@@ -1,6 +1,6 @@
 //! Runtime supervisor — manages the lifecycle of individual runtimes
 
-use crate::common::process::{graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy};
+use crate::common::process::{graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Child;
@@ -18,6 +18,8 @@ pub struct ManagedRuntime {
     pub last_error: Option<String>,
     /// The adapter is boxed to allow different types per runtime
     pub adapter: Arc<dyn BackgroundRuntimeAdapter>,
+    /// Spawn configuration used to create this runtime (needed for restart)
+    pub spawn_config: RuntimeSpawnConfig,
 }
 
 impl std::fmt::Debug for ManagedRuntime {
@@ -29,6 +31,7 @@ impl std::fmt::Debug for ManagedRuntime {
             .field("restart_count", &self.restart_count)
             .field("last_error", &self.last_error)
             .field("adapter", &"<dyn BackgroundRuntimeAdapter>")
+            .field("spawn_config", &self.spawn_config)
             .finish()
     }
 }
@@ -107,6 +110,7 @@ pub async fn spawn_runtime_process(
     config: &ProcessSpawnConfig,
     adapter: Arc<dyn BackgroundRuntimeAdapter>,
     restart_policy: RestartPolicy,
+    spawn_config: RuntimeSpawnConfig,
 ) -> anyhow::Result<ManagedRuntime> {
     let (child, stdin, stdout, pid) = spawn_process(config).await?;
 
@@ -118,6 +122,7 @@ pub async fn spawn_runtime_process(
         restart_count: 0,
         last_error: None,
         adapter,
+        spawn_config,
     })
 }
 
@@ -128,6 +133,7 @@ pub fn spawn_runtime_task(
     abort_tx: tokio::sync::oneshot::Sender<()>,
     adapter: Arc<dyn BackgroundRuntimeAdapter>,
     restart_policy: RestartPolicy,
+    spawn_config: RuntimeSpawnConfig,
 ) -> ManagedRuntime {
     ManagedRuntime {
         id: id.to_string(),
@@ -140,6 +146,7 @@ pub fn spawn_runtime_task(
         restart_count: 0,
         last_error: None,
         adapter,
+        spawn_config,
     }
 }
 
@@ -149,6 +156,7 @@ pub fn spawn_runtime_external(
     endpoint: String,
     adapter: Arc<dyn BackgroundRuntimeAdapter>,
     restart_policy: RestartPolicy,
+    spawn_config: RuntimeSpawnConfig,
 ) -> ManagedRuntime {
     ManagedRuntime {
         id: id.to_string(),
@@ -161,6 +169,7 @@ pub fn spawn_runtime_external(
         restart_count: 0,
         last_error: None,
         adapter,
+        spawn_config,
     }
 }
 

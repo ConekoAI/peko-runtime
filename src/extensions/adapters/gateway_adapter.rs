@@ -202,6 +202,8 @@ impl ExtensionTypeAdapter for GatewayAdapter {
                 "grpc" => debug!("Initializing gRPC gateway"),
                 "cli" => debug!("Initializing CLI gateway"),
                 "custom" => debug!("Initializing custom gateway"),
+                "out-of-process" => debug!("Initializing out-of-process gateway"),
+                "external" => debug!("Initializing external gateway"),
                 _ => warn!("Unknown gateway type: {}", config.gateway_type),
             }
         }

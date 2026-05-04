@@ -356,6 +356,10 @@ impl GatewayRuntimeAdapter {
 
 #[async_trait]
 impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
+    fn clone_box(&self) -> Arc<dyn BackgroundRuntimeAdapter> {
+        Arc::new(self.clone())
+    }
+
     async fn initialize(&self, runtime: &mut ManagedRuntime) -> Result<()> {
         match &self.flavor {
             GatewayFlavor::OutOfProcess { .. } => {

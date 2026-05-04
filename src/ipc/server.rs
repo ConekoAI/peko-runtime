@@ -684,26 +684,18 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Handle an ExtStart request — start a background runtime for an extension
-    async fn handle_ext_start(
-        request_id: u64,
-        extension_id: String,
-        state: AppState,
-        socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+    /// Start a background runtime for an extension from its manifest.
+    ///
+    /// Shared helper used by `handle_ext_start` and `handle_ext_restart`.
+    async fn start_extension_runtime(
+        extension_id: &str,
+        state: &AppState,
     ) -> anyhow::Result<()> {
         let manager = state.background_runtime_manager().clone();
-
-        // Gateway extensions are started directly via BackgroundRuntimeManager.
-        // MCP servers are managed through the McpAdapter extension system; when
-        // the adapter starts an MCP server, McpManager internally delegates to
-        // BackgroundRuntimeManager (ADR-025 Phase 2). The `ext start` path here
-        // only handles gateway extensions because MCP servers use config files
-        // (mcp.toml / mcp.json) rather than manifest.yaml in the extensions dir.
         let data_dir = &state.data_dir;
-        let ext_dir = data_dir.join("extensions").join(&extension_id);
+        let ext_dir = data_dir.join("extensions").join(extension_id);
 
-        let spawn_result = if ext_dir.join("manifest.yaml").exists() {
+        if ext_dir.join("manifest.yaml").exists() {
             match tokio::fs::read_to_string(ext_dir.join("manifest.yaml")).await {
                 Ok(content) => {
                     match serde_yaml::from_str::<serde_yaml::Value>(&content) {
@@ -714,7 +706,7 @@ impl IpcServer {
 
                             if ext_type == "gateway" {
                                 let agent_service = state.agent_service().clone();
-                                Self::start_gateway_runtime(&extension_id, &manifest, &ext_dir, &manager, agent_service).await
+                                Self::start_gateway_runtime(extension_id, &manifest, &ext_dir, &manager, agent_service).await
                             } else if ext_type == "mcp" {
                                 Err(anyhow::anyhow!("MCP runtime start is not yet implemented via BackgroundRuntimeManager. Use the legacy MCP configuration."))
                             } else {
@@ -728,9 +720,18 @@ impl IpcServer {
             }
         } else {
             Err(anyhow::anyhow!("Extension '{}' not found or has no manifest", extension_id))
-        };
+        }
+    }
 
-        match spawn_result {
+    /// Handle an ExtStart request — start a background runtime for an extension
+    async fn handle_ext_start(
+        request_id: u64,
+        extension_id: String,
+        state: AppState,
+        socket: ServerSocket,
+        addr: Option<std::net::SocketAddr>,
+    ) -> anyhow::Result<()> {
+        match Self::start_extension_runtime(&extension_id, &state).await {
             Ok(()) => {
                 let response = ResponsePacket::ExtStarted { request_id, extension_id };
                 Self::send_packet(&socket, response, addr).await?;
@@ -865,7 +866,18 @@ impl IpcServer {
     ) -> anyhow::Result<()> {
         let manager = state.background_runtime_manager().clone();
 
-        match manager.restart(&extension_id).await {
+        // If the runtime is not currently managed (e.g. was stopped), fall back
+        // to starting it from the manifest — this makes `ext restart` work after
+        // `ext stop` and matches user expectations.
+        let runtime_exists = manager.get_state(&extension_id).await.is_some();
+
+        let result = if runtime_exists {
+            manager.restart(&extension_id).await
+        } else {
+            Self::start_extension_runtime(&extension_id, &state).await
+        };
+
+        match result {
             Ok(()) => {
                 let response = ResponsePacket::ExtRestarted { request_id, extension_id };
                 Self::send_packet(&socket, response, addr).await?;

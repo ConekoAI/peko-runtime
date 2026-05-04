@@ -137,7 +137,7 @@ impl Default for McpClientRegistry {
 /// - Tool discovery
 /// - Periodic health checks via JSON-RPC ping
 /// - Graceful shutdown via JSON-RPC exit notification
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct McpRuntimeAdapter {
     /// Server configuration (timeouts, capabilities, etc.)
     server_config: McpServerConfig,
@@ -174,6 +174,10 @@ impl McpRuntimeAdapter {
 
 #[async_trait]
 impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
+    fn clone_box(&self) -> Arc<dyn BackgroundRuntimeAdapter> {
+        Arc::new(self.clone())
+    }
+
     /// Called after the OS process has started.
     ///
     /// 1. Extract stdin/stdout from `RuntimeKind::Process`

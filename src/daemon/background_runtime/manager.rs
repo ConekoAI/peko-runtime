@@ -57,7 +57,7 @@ impl BackgroundRuntimeManager {
         // Create the runtime based on spawn config
         let mut runtime = match &spawn_config {
             RuntimeSpawnConfig::Process(process_config) => {
-                spawn_runtime_process(&id, process_config, adapter, restart_policy).await?
+                spawn_runtime_process(&id, process_config, adapter, restart_policy, spawn_config.clone()).await?
             }
             RuntimeSpawnConfig::Task { .. } => {
                 // For tasks, the caller must spawn the task and pass the handle.
@@ -67,7 +67,7 @@ impl BackgroundRuntimeManager {
                 );
             }
             RuntimeSpawnConfig::External { endpoint, .. } => {
-                spawn_runtime_external(&id, endpoint.clone(), adapter, restart_policy)
+                spawn_runtime_external(&id, endpoint.clone(), adapter, restart_policy, spawn_config.clone())
             }
         };
 
@@ -108,7 +108,8 @@ impl BackgroundRuntimeManager {
 
         info!("Starting background task runtime: {}", id);
 
-        let mut runtime = spawn_runtime_task(&id, task, abort_tx, adapter.clone(), restart_policy);
+        let spawn_config = RuntimeSpawnConfig::Task { name: id.clone() };
+        let mut runtime = spawn_runtime_task(&id, task, abort_tx, adapter.clone(), restart_policy, spawn_config);
 
         // Initialize via adapter
         if let Err(e) = adapter.initialize(&mut runtime).await {
@@ -160,10 +161,28 @@ impl BackgroundRuntimeManager {
     pub async fn restart(&self, id: &str) -> anyhow::Result<()> {
         info!("Restarting background runtime: {}", id);
 
-        // Restart not yet implemented — callers should stop and re-start with original config
-        anyhow::bail!(
-            "Restart not yet implemented — use stop() then start() with original config"
-        );
+        // Collect config needed for restart
+        let (spawn_config, adapter, restart_policy) = {
+            let runtimes = self.runtimes.read().await;
+            let runtime = runtimes
+                .get(id)
+                .ok_or_else(|| anyhow::anyhow!("Runtime '{}' not found", id))?;
+            (
+                runtime.spawn_config.clone(),
+                runtime.adapter.clone_box(),
+                runtime.restart_policy.clone(),
+            )
+        };
+
+        // Stop the existing runtime
+        self.stop(id).await?;
+
+        // Start a new runtime with the same configuration
+        self.start(id.to_string(), spawn_config, adapter, restart_policy)
+            .await?;
+
+        info!("Background runtime '{}' restarted successfully", id);
+        Ok(())
     }
 
     /// Get runtime state
