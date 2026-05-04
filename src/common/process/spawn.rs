@@ -74,7 +74,14 @@ pub async fn spawn_process(
     );
 
     let mut cmd = Command::new(&cmd_info.cmd);
-    cmd.args(&cmd_info.args)
+    // Use resolved args for interpreter auto-detection, but fall back to config args
+    // when the command is already the interpreter (e.g., "node" with args ["gateway.js"])
+    let args: Vec<String> = if cmd_info.args.is_empty() {
+        config.args.clone()
+    } else {
+        cmd_info.args.clone()
+    };
+    cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

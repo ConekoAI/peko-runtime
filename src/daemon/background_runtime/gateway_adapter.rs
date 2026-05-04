@@ -271,13 +271,13 @@ impl GatewayRuntimeAdapter {
     ) {
         match response {
             GatewayResponse::Receive {
-                request_id,
+                request_id: _,
                 channel_id,
                 user_id,
                 message,
                 metadata,
             } => {
-                debug!(
+                warn!(
                     "Gateway '{}' received message from '{}' in '{}': {}",
                     gateway_id, user_id, channel_id, message
                 );
@@ -288,8 +288,12 @@ impl GatewayRuntimeAdapter {
                     .await
                 {
                     Ok(agent_response) => {
+                        info!(
+                            "Gateway '{}' routed message successfully, agent response length: {}",
+                            gateway_id, agent_response.len()
+                        );
                         // Deliver response back to gateway via the packet channel
-                        let session_id = format!("{}:{}:{}", gateway_id, channel_id, user_id);
+                        let session_id = format!("{}__{}__{}", gateway_id, channel_id, user_id);
                         if let Err(e) = self
                             .deliver_response(
                                 gateway_id,

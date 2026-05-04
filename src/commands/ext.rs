@@ -205,8 +205,9 @@ pub enum ExtCommands {
 /// Create an `ExtensionManager` with all default adapters registered
 async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionManager {
     use crate::extensions::adapters::{
-        general_adapter::GeneralExtensionAdapter, mcp_adapter::McpAdapter,
-        skill_adapter::SkillAdapter, universal_tool_adapter::UniversalToolAdapter,
+        gateway_adapter::GatewayAdapter, general_adapter::GeneralExtensionAdapter,
+        mcp_adapter::McpAdapter, skill_adapter::SkillAdapter,
+        universal_tool_adapter::UniversalToolAdapter,
     };
     use crate::extensions::core::global_core;
     use crate::tools::registry::builtin::{BuiltinToolRegistrar, BuiltinToolRegistrarConfig};
@@ -222,18 +223,17 @@ async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> Exte
         );
     }
 
-    let mut manager = ExtensionManager::with_core(core);
+    let mut manager = ExtensionManager::with_core(core.clone());
 
     if let Some(storage) = storage {
         manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
     }
 
     // Register extension type adapters
-    // Note: GatewayAdapter requires ExtensionCore and is registered by
-    // ExtensionManager when needed.
     manager.register_adapter(Box::new(SkillAdapter::new()));
     manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
     manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+    manager.register_adapter(Box::new(GatewayAdapter::new(core)));
     manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
 
     manager

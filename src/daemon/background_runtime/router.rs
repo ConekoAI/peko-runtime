@@ -133,6 +133,11 @@ impl GatewayRouter {
         message: &str,
         metadata: serde_json::Value,
     ) -> Result<String> {
+        warn!(
+            "Routing incoming message for gateway '{}' channel '{}' user '{}'",
+            gateway_id, channel_id, user_id
+        );
+
         // Check if gateway is offline
         {
             let queues = self.offline_queues.read().await;
@@ -155,20 +160,37 @@ impl GatewayRouter {
                 gateway_id, channel_id
             ))?;
 
+        warn!(
+            "Resolved agent '{}' for gateway '{}' channel '{}'",
+            agent_name, gateway_id, channel_id
+        );
+
         debug!(
             "Routing message from gateway '{}' channel '{}' to agent '{}'",
             gateway_id, channel_id, agent_name
         );
 
         // Generate a session ID based on gateway + channel + user
-        let session_id = format!("{}:{}:{}", gateway_id, channel_id, user_id);
+        // Use '__' as separator instead of ':' for Windows filename compatibility
+        let session_id = format!("{}__{}__{}", gateway_id, channel_id, user_id);
 
         let request = MessageRequest::new(&agent_name, message)
             .with_session(&session_id)
             .with_user(user_id);
 
+        warn!(
+            "Executing message for agent '{}' via gateway '{}'",
+            agent_name, gateway_id
+        );
+
         match self.agent_service.execute_message(request).await {
-            Ok(result) => Ok(result.content),
+            Ok(result) => {
+                info!(
+                    "Agent '{}' executed message successfully, response length: {}",
+                    agent_name, result.content.len()
+                );
+                Ok(result.content)
+            }
             Err(e) => {
                 error!("Agent execution failed for gateway '{}': {}", gateway_id, e);
                 Err(anyhow::anyhow!("Agent execution failed: {}", e))

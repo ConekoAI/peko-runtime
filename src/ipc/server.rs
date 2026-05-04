@@ -765,6 +765,10 @@ impl IpcServer {
 
         let router = GatewayRouter::new(agent_service);
 
+        // Parse and register routing configuration from manifest
+        let routing_config = parse_gateway_routing_config(config);
+        router.register_gateway(extension_id, routing_config).await?;
+
         if gateway_type == "out-of-process" {
             let command = config.get("command")
                 .and_then(|v| v.as_str())
@@ -780,11 +784,12 @@ impl IpcServer {
                     .collect())
                 .unwrap_or_default();
 
-            let process_config = ProcessSpawnConfig::new(command)
+            let mut process_config = ProcessSpawnConfig::new(command)
                 .args(args.clone())
                 .cwd(ext_dir);
-            // env is not supported by the builder directly, so we'd need to extend ProcessSpawnConfig
-            // For now, skip env (it's a limitation we can document)
+            for (key, value) in &env {
+                process_config = process_config.env(key.clone(), value.clone());
+            }
 
             let spawn_config = RuntimeSpawnConfig::Process(process_config);
             let adapter = std::sync::Arc::new(GatewayRuntimeAdapter::new(
@@ -926,5 +931,46 @@ impl IpcServer {
         trace!("Sending response: {:?} ({} bytes)", packet, bytes.len());
         socket.send_response(&bytes, addr).await?;
         Ok(())
+    }
+}
+
+/// Parse gateway routing configuration from manifest config section
+fn parse_gateway_routing_config(config: &serde_yaml::Value) -> crate::daemon::background_runtime::GatewayRoutingConfig {
+    use crate::daemon::background_runtime::GatewayRoutingConfig;
+    use std::collections::HashMap;
+
+    let default_agent = config
+        .get("routing")
+        .and_then(|r| r.get("default_agent"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("assistant")
+        .to_string();
+
+    let channel_map: HashMap<String, String> = config
+        .get("routing")
+        .and_then(|r| r.get("channel_map"))
+        .and_then(|v| v.as_mapping())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let dm_agents: HashMap<String, String> = config
+        .get("routing")
+        .and_then(|r| r.get("dm_agents"))
+        .and_then(|v| v.as_mapping())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    GatewayRoutingConfig {
+        default_agent,
+        channel_map,
+        dm_agents,
     }
 }

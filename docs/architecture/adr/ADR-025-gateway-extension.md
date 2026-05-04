@@ -1,8 +1,8 @@
 # ADR-025: Gateway Extension Architecture
 
-**Status**: Accepted — Partially Implemented  
+**Status**: Accepted — Implemented  
 **Date**: 2026-05-03  
-**Last Updated**: 2026-05-03  
+**Last Updated**: 2026-05-04  
 **Author**: Kimi Code CLI  
 **Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-024 (Unified Extension Manifest)  
 **Replaces / Supersedes**: `gateways/` workspace at project root (legacy plugin approach)
@@ -613,10 +613,19 @@ pekobot ext config discord-gateway --set routing.channel_map.#general=assistant
 3. Implement `MessagePreSend` / `MessagePostReceive` transformation in the engine's message pipeline.
 4. **Note:** This is a behavioral change. Existing extensions that return values will now have those values consumed.
 
-### Phase 5: Reference Gateway Implementations (Medium Term)
+### Phase 5: Reference Gateway Implementations ✅ Done
 
-1. **HTTP API gateway** (out-of-process): Axum server spawned as child process.
-2. Place examples and E2E tests: `e2e_tests/extensions/gateway/http_basics/test.ps1`. Reference patterns: `e2e_tests\extensions\universal`
+1. **HTTP API gateway** (out-of-process): Node.js reference gateway at `e2e_tests/extensions/gateway/http_basics/`.
+   - Speaks `GatewayPacket`/`GatewayResponse` stdio-line JSON protocol
+   - Receives config, responds to pings, handles `Deliver` packets
+   - Simulates incoming HTTP POST by emitting synthetic `Receive` message
+   - E2E test (`test.ps1`) validates full lifecycle: install → start → config → Receive → agent execution → Deliver → stop
+
+2. **Key implementation notes discovered during Phase 5:**
+   - **Session ID format**: Session IDs must be valid filenames on all platforms. The router uses `__` as separator (e.g., `gateway__channel__user`) instead of `:` which is invalid on Windows.
+   - **Session auto-creation**: `resume_specific_session` must create sessions that don't exist, since gateway messages reference sessions that may not have been created yet.
+   - **Process spawn args**: `spawn_process` must pass `config.args` even when interpreter auto-detection is not triggered (e.g., `node gateway.js` needs the script path).
+   - **Async delivery**: Agent responses are delivered back to the gateway asynchronously via the packet channel (`packet_tx`), decoupling the router from direct I/O.
 
 ---
 
@@ -674,13 +683,13 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 | `BackgroundRuntimeManager` exists and is initialized in `Daemon::run()` | ✅ Done | Initialized in `AppState::build()`; accessible via `app_state.background_runtime_manager()` |
 | `McpManager` refactored to use `BackgroundRuntimeManager` + `McpRuntimeAdapter` | ✅ Done | `McpManager` now delegates stdio transport servers to `BackgroundRuntimeManager` via `McpRuntimeAdapter`. SSE servers still handled directly. Public API unchanged. |
 | All existing MCP E2E tests pass after refactoring | ✅ Done | 940 unit tests pass; all MCP-specific tests pass. |
-| `GatewayRuntimeAdapter` implemented and registered in CLI | 🟡 Partial | `GatewayRuntimeAdapter` + `GatewayFlavor` implemented in `src/daemon/background_runtime/gateway_adapter.rs`. CLI registration via `pekobot ext start <id>` wired through IPC (ADR-026 Phase 1). |
-| Out-of-process gateway can be started (spawns child process) and stopped | 🟡 Partial | `BackgroundRuntimeManager::start()` with `RuntimeSpawnConfig::Process` works. Gateway-specific spawn/stop via `pekobot ext start/stop` wired through daemon IPC (ADR-026 Phase 1). |
+| `GatewayRuntimeAdapter` implemented and registered in CLI | ✅ Done | `GatewayRuntimeAdapter` + `GatewayFlavor` implemented in `src/daemon/background_runtime/gateway_adapter.rs`. CLI registration via `pekobot ext start <id>` wired through IPC (ADR-026 Phase 1). |
+| Out-of-process gateway can be started (spawns child process) and stopped | ✅ Done | `BackgroundRuntimeManager::start()` with `RuntimeSpawnConfig::Process` works. Gateway-specific spawn/stop via `pekobot ext start/stop` wired through daemon IPC (ADR-026 Phase 1). |
 | `GatewayPacket`/`GatewayResponse` stdio-line protocol handled end-to-end | ✅ Done | Types + encode/decode in `src/daemon/background_runtime/protocol.rs`. Stdout read loop routes `Receive` messages to `GatewayRouter`. |
-| HTTP API gateway (out-of-process) accepts POST and routes to agent | ⏸️ Pending | Phase 5 — requires reference implementation |
-| Agent response is delivered back to the originating channel | 🟡 Partial | `GatewayRouter::route_incoming()` executes agent and returns response. Delivery back to gateway process via `GatewayPacket::Deliver` requires stdin access from router (not yet wired). |
+| HTTP API gateway (out-of-process) accepts POST and routes to agent | ✅ Done | Reference Node.js gateway at `e2e_tests/extensions/gateway/http_basics/`. Simulates HTTP POST by emitting synthetic `Receive` message. |
+| Agent response is delivered back to the originating channel | ✅ Done | `GatewayRouter::route_incoming()` executes agent, then `GatewayRuntimeAdapter::handle_gateway_response()` calls `deliver_response()` which sends `GatewayPacket::Deliver` via the packet channel to the gateway process. |
 | `ChannelInput`/`ChannelOutput` hook results are consumed by the agent runtime | ✅ Done | Both streaming and non-streaming paths in `stateless_service.rs` now consume hook results. **Behavioral change**: extensions that return values are now effective. |
-| E2E tests verify gateway lifecycle | ⏸️ Pending | Phase 5 |
+| E2E tests verify gateway lifecycle | ✅ Done | PowerShell test at `e2e_tests/extensions/gateway/http_basics/test.ps1` validates: install → start → config → Receive → agent execution → Deliver → stop → restart stub. |
 | Legacy `gateways/` workspace is removed | ✅ Done | Confirmed non-existent at project root |
 
 ---

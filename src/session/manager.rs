@@ -812,11 +812,17 @@ impl SessionManager {
 
         let peer = Peer::User(self.user.clone());
 
-        // Open the SPECIFIC session by ID
-        let handle = self
-            .open_session(session_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
+        // Open the SPECIFIC session by ID, creating it if it doesn't exist
+        let handle = match self.open_session(session_id).await? {
+            Some(handle) => handle,
+            None => {
+                info!("Session '{}' not found, creating new", session_id);
+                let options = crate::session::SessionCreateOptions::new()
+                    .with_trigger("api")
+                    .with_session_id(session_id);
+                self.create_session(agent_name, &peer, options).await?
+            }
+        };
 
         // Get the base session from the handle
         let base = handle.base().clone();

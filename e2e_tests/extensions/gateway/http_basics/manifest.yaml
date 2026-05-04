@@ -1,0 +1,13 @@
+id: "http-gateway-ref"
+name: "HTTP Gateway Reference"
+version: "1.0.0"
+description: "Reference out-of-process HTTP gateway for E2E testing"
+extension_type: "gateway"
+gateway_type: "out-of-process"
+config:
+  command: "node"
+  args: ["gateway.js"]
+  routing:
+    default_agent: "gateway_test_agent"
+    channel_map:
+      "test-channel": "gateway_test_agent"
