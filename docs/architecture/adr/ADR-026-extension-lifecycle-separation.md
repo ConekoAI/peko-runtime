@@ -1,6 +1,6 @@
 # ADR-026: Separate Extension Runtime Lifecycle from Access Control
 
-**Status**: Proposed  
+**Status**: Accepted — Phase 1 Implemented  
 **Date**: 2026-05-03  
 **Last Updated**: 2026-05-03  
 **Author**: Kimi Code CLI  
@@ -231,14 +231,14 @@ To avoid breaking existing workflows during the transition:
 
 | Criterion | Status | Notes |
 |---|---|---|
-| `pekobot ext start <id>` spawns background runtime via `BackgroundRuntimeManager` | ⏸️ Pending | New command |
-| `pekobot ext stop <id>` gracefully stops background runtime | ⏸️ Pending | New command |
-| `pekobot ext restart <id>` restarts with backoff | ⏸️ Pending | New command |
-| `pekobot ext status <id>` shows `RuntimeState` | ⏸️ Pending | New command |
-| `pekobot ext enable` no longer starts processes for any extension type | ⏸️ Pending | After deprecation phase |
-| `pekobot ext disable` no longer stops processes for any extension type | ⏸️ Pending | After deprecation phase |
-| `pekobot ext list` shows both runtime and access status | ⏸️ Pending | Enhanced output |
-| Deprecation warnings printed when `enable`/`disable` trigger runtime side-effects | ⏸️ Pending | Phase 1 only |
+| `pekobot ext start <id>` spawns background runtime via `BackgroundRuntimeManager` | ✅ Done | New command; delegates to daemon IPC |
+| `pekobot ext stop <id>` gracefully stops background runtime | ✅ Done | New command; delegates to daemon IPC |
+| `pekobot ext restart <id>` restarts with backoff | ✅ Done | New command; delegates to daemon IPC |
+| `pekobot ext status <id>` shows `RuntimeState` | ✅ Done | New command; delegates to daemon IPC |
+| `pekobot ext enable` no longer starts processes for any extension type | ⏸️ Pending | After deprecation phase (Phase 2) |
+| `pekobot ext disable` no longer stops processes for any extension type | ⏸️ Pending | After deprecation phase (Phase 2) |
+| `pekobot ext list` shows both runtime and access status | ✅ Done | Enhanced output with RUNTIME column |
+| Deprecation warnings printed when `enable`/`disable` trigger runtime side-effects | ✅ Done | Phase 1 — warns for gateway/mcp extensions |
 | All E2E tests updated to use `start`/`stop` for runtime extensions | ⏸️ Pending | Phase 2 |
 | Documentation updated across ADR-025, EXTENSION_SYSTEM.md, README.md | ⏸️ Pending | Phase 3 |
 

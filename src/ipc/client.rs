@@ -258,6 +258,66 @@ impl DaemonClient {
             None => anyhow::bail!("Cron history stream closed unexpectedly"),
         }
     }
+
+    // ------------------------------------------------------------------
+    // Extension runtime lifecycle (ADR-026)
+    // ------------------------------------------------------------------
+
+    /// Start a background runtime for an extension
+    pub async fn ext_start(&self, extension_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ExtStart {
+            request_id,
+            extension_id: extension_id.into(),
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Ext start stream closed unexpectedly"),
+        }
+    }
+
+    /// Stop a background runtime for an extension
+    pub async fn ext_stop(&self, extension_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ExtStop {
+            request_id,
+            extension_id: extension_id.into(),
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Ext stop stream closed unexpectedly"),
+        }
+    }
+
+    /// Restart a background runtime for an extension
+    pub async fn ext_restart(&self, extension_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ExtRestart {
+            request_id,
+            extension_id: extension_id.into(),
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Ext restart stream closed unexpectedly"),
+        }
+    }
+
+    /// Get background runtime status for an extension
+    pub async fn ext_status(&self, extension_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ExtStatus {
+            request_id,
+            extension_id: extension_id.into(),
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Ext status stream closed unexpectedly"),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -157,6 +157,49 @@ pub enum ExtCommands {
         /// Extension ID
         id: String,
     },
+
+    /// Start a background runtime for an extension (daemon-scoped)
+    ///
+    /// Only extensions that declare a background runtime (e.g., gateway, mcp)
+    /// can be started. Stateless extensions (skills, general) should use
+    /// 'pekobot ext enable' instead.
+    ///
+    /// Examples:
+    ///   pekobot ext start discord-gateway
+    ///   pekobot ext start mcp-filesystem
+    Start {
+        /// Extension ID
+        id: String,
+    },
+
+    /// Stop a background runtime for an extension (daemon-scoped)
+    ///
+    /// Examples:
+    ///   pekobot ext stop discord-gateway
+    ///   pekobot ext stop mcp-filesystem
+    Stop {
+        /// Extension ID
+        id: String,
+    },
+
+    /// Restart a background runtime for an extension (daemon-scoped)
+    ///
+    /// Examples:
+    ///   pekobot ext restart discord-gateway
+    ///   pekobot ext restart mcp-filesystem
+    Restart {
+        /// Extension ID
+        id: String,
+    },
+
+    /// Show background runtime status for an extension
+    ///
+    /// Examples:
+    ///   pekobot ext status discord-gateway
+    Status {
+        /// Extension ID
+        id: String,
+    },
 }
 
 /// Create an `ExtensionManager` with all default adapters registered
@@ -244,11 +287,45 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                     team,
                     agent,
                 } => handle_config(paths, id, show, set, unset, global, team, agent).await,
+                ExtCommands::Start { id } => handle_start(id).await,
+                ExtCommands::Stop { id } => handle_stop(id).await,
+                ExtCommands::Restart { id } => handle_restart(id).await,
+                ExtCommands::Status { id } => handle_status(id).await,
                 // These are handled above
                 ExtCommands::Validate { .. } | ExtCommands::Debug { .. } => unreachable!(),
             }
         }
     }
+}
+
+/// Best-effort fetch of runtime states from daemon for installed extensions
+async fn fetch_runtime_states(
+    extensions: &[&LoadedExtension],
+) -> std::collections::HashMap<String, String> {
+    let mut states = std::collections::HashMap::new();
+
+    // Only query daemon for runtime-bearing extension types
+    let runtime_types: std::collections::HashSet<&str> = ["gateway", "mcp"].iter().cloned().collect();
+
+    let client = match crate::ipc::DaemonClient::connect().await {
+        Ok(c) => c,
+        Err(_) => return states,
+    };
+
+    for ext in extensions {
+        if !runtime_types.contains(ext.extension_type.as_str()) {
+            continue;
+        }
+        let id = ext.manifest.id.0.as_str();
+        match client.ext_status(id).await {
+            Ok(crate::ipc::ResponsePacket::ExtStatus { state, .. }) => {
+                states.insert(id.to_string(), state);
+            }
+            _ => {}
+        }
+    }
+
+    states
 }
 
 /// Handle install command
@@ -341,6 +418,9 @@ async fn handle_list(
         Vec::new()
     };
 
+    // ADR-026: Fetch runtime states from daemon (best-effort)
+    let runtime_states = fetch_runtime_states(&filtered_installed).await;
+
     if show_permissions {
         // Print header with access columns
         let access_header = if agent_configs.len() == 1 {
@@ -349,13 +429,16 @@ async fn handle_list(
             "ACCESS".to_string()
         };
         println!(
-            "{:<24} {:<14} {:<18} {:<10} {}",
-            "ID", "TYPE", "NAME", "SOURCE", access_header
+            "{:<24} {:<14} {:<18} {:<10} {:<12} {}",
+            "ID", "TYPE", "NAME", "SOURCE", "RUNTIME", access_header
         );
-        println!("{}", "-".repeat(90));
+        println!("{}", "-".repeat(105));
     } else {
-        println!("{:<24} {:<14} {:<18} SOURCE", "ID", "TYPE", "NAME");
-        println!("{}", "-".repeat(72));
+        println!(
+            "{:<24} {:<14} {:<18} {:<10} {:<12}",
+            "ID", "TYPE", "NAME", "SOURCE", "RUNTIME"
+        );
+        println!("{}", "-".repeat(85));
     }
 
     for b in &filtered_builtins {
@@ -365,13 +448,13 @@ async fn handle_list(
         if show_permissions {
             let access = format_access_for_agent_configs(b.name.as_str(), &agent_configs);
             println!(
-                "{:<24} {:<14} {:<18} {:<10} {}",
-                b.id, b.ext_type, b.name, source, access
+                "{:<24} {:<14} {:<18} {:<10} {:<12} {}",
+                b.id, b.ext_type, b.name, source, "n/a", access
             );
         } else {
             println!(
-                "{:<24} {:<14} {:<18} {}",
-                b.id, b.ext_type, b.name, source
+                "{:<24} {:<14} {:<18} {:<10} {:<12}",
+                b.id, b.ext_type, b.name, source, "n/a"
             );
         }
     }
@@ -379,17 +462,21 @@ async fn handle_list(
     for ext in &filtered_installed {
         let source = "installed";
         let tool_name = ext.manifest.name.as_str();
+        let runtime_status = runtime_states
+            .get(ext.manifest.id.0.as_str())
+            .cloned()
+            .unwrap_or_else(|| "n/a".to_string());
 
         if show_permissions {
             let access = format_access_for_agent_configs(tool_name, &agent_configs);
             println!(
-                "{:<24} {:<14} {:<18} {:<10} {}",
-                ext.manifest.id, ext.extension_type, ext.manifest.name, source, access
+                "{:<24} {:<14} {:<18} {:<10} {:<12} {}",
+                ext.manifest.id, ext.extension_type, ext.manifest.name, source, runtime_status, access
             );
         } else {
             println!(
-                "{:<24} {:<14} {:<18} {}",
-                ext.manifest.id, ext.extension_type, ext.manifest.name, source
+                "{:<24} {:<14} {:<18} {:<10} {:<12}",
+                ext.manifest.id, ext.extension_type, ext.manifest.name, source, runtime_status
             );
         }
     }
@@ -524,6 +611,13 @@ async fn handle_enable(
             .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
         (ext.manifest.name.clone(), ext.extension_type.clone())
     };
+
+    // ADR-026 Phase 1: Deprecation warning for runtime extensions
+    let is_runtime_extension = ext_type == "gateway" || ext_type == "mcp";
+    if is_runtime_extension {
+        eprintln!("Warning: 'pekobot ext enable {id}' will soon only control access.");
+        eprintln!("         Use 'pekobot ext start {id}' to launch the background runtime.");
+    }
 
     match manager.enable(&ext_id).await {
         Ok(()) => {
@@ -710,6 +804,16 @@ async fn handle_disable(
         anyhow::bail!("Extension '{id}' not found");
     }
 
+    // ADR-026 Phase 1: Deprecation warning for runtime extensions
+    if let Some(ext) = manager.get_extension(&ext_id) {
+        let ext_type = ext.extension_type.clone();
+        let is_runtime_extension = ext_type == "gateway" || ext_type == "mcp";
+        if is_runtime_extension {
+            eprintln!("Warning: 'pekobot ext disable {id}' will soon only control access.");
+            eprintln!("         Use 'pekobot ext stop {id}' to stop the background runtime.");
+        }
+    }
+
     match manager.disable(&ext_id).await {
         Ok(()) => {
             println!("Extension '{id}' disabled");
@@ -861,6 +965,115 @@ fn handle_bundle(manager: &ExtensionManager, name: String, ids: Vec<String>) -> 
         Err(e) => {
             eprintln!("Failed to create bundle: {e}");
             Err(e)
+        }
+    }
+}
+
+/// Handle start command — start a background runtime via daemon IPC
+async fn handle_start(id: String) -> anyhow::Result<()> {
+    match crate::ipc::DaemonClient::connect().await {
+        Ok(client) => {
+            match client.ext_start(&id).await {
+                Ok(crate::ipc::ResponsePacket::ExtStarted { extension_id, .. }) => {
+                    println!("Background runtime for '{}' started", extension_id);
+                    Ok(())
+                }
+                Ok(crate::ipc::ResponsePacket::Error { message, .. }) => {
+                    anyhow::bail!("Failed to start '{}': {}", id, message)
+                }
+                Ok(other) => {
+                    anyhow::bail!("Unexpected response from daemon: {:?}", other)
+                }
+                Err(e) => {
+                    anyhow::bail!("Failed to communicate with daemon: {e}")
+                }
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Daemon is not running. Start it with 'pekobot daemon start'. ({e})")
+        }
+    }
+}
+
+/// Handle stop command — stop a background runtime via daemon IPC
+async fn handle_stop(id: String) -> anyhow::Result<()> {
+    match crate::ipc::DaemonClient::connect().await {
+        Ok(client) => {
+            match client.ext_stop(&id).await {
+                Ok(crate::ipc::ResponsePacket::ExtStopped { extension_id, .. }) => {
+                    println!("Background runtime for '{}' stopped", extension_id);
+                    Ok(())
+                }
+                Ok(crate::ipc::ResponsePacket::Error { message, .. }) => {
+                    anyhow::bail!("Failed to stop '{}': {}", id, message)
+                }
+                Ok(other) => {
+                    anyhow::bail!("Unexpected response from daemon: {:?}", other)
+                }
+                Err(e) => {
+                    anyhow::bail!("Failed to communicate with daemon: {e}")
+                }
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Daemon is not running. Start it with 'pekobot daemon start'. ({e})")
+        }
+    }
+}
+
+/// Handle restart command — restart a background runtime via daemon IPC
+async fn handle_restart(id: String) -> anyhow::Result<()> {
+    match crate::ipc::DaemonClient::connect().await {
+        Ok(client) => {
+            match client.ext_restart(&id).await {
+                Ok(crate::ipc::ResponsePacket::ExtRestarted { extension_id, .. }) => {
+                    println!("Background runtime for '{}' restarted", extension_id);
+                    Ok(())
+                }
+                Ok(crate::ipc::ResponsePacket::Error { message, .. }) => {
+                    anyhow::bail!("Failed to restart '{}': {}", id, message)
+                }
+                Ok(other) => {
+                    anyhow::bail!("Unexpected response from daemon: {:?}", other)
+                }
+                Err(e) => {
+                    anyhow::bail!("Failed to communicate with daemon: {e}")
+                }
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Daemon is not running. Start it with 'pekobot daemon start'. ({e})")
+        }
+    }
+}
+
+/// Handle status command — show background runtime status via daemon IPC
+async fn handle_status(id: String) -> anyhow::Result<()> {
+    match crate::ipc::DaemonClient::connect().await {
+        Ok(client) => {
+            match client.ext_status(&id).await {
+                Ok(crate::ipc::ResponsePacket::ExtStatus { extension_id, state, restart_count, last_error, .. }) => {
+                    println!("Background runtime status for '{}'", extension_id);
+                    println!("  State:          {}", state);
+                    println!("  Restart count:  {}", restart_count);
+                    if let Some(err) = last_error {
+                        println!("  Last error:     {}", err);
+                    }
+                    Ok(())
+                }
+                Ok(crate::ipc::ResponsePacket::Error { message, .. }) => {
+                    anyhow::bail!("Failed to get status for '{}': {}", id, message)
+                }
+                Ok(other) => {
+                    anyhow::bail!("Unexpected response from daemon: {:?}", other)
+                }
+                Err(e) => {
+                    anyhow::bail!("Failed to communicate with daemon: {e}")
+                }
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Daemon is not running. Start it with 'pekobot daemon start'. ({e})")
         }
     }
 }

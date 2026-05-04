@@ -86,6 +86,22 @@ pub enum RequestPacket {
     /// Get cron job history
     #[serde(rename = "cron_history")]
     CronHistory { request_id: u64, job_id: String, limit: usize },
+
+    /// Start a background runtime (extension lifecycle — ADR-026)
+    #[serde(rename = "ext_start")]
+    ExtStart { request_id: u64, extension_id: String },
+
+    /// Stop a background runtime (extension lifecycle — ADR-026)
+    #[serde(rename = "ext_stop")]
+    ExtStop { request_id: u64, extension_id: String },
+
+    /// Restart a background runtime (extension lifecycle — ADR-026)
+    #[serde(rename = "ext_restart")]
+    ExtRestart { request_id: u64, extension_id: String },
+
+    /// Get background runtime status (extension lifecycle — ADR-026)
+    #[serde(rename = "ext_status")]
+    ExtStatus { request_id: u64, extension_id: String },
 }
 
 impl RequestPacket {
@@ -102,7 +118,11 @@ impl RequestPacket {
             | Self::CronAdd { request_id, .. }
             | Self::CronRemove { request_id, .. }
             | Self::CronRun { request_id, .. }
-            | Self::CronHistory { request_id, .. } => *request_id,
+            | Self::CronHistory { request_id, .. }
+            | Self::ExtStart { request_id, .. }
+            | Self::ExtStop { request_id, .. }
+            | Self::ExtRestart { request_id, .. }
+            | Self::ExtStatus { request_id, .. } => *request_id,
         }
     }
 
@@ -198,6 +218,28 @@ pub enum ResponsePacket {
     /// Cron job history response
     #[serde(rename = "cron_history")]
     CronHistory { request_id: u64, runs: Vec<crate::cron::CronRun> },
+
+    /// Background runtime started (ADR-026)
+    #[serde(rename = "ext_started")]
+    ExtStarted { request_id: u64, extension_id: String },
+
+    /// Background runtime stopped (ADR-026)
+    #[serde(rename = "ext_stopped")]
+    ExtStopped { request_id: u64, extension_id: String },
+
+    /// Background runtime restarted (ADR-026)
+    #[serde(rename = "ext_restarted")]
+    ExtRestarted { request_id: u64, extension_id: String },
+
+    /// Background runtime status response (ADR-026)
+    #[serde(rename = "ext_status")]
+    ExtStatus {
+        request_id: u64,
+        extension_id: String,
+        state: String,
+        restart_count: u32,
+        last_error: Option<String>,
+    },
 }
 
 impl ResponsePacket {
@@ -216,7 +258,11 @@ impl ResponsePacket {
             | Self::CronAdded { request_id, .. }
             | Self::CronRemoved { request_id, .. }
             | Self::CronRunStarted { request_id, .. }
-            | Self::CronHistory { request_id, .. } => *request_id,
+            | Self::CronHistory { request_id, .. }
+            | Self::ExtStarted { request_id, .. }
+            | Self::ExtStopped { request_id, .. }
+            | Self::ExtRestarted { request_id, .. }
+            | Self::ExtStatus { request_id, .. } => *request_id,
         }
     }
 

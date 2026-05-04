@@ -387,6 +387,24 @@ impl IpcServer {
                     }
                 }
             }
+
+            // ─── Extension Runtime Lifecycle (ADR-026) ───────────────────────
+
+            RequestPacket::ExtStart { request_id, extension_id } => {
+                Self::handle_ext_start(request_id, extension_id, state, socket, addr).await?;
+            }
+
+            RequestPacket::ExtStop { request_id, extension_id } => {
+                Self::handle_ext_stop(request_id, extension_id, state, socket, addr).await?;
+            }
+
+            RequestPacket::ExtRestart { request_id, extension_id } => {
+                Self::handle_ext_restart(request_id, extension_id, state, socket, addr).await?;
+            }
+
+            RequestPacket::ExtStatus { request_id, extension_id } => {
+                Self::handle_ext_status(request_id, extension_id, state, socket, addr).await?;
+            }
         }
 
         Ok(())
@@ -662,6 +680,235 @@ impl IpcServer {
             },
         };
         Self::send_packet(&socket, response, addr).await?;
+
+        Ok(())
+    }
+
+    /// Handle an ExtStart request — start a background runtime for an extension
+    async fn handle_ext_start(
+        request_id: u64,
+        extension_id: String,
+        state: AppState,
+        socket: ServerSocket,
+        addr: Option<std::net::SocketAddr>,
+    ) -> anyhow::Result<()> {
+        let manager = state.background_runtime_manager().clone();
+
+        // For now, we only support gateway extensions through BackgroundRuntimeManager.
+        // MCP servers still use the legacy McpManager (ADR-025 Phase 2 is deferred).
+        // We attempt to look up the extension manifest to determine type and spawn config.
+        let data_dir = &state.data_dir;
+        let ext_dir = data_dir.join("extensions").join(&extension_id);
+
+        let spawn_result = if ext_dir.join("manifest.yaml").exists() {
+            match tokio::fs::read_to_string(ext_dir.join("manifest.yaml")).await {
+                Ok(content) => {
+                    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                        Ok(manifest) => {
+                            let ext_type = manifest.get("extension_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("general");
+
+                            if ext_type == "gateway" {
+                                let agent_service = state.agent_service().clone();
+                                Self::start_gateway_runtime(&extension_id, &manifest, &ext_dir, &manager, agent_service).await
+                            } else if ext_type == "mcp" {
+                                Err(anyhow::anyhow!("MCP runtime start is not yet implemented via BackgroundRuntimeManager. Use the legacy MCP configuration."))
+                            } else {
+                                Err(anyhow::anyhow!("Extension '{}' does not declare a background runtime. Use 'pekobot ext enable' instead.", extension_id))
+                            }
+                        }
+                        Err(e) => Err(anyhow::anyhow!("Failed to parse manifest: {e}")),
+                    }
+                }
+                Err(e) => Err(anyhow::anyhow!("Failed to read manifest: {e}")),
+            }
+        } else {
+            Err(anyhow::anyhow!("Extension '{}' not found or has no manifest", extension_id))
+        };
+
+        match spawn_result {
+            Ok(()) => {
+                let response = ResponsePacket::ExtStarted { request_id, extension_id };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            Err(e) => {
+                let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Start a gateway runtime from manifest data
+    async fn start_gateway_runtime(
+        extension_id: &str,
+        manifest: &serde_yaml::Value,
+        ext_dir: &std::path::Path,
+        manager: &crate::daemon::background_runtime::BackgroundRuntimeManager,
+        agent_service: std::sync::Arc<crate::agent::stateless_service::StatelessAgentService>,
+    ) -> anyhow::Result<()> {
+        use crate::daemon::background_runtime::gateway_adapter::{GatewayRuntimeAdapter, GatewayFlavor};
+        use crate::daemon::background_runtime::GatewayRouter;
+        use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
+        use std::collections::HashMap;
+
+        let config = manifest.get("config").ok_or_else(|| anyhow::anyhow!("Gateway manifest missing 'config' section"))?;
+
+        let gateway_type = manifest.get("gateway_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("out-of-process");
+
+        let router = GatewayRouter::new(agent_service);
+
+        if gateway_type == "out-of-process" {
+            let command = config.get("command")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Gateway config missing 'command'"))?;
+            let args: Vec<String> = config.get("args")
+                .and_then(|v| v.as_sequence())
+                .map(|seq| seq.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let env: HashMap<String, String> = config.get("env")
+                .and_then(|v| v.as_mapping())
+                .map(|m| m.iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                    .collect())
+                .unwrap_or_default();
+
+            let process_config = ProcessSpawnConfig::new(command)
+                .args(args.clone())
+                .cwd(ext_dir);
+            // env is not supported by the builder directly, so we'd need to extend ProcessSpawnConfig
+            // For now, skip env (it's a limitation we can document)
+
+            let spawn_config = RuntimeSpawnConfig::Process(process_config);
+            let adapter = std::sync::Arc::new(GatewayRuntimeAdapter::new(
+                std::sync::Arc::new(router),
+                GatewayFlavor::OutOfProcess {
+                    command: command.to_string(),
+                    args: args.clone(),
+                    env: HashMap::new(),
+                    cwd: Some(ext_dir.to_path_buf()),
+                },
+            ));
+
+            manager.start(extension_id.to_string(), spawn_config, adapter, RestartPolicy::default()).await?;
+        } else if gateway_type == "external" {
+            let endpoint = config.get("endpoint")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("External gateway config missing 'endpoint'"))?;
+            let webhook_secret = config.get("webhook_secret")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+
+            let spawn_config = RuntimeSpawnConfig::External {
+                endpoint: endpoint.to_string(),
+                connect_timeout: std::time::Duration::from_secs(10),
+            };
+            let adapter = std::sync::Arc::new(GatewayRuntimeAdapter::new(
+                std::sync::Arc::new(router),
+                GatewayFlavor::External {
+                    endpoint: endpoint.to_string(),
+                    webhook_secret,
+                },
+            ));
+
+            manager.start(extension_id.to_string(), spawn_config, adapter, RestartPolicy::default()).await?;
+        } else {
+            anyhow::bail!("Unknown gateway_type: {}", gateway_type);
+        }
+
+        Ok(())
+    }
+
+    /// Handle an ExtStop request
+    async fn handle_ext_stop(
+        request_id: u64,
+        extension_id: String,
+        state: AppState,
+        socket: ServerSocket,
+        addr: Option<std::net::SocketAddr>,
+    ) -> anyhow::Result<()> {
+        let manager = state.background_runtime_manager().clone();
+
+        match manager.stop(&extension_id).await {
+            Ok(()) => {
+                let response = ResponsePacket::ExtStopped { request_id, extension_id };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            Err(e) => {
+                let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle an ExtRestart request
+    async fn handle_ext_restart(
+        request_id: u64,
+        extension_id: String,
+        state: AppState,
+        socket: ServerSocket,
+        addr: Option<std::net::SocketAddr>,
+    ) -> anyhow::Result<()> {
+        let manager = state.background_runtime_manager().clone();
+
+        match manager.restart(&extension_id).await {
+            Ok(()) => {
+                let response = ResponsePacket::ExtRestarted { request_id, extension_id };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            Err(e) => {
+                let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle an ExtStatus request
+    async fn handle_ext_status(
+        request_id: u64,
+        extension_id: String,
+        state: AppState,
+        socket: ServerSocket,
+        addr: Option<std::net::SocketAddr>,
+    ) -> anyhow::Result<()> {
+        let manager = state.background_runtime_manager().clone();
+
+        match manager.get_state(&extension_id).await {
+            Some(runtime_state) => {
+                // Also get summary for restart_count and last_error
+                let summaries = manager.list().await;
+                let summary = summaries.iter().find(|s| s.id == extension_id);
+                let restart_count = summary.map(|s| s.restart_count).unwrap_or(0);
+                let last_error = summary.and_then(|s| s.last_error.clone());
+
+                let response = ResponsePacket::ExtStatus {
+                    request_id,
+                    extension_id,
+                    state: runtime_state.to_string(),
+                    restart_count,
+                    last_error,
+                };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            None => {
+                let response = ResponsePacket::ExtStatus {
+                    request_id,
+                    extension_id,
+                    state: "not_found".to_string(),
+                    restart_count: 0,
+                    last_error: None,
+                };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+        }
 
         Ok(())
     }
