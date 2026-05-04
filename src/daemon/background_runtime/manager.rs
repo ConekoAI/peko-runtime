@@ -236,63 +236,141 @@ impl BackgroundRuntimeManager {
             loop {
                 interval.tick().await;
 
-                let mut runtimes_guard = runtimes.write().await;
-                let Some(runtime) = runtimes_guard.get_mut(&id_owned) else {
-                    break;
+                // ── Phase 1: Check health (hold lock briefly) ─────────────────
+                let crash_action = {
+                    let mut runtimes_guard = runtimes.write().await;
+                    let Some(runtime) = runtimes_guard.get_mut(&id_owned) else {
+                        break;
+                    };
+
+                    let healthy = runtime.adapter.health_check(runtime).await;
+
+                    if healthy {
+                        if runtime.state == RuntimeState::Unhealthy {
+                            info!("Runtime '{}' is now healthy", id_owned);
+                            runtime.state = RuntimeState::Healthy;
+                        } else if runtime.state == RuntimeState::Running {
+                            runtime.state = RuntimeState::Healthy;
+                        }
+                        None
+                    } else {
+                        if runtime.state == RuntimeState::Healthy
+                            || runtime.state == RuntimeState::Running
+                        {
+                            warn!("Runtime '{}' is now unhealthy", id_owned);
+                            runtime.state = RuntimeState::Unhealthy;
+                        }
+
+                        // Check if the runtime has crashed
+                        if !is_runtime_alive(runtime) {
+                            warn!("Runtime '{}' has crashed", id_owned);
+                            runtime.state = RuntimeState::Crashed;
+
+                            let adapter = runtime.adapter.clone();
+                            let action = adapter.on_crash(runtime).await;
+                            Some(action)
+                        } else {
+                            None
+                        }
+                    }
                 };
 
-                let healthy = runtime.adapter.health_check(runtime).await;
+                // ── Phase 2: Act on crash (lock released, can do I/O) ─────────
+                if let Some(action) = crash_action {
+                    match action {
+                        super::adapter::CrashAction::Restart => {
+                            // Re-acquire lock to check restart count and collect config
+                            let (should_restart, spawn_config, adapter, restart_policy) = {
+                                let runtimes_guard = runtimes.read().await;
+                                let Some(runtime) = runtimes_guard.get(&id_owned) else {
+                                    break;
+                                };
 
-                if healthy {
-                    if runtime.state == RuntimeState::Unhealthy {
-                        info!("Runtime '{}' is now healthy", id_owned);
-                        runtime.state = RuntimeState::Healthy;
-                    } else if runtime.state == RuntimeState::Running {
-                        runtime.state = RuntimeState::Healthy;
-                    }
-                } else {
-                    if runtime.state == RuntimeState::Healthy || runtime.state == RuntimeState::Running
-                    {
-                        warn!("Runtime '{}' is now unhealthy", id_owned);
-                        runtime.state = RuntimeState::Unhealthy;
-                    }
-
-                    // Check if the runtime has crashed
-                    if !is_runtime_alive(runtime) {
-                        warn!("Runtime '{}' has crashed", id_owned);
-                        runtime.state = RuntimeState::Crashed;
-
-                        let adapter = runtime.adapter.clone();
-                        let action = adapter.on_crash(runtime).await;
-                        match action {
-                            super::adapter::CrashAction::Restart => {
                                 if runtime.restart_count < runtime.restart_policy.max_restarts {
-                                    runtime.restart_count += 1;
-                                    warn!(
-                                        "Restarting runtime '{}' (attempt {}/{})",
-                                        id_owned, runtime.restart_count, runtime.restart_policy.max_restarts
-                                    );
-                                    // TODO: Implement actual restart by re-spawning
-                                    // For now, just mark as stopped
-                                    runtime.state = RuntimeState::Stopped;
+                                    (
+                                        true,
+                                        runtime.spawn_config.clone(),
+                                        runtime.adapter.clone_box(),
+                                        runtime.restart_policy.clone(),
+                                    )
                                 } else {
                                     error!(
                                         "Runtime '{}' exceeded max restarts ({}), giving up",
                                         id_owned, runtime.restart_policy.max_restarts
                                     );
-                                    runtime.state = RuntimeState::Stopped;
+                                    (false, runtime.spawn_config.clone(), runtime.adapter.clone_box(), runtime.restart_policy.clone())
                                 }
-                            }
-                            super::adapter::CrashAction::Stop => {
-                                runtime.state = RuntimeState::Stopped;
-                            }
-                            super::adapter::CrashAction::Escalate => {
-                                error!("Runtime '{}' crashed — operator intervention required", id_owned);
-                                runtime.state = RuntimeState::Stopped;
+                            };
+
+                            if should_restart {
+                                // Apply backoff before restart
+                                let backoff = restart_policy.backoff_for(
+                                    // Read current count (we haven't incremented yet in the guard above)
+                                    {
+                                        let runtimes_guard = runtimes.read().await;
+                                        let rt = runtimes_guard.get(&id_owned).unwrap();
+                                        rt.restart_count
+                                    }
+                                );
+                                if backoff > std::time::Duration::from_millis(0) {
+                                    info!(
+                                        "Waiting {:?} before restarting runtime '{}'",
+                                        backoff, id_owned
+                                    );
+                                    tokio::time::sleep(backoff).await;
+                                }
+
+                                // Re-spawn the runtime
+                                match Self::respawn_runtime(
+                                    &id_owned,
+                                    spawn_config,
+                                    adapter,
+                                    restart_policy,
+                                    &runtimes,
+                                )
+                                .await
+                                {
+                                    Ok(()) => {
+                                        info!("Runtime '{}' restarted successfully", id_owned);
+                                        // Continue the health check loop
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to restart runtime '{}': {}", id_owned, e);
+                                        let mut runtimes_guard = runtimes.write().await;
+                                        if let Some(rt) = runtimes_guard.get_mut(&id_owned) {
+                                            rt.state = RuntimeState::Stopped;
+                                            rt.last_error = Some(e.to_string());
+                                        }
+                                        break;
+                                    }
+                                }
+                            } else {
+                                let mut runtimes_guard = runtimes.write().await;
+                                if let Some(rt) = runtimes_guard.get_mut(&id_owned) {
+                                    rt.state = RuntimeState::Stopped;
+                                }
+                                break;
                             }
                         }
-
-                        break;
+                        super::adapter::CrashAction::Stop => {
+                            let mut runtimes_guard = runtimes.write().await;
+                            if let Some(rt) = runtimes_guard.get_mut(&id_owned) {
+                                rt.state = RuntimeState::Stopped;
+                            }
+                            break;
+                        }
+                        super::adapter::CrashAction::Escalate => {
+                            error!(
+                                "Runtime '{}' crashed — operator intervention required",
+                                id_owned
+                            );
+                            let mut runtimes_guard = runtimes.write().await;
+                            if let Some(rt) = runtimes_guard.get_mut(&id_owned) {
+                                rt.state = RuntimeState::Stopped;
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -304,6 +382,61 @@ impl BackgroundRuntimeManager {
 
         let mut health_tasks = self.health_tasks.write().await;
         health_tasks.insert(id.to_string(), handle);
+    }
+
+    /// Re-spawn a crashed runtime with the same configuration.
+    ///
+    /// This is called from the health check task when `CrashAction::Restart` is
+    /// returned by the adapter. It replaces the old `ManagedRuntime` entry in
+    /// the map with a freshly spawned one.
+    async fn respawn_runtime(
+        id: &str,
+        spawn_config: RuntimeSpawnConfig,
+        adapter: Arc<dyn BackgroundRuntimeAdapter>,
+        restart_policy: RestartPolicy,
+        runtimes: &Arc<RwLock<HashMap<String, ManagedRuntime>>>,
+    ) -> anyhow::Result<()> {
+        info!("Re-spawning runtime '{}'", id);
+
+        // Spawn new process/task/external connection
+        let mut runtime = match &spawn_config {
+            RuntimeSpawnConfig::Process(process_config) => {
+                spawn_runtime_process(id, process_config, adapter, restart_policy, spawn_config.clone())
+                    .await?
+            }
+            RuntimeSpawnConfig::Task { .. } => {
+                anyhow::bail!("Task runtime restart not supported from health check");
+            }
+            RuntimeSpawnConfig::External { endpoint, .. } => {
+                spawn_runtime_external(id, endpoint.clone(), adapter, restart_policy, spawn_config.clone())
+            }
+        };
+
+        // Initialize via adapter
+        let adapter = runtime.adapter.clone();
+        if let Err(e) = adapter.initialize(&mut runtime).await {
+            runtime.state = RuntimeState::Crashed;
+            runtime.last_error = Some(e.to_string());
+            let mut runtimes_guard = runtimes.write().await;
+            // Increment restart count since we attempted a restart
+            if let Some(old_rt) = runtimes_guard.get(id) {
+                runtime.restart_count = old_rt.restart_count + 1;
+            }
+            runtimes_guard.insert(id.to_string(), runtime);
+            anyhow::bail!("Failed to initialize restarted runtime '{}': {}", id, e);
+        }
+
+        runtime.state = RuntimeState::Running;
+
+        // Preserve restart count from previous incarnation
+        let mut runtimes_guard = runtimes.write().await;
+        if let Some(old_rt) = runtimes_guard.get(id) {
+            runtime.restart_count = old_rt.restart_count + 1;
+        }
+        runtimes_guard.insert(id.to_string(), runtime);
+
+        info!("Runtime '{}' re-spawned and initialized", id);
+        Ok(())
     }
 }
 

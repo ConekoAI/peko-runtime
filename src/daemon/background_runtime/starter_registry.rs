@@ -145,32 +145,44 @@ impl ExtensionRuntimeStarterRegistry {
         started
     }
 
-    /// Read and parse an extension's manifest.yaml.
+    /// Read and parse an extension's manifest.
+    ///
+    /// Tries `manifest.yaml` first. For Tier 1 MCP servers that only have
+    /// `server.json`, synthesizes a minimal manifest with `extension_type: "mcp"`.
     async fn read_manifest(
         extension_id: &str,
         data_dir: &std::path::Path,
     ) -> anyhow::Result<serde_yaml::Value> {
-        let manifest_path = data_dir
-            .join("extensions")
-            .join(extension_id)
-            .join("manifest.yaml");
+        let ext_dir = data_dir.join("extensions").join(extension_id);
+        let manifest_path = ext_dir.join("manifest.yaml");
 
-        if !manifest_path.exists() {
-            anyhow::bail!(
-                "Extension '{}' not found (no manifest at {})",
-                extension_id,
-                manifest_path.display()
-            );
+        if manifest_path.exists() {
+            let content = tokio::fs::read_to_string(&manifest_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read manifest for '{}': {}", extension_id, e))?;
+
+            let manifest: serde_yaml::Value = serde_yaml::from_str(&content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse manifest for '{}': {}", extension_id, e))?;
+
+            return Ok(manifest);
         }
 
-        let content = tokio::fs::read_to_string(&manifest_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to read manifest for '{}': {}", extension_id, e))?;
+        // Tier 1 MCP: server.json without manifest.yaml
+        let server_json_path = ext_dir.join("server.json");
+        if server_json_path.exists() {
+            return Ok(serde_yaml::Value::Mapping(
+                serde_yaml::mapping::Mapping::from_iter([(
+                    serde_yaml::Value::String("extension_type".to_string()),
+                    serde_yaml::Value::String("mcp".to_string()),
+                )]),
+            ));
+        }
 
-        let manifest: serde_yaml::Value = serde_yaml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse manifest for '{}': {}", extension_id, e))?;
-
-        Ok(manifest)
+        anyhow::bail!(
+            "Extension '{}' not found (no manifest at {})",
+            extension_id,
+            manifest_path.display()
+        )
     }
 }
 

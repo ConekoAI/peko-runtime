@@ -4,9 +4,10 @@
 # Tests:
 # 1. MCP server installation via ext install WITHOUT --type flag
 #    (server.json should be auto-detected as Tier 1 ecosystem standard)
-# 2. Tool discovery and registration
-# 3. Tool execution via pekobot send (echo, add, get_server_info)
-# 4. Verification that NO manifest.yaml or Pekobot-specific metadata is needed
+# 2. Daemon start
+# 3. MCP background runtime start via 'pekobot ext start'
+# 4. Tool execution via pekobot send (echo, add, get_server_info)
+# 5. Verification that NO manifest.yaml or Pekobot-specific metadata is needed
 #
 # This validates ADR-024's ecosystem compatibility goal: pure MCP servers
 # from the broader ecosystem should work in Pekobot without custom metadata.
@@ -133,16 +134,16 @@ pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent" -ForegroundColor Green
 
 # ============================================================
-# STEP 4: Enable MCP extension for agent
+# STEP 4: Enable MCP tools for agent (access control only)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "STEP 4: Enable MCP extension for agent" -ForegroundColor Cyan
+Write-Host "STEP 4: Enable MCP tools for agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "Enabling MCP extension 'standard-echo'..." -ForegroundColor Yellow
+Write-Host "Enabling MCP extension 'standard-echo' for agent..." -ForegroundColor Yellow
 $enableResult = pekobot ext enable standard-echo --target default/$agentName 2>&1
 Write-Host $enableResult
-Write-Host "Enabled MCP extension" -ForegroundColor Green
+Write-Host "Enabled MCP extension for agent" -ForegroundColor Green
 
 # Verify whitelist was updated
 $agentConfig = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName/config.toml"
@@ -150,10 +151,64 @@ Write-Host "`nAgent tool whitelist:" -ForegroundColor Cyan
 Get-Content $agentConfig | Select-String -Pattern "enabled" | ForEach-Object { Write-Host $_ }
 
 # ============================================================
-# STEP 5: Test echo tool via agent
+# STEP 5: Start daemon
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "STEP 5: Test echo tool via agent" -ForegroundColor Cyan
+Write-Host "STEP 5: Start daemon" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Starting pekobot daemon in background..." -ForegroundColor Yellow
+
+$daemonOut = "$env:TEMP\pekobot_standard_daemon_out.log"
+$daemonErr = "$env:TEMP\pekobot_standard_daemon_err.log"
+if (Test-Path $daemonOut) { Remove-Item $daemonOut }
+if (Test-Path $daemonErr) { Remove-Item $daemonErr }
+
+$daemonProc = Start-Process -FilePath "pekobot" -ArgumentList "daemon","start","--foreground" -PassThru -RedirectStandardOutput $daemonOut -RedirectStandardError $daemonErr -WindowStyle Hidden
+
+Start-Sleep -Seconds 4
+
+$daemonStatus = pekobot daemon status 2>&1
+Write-Host $daemonStatus
+if ($daemonStatus -match "running" -or $daemonStatus -match "Daemon is running") {
+    Write-Host "✓ Daemon is running" -ForegroundColor Green
+} else {
+    Write-Host "⚠ Daemon status unclear, continuing..." -ForegroundColor Yellow
+}
+
+# ============================================================
+# STEP 6: Start MCP background runtime via ext start
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "STEP 6: Start MCP background runtime" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Starting MCP background runtime via 'pekobot ext start standard-echo'..." -ForegroundColor Yellow
+$startResult = pekobot ext start standard-echo 2>&1
+Write-Host $startResult
+
+if ($startResult -match "started" -or $startResult -match "running") {
+    Write-Host "✓ MCP runtime start command accepted" -ForegroundColor Green
+} else {
+    Write-Error "Failed to start MCP runtime: $startResult"
+}
+
+Start-Sleep -Seconds 3
+
+# Verify runtime status
+$statusResult = pekobot ext status standard-echo 2>&1
+Write-Host "Runtime status: $statusResult"
+if ($statusResult -match "healthy" -or $statusResult -match "running") {
+    Write-Host "✓ MCP runtime is healthy" -ForegroundColor Green
+} else {
+    Write-Host "⚠ MCP runtime status unclear" -ForegroundColor Yellow
+}
+
+# ============================================================
+# STEP 7: Test echo tool via agent
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "STEP 7: Test echo tool via agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending message to agent requesting echo..." -ForegroundColor Yellow
@@ -170,10 +225,10 @@ if ($response -match "TOOL_SUCCESS") {
 }
 
 # ============================================================
-# STEP 6: Test add tool via agent
+# STEP 8: Test add tool via agent
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "STEP 6: Test add tool via agent" -ForegroundColor Cyan
+Write-Host "STEP 8: Test add tool via agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending message to agent requesting addition..." -ForegroundColor Yellow
@@ -190,10 +245,10 @@ if ($response2 -match "TOOL_SUCCESS" -or $response2 -match "45") {
 }
 
 # ============================================================
-# STEP 7: Test get_server_info tool via agent
+# STEP 9: Test get_server_info tool via agent
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "STEP 7: Test get_server_info tool via agent" -ForegroundColor Cyan
+Write-Host "STEP 9: Test get_server_info tool via agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending message to agent requesting server info..." -ForegroundColor Yellow
@@ -216,6 +271,12 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Cleanup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
+# Stop daemon
+if ($daemonProc -and -not $daemonProc.HasExited) {
+    Stop-Process -Id $daemonProc.Id -Force -ErrorAction SilentlyContinue
+    Write-Host "Stopped daemon process" -ForegroundColor Green
+}
+
 # Uninstall MCP extension
 pekobot ext uninstall standard-echo 2>&1 | Out-Null
 Write-Host "Uninstalled standard MCP extension" -ForegroundColor Green
@@ -229,6 +290,7 @@ Write-Host "" -ForegroundColor Cyan
 Write-Host "Summary:" -ForegroundColor Cyan
 Write-Host "  - MCP server installed via 'pekobot ext install' (NO --type flag)" -ForegroundColor Cyan
 Write-Host "  - server.json auto-detected as Tier 1 ecosystem standard -> mcp" -ForegroundColor Cyan
+Write-Host "  - MCP background runtime started via 'pekobot ext start'" -ForegroundColor Cyan
 Write-Host "  - No manifest.yaml or Pekobot-specific metadata required" -ForegroundColor Cyan
 Write-Host "  - MCP tools (echo, add, get_server_info) executed successfully" -ForegroundColor Cyan
 Write-Host "" -ForegroundColor Cyan

@@ -60,9 +60,24 @@ impl McpRuntimeStarter {
             }
         }
 
+        // Tier 1: MCP Registry server.json
+        let server_json_path = ext_dir.join("server.json");
+        if server_json_path.exists() {
+            let content = tokio::fs::read_to_string(&server_json_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read server.json: {e}"))?;
+            let registry_manifest: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse server.json: {e}"))?;
+            if let Some(mcp_servers) =
+                Self::registry_manifest_to_mcp_servers(&registry_manifest, &server_json_path)
+            {
+                return Self::parse_mcp_servers_from_json(&mcp_servers);
+            }
+        }
+
         // Fallback: legacy config.toml or config.json
         let toml_path = ext_dir.join("config.toml");
-        let json_path = ext_dir.join("config.json");
+        let json_config_path = ext_dir.join("config.json");
 
         if toml_path.exists() {
             let content = tokio::fs::read_to_string(&toml_path)
@@ -73,8 +88,8 @@ impl McpRuntimeStarter {
             return Ok(config.servers);
         }
 
-        if json_path.exists() {
-            let content = tokio::fs::read_to_string(&json_path)
+        if json_config_path.exists() {
+            let content = tokio::fs::read_to_string(&json_config_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read config.json: {e}"))?;
             let config: crate::mcp::config::McpConfig = serde_json::from_str(&content)
@@ -119,6 +134,113 @@ impl McpRuntimeStarter {
         Ok(configs)
     }
 
+    /// Parse `mcp_servers` section from a JSON value (used for server.json Tier 1 format).
+    fn parse_mcp_servers_from_json(
+        servers: &serde_json::Value,
+    ) -> anyhow::Result<Vec<McpServerConfig>> {
+        let servers_map = servers
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("mcp_servers must be an object"))?;
+
+        let mut configs = Vec::new();
+
+        for (server_name, value) in servers_map {
+            let mut server_json = value.clone();
+
+            // Ensure name field is present
+            if let Some(obj) = server_json.as_object_mut() {
+                if !obj.contains_key("name") {
+                    obj.insert("name".to_string(), serde_json::json!(server_name));
+                }
+            }
+
+            let config: McpServerConfig = serde_json::from_value(server_json)
+                .map_err(|e| anyhow::anyhow!("Failed to parse mcp_servers config for '{}': {}", server_name, e))?;
+
+            configs.push(config);
+        }
+
+        Ok(configs)
+    }
+
+    /// Convert an MCP Registry `server.json` into the `mcp_servers` structure.
+    ///
+    /// Looks at `transport` (top-level) or `packages[].transport` to build the
+    /// server config map: `{ "server_name": { "command": "...", "args": [...] } }`.
+    fn registry_manifest_to_mcp_servers(
+        registry_manifest: &serde_json::Value,
+        server_json_path: &std::path::Path,
+    ) -> Option<serde_json::Value> {
+        let server_name = registry_manifest
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        // Try top-level transport first
+        let transport = registry_manifest.get("transport");
+        // Fall back to first package's transport
+        let transport = transport.or_else(|| {
+            registry_manifest
+                .get("packages")
+                .and_then(|p| p.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|pkg| pkg.get("transport"))
+        });
+
+        let transport = transport?;
+        let transport_type = transport
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("stdio");
+
+        if transport_type != "stdio" {
+            warn!(
+                server_name = %server_name,
+                transport_type = %transport_type,
+                "Non-stdio transport in server.json is not yet auto-started by BackgroundRuntimeManager"
+            );
+            return None;
+        }
+
+        let command = transport
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let args = transport
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut server_config = serde_json::Map::new();
+        server_config.insert("name".to_string(), serde_json::json!(server_name));
+        server_config.insert("transport".to_string(), serde_json::json!(transport_type));
+        if let Some(cmd) = command {
+            server_config.insert("command".to_string(), serde_json::json!(cmd));
+        }
+        if !args.is_empty() {
+            server_config.insert("args".to_string(), serde_json::json!(args));
+        }
+        server_config.insert("auto_start".to_string(), serde_json::json!(true));
+
+        // Set cwd to the directory containing server.json so relative paths work
+        if let Some(parent) = server_json_path.parent() {
+            server_config.insert(
+                "cwd".to_string(),
+                serde_json::json!(parent.to_string_lossy().to_string()),
+            );
+        }
+
+        let mut mcp_servers = serde_json::Map::new();
+        mcp_servers.insert(server_name.to_string(), serde_json::Value::Object(server_config));
+
+        Some(serde_json::Value::Object(mcp_servers))
+    }
+
     /// Try to parse a single server config from a YAML value.
     fn try_parse_single_server_config(config: &serde_yaml::Value) -> anyhow::Result<McpServerConfig> {
         let json = serde_json::to_value(config)
@@ -132,6 +254,7 @@ impl McpRuntimeStarter {
     async fn start_stdio_server(
         &self,
         config: &McpServerConfig,
+        ext_dir: &std::path::Path,
         ctx: &StarterContext,
     ) -> anyhow::Result<()> {
         let command = config
@@ -139,14 +262,11 @@ impl McpRuntimeStarter {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("MCP server '{}' missing command", config.name))?;
 
-        let cwd = config.cwd.clone().or_else(|| {
-            // Default to extension directory if cwd not specified
-            ctx.data_dir.join("extensions").parent().map(std::path::Path::to_path_buf)
-        });
+        let cwd = config.cwd.clone().unwrap_or_else(|| ext_dir.to_path_buf());
 
         let process_config = ProcessSpawnConfig::new(command)
             .args(config.args.clone())
-            .cwd(cwd.unwrap_or_else(|| std::path::PathBuf::from(".")));
+            .cwd(cwd);
 
         let spawn_config = RuntimeSpawnConfig::Process(process_config);
 
@@ -201,7 +321,7 @@ impl ExtensionRuntimeStarter for McpRuntimeStarter {
         for config in &configs {
             match config.transport {
                 TransportType::Stdio => {
-                    self.start_stdio_server(config, ctx).await?;
+                    self.start_stdio_server(config, &ext_dir, ctx).await?;
                 }
                 TransportType::Sse => {
                     // SSE transports are external connections, not supervised child processes.
