@@ -83,6 +83,7 @@ pub struct InjectedContext {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct InjectedSection {
     pub name: String,
     pub content: String,

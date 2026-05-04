@@ -531,7 +531,6 @@ impl IpcServer {
                                             chunk: format!("\n[Tool result]: {}\n", output),
                                         };
                                         Self::send_packet(&socket, packet, addr).await?;
-                                        seq += 1;
                                     }
                                 }
                                 AgenticEvent::Lifecycle { phase: LifecyclePhase::End, .. } => {
@@ -543,7 +542,6 @@ impl IpcServer {
                                             chunk: std::mem::take(&mut non_streaming_buffer),
                                         };
                                         Self::send_packet(&socket, packet, addr).await?;
-                                        seq += 1;
                                     }
                                     let packet = ResponsePacket::Done {
                                         request_id,
@@ -562,7 +560,6 @@ impl IpcServer {
                                             chunk: std::mem::take(&mut non_streaming_buffer),
                                         };
                                         Self::send_packet(&socket, packet, addr).await?;
-                                        seq += 1;
                                     }
                                     let packet = ResponsePacket::Done {
                                         request_id,
@@ -586,7 +583,6 @@ impl IpcServer {
                                     chunk: std::mem::take(&mut non_streaming_buffer),
                                 };
                                 Self::send_packet(&socket, packet, addr).await?;
-                                seq += 1;
                             }
                             let packet = ResponsePacket::Done {
                                 request_id,
@@ -620,7 +616,7 @@ impl IpcServer {
         socket: ServerSocket,
         addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<()> {
-        use crate::tools::framework::async_executor::{AsyncTaskId, AsyncTaskResult, AsyncToolConfig};
+        use crate::tools::framework::async_executor::{AsyncTaskId, AsyncToolConfig};
 
         let tool_runtime = state.tool_runtime.clone();
         let executor = state.async_task_executor.clone();

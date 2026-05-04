@@ -899,7 +899,7 @@ async fn compact_session(
     }
 
     // Perform compaction
-    let mut compactor = crate::compaction::Compactor::new();
+    let _compactor = crate::compaction::Compactor::new();
 
     // Load previous summary for cumulative updates
     let previous_summary = session
@@ -908,7 +908,7 @@ async fn compact_session(
         .ok()
         .flatten();
     if let Some(ref summary) = previous_summary {
-        compactor = compactor.with_previous_summary(Some(summary.clone()));
+        let _compactor = _compactor.with_previous_summary(Some(summary.clone()));
     }
 
     // TODO: In a full implementation, we would need a Provider here to call the LLM.

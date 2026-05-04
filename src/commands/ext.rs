@@ -8,7 +8,6 @@
 //! - Configure extensions (global, team, agent levels)
 
 use crate::commands::GlobalPaths;
-use crate::extensions::adapters::{general_adapter, ExtensionTypeAdapter};
 use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extensions::types::ExtensionId;
 use clap::Subcommand;
@@ -517,7 +516,7 @@ async fn collect_agent_extension_configs(
     team_filter: Option<&str>,
 ) -> anyhow::Result<Vec<(String, String, crate::types::agent::ExtensionConfig)>> {
     let mut result = Vec::new();
-    let config_service = paths.services().agent_config();
+    let _config_service = paths.services().agent_config();
 
     if let Some(agent_id) = agent_filter {
         // Single agent mode
@@ -1258,7 +1257,7 @@ async fn handle_config(
 async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
     use crate::extensions::adapters::{
         extract_extension_type_from_yaml,
-        general_adapter::{discover_general_extensions, GeneralExtensionAdapter},
+        general_adapter::discover_general_extensions,
         mcp_adapter::McpAdapter,
         skill_adapter::SkillAdapter,
         universal_tool_adapter::UniversalToolAdapter,

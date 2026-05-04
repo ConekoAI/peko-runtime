@@ -95,6 +95,7 @@ impl A2aSendTool {
     }
 
     /// Build the message with optional caller annotation
+    #[allow(dead_code)]
     fn build_message(&self, message: &str) -> String {
         match &self.caller_agent {
             Some(caller) => format!("[Message from agent: {caller}]\n\n{message}"),

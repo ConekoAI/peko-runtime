@@ -105,10 +105,3 @@ tempfile = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
 
 
-[[bin]]
-name = "pekobot"
-path = "src/main.rs"
-
-[[bin]]
-name = "peko"
-path = "src/main.rs"

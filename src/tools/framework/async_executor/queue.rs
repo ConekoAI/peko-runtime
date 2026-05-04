@@ -7,6 +7,7 @@ use crate::common::registry::SimpleRegistry;
 /// Queue for managing async result delivery (inspired by OpenClaw)
 #[derive(Debug)]
 pub struct AsyncResultQueue {
+    #[allow(dead_code)]
     session_key: String,
     mode: AsyncResultDeliveryMode,
     items: Vec<AsyncTaskCompletionEvent>,

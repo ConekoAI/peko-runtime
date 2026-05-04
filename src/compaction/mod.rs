@@ -200,6 +200,7 @@ pub struct CompactionState {
 
 /// Detailed token usage estimate with breakdown.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ContextUsageEstimate {
     /// Total estimated tokens
     pub tokens: usize,
@@ -216,6 +217,7 @@ pub struct ContextUsageEstimate {
 ///
 /// TODO: Wire this up when LlmMessage carries usage metadata from provider responses.
 /// For now, always returns None, causing fallback to heuristic estimation.
+#[allow(dead_code)]
 fn find_last_assistant_usage(
     _messages: &[LlmMessage],
 ) -> Option<(crate::providers::TokenUsage, usize)> {
@@ -241,6 +243,7 @@ pub struct Compactor {
     previous_summary: Option<String>,
 }
 
+#[allow(dead_code)]
 impl Compactor {
     /// Create a new compactor with default config
     #[must_use]
@@ -522,7 +525,7 @@ impl Compactor {
         };
 
         // Track file operations from messages being summarized
-        let file_ops = summary_format::extract_file_ops_from_messages(&to_compact);
+        let _file_ops = summary_format::extract_file_ops_from_messages(&to_compact);
         let cumulative_details = summary_format::compute_cumulative_details(
             None, // TODO: pass previous details when available
             &to_compact,

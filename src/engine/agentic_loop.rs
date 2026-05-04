@@ -319,7 +319,7 @@ impl AgenticLoop {
                                 if let Some(compaction_table) = root.get("compaction") {
                                     match compaction_table.clone().try_into::<crate::compaction::CompactionConfig>() {
                                         Ok(cfg) => cfg,
-                                        Err(e) => {
+                                        Err(_e) => {
                                             crate::compaction::CompactionConfig::default()
                                         }
                                     }
@@ -327,12 +327,12 @@ impl AgenticLoop {
                                     crate::compaction::CompactionConfig::default()
                                 }
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 crate::compaction::CompactionConfig::default()
                             }
                         }
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         crate::compaction::CompactionConfig::default()
                     }
                 }
@@ -418,7 +418,7 @@ impl AgenticLoop {
                     .saturating_sub(compaction_config.reserve_tokens);
                 let keep_recent_tokens = compaction_config.keep_recent_tokens;
 
-                let (messages_to_summarize, messages_to_keep, is_split_turn) =
+                let (messages_to_summarize, _messages_to_keep, is_split_turn) =
                     crate::compaction::turn_boundaries::select_messages_respecting_boundaries(
                         &messages,
                         keep_recent_tokens,
@@ -1048,6 +1048,7 @@ impl AgenticLoop {
     }
 
     /// Fallback for providers without native tool support
+    #[allow(dead_code)]
     async fn fallback_chat_with_tools(
         &self,
         messages: &[LlmMessage],
@@ -1428,6 +1429,7 @@ async fn load_and_register_skills(
 }
 
 /// Convert chat messages to prompt string (fallback)
+#[allow(dead_code)]
 fn messages_to_prompt(messages: &[LlmMessage]) -> String {
     messages
         .iter()
@@ -1453,6 +1455,7 @@ fn messages_to_prompt(messages: &[LlmMessage]) -> String {
 }
 
 /// Parse legacy JSON response format (fallback)
+#[allow(dead_code)]
 fn parse_legacy_response(response: &str) -> Vec<ContentBlock> {
     // Try to parse as JSON with content field
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(response.trim()) {
@@ -1476,6 +1479,7 @@ fn parse_legacy_response(response: &str) -> Vec<ContentBlock> {
 }
 
 /// Parse a single content block from JSON
+#[allow(dead_code)]
 fn parse_content_block(value: &serde_json::Value) -> Option<ContentBlock> {
     let block_type = value.get("type")?.as_str()?;
 

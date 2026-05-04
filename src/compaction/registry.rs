@@ -122,6 +122,7 @@ impl ModelContextRegistry {
     }
 
     /// Register or override a limit for a provider/model pair.
+    #[allow(dead_code)]
     pub fn set(&mut self, provider: impl Into<String>, model: impl Into<String>, limit: usize) {
         self.limits
             .entry(provider.into())

@@ -93,7 +93,7 @@ pub fn extract_file_ops_from_messages(
         for block in &msg.content {
             if let ContentBlock::ToolCall { name, arguments, .. } = block {
                 let name_lower = name.to_lowercase();
-                if let Ok(args) = serde_json::to_string(arguments) {
+                if let Ok(_args) = serde_json::to_string(arguments) {
                     // Extract path from arguments if present
                     if let Some(path) = extract_path_from_args(arguments) {
                         if name_lower.contains("read")

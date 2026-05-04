@@ -19,6 +19,7 @@ use tracing::{debug, error, info, warn};
 
 /// Quota configuration for background compaction
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct CompactionQuota {
     /// Minimum time between compactions
     pub cooldown_seconds: u64,
@@ -57,6 +58,7 @@ pub enum CompactionResponse {
     /// Compaction not needed (under threshold)
     NotNeeded,
     /// Compaction skipped due to quota/cooldown
+    #[allow(dead_code)]
     Skipped(String),
     /// Compaction failed
     Failed(String),
@@ -126,6 +128,7 @@ impl BackgroundCompactor {
     }
 
     /// Create with custom config and quota
+    #[allow(dead_code)]
     pub fn with_config(
         provider: Arc<crate::providers::Provider>,
         config: CompactionConfig,
@@ -171,6 +174,7 @@ impl BackgroundCompactor {
 
     /// Create with custom config, quota, and an explicit context window.
     /// The context window is passed through to the compactor for threshold checks.
+    #[allow(dead_code)]
     pub fn with_config_and_window(
         provider: Arc<crate::providers::Provider>,
         config: CompactionConfig,
@@ -266,6 +270,7 @@ impl BackgroundCompactor {
     }
 
     /// Get current worker status
+    #[allow(dead_code)]
     pub async fn status(&self) -> String {
         let state = self.state.lock().await;
         let cooldown_remaining = state
@@ -290,6 +295,7 @@ impl BackgroundCompactor {
     }
 
     /// Reset consecutive auto counter (call after successful manual compaction)
+    #[allow(dead_code)]
     pub async fn reset_consecutive(&self) {
         let mut state = self.state.lock().await;
         state.consecutive_auto = 0;
@@ -331,7 +337,7 @@ async fn process_compaction_request_with_config(
     // Check if compaction is actually needed.
     // The caller is responsible for passing the correct context_window to
     // should_request(). Here we just verify the message list is long enough.
-    let estimated_tokens = Compactor::estimate_tokens(&request.messages);
+    let _estimated_tokens = Compactor::estimate_tokens(&request.messages);
     if request.messages.len() < 4 {
         let _ = request.response_tx.send(CompactionResponse::NotNeeded);
         return Ok(());

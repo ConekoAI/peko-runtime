@@ -22,6 +22,7 @@ pub enum MessageKind {
     /// Summary message from previous compaction
     Summary,
     /// Other/unknown
+    #[allow(dead_code)]
     Other,
 }
 
@@ -115,10 +116,7 @@ pub fn select_messages_respecting_boundaries(
             } else {
                 // No valid cut point before — keep everything
                 split_point = 0;
-                keep_count = messages.len();
             }
-            // Recalculate keep_count
-            keep_count = messages.len() - split_point;
         }
     }
 
