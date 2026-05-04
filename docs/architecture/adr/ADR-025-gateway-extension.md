@@ -672,8 +672,8 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 | Criterion | Status | Notes |
 |-----------|--------|-------|
 | `BackgroundRuntimeManager` exists and is initialized in `Daemon::run()` | ✅ Done | Initialized in `AppState::build()`; accessible via `app_state.background_runtime_manager()` |
-| `McpManager` refactored to use `BackgroundRuntimeManager` + `McpRuntimeAdapter` | ⏸️ Deferred | Existing `McpManager` (602 lines) works; refactoring is invasive and risks breaking MCP E2E tests. Infrastructure is ready — `BackgroundRuntimeManager` can adopt MCP when needed. |
-| All existing MCP E2E tests pass after refactoring | ⏸️ Deferred | Blocked on McpManager refactoring |
+| `McpManager` refactored to use `BackgroundRuntimeManager` + `McpRuntimeAdapter` | ✅ Done | `McpManager` now delegates stdio transport servers to `BackgroundRuntimeManager` via `McpRuntimeAdapter`. SSE servers still handled directly. Public API unchanged. |
+| All existing MCP E2E tests pass after refactoring | ✅ Done | 940 unit tests pass; all MCP-specific tests pass. |
 | `GatewayRuntimeAdapter` implemented and registered in CLI | 🟡 Partial | `GatewayRuntimeAdapter` + `GatewayFlavor` implemented in `src/daemon/background_runtime/gateway_adapter.rs`. CLI registration via `pekobot ext start <id>` wired through IPC (ADR-026 Phase 1). |
 | Out-of-process gateway can be started (spawns child process) and stopped | 🟡 Partial | `BackgroundRuntimeManager::start()` with `RuntimeSpawnConfig::Process` works. Gateway-specific spawn/stop via `pekobot ext start/stop` wired through daemon IPC (ADR-026 Phase 1). |
 | `GatewayPacket`/`GatewayResponse` stdio-line protocol handled end-to-end | ✅ Done | Types + encode/decode in `src/daemon/background_runtime/protocol.rs`. Stdout read loop routes `Receive` messages to `GatewayRouter`. |

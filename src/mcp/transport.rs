@@ -105,8 +105,8 @@ pub trait McpTransport: Send + Sync {
 /// Communicates with an MCP server via stdin/stdout of a subprocess.
 /// This is the most common transport for local MCP servers.
 pub struct StdioTransport {
-    /// The child process handle
-    child: Arc<Mutex<Child>>,
+    /// The child process handle (None when created from external handles)
+    child: Option<Arc<Mutex<Child>>>,
     /// stdin of the child process (for sending)
     stdin: Arc<Mutex<ChildStdin>>,
     /// stdout of the child process (for receiving)
@@ -118,6 +118,34 @@ pub struct StdioTransport {
 }
 
 impl StdioTransport {
+    /// Create a `StdioTransport` from existing stdin/stdout handles.
+    ///
+    /// This is used when the process is spawned externally (e.g. by the
+    /// `BackgroundRuntimeManager`) and we only need the transport layer.
+    /// The caller is responsible for managing the child process lifecycle.
+    ///
+    /// # Arguments
+    /// * `stdin` - The child's stdin handle
+    /// * `stdout` - The child's stdout handle (wrapped in a `BufReader`)
+    /// * `pid` - The process ID for logging
+    ///
+    /// # Returns
+    /// A new `StdioTransport` connected to the existing handles
+    #[must_use]
+    pub fn from_handles(
+        stdin: ChildStdin,
+        stdout: BufReader<ChildStdout>,
+        pid: u32,
+    ) -> Self {
+        Self {
+            child: None,
+            stdin: Arc::new(Mutex::new(stdin)),
+            stdout: Arc::new(Mutex::new(stdout)),
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            pid,
+        }
+    }
+
     /// Spawn a new subprocess and create a stdio transport
     ///
     /// # Arguments
@@ -182,7 +210,7 @@ impl StdioTransport {
         debug!("MCP server spawned with PID {}", pid);
 
         Ok(Self {
-            child: Arc::new(Mutex::new(child)),
+            child: Some(Arc::new(Mutex::new(child))),
             stdin: Arc::new(Mutex::new(stdin)),
             stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -208,7 +236,11 @@ impl StdioTransport {
 
     /// Check if the child process is still running
     pub async fn is_running(&self) -> bool {
-        let mut child = self.child.lock().await;
+        let Some(ref child_arc) = self.child else {
+            // External handles — we don't own the child, assume alive
+            return true;
+        };
+        let mut child = child_arc.lock().await;
         match child.try_wait() {
             Ok(None) => true,
             Ok(Some(status)) => {
@@ -317,21 +349,24 @@ impl McpTransport for StdioTransport {
 
         // Wait for the process to exit (with longer timeout for some servers)
         // Some MCP servers take longer to shut down gracefully
-        let mut child = self.child.lock().await;
-        match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
-            Ok(Ok(status)) => {
-                debug!("MCP server[{}] exited with status: {:?}", self.pid, status);
-            }
-            Ok(Err(e)) => {
-                error!("MCP server[{}] error waiting for exit: {}", self.pid, e);
-            }
-            Err(_) => {
-                // Server didn't exit gracefully, kill it
-                debug!(
-                    "MCP server[{}] did not exit gracefully within timeout, killing",
-                    self.pid
-                );
-                let _ = child.kill().await;
+        // Only if we own the child process (from_handles transports don't)
+        if let Some(ref child_arc) = self.child {
+            let mut child = child_arc.lock().await;
+            match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+                Ok(Ok(status)) => {
+                    debug!("MCP server[{}] exited with status: {:?}", self.pid, status);
+                }
+                Ok(Err(e)) => {
+                    error!("MCP server[{}] error waiting for exit: {}", self.pid, e);
+                }
+                Err(_) => {
+                    // Server didn't exit gracefully, kill it
+                    debug!(
+                        "MCP server[{}] did not exit gracefully within timeout, killing",
+                        self.pid
+                    );
+                    let _ = child.kill().await;
+                }
             }
         }
 
@@ -349,15 +384,18 @@ impl Drop for StdioTransport {
         // Mark as unhealthy to prevent further operations
         self.mark_unhealthy();
 
-        // Try to kill the process if it's still running
-        // Note: We can't use async here, so we use try_wait which is non-blocking
-        // The proper shutdown should be done via close() before dropping
-        if let Ok(mut child) = self.child.try_lock() {
-            if let Ok(None) = child.try_wait() {
-                // Process is still running, kill it
-                let _ = std::process::Command::new("kill")
-                    .arg(self.pid.to_string())
-                    .spawn();
+        // Only try to kill the process if we own it (not from_handles)
+        if let Some(ref child_arc) = self.child {
+            // Try to kill the process if it's still running
+            // Note: We can't use async here, so we use try_wait which is non-blocking
+            // The proper shutdown should be done via close() before dropping
+            if let Ok(mut child) = child_arc.try_lock() {
+                if let Ok(None) = child.try_wait() {
+                    // Process is still running, kill it
+                    let _ = std::process::Command::new("kill")
+                        .arg(self.pid.to_string())
+                        .spawn();
+                }
             }
         }
     }

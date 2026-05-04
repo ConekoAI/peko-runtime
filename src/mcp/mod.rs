@@ -68,6 +68,7 @@ pub use discovery::{
 };
 pub use injectable_proxy::InjectableMcpToolProxy;
 pub use manager::{ManagerError, McpManager, ServerState};
+pub use runtime_adapter::{McpClientRegistry, McpRuntimeAdapter};
 pub use tool_proxy::{create_tool_proxies, McpToolProxy};
 pub use transport::{
     InMemoryTransport, McpTransport, SseTransport, StdioTransport, TransportError,
@@ -80,6 +81,7 @@ pub mod config;
 pub mod discovery;
 pub mod injectable_proxy;
 pub mod manager;
+pub mod runtime_adapter;
 pub mod tool_proxy;
 pub mod transport;
 pub mod types;

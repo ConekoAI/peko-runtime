@@ -40,9 +40,11 @@ pub enum RuntimeKind {
         child: Child,
         pid: u32,
         /// stdin of the child process (for sending data)
-        stdin: tokio::process::ChildStdin,
+        /// Wrapped in Option so adapters can take() ownership during initialize()
+        stdin: Option<tokio::process::ChildStdin>,
         /// stdout of the child process (for receiving data)
-        stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
+        /// Wrapped in Option so adapters can take() ownership during initialize()
+        stdout: Option<tokio::io::BufReader<tokio::process::ChildStdout>>,
     },
     /// In-process async task (Rust-native HTTP server, TUI)
     Task {
@@ -110,7 +112,7 @@ pub async fn spawn_runtime_process(
 
     Ok(ManagedRuntime {
         id: id.to_string(),
-        kind: RuntimeKind::Process { child, pid, stdin, stdout },
+        kind: RuntimeKind::Process { child, pid, stdin: Some(stdin), stdout: Some(stdout) },
         state: RuntimeState::Starting,
         restart_policy,
         restart_count: 0,
@@ -175,6 +177,9 @@ pub async fn stop_runtime(runtime: &mut ManagedRuntime) -> anyhow::Result<()> {
     let kind = std::mem::replace(&mut runtime.kind, RuntimeKind::External { endpoint: String::new(), connected: false });
     match kind {
         RuntimeKind::Process { child, pid, .. } => {
+            // stdin/stdout may have been taken() by the adapter; that's fine
+            // because the adapter's transport owns them and will close them
+            // when the adapter's shutdown() is called (which happens above).
             let kill_timeout = Duration::from_secs(5);
             graceful_shutdown(child, kill_timeout, pid).await?;
         }

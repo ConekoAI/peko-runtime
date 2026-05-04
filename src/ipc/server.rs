@@ -694,9 +694,12 @@ impl IpcServer {
     ) -> anyhow::Result<()> {
         let manager = state.background_runtime_manager().clone();
 
-        // For now, we only support gateway extensions through BackgroundRuntimeManager.
-        // MCP servers still use the legacy McpManager (ADR-025 Phase 2 is deferred).
-        // We attempt to look up the extension manifest to determine type and spawn config.
+        // Gateway extensions are started directly via BackgroundRuntimeManager.
+        // MCP servers are managed through the McpAdapter extension system; when
+        // the adapter starts an MCP server, McpManager internally delegates to
+        // BackgroundRuntimeManager (ADR-025 Phase 2). The `ext start` path here
+        // only handles gateway extensions because MCP servers use config files
+        // (mcp.toml / mcp.json) rather than manifest.yaml in the extensions dir.
         let data_dir = &state.data_dir;
         let ext_dir = data_dir.join("extensions").join(&extension_id);
 

@@ -100,6 +100,9 @@ impl GatewayRuntimeAdapter {
     /// Send a packet to the gateway process
     async fn send_packet(&self, runtime: &mut ManagedRuntime, packet: GatewayPacket) -> Result<()> {
         if let RuntimeKind::Process { ref mut stdin, .. } = runtime.kind {
+            let Some(stdin) = stdin.as_mut() else {
+                anyhow::bail!("Gateway '{}': stdin already taken by adapter", runtime.id);
+            };
             let line = encode_packet(&packet)?;
             stdin.write_all(line.as_bytes()).await?;
             stdin.flush().await?;
@@ -116,10 +119,11 @@ impl GatewayRuntimeAdapter {
         let packet = GatewayPacket::Ping { request_id };
 
         if let RuntimeKind::Process { ref stdin, ref stdout, .. } = runtime.kind {
-            // We need to send ping and read pong, but stdin/stdout are not easily
-            // accessible without mutable borrow. For now, we just check if the process
-            // is still alive by checking its PID.
-            // A full implementation would require shared access to stdin/stdout.
+            // We need to send ping and read pong, but stdin/stdout may have been
+            // taken by an adapter. For now, we just check if the process is still
+            // alive by checking its PID.
+            let _ = stdin;
+            let _ = stdout;
             Ok(())
         } else {
             anyhow::bail!("Cannot ping non-process runtime")
