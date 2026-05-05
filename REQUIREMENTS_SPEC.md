@@ -1,6 +1,6 @@
 # Pekobot — Requirements Specification
 
-**Version:** 2.0
+**Version:** 0.1.0
 **Date:** 2026-03-16
 **Status:** Draft
 **Supersedes:** v1.0 (2026-03-15)
@@ -1197,7 +1197,7 @@ CLI commands shall support structured output for scripting and CI integration.
 
 ## Revision Notes
 
-### Changes from v1.0 to v2.0
+### Changes from v1.0 to 0.1.0
 
 **Structural changes:**
 - Requirements reorganised around the four new specs (`UNIFIED_ARCHITECTURE_SPEC.md` v4.0, `API_CONTRACT.md`, `DATA_MODEL.md`, `CAPABILITY_INTERFACE.md`)
@@ -1225,4 +1225,4 @@ CLI commands shall support structured output for scripting and CI integration.
 
 ---
 
-*Version: 2.0 · Last Updated: 2026-03-16 · Status: Draft*
+*Version: 0.1.0 · Last Updated: 2026-03-16 · Status: Draft*

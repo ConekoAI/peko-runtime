@@ -1,6 +1,6 @@
 # Pekobot — Capability Interface Specification
 
-**Version:** 1.0
+**Version:** 0.1.0
 **Date:** 2026-03-16
 **Status:** Draft
 **Companion docs:** `UNIFIED_ARCHITECTURE_SPEC.md` v4.0, `DATA_MODEL.md` v1.0, `API_CONTRACT.md` v1.0
@@ -1416,4 +1416,4 @@ At instance startup, before the agentic loop begins, the runtime:
 
 ---
 
-*Version: 1.0 · Last Updated: 2026-03-16 · Status: Draft*
+*Version: 0.1.0 · Last Updated: 2026-03-16 · Status: Draft*

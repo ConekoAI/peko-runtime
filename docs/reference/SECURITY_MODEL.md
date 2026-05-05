@@ -490,10 +490,10 @@ Log format (JSON):
    audit_level = "all"
    ```
 
-4. **Use System Keyring**
+4. **Use Environment Variables**
    ```bash
-   # Store API key in system keyring
-   pekobot config set provider.api_key '${keyring:openai}'
+   # Store API key in environment
+   export OPENAI_API_KEY="sk-..."
    ```
 
 5. **Run as Non-Root User**
@@ -527,29 +527,32 @@ Monitor for:
 
 ### Response Procedure
 
-1. **Isolate**: Stop the agent
+1. **Isolate**: Stop the daemon
    ```bash
-   pekobot agent stop --force
+   pekobot daemon stop --force
    ```
 
 2. **Preserve**: Save logs
    ```bash
-   cp /var/log/pekobot/audit.log /incident/$(date +%Y%m%d)/
+   cp ~/.local/share/pekobot/logs/daemon.log /incident/$(date +%Y%m%d)/
    ```
 
-3. **Analyze**: Review audit log
+3. **Analyze**: Review daemon logs
    ```bash
-   pekobot audit query --since "2 hours ago"
+   # Run daemon in foreground to see logs
+   pekobot daemon start --foreground
    ```
 
 4. **Rotate**: Replace compromised credentials
    ```bash
-   pekobot secrets rotate --all
+   # Update API keys via auth command
+   pekobot auth remove openai
+   pekobot auth set openai "sk-new-key-..."
    ```
 
-5. **Restart**: Start with clean state
+5. **Restart**: Start daemon with clean state
    ```bash
-   pekobot agent start --reset
+   pekobot daemon start
    ```
 
 ## References

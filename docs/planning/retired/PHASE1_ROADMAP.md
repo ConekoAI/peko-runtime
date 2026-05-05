@@ -101,9 +101,9 @@ curl http://localhost:11435/info    # Returns version, workspace, etc.
 
 ### Verification
 ```bash
-pekobot build ./my-agent/ -t my-agent:v1.0
-pekobot run my-agent:v1.0 --detach  # Creates instance
-pekobot ps                           # List instances with digests
+pekobot agent create ./my-agent/ --provider minimax --yes
+pekobot agent list
+pekobot send my-agent "Hello"
 ```
 
 ---
@@ -180,11 +180,8 @@ kill -9 $(cat .pekobot/run/daemon.pid)
 
 ### Verification
 ```bash
-pekobot run ./agent/ --watch  # Auto-reload on file changes
-# In another terminal:
-curl -N http://localhost:11435/agents/{id}/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Hello"}'  # Streams SSE events
+pekobot agent create ./agent/ --provider minimax --yes
+pekobot send my-agent "Hello"
 ```
 
 ---
@@ -419,9 +416,9 @@ session = "new"
 
 ### Verification
 ```bash
-pekobot build ./agent/ -t my-agent:v1.0
-pekobot push my-agent:v1.0 pekohub.com/user/my-agent:v1.0
-pekobot pull pekohub.com/agents/base:v1
+# Packaging and registry are not yet implemented in the CLI
+# Use cargo build --release for building
+pekobot agent create ./agent/ --provider minimax --yes
 ```
 
 ---

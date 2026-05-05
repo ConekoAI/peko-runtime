@@ -66,8 +66,8 @@ sudo chown -R pekobot:pekobot /var/log/pekobot
 # Create config
 sudo tee /etc/pekobot/config.toml > /dev/null <<EOF
 [agent]
-default_provider = "openai"
-default_model = "gpt-4o-mini"
+default_provider = "minimax"
+default_model = "minimax-text-01"
 
 [memory]
 type = "sqlite"
@@ -164,6 +164,7 @@ sudo journalctl -u pekobot -f
 # Test CLI
 pekobot --version
 pekobot agent list
+pekobot team list
 ```
 
 ## Update Pekobot
@@ -174,11 +175,8 @@ pekobot agent list
 # Check for updates
 pekobot update --check
 
-# Update to latest
+# Update to latest (if available)
 pekobot update
-
-# Force update (skip confirmation)
-pekobot update --force
 ```
 
 ### Manual Update
@@ -287,7 +285,7 @@ EOF
 sudo journalctl -u pekobot -n 50
 
 # Check config
-pekobot config validate
+pekobot config validate ./pekobot.toml
 
 # Test with debug logging
 sudo systemctl stop pekobot

@@ -1,270 +1,214 @@
-# GAP-008: MCP Migration Guide
+# MCP Migration Guide
 
 ## Overview
 
-Starting with v0.7.0, Pekobot has migrated heavy tools (web_search, fetch, http, browser, memory) from embedded core to standalone MCP servers. This guide helps you understand and navigate this change.
+Pekobot supports the Model Context Protocol (MCP) for external tool integration. MCP servers are managed through the Unified Extension Architecture (ADR-017) as extensions.
 
-> **Note:** The built-in MCP servers (`mcp-web`, `mcp-browser`, `mcp-memory`) have been removed from the main repository. They should be maintained as separate external projects or obtained from the community MCP servers ecosystem.
+> **Note:** MCP servers are not built into Pekobot core. They are provided as external extensions that can be installed and enabled through the extension system.
 
 ## What Changed
 
-### Before (v0.6.x)
+### Before (Legacy)
 
-All tools were built into Pekobot core:
+Some tools were built into Pekobot core:
 
 ```
-pekobot (single binary, ~20MB)
+pekobot (single binary)
 ├── filesystem
-├── process
-├── apply_patch
-├── web_search  ← embedded
-├── fetch       ← embedded
-├── http        ← embedded
-├── browser     ← embedded
-└── memory      ← embedded
+├── shell
+├── cron
+└── session
 ```
 
-### After (v0.7.0+)
+### After (Current)
 
-Core tools are minimal; heavy tools are provided by external MCP servers:
+Core tools remain minimal; extended capabilities come via MCP extensions:
 
 ```
-pekobot (core binary, ~20MB)
-├── filesystem
-├── process
-├── apply_patch
-└── cron
+pekobot (core binary)
+├── filesystem (built-in)
+├── shell (built-in)
+├── cron (built-in)
+└── session (built-in)
 
-MCP Servers (external binaries — install separately)
-├── @anthropic/mcp-filesystem-server
-├── @anthropic/mcp-browser-server
-├── @anthropic/mcp-sqlite-server
+MCP Extensions (installed separately)
+├── filesystem-mcp
+├── browser-mcp
+├── sqlite-mcp
 └── community MCP servers
 ```
 
 ## Migration Steps
 
-### 1. Install MCP Servers
+### 1. Install MCP Server Extensions
 
-Install the servers you need from the community ecosystem:
+MCP servers are packaged as extensions:
 
 ```bash
-# Example: install filesystem server via npm
-npm install -g @anthropic/mcp-filesystem-server
+# Install an MCP server extension
+pekobot ext install ./mcp-filesystem-extension
 
-# Example: install browser server via npm
-npm install -g @anthropic/mcp-browser-server
-
-# Example: install SQLite server via npm
-npm install -g @anthropic/mcp-sqlite-server
+# Or create your own with an extension.yaml
 ```
 
 ### 2. Verify Installation
 
-Check that servers are installed and recognized:
+```bash
+# List installed extensions
+pekobot ext list
+
+# Show MCP extension details
+pekobot ext info filesystem-mcp
+```
+
+### 3. Enable the Extension
 
 ```bash
-pekobot mcp status
+pekobot ext enable filesystem-mcp
 ```
 
-Expected output:
-```
-MCP Server Status
+### 4. Use with Agent
 
-Config: /home/user/.pekobot/mcp.toml
-
-NAME            STATUS       TOOLS      BINARY
-------------------------------------------------------------
-filesystem      ✅           3          installed
-browser         ✅           4          installed
-```
-
-### 3. Test Servers
-
-Test each server to ensure it works:
+MCP tools are automatically available once the extension is enabled:
 
 ```bash
-pekobot mcp test filesystem
-pekobot mcp test browser
-```
-
-### 4. Verify Tool Loading
-
-Start an agent and verify MCP tools are loaded:
-
-```bash
-pekobot agent start my-agent
-```
-
-Look for log messages:
-```
-✅ Loaded 8 tools from 3 MCP servers
+pekobot send myagent "Read the file README.md"
 ```
 
 ## Configuration
 
-### Default Config Location
+### Extension Manifest
 
-`~/.pekobot/mcp.toml`
+MCP extensions use `extension.yaml`:
 
-### Manual Config Editing
+```yaml
+---
+id: "filesystem-mcp"
+name: "Filesystem MCP Server"
+version: "1.0.0"
+extension_type: "mcp"
 
-```bash
-# View config
-pekobot mcp config
-
-# Edit in $EDITOR
-pekobot mcp config --edit
+hooks:
+  - point: "tool.register"
+    handler: "register_mcp_tools"
+  - point: "tool.execute"
+    handler: "execute_mcp_tool"
+  - point: "agent.init"
+    handler: "init_mcp_client"
+  - point: "agent.shutdown"
+    handler: "shutdown_mcp_client"
 ```
 
-### Config Format
+### MCP Server Config
 
-```toml
-[[server]]
-name = "filesystem"
-transport = "stdio"
-command = "mcp-filesystem-server"
-args = ["/home/user/docs"]
-auto_start = true
+The extension adapter reads MCP server configuration:
 
-[[server]]
-name = "browser"
-transport = "stdio"
-command = "mcp-browser-server"
-args = ["--headless"]
-env = { "BROWSER_TIMEOUT" = "30" }
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+    }
+  }
+}
 ```
 
 ## CLI Commands
 
-### Installation
+MCP servers are managed through the extension system:
 
 ```bash
-# Add a server manually
-pekobot mcp add filesystem stdio --command mcp-filesystem-server --args /home/user/docs
+# Install an MCP extension
+pekobot ext install ./my-mcp-extension
 
-# Remove a server
-pekobot mcp remove filesystem
-```
+# Enable it
+pekobot ext enable my-mcp-extension
 
-### Status & Discovery
+# Check status
+pekobot ext info my-mcp-extension
 
-```bash
-# Check all servers
-pekobot mcp status
+# Debug
+pekobot ext debug my-mcp-extension
 
-# Check specific server
-pekobot mcp status --server web
+# Disable
+pekobot ext disable my-mcp-extension
 
-# List configured servers
-pekobot mcp list
-pekobot mcp list --long
-
-# Show server details
-pekobot mcp show web
-```
-
-### Testing
-
-```bash
-# Test server connection
-pekobot mcp test web
-
-# List available tools
-pekobot mcp tools
-pekobot mcp tools --server web
-```
-
-### Direct Tool Calling
-
-```bash
-# Call tool with JSON args
-pekobot mcp call web web_search --args '{"query":"rust programming"}'
-
-# Call tool with key=value args
-pekobot mcp call web fetch --kv url=https://example.com
-
-# Combine args
-pekobot mcp call web http --kv method=GET --kv url=https://api.example.com
+# Uninstall
+pekobot ext uninstall my-mcp-extension
 ```
 
 ## Troubleshooting
 
-### "Server not found" Error
+### "Extension not found"
 
-**Problem**: MCP server binary is missing.
+**Problem**: MCP extension is not installed.
 
-**Solution**: Install the server from the community ecosystem (e.g., via npm, cargo, etc.) and ensure it is in your PATH.
+**Solution**:
+```bash
+pekobot ext list
+pekobot ext install ./my-mcp-extension
+```
 
 ### "No MCP tools loaded"
 
-**Problem**: Config exists but servers aren't starting.
-
-**Solution**: 
-1. Check status: `pekobot mcp status`
-2. Test server: `pekobot mcp test filesystem`
-3. Check binary exists: `which mcp-filesystem-server`
-
-### "Failed to initialize MCP manager"
-
-**Problem**: Servers are crashing on startup.
+**Problem**: Extension is installed but not enabled.
 
 **Solution**:
-1. Check server binary works directly:
+```bash
+pekobot ext enable my-mcp-extension
+pekobot ext info my-mcp-extension
+```
+
+### "Failed to initialize MCP client"
+
+**Problem**: MCP server binary is missing or crashing.
+
+**Solution**:
+1. Check the server binary works directly:
    ```bash
-   mcp-filesystem-server --help
+   npx -y @modelcontextprotocol/server-filesystem --help
    ```
-2. Reinstall from the community ecosystem if needed.
+2. Check extension logs via daemon foreground mode
+3. Validate extension manifest:
+   ```bash
+   pekobot ext validate ./my-mcp-extension
+   ```
 
 ### Backward Compatibility
 
-**Problem**: Existing agents expect embedded tools.
+**Problem**: Existing agents expect certain tools.
 
-**Solution**: No changes needed. Pekobot automatically:
-1. Loads MCP tools when available
-2. Falls back to core tools if MCP unavailable
-3. Logs warnings to guide installation
+**Solution**: Built-in tools (filesystem, shell, cron, session) are always available. MCP tools are additive.
 
 ## FAQ
 
 ### Q: Do I have to use MCP servers?
 
-**A**: No. Core tools (filesystem, process, apply_patch, cron) work without MCP. MCP servers are optional for extended functionality.
+**A**: No. Core built-in tools work without MCP. MCP extensions are optional for extended functionality.
 
-### Q: Can I mix MCP and embedded tools?
+### Q: Can I mix MCP and built-in tools?
 
-**A**: Yes. Pekobot uses MCP-first loading: it tries MCP first, then falls back. You can have both.
+**A**: Yes. Built-in tools are always available. MCP tools are loaded through extensions and add to the tool set.
 
 ### Q: What if an MCP server crashes?
 
-**A**: Pekobot will log an error and continue with remaining tools. The agent won't fail; it just won't have that server's tools.
+**A**: The extension adapter handles errors gracefully. The agent continues with remaining tools.
 
 ### Q: Can I add custom MCP servers?
 
-**A**: Yes! Use `pekobot mcp add`:
-```bash
-pekobot mcp add my-server stdio --command /path/to/server
-```
+**A**: Yes! Package them as extensions with `extension.yaml` and install via `pekobot ext install`.
 
 ### Q: Where are MCP binaries stored?
 
-**A**: MCP binaries are installed via your system package manager (npm, cargo, etc.) and should be in your PATH. Pekobot does not manage or store MCP server binaries internally.
-
-### Q: How do I uninstall an MCP server?
-
-**A**: Remove the server from Pekobot's config and uninstall via your package manager:
-```bash
-pekobot mcp remove filesystem
-npm uninstall -g @anthropic/mcp-filesystem-server
-```
+**A**: MCP binaries are managed by the extension. They may be installed via npm, cargo, etc. and referenced in the extension manifest.
 
 ## Performance Impact
 
-| Metric | Before | After |
-|--------|--------|-------|
-| Core binary size | ~20MB | ~20MB |
-| With MCP servers | N/A | Varies by server |
-| Startup time | ~50ms | ~50ms + MCP connection |
+| Metric | Built-in Only | With MCP Extensions |
+|--------|---------------|---------------------|
+| Core binary size | ~5-8MB | Same |
+| Startup time | ~50ms | ~50ms + extension init |
 | Tool latency | 1-10ms | 5-50ms (cross-process) |
 
 ## Benefits of MCP Architecture
@@ -278,5 +222,6 @@ npm uninstall -g @anthropic/mcp-filesystem-server
 ## See Also
 
 - [MCP Specification](https://modelcontextprotocol.io/)
-- `pekobot mcp --help`
-- `pekobot/docs/MCP.md`
+- [MCP Overview](MCP.md)
+- [Extension System](../architecture/EXTENSION_SYSTEM.md)
+- `pekobot ext --help`

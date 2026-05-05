@@ -24,7 +24,7 @@ This document provides a high-level overview of Pekobot's architecture after the
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              USER INTERFACES                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  CLI (pekobot)    │   HTTP API   │   Web UI   │   WebSocket   │   TUI      │
+│  CLI (pekobot)    │   IPC        │   Web UI   │   WebSocket   │   TUI      │
 │                   │   (daemon)   │            │               │            │
 └───────────────────┴──────┬───────┴────────────┴───────────────┴────────────┘
                            │
@@ -140,8 +140,8 @@ This document provides a high-level overview of Pekobot's architecture after the
 
 Multiple interfaces all communicate through the same Extension Manager and Core:
 
-- **CLI**: Direct filesystem operations or HTTP API calls
-- **HTTP API**: RESTful API served by daemon
+- **CLI**: Direct filesystem operations or IPC to daemon
+- **IPC**: UDP (Windows) / Unix domain socket (Unix) protocol served by daemon
 - **Web UI**: Browser-based interface
 - **WebSocket**: Real-time bidirectional communication
 - **TUI**: Terminal user interface

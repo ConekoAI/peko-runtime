@@ -1,18 +1,18 @@
-# Pekobot Error Codes Reference
+# Pekobot Error Reference
 
-Complete reference for all error codes with human-readable explanations and suggested fixes.
+Common errors and how to resolve them.
 
 ---
 
 ## Error Response Format
 
-All API errors follow this structure:
+Daemon API errors follow this structure:
 
 ```json
 {
   "error": {
-    "code": "instance_not_found",
-    "message": "Instance not found: agent-123",
+    "code": "agent_not_found",
+    "message": "Agent not found: myagent",
     "request_id": "req_abc123",
     "details": {}
   }
@@ -20,60 +20,59 @@ All API errors follow this structure:
 ```
 
 **Fields:**
-- `code` — Machine-readable error code (use this for programmatic handling)
+- `code` — Machine-readable error code
 - `message` — Human-readable description
-- `request_id` — Unique identifier for tracing (include in bug reports)
-- `details` — Additional structured data (varies by error type)
+- `request_id` — Unique identifier for tracing
+- `details` — Additional structured data
 
 ---
 
 ## Resource Errors (4xx)
 
-### `instance_not_found` (404)
-**Meaning:** The instance ID you provided doesn't exist.
+### `agent_not_found` (404)
+**Meaning:** The agent name you provided doesn't exist.
 
 **Common causes:**
-- Typo in the instance ID
-- Instance was deleted
-- Instance exists in a different team
+- Typo in the agent name
+- Agent was deleted
+- Agent exists in a different team
 
 **How to fix:**
 ```bash
-# List all instances to find the correct ID
-pekobot ps
+# List all agents
+pekobot agent list
 
-# Check if the instance was deleted
-pekobot ps --all
+# Check specific team
+pekobot agent list --team myteam
 ```
 
 ---
 
 ### `session_not_found` (404)
-**Meaning:** The session ID doesn't exist for this instance.
+**Meaning:** The session ID doesn't exist for this agent.
 
 **Common causes:**
 - Session was purged
-- Wrong instance ID (sessions are per-instance)
+- Wrong agent (sessions are per-agent)
 - Session ID typo
 
 **How to fix:**
 ```bash
-# List sessions for an instance
-pekobot session list --instance <instance-id>
+# List sessions for an agent
+pekobot session list myagent
 
-# View all sessions across all instances
-pekobot session list --all
+# Show all sessions including inactive
+pekobot session list myagent --all
 ```
 
 ---
 
 ### `team_not_found` (404)
-**Meaning:** The team ID doesn't exist.
+**Meaning:** The team name doesn't exist.
 
 **Common causes:**
 - Team was deleted
-- Typo in team ID
-- You're not a member of the team
+- Typo in team name
 
 **How to fix:**
 ```bash
@@ -81,219 +80,112 @@ pekobot session list --all
 pekobot team list
 
 # Create a new team
-pekobot team deploy -f team.toml
+pekobot team create myteam
 ```
 
 ---
 
-### `image_not_found` (404)
-**Meaning:** The image reference couldn't be resolved.
-
-**Common causes:**
-- Image hasn't been built yet
-- Wrong tag (e.g., `v1.0` vs `v1.1`)
-- Registry is unreachable
-- Image was deleted from registry
+### `extension_not_found` (404)
+**Meaning:** The extension ID doesn't exist.
 
 **How to fix:**
 ```bash
-# List local images
-pekobot images list
+# List installed extensions
+pekobot ext list
 
-# Build the image
-pekobot build ./my-agent/ -t my-agent:v1.0
-
-# Pull from registry
-pekobot pull registry.example.com/agents/my-agent:v1.0
-```
-
----
-
-### `registry_not_found` (404)
-**Meaning:** Image not found in the remote registry.
-
-**Common causes:**
-- Image doesn't exist at that path
-- Wrong registry URL
-- Image is private and you're not authenticated
-
-**How to fix:**
-```bash
-# Verify the image path
-pekobot pull pekohub.com/user/image:tag
-
-# Check registry authentication
-pekobot auth status
-
-# Login to registry if needed
-pekobot auth login registry.example.com
+# Show details
+pekobot ext info <extension-id>
 ```
 
 ---
 
 ## State Errors (409)
 
-### `instance_not_running` (409)
-**Meaning:** The operation requires the instance to be running, but it's not.
-
-**Common causes:**
-- Instance hasn't been started yet
-- Instance crashed
-- Instance was stopped
+### `daemon_not_running` (409)
+**Meaning:** The daemon is not running, but a command requires it.
 
 **How to fix:**
 ```bash
-# Check instance status
-pekobot ps
+# Start the daemon
+pekobot daemon start
 
-# Start the instance
-pekobot run <image:tag>
+# Or in foreground to see errors
+pekobot daemon start --foreground
 
-# Or restart a stopped instance
-pekobot start <instance-id>
-
-# Check logs for crash reason
-pekobot logs <instance-id>
-```
-
----
-
-### `instance_already_running` (409)
-**Meaning:** You tried to start an instance that's already running.
-
-**How to fix:**
-```bash
-# Connect to the running instance
-pekobot attach <instance-id>
-
-# Or chat via API
-pekobot chat <instance-id> "Hello"
-
-# To restart, stop first
-pekobot stop <instance-id>
-pekobot start <instance-id>
-```
-
----
-
-### `team_not_stopped` (409)
-**Meaning:** Can't delete a team that still has running instances.
-
-**How to fix:**
-```bash
-# Stop all team instances
-pekobot team stop <team-id>
-
-# Or force delete (not recommended)
-pekobot team delete <team-id> --force
+# Check status
+pekobot daemon status
 ```
 
 ---
 
 ### `session_is_active` (409)
-**Meaning:** Can't delete the active session of a running instance.
+**Meaning:** Can't remove the active session.
 
 **How to fix:**
 ```bash
-# Option 1: Stop the instance first
-pekobot stop <instance-id>
-pekobot session remove <session-id>
+# Switch to a different session first
+pekobot session switch myagent <other-session-id>
 
-# Option 2: Switch to a different session
-pekobot chat <instance-id> "Hello" --session <other-session-id>
+# Then remove
+pekobot session remove myagent --session-id <session-id>
 
-# Option 3: Force delete
-pekobot session remove <session-id> --force
+# Or force
+pekobot session remove myagent --session-id <session-id> --force
 ```
 
 ---
 
-### `session_has_pending_tool_calls` (409)
-**Meaning:** The session has async tool calls that haven't completed yet.
+### `team_has_agents` (409)
+**Meaning:** Can't delete a team that still has agents.
 
 **How to fix:**
 ```bash
-# Wait for tool calls to complete
-pekobot session status <session-id>
+# Remove all agents first
+pekobot agent remove myteam/my-agent --force
 
-# Or cancel pending calls
-pekobot session cancel-tools <session-id>
-
-# Or force the operation
-pekobot <command> --force
+# Or force delete team (removes everything)
+pekobot team delete myteam --force
 ```
 
 ---
 
 ## Validation Errors (400, 422)
 
-### `invalid_image_ref` (400)
-**Meaning:** The image reference format is wrong.
+### `invalid_agent_name` (400)
+**Meaning:** The agent name contains invalid characters.
 
-**Valid formats:**
-- `my-agent:v1.0` — Local tag
-- `pekohub.com/user/agent:v1.0` — Registry path
-- `sha256:abc123...` — Content digest
+**Valid names:** Alphanumeric, hyphens, underscores. No spaces.
 
 **How to fix:**
 ```bash
-# Use correct format
-pekobot run my-agent:v1.0
-
-# For registries, include full path
-pekobot run registry.example.com/namespace/agent:tag
+# Use a valid name
+pekobot agent create my-agent --provider kimi
 ```
 
 ---
 
 ### `missing_required_field` (400)
-**Meaning:** A required field is missing from the request.
+**Meaning:** A required field is missing.
 
 **Common causes:**
-- Forgot `message` field in chat request
-- Missing `image` field when creating instance
+- Missing `--provider` when creating agent
+- Missing `--name` for cron job
 
 **How to fix:**
 ```bash
-# API example - include all required fields
-curl -X POST http://localhost:11435/agents \
-  -H "Content-Type: application/json" \
-  -d '{"image": "my-agent:v1.0", "name": "my-instance"}'
-```
-
----
-
-### `invalid_field_value` (422)
-**Meaning:** A field value failed validation.
-
-**Common causes:**
-- Invalid provider name
-- Temperature outside 0-1 range
-- Negative timeout value
-
-**How to fix:**
-Check the error `details` for which field failed:
-```json
-{
-  "error": {
-    "code": "invalid_field_value",
-    "details": {
-      "field": "temperature",
-      "value": 2.5,
-      "allowed": "0.0 to 1.0"
-    }
-  }
-}
+# Include all required arguments
+pekobot agent create myagent --provider kimi
+pekobot cron add --name "daily" --schedule "0 9 * * *" --message "Hello"
 ```
 
 ---
 
 ### `config_parse_error` (422)
-**Meaning:** `config.toml` or `team.toml` has a syntax error.
+**Meaning:** `config.toml` has a syntax error.
 
 **How to fix:**
 ```bash
-# Validate config without running
+# Validate config
 pekobot config validate ./my-agent/config.toml
 
 # Common fixes:
@@ -302,98 +194,48 @@ pekobot config validate ./my-agent/config.toml
 # - Verify TOML syntax online at https://www.toml-lint.com/
 ```
 
-**Example error details:**
-```json
-{
-  "error": {
-    "code": "config_parse_error",
-    "details": {
-      "errors": [
-        {"line": 5, "message": "Expected '=' after key"},
-        {"line": 12, "message": "Unknown field 'providor'"}
-      ]
-    }
-  }
-}
-```
-
 ---
 
-### `capability_not_installed` (422)
-**Meaning:** The agent requires a capability that's not installed.
+### `extension_already_installed` (422)
+**Meaning:** An extension with this ID is already installed.
 
 **How to fix:**
 ```bash
-# Install the missing capability
-pekobot capability install <name>
+# Uninstall first
+pekobot ext uninstall <id>
 
-# Or update agent to not require it
-# Edit config.toml and remove from required_capabilities
-```
-
----
-
-### `circular_base_dependency` (422)
-**Meaning:** Base image inheritance forms a cycle (A → B → C → A).
-
-**How to fix:**
-Review your `config.toml` base image chains:
-```toml
-# my-agent/config.toml
-[base]
-image = "base-agent:v1.0"
-
-# base-agent/config.toml
-[base]
-image = "another-base:v1.0"  # Make sure this doesn't point back!
-```
-
----
-
-### `incompatible_plugin_version` (422)
-**Meaning:** A session plugin has an incompatible ABI version.
-
-**How to fix:**
-```bash
-# Update the plugin to match daemon version
-pekobot plugin update <plugin-name>
-
-# Or disable the plugin
-# Edit config.toml: plugins = []
-```
-
----
-
-### `missing_webhook_token` (422)
-**Meaning:** Webhook hook configuration is missing the required `token` field.
-
-**How to fix:**
-```toml
-[[hooks]]
-type = "webhook"
-path = "/github"
-token = "your-secret-token"  # Add this!
-action = "run"
+# Or reinstall
+pekobot ext install ./my-extension --force
 ```
 
 ---
 
 ## Authentication Errors (401)
 
-### `registry_auth_failed` (401)
-**Meaning:** Couldn't authenticate to the registry.
+### `provider_auth_failed` (401)
+**Meaning:** Couldn't authenticate to the LLM provider.
 
 **How to fix:**
 ```bash
-# Check if you're logged in
-pekobot auth status
+# Check if API key is set
+pekobot auth list
 
-# Login to the registry
-pekobot auth login registry.example.com
+# Set the API key
+pekobot auth set openai "sk-..."
 
-# For token-based auth, set environment variable
-export PEKOHUB_API_KEY="your-key"
+# Or set environment variable
+export OPENAI_API_KEY="sk-..."
 ```
+
+---
+
+### `invalid_api_key` (401)
+**Meaning:** The API key format is invalid or expired.
+
+**How to fix:**
+- Verify the key with your provider's dashboard
+- Check for extra whitespace or quotes
+- Regenerate if expired
 
 ---
 
@@ -411,14 +253,15 @@ export PEKOHUB_API_KEY="your-key"
 **How to fix:**
 ```bash
 # Check your API key
-pekobot auth status
+pekobot auth test openai
 
 # Check provider status page
 # OpenAI: https://status.openai.com
 # Anthropic: https://status.anthropic.com
 
 # For rate limits, wait or upgrade your plan
-# For context length, reduce message size or use a model with larger context
+# For context length, compact the session
+pekobot session compact myagent
 ```
 
 ---
@@ -433,7 +276,7 @@ Check the error details:
   "error": {
     "code": "tool_execution_failed",
     "details": {
-      "tool": "filesystem.read",
+      "tool": "read_file",
       "error": "Permission denied: /etc/passwd"
     }
   }
@@ -442,7 +285,7 @@ Check the error details:
 
 Common fixes:
 - **Filesystem:** Ensure path is within workspace sandbox
-- **Process:** Check command exists and has execute permission
+- **Shell:** Check command exists and has execute permission
 - **Network:** Check internet connectivity and firewall rules
 
 ---
@@ -451,16 +294,7 @@ Common fixes:
 **Meaning:** A tool took too long to complete.
 
 **How to fix:**
-```toml
-# Increase timeout in config.toml
-[tools]
-timeout_seconds = 120  # Default is 30
-
-# Or for specific tools
-[[tools.config]]
-name = "slow-tool"
-timeout_seconds = 300
-```
+Tools have configurable timeouts. Check the tool documentation or retry with a simpler request.
 
 ---
 
@@ -470,168 +304,132 @@ timeout_seconds = 300
 **Common causes:**
 - Disk full
 - Permission denied
-- Filesystem corruption
 
 **How to fix:**
 ```bash
 # Check disk space
-df -h ~/.pekobot
+df -h ~/.local/share/pekobot
 
 # Check permissions
-ls -la ~/.pekobot/agents/<agent>/sessions/
+ls -la ~/.local/share/pekobot/sessions/
 
 # Fix permissions
-chmod 755 ~/.pekobot
-chown -R $USER:$USER ~/.pekobot
+chmod 755 ~/.local/share/pekobot
 ```
 
 ---
 
-### `capability_install_failed` (500)
-**Meaning:** Auto-install was attempted and failed.
+### `ipc_error` (500)
+**Meaning:** Communication with the daemon failed.
 
 **How to fix:**
 ```bash
-# Try manual install
-pekobot capability install <name> --verbose
+# Check daemon status
+pekobot daemon status
 
-# Check network connectivity
-ping tools.coneko.ai
+# Restart if needed
+pekobot daemon restart
 
-# Install from source
-pekobot capability install <name> --from-source
+# Check for port conflicts
+# Default daemon port: 11435
 ```
 
 ---
 
-## Availability Errors (503)
-
-### `bus_unavailable` (503)
-**Meaning:** Team event bus is not reachable.
-
-**Common causes:**
-- Redis/NATS server down
-- Network partition
-- Wrong connection string
-
-**How to fix:**
-```bash
-# Check bus backend status
-pekobot team status <team-id>
-
-# For Redis: verify connection
-redis-cli -h <host> ping
-
-# Restart with in-memory bus as fallback
-pekobot team deploy -f team.toml --bus in-memory
-```
-
----
+## MCP Errors (503)
 
 ### `mcp_server_unavailable` (503)
-**Meaning:** MCP server crashed and restart failed.
+**Meaning:** MCP server crashed or is not responding.
 
 **How to fix:**
 ```bash
-# Check MCP server logs
-pekobot mcp logs <server-name>
+# Check extension status
+pekobot ext info <mcp-extension>
 
-# Restart the MCP server
-pekobot mcp restart <server-name>
+# Restart the extension
+pekobot ext disable <mcp-extension>
+pekobot ext enable <mcp-extension>
 
-# Check MCP configuration
-pekobot mcp config validate
+# Check extension logs in daemon output
 ```
 
 ---
 
-### `tool_unavailable` (503)
-**Meaning:** A tool from a failed MCP server was invoked.
+### `extension_load_failed` (503)
+**Meaning:** An extension failed to load.
 
 **How to fix:**
 ```bash
-# Check MCP server status
-pekobot mcp status
+# Validate the extension
+pekobot ext validate ./my-extension
 
-# Restart the server
-pekobot mcp restart <server-name>
+# Check extension info
+pekobot ext info <id>
 
-# Or disable the tool temporarily
-# Edit mcp.json and set enabled: false
+# Reinstall if corrupted
+pekobot ext uninstall <id>
+pekobot ext install ./my-extension
 ```
 
 ---
 
-### `registry_unavailable` (503)
-**Meaning:** Registry did not respond.
+## Cron Errors
+
+### `cron_job_not_found` (404)
+**Meaning:** The cron job name doesn't exist.
 
 **How to fix:**
 ```bash
-# Check network connectivity
-ping registry.example.com
+# List all jobs
+pekobot cron list
 
-# Use local image instead
-pekobot run my-local-image:v1.0
-
-# Try alternative registry
-pekobot pull mirror.example.com/image:tag
+# Check job history
+pekobot cron history <job-name>
 ```
 
 ---
 
-## Timeout Errors (408)
-
-### `upgrade_timeout` (408)
-**Meaning:** Instance upgrade took too long.
+### `invalid_cron_expression` (422)
+**Meaning:** The cron expression is malformed.
 
 **How to fix:**
 ```bash
-# Check instance status
-pekobot ps
+# Use a valid expression
+pekobot cron add --name "daily" --schedule "0 9 * * *" --message "Hello"
 
-# Force upgrade if stuck
-pekobot upgrade <instance-id> --to <image:tag> --force
-
-# Or stop and recreate
-pekobot stop <instance-id>
-pekobot run <new-image:tag>
+# Or use interval syntax
+pekobot cron every --name "frequent" --interval "5m" --message "Ping"
 ```
 
 ---
 
 ## Client Errors (CLI)
 
-These errors occur in the CLI client before reaching the API:
-
 ### `DaemonNotRunning`
-**Message:** `Daemon not running at http://127.0.0.1:11435. Start it with 'pekobot daemon start --foreground'`
+**Message:** `Daemon not running. Start it with 'pekobot daemon start'`
 
 **How to fix:**
 ```bash
 # Start the daemon
 pekobot daemon start
 
-# Or in foreground to see errors
+# Or in foreground
 pekobot daemon start --foreground
-
-# Check if daemon is running on a different port
-pekobot daemon status
 ```
 
 ---
 
 ### `NotFound`
-**Message:** `{resource_type} not found: {resource_id}`
+**Message:** `{resource} not found: {name}`
 
-Occurs when the CLI can't find local resources (configs, etc.).
+Occurs when the CLI can't find local resources.
 
 **How to fix:**
 ```bash
-# Verify the path
+# Verify the resource exists
 pekobot agent show <name>
-
-# List available resources
-pekobot agent list
+pekobot team show <name>
+pekobot session list <agent>
 ```
 
 ---
@@ -670,22 +468,21 @@ export PEKOBOT_DEBUG=1
 ```
 
 ### Check Request ID
-Every error includes a `request_id`. Include this when reporting issues:
-```bash
-# From API response
-{"error": {"request_id": "req_abc123", ...}}
-
-# Check daemon logs for that request
-grep "req_abc123" ~/.pekobot/logs/daemon.log
-```
+Every daemon error includes a `request_id`. Include this when reporting issues.
 
 ### Validate Configuration
 ```bash
 # Validate before running
 pekobot config validate ./my-agent/config.toml
+```
 
-# Check with verbose output
-pekobot config validate ./my-agent/config.toml --verbose
+### Check Daemon Logs
+```bash
+# Run daemon in foreground to see logs
+pekobot daemon start --foreground
+
+# Or check log files (if configured)
+cat ~/.local/share/pekobot/logs/daemon.log
 ```
 
 ---
@@ -696,6 +493,6 @@ If an error persists:
 
 1. Check this reference for the error code
 2. Enable debug mode (`--debug`) for more details
-3. Check the [troubleshooting guide](../user-guide/TROUBLESHOOTING.md)
+3. Check the daemon is running (`pekobot daemon status`)
 4. Search [GitHub Issues](https://github.com/coneko/pekobot/issues)
 5. Report a bug with the `request_id` and debug output

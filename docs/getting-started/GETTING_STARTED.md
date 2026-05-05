@@ -46,32 +46,18 @@ export KIMI_API_KEY="your-kimi-key"
 
 > 💡 **Tip:** Add this to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to persist across sessions.
 
-### 3. Start the Daemon
-
-The daemon is the heart of Pekobot — it manages agents, sessions, and the HTTP API.
+### 3. Create Your First Agent
 
 ```bash
-# Start in background
-./target/release/pekobot daemon start
-
-# Verify it's running
-./target/release/pekobot daemon status
+# Create a new agent
+./target/release/pekobot agent create my-agent --provider minimax
 ```
 
-You should see:
-```
-📊 Daemon Status:
-  Status: ✅ Running (healthy)
-  Version: 0.1.0
-  API Version: v1
-  Port: 11435
-```
-
-### 4. Create Your First Agent
+Or initialize an agent directory:
 
 ```bash
 # Initialize a new agent directory
-./target/release/pekobot agent init ./my-agent/ --provider openai
+./target/release/pekobot agent init ./my-agent/ --provider minimax
 ```
 
 This creates:
@@ -81,11 +67,10 @@ my-agent/
 ├── AGENT.md         # Agent description (edit this!)
 ├── .gitignore       # Excludes sessions/, workspace/
 ├── tools/           # Custom tools directory
-├── skills/          # Skills directory
 └── workspace/       # Working files
 ```
 
-### 5. Edit Your Agent (Optional)
+### 4. Edit Your Agent (Optional)
 
 Edit `my-agent/AGENT.md` to give your agent a personality:
 
@@ -105,36 +90,21 @@ You are a helpful coding assistant.
 Friendly, concise, and encouraging.
 ```
 
-### 6. Build and Run
+### 5. Send a Message
 
 ```bash
-# Build the agent into an image
-./target/release/pekobot build ./my-agent/ -t my-agent:v1.0
-
-# Run it (creates an instance)
-./target/release/pekobot run my-agent:v1.0
+# Send a message to your agent
+./target/release/pekobot send my-agent "Hello, what can you do?"
 ```
 
-You'll see:
+You'll see the agent's response streamed to your terminal.
+
+### 6. Start a New Session
+
+```bash
+# Start a fresh conversation
+./target/release/pekobot send my-agent "Let's start fresh" --new
 ```
-🚀 Starting agent instance...
-✅ Instance 'my-agent-abc123' created
-📡 Connecting to chat stream...
-
-🐱 My Agent: Hello! I'm ready to help. What would you like to work on?
-
-💬 You:
-```
-
-Type a message and press Enter:
-```
-💬 You: Write a Python function to calculate fibonacci numbers
-🐱 My Agent: Here's a Python function to calculate Fibonacci numbers...
-```
-
-### 7. Stop the Agent
-
-Press `Ctrl+C` or type `exit` to stop the agent.
 
 ---
 
@@ -145,42 +115,51 @@ Press `Ctrl+C` or type `exit` to stop the agent.
 | [Tutorial: Building Your First Agent](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive |
 | [CLI Reference](../user-guide/CLI_REFERENCE.md) | All commands explained |
 | [Architecture Overview](../dev/ARCHITECTURE.md) | How Pekobot works |
-| [API Examples](../api-examples.md) | HTTP API usage |
 
 ---
 
 ## Common Commands
 
 ```bash
-# Daemon management
-pekobot daemon start              # Start daemon
-pekobot daemon status             # Check status
-pekobot daemon stop               # Stop daemon
-
 # Agent lifecycle
-pekobot agent init ./my-agent/    # Create new agent
-pekobot build ./my-agent/ -t tag  # Build image
-pekobot run my-agent:v1.0         # Run instance
-pekobot ps                        # List instances
+pekobot agent list                  # List all agents
+pekobot agent create my-agent --provider minimax  # Create a new agent
+pekobot agent init ./my-agent/      # Initialize agent directory
+pekobot agent show my-agent         # Show agent details
+pekobot agent remove my-agent       # Remove an agent
+
+# Send messages
+pekobot send my-agent "Hello!"      # Send a message
+pekobot send my-agent "Hello!" --new # Start a new session
+pekobot send my-agent --file prompt.txt  # Read from file
 
 # Session management
-pekobot session list              # List sessions
-pekobot session show <id>         # View session history
+pekobot session list my-agent       # List sessions
+pekobot session show my-agent <id>  # View session history
+
+# Daemon management
+pekobot daemon start --foreground   # Start daemon
+pekobot daemon status               # Check status
+pekobot daemon stop                 # Stop daemon
 
 # Get help
-pekobot --help                    # Global help
-pekobot agent --help              # Agent commands
-pekobot daemon --help             # Daemon commands
+pekobot --help                      # Global help
+pekobot agent --help                # Agent commands
+pekobot send --help                 # Send command help
+pekobot daemon --help               # Daemon commands
 ```
 
 ---
 
 ## Troubleshooting
 
-### "Daemon not running"
+### "Agent not found"
 ```bash
-# Start the daemon first
-pekobot daemon start --foreground  # See errors in real-time
+# Check that the agent exists
+pekobot agent list
+
+# Create the agent if needed
+pekobot agent create my-agent --provider minimax
 ```
 
 ### "API key not found"
@@ -199,22 +178,13 @@ sudo apt-get update
 sudo apt-get install libssl-dev pkg-config
 ```
 
-### Port already in use
-```bash
-# Check what's using port 11435
-lsof -i :11435
-
-# Stop the existing daemon or use a different port
-pekobot daemon stop
-```
-
 ---
 
 ## Requirements Checklist
 
 ✅ **Time to first agent:** Under 5 minutes  
-✅ **No configuration required:** Daemon starts with sensible defaults  
-✅ **Git-friendly:** `pekobot init` creates proper `.gitignore`  
+✅ **No configuration required:** Sensible defaults  
+✅ **Git-friendly:** `pekobot agent init` creates proper `.gitignore`  
 ✅ **Actionable errors:** All errors include suggested fixes
 
 ---

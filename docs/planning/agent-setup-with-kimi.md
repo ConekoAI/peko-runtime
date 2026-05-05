@@ -114,8 +114,8 @@ export KIMI_API_KEY="sk-..."
 # Create agent
 pekobot agent create testagent --provider kimi --yes
 
-# Run agent with message
-echo "Hello" | pekobot agent start testagent
+# Send a message to the agent
+pekobot send testagent "Hello"
 
 # Verify session files
 ls ~/.pekobot/agents/testagent/sessions/
@@ -131,12 +131,8 @@ The registry's `resolve()` method for `ImageRef::Path` needs to:
 ### Option 3: Use Pre-built Images
 
 ```bash
-# Build image first
-pekobot build ./test_kimi_agent/ -t test_kimi:v1.0
-
-# Then create instance via API
-curl -X POST http://localhost:11435/agents \
-  -d '{"image": "test_kimi:v1.0", "auto_start": true}'
+# Create agent from directory
+pekobot agent create ./test_kimi_agent/ --provider kimi --yes
 ```
 
 ## Files Created During Test

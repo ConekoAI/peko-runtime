@@ -86,20 +86,16 @@ Simple recurring intervals:
 
 ```bash
 # Every 5 minutes
-pekobot cron every --name "heartbeat" --interval "5m"
+pekobot cron every --name "heartbeat" --interval-ms 300000
 
 # Every hour
-pekobot cron every --name "hourly" --interval "1h"
+pekobot cron every --name "hourly" --interval-ms 3600000
 
 # Every 30 seconds
-pekobot cron every --name "frequent" --interval "30s"
+pekobot cron every --name "frequent" --interval-ms 30000
 ```
 
-**Supported units:**
-- `s` - seconds
-- `m` - minutes
-- `h` - hours
-- `d` - days (not yet implemented)
+**Interval is specified in milliseconds via `--interval-ms`.**
 
 ### One-shot (At)
 
@@ -228,7 +224,7 @@ pekobot cron at \
 # Recurring interval
 pekobot cron every \
   --name "heartbeat" \
-  --interval "5m" \
+  --interval-ms 300000 \
   --message "Check system status"
 ```
 
@@ -243,6 +239,23 @@ pekobot cron run --id <job-id>
 
 # View job history
 pekobot cron history --id <job-id>
+```
+
+### Event-Triggered Jobs
+
+```bash
+# Add a job that runs when agent is idle
+pekobot cron add-idle \
+  --name "idle-cleanup" \
+  --minutes 30 \
+  --agent my-agent \
+  --message "Clean up old files"
+
+# Add a job that runs on a system event
+pekobot cron add-event \
+  --name "on-event" \
+  --event-type "internal" \
+  --message "System started"
 ```
 
 ## Database Schema

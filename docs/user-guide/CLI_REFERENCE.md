@@ -5,322 +5,494 @@ Complete reference for the Pekobot command-line interface.
 ## Global Options
 
 ```
-pekobot [OPTIONS] [COMMAND]
+pekobot [OPTIONS] <COMMAND>
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-h, --help` | Print help information |
 | `-V, --version` | Print version information |
+| `--config-dir <CONFIG_DIR>` | Configuration directory override |
+| `--data-dir <DATA_DIR>` | Data directory override |
+| `--cache-dir <CACHE_DIR>` | Cache directory override |
+| `--json` | Output results as JSON |
+| `-q, --quiet` | Suppress non-error output |
+| `-v, --verbose...` | Enable verbose logging (-v=info, -vv=debug, -vvv=trace) |
+| `--debug` | Show debug information including stack traces |
+| `-U, --user <USER>` | User identifier for session isolation |
 
 ---
 
 ## Commands
 
-### `agent` — Run a Single Agent
+### `agent` — Agent Management
 
-Start an interactive agent with CLI interface.
-
-```bash
-pekobot agent [OPTIONS]
-```
-
-#### Options
-
-| Option | Short | Description | Default |
-|--------|-------|-------------|---------|
-| `--config` | `-c` | Path to configuration file | - |
-| `--name` | `-n` | Agent name | `peko` |
-| `--provider` | `-p` | LLM provider (`openai`, `anthropic`, `ollama`) | `openai` |
-| `--model` | `-m` | Model name | Provider default |
-| `--db` | - | Database path for memory | Auto-generated |
-| `--coneko` | - | Coneko endpoint URL | - |
-| `--coneko-token` | - | Coneko auth token | `$CONEKO_TOKEN` |
-
-#### Examples
-
-**Basic agent:**
-```bash
-pekobot agent --name my-agent
-```
-
-**With OpenAI and memory:**
-```bash
-export OPENAI_API_KEY="sk-..."
-pekobot agent --name ai-agent --provider openai --db ~/.pekobot/memory.db
-```
-
-**With Coneko network:**
-```bash
-pekobot agent \
-  --name networked-agent \
-  --coneko http://localhost:8080 \
-  --coneko-token my-token
-```
-
-**Using config file:**
-```bash
-pekobot agent --config ./pekobot.toml
-```
-
-#### Interactive Commands
-
-When running in agent mode, you can use these commands:
-
-| Command | Description |
-|---------|-------------|
-| `help` | Show available commands |
-| `exit`, `quit`, `bye` | Stop the agent |
-
----
-
-### `orchestrate` — Run Multi-Agent Orchestrator
-
-Start the multi-agent orchestrator for managing multiple agents.
+Manage agent configurations.
 
 ```bash
-pekobot orchestrate [OPTIONS]
+pekobot agent <COMMAND>
 ```
 
-#### Options
+#### Subcommands
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--config` | `-c` | Orchestrator configuration file |
+| Subcommand | Description |
+|-----------|-------------|
+| `list` | List all configured agents |
+| `show <AGENT>` | Show detailed agent information |
+| `create <AGENT>` | Create a new agent |
+| `remove <AGENT>` | Remove an agent and its configuration |
+| `move <AGENT> <NEW_NAME>` | Move/rename an agent |
+| `export --name <AGENT>` | Export agent to .agent package |
+| `import --file <PATH>` | Import agent from .agent package |
+| `inspect <PATH>` | Inspect .agent package without importing |
+| `init <PATH>` | Initialize a new agent directory with minimal structure |
+| `config <AGENT>` | Manage agent configuration |
 
 #### Examples
 
 ```bash
-pekobot orchestrate --config ./orchestrator.toml
-```
+# List all agents
+pekobot agent list
 
-> **Note:** Full orchestrator mode is under development. For now, use the `examples/multi_agent.rs` example.
+# Create an agent in the default team
+pekobot agent create my-agent --provider minimax
 
----
+# Create an agent in a specific team
+pekobot agent create myteam/my-agent --provider kimi
 
-### `status` — Check System Status
+# Initialize a new agent directory
+pekobot agent init ./my-agent --provider minimax
 
-Display the current status of Pekobot and its components.
+# Show agent details
+pekobot agent show my-agent
 
-```bash
-pekobot status
-```
+# Export an agent
+pekobot agent export --name my-agent
 
-#### Example Output
-
-```
-🐱 Pekobot Status
-   Version: 0.1.0
-   Status: 🟢 Operational
-   Features:
-     - Agent Runtime: ✅ Ready
-     - Identity System: ✅ Ready
-     - SQLite Memory: ✅ Ready
-     - OpenAI Provider: ✅ Ready
-     - CLI Channel: ✅ Ready
-     - HTTP Channel: ✅ Ready
-     - Multi-Agent Orchestration: ✅ Ready
-     - Coneko Adapter: ✅ Ready
+# Remove an agent
+pekobot agent remove my-agent
 ```
 
 ---
 
-### `onboard` — Interactive Setup
+### `team` — Team Management
 
-Guided setup for creating your first agent configuration.
+Manage teams of agents.
 
 ```bash
-pekobot onboard
+pekobot team <COMMAND>
 ```
 
-#### Example Session
+#### Subcommands
 
-```
-🐱 Pekobot Onboarding
+| Subcommand | Description |
+|-----------|-------------|
+| `create <TEAM>` | Create a new team |
+| `list` | List all teams |
+| `show <TEAM>` | Show team details |
+| `remove <TEAM>` | Remove a team and all its agents |
+| `move <TEAM> <NEW_NAME>` | Move/rename a team |
+| `export <TEAM>` | Export a team to a .team package |
+| `import <PATH>` | Import a team from a .team package |
 
-Welcome! Let's set up your first agent.
+#### Examples
 
-Agent name [peko]: my-agent
-Provider (openai/anthropic/ollama) [openai]: openai
-Coneko endpoint (optional): http://localhost:8080
+```bash
+# Create a team
+pekobot team create myteam
 
-✅ Configuration complete!
-   Name: my-agent
-   Provider: openai
-   Coneko: http://localhost:8080
+# List teams
+pekobot team list
 
-Start your agent with:
-   pekobot agent --name my-agent --provider openai --coneko http://localhost:8080
+# Show team details
+pekobot team show myteam
 ```
 
 ---
 
 ### `send` — Send Message to Agent
 
-Send a message to a running agent via HTTP.
+Send a message to an agent. This is the primary way to interact with agents.
 
 ```bash
-pekobot send --endpoint <URL> --message <MESSAGE>
+pekobot send <AGENT> [MESSAGE]
 ```
+
+#### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<AGENT>` | Agent name or team/agent format (e.g., "myagent" or "myteam/myagent") |
+| `[MESSAGE]` | Message to send (optional if --file or --stdin is used) |
 
 #### Options
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--endpoint` | `-e` | Target agent endpoint URL (required) |
-| `--message` | `-m` | Message to send (required) |
+| `-t, --team <TEAM>` | - | Team to look in |
+| `-s, --session <SESSION>` | - | Specific session ID to use |
+| `-n, --new` | - | Start a new session |
+| `-f, --file <PATH>` | - | Read message from file |
+| `--stdin` | - | Read message from stdin |
+| `--no-stream` | - | Disable streaming, wait for full response |
 
 #### Examples
 
 ```bash
-pekobot send \
-  --endpoint http://localhost:3000 \
-  --message "Hello, agent!"
+# Send a simple message
+pekobot send my-agent "Hello!"
+
+# Send to an agent in a team
+pekobot send myteam/my-agent "Hello!"
+
+# Start a new session
+pekobot send my-agent "Hello!" --new
+
+# Read message from file
+pekobot send my-agent --file prompt.txt
+
+# Pipe from stdin
+echo "Hello!" | pekobot send my-agent --stdin
+
+# Disable streaming
+pekobot send my-agent "Hello!" --no-stream
 ```
 
 ---
 
-### `coneko` — Coneko Network Commands
+### `auth` — Authentication Management
 
-Manage connection to the Coneko coordination network.
-
-#### `coneko status` — Check Server Health
+Manage API keys and credentials.
 
 ```bash
-pekobot coneko status --endpoint <URL>
+pekobot auth <COMMAND>
 ```
 
-**Options:**
+#### Subcommands
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--endpoint` | `-e` | Coneko server URL (required) |
+| Subcommand | Description |
+|-----------|-------------|
+| `set` | Add a new API key |
+| `list` | List configured credentials |
+| `remove` | Remove a credential |
+| `test` | Test a credential |
 
-**Example:**
+#### Examples
+
 ```bash
-pekobot coneko status --endpoint http://localhost:8080
-```
+# Set an API key
+pekobot auth set openai
 
-**Output:**
-```
-🌐 Checking Coneko status at http://localhost:8080...
-✅ Coneko server is healthy
+# List credentials
+pekobot auth list
+
+# Test a credential
+pekobot auth test openai
 ```
 
 ---
 
-#### `coneko register` — Register Agent
+### `ext` — Extension Management
 
-Register your agent with the Coneko network.
+Manage extensions (skills, MCP, tools, channels, hooks).
 
 ```bash
-pekobot coneko register \
-  --endpoint <URL> \
-  --did <DID> \
-  --name <NAME> \
-  --agent-endpoint <URL> \
-  --capabilities <CAPS>
+pekobot ext <COMMAND>
 ```
 
-**Options:**
+#### Subcommands
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--endpoint` | `-e` | Coneko server URL (required) |
-| `--did` | `-d` | Agent DID (required) |
-| `--name` | `-n` | Agent name (required) |
-| `--agent-endpoint` | `-a` | Agent's public endpoint URL (required) |
-| `--capabilities` | `-c` | Comma-separated capabilities (required) |
-| `--token` | - | Auth token (or `$CONEKO_TOKEN`) |
+| Subcommand | Description |
+|-----------|-------------|
+| `install` | Install an extension |
+| `list` | List installed extensions |
+| `enable` | Enable an extension or built-in capability |
+| `disable` | Disable an extension or built-in capability |
+| `uninstall` | Uninstall an extension |
+| `info` | Show extension details |
+| `bundle` | Create a bundle from installed extensions |
+| `config` | Configure extension settings |
+| `validate` | Validate an extension manifest |
+| `debug` | Debug an installed extension |
+| `start` | Start a background runtime for an extension |
+| `stop` | Stop a background runtime for an extension |
+| `restart` | Restart a background runtime for an extension |
+| `status` | Show background runtime status for an extension |
 
-**Example:**
+#### Examples
+
 ```bash
-pekobot coneko register \
-  --endpoint http://localhost:8080 \
-  --did did:pekobot:local:default:abc123 \
-  --name my-agent \
-  --agent-endpoint http://my-server:3000 \
-  --capabilities messaging,task_execution,research \
-  --token my-secret-token
-```
+# List installed extensions
+pekobot ext list
 
-**Output:**
-```
-🌐 Registering agent with Coneko...
-   DID: did:pekobot:local:default:abc123
-   Name: my-agent
-   Endpoint: http://my-server:3000
-✅ Agent registered successfully!
+# Install an extension
+pekobot ext install <path-or-url>
+
+# Enable a capability
+pekobot ext enable <capability>
+
+# Show extension info
+pekobot ext info <extension>
 ```
 
 ---
 
-#### `coneko unregister` — Remove Agent Registration
+### `session` — Session Management
 
-Unregister your agent from the Coneko network.
+Manage agent sessions (offline operations).
 
 ```bash
-pekobot coneko unregister \
-  --endpoint <URL> \
-  --did <DID>
+pekobot session <COMMAND>
 ```
 
-**Options:**
+#### Subcommands
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--endpoint` | `-e` | Coneko server URL (required) |
-| `--did` | `-d` | Agent DID to unregister (required) |
-| `--token` | - | Auth token (or `$CONEKO_TOKEN`) |
+| Subcommand | Description |
+|-----------|-------------|
+| `list <AGENT>` | List sessions for an agent |
+| `show <AGENT>` | Show session details and history |
+| `branch <AGENT>` | Branch a session |
+| `remove <AGENT>` | Remove a session |
+| `switch <AGENT> <SESSION>` | Switch active session |
+| `compact <AGENT>` | Compact a session |
 
-**Example:**
+#### Examples
+
 ```bash
-pekobot coneko unregister \
-  --endpoint http://localhost:8080 \
-  --did did:pekobot:local:default:abc123
+# List sessions for an agent
+pekobot session list my-agent
+
+# Show session history (active session by default)
+pekobot session show my-agent --history
+
+# Show specific session
+pekobot session show my-agent --session-id sess_xxx --history
+
+# Compact a session (active session by default)
+pekobot session compact my-agent
+
+# Compact specific session
+pekobot session compact my-agent --session-id sess_xxx
 ```
 
 ---
 
-#### `coneko discover` — Find Agents
+### `config` — Configuration Management
 
-Discover agents registered on the Coneko network.
-
-```bash
-pekobot coneko discover --endpoint <URL> [OPTIONS]
-```
-
-**Options:**
-
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--endpoint` | `-e` | Coneko server URL (required) |
-| `--capability` | `-c` | Filter by capability |
-| `--token` | - | Auth token (or `$CONEKO_TOKEN`) |
-
-**Example:**
+Manage Pekobot configuration.
 
 ```bash
-# Discover all agents
-pekobot coneko discover --endpoint http://localhost:8080
-
-# Discover agents with messaging capability
-pekobot coneko discover \
-  --endpoint http://localhost:8080 \
-  --capability messaging
+pekobot config <COMMAND>
 ```
 
-**Output:**
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `validate` | Validate a configuration file |
+| `init` | Initialize a new configuration |
+| `defaults` | Show default configuration values |
+| `path` | Show configuration paths |
+| `get` | Get a configuration value |
+| `set` | Set a configuration value |
+
+#### Examples
+
+```bash
+# Show config paths
+pekobot config path
+
+# Show defaults
+pekobot config defaults
+
+# Get a value
+pekobot config get <key>
+
+# Set a value
+pekobot config set <key> <value>
 ```
-🌐 Discovering agents on Coneko...
-✅ Found 3 agent(s):
-   - Agent Alpha (did:pekobot:local:default:aaa...)
-     Capabilities: messaging, task_execution
-     Endpoint: http://agent-alpha:3000
-   - Agent Beta (did:pekobot:local:default:bbb...)
-     Capabilities: research, analysis
-     Endpoint: http://agent-beta:3000
+
+---
+
+### `system` — System Diagnostics
+
+System diagnostics and maintenance.
+
+```bash
+pekobot system <COMMAND>
 ```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `status` | Show detailed system status |
+| `info` | Show system information |
+| `doctor` | Run health check diagnostics |
+| `clean` | Clean up temporary files and cache |
+
+#### Examples
+
+```bash
+# Check system status
+pekobot system status
+
+# Run diagnostics
+pekobot system doctor
+
+# Clean up
+pekobot system clean
+```
+
+---
+
+### `daemon` — Daemon Management
+
+Manage the Pekobot daemon (for cron job execution).
+
+```bash
+pekobot daemon <COMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `start` | Start the daemon |
+| `stop` | Stop the daemon |
+| `status` | Check daemon status |
+| `restart` | Restart the daemon |
+| `check` | Trigger immediate cron check |
+
+#### Examples
+
+```bash
+# Start daemon in foreground
+pekobot daemon start --foreground
+
+# Check daemon status
+pekobot daemon status
+
+# Stop daemon
+pekobot daemon stop
+
+# Restart daemon
+pekobot daemon restart
+```
+
+---
+
+### `cron` — Cron Job Management
+
+Manage scheduled jobs.
+
+```bash
+pekobot cron <COMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `list` | List all cron jobs |
+| `add` | Add a new cron job |
+| `at` | Add a one-shot job at specific time |
+| `every` | Add a recurring interval job |
+| `remove` | Remove a cron job |
+| `run` | Run a job immediately |
+| `history` | Show job run history |
+| `add-idle` | Add an idle-triggered job |
+| `add-event` | Add an event-triggered job |
+
+#### Examples
+
+```bash
+# List cron jobs
+pekobot cron list
+
+# Add a recurring job
+pekobot cron add --name "daily" --schedule "0 9 * * *" --message "Hello"
+
+# Add a one-shot job
+pekobot cron at --name "reminder" --at "2026-03-01T09:00:00Z" --message "Meeting"
+
+# Add an interval job
+pekobot cron every --name "heartbeat" --interval-ms 300000 --message "Check"
+
+# Run a job now
+pekobot cron run --id <job-id>
+```
+
+---
+
+### `orchestration` — Orchestration Management
+
+Manage event routing, webhooks, and file watching.
+
+```bash
+pekobot orchestration <COMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `handlers` | List registered event handlers |
+| `watch` | Watch a directory for changes |
+| `unwatch` | Unwatch a directory |
+| `webhook-add` | Register a webhook route |
+| `webhook-remove` | Remove a webhook route |
+| `webhook-list` | List webhook routes |
+| `ingress-add` | Add an external source |
+| `ingress-remove` | Remove an external source |
+| `ingress-list` | List external sources |
+| `ingress-enable` | Enable unified external ingress |
+| `events` | View recent events |
+| `replay` | Replay an event by ID |
+| `status` | Show orchestration status |
+| `validate` | Validate configuration |
+
+---
+
+### `provider` — Provider Management
+
+List available LLM providers.
+
+```bash
+pekobot provider <COMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `list` | List all available providers |
+
+---
+
+### `update` — Update Pekobot
+
+Update Pekobot to the latest version.
+
+```bash
+pekobot update [--check]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--check` | Check for updates without installing |
+
+---
+
+### `completions` — Shell Completions
+
+Generate shell completions.
+
+```bash
+pekobot completions <SHELL>
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 
 ---
 
@@ -329,10 +501,13 @@ pekobot coneko discover \
 | Variable | Used By | Description |
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | Agent | OpenAI API key for LLM provider |
-| `CONEKO_ENDPOINT` | Agent, Coneko cmds | Default Coneko server URL |
-| `CONEKO_TOKEN` | Agent, Coneko cmds | Coneko authentication token |
-| `AGENT_ENDPOINT` | Coneko register | Your agent's public endpoint |
+| `ANTHROPIC_API_KEY` | Agent | Anthropic API key |
+| `KIMI_API_KEY` | Agent | Kimi API key |
 | `RUST_LOG` | All | Logging level (debug, info, warn, error) |
+| `PEKOBOT_CONFIG_DIR` | All | Configuration directory override |
+| `PEKOBOT_DATA_DIR` | All | Data directory override |
+| `PEKOBOT_CACHE_DIR` | All | Cache directory override |
+| `PEKOBOT_DEBUG` | All | Show debug information |
 
 ---
 
@@ -352,59 +527,52 @@ pekobot coneko discover \
 ## Quick Reference Card
 
 ```bash
-# Build and basic usage
-cargo build --release
-./target/release/pekobot --version
+# Agent management
+pekobot agent list
+pekobot agent create my-agent --provider minimax
+pekobot agent init ./my-agent --provider minimax
+pekobot agent show my-agent
+pekobot agent remove my-agent
 
-# Run an agent
-pekobot agent --name my-agent
-pekobot agent --name ai-agent --provider openai --db memory.db
+# Team management
+pekobot team create myteam
+pekobot team list
 
-# Multi-agent
-pekobot orchestrate --config config.toml
+# Send messages
+pekobot send my-agent "Hello!"
+pekobot send myteam/my-agent "Hello!" --new
+pekobot send my-agent --file prompt.txt
 
-# Coneko network
-pekobot coneko status --endpoint http://localhost:8080
-pekobot coneko register --endpoint http://localhost:8080 --did ... --name my-agent --agent-endpoint http://localhost:3000 --capabilities messaging,tasks
-pekobot coneko discover --endpoint http://localhost:8080
-pekobot coneko unregister --endpoint http://localhost:8080 --did ...
+# Authentication
+pekobot auth set openai
+pekobot auth list
+pekobot auth test openai
+
+# Extensions
+pekobot ext list
+pekobot ext install <path>
+
+# Sessions
+pekobot session list my-agent
+pekobot session show my-agent --history
+pekobot session compact my-agent
+
+# Daemon
+pekobot daemon start --foreground
+pekobot daemon status
+pekobot daemon stop
+
+# Cron
+pekobot cron list
+pekobot cron add --name daily --schedule "0 9 * * *" --message "Hello"
 
 # System
-pekobot status
-pekobot onboard
-```
+pekobot system status
+pekobot system doctor
 
----
-
-## Configuration File Format
-
-Example `pekobot.toml`:
-
-```toml
-[agent]
-name = "my-agent"
-description = "A helpful agent"
-capabilities = ["messaging", "task_execution"]
-
-[agent.memory]
-enabled = true
-database_path = "~/.local/share/pekobot/memory.db"
-max_entries = 10000
-
-[agent.provider]
-type = "openai"
-api_key = "${OPENAI_API_KEY}"
-model = "gpt-4o-mini"
-temperature = 0.7
-max_tokens = 2048
-timeout_seconds = 30
-
-[coneko]
-enabled = true
-endpoint = "http://localhost:8080"
-auth_token = "${CONEKO_TOKEN}"
-auto_register = true
-poll_interval_seconds = 30
+# Configuration
+pekobot config path
+pekobot config defaults
 ```
 
 ---

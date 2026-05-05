@@ -1,6 +1,6 @@
-# Gateway Plugin System
+# Gateway Extension System
 
-Pekobot's gateway plugin system allows you to connect to any messaging platform through a unified interface. Gateways are loaded on-demand as dynamic libraries.
+Pekobot's gateway system allows you to connect to messaging platforms through the Unified Extension Architecture. Gateways are implemented as extensions that hook into the I/O lifecycle.
 
 ## Overview
 
@@ -8,17 +8,18 @@ Pekobot's gateway plugin system allows you to connect to any messaging platform 
 ┌─────────────────────────────────────────┐
 │         Pekobot Core                    │
 │  ┌─────────────────────────────────┐    │
-│  │      GatewayManager             │    │
+│  │      ExtensionCore              │    │
 │  │  ┌───────────────────────────┐  │    │
-│  │  │   GatewayRegistry         │  │    │
-│  │  │   - Load plugins          │  │    │
-│  │  │   - Manage instances      │  │    │
+│  │  │   Gateway Adapter         │  │    │
+│  │  │   - ChannelInput hook     │  │    │
+│  │  │   - ChannelOutput hook    │  │    │
+│  │  │   - EventEmit hook        │  │    │
 │  │  └───────────────────────────┘  │    │
 │  └─────────────────────────────────┘    │
 └──────────────────┬──────────────────────┘
-                   │ loads .gateway files
+                   │ extension.yaml
 ┌──────────────────▼──────────────────────┐
-│         Gateway Plugins                 │
+│         Gateway Extension               │
 │  ┌──────────┐ ┌──────────┐ ┌─────────┐ │
 │  │ discord  │ │ whatsapp │ │  slack  │ │
 │  └──────────┘ └──────────┘ └─────────┘ │
@@ -29,152 +30,103 @@ Pekobot's gateway plugin system allows you to connect to any messaging platform 
 
 | Gateway | Status | Description |
 |---------|--------|-------------|
-| Discord | ✅ Available | Full Discord bot support |
+| Discord | ⏳ Planned | Discord bot support via extension |
 | WhatsApp | ⏳ Planned | WhatsApp Business API |
 | Telegram | ⏳ Planned | Telegram Bot API |
 | Slack | ⏳ Planned | Slack Web API |
 | Signal | ⏳ Planned | Signal client |
 | IRC | ⏳ Planned | IRC client |
-| Google Chat | ⏳ Planned | Google Chat API |
 
 ## CLI Usage
 
+Gateways are managed through the unified extension system:
+
 ### Install a gateway
 ```bash
-pekobot gateway install discord
+pekobot ext install ./discord-gateway
 ```
 
-### List installed gateways
+### List extensions (including gateways)
 ```bash
-pekobot gateway list
+pekobot ext list --type gateway
 ```
 
-### Start a gateway instance
-Create a config file `discord.toml`:
-```toml
-name = "my-bot"
-plugin = "discord"
-config = { token = "${secret:DISCORD_TOKEN}" }
-```
-
-Then start it:
+### Enable a gateway
 ```bash
-pekobot gateway start --config discord.toml
+pekobot ext enable discord
 ```
 
-### Update gateways
+### Show gateway details
 ```bash
-# Update specific gateway
-pekobot gateway update discord
-
-# Update all
-pekobot gateway update
+pekobot ext info discord
 ```
 
 ## Configuration
 
-Gateway configuration supports:
+Gateway extensions use `GATEWAY.toml` or `extension.yaml` manifests:
 
-- **Rate limiting**: Control message throughput
-- **Retry logic**: Automatic reconnection
-- **Message filtering**: Drop or forward based on rules
-- **Multiple instances**: Run multiple bots on same platform
+```yaml
+---
+id: "discord"
+name: "Discord Gateway"
+version: "1.0.0"
+extension_type: "gateway"
 
-Example:
-```toml
-[[gateways]]
-name = "main-discord"
-plugin = "discord"
-enabled = true
-config = { token = "${secret:DISCORD_TOKEN}", default_channel = "general" }
-
-[rate_limit]
-messages_per_second = 5.0
-burst = 10
-
-[retry]
-max_retries = 3
-base_delay_ms = 1000
+hooks:
+  - point: "channel.input"
+    handler: "handle_discord_message"
+  - point: "channel.output"
+    handler: "send_discord_message"
+  - point: "event.emit"
+    handler: "handle_system_event"
 ```
 
 ## Developing Gateways
 
-See [gateways/discord/](gateways/discord/) for a complete example.
+See [Gateway Plugin Development Guide](../dev/GATEWAY_PLUGIN_GUIDE.md) for details on building custom gateway extensions.
 
-### Key Traits
+### Key Hook Points
 
-```rust
-use gateway_interface::{GatewayPlugin, GatewayFactory};
+Gateway extensions typically use these hook points:
 
-#[async_trait]
-impl GatewayPlugin for MyGateway {
-    async fn initialize(&mut self, 
-        config: HashMap<String, Value>
-    ) -> GatewayResult<()>;
-    
-    async fn start(&self) -> GatewayResult<MessageStream>;
-    
-    async fn send(
-        &self, 
-        target: Target, 
-        content: MessageContent
-    ) -> GatewayResult<MessageId>;
-    
-    async fn shutdown(&self) -> GatewayResult<()>;
-}
+| Hook Point | Purpose |
+|------------|---------|
+| `ChannelInput` | Process incoming messages from the platform |
+| `ChannelOutput` | Format and send outgoing messages |
+| `EventEmit` | React to system events (agent ready, error, etc.) |
+
+### Example Extension Structure
+
 ```
-
-### FFI Export
-
-```rust
-#[no_mangle]
-pub extern "C" fn create_gateway_factory() 
-    -> *mut dyn GatewayFactory {
-    Box::into_raw(Box::new(MyGatewayFactory))
-}
+discord-gateway/
+├── GATEWAY.toml          # Extension manifest
+├── src/
+│   └── main.rs           # Gateway implementation
+└── README.md
 ```
 
 ## Architecture
 
 ### Core Components
 
-- **`gateway-interface`**: Shared types and traits (stable API)
-- **`GatewayRegistry`**: Plugin lifecycle management
-- **`GatewayManager`**: Active instance coordination
-- **`PluginLoader`**: Dynamic library loading
+- **ExtensionCore**: Central hook registry (22 hook points)
+- **Gateway Adapter**: Maps gateway extensions to I/O hooks
+- **ExtensionManager**: Lifecycle management (install, enable, disable)
 
 ### Loading Process
 
-1. CLI calls `registry.load("discord")`
-2. Registry checks local cache
-3. If not cached, downloads from Pekohub
-4. `PluginLoader` loads the `.gateway` file
-5. FFI calls `create_gateway_factory()`
-6. Factory creates `GatewayPlugin` instances
+1. `pekobot ext install ./discord-gateway` — copies extension to extensions dir
+2. `pekobot ext enable discord` — registers hooks with ExtensionCore
+3. Daemon loads the extension and invokes hooks during agent execution
 
 ### Security
 
-- Plugins are signed and verified by Pekohub
-- API version checking prevents incompatible plugins
-- File permissions set on download (Unix: 755)
-- Sandboxed execution planned (WASM)
+- Extensions are loaded from user-controlled directories
+- No dynamic library loading — extensions run in the daemon process
+- API keys stored via environment variables or config files
 
-## Migration from Built-in Channels
+## See Also
 
-If you were using the old built-in channel system:
-
-1. Install the gateway plugin: `pekobot gateway install discord`
-2. Update your config from:
-   ```toml
-   [channel.discord]
-   enabled = true
-   token = "..."
-   ```
-   To:
-   ```toml
-   [[gateways]]
-   name = "discord"
-   plugin = "discord"
-   config = { token = "..." }
-   ```
-3. Restart your agent
+- [Extension System](../architecture/EXTENSION_SYSTEM.md) — Unified Extension Architecture
+- [Gateway Plugin Development Guide](../dev/GATEWAY_PLUGIN_GUIDE.md) — Building custom gateways
+- [Extension ADRs](../architecture/adr/) — ADR-025 (Gateway Extension), ADR-026 (Extension Lifecycle)

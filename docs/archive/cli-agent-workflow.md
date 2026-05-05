@@ -124,27 +124,30 @@ pekobot agent show myagent
 Send a single message to an agent and get the response:
 
 ```bash
-pekobot agent start <name> --message "<message>" [--new]
+pekobot send <name> "<message>" [--new] [--no-stream]
 ```
 
 **Parameters:**
-- `name`: Agent name (optional, defaults to 'peko')
-- `--message` / `-M`: Message text (required)
+- `name`: Agent name or team/agent format (required)
+- `message`: Message text (optional if --file or --stdin is used)
 - `--new`: Start a new session (don't resume existing)
+- `--no-stream`: Wait for full response before output
+- `--file`: Read message from file
+- `--stdin`: Read message from stdin
 
 **Example:**
 ```bash
-pekobot agent start myagent --message "What's the capital of France?"
+pekobot send myagent "What's the capital of France?"
 ```
 
-**Note:** The CLI only supports non-interactive single message mode. Interactive TUI is available via the API or external tools.
+**Note:** The CLI is a thin client per ADR-021. All execution happens in the daemon. The `send` command forwards to the daemon via IPC.
 
 ### 7. Delete Agent
 
 Remove an agent configuration:
 
 ```bash
-pekobot agent delete <name> [--purge] [--force]
+pekobot agent remove <name> [--purge] [--force]
 ```
 
 **Parameters:**
@@ -174,13 +177,13 @@ pekobot agent list
 pekobot agent show myassistant
 
 # 5. Send first message
-pekobot agent start myassistant --message "Hello! What's your name?"
+pekobot send myassistant "Hello! What's your name?"
 
 # 6. Continue conversation (resumes session)
-pekobot agent start myassistant --message "What can you help me with?"
+pekobot send myassistant "What can you help me with?"
 
 # 7. Start fresh session
-pekobot agent start myassistant --new --message "Starting a new topic..."
+pekobot send myassistant --new "Starting a new topic..."
 ```
 
 ### Multi-Agent Setup
@@ -195,8 +198,8 @@ pekobot agent create coder --provider kimi
 pekobot agent list
 
 # Use specific agent for task
-echo "Research quantum computing" | pekobot agent start researcher
-echo "Write a blog post about it" | pekobot agent start writer
+echo "Research quantum computing" | pekobot send researcher --stdin
+echo "Write a blog post about it" | pekobot send writer --stdin
 ```
 
 ## Configuration Files
@@ -237,7 +240,7 @@ Use `--force` to overwrite existing resources instead of interactive confirmatio
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Run from source directory | ✅ | `pekobot agent start --config <path>` |
+| Run from source directory | ✅ | `pekobot agent init ./my-agent --provider kimi` |
 | No build step | ✅ | Direct config loading |
 | Auto-create on start | ✅ | Default config if not exists |
 

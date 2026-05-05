@@ -1,6 +1,6 @@
 # Pekobot Migration Guide
 
-**Version:** 2.0  
+**Version:** 0.1.0  
 **Date:** 2026-04-11  
 **Status:** Current  
 
@@ -32,7 +32,7 @@ The migration from legacy extension systems to the Unified Extension Architectur
 
 ### Migration Process
 
-On first startup after updating to Pekobot 2.0:
+On first startup after updating to Pekobot 0.1.0:
 
 1. **Detection**: System scans legacy paths
 2. **Conversion**: Legacy items converted to extension format
@@ -40,11 +40,11 @@ On first startup after updating to Pekobot 2.0:
 4. **Persistence**: Migration state saved to `migration-state.json`
 
 ```
-2026-04-11T09:00:00Z [INFO] Starting legacy extension migration
-2026-04-11T09:00:01Z [INFO] Migrating skills: 5 found, 5 succeeded
-2026-04-11T09:00:02Z [INFO] Migrating tools: 3 found, 3 succeeded  
-2026-04-11T09:00:03Z [INFO] Migrating MCP servers: 2 found, 2 succeeded
-2026-04-11T09:00:04Z [INFO] Migration complete: 10/10 items migrated
+2026-05-05T09:00:00Z [INFO] Starting legacy extension migration
+2026-05-05T09:00:01Z [INFO] Migrating skills: 5 found, 5 succeeded
+2026-05-05T09:00:02Z [INFO] Migrating tools: 3 found, 3 succeeded  
+2026-05-05T09:00:03Z [INFO] Migrating MCP servers: 2 found, 2 succeeded
+2026-05-05T09:00:04Z [INFO] Migration complete: 10/10 items migrated
 ```
 
 ### Post-Migration Structure
@@ -81,11 +81,11 @@ rm ~/.pekobot/migration-state.json
 
 | Old Command | New Command | Status |
 |-------------|-------------|--------|
-| `pekobot skill list` | `pekobot ext list --type skill` | ⚠️ Deprecated |
-| `pekobot tool list` | `pekobot ext list --type tool` | ⚠️ Deprecated |
-| `pekobot mcp list` | `pekobot ext list --type mcp` | ⚠️ Deprecated |
+| `pekobot skill list` | `pekobot ext list` | ❌ Removed |
+| `pekobot tool list` | `pekobot ext list` | ❌ Removed |
+| `pekobot mcp list` | `pekobot ext list` | ❌ Removed |
 
-Old commands still work but show deprecation warnings.
+Old commands no longer exist. Use `pekobot ext` for all extension management.
 
 ### API Changes
 
@@ -140,7 +140,7 @@ If you have custom tools in your workspace:
     └── my_custom_tool.py
 ```
 
-**After (Extensions 2.0):**
+**After (Unified Extensions):**
 ```
 ./.pekobot/extensions/
 └── my_custom_tool/
@@ -287,7 +287,7 @@ pekobot ext debug my-extension
 
 ## Migration Checklist
 
-- [ ] Update to Pekobot 2.0
+- [ ] Update to latest Pekobot
 - [ ] Run `pekobot system doctor` to verify migration
 - [ ] Check `pekobot ext list` shows all expected extensions
 - [ ] Test agent execution
@@ -304,4 +304,4 @@ pekobot ext debug my-extension
 
 ---
 
-*Version 2.0 · Last Updated: 2026-04-11*
+*Version 0.1.0 · Last Updated: 2026-05-05*

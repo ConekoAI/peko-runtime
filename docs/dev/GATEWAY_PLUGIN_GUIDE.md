@@ -172,11 +172,12 @@ The output will be:
 ### 5. Install the Plugin
 
 ```bash
-# Copy to Pekobot's gateway directory
-cp target/release/libmy_gateway.so ~/.config/pekobot/gateways/my-gateway.gateway
+# Package as an extension
+cp target/release/libmy_gateway.so ./my-gateway-extension/
+cp manifest.yaml ./my-gateway-extension/
 
-# Or use the CLI
-pekobot gateway install ./target/release/libmy_gateway.so --name my-gateway
+# Install via extension system
+pekobot ext install ./my-gateway-extension
 ```
 
 ### 6. Configure and Enable
@@ -377,16 +378,18 @@ EOF
 # Build for all platforms
 ./scripts/build-all-platforms.sh
 
-# Sign with your key
-pekobot sign --key ~/.pekobot/signing.key my-gateway.gateway
+# Extensions are distributed as directories or bundles
+# No signing required for local use
 ```
 
-### 2. Submit to Registry
+### 2. Share Your Extension
 
 ```bash
-pekobot gateway publish \
-  --manifest manifest.toml \
-  --binary ./my-gateway.gateway
+# Bundle the extension
+pekobot ext bundle --name my-gateway-bundle my-gateway-extension
+
+# The bundle can be shared and installed by others
+pekobot ext install ./my-gateway-bundle.tar.gz
 ```
 
 ## Troubleshooting
@@ -401,12 +404,12 @@ ldd my-gateway.gateway
 nm -D my-gateway.gateway | grep gateway_factory
 
 # Enable debug logging
-RUST_LOG=debug pekobot gateway list
+RUST_LOG=debug pekobot ext list --type gateway
 ```
 
 ### Connection Issues
 
-- Verify config values: `pekobot config get gateway.my-bot`
+- Verify config values in the extension config: `pekobot ext config my-gateway --show`
 - Check network connectivity
 - Review platform API documentation
 - Enable tracing: `RUST_LOG=gateway_interface=trace`

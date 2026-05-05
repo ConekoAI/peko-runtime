@@ -1,6 +1,6 @@
 # Public API Surface Documentation
 
-> **Version:** 2.0 (Post-ADR-017)  
+> **Version:** 0.1.0 (Post-ADR-017)  
 > **Last Updated:** 2026-04-11  
 
 This document defines the public API surface for Pekobot, including the new Unified Extension Architecture (ADR-017) APIs.
@@ -21,7 +21,7 @@ This document defines the public API surface for Pekobot, including the new Unif
 
 ## Module: `extensions`
 
-**Status:** ACTIVE (New in 2.0)  
+**Status:** ACTIVE (New in 0.1.0)  
 **ADR:** ADR-017: Unified Extension Architecture
 
 The extensions module provides a unified system for all agent capabilities (tools, skills, MCP servers, channels, gateways) through 22 hook points.
@@ -242,7 +242,7 @@ impl StatelessAgentManager {
 }
 ```
 
-#### `agent::manager` (REMOVED in 2.0)
+#### `agent::manager` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
 **Replaced by:** `StatelessAgentManager`
@@ -278,7 +278,7 @@ impl KimiProvider {
 }
 ```
 
-#### `providers::kimi_code` (REMOVED in 2.0)
+#### `providers::kimi_code` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
 **Replaced by:** `AnthropicProvider` or `KimiProvider`
@@ -326,17 +326,17 @@ impl AgentConfigService {
 }
 ```
 
-#### `common::services::agent_creation_service` (REMOVED in 2.0)
+#### `common::services::agent_creation_service` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
 **Replaced by:** `AgentService::create_agent()`
 
-#### `common::services::agent_config_builder` (REMOVED in 2.0)
+#### `common::services::agent_config_builder` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
 **Replaced by:** `AgentService` methods directly
 
-#### `common::services::message_service` (REMOVED in 2.0)
+#### `common::services::message_service` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED in ADR-016  
 **Replaced by:** `StatelessAgentService`
@@ -349,7 +349,7 @@ impl AgentConfigService {
 
 #### `tools::factory::ToolFactory`
 
-**Status:** Simplified in 2.0
+**Status:** Simplified in 0.1.0
 
 ```rust
 impl ToolFactory {
@@ -374,7 +374,7 @@ impl ToolFactoryConfig {
 
 #### `session::context::ExecutionContext`
 
-**Status:** ACTIVE (Renamed from SessionContext in 2.0)
+**Status:** ACTIVE (Renamed from SessionContext in 0.1.0)
 
 ```rust
 pub struct ExecutionContext {
@@ -386,7 +386,7 @@ pub struct ExecutionContext {
 
 #### `session::key::SessionKeyContext`
 
-**Status:** ACTIVE (Renamed from SessionContext in 2.0)
+**Status:** ACTIVE (Renamed from SessionContext in 0.1.0)
 
 ```rust
 pub struct SessionKeyContext {
@@ -397,7 +397,7 @@ pub struct SessionKeyContext {
 }
 ```
 
-#### `agent::context::AgentContext` (REMOVED in 2.0)
+#### `agent::context::AgentContext` (REMOVED in 0.1.0)
 
 **Status:** ❌ REMOVED  
 **Replaced by:** `ExecutionContext`
@@ -406,7 +406,7 @@ pub struct SessionKeyContext {
 
 ## Compatibility Notes
 
-### Breaking Changes (2.0)
+### Breaking Changes (0.1.0)
 
 | Component | Status | Replacement |
 |-----------|--------|-------------|
@@ -418,7 +418,7 @@ pub struct SessionKeyContext {
 | `AgentContext` | ❌ Removed | `ExecutionContext` |
 | `KimiCodeProvider` | ❌ Removed | `AnthropicProvider` or `KimiProvider` |
 
-### New APIs (2.0)
+### New APIs (0.1.0)
 
 | Component | Status | Purpose |
 |-----------|--------|---------|
@@ -486,4 +486,4 @@ The following operations must be tested:
 
 ---
 
-*Version 2.0 · Post-ADR-017 · 2026-04-11*
+*Version 0.1.0 · Post-ADR-017 · 2026-04-11*

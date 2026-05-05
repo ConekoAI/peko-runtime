@@ -142,7 +142,7 @@ build_cache = "~/.cache/pekobot/tool-builds"
 git clone https://github.com/coneko/pekohub-tools ~/src/pekohub-tools
 
 # First use triggers build
-pekobot agent use-tool my_agent social_media
+pekobot send myagent "Use the social_media tool to post an update"
 # → Building social_media from source...
 # → Compiling...
 # → Tool ready!
@@ -171,7 +171,7 @@ package = "my_agent.agent"
 # Tools extracted from package on import
 ```
 
-**No configuration needed** — handled automatically during `pekobot import`.
+**No configuration needed** — handled automatically during agent creation.
 
 ---
 
@@ -242,8 +242,8 @@ allow_source_builds = false  # Faster builds
 
 ### Method 1: Download from Registry (Default)
 ```bash
-# Automatically downloaded on first use
-pekobot agent use-tool my_agent social_media
+# Tools are used via agent conversation or ext commands
+pekobot send myagent "Use the social_media tool to post an update"
 ```
 
 ### Method 2: Manual Install to Local Registry
@@ -257,8 +257,10 @@ mkdir -p ~/.local/share/pekobot/tools/social_media/1.0.0
 cp social_media-linux-x64 ~/.local/share/pekobot/tools/social_media/1.0.0/
 
 # Update config to use local registry
-pekobot config set tools.registry.type local
-pekobot config set tools.registry.path ~/.local/share/pekobot/tools
+# (Edit ~/.config/pekobot/config.toml directly — config set is a placeholder)
+# [tools.registry]
+# type = "local"
+# path = "~/.local/share/pekobot/tools"
 ```
 
 ### Method 3: Build from Source
@@ -315,14 +317,14 @@ allowed_tools = ["calendar", "email"]
 
 ### "Tool not found in any registry"
 ```bash
-# Check registry connectivity
-pekobot registry ping
+# Check extension status
+pekobot ext info my-extension
 
-# List available tools
-pekobot registry list
+# List available extensions
+pekobot ext list
 
-# Try specific registry
-pekobot registry list --registry https://tools.coneko.ai
+# Validate extension manifest
+pekobot ext validate ./my-extension
 ```
 
 ### "Build failed" (Source mode)
@@ -337,11 +339,12 @@ ls ~/.local/share/pekobot/tool-sources/social_media
 
 ### Cache issues
 ```bash
-# Clear tool cache
-rm -rf ~/.cache/pekobot/tools
+# Clear extension cache
+rm -rf ~/.cache/pekobot/extensions
 
-# Force re-download
-pekobot tool install social_media --force
+# Re-install extension
+pekobot ext uninstall social_media
+pekobot ext install ./social_media
 ```
 
 ---
@@ -351,8 +354,10 @@ pekobot tool install social_media --force
 ### From Bundled to Pekohub
 ```bash
 # 1. Update config to use Pekohub
-pekobot config set tools.registry.type pekohub
-pekobot config set tools.registry.url https://tools.coneko.ai
+# (Edit ~/.config/pekobot/config.toml directly)
+# [tools.registry]
+# type = "pekohub"
+# url = "https://tools.coneko.ai"
 
 # 2. Remove bundled tools (optional)
 # Edit Cargo.toml, remove tool dependencies
@@ -371,7 +376,10 @@ curl https://tools.coneko.ai/api/v1/tools/social_media/1.0.0/binary \
 # Upload to your instance...
 
 # 3. Update config
-pekobot config set tools.registry.url https://your-domain.com
+# (Edit ~/.config/pekobot/config.toml directly)
+# [tools.registry]
+# type = "pekohub"
+# url = "https://your-domain.com"
 ```
 
 ### From Online to Offline
@@ -386,8 +394,10 @@ mkdir -p /opt/pekobot/tools
 # Copy binaries...
 
 # 3. Switch to offline mode
-pekobot config set tools.registry.type local
-pekobot config set tools.registry.path /opt/pekobot/tools
+# (Edit ~/.config/pekobot/config.toml directly)
+# [tools.registry]
+# type = "local"
+# path = "/opt/pekobot/tools"
 ```
 
 ---

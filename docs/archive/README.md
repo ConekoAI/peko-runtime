@@ -28,6 +28,11 @@ This folder contains obsolete, completed, or superseded planning documents kept 
 | PORTABLE_AGENT_PLAN.md | Completed | 2026-02 |
 | SECRET_MANAGER_PLAN.md | Completed | 2026-02 |
 | SKILLS_MIGRATION_PLAN.md | Completed | 2026-02 |
+| API_CONTRACT.md | Superseded | 2026-05 | Daemon uses IPC, not HTTP REST API |
+| api-examples.md | Superseded | 2026-05 | Based on fictional HTTP API |
+| agent-invoke-tool.md | Archived | 2026-05 | Internal implementation detail |
+| cli-agent-workflow.md | Superseded | 2026-05 | Replaced by CLI_REFERENCE.md |
+| cli-agent-workflow-verification.md | Archived | 2026-05 | Historical verification report |
 
 ## Note
 

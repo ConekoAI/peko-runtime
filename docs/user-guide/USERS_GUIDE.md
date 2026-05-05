@@ -9,9 +9,9 @@ Welcome to the Pekobot User Guide! This guide will help you understand and use P
 3. [Core Concepts](#core-concepts)
 4. [Running Your First Agent](#running-your-first-agent)
 5. [Configuration](#configuration)
-6. [Working with Memory](#working-with-memory)
-7. [Multi-Agent Orchestration](#multi-agent-orchestration)
-8. [Coneko Network Integration](#coneko-network-integration)
+6. [Working with Sessions](#working-with-sessions)
+7. [Multi-Agent Teams](#multi-agent-teams)
+8. [Extensions](#extensions)
 9. [Troubleshooting](#troubleshooting)
 
 ---
@@ -21,21 +21,23 @@ Welcome to the Pekobot User Guide! This guide will help you understand and use P
 Pekobot 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to:
 
 - Run autonomous AI agents locally
-- Connect agents to LLM providers (OpenAI, etc.)
-- Enable persistent memory for your agents
+- Connect agents to LLM providers (OpenAI, Anthropic, Kimi, Ollama, etc.)
+- Organize agents into teams
+- Manage persistent sessions
 - Orchestrate multiple agents working together
-- Optionally connect to the Coneko network for cross-network agent discovery
+- Schedule tasks with cron jobs
 
 ### Key Features
 
 | Feature | Description |
 |---------|-------------|
-| **Lightweight** | ~5-8MB binary, starts in <50ms |
+| **Lightweight** | Small binary, starts quickly |
 | **Standalone** | Works without external services |
-| **Multi-Agent** | Coordinate multiple agents with A2A protocol |
-| **Persistent Memory** | SQLite-backed memory with search |
+| **Multi-Agent** | Coordinate multiple agents in teams |
+| **Persistent Sessions** | JSONL-based session storage |
 | **DID Identity** | ed25519-based decentralized identifiers |
-| **Optional Network** | Connect to Coneko when needed |
+| **Extensions** | Unified Extension Architecture for skills, MCP, tools, channels, hooks |
+| **Cron Scheduling** | Schedule recurring and one-time tasks |
 
 ---
 
@@ -44,7 +46,7 @@ Pekobot 🐱 is a lightweight multi-agent runtime written in Rust. It allows you
 ### Prerequisites
 
 - Rust 1.70+ (install from [rustup.rs](https://rustup.rs))
-- OpenAI API key (for LLM capabilities)
+- API key for at least one LLM provider
 
 ### Building from Source
 
@@ -64,7 +66,6 @@ cargo build --release
 
 ```bash
 ./target/release/pekobot --version
-# Output: pekobot 0.1.0
 
 ./target/release/pekobot --help
 ```
@@ -78,10 +79,9 @@ cargo build --release
 An agent is the fundamental unit in Pekobot. It has:
 
 - **Identity** — A unique DID (decentralized identifier)
-- **State** — Current status (Initializing, Idle, Busy, etc.)
-- **Memory** — SQLite database for persistence
-- **Provider** — LLM integration (OpenAI, etc.)
-- **Capabilities** — What the agent can do
+- **Configuration** — Agent settings including provider, model, etc.
+- **Sessions** — Conversation history stored as JSONL
+- **Extensions** — Enabled capabilities (tools, skills, MCP, etc.)
 
 ### DID (Decentralized Identifier)
 
@@ -94,129 +94,80 @@ did:pekobot:local:default:abc123def456
 Format: `did:pekobot:{scope}:{tenant}:{identifier}`
 
 - **Scope**: `local`, `tenant`, or `global`
-- **Tenant**: Organization or namespace
+- **Tenant**: Organization or namespace (team)
 - **Identifier**: Unique hash-based ID
 
-### Agent State
+### Team
 
-Agents transition through states:
+Teams group related agents together. Agents are referenced as `team/agent` or just `agent` (uses default team).
 
-```
-Initializing → Idle ↔ Busy → ShuttingDown
-     ↓           ↓      ↓
-   Error      Paused
-```
+### Session
 
-| State | Description |
-|-------|-------------|
-| `Initializing` | Starting up |
-| `Idle` | Ready to receive tasks |
-| `Busy` | Processing a task |
-| `Paused` | Temporarily stopped |
-| `Error` | Encountered an error |
-| `ShuttingDown` | Cleaning up |
+Sessions store conversation history as JSONL files. They support branching, switching, and compaction.
 
 ---
 
 ## Running Your First Agent
 
-### Basic Agent
+### 1. Set Your API Key
 
 ```bash
-# Set your OpenAI API key
+# For OpenAI
 export OPENAI_API_KEY="sk-..."
 
-# Run a basic agent
-./target/release/pekobot agent --name my-agent
+# For Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# For Kimi
+export KIMI_API_KEY="your-kimi-key"
 ```
 
-You'll see output like:
-
-```
-🐱 Agent 'my-agent' started successfully!
-   DID: did:pekobot:local:default:a1b2c3d4...
-   State: Idle
-   Coneko: ⚪ Disabled (use --coneko to enable)
-
-╔════════════════════════════════════════╗
-║     🐱 Pekobot Agent Interface         ║
-╚════════════════════════════════════════╝
-   Channel: my-agent
-
-⚡ Agent 'my-agent' is ready! Type 'exit' or 'quit' to stop.
-
-💬 You:
-```
-
-### Try Commands
-
-```
-💬 You: hello
-🐱 Agent: Received: 'hello' (agent processing not yet implemented)
-
-💬 You: help
-🐱 Agent: Available commands:
-  help - Show this message
-  exit/quit/bye - Stop the agent
-
-💬 You: exit
-⚡ Goodbye! 👋
-```
-
-### With Memory Enabled
+### 2. Create an Agent
 
 ```bash
-./target/release/pekobot agent --name memory-agent --db ~/.local/share/pekobot/memory.db
+# Create a new agent
+./target/release/pekobot agent create my-agent --provider minimax
+
+# Or initialize an agent directory
+./target/release/pekobot agent init ./my-agent --provider minimax
 ```
 
-### With Coneko Network
+### 3. Send a Message
 
 ```bash
-./target/release/pekobot agent \
-  --name networked-agent \
-  --coneko http://localhost:8080 \
-  --coneko-token your-token
+# Send a message to the agent
+./target/release/pekobot send my-agent "Hello, what can you do?"
+```
+
+You'll see the agent's response streamed to your terminal.
+
+### 4. Start a New Session
+
+```bash
+# Start a fresh conversation
+./target/release/pekobot send my-agent "Let's start fresh" --new
 ```
 
 ---
 
 ## Configuration
 
-### Using a Config File
+### Agent Configuration
 
-Create `pekobot.toml`:
+Agents are configured via `config.toml` in the agent directory (when using `agent init`) or stored in the config directory (when using `agent create`).
+
+Example `config.toml`:
 
 ```toml
 [agent]
 name = "my-agent"
 description = "A helpful assistant"
-capabilities = ["messaging", "task_execution"]
-
-[agent.memory]
-enabled = true
-database_path = "~/.local/share/pekobot/memory.db"
-max_entries = 10000
 
 [agent.provider]
 type = "openai"
-api_key = "${OPENAI_API_KEY}"
 model = "gpt-4o-mini"
 temperature = 0.7
 max_tokens = 2048
-timeout_seconds = 30
-
-[coneko]
-enabled = true
-endpoint = "http://localhost:8080"
-auth_token = "${CONEKO_TOKEN}"
-auto_register = true
-poll_interval_seconds = 30
-```
-
-Run with config:
-
-```bash
-./target/release/pekobot agent --config pekobot.toml
 ```
 
 ### Environment Variables
@@ -224,9 +175,11 @@ Run with config:
 | Variable | Description |
 |----------|-------------|
 | `OPENAI_API_KEY` | Your OpenAI API key |
-| `CONEKO_ENDPOINT` | Coneko server URL |
-| `CONEKO_TOKEN` | Coneko authentication token |
-| `AGENT_ENDPOINT` | Your agent's public endpoint |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key |
+| `KIMI_API_KEY` | Your Kimi API key |
+| `RUST_LOG` | Logging level (debug, info, warn, error) |
+| `PEKOBOT_CONFIG_DIR` | Configuration directory override |
+| `PEKOBOT_DATA_DIR` | Data directory override |
 
 ### Configuration Priority
 
@@ -237,195 +190,129 @@ Run with config:
 
 ---
 
-## Working with Memory
+## Working with Sessions
 
-### How Memory Works
+### List Sessions
 
-Pekobot uses SQLite for persistent memory:
-
-- Stores all prompts and responses
-- Full-text search capability
-- Organized by agent DID (namespace)
-- Metadata support for filtering
-
-### Memory Operations
-
-**Store Memory:**
-```rust
-agent.store_memory("Important information", None)?;
+```bash
+pekobot session list my-agent
 ```
 
-**Search Memory:**
-```rust
-let results = agent.search_memory("query", 10)?;
-for entry in results {
-    println!("{}", entry.content);
-}
+### Show Session History
+
+```bash
+pekobot session show my-agent sess_xxx
 ```
 
-### Memory Schema
+### Branch a Session
 
-Each memory entry contains:
-
-| Field | Description |
-|-------|-------------|
-| `id` | Unique identifier |
-| `content` | The stored text |
-| `timestamp` | When it was stored |
-| `metadata` | Optional JSON metadata |
-
----
-
-## Multi-Agent Orchestration
-
-### Creating Multiple Agents
-
-```rust
-use pekobot::{Agent, Config, agent::Orchestrator, a2a::registry::create_registry};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Create registry and orchestrator
-    let (registry, _receiver) = create_registry();
-    let mut orchestrator = Orchestrator::with_registry(registry);
-
-    // Create agents
-    let planner = Agent::new(
-        Config::agent("planner")
-            .with_capabilities(vec!["planning".to_string()])
-            .build()
-    ).await?;
-
-    let executor = Agent::new(
-        Config::agent("executor")
-            .with_capabilities(vec!["execution".to_string()])
-            .build()
-    ).await?;
-
-    // Add to orchestrator
-    orchestrator.add_agent(planner).await?;
-    orchestrator.add_agent(executor).await?;
-
-    // Start all
-    orchestrator.start_all().await?;
-
-    // List agents
-    for (did, name) in orchestrator.list_agents().await {
-        println!("{}: {}", name, did);
-    }
-
-    // Stop all
-    orchestrator.stop_all().await?;
-    Ok(())
-}
+```bash
+pekobot session branch my-agent sess_xxx
 ```
 
-### Finding Agents
+### Switch Active Session
 
-```rust
-// By name
-if let Some(agent) = orchestrator.find_by_name("planner").await {
-    // Use agent...
-}
+```bash
+pekobot session switch my-agent sess_xxx
+```
 
-// By DID
-if let Some(agent) = orchestrator.find_by_did("did:pekobot:...").await {
-    // Use agent...
-}
+### Compact a Session
+
+Compaction summarizes old messages to reduce context window usage:
+
+```bash
+pekobot session compact my-agent sess_xxx
 ```
 
 ---
 
-## Coneko Network Integration
+## Multi-Agent Teams
 
-### What is Coneko?
-
-Coneko is an optional network layer that enables:
-
-- Cross-network agent discovery
-- Agent-to-agent messaging across networks
-- Capability-based search
-- Federated agent registries
-
-### Checking Coneko Status
+### Create a Team
 
 ```bash
-./target/release/pekobot coneko status --endpoint http://localhost:8080
+pekobot team create myteam
 ```
 
-### Registering an Agent
+### Create Agents in a Team
 
 ```bash
-./target/release/pekobot coneko register \
-  --endpoint http://localhost:8080 \
-  --did did:pekobot:local:default:abc123 \
-  --name my-agent \
-  --agent-endpoint http://my-server:3000 \
-  --capabilities messaging,task_execution
+pekobot agent create myteam/planner --provider minimax
+pekobot agent create myteam/executor --provider minimax
 ```
 
-### Discovering Agents
+### Send Messages to Team Agents
 
 ```bash
-# All agents
-./target/release/pekobot coneko discover --endpoint http://localhost:8080
-
-# By capability
-./target/release/pekobot coneko discover \
-  --endpoint http://localhost:8080 \
-  --_capability messaging
+pekobot send myteam/planner "Plan a project"
+pekobot send myteam/executor "Execute step 1"
 ```
 
-### Unregistering
+---
+
+## Extensions
+
+Extensions provide additional capabilities to agents through the Unified Extension Architecture.
+
+### List Extensions
 
 ```bash
-./target/release/pekobot coneko unregister \
-  --endpoint http://localhost:8080 \
-  --did did:pekobot:local:default:abc123
+pekobot ext list
+```
+
+### Install an Extension
+
+```bash
+pekobot ext install <path-or-url>
+```
+
+### Enable/Disable Capabilities
+
+```bash
+pekobot ext enable <capability>
+pekobot ext disable <capability>
+```
+
+### MCP Servers
+
+MCP (Model Context Protocol) servers are managed as extensions:
+
+```bash
+# MCP servers are installed and managed via the ext command
+pekobot ext install <mcp-extension>
+pekobot ext enable <mcp-extension>
 ```
 
 ---
 
 ## Troubleshooting
 
-### Agent Won't Start
+### Agent Won't Respond
 
-**Problem:** Agent fails to start with error about identity.
+**Problem:** Agent fails to respond to messages.
 
-**Solution:** Check write permissions for the data directory:
+**Solution:**
+- Check the agent exists: `pekobot agent list`
+- Verify your API key is set: `echo $OPENAI_API_KEY`
+- Check the agent configuration: `pekobot agent show my-agent`
 
-```bash
-ls -la ~/.local/share/pekobot/
-# or on macOS
-ls -la ~/Library/Application\ Support/pekobot/
-```
-
-### OpenAI API Errors
+### API Key Errors
 
 **Problem:** "Failed to create provider" or API errors.
 
 **Solution:**
-- Verify `OPENAI_API_KEY` is set: `echo $OPENAI_API_KEY`
-- Check API key has sufficient credits
-- Verify network connectivity to api.openai.com
+- Verify the API key is set: `echo $OPENAI_API_KEY`
+- Check the key has sufficient credits
+- Verify network connectivity to the provider
 
-### Coneko Connection Fails
+### Session Issues
 
-**Problem:** "Failed to connect" when using Coneko commands.
-
-**Solution:**
-- Verify Coneko server is running: `curl http://localhost:8080/health`
-- Check firewall settings
-- Verify `CONEKO_TOKEN` is correct
-
-### Memory Database Locked
-
-**Problem:** SQLite "database is locked" error.
+**Problem:** Session not found or corrupted.
 
 **Solution:**
-- Only one agent can use a database at a time
-- Use different database paths for different agents
-- Check for zombie processes: `ps aux | grep pekobot`
+- List available sessions: `pekobot session list my-agent`
+- Start a new session: `pekobot send my-agent "Hello" --new`
+- Compact old sessions: `pekobot session compact my-agent sess_xxx`
 
 ### Getting Help
 
@@ -435,18 +322,18 @@ ls -la ~/Library/Application\ Support/pekobot/
 
 # Show command-specific help
 ./target/release/pekobot agent --help
-./target/release/pekobot coneko --help
+./target/release/pekobot send --help
+./target/release/pekobot ext --help
 ```
 
 ---
 
 ## Next Steps
 
-- Read the [API Documentation](API.md) for programmatic usage
-- Try the [examples](../examples/) to see Pekobot in action
-- Read the [Architecture Guide](ARCHITECTURE.md) to understand internals
-- Build your own agent following the [Tutorial](TUTORIAL_BUILDING_FIRST_AGENT.md)
+- Read the [CLI Reference](CLI_REFERENCE.md) for all commands
+- Read the [Architecture Guide](../dev/ARCHITECTURE.md) to understand internals
+- Read the [Tutorial: Building Your First Agent](../getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md)
 
 ---
 
-*Built with 🐰 by the Coneko team*
+*Built with 🐱 by the Pekobot team*

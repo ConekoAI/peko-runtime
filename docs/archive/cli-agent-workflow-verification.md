@@ -31,14 +31,14 @@ The CLI agent workflow has been verified and is functional. Users can create age
 - **Status:** Working
 - **Purpose:** Display agent configuration details
 
-### ✅ `pekobot agent start <name> --message "..."`
+### ✅ `pekobot send <name> "..."`
 - **Status:** Working
 - **Purpose:** Send single message and get response (non-interactive only)
-- **Example:** `pekobot agent start myagent --message "Hello!"`
+- **Example:** `pekobot send myagent "Hello!"`
 - **Output:** Assistant response printed to stdout
-- **Note:** Interactive TUI has been removed. Use API for interactive features.
+- **Note:** The CLI is a thin client per ADR-021. All execution happens in the daemon via IPC.
 
-### ✅ `pekobot agent delete <name> --force`
+### ✅ `pekobot agent remove <name> --force`
 - **Status:** Working
 - **Purpose:** Remove agent configuration
 
@@ -58,18 +58,18 @@ pekobot agent list
 pekobot agent show myagent
 
 # 5. Send message
-pekobot agent start myagent --message "What's the capital of France?"
+pekobot send myagent "What's the capital of France?"
 # Output: Paris is the capital of France.
 
 # 6. Continue conversation (resumes session)
-pekobot agent start myagent --message "What about Germany?"
+pekobot send myagent "What about Germany?"
 # Output: Berlin is the capital of Germany.
 
 # 7. Start fresh session
-pekobot agent start myagent --new --message "Starting fresh..."
+pekobot send myagent --new "Starting fresh..."
 
 # 8. Cleanup (non-interactive, use --force to skip confirmation)
-pekobot agent delete myagent --force
+pekobot agent remove myagent --force
 ```
 
 ## Session File Verification
@@ -116,9 +116,8 @@ Default team is `default` when no team is specified.
 | `agent create` | ⚠️ | Command exists, config format issues |
 | `agent list` | ✅ | Working |
 | `agent show` | ✅ | Working |
-| `agent start --message` | ✅ | Working (non-interactive only) |
-| `agent start` (interactive) | ❌ Removed | Use API for interactive features |
-| `agent delete` | ✅ | Working |
+| `send` | ✅ | Working (primary interaction method) |
+| `agent remove` | ✅ | Working |
 | `auth set` | ✅ | Working |
 | Direct source execution | ✅ | No build step required |
 | Session persistence | ✅ | JSONL files created |
@@ -126,7 +125,7 @@ Default team is `default` when no team is specified.
 ### REQ-AI-001: Direct Source Execution
 | Criterion | Status | Notes |
 |-----------|--------|-------|
-| Run from source | ✅ | `pekobot agent start --config <path>` |
+| Run from source | ✅ | `pekobot agent init ./my-agent --provider kimi` |
 | No build step | ✅ | Direct config loading |
 | Config only required | ✅ | Minimal config works |
 

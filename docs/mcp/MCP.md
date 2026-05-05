@@ -9,221 +9,112 @@ MCP is an open protocol that standardizes how applications provide context to LL
 - Connect to MCP servers via stdio (local) or SSE (remote)
 - Discover and invoke tools from MCP servers
 - Use MCP resources and prompts
-- Manage multiple MCP servers with lifecycle and health monitoring
+- Manage multiple MCP servers through the Unified Extension Architecture
 
 ## Quick Start
 
 ### 1. Install an MCP Server
 
-For example, install the filesystem MCP server:
+MCP servers are managed as extensions. For example, to use an MCP filesystem server:
 
 ```bash
-npm install -g @anthropic/mcp-filesystem-server
+# Install the MCP server as an extension
+pekobot ext install <mcp-extension-path-or-url>
 ```
 
-### 2. Configure the Server
-
-Add the server to Pekobot's MCP configuration:
+### 2. Start the MCP Server
 
 ```bash
-pekobot mcp add filesystem stdio --command mcp-filesystem-server --args /home/user/docs
+# Start the MCP server runtime
+pekobot ext start <mcp-extension-name>
 ```
 
-### 3. List Available Tools
+### 3. Verify It's Working
 
 ```bash
-pekobot mcp tools
+# Check extension status
+pekobot ext status <mcp-extension-name>
+
+# List installed extensions
+pekobot ext list
 ```
 
-### 4. Test the Connection
+## Managing MCP via Extensions
+
+Pekobot manages MCP servers through the Unified Extension Architecture (`pekobot ext`):
+
+### Install an MCP Extension
 
 ```bash
-pekobot mcp test filesystem
+pekobot ext install <path-or-url>
 ```
 
-## CLI Commands
-
-### `pekobot mcp list`
-
-List configured MCP servers.
+### List Extensions
 
 ```bash
-pekobot mcp list              # Simple list
-pekobot mcp list --long       # Detailed information
+pekobot ext list
 ```
 
-### `pekobot mcp show <name>`
-
-Show detailed information about a specific server.
+### Enable/Disable Capabilities
 
 ```bash
-pekobot mcp show filesystem
+pekobot ext enable <capability>
+pekobot ext disable <capability>
 ```
 
-### `pekobot mcp add`
-
-Add a new MCP server.
-
-**Stdio transport:**
-```bash
-pekobot mcp add browser stdio \
-  --command mcp-browser-server \
-  --args --headless \
-  --env LOG_LEVEL=debug
-```
-
-**SSE transport:**
-```bash
-pekobot mcp add remote-tools sse \
-  --endpoint https://tools.example.com/mcp
-```
-
-Options:
-- `--command`: Command to execute (stdio only)
-- `--args`: Arguments for the command (can be repeated)
-- `--endpoint`: Endpoint URL (SSE only)
-- `--env`: Environment variables (KEY=VALUE, can be repeated)
-- `--cwd`: Working directory
-- `--no-auto-start`: Don't start automatically
-
-### `pekobot mcp remove <name>`
-
-Remove an MCP server configuration.
+### Start/Stop MCP Runtimes
 
 ```bash
-pekobot mcp remove filesystem
-pekobot mcp remove filesystem --force
+# Start a background runtime for the extension
+pekobot ext start <mcp-extension-name>
+
+# Stop the runtime
+pekobot ext stop <mcp-extension-name>
+
+# Restart the runtime
+pekobot ext restart <mcp-extension-name>
+
+# Check runtime status
+pekobot ext status <mcp-extension-name>
 ```
 
-### `pekobot mcp start|stop|restart <name>`
-
-Control server lifecycle (runtime management).
+### Show Extension Info
 
 ```bash
-pekobot mcp start filesystem
-pekobot mcp stop filesystem
-pekobot mcp restart filesystem
+pekobot ext info <mcp-extension-name>
 ```
 
-### `pekobot mcp test <name>`
-
-Test connection to an MCP server.
+### Debug an Extension
 
 ```bash
-pekobot mcp test filesystem
+pekobot ext debug <mcp-extension-name>
 ```
 
-### `pekobot mcp tools`
+## Configuration
 
-List available tools from MCP servers.
+Extension settings can be configured at global, team, or agent level:
 
 ```bash
-pekobot mcp tools              # All servers
-pekobot mcp tools --server filesystem  # Specific server
+# Configure extension settings
+pekobot ext config <mcp-extension-name>
 ```
-
-### `pekobot mcp config`
-
-View or edit MCP configuration.
-
-```bash
-pekobot mcp config             # View configuration
-pekobot mcp config --edit      # Open in editor
-```
-
-## Configuration File
-
-MCP servers are configured in `~/.pekobot/mcp.toml`:
-
-```toml
-[[server]]
-name = "filesystem"
-transport = "stdio"
-command = "mcp-filesystem-server"
-args = ["/home/user/documents"]
-auto_start = true
-
-[[server]]
-name = "browser"
-transport = "stdio"
-command = "mcp-browser-server"
-args = ["--headless"]
-env = { "BROWSER_TIMEOUT" = "30" }
-
-[[server]]
-name = "remote-tools"
-transport = "sse"
-endpoint = "https://tools.example.com/mcp"
-auto_start = false
-```
-
-### Configuration Options
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `name` | string | Unique server identifier |
-| `transport` | "stdio" or "sse" | Connection method |
-| `command` | string | Command to execute (stdio) |
-| `args` | array | Arguments for command |
-| `env` | table | Environment variables |
-| `cwd` | string | Working directory |
-| `endpoint` | string | URL endpoint (SSE) |
-| `auto_start` | boolean | Start automatically |
-| `health_check_interval_secs` | integer | Health check frequency |
-| `max_restarts` | integer | Max restart attempts |
-| `init_timeout_secs` | integer | Initialization timeout |
-| `tool_timeout_secs` | integer | Tool execution timeout |
 
 ## Using MCP Tools with Agents
 
-MCP tools are automatically available to agents. When you add MCP servers, their tools are discovered and merged with built-in tools.
+MCP tools are automatically available to agents when the MCP extension is enabled. When MCP servers are running, their tools are discovered and merged with built-in tools.
 
 ### Example Agent Configuration
 
 ```toml
-# ~/.pekobot/agents/coding-agent.toml
+# ~/.pekobot/agents/coding-agent/config.toml
 [agent]
 name = "coding-agent"
-capabilities = ["filesystem", "mcp"]
-
-# MCP servers are loaded from ~/.pekobot/mcp.toml
 ```
 
-### Programmatic Usage
+Enable the MCP extension for the agent:
 
-```rust
-use pekobot::mcp::{McpConfig, McpManager, McpServerConfig};
-use std::sync::Arc;
-use tokio::sync::RwLock;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Load MCP configuration
-    let mut config = McpConfig::new();
-    config.add_server(McpServerConfig::stdio(
-        "filesystem",
-        "mcp-filesystem-server",
-        vec!["/home/user/docs".to_string()],
-    ));
-
-    // Create and initialize manager
-    let manager = Arc::new(RwLock::new(McpManager::new(config)));
-    manager.read().await.init().await?;
-
-    // Get built-in tools
-    let config = pekobot::tools::ToolFactoryConfig::full(".".into());
-    let mut tools = pekobot::tools::ToolFactory::create_tools(&config);
-
-    // Add MCP tools
-    let mcp_tools = manager.read().await.get_tools().await;
-    tools.extend(mcp_tools);
-
-    // Use tools with agent...
-
-    // Shutdown
-    manager.read().await.shutdown().await?;
-    Ok(())
-}
+```bash
+pekobot ext enable <mcp-capability>
 ```
 
 ## Available MCP Servers
@@ -242,19 +133,19 @@ See the [MCP Servers Repository](https://github.com/modelcontextprotocol/servers
 
 ### Server Won't Start
 
-1. Check that the command exists:
+1. Check that the extension is installed:
    ```bash
-   which mcp-filesystem-server
+   pekobot ext list
    ```
 
-2. Test manually:
+2. Check extension status:
    ```bash
-   mcp-filesystem-server /path/to/docs
+   pekobot ext status <mcp-extension-name>
    ```
 
-3. Check logs with verbose mode:
+3. Debug the extension:
    ```bash
-   pekobot -vv mcp test filesystem
+   pekobot ext debug <mcp-extension-name>
    ```
 
 ### Connection Issues
@@ -271,17 +162,20 @@ For stdio servers:
 
 ### Tool Discovery Fails
 
-1. Verify server is running:
+1. Verify the extension runtime is running:
    ```bash
-   pekobot mcp test <server-name>
+   pekobot ext status <mcp-extension-name>
    ```
 
-2. Check server capabilities:
+2. Check extension info:
    ```bash
-   pekobot mcp show <server-name>
+   pekobot ext info <mcp-extension-name>
    ```
 
-3. Review server logs for errors
+3. Review logs with verbose mode:
+   ```bash
+   pekobot -vv ext debug <mcp-extension-name>
+   ```
 
 ## Architecture
 
@@ -304,8 +198,8 @@ For stdio servers:
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                      MCP Manager                            │
-│         (lifecycle, health monitoring, routing)             │
+│                  Extension Architecture                       │
+│         (MCP adapter, lifecycle, health monitoring)           │
 └─────────────────────────────────────────────────────────────┘
                               │
         ┌─────────────────────┼─────────────────────┐

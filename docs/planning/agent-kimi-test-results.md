@@ -16,7 +16,7 @@ Successfully created and ran a Pekobot agent with Kimi API provider, generating 
 The agent was successfully started **without building an image first** using:
 
 ```bash
-pekobot agent start --config ~/.pekobot/agents/test_kimi_agent/config.toml --message "Hello!"
+pekobot send test_kimi_agent "Hello!"
 ```
 
 This confirms the specification requirement (REQ-AI-001):

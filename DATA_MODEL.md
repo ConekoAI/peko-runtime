@@ -1,6 +1,6 @@
 # Pekobot — Data Model Specification
 
-**Version:** 1.1
+**Version:** 0.1.0
 **Date:** 2026-04-26
 **Status:** Draft
 **Companion docs:** `UNIFIED_ARCHITECTURE_SPEC.md` v4.0, `API_CONTRACT.md` v1.0
@@ -1374,9 +1374,8 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0 | 2026-03-16 | Initial draft |
-| 1.1 | 2026-04-26 | ADR-022: Session compaction — added `compaction` and `model_change` system events (§5.3), context cache file format (§5.5), compaction semantics including dual-threshold triggers, turn boundaries, split-turn handling, and structured summary format (§5.6) |
+| 0.1.0 | 2026-04-26 | Initial draft. ADR-022: Session compaction — added `compaction` and `model_change` system events (§5.3), context cache file format (§5.5), compaction semantics including dual-threshold triggers, turn boundaries, split-turn handling, and structured summary format (§5.6) |
 
 ---
 
-*Version: 1.1 · Last Updated: 2026-04-26 · Status: Draft*
+*Version: 0.1.0 · Last Updated: 2026-04-26 · Status: Draft*

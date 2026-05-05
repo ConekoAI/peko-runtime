@@ -2,8 +2,8 @@
 
 Complete documentation for the Pekobot multi-agent runtime.
 
-**Current Version:** 2.0 (Post-ADR-017)  
-**Last Updated:** 2026-04-11  
+**Current Version:** 0.1.0  
+**Last Updated:** 2026-05-05
 
 ---
 
@@ -32,15 +32,30 @@ Technical architecture and design:
 
 - **[Architecture Overview](architecture/OVERVIEW.md)** - High-level system architecture
 - **[Extension System](architecture/EXTENSION_SYSTEM.md)** - Unified extension architecture
-- **[ADR Index](architecture/adr/)** - Architecture Decision Records
+- **[ADR Index](architecture/adr/)** - Architecture Decision Records (ADR-001 through ADR-026)
 - **[Implementation Notes](architecture/implementation/)** - Detailed implementation docs
+
+### 🔧 Developer Documentation
+
+Resources for contributors and extenders:
+
+- **[Contributor Guide](dev/CONTRIBUTOR_GUIDE.md)** - How to contribute
+- **[Architecture Deep Dive](dev/ARCHITECTURE.md)** - Internal architecture details
+- **[Gateway Plugin Guide](dev/GATEWAY_PLUGIN_GUIDE.md)** - Building gateway plugins
+- **[Registry Configuration](dev/REGISTRY_CONFIG.md)** - Registry setup and config
+- **[Streaming](dev/STREAMING.md)** - Streaming architecture
+- **[Tool Monitoring](dev/TOOL_MONITORING.md)** - Observability for tools
+- **[OpenClaw Comparison](dev/OPENCLAW_COMPARISON.md)** - Comparison with OpenClaw
 
 ### 📋 Planning & Migration
 
-Roadmaps and migration guides:
+Roadmaps, design documents, and migration guides:
 
-- **[Migration Guide](planning/migration/)** - Version migration instructions
-- **[Migration: Extensions 2.0](planning/migration/MIGRATION-EXTENSIONS-2.0.md)** - Legacy migration
+- **[A2A Planning](planning/a2a/)** - Agent-to-Agent messaging plans
+- **[Async Framework](planning/async/)** - Async execution planning
+- **[Session Design](planning/session/)** - Session management architecture
+- **[Tool System](planning/tool/)** - Tool wrapper and registry design
+- **[Migration Guides](planning/migration/)** - Version migration instructions
 - **[Retired Plans](planning/retired/)** - Historical roadmaps
 
 ### 🚀 Deployment
@@ -50,14 +65,25 @@ Production deployment:
 - **[VPS Deployment](deployment/VPS_DEPLOYMENT.md)** - Cloud server deployment
 - **[Gateways](deployment/GATEWAYS.md)** - Messaging platform integration
 
+### 🔌 MCP
+
+Model Context Protocol documentation:
+
+- **[MCP Overview](mcp/MCP.md)** - MCP integration overview
+- **[Quick Start](mcp/QUICK_START.md)** - Getting started with MCP
+- **[Migration Guide](mcp/MIGRATION_GUIDE.md)** - Migrating to MCP
+- **[Reserved Parameters Guide](mcp/mcp_reserved_params_guide.md)** - MCP reserved parameters
+- **[Reserved Parameters Proposal](mcp/mcp_reserved_params_proposal.md)** - Parameter design proposal
+- **[Universal vs MCP Comparison](mcp/universal_vs_mcp_comparison.md)** - Protocol comparison
+
 ### 📖 Reference
 
 Detailed reference documentation:
 
-- **[API Contract](../API_CONTRACT.md)** - Public API surface
 - **[Data Model](../DATA_MODEL.md)** - Data formats and schemas
 - **[Security Model](reference/SECURITY_MODEL.md)** - Security architecture
 - **[Error Codes](reference/ERROR_CODES.md)** - Error reference
+- **[Agent Spawn](reference/agent-spawn/)** - Agent spawning guides and roadmap
 
 ### 🗃️ Archive
 
@@ -82,49 +108,44 @@ docs/
 ├── architecture/                 # Technical architecture
 │   ├── OVERVIEW.md
 │   ├── EXTENSION_SYSTEM.md
-│   ├── adr/                      # ADR-001 through ADR-017
+│   ├── NAMING_CONVENTIONS.md
+│   ├── adr/                      # ADR-001 through ADR-026
 │   └── implementation/           # Implementation details
+├── dev/                          # Developer documentation
+│   ├── ARCHITECTURE.md
+│   ├── CONTRIBUTOR_GUIDE.md
+│   ├── GATEWAY_PLUGIN_GUIDE.md
+│   ├── OPENCLAW_COMPARISON.md
+│   ├── REGISTRY_CONFIG.md
+│   ├── STREAMING.md
+│   └── TOOL_MONITORING.md
 ├── planning/                     # Planning documents
+│   ├── a2a/                      # A2A messaging plans
+│   ├── async/                    # Async framework plans
 │   ├── migration/                # Migration guides
-│   └── retired/                  # Historical plans
+│   ├── retired/                  # Historical plans
+│   ├── session/                  # Session management design
+│   └── tool/                     # Tool system design
 ├── deployment/                   # Deployment guides
+│   ├── GATEWAYS.md
+│   └── VPS_DEPLOYMENT.md
+├── mcp/                          # MCP documentation
+│   ├── MCP.md
+│   ├── MIGRATION_GUIDE.md
+│   ├── QUICK_START.md
+│   ├── mcp_reserved_params_guide.md
+│   ├── mcp_reserved_params_proposal.md
+│   └── universal_vs_mcp_comparison.md
 ├── reference/                    # Reference documentation
+│   ├── cron.md
+│   ├── daemon.md
+│   ├── ERROR_CODES.md
+│   ├── SECURITY_MODEL.md
+│   └── agent-spawn/              # Agent spawn guides
+├── migration/                    # Legacy migration docs
+│   └── MIGRATION-EXTENSIONS-2.0.md
 └── archive/                      # Archived documents
 ```
-
----
-
-## Key Concepts
-
-### Unified Extension Architecture (ADR-017)
-
-Pekobot 2.0 introduces a unified extension system where all capabilities—tools, skills, MCP servers, channels, and gateways—are implemented through a single, consistent hook-based architecture with 22 hook points.
-
-**Key benefits:**
-- Single CLI for all extensions: `pekobot ext <command>`
-- Composable capabilities across extension types
-- Unified lifecycle management
-- Centralized observability
-
-Learn more: [Extension System](architecture/EXTENSION_SYSTEM.md)
-
-### Stateless Execution (ADR-013)
-
-Pekobot uses a stateless execution model where agents cold-start on every request. This ensures:
-- Reproducibility
-- Resource efficiency
-- Simpler failure recovery
-
-Learn more: [Architecture Overview](architecture/OVERVIEW.md)
-
----
-
-## Version History
-
-| Version | Key Changes | Documentation |
-|---------|-------------|---------------|
-| 2.0 (Current) | Unified Extension Architecture (ADR-017) | This documentation |
-| 1.0 | Basic agent runtime, standalone tools | See archive |
 
 ---
 
@@ -145,4 +166,4 @@ For the main project README with quick start, features, and overview, see [../RE
 
 ---
 
-*Documentation Version 2.0 · Pekobot 2.0 · 2026-04-11*
+*Documentation Version 0.1.0 · Pekobot 0.1.0 · 2026-05-05*

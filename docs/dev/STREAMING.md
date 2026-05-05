@@ -72,15 +72,11 @@ show_status = true          # Show ⚡ status messages
 Override the agent config with the `--streaming` flag:
 
 ```bash
-# Use agent config (streaming.enabled from config)
-pekobot agent start myagent
+# Send to an agent with streaming (default behavior)
+pekobot send myagent "Your message here"
 
-# Force enable streaming
-pekobot agent start myagent --streaming
-pekobot agent start myagent --streaming=true
-
-# Force disable streaming
-pekobot agent start myagent --streaming=false
+# Send with no streaming, wait for full response
+pekobot send myagent "Your message here" --no-stream
 ```
 
 ## Provider Support

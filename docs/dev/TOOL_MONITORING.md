@@ -15,7 +15,7 @@ Pekobot now supports full tool lifecycle management similar to OpenClaw:
 
 ### Core Components
 
-#### 1. `ToolContext` (`src/tools/context.rs`)
+#### 1. `ToolContext` (`src/tools/core/context.rs`)
 
 The execution context passed to tools, providing:
 
@@ -37,7 +37,7 @@ pub struct ToolContext {
 }
 ```
 
-#### 2. `AbortSignal` (`src/tools/context.rs`)
+#### 2. `AbortSignal` (`src/tools/core/context.rs`)
 
 Similar to OpenClaw's `wrapToolWithAbortSignal`, provides:
 
@@ -53,7 +53,7 @@ let ctx = signal.create_context("run-1", "tool-1", "my-tool");
 signal.abort();
 ```
 
-#### 3. `ToolError` (`src/tools/context.rs`)
+#### 3. `ToolError` (`src/tools/core/context.rs`)
 
 Strongly typed errors for tool execution:
 
@@ -77,7 +77,7 @@ match result {
 }
 ```
 
-#### 4. Enhanced `Tool` Trait (`src/tools/traits.rs`)
+#### 4. Enhanced `Tool` Trait (`src/tools/core/traits.rs`)
 
 Extended with context-aware execution:
 
@@ -274,7 +274,7 @@ tokio::spawn(async move {
 
 ## Example: ProgressDemoTool
 
-See `src/tools/progress_demo.rs` for a complete example demonstrating:
+See `src/tools/framework/shared/proxy_utils.rs` for examples demonstrating:
 - Progress reporting with batch processing
 - Abort signal handling
 - Timeout checking

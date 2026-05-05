@@ -212,19 +212,18 @@ const agentId = args.agent_id || 'anonymous';
 ### Test Reserved Parameter Injection
 
 ```bash
-# Test with the memory example
-pekobot tool test memory memory_store '{"key": "test", "value": "hello"}'
+# Test with the memory example via agent conversation
+pekobot send myagent "Store 'test' = 'hello' in memory"
 
 # Verify isolation by checking stored values
-pekobot tool test memory memory_retrieve '{"key": "test"}'
-pekobot tool test memory memory_list '{}'
+pekobot send myagent "Retrieve the value for key 'test' from memory"
 ```
 
 ### Verify Schema Filtering
 
 ```bash
 # List tools and verify reserved params are NOT in schema
-pekobot mcp tools --server memory
+pekobot ext info memory-server
 ```
 
 ## Troubleshooting
@@ -233,7 +232,7 @@ pekobot mcp tools --server memory
 
 1. Check configuration is loaded:
    ```bash
-   pekobot mcp config show
+   pekobot ext info my-server
    ```
 
 2. Verify server has reserved_parameters:

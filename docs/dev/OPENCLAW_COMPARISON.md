@@ -32,7 +32,7 @@
 |---------|---------|----------|-------|
 | **DID Identity** | ✅ ed25519-based DIDs | ❌ Not mentioned | Pekobot: decentralized identifiers |
 | **Key Storage** | ✅ Encrypted SQLite | ❌ Not mentioned | Pekobot: secure key management |
-| **Secret Manager** | ✅ 6-phase implementation | ❌ Not mentioned | Pekobot: encrypted secrets |
+| **Auth System** | ✅ Credential storage via `auth` command | ❌ Not mentioned | Pekobot: secure credential management |
 | **Security Sandbox** | ✅ Filesystem restrictions | ✅ Channel restrictions | Different approaches |
 | **Allowlists** | ✅ Tool-level + Channel-level | ✅ Channel allowFrom | Both support access control |
 
@@ -41,7 +41,7 @@
 | Channel | Pekobot | OpenClaw | Notes |
 |---------|---------|----------|-------|
 | **CLI** | ✅ Interactive | ✅ CLI + TUI | Both fully supported |
-| **HTTP/Webhook** | ✅ REST API | ✅ Webhooks | Both supported |
+| **HTTP/Webhook** | ✅ IPC + Daemon | ✅ Webhooks | Pekobot uses IPC; OpenClaw uses webhooks |
 | **Telegram** | ✅ Bot API | ✅ gramY | Both supported |
 | **Discord** | ✅ Bot API | ✅ discord.js | Both supported |
 | **Slack** | ✅ Web API | ✅ Socket Mode | Both supported |
@@ -217,7 +217,7 @@
 4. **18 Core Tools** - Calendar, email, social media, etc.
 5. **Memory Hygiene** - Automatic cleanup
 6. **DID Identity** - Decentralized identifiers
-7. **Secret Manager** - Encrypted secrets
+7. **Auth System** - Secure credential storage
 8. **Rust Performance** - 2MB binary, <50ms startup
 9. **Audit Logging** - Full observability
 
@@ -303,7 +303,7 @@ Extensions:
 2. **Pekohub-style Registry** - Cloud tool distribution
 3. **More Tools** - Calendar, email, social media
 4. **DID Identity** - Decentralized identifiers
-5. **Secret Manager** - Encrypted credential storage
+5. **Auth System** - Secure credential storage
 6. **Memory Hygiene** - Automatic cleanup
 7. **More Providers** - 15+ LLM options
 

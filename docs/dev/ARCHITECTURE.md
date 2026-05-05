@@ -2,8 +2,8 @@
 
 This document describes the internal architecture of Pekobot, explaining how the different components work together.
 
-**Last Updated:** 2026-03-14  
-**Version:** v0.6.0 (post GAP-007)
+**Last Updated:** 2026-05-05  
+**Version:** v0.1.0
 
 ---
 
@@ -11,16 +11,13 @@ This document describes the internal architecture of Pekobot, explaining how the
 
 1. [High-Level Architecture](#high-level-architecture)
 2. [Component Overview](#component-overview)
-3. [Recent Architecture Changes](#recent-architecture-changes)
-4. [Data Flow](#data-flow)
-5. [Module Details](#module-details)
-6. [Agent Lifecycle](#agent-lifecycle)
-7. [A2A Protocol & Agent Messaging](#a2a-protocol--agent-messaging)
-8. [Session System](#session-system)
-9. [MCP Integration](#mcp-integration)
-10. [Skills System](#skills-system)
-11. [Memory System](#memory-system)
-12. [Identity System](#identity-system)
+3. [Data Flow](#data-flow)
+4. [Module Details](#module-details)
+5. [Agent Lifecycle](#agent-lifecycle)
+6. [Session System](#session-system)
+7. [MCP Integration](#mcp-integration)
+8. [Extensions System](#extensions-system)
+9. [Identity System](#identity-system)
 
 ---
 
@@ -29,25 +26,20 @@ This document describes the internal architecture of Pekobot, explaining how the
 ```mermaid
 graph TB
     subgraph "User Interface"
-        CLI[CLI Channel]
-        HTTP[HTTP Channel]
-        DISCORD[Discord]
-        TELEGRAM[Telegram]
+        CLI[CLI]
     end
 
     subgraph "Pekobot Runtime"
         AGENT[Agent]
-        POOL[Agent Pool]
-        ROUTER[Event Router]
+        ENGINE[Engine]
         SESSION[Session Manager]
-        SKILLS[Skills Registry]
+        EXT[Extension Registry]
     end
 
     subgraph "Core Services"
         ID[Identity System]
-        MEM[SQLite Memory]
         TOOLS[Tool Registry]
-        MCP[MCP Manager]
+        MCP[MCP Client]
     end
 
     subgraph "External"
@@ -56,17 +48,12 @@ graph TB
     end
 
     CLI --> AGENT
-    HTTP --> AGENT
-    DISCORD --> AGENT
-    TELEGRAM --> AGENT
-    AGENT --> POOL
-    AGENT --> ROUTER
+    AGENT --> ENGINE
     AGENT --> SESSION
-    AGENT --> SKILLS
-    AGENT --> ID
-    AGENT --> MEM
-    AGENT --> TOOLS
-    AGENT --> LLM
+    AGENT --> EXT
+    ENGINE --> ID
+    ENGINE --> TOOLS
+    ENGINE --> LLM
     TOOLS --> MCP
     MCP --> MCPS
 ```
@@ -78,144 +65,25 @@ graph TB
 | Component | Purpose | Key Files | Status |
 |-----------|---------|-----------|--------|
 | **Agent** | Single agent runtime with lifecycle | `src/agent/` | ✅ Stable |
-| **Agent Pool** | Multi-agent management | `src/agent/pool.rs` | ✅ GAP-005 |
-| **Event Router** | Event routing and subscription | `src/orchestration/router.rs` | ✅ GAP-004 |
-| **Session Manager** | Session lifecycle and routing | `src/session/` | ✅ GAP-003 |
-| **MCP Manager** | Model Context Protocol | `src/mcp/` | ✅ GAP-001 |
-| **Skills Registry** | Documentation-driven skills | `src/skills/` | ✅ GAP-007 |
+| **Engine** | Agentic loop, event processing, streaming | `src/engine/` | ✅ Stable |
+| **Session** | Session storage, overlays, JSONL | `src/session/` | ✅ Stable |
+| **MCP** | Model Context Protocol support | `src/mcp/` | ✅ Stable |
+| **Extensions** | Unified Extension Architecture | `src/extensions/` | ✅ Stable |
 | **Identity** | DID and key management | `src/identity/` | ✅ Stable |
-| **Memory** | SQLite persistence | `src/memory/` | ✅ Stable |
-| **Providers** | LLM integrations | `src/providers/` | ✅ 15 providers |
-| **Tools** | Agent capabilities | `src/tools/` | ✅ 18 tools |
-| **Channels** | User interfaces | `src/channels/` | ✅ 7 channels |
-| **Cron/Daemon** | Scheduled execution | `src/cron/`, `src/daemon/` | ✅ GAP-006 |
-
----
-
-## Recent Architecture Changes
-
-### GAP-001: MCP Support (Completed)
-
-Pekobot now supports the Model Context Protocol (MCP) for external tool capabilities:
-
-```mermaid
-graph LR
-    subgraph "Pekobot"
-        MANAGER[MCP Manager]
-        CLIENT[MCP Client]
-        PROXY[Tool Proxy]
-    end
-    
-    subgraph "External MCP Servers"
-        FSrv[mcp-filesystem-server]
-        BSrv[mcp-browser-server]
-        RSrv[remote MCP servers]
-    end
-    
-    MANAGER --> CLIENT
-    CLIENT --> FSrv
-    CLIENT --> BSrv
-    CLIENT --> RSrv
-    PROXY --> CLIENT
-```
-
-**Key Features:**
-- Stdio and SSE transport
-- Automatic tool discovery
-- Health monitoring and reconnection
-- Full CLI management
-
-### GAP-003: Session Overlays (Completed)
-
-Advanced session management with overlay system:
-
-```mermaid
-graph TB
-    subgraph "Session Architecture"
-        BASE[Base Session]
-        SPAWN[Spawn Overlay]
-        FORK[Fork Overlay]
-        MERGE[Merge Overlay]
-    end
-    
-    BASE --> SPAWN
-    BASE --> FORK
-    SPAWN --> MERGE
-    FORK --> MERGE
-```
-
-**Key Features:**
-- Session forking for parallel exploration
-- Session spawning for sub-agents
-- Session merging for result consolidation
-- JSONL-based storage
-
-### GAP-004: Event Router (Completed)
-
-Central event routing system:
-
-```mermaid
-graph TB
-    subgraph "Event Flow"
-        PUBLISH[Publishers]
-        ROUTER[Event Router]
-        SUB[Subscribers]
-    end
-    
-    PUBLISH --> ROUTER
-    ROUTER --> SUB
-```
-
-### GAP-005: Agent-to-Agent Messaging (Completed)
-
-Direct agent invocation via `agent_invoke` tool:
-
-```mermaid
-sequenceDiagram
-    participant A1 as Agent 1
-    participant POOL as Agent Pool
-    participant A2 as Agent 2
-    
-    A1->>POOL: agent_invoke(target=A2)
-    POOL->>A2: Execute prompt
-    A2-->>POOL: Response
-    POOL-->>A1: Return result
-```
-
-**Modes:**
-- **Sync:** Block until response (with timeout)
-- **Async:** Return receipt, result via event
-
-### GAP-007: Skills System (Completed)
-
-Documentation-driven skills:
-
-```mermaid
-graph TB
-    subgraph "Skills Flow"
-        PROMPT[System Prompt]
-        SKILL[SKILL.md]
-        LLM[LLM Decision]
-        EXEC[Tool Execution]
-    end
-    
-    PROMPT --> LLM
-    LLM -->|read| SKILL
-    SKILL --> LLM
-    LLM --> EXEC
-```
-
-**Format:**
-```yaml
----
-name: github
-description: GitHub CLI operations
-tags: [devops]
----
-
-# GitHub Skill
-...
-```
+| **Providers** | LLM integrations | `src/providers/` | ✅ Multiple providers |
+| **Tools** | Tool framework | `src/tools/` | ✅ Stable |
+| **Team** | Multi-agent team runtime | `src/team/` | ✅ Stable |
+| **Cron/Daemon** | Scheduled execution | `src/cron/`, `src/daemon/` | ✅ Stable |
+| **Commands** | CLI command handlers | `src/commands/` | ✅ Stable |
+| **Common** | Shared utilities, registry, services | `src/common/` | ✅ Stable |
+| **Types** | Core type definitions | `src/types/` | ✅ Stable |
+| **IPC** | Inter-process communication | `src/ipc/` | ✅ Stable |
+| **Portable** | Portable agent packages | `src/portable/` | ✅ Stable |
+| **Image** | Agent image building | `src/image/` | ✅ Stable |
+| **Prompt** | Prompt construction | `src/prompt/` | ✅ Stable |
+| **Runtime** | Shared runtime components | `src/runtime/` | ✅ Stable |
+| **Compaction** | Session compaction | `src/compaction/` | ✅ Stable |
+| **Observability** | Logging, metrics | `src/observability/` | ✅ Stable |
 
 ---
 
@@ -226,127 +94,93 @@ tags: [devops]
 ```mermaid
 sequenceDiagram
     participant User
-    participant CLI as CLI Channel
+    participant CLI as CLI
     participant Agent
     participant Session
-    participant Skills
-    participant Memory
+    participant Engine
     participant Provider
 
-    User->>CLI: Type message
-    CLI->>Agent: receive()
-    Agent->>Agent: set_state(Busy)
-    
-    Agent->>Session: get_or_create()
-    Agent->>Skills: load_for_prompt()
-    
-    alt Memory Enabled
-        Agent->>Memory: store(prompt)
-    end
-    
-    Agent->>Provider: complete(prompt + skills)
-    Provider-->>Agent: response
-    
+    User->>CLI: pekobot send "Hello"
+    CLI->>Agent: resolve agent config
+    Agent->>Session: get_or_create_session()
+    Agent->>Engine: execute(message)
+    Engine->>Engine: build context (system prompt + history + tools)
+    Engine->>Provider: complete(prompt)
+    Provider-->>Engine: response
     alt Tool Calls
-        Agent->>Agent: execute_tools()
-        Agent->>Provider: continue
+        Engine->>Engine: execute_tools()
+        Engine->>Provider: continue
     end
-    
-    alt Memory Enabled
-        Agent->>Memory: store(response)
-    end
-    
-    Agent->>Session: persist()
-    Agent->>Agent: set_state(Idle)
-    Agent-->>CLI: response
+    Engine->>Session: persist()
+    Engine-->>CLI: response
     CLI-->>User: Display
 ```
 
-### Multi-Agent with Invoke
+### Multi-Agent with Teams
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant A1 as Agent 1 (Orchestrator)
-    participant Pool
-    participant A2 as Agent 2 (Worker)
-    participant A3 as Agent 3 (Worker)
+    participant A1 as Agent 1 (Planner)
+    participant A2 as Agent 2 (Executor)
 
-    User->>A1: "Analyze and summarize"
-    
+    User->>A1: "Plan a project"
     A1->>A1: Plan tasks
-    
-    par Parallel Execution
-        A1->>Pool: agent_invoke(A2, "Analyze data")
-        Pool->>A2: Execute
-        A2-->>Pool: Analysis result
-        Pool-->>A1: Result 1
-    and
-        A1->>Pool: agent_invoke(A3, "Find sources")
-        Pool->>A3: Execute
-        A3-->>Pool: Sources
-        Pool-->>A1: Result 2
-    end
-    
-    A1->>A1: Synthesize results
-    A1-->>User: Final summary
+    A1-->>User: Plan result
+    User->>A2: "Execute step 1"
+    A2->>A2: Execute
+    A2-->>User: Execution result
 ```
 
 ---
 
 ## Module Details
 
-### Agent Pool
+### Agent Module (`src/agent/`)
 
-The agent pool manages multiple agent lifecycles:
+The agent module handles agent runtime, lifecycle, registry, and subagent execution.
 
-```rust
-pub struct AgentPool {
-    agents: HashMap<String, PoolAgentEntry>,
-    channels: HashMap<String, mpsc::Channel>,
-}
+Key files:
+- `src/agent/agent.rs` — Core agent struct
+- `src/agent/lifecycle.rs` — Agent lifecycle management
+- `src/agent/registry.rs` — Agent registry
 
-impl AgentPool {
-    pub fn get(&self, did: &str) -> Option<AgentHandle>;
-    pub fn list(&self) -> Vec<PoolAgentInfo>;
-    pub async fn stop(&mut self, did: &str) -> Result<()>;
-}
-```
+### Engine Module (`src/engine/`)
 
-### MCP Manager
+The engine implements the agentic loop, event processing, streaming, and state machine.
 
-Manages external MCP server lifecycle:
+Key files:
+- `src/engine/loop_v4.rs` — Main execution loop
+- `src/engine/input.rs` — Input types
+- `src/engine/events.rs` — Event types and routing
+- `src/engine/execution.rs` — Tool execution
 
-```rust
-pub struct McpManager {
-    clients: HashMap<String, McpClient>,
-    config: McpConfig,
-}
+### Session Module (`src/session/`)
 
-impl McpManager {
-    pub async fn start_server(&self, name: &str) -> Result<()>;
-    pub async fn list_tools(&self) -> Vec<Tool>;
-    pub async fn call_tool(&self, name: &str, params: Value) -> Result<Value>;
-}
-```
+Sessions are stored as JSONL files with overlay support.
 
-### Skills Registry
+Key files:
+- `src/session/jsonl.rs` — JSONL storage
+- `src/session/manager.rs` — Session lifecycle
+- `src/session/overlay.rs` — Session overlays
 
-Loads and manages skills from SKILL.md files:
+### Extensions Module (`src/extensions/`)
 
-```rust
-pub struct SkillsRegistry {
-    skills: HashMap<String, Skill>,
-    skills_dir: PathBuf,
-}
+The Unified Extension Architecture handles skills, MCP, tools, channels, and hooks.
 
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    pub file_path: PathBuf,
-    pub tags: Vec<String>,
-}
-```
+Key files:
+- `src/extensions/core/` — Core extension registry and types
+- `src/extensions/adapters/` — Adapters for builtin tools, MCP, skills
+- `src/extensions/services/` — Extension services
+
+### MCP Module (`src/mcp/`)
+
+MCP client for connecting to external MCP servers.
+
+Key files:
+- `src/mcp/client.rs` — MCP protocol client
+- `src/mcp/manager.rs` — MCP server management
+- `src/mcp/transport.rs` — Transport implementations
 
 ---
 
@@ -354,67 +188,24 @@ pub struct Skill {
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Initializing: Agent::new()
-    
-    Initializing --> Idle: start()
-    Initializing --> Error: init_failure
-    
-    Idle --> Busy: execute()
-    Idle --> Paused: pause()
-    Idle --> ShuttingDown: stop()
-    
-    Busy --> Idle: task_complete
-    Busy --> Error: task_failure
-    Busy --> ShuttingDown: stop()
-    
-    Paused --> Idle: resume()
-    Paused --> ShuttingDown: stop()
-    
-    Error --> Idle: recover()
-    Error --> ShuttingDown: stop()
-    
-    ShuttingDown --> [*]: cleanup_complete
+    [*] --> Configured: agent create
+    Configured --> Ready: send message
+    Ready --> Processing: execute()
+    Processing --> Ready: complete
+    Processing --> Error: failure
+    Error --> Ready: retry
+    Ready --> [*]: agent remove
 ```
 
 ### State Transitions
 
 | From | To | Trigger | Description |
 |------|-----|---------|-------------|
-| `Initializing` | `Idle` | `start()` | Agent ready |
-| `Idle` | `Busy` | `execute()` | Processing |
-| `Busy` | `Idle` | Complete | Ready next |
-| `Busy` | `ShuttingDown` | `stop()` | Emergency stop |
-
----
-
-## A2A Protocol & Agent Messaging
-
-### Message Types
-
-| Type | Purpose | Direction |
-|------|---------|-----------|
-| `Intent` | Initiate action | Any → Any |
-| `Task` | Execute work | Parent → Child |
-| `Update` | Progress update | Child → Parent |
-| `Complete` | Task done | Child → Parent |
-| `Query` | Information request | Any → Any |
-| `Response` | Query answer | Any → Any |
-
-### Agent Invoke Tool
-
-The `agent_invoke` tool provides direct agent-to-agent communication:
-
-```json
-{
-  "tool": "agent_invoke",
-  "params": {
-    "target": "agent-did-or-name",
-    "message": "Task description",
-    "mode": "sync",
-    "timeout_ms": 30000
-  }
-}
-```
+| `Configured` | `Ready` | First message | Agent initialized |
+| `Ready` | `Processing` | `execute()` | Processing message |
+| `Processing` | `Ready` | Complete | Ready for next |
+| `Processing` | `Error` | Failure | Error occurred |
+| `Error` | `Ready` | Retry | Recovered |
 
 ---
 
@@ -425,9 +216,7 @@ The `agent_invoke` tool provides direct agent-to-agent communication:
 | Type | Use Case | Persistence |
 |------|----------|-------------|
 | `Base` | Normal conversation | Yes |
-| `Spawn` | Sub-agent execution | Configurable |
-| `Fork` | Parallel exploration | No |
-| `Merge` | Result consolidation | Yes |
+| `Branch` | Forked exploration | Yes |
 
 ### Session Key Format
 
@@ -435,10 +224,19 @@ The `agent_invoke` tool provides direct agent-to-agent communication:
 {agent_did}:{peer_type}:{peer_id}:{scope}:{date}
 
 Examples:
-- did:pekobot:...:main:dm:owner:2026-03-14
-- did:pekobot:...:spawn:task-123:2026-03-14
-- did:pekobot:...:fork:exploration-1:2026-03-14
+- did:pekobot:...:main:dm:owner:2026-05-05
+- did:pekobot:...:branch:exploration-1:2026-05-05
 ```
+
+### Session Operations
+
+Sessions support the following operations:
+- **List** — List all sessions for an agent
+- **Show** — View session history
+- **Branch** — Create a copy of a session
+- **Switch** — Change the active session
+- **Compact** — Summarize old messages
+- **Remove** — Delete a session
 
 ---
 
@@ -450,102 +248,49 @@ Examples:
 |-----------|----------|--------|
 | Stdio | Local subprocess | ✅ |
 | SSE | HTTP+Server-Sent Events | ✅ |
-| In-Memory | Testing | ✅ |
 
-### MCP CLI Commands
+### MCP Management
 
-```bash
-pekobot mcp list          # List configured servers
-pekobot mcp add <name>    # Add MCP server
-pekobot mcp start <name>  # Start server
-pekobot mcp stop <name>   # Stop server
-pekobot mcp test <name>   # Test connection
-```
-
----
-
-## Skills System
-
-### Skill Discovery
-
-Skills are loaded from `~/.pekobot/skills/`:
-
-```
-~/.pekobot/skills/
-├── github/SKILL.md
-├── docker/SKILL.md
-└── deploy/SKILL.md
-```
-
-### Skill Format
-
-```markdown
----
-name: github
-description: GitHub CLI operations
-tags: [devops, git]
----
-
-# GitHub Skill
-
-Use this skill when working with GitHub.
-
-## Common Commands
+MCP servers are managed through the `ext` command:
 
 ```bash
-gh pr list
-gh issue create --title "Bug" --body "Description"
-```
-```
-
-### System Prompt Integration
-
-Skills appear in system prompt as:
-
-```
-## Skills (mandatory)
-Before replying: scan <available_skills> <description> entries.
-
-<available_skills>
-- github: GitHub CLI operations (location: ~/.pekobot/skills/github/SKILL.md)
-- docker: Docker container management (location: ~/.pekobot/skills/docker/SKILL.md)
-</available_skills>
+pekobot ext install <mcp-extension>
+pekobot ext start <mcp-extension>
+pekobot ext stop <mcp-extension>
+pekobot ext status <mcp-extension>
 ```
 
 ---
 
-## Memory System
+## Extensions System
 
-### Architecture
+The Unified Extension Architecture provides a single system for managing:
+- **Skills** — Documentation-driven capabilities
+- **MCP** — External tool servers
+- **Tools** — Built-in and custom tools
+- **Channels** — Input/output interfaces
+- **Hooks** — Event-driven triggers
 
-```mermaid
-graph TB
-    subgraph "Memory Module"
-        SQL[SQLite
-        sqlite.rs]
-        HYBRID[Hybrid Memory
-        hybrid.rs]
-    end
-    
-    subgraph "Storage"
-        TABLE[memories table]
-        INDEX[vector index]
-    end
-    
-    SQL --> TABLE
-    HYBRID --> SQL
-    HYBRID --> INDEX
+### Extension Lifecycle
+
+```bash
+# Install an extension
+pekobot ext install <path-or-url>
+
+# List installed extensions
+pekobot ext list
+
+# Enable/disable capabilities
+pekobot ext enable <capability>
+pekobot ext disable <capability>
+
+# Configure an extension
+pekobot ext config <extension>
+
+# Start/stop background runtimes
+pekobot ext start <extension>
+pekobot ext stop <extension>
 ```
-
-### Memory Scopes
-
-| Scope | Visibility | Use Case |
-|-------|------------|----------|
-| `Agent` | Single agent | Agent-specific knowledge |
-| `Tenant` | Tenant-wide | Shared within organization |
-| `Local` | Instance | Local-only data |
-| `Network` | Coneko network | Cross-network shared |
-| `System` | Global | System-wide defaults |
 
 ---
 
@@ -575,9 +320,9 @@ Examples:
 
 ### Adding New Features
 
-1. Check existing GAPs in `issues/`
+1. Check existing issues in `issues/`
 2. Follow the architecture patterns above
-3. Maintain test coverage (aim for >80%)
+3. Maintain test coverage
 4. Update documentation
 
 ### Code Quality
@@ -589,13 +334,9 @@ cargo clippy --lib
 cargo test --lib
 ```
 
-See [REFACTOR-002](../issues/REFACTOR-002-code-quality-plan.md) for current code quality initiatives.
-
 ---
 
 ## References
 
-- [Grand Architecture](../../GRAND_ARCHITECTURE.md)
-- [GAP Registry](../../issues/index.md)
+- [Contributor Guide](./CONTRIBUTOR_GUIDE.md)
 - [MCP Documentation](../MCP.md)
-- [OpenClaw Comparison](./OPENCLAW_COMPARISON.md)

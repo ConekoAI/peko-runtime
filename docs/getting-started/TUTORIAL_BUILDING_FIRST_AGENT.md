@@ -1,18 +1,17 @@
 # Tutorial: Building Your First Agent
 
-In this tutorial, you'll build your first Pekobot agent from scratch. By the end, you'll have a working agent that can process tasks and store memories.
+In this tutorial, you'll build your first Pekobot agent using the CLI. By the end, you'll have a working agent that can process tasks and store conversations.
 
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Step 1: Create a New Project](#step-1-create-a-new-project)
-3. [Step 2: Add Dependencies](#step-2-add-dependencies)
-4. [Step 3: Write Your Agent](#step-3-write-your-agent)
-5. [Step 4: Add Memory](#step-4-add-memory)
-6. [Step 5: Handle Multiple Tasks](#step-5-handle-multiple-tasks)
-7. [Step 6: Connect to OpenAI](#step-6-connect-to-openai)
-8. [Step 7: Build and Run](#step-7-build-and-run)
-9. [What's Next?](#whats-next)
+2. [Step 1: Create a New Agent](#step-1-create-a-new-agent)
+3. [Step 2: Customize Your Agent](#step-2-customize-your-agent)
+4. [Step 3: Send Your First Message](#step-3-send-your-first-message)
+5. [Step 4: Manage Sessions](#step-4-manage-sessions)
+6. [Step 5: Work with Teams](#step-5-work-with-teams)
+7. [Step 6: Schedule Tasks with Cron](#step-6-schedule-tasks-with-cron)
+8. [What's Next?](#whats-next)
 
 ---
 
@@ -21,353 +20,235 @@ In this tutorial, you'll build your first Pekobot agent from scratch. By the end
 Before starting, ensure you have:
 
 - Rust 1.70+ installed (`rustc --version`)
-- An OpenAI API key (get one at [platform.openai.com](https://platform.openai.com))
-- Pekobot built from source (see [README](../README.md))
+- An API key for an LLM provider (OpenAI, Anthropic, Kimi, or Ollama)
+- Pekobot built from source (see [Getting Started](GETTING_STARTED.md))
 
 ---
 
-## Step 1: Create a New Project
+## Step 1: Create a New Agent
 
-Create a new Rust project for your agent:
+The easiest way to create an agent is with the `agent create` command:
 
 ```bash
-cargo new my-first-agent
-cd my-first-agent
-```
-
----
-
-## Step 2: Add Dependencies
-
-Edit `Cargo.toml` to add Pekobot as a dependency:
-
-```toml
-[package]
-name = "my-first-agent"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-pekobot = { path = "../pekora/projects/pekobot" }
-tokio = { version = "1.35", features = ["full"] }
-anyhow = "1.0"
-tracing-subscriber = "0.3"
-serde_json = "1.0"
-```
-
----
-
-## Step 3: Write Your Agent
-
-Replace the contents of `src/main.rs`:
-
-```rust
-use pekobot::{Agent, Config};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
-
-    println!("🚀 Starting My First Agent!\n");
-
-    // Create agent configuration
-    let config = Config::agent("my-agent")
-        .with_description("My first Pekobot agent")
-        .build();
-
-    // Create and start the agent
-    let agent = Agent::new(config).await?;
-    agent.start().await?;
-
-    println!("✅ Agent started!");
-    println!("   Name: {}", agent.name());
-    println!("   DID: {}", agent.did());
-    println!("   State: {:?}\n", agent.state());
-
-    // Execute a simple task
-    let response = agent.execute("Hello, Pekobot!").await?;
-    println!("📝 Response: {}\n", response);
-
-    // Stop the agent
-    agent.stop().await?;
-    println!("👋 Agent stopped. Goodbye!");
-
-    Ok(())
-}
-```
-
-### Build and Test
-
-```bash
-cargo run
-```
-
-You should see:
-
-```
-🚀 Starting My First Agent!
-
-✅ Agent started!
-   Name: my-agent
-   DID: did:pekobot:local:default:...
-   State: Idle
-
-📝 Response: Echo: Hello, Pekobot!
-
-👋 Agent stopped. Goodbye!
-```
-
-> **Note:** Without an OpenAI API key, the agent echoes back your input. We'll add LLM integration in Step 6.
-
----
-
-## Step 4: Add Memory
-
-Let's make your agent remember things. Update `src/main.rs`:
-
-```rust
-use pekobot::{Agent, Config};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
-    println!("🚀 Starting Agent with Memory!\n");
-
-    // Create agent with memory enabled
-    let config = Config::agent("memory-agent")
-        .with_description("An agent that remembers things")
-        .with_memory(true)  // Enable SQLite memory
-        .build();
-
-    let agent = Agent::new(config).await?;
-    agent.start().await?;
-
-    println!("✅ Agent started with memory!");
-    println!("   DID: {}\n", agent.did());
-
-    // Store some memories
-    println!("💾 Storing memories...");
-    
-    agent.store_memory(
-        "My favorite color is blue",
-        Some(serde_json::json!({"topic": "preferences"})),
-    )?;
-    
-    agent.store_memory(
-        "I was created in 2026",
-        Some(serde_json::json!({"topic": "facts"})),
-    )?;
-    
-    agent.store_memory(
-        "Pekobot is a multi-agent runtime",
-        Some(serde_json::json!({"topic": "facts"})),
-    )?;
-
-    println!("   Stored 3 memories\n");
-
-    // Search memories
-    println!("🔍 Searching for 'favorite':");
-    let results = agent.search_memory("favorite", 5)?;
-    for (i, entry) in results.iter().enumerate() {
-        println!("   [{}] {}", i + 1, entry.content);
-    }
-
-    println!("\n🔍 Searching for 'Pekobot':");
-    let results = agent.search_memory("Pekobot", 5)?;
-    for (i, entry) in results.iter().enumerate() {
-        println!("   [{}] {}", i + 1, entry.content);
-    }
-
-    agent.stop().await?;
-    println!("\n👋 Agent stopped!");
-
-    Ok(())
-}
-```
-
-### Test Memory
-
-```bash
-cargo run
-```
-
-Output:
-
-```
-🚀 Starting Agent with Memory!
-
-✅ Agent started with memory!
-   DID: did:pekobot:local:default:...
-
-💾 Storing memories...
-   Stored 3 memories
-
-🔍 Searching for 'favorite':
-   [1] My favorite color is blue
-
-🔍 Searching for 'Pekobot':
-   [1] Pekobot is a multi-agent runtime
-
-👋 Agent stopped!
-```
-
----
-
-## Step 5: Handle Multiple Tasks
-
-Let's make your agent handle multiple tasks in a loop:
-
-```rust
-use pekobot::{Agent, Config};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
-    println!("🚀 Starting Task Processor Agent!\n");
-
-    let config = Config::agent("task-processor")
-        .with_description("Processes multiple tasks")
-        .with_memory(true)
-        .build();
-
-    let agent = Agent::new(config).await?;
-    agent.start().await?;
-
-    println!("✅ Agent ready for tasks!\n");
-
-    // Define tasks
-    let tasks = vec![
-        "Summarize the latest news",
-        "Write a poem about Rust",
-        "Explain what an agent is",
-    ];
-
-    for (i, task) in tasks.iter().enumerate() {
-        println!("📋 Task {}: {}", i + 1, task);
-        
-        let response = agent.execute(task).await?;
-        println!("✅ Result: {}\n", response);
-
-        // Small delay between tasks
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-
-    // Show memory usage
-    println!("🧠 Memory summary:");
-    let all_memories = agent.search_memory("", 100)?;
-    println!("   Total entries: {}", all_memories.len());
-
-    agent.stop().await?;
-    println!("\n👋 All tasks completed!");
-
-    Ok(())
-}
-```
-
----
-
-## Step 6: Connect to OpenAI
-
-Now let's add real AI capabilities. Set your API key and update the config:
-
-```bash
+# Set your API key
 export OPENAI_API_KEY="sk-..."
+
+# Create an agent
+pekobot agent create my-first-agent --provider minimax
 ```
 
-Update `Cargo.toml` to ensure the OpenAI feature is enabled (it is by default):
+This creates an agent configuration in Pekobot's config directory.
 
-```rust
-use pekobot::{Agent, Config};
-use pekobot::types::agent::{AgentConfig, ProviderConfig, ProviderType, MemoryConfig};
-use std::path::PathBuf;
+Alternatively, you can initialize an agent directory for version control:
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+```bash
+# Initialize an agent directory
+pekobot agent init ./my-first-agent --provider minimax
+```
 
-    println!("🚀 Starting AI-Powered Agent!\n");
-
-    // Create configuration manually for more control
-    let config = AgentConfig {
-        name: "ai-agent".to_string(),
-        description: Some("An AI-powered agent".to_string()),
-        tenant: None,
-        capabilities: vec![
-            pekobot::types::agent::AgentCapability {
-                name: "conversation".to_string(),
-                version: "1.0".to_string(),
-                description: Some("Can have conversations".to_string()),
-                parameters: None,
-                required_auth: None,
-                estimated_cost: None,
-                estimated_duration: None,
-            }
-        ],
-        provider: ProviderConfig {
-            provider_type: ProviderType::OpenAI,
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
-            base_url: Some("https://api.openai.com/v1".to_string()),
-            timeout_seconds: Some(30),
-            model: Some("gpt-4o-mini".to_string()),
-            temperature: Some(0.7),
-            max_tokens: Some(1000),
-        },
-        memory: Some(MemoryConfig {
-            enabled: true,
-            max_entries: 10000,
-            database_path: Some(PathBuf::from("agent_memory.db")),
-        }),
-        tools: None,
-        channels: None,
-        auto_accept_trusted: false,
-        approval_threshold: Some(100.0),
-        default_timeout_seconds: 300,
-        coneko: None,
-    };
-
-    let agent = Agent::new(config).await?;
-    agent.start().await?;
-
-    println!("✅ AI Agent started!");
-    println!("   Model: gpt-4o-mini\n");
-
-    // Have a conversation
-    let messages = vec![
-        "What is the capital of France?",
-        "What is 2 + 2?",
-        "Tell me a fun fact about space.",
-    ];
-
-    for message in messages {
-        println!("💬 You: {}", message);
-        let response = agent.execute(message).await?;
-        println!("🤖 Agent: {}\n", response);
-    }
-
-    agent.stop().await?;
-    println!("👋 Conversation ended!");
-
-    Ok(())
-}
+This creates:
+```
+my-first-agent/
+├── config.toml      # Agent configuration
+├── AGENT.md         # Agent description
+├── .gitignore
+├── tools/           # Custom tools
+└── workspace/       # Working files
 ```
 
 ---
 
-## Step 7: Build and Run
+## Step 2: Customize Your Agent
 
-Build your agent:
+Edit `my-first-agent/AGENT.md` (if using `agent init`) to give your agent a personality:
 
-```bash
-cargo build --release
+```markdown
+# My First Agent
+
+You are a helpful coding assistant.
+
+## Capabilities
+
+- Write and debug code in multiple languages
+- Explain technical concepts clearly
+- Review code for best practices
+
+## Tone
+
+Friendly, concise, and encouraging.
 ```
 
-Run it:
+You can also customize the agent's configuration:
 
 ```bash
-./target/release/my-first-agent
+# View current config
+pekobot agent show my-first-agent
+
+# The configuration includes provider, model, temperature, etc.
+```
+
+---
+
+## Step 3: Send Your First Message
+
+Now let's interact with the agent:
+
+```bash
+# Send a simple message
+pekobot send my-first-agent "Hello, what can you do?"
+```
+
+You'll see the agent's response streamed to your terminal.
+
+Try a more complex task:
+
+```bash
+pekobot send my-first-agent "Write a Python function to calculate fibonacci numbers"
+```
+
+### Message Options
+
+```bash
+# Start a new session
+pekobot send my-first-agent "Let's start fresh" --new
+
+# Read message from a file
+pekobot send my-first-agent --file prompt.txt
+
+# Pipe from stdin
+echo "Explain Rust ownership" | pekobot send my-first-agent --stdin
+
+# Disable streaming (wait for full response)
+pekobot send my-first-agent "Write a long essay" --no-stream
+```
+
+---
+
+## Step 4: Manage Sessions
+
+Sessions store your conversation history.
+
+### List Sessions
+
+```bash
+pekobot session list my-first-agent
+```
+
+### Show Session History
+
+```bash
+pekobot session show my-first-agent <session-id>
+```
+
+### Start a New Session
+
+```bash
+pekobot send my-first-agent "New topic" --new
+```
+
+### Compact a Session
+
+Compaction summarizes old messages to save context window space:
+
+```bash
+pekobot session compact my-first-agent --session-id <session-id>
+```
+
+### Branch a Session
+
+Create a copy of a session to explore different directions:
+
+```bash
+pekobot session branch my-first-agent --session-id <session-id>
+```
+
+---
+
+## Step 5: Work with Teams
+
+Teams help organize multiple agents.
+
+### Create a Team
+
+```bash
+pekobot team create my-team
+```
+
+### Create Agents in a Team
+
+```bash
+pekobot agent create my-team/coder --provider minimax
+pekobot agent create my-team/reviewer --provider minimax
+```
+
+### Send Messages to Team Agents
+
+```bash
+pekobot send my-team/coder "Write a sorting algorithm"
+pekobot send my-team/reviewer "Review this code for bugs"
+```
+
+---
+
+## Step 6: Schedule Tasks with Cron
+
+You can schedule recurring tasks for your agent.
+
+### Start the Daemon
+
+The daemon is required for automatic cron execution:
+
+```bash
+pekobot daemon start --foreground
+```
+
+### Add a Cron Job
+
+```bash
+# Daily summary at 9 AM
+pekobot cron add \
+  --name "daily-summary" \
+  --schedule "0 9 * * *" \
+  --agent my-first-agent \
+  --message "Summarize yesterday's progress"
+```
+
+### Add an Interval Job
+
+```bash
+# Every 5 minutes
+pekobot cron every \
+  --name "heartbeat" \
+  --interval-ms 300000 \
+  --agent my-first-agent \
+  --message "Check system status"
+```
+
+### Add a One-Shot Job
+
+```bash
+# Run once at a specific time
+pekobot cron at \
+  --name "reminder" \
+  --at "2026-03-01T09:00:00Z" \
+  --agent my-first-agent \
+  --message "Meeting in 1 hour"
+```
+
+### List and Manage Jobs
+
+```bash
+# List all jobs
+pekobot cron list
+
+# Run a job immediately
+pekobot cron run --id <job-id>
+
+# View job history
+pekobot cron history --id <job-id>
+
+# Remove a job
+pekobot cron remove --id <job-id>
 ```
 
 ---
@@ -376,127 +257,65 @@ Run it:
 
 Congratulations! You've built your first Pekobot agent. Here are some things to try next:
 
-### 1. Add More Capabilities
+### 1. Explore Extensions
 
-Extend your agent with additional capabilities:
+Extensions add capabilities to your agents:
 
-```rust
-.with_capabilities(vec![
-    "messaging".to_string(),
-    "task_execution".to_string(),
-    "research".to_string(),
-])
+```bash
+# List installed extensions
+pekobot ext list
+
+# Install a new extension
+pekobot ext install <path-or-url>
+
+# Enable a capability
+pekobot ext enable <capability>
 ```
 
-### 2. Use the HTTP Tool
+### 2. Configure Authentication
 
-Make your agent fetch web data:
+Manage API keys centrally:
 
-```rust
-use pekobot::tools::http::HttpTool;
+```bash
+# Set an API key (you will be prompted for the value)
+pekobot auth set openai
 
-let http = HttpTool::new();
-let response = http.get("https://api.example.com/data").await?;
+# List credentials
+pekobot auth list
+
+# Test a credential
+pekobot auth test openai
 ```
 
-### 3. Connect Multiple Agents
+### 3. Export and Share Agents
 
-Set up an orchestrator with multiple specialized agents:
+```bash
+# Export an agent to a .agent package
+pekobot agent export --name my-first-agent
 
-```rust
-use pekobot::agent::Orchestrator;
-use pekobot::a2a::registry::create_registry;
-
-let (registry, _) = create_registry();
-let mut orchestrator = Orchestrator::with_registry(registry);
-
-// Add multiple agents...
-orchestrator.start_all().await?;
+# Import an agent
+pekobot agent import --file ./my-first-agent.agent
 ```
 
-### 4. Connect to Coneko
+### 4. Run System Diagnostics
 
-Enable network capabilities:
+```bash
+# Check system status
+pekobot system status
 
-```rust
-use pekobot::coneko::ConekoConfig;
+# Run health checks
+pekobot system doctor
 
-let coneko_config = ConekoConfig {
-    enabled: true,
-    endpoint: "http://localhost:8080".to_string(),
-    auth_token: std::env::var("CONEKO_TOKEN").ok(),
-    auto_register: true,
-    poll_interval_seconds: 30,
-};
+# Clean up temporary files
+pekobot system clean
 ```
 
 ### 5. Read More
 
-- [User Guide](USERS_GUIDE.md) — Comprehensive guide to Pekobot
-- [API Documentation](API.md) — Reference for all APIs
-- [CLI Reference](CLI_REFERENCE.md) — Command-line documentation
-- [Architecture Guide](ARCHITECTURE.md) — How Pekobot works
+- [User Guide](../user-guide/USERS_GUIDE.md) — Comprehensive guide to Pekobot
+- [CLI Reference](../user-guide/CLI_REFERENCE.md) — Command-line documentation
+- [Architecture Guide](../dev/ARCHITECTURE.md) — How Pekobot works
 
 ---
 
-## Full Example Code
-
-Here's the complete code for a feature-rich agent:
-
-```rust
-use pekobot::{Agent, Config};
-use pekobot::tools::http::HttpTool;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
-    println!("🚀 My Advanced Agent\n");
-
-    // Create agent with full configuration
-    let config = Config::agent("advanced-agent")
-        .with_description("An agent with memory and HTTP capabilities")
-        .with_capabilities(vec![
-            "messaging".to_string(),
-            "task_execution".to_string(),
-            "http_requests".to_string(),
-        ])
-        .with_memory(true)
-        .build();
-
-    let agent = Agent::new(config).await?;
-    agent.start().await?;
-
-    println!("✅ Agent ready!");
-    println!("   DID: {}\n", agent.did());
-
-    // Use HTTP tool
-    let http = HttpTool::new();
-    
-    println!("🌐 Fetching data...");
-    match http.get("https://jsonplaceholder.typicode.com/posts/1").await {
-        Ok(response) => {
-            println!("   Status: {}", response.status);
-            agent.store_memory(
-                &format!("Fetched: {}", &response.body[..50]),
-                None,
-            )?;
-        }
-        Err(e) => println!("   Error: {}", e),
-    }
-
-    // Search memory
-    println!("\n🔍 Memory search:");
-    let memories = agent.search_memory("fetch", 5)?;
-    println!("   Found {} memories", memories.len());
-
-    agent.stop().await?;
-    println!("\n👋 Done!");
-
-    Ok(())
-}
-```
-
----
-
-Happy building! 🐱
+*Happy building! 🐱*

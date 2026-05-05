@@ -72,7 +72,7 @@ This plan addresses the migration from deprecated `discover_universal_tools()` a
 | `src/agent/agent.rs` | 191 | `load_universal_tools()` | Agent loading system-wide tools |
 | `src/tools/factory.rs` | 916 | `load_universal_tools()` | Custom tools from workspace `tools/` dir |
 | `src/cap/catalog.rs` | 125 | `discover_universal_tools()` | CAP capability discovery |
-| `src/commands/tool.rs` | 252 | `discover_universal_tools()` | CLI `pekobot tool list` |
+| `src/commands/tool.rs` | 252 | `discover_universal_tools()` | CLI tool discovery (via `ext` command) |
 | `src/tool_management/catalog.rs` | 113 | `discover_universal_tools()` | Tool management catalog |
 | `src/extensions/adapters/universal_tool_adapter.rs` | 81 | `discover_universal_tools()` | Adapter discovery method |
 

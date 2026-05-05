@@ -21,7 +21,6 @@ Guide for developers contributing to Pekobot.
 
 - Rust 1.70+ with Cargo
 - Git
-- (Optional) SQLite for memory features
 
 ### Build
 
@@ -49,136 +48,105 @@ RUST_LOG=debug cargo run -- daemon start --foreground
 
 ```
 src/
-├── api/              # HTTP API server (Axum)
-│   ├── client.rs     # HTTP client for CLI
-│   ├── error.rs      # API error types
-│   ├── middleware/   # Auth, logging, headers
-│   ├── routes/       # Endpoint handlers
-│   │   ├── agents.rs     # Instance CRUD
-│   │   ├── chat.rs       # Chat streaming
-│   │   ├── images.rs     # Image build/pull/push
-│   │   ├── metrics.rs    # Performance metrics
-│   │   ├── sessions.rs   # Session management
-│   │   └── teams.rs      # Team management
-│   ├── server.rs     # Axum server setup
-│   ├── state.rs      # Shared app state
-│   ├── streaming.rs  # SSE streaming utilities
-│   ├── types.rs      # API request/response types
-│   └── websocket.rs  # WebSocket handlers
-│
-├── agent/            # Agent runtime
+├── agent/            # Agent runtime, lifecycle, registry, subagent execution
 │   ├── agent.rs      # Core agent struct
-│   ├── context.rs    # Agent execution context
-│   ├── lifecycle.rs  # Start/stop/upgrade
-│   ├── manager.rs    # Instance management
-│   ├── pool.rs       # Multi-agent pool
-│   └── registry.rs   # Instance registry
+│   ├── lifecycle.rs  # Agent lifecycle management
+│   └── registry.rs   # Agent registry
 │
-├── commands/         # CLI commands
-│   ├── agent.rs      # Agent management
+├── commands/         # CLI command handlers
+│   ├── agent.rs      # Agent management commands
 │   ├── daemon.rs     # Daemon control
+│   ├── send.rs       # Send message command
 │   ├── session.rs    # Session commands
-│   ├── tool.rs       # Tool management
+│   ├── ext.rs        # Extension management
 │   └── ...
 │
-├── engine/           # Agentic loop
+├── common/           # Shared utilities, registry, services, time, identifiers
+│
+├── compaction/       # Session compaction
+│
+├── cron/             # Scheduling system
+│
+├── daemon/           # Daemon process management
+│
+├── engine/           # Agentic loop, event processing, streaming, state machine
 │   ├── loop_v4.rs    # Main execution loop
-│   ├── input.rs      # Input types (user, hook, A2A)
-│   ├── execution.rs  # Tool execution
-│   ├── events.rs     # Event types
-│   ├── runner.rs     # Turn runner
-│   ├── state.rs      # Loop state machine
-│   └── task_manager.rs # Sync/async task handling
+│   ├── input.rs      # Input types
+│   ├── events.rs     # Event types and routing
+│   └── execution.rs  # Tool execution
 │
-├── session/          # Session management
-│   ├── jsonl.rs      # JSONL storage
-│   ├── index.rs      # Sidecar indexes
-│   ├── manager.rs    # Session lifecycle
-│   ├── types.rs      # Session types
-│   └── recovery.rs   # Crash recovery
+├── extensions/       # Unified Extension Architecture
+│   ├── core/         # Core registry, types, tool registration
+│   ├── adapters/     # Builtin tool, MCP, skill adapters
+│   └── services/     # Extension services
 │
-├── tools/            # Built-in tools
-│   ├── filesystem.rs # File operations
-│   ├── process.rs    # Process execution
-│   ├── agent_spawn.rs # Subagent spawning
-│   ├── cron_tool.rs  # Cron scheduling
-│   └── ...
+├── identity/         # DID identity, keys, resolver, storage
 │
-├── team/             # Team runtime
-│   ├── mod.rs        # Team management
-│   ├── bus/          # Event bus backends
-│   │   ├── memory.rs # In-memory backend
-│   │   └── mod.rs    # Bus trait
-│   ├── config.rs     # Team config parsing
-│   └── shared.rs     # Shared services
+├── image/            # Agent image building
 │
-├── image/            # Image management
-│   ├── builder.rs    # Image building
-│   ├── config.rs     # config.toml parsing
-│   ├── manifest.rs   # Image manifest
-│   └── registry.rs   # Local registry storage
+├── ipc/              # Inter-process communication
 │
-├── registry/         # Remote registry client
-│   ├── client.rs     # Push/pull client
-│   └── config.rs     # Registry auth
-│
-├── mcp/              # MCP client
+├── mcp/              # Model Context Protocol support
 │   ├── client.rs     # MCP protocol client
-│   ├── config.rs     # mcp.json parsing
-│   ├── discovery.rs  # Tool discovery
-│   └── tool_proxy.rs # Tool call proxying
+│   ├── manager.rs    # MCP server management
+│   └── transport.rs  # Transport implementations
 │
-├── providers/        # LLM providers
+├── observability/    # Logging, metrics
+│
+├── portable/         # Portable agent packages
+│
+├── prompt/           # Prompt construction
+│
+├── providers/        # LLM provider integrations
 │   ├── anthropic.rs  # Claude
 │   ├── openai.rs     # GPT models
 │   ├── ollama.rs     # Local models
 │   ├── kimi.rs       # Moonshot AI
 │   └── traits.rs     # Provider trait
 │
-├── hooks/            # Hook system
-│   ├── event_bus.rs  # A2A messaging
-│   ├── file_watch.rs # File watcher
-│   ├── registry.rs   # Hook registration
-│   └── trigger.rs    # Hook activation
+├── registry/         # Tool registry
 │
-├── observability/    # Monitoring
-│   ├── audit.rs      # Audit logging
-│   ├── metrics.rs    # General metrics
-│   └── performance.rs # Performance tracking
+├── runtime/          # Shared runtime components
 │
-└── main.rs           # CLI entry point
+├── session/          # Session storage, overlays, JSONL
+│   ├── jsonl.rs      # JSONL storage
+│   ├── manager.rs    # Session lifecycle
+│   └── overlay.rs    # Session overlays
+│
+├── team/             # Multi-agent team runtime
+│
+├── tools/            # Tool framework
+│   ├── builtin/      # Built-in tools
+│   └── framework/    # Tool framework (async executor, traits)
+│
+├── types/            # Core type definitions
+│   └── config.rs     # Configuration types
+│
+├── lib.rs            # Library entry point
+├── main.rs           # CLI entry point
+└── watcher.rs        # File watcher
 ```
 
 ---
 
 ## Key Concepts
 
-### 1. Image vs Instance
+### 1. Agent vs Agent Directory
 
-**Image** = Blueprint (immutable)
-- Built from agent directory
-- Has SHA-256 digest
-- Stored in `.pekobot/registry/images/`
+**Agent (created with `agent create`)** = Configuration stored in Pekobot's config directory
+- Managed by Pekobot
+- No separate directory needed
 
-**Instance** = Running agent
-- Created from an image
-- Has state (running, stopped, etc.)
-- Owns sessions and workspace
-
-```rust
-// Build image
-let image = ImageBuilder::new("./my-agent/").build()?;
-
-// Create instance
-let instance = Instance::create(&image, "my-instance").await?;
-```
+**Agent Directory (created with `agent init`)** = Self-contained agent project
+- Can be version controlled
+- Contains config.toml, AGENT.md, tools/, workspace/
 
 ### 2. The Agentic Loop
 
 The core execution flow:
 
 ```
-1. Receive input (user message / hook trigger / A2A message)
+1. Receive input (user message via CLI)
 2. Build context (system prompt + history + tools)
 3. Call LLM provider
 4. Parse response (content vs tool calls)
@@ -197,8 +165,8 @@ The core execution flow:
 Sessions are stored as JSONL files:
 
 ```
-.pckobot/agents/{instance}/sessions/{session}.jsonl
-.pckobot/agents/{instance}/sessions/{session}.index.json
+{data_dir}/agents/{agent}/sessions/{session}.jsonl
+{data_dir}/agents/{agent}/sessions/{session}.index.json
 ```
 
 Each line is a JSON event:
@@ -208,49 +176,56 @@ Each line is a JSON event:
 
 **Key files:**
 - `src/session/jsonl.rs` — Atomic writes
-- `src/session/index.rs` — Sidecar indexes
+- `src/session/manager.rs` — Session lifecycle
 
 ### 4. Tool System
 
 Tools have three sources (in order of precedence):
 
-1. **Built-in** — `src/tools/*.rs`
+1. **Built-in** — `src/tools/builtin/*.rs`
 2. **Local** — `tools/` directory in agent
-3. **MCP** — External MCP servers
+3. **MCP** — External MCP servers (via extensions)
 
 **Adding a built-in tool:**
 ```rust
-// src/tools/my_tool.rs
-use crate::tools::traits::{Tool, ToolContext};
+// src/tools/builtin/my_tool.rs
+use crate::tools::framework::traits::{Tool, ToolContext, ToolResult};
+use serde_json::Value;
 
 pub struct MyTool;
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Tool for MyTool {
     fn name(&self) -> &str { "my_tool" }
     
-    async fn execute(&self, ctx: &ToolContext, params: Value) -> Result<Value> {
-        // Implementation
+    fn description(&self) -> &str { "Does something useful" }
+    
+    fn schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "input": {"type": "string"}
+            },
+            "required": ["input"]
+        })
+    }
+    
+    async fn execute(&self, ctx: &ToolContext, params: Value) -> ToolResult {
+        let input = params["input"].as_str().unwrap_or_default();
+        // Do work
+        Ok(json!({"result": "success"}))
     }
 }
 ```
 
-### 5. Event Bus (A2A)
+### 5. Extensions Architecture
 
-Agents communicate via the event bus:
+The Unified Extension Architecture (`src/extensions/`) provides a single system for skills, MCP, tools, channels, and hooks.
 
-```rust
-// Send message
-bus.send(A2AMessage::Direct {
-    target: "agent-2",
-    payload: json!({"task": "analyze"}),
-}).await?;
-
-// Receive message
-bus.subscribe("agent-1").await?.for_each(|msg| {
-    // Handle message
-});
-```
+Key components:
+- **Registry** (`src/extensions/core/registry.rs`) — Extension registration
+- **Adapters** (`src/extensions/adapters/`) — Bridge extensions to the runtime
+- **Services** (`src/extensions/services/`) — Shared extension services
 
 ---
 
@@ -293,36 +268,12 @@ pub enum Commands {
 Commands::MyFeature(cmd) => myfeature::handle_myfeature(cmd, paths).await,
 ```
 
-### Adding a New API Endpoint
-
-1. **Add route handler:**
-```rust
-// src/api/routes/myfeature.rs
-use axum::{extract::State, Json};
-use crate::api::state::AppState;
-
-pub async fn my_endpoint(
-    State(state): State<AppState>,
-) -> Json<MyResponse> {
-    Json(MyResponse { data: vec![] })
-}
-```
-
-2. **Register in router:**
-```rust
-// src/api/routes/mod.rs
-pub mod myfeature;
-
-// In routes() function
-.route("/myfeature", get(myfeature::my_endpoint))
-```
-
 ### Adding a New Tool
 
 1. **Create tool file:**
 ```rust
-// src/tools/my_tool.rs
-use crate::tools::traits::{Tool, ToolContext, ToolResult};
+// src/tools/builtin/my_tool.rs
+use crate::tools::framework::traits::{Tool, ToolContext, ToolResult};
 use serde_json::Value;
 
 pub struct MyTool;
@@ -353,7 +304,7 @@ impl Tool for MyTool {
 
 2. **Register in factory:**
 ```rust
-// src/tools/factory.rs
+// src/tools/builtin/mod.rs or appropriate registry
 pub fn create_builtin_tools() -> Vec<Box<dyn Tool>> {
     vec![
         // ... existing tools
@@ -425,27 +376,17 @@ cargo test --lib
 cargo test --lib session::
 
 # Run with output
-cargo test --lib tools::filesystem -- --nocapture
+cargo test --lib tools::builtin -- --nocapture
 ```
 
 ### Integration Tests
 
 ```bash
 # Start daemon first
-cargo run -- daemon start
+cargo run -- daemon start --foreground
 
 # Run integration tests
 cargo test --test integration
-
-# Run use case tests
-cargo test --test m12_use_case_tests -- --ignored
-```
-
-### Benchmarks
-
-```bash
-# Run performance benchmarks
-cargo bench --bench m12_performance_benchmarks
 ```
 
 ### Test Organization
@@ -453,9 +394,7 @@ cargo bench --bench m12_performance_benchmarks
 ```
 tests/
 ├── integration/          # Integration tests
-│   ├── api_tests.rs
 │   └── cli_tests.rs
-├── m12_use_case_tests.rs # Use case tests
 └── fixtures/             # Test data
 ```
 
@@ -500,7 +439,6 @@ cargo doc --no-deps --open
 cargo fmt
 cargo clippy --lib
 cargo test --lib
-cargo doc --no-deps
 ```
 
 ---
@@ -520,28 +458,14 @@ RUST_LOG=pekobot::engine=trace cargo run -- ...
 RUST_BACKTRACE=1 cargo run -- ...
 ```
 
-### Debug an Instance
+### Debug an Agent
 
 ```bash
-# Attach to running instance
-pekobot attach <instance-id>
-
-# View logs
-pekobot logs <instance-id> --follow
-
 # Check session history
-pekobot session show <instance-id> <session-id> --history
-```
+pekobot session show my-agent <session-id>
 
-### API Debugging
-
-```bash
-# Verbose curl
-curl -v http://localhost:11435/health
-
-# With request ID for tracing
-curl -H "X-Request-ID: debug-123" http://localhost:11435/agents
-# Then grep logs: grep "debug-123" ~/.pekobot/logs/daemon.log
+# Enable verbose output
+pekobot send my-agent "Hello" -vv
 ```
 
 ---
@@ -555,33 +479,20 @@ curl -H "X-Request-ID: debug-123" http://localhost:11435/agents
 pekobot daemon stop
 
 # Clear all data
-rm -rf ~/.pekobot
+rm -rf ~/.local/share/pekobot
+rm -rf ~/.config/pekobot
 
 # Start fresh
-pekobot daemon start
+pekobot daemon start --foreground
 ```
 
 ### Test Against Different Providers
 
 ```bash
 # Create agent with specific provider
-pekobot agent init ./test-agent --provider anthropic
+pekobot agent create test-agent --provider minimax
 export ANTHROPIC_API_KEY="..."
-pekobot run ./test-agent/
-```
-
-### Profile Performance
-
-```bash
-# Build with release
-cargo build --release
-
-# Run with timing
-./target/release/pekobot daemon start --foreground &
-time ./target/release/pekobot run my-agent:v1.0 --message "Hello"
-
-# Get metrics
-curl http://localhost:11435/metrics/performance | jq
+pekobot send test-agent "Hello"
 ```
 
 ---
@@ -589,9 +500,7 @@ curl http://localhost:11435/metrics/performance | jq
 ## Resources
 
 - [Architecture Overview](./ARCHITECTURE.md) — High-level design
-- [API Contract](../../API_CONTRACT.md) — HTTP API spec
 - [Error Codes](../reference/ERROR_CODES.md) — Error reference
-- [API Examples](../api-examples.md) — Usage examples
 
 ---
 
@@ -599,7 +508,6 @@ curl http://localhost:11435/metrics/performance | jq
 
 - **GitHub Issues:** Bug reports and feature requests
 - **Discussions:** Questions and ideas
-- **Discord:** Real-time chat (link in README)
 
 ---
 

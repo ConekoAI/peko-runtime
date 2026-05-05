@@ -4,104 +4,118 @@ Get started with MCP servers in 5 minutes.
 
 ## Prerequisites
 
-- Pekobot v0.7.0 or later
-- Rust toolchain (for building from source)
+- Pekobot built from source
+- MCP server binaries or extension packages
 
 ## 1. Install MCP Servers
 
+MCP servers are installed as extensions via the unified extension system:
+
 ```bash
-# Install all recommended servers
-pekobot mcp install web
-pekobot mcp install browser
-pekobot mcp install memory
+# Install an MCP server extension
+pekobot ext install ./mcp-filesystem-server
+
+# Or from a remote source
+pekobot ext install ./mcp-web-server
 ```
 
 ## 2. Verify Installation
 
 ```bash
-pekobot mcp status
+# List installed extensions
+pekobot ext list
+
+# Show MCP extension details
+pekobot ext info filesystem-mcp
 ```
 
-You should see:
-```
-NAME            STATUS       TOOLS      BINARY
-------------------------------------------------------------
-web             ✅           0          installed
-browser         ✅           0          installed
-memory          ✅           0          installed
-```
+You should see the extension listed with type `mcp`.
 
-## 3. Test Tools
+## 3. Enable the Extension
 
 ```bash
-# Test web search
-pekobot mcp call web web_search --kv query="rust programming"
-
-# Test fetch
-pekobot mcp call web fetch --kv url=https://example.com
-
-# Test HTTP
-pekobot mcp call web http --kv method=GET --kv url=https://api.github.com
+# Enable the MCP extension
+pekobot ext enable filesystem-mcp
 ```
 
 ## 4. Use with Agent
 
-Start an agent as usual. MCP tools are automatically available:
+MCP tools are automatically available to agents once the extension is enabled:
 
 ```bash
-pekobot agent start my-agent
+pekobot send myagent "Read the file README.md"
 ```
 
 ## Common Tasks
 
-### List Available Tools
+### List Available Extensions
 
 ```bash
-pekobot mcp tools
+pekobot ext list --type mcp
 ```
 
-### Test Server Health
+### Test Extension Health
 
 ```bash
-pekobot mcp test web
+# Check extension status
+pekobot ext info filesystem-mcp
+
+# Debug extension
+pekobot ext debug filesystem-mcp
 ```
 
-### View Configuration
+### View Extension Configuration
 
 ```bash
-pekobot mcp config
+# Show config
+pekobot ext config filesystem-mcp --show
+
+# Set config value
+pekobot ext config filesystem-mcp --set timeout=30
 ```
 
-### Reinstall a Server
+### Reinstall an Extension
 
 ```bash
-pekobot mcp install web --force
+# Uninstall and reinstall
+pekobot ext uninstall filesystem-mcp
+pekobot ext install ./mcp-filesystem-server
 ```
 
 ## Troubleshooting
 
-### Server Not Found
+### Extension Not Found
 
 ```bash
-# Check if binary exists
-ls ~/.pekobot/mcp-servers/
+# Check if extension is installed
+pekobot ext list
 
 # Reinstall if missing
-pekobot mcp install web
+pekobot ext install ./mcp-filesystem-server
 ```
 
 ### Connection Failed
 
 ```bash
-# Test the server
-pekobot mcp test web
+# Check extension status
+pekobot ext info filesystem-mcp
 
-# Check for errors
-pekobot mcp test web -vv
+# Check daemon logs
+pekobot daemon start --foreground
+```
+
+### Tools Not Appearing
+
+```bash
+# Ensure extension is enabled
+pekobot ext enable filesystem-mcp
+
+# Validate extension manifest
+pekobot ext validate ./mcp-filesystem-server
 ```
 
 ## Next Steps
 
+- Read the [MCP Overview](MCP.md)
 - Read the [Migration Guide](MIGRATION_GUIDE.md)
-- Learn about [MCP Configuration](CONFIGURATION.md)
-- Explore [Available Tools](TOOLS.md)
+- Learn about the [Extension System](../architecture/EXTENSION_SYSTEM.md)
