@@ -18,9 +18,9 @@
 //! ```
 
 use crate::extensions::services::ReservedParamsConfig;
-use crate::extensions::runtime::mcp_tool_proxy::McpToolProxy;
-use crate::mcp::types::Tool as McpTool;
-use crate::extensions::protocols::shared::proxy_utils::execute_with_context_handling;
+use crate::extensions::mcp::runtime::tool_proxy::McpToolProxy;
+use crate::extensions::mcp::protocol::types::Tool as McpTool;
+use crate::extension::protocols::shared::proxy_utils::execute_with_context_handling;
 use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -53,7 +53,7 @@ impl InjectableMcpToolProxy {
     pub fn new(
         server_name: String,
         tool: McpTool,
-        manager: Arc<RwLock<crate::mcp::manager::McpManager>>,
+        manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
         reserved_params: ReservedParamsConfig,
     ) -> Self {
         let inner = McpToolProxy::new(server_name, tool.clone(), manager);
@@ -72,7 +72,7 @@ impl InjectableMcpToolProxy {
     pub fn with_duration(
         server_name: String,
         tool: McpTool,
-        manager: Arc<RwLock<crate::mcp::manager::McpManager>>,
+        manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
         reserved_params: ReservedParamsConfig,
         estimated_duration_ms: u64,
     ) -> Self {
@@ -120,7 +120,7 @@ impl InjectableMcpToolProxy {
     ///
     /// Uses the shared schema filter for consistency with Universal Tools.
     fn filter_schema(schema: &Value, reserved: &ReservedParamsConfig) -> Value {
-        use crate::extensions::protocols::shared::filter_reserved_params;
+        use crate::extension::protocols::shared::filter_reserved_params;
         use std::collections::HashSet;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();

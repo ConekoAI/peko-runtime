@@ -87,9 +87,6 @@ pub mod providers;
 
 /// Tool registry and management
 /// Unified capability framework (tools, MCP, skills)
-/// MCP (Model Context Protocol) support
-pub mod mcp;
-
 /// Unified Extension Framework (generic, no external deps)
 pub mod extension;
 

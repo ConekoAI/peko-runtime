@@ -3,7 +3,7 @@
 //! Exports agents to `.agent` files (tar.gz archives with manifest)
 
 use crate::identity::Identity;
-use crate::mcp::config::{McpConfig, TransportType};
+use crate::extensions::mcp::protocol::config::{McpConfig, TransportType};
 use crate::portable::manifest::{AgentManifest, McpManifestEntry, ToolSourceRef};
 use crate::types::agent::AgentConfig;
 use anyhow::Context;
@@ -441,7 +441,7 @@ impl Packager {
     /// Try to bundle an MCP server binary
     async fn try_bundle_mcp_binary(
         &self,
-        server: &crate::mcp::config::McpServerConfig,
+        server: &crate::extensions::mcp::protocol::config::McpServerConfig,
         files: &mut HashMap<String, Vec<u8>>,
         manifest: &mut AgentManifest,
         entry: &mut McpManifestEntry,

@@ -3,11 +3,11 @@
 //! Adapts MCP tools to Pekobot's Tool trait, allowing MCP tools to be used
 //! seamlessly by the agent system.
 
-use crate::mcp::{
+use crate::extensions::mcp::protocol::{
     manager::McpManager,
     types::{CallToolResult, Tool as McpTool, ToolResultContent},
 };
-use crate::extensions::protocols::shared::proxy_utils::{estimate_tool_duration, execute_with_context_handling};
+use crate::extension::protocols::shared::proxy_utils::{estimate_tool_duration, execute_with_context_handling};
 use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::json;
@@ -101,7 +101,7 @@ impl McpToolProxy {
             .await
         {
             Ok(result) => Ok(result),
-            Err(crate::mcp::manager::ManagerError::ServerNotRunning(_)) => {
+            Err(crate::extensions::mcp::protocol::manager::ManagerError::ServerNotRunning(_)) => {
                 // Server not running, try to start it
                 drop(manager); // Drop read lock before starting server
                 let manager = self.manager.write().await;
@@ -264,7 +264,7 @@ pub async fn create_tool_proxy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::config::McpConfig;
+    use crate::extensions::mcp::protocol::config::McpConfig;
 
     #[test]
     fn test_tool_proxy_creation() {
@@ -304,7 +304,7 @@ mod tests {
 
         // Test successful result
         let result = CallToolResult {
-            content: vec![ToolResultContent::Text(crate::mcp::types::TextContent {
+            content: vec![ToolResultContent::Text(crate::extensions::mcp::protocol::types::TextContent {
                 text: "Hello".to_string(),
             })],
             is_error: false,

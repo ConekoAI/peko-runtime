@@ -17,13 +17,13 @@
 //!   connections, not supervised child processes.
 
 use crate::daemon::background_runtime::{BackgroundRuntimeManager, RuntimeState};
-use crate::mcp::{
+use crate::extensions::mcp::protocol::{
     client::{ClientError, McpClient},
     config::{McpConfig, McpServerConfig, TransportType},
     transport::{SseTransport, StdioTransport},
     types::Tool,
 };
-use crate::extensions::runtime::{McpClientRegistry, McpRuntimeAdapter, McpServerInfo};
+use crate::extensions::mcp::runtime::adapter::{McpClientRegistry, McpRuntimeAdapter, McpServerInfo};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -521,7 +521,7 @@ impl McpManager {
     /// # Returns
     /// A vector of `Arc<dyn Tool>` containing all MCP tools from running servers
     pub async fn get_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::extensions::runtime::{InjectableMcpToolProxy, McpToolProxy};
+        use crate::extensions::mcp::runtime::{injectable_proxy::InjectableMcpToolProxy, tool_proxy::McpToolProxy};
 
         let servers = self.servers.read().await;
         let manager_arc = Arc::new(RwLock::new(self.clone()));
@@ -576,7 +576,7 @@ impl McpManager {
         server_name: &str,
         tool_name: &str,
         arguments: serde_json::Value,
-    ) -> Result<crate::mcp::types::CallToolResult> {
+    ) -> Result<crate::extensions::mcp::protocol::types::CallToolResult> {
         let client = self.get_client(server_name).await?;
         let client = client.read().await;
 

@@ -5,8 +5,8 @@
 
 use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
 use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
-use crate::extensions::runtime::gateway_runtime_adapter::{GatewayRuntimeAdapter, GatewayFlavor};
-use crate::extensions::runtime::gateway_router::GatewayRouter;
+use super::adapter::{GatewayRuntimeAdapter, GatewayFlavor};
+use super::router::GatewayRouter;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -152,8 +152,8 @@ impl ExtensionRuntimeStarter for GatewayRuntimeStarter {
 /// Parse gateway routing configuration from manifest config section
 fn parse_gateway_routing_config(
     config: &serde_yaml::Value,
-) -> crate::extensions::runtime::gateway_router::GatewayRoutingConfig {
-    use crate::extensions::runtime::gateway_router::GatewayRoutingConfig;
+) -> super::router::GatewayRoutingConfig {
+    use super::router::GatewayRoutingConfig;
 
     let default_agent = config
         .get("routing")

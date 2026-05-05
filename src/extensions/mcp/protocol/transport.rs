@@ -4,7 +4,7 @@
 //! - `StdioTransport`: Local subprocess communication
 //! - `SseTransport`: HTTP+SSE remote communication (Phase 2)
 
-use crate::mcp::types::JsonRpcMessage;
+use crate::extensions::mcp::protocol::types::JsonRpcMessage;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -798,7 +798,7 @@ struct SseEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::types::JsonRpcRequest;
+    use crate::extensions::mcp::protocol::types::JsonRpcRequest;
 
     #[tokio::test]
     async fn test_in_memory_transport() {

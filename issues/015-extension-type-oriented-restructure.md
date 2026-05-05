@@ -1,7 +1,7 @@
 # Issue 015: Extension Type-Oriented Module Restructure
 
 **Severity:** MEDIUM  
-**Status:** 🟡 **Open** — Awaiting implementation  
+**Status:** 🟡 **Open** — Phase 2 complete, Phases 3–5 pending  
 **Labels:** `architecture`, `extensions`, `adr-017`, `refactor`, `module-boundaries`  
 **Reported:** 2026-05-05  
 **Related:** ADR-017 (Unified Extension Architecture), Issue 014 (closed), `AGENTS.md`
@@ -184,6 +184,8 @@ src/portable/                ← depends on extensions/mcp/protocol/config
 
 ### Phase 1: Framework Extraction — Create `src/extension/`
 
+**Status:** ✅ **Complete**
+
 **Goal:** Move generic framework code out of `src/extensions/` into `src/extension/`.
 
 | From | To |
@@ -198,18 +200,20 @@ src/portable/                ← depends on extensions/mcp/protocol/config
 | `src/extensions/protocols/shared/` | `src/extension/protocols/shared/` |
 
 **Steps:**
-1. Create `src/extension/` directory structure.
-2. Move framework modules.
-3. Update all `use crate::extensions::core::...` → `use crate::extension::core::...` across the codebase.
-4. Update `src/extensions/mod.rs` to re-export from `src/extension/` for backward compatibility during migration.
-5. Update `src/lib.rs` module declarations.
+1. ✅ Create `src/extension/` directory structure.
+2. ✅ Move framework modules.
+3. ✅ Update all `use crate::extensions::core::...` → `use crate::extension::core::...` across the codebase.
+4. ✅ Update `src/extensions/mod.rs` to re-export from `src/extension/` for backward compatibility during migration.
+5. ✅ Update `src/lib.rs` module declarations.
 
 **Acceptance Criteria:**
-- [ ] `cargo check` passes.
-- [ ] `cargo test` passes.
-- [ ] `src/extension/` contains only generic framework code.
+- [x] `cargo check` passes.
+- [x] `cargo test` passes.
+- [x] `src/extension/` contains only generic framework code.
 
 ### Phase 2: Extension Type Consolidation — Create `src/extensions/<type>/`
+
+**Status:** ✅ **Complete** (2026-05-05)
 
 **Goal:** Group each extension type's code into a single directory.
 
@@ -238,21 +242,23 @@ src/portable/                ← depends on extensions/mcp/protocol/config
 | `src/extensions/adapters/general_adapter.rs` | `src/extensions/general/adapter.rs` |
 
 **Steps:**
-1. Create `src/extensions/mcp/`, `gateway/`, `universal/`, `skill/`, `builtin/`, `general/`.
-2. Move files as listed above.
-3. Update all `use` statements across the codebase.
-4. Update `src/mcp/mod.rs` → either delete or turn into a thin re-export of `crate::extensions::mcp::protocol::*`.
-5. Update `src/extensions/mod.rs` to declare submodules and re-export.
-6. Update `src/extensions/adapters/mod.rs` — either delete or keep as a compatibility re-export layer during migration.
-7. Update `src/extensions/runtime/mod.rs` — same as above.
-8. Update `src/extensions/protocols/mod.rs` — remove `gateway/` and `universal/`, keep only shared re-exports (or move shared to `src/extension/protocols/shared/` in Phase 1).
+1. ✅ Create `src/extensions/mcp/`, `gateway/`, `universal/`, `skill/`, `builtin/`, `general/`.
+2. ✅ Move files as listed above.
+3. ✅ Update all `use` statements across the codebase.
+4. ✅ `src/mcp/mod.rs` deleted (module absorbed into `src/extensions/mcp/protocol/`).
+5. ✅ Update `src/extensions/mod.rs` to declare submodules and re-export.
+6. ✅ `src/extensions/adapters/mod.rs` kept as compatibility re-export layer.
+7. ✅ `src/extensions/runtime/mod.rs` kept as compatibility re-export layer.
+8. ✅ `src/extensions/protocols/mod.rs` updated — `gateway/` and `universal/` removed, only shared re-exports remain.
 
 **Acceptance Criteria:**
-- [ ] `cargo check` passes.
-- [ ] `cargo test` passes.
-- [ ] Each extension type's code lives in exactly one directory under `src/extensions/<type>/`.
+- [x] `cargo check` passes.
+- [x] `cargo test` passes.
+- [x] Each extension type's code lives in exactly one directory under `src/extensions/<type>/`.
 
 ### Phase 3: Consumer Updates
+
+**Status:** 🟡 **Partially complete** — `src/mcp/` deleted and consumer `use` statements updated during Phase 2. Remaining: delete backward-compatibility `mod.rs` layers once all consumers migrated.
 
 **Goal:** Update all non-extension code that references old paths.
 
@@ -264,16 +270,16 @@ src/portable/                ← depends on extensions/mcp/protocol/config
 | `src/daemon/background_runtime/mod.rs` | re-exports from `extensions::runtime` | update re-export paths |
 
 **Steps:**
-1. Audit all `use crate::mcp::` and `use crate::extensions::` across non-extension modules.
-2. Update to new paths.
-3. Delete `src/mcp/` once all references are gone.
-4. Delete `src/extensions/adapters/`, `src/extensions/runtime/`, `src/extensions/protocols/` once empty.
+1. ✅ Audit all `use crate::mcp::` and `use crate::extensions::` across non-extension modules.
+2. ✅ Update to new paths.
+3. ✅ Delete `src/mcp/` once all references are gone.
+4. 🔄 Delete `src/extensions/adapters/`, `src/extensions/runtime/`, `src/extensions/protocols/` once empty (pending Phase 4).
 
 **Acceptance Criteria:**
-- [ ] `cargo check` passes.
-- [ ] `cargo test` passes.
-- [ ] `src/mcp/` no longer exists.
-- [ ] `src/extensions/adapters/`, `runtime/`, `protocols/` no longer exist (or contain only shared/framework code).
+- [x] `cargo check` passes.
+- [x] `cargo test` passes.
+- [x] `src/mcp/` no longer exists.
+- [ ] `src/extensions/adapters/`, `runtime/`, `protocols/` no longer exist as mixed directories (deferred to Phase 4).
 
 ### Phase 4: Cleanup & Documentation
 

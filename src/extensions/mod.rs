@@ -60,9 +60,15 @@ pub use crate::extension::types;
 
 // Submodules for extension type implementations
 pub mod adapters;
+pub mod builtin;
+pub mod gateway;
+pub mod general;
 pub mod migration;
+pub mod mcp;
 pub mod protocols;
 pub mod runtime;
+pub mod skill;
+pub mod universal;
 
 /// Extension type identifiers
 pub mod extension_types {

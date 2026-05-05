@@ -212,9 +212,9 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
         GENERAL_EXTENSION_TYPE
     }
 
-    fn manifest_format(&self) -> super::ManifestFormat {
+    fn manifest_format(&self) -> crate::extensions::adapters::ManifestFormat {
         // ADR-024: General extensions use pure YAML manifest.yaml with extension_type: "general".
-        super::ManifestFormat::Yaml {
+        crate::extensions::adapters::ManifestFormat::Yaml {
             schema: "general".to_string(),
             file_name: "manifest.yaml",
         }
@@ -230,7 +230,7 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse general extension manifest at {path:?}"))?;
 
-        let (id, name, version, description) = super::parsing::extract_extension_fields(&yaml)?;
+        let (id, name, version, description) = crate::extensions::adapters::parsing::extract_extension_fields(&yaml)?;
 
         // Validate extension_type if present (absence is allowed for legacy fallback)
         if let Some(ext_type) = yaml.get("extension_type").and_then(|v| v.as_str()) {
@@ -253,7 +253,7 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
 
         // Store hooks in manifest metadata
         if let Some(hooks) = yaml.get("hooks") {
-            manifest.set("hooks", super::parsing::yaml_to_json(hooks.clone()));
+            manifest.set("hooks", crate::extensions::adapters::parsing::yaml_to_json(hooks.clone()));
         }
 
         // Store any additional metadata
@@ -263,7 +263,7 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
                     if !["id", "name", "version", "description", "extension_type", "hooks"]
                         .contains(&key)
                     {
-                        manifest.set(key, super::parsing::yaml_to_json(v.clone()));
+                        manifest.set(key, crate::extensions::adapters::parsing::yaml_to_json(v.clone()));
                     }
                 }
             }
@@ -634,7 +634,7 @@ mod tests {
 
         assert!(matches!(
             format,
-            super::super::ManifestFormat::Yaml { .. }
+            crate::extensions::adapters::ManifestFormat::Yaml { .. }
         ));
     }
 

@@ -3,7 +3,7 @@
 //! Automatically discovers MCP servers from configuration.
 //! Provides status information about available MCP servers.
 
-use crate::mcp::{McpConfig, McpServerConfig};
+use crate::extensions::mcp::protocol::config::{McpConfig, McpServerConfig};
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 

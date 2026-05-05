@@ -3,8 +3,8 @@
 //! Provides a high-level client for communicating with MCP servers.
 //! Handles JSON-RPC request/response correlation, initialization, and lifecycle.
 
-use crate::mcp::transport::{McpTransport, TransportError};
-use crate::mcp::types::{
+use crate::extensions::mcp::protocol::transport::{McpTransport, TransportError};
+use crate::extensions::mcp::protocol::types::{
     CallToolRequest, CallToolResult, ClientCapabilities, GetPromptRequest, GetPromptResult,
     Implementation, InitializeRequest, InitializeResult, JsonRpcMessage, JsonRpcNotification,
     JsonRpcRequest, ListPromptsRequest, ListPromptsResult, ListResourcesRequest,
@@ -530,7 +530,7 @@ impl Drop for McpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::transport::InMemoryTransport;
+    use crate::extensions::mcp::protocol::transport::InMemoryTransport;
 
     fn create_test_client() -> (McpClient, McpClient) {
         let (transport1, transport2) = InMemoryTransport::pair();

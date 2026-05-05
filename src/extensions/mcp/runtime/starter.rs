@@ -8,10 +8,10 @@
 
 use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
 use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
-use crate::mcp::{
+use crate::extensions::mcp::protocol::{
     config::{McpServerConfig, TransportType},
 };
-use crate::extensions::runtime::mcp_runtime_adapter::McpRuntimeAdapter;
+use crate::extensions::mcp::runtime::adapter::McpRuntimeAdapter;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -83,7 +83,7 @@ impl McpRuntimeStarter {
             let content = tokio::fs::read_to_string(&toml_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read config.toml: {e}"))?;
-            let config: crate::mcp::config::McpConfig = toml::from_str(&content)
+            let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(&content)
                 .map_err(|e| anyhow::anyhow!("Failed to parse config.toml: {e}"))?;
             return Ok(config.servers);
         }
@@ -92,7 +92,7 @@ impl McpRuntimeStarter {
             let content = tokio::fs::read_to_string(&json_config_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read config.json: {e}"))?;
-            let config: crate::mcp::config::McpConfig = serde_json::from_str(&content)
+            let config: crate::extensions::mcp::protocol::config::McpConfig = serde_json::from_str(&content)
                 .map_err(|e| anyhow::anyhow!("Failed to parse config.json: {e}"))?;
             return Ok(config.servers);
         }

@@ -5,7 +5,7 @@
 
 use crate::extensions::services::ReservedParamsConfig;
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
-use crate::mcp::config::{McpConfig, McpServerConfig, TransportType};
+use crate::extensions::mcp::protocol::config::{McpConfig, McpServerConfig, TransportType};
 use crate::portable::{
     crypto::{decrypt_with_passphrase, deserialize_encrypted},
     manifest::{AgentManifest, McpManifestEntry},

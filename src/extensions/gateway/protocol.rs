@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 // Re-export the canonical GatewayRoutingConfig from the router module
-pub use crate::extensions::runtime::gateway_router::GatewayRoutingConfig;
+pub use crate::extensions::gateway::runtime::router::GatewayRoutingConfig;
 
 // =============================================================================
 // Daemon → Gateway (stdin)

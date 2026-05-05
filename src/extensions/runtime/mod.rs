@@ -1,31 +1,12 @@
-//! Extension runtime layer
+//! Extension Runtime — Backward Compatibility Re-exports
 //!
-//! This module contains runtime adapters and starters that bridge extension
-//! protocols to the daemon's background runtime infrastructure.
+//! This module is preserved during Phase 2 migration as a compatibility layer.
+//! All runtime implementations have moved to `src/extensions/<type>/runtime/`.
 //!
-//! # MCP Runtime
-//! - `mcp_runtime_adapter`: Bridges MCP servers to BackgroundRuntimeManager
-//! - `mcp_tool_proxy`: Adapts MCP tools to Pekobot's Tool trait
-//! - `mcp_injectable_proxy`: Wraps McpToolProxy with reserved parameter injection
-//! - `mcp_starter`: ExtensionRuntimeStarter implementation for MCP extensions
-//!
-//! # Gateway Runtime
-//! - `gateway_runtime_adapter`: BackgroundRuntimeAdapter implementation for gateways
-//! - `gateway_router`: Routes incoming gateway messages to agents
-//! - `gateway_starter`: ExtensionRuntimeStarter implementation for gateway extensions
+//! # New Locations
+//! - `crate::extensions::mcp::runtime` — MCP runtime adapters and starters
+//! - `crate::extensions::gateway::runtime` — Gateway runtime adapters and starters
 
-pub mod gateway_runtime_adapter;
-pub mod gateway_router;
-pub mod gateway_starter;
-pub mod mcp_runtime_adapter;
-pub mod mcp_starter;
-pub mod mcp_tool_proxy;
-pub mod mcp_injectable_proxy;
-
-pub use gateway_runtime_adapter::{GatewayFlavor, GatewayRuntimeAdapter};
-pub use gateway_router::{GatewayRouter, GatewayRoutingConfig, QueuedMessage};
-pub use gateway_starter::GatewayRuntimeStarter;
-pub use mcp_runtime_adapter::{McpClientRegistry, McpRuntimeAdapter, McpRuntimeAdapterError, McpServerInfo};
-pub use mcp_starter::McpRuntimeStarter;
-pub use mcp_tool_proxy::{create_tool_proxies, create_tool_proxy, McpToolProxy};
-pub use mcp_injectable_proxy::InjectableMcpToolProxy;
+// Re-export from new type-oriented locations for backward compatibility
+pub use crate::extensions::gateway::runtime::*;
+pub use crate::extensions::mcp::runtime::*;

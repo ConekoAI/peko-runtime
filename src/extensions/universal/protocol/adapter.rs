@@ -362,7 +362,7 @@ mod tests {
             llm_description: None,
             parameters: json!({"type": "object"}),
             reserved_parameters: ReservedParamsConfig::new(),
-            protocol: super::super::manifest::ProtocolConfig::default(),
+            protocol: crate::extensions::universal::protocol::manifest::ProtocolConfig::default(),
             extra: std::collections::HashMap::new(),
         };
 
@@ -389,7 +389,7 @@ mod tests {
                 }
             }),
             reserved_parameters: ReservedParamsConfig::new(),
-            protocol: super::super::manifest::ProtocolConfig::default(),
+            protocol: crate::extensions::universal::protocol::manifest::ProtocolConfig::default(),
             extra: std::collections::HashMap::new(),
         };
 

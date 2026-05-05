@@ -125,7 +125,7 @@ impl UniversalToolAdapter {
             .await
             .with_context(|| format!("Failed to read manifest {manifest_path:?}"))?;
 
-        let tool_manifest: crate::extensions::protocols::universal::Manifest = serde_json::from_str(&content)
+        let tool_manifest: crate::extensions::universal::protocol::Manifest = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse manifest {manifest_path:?}"))?;
 
         let mut manifest = ExtensionManifest::new(
@@ -161,7 +161,7 @@ impl UniversalToolAdapter {
 
     /// Find executable for a tool (delegates to shared utility)
     async fn find_executable(&self, tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
-        super::parsing::find_executable(tool_path, tool_name).await
+        crate::extensions::adapters::parsing::find_executable(tool_path, tool_name).await
     }
 
     /// Register a universal tool with the unified registry (ADR-018b)
@@ -276,12 +276,12 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
             .with_context(|| format!("Failed to parse universal tool YAML manifest at {path:?}"))?;
 
         let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
-        let tool_name = super::parsing::require_string_field(&yaml, "name")
-            .or_else(|_| super::parsing::require_string_field(&yaml, "id"))?;
-        let description = super::parsing::optional_string_field(&yaml, "description", "");
-        let version = super::parsing::optional_string_field(&yaml, "version", "1.0.0");
+        let tool_name = crate::extensions::adapters::parsing::require_string_field(&yaml, "name")
+            .or_else(|_| crate::extensions::adapters::parsing::require_string_field(&yaml, "id"))?;
+        let description = crate::extensions::adapters::parsing::optional_string_field(&yaml, "description", "");
+        let version = crate::extensions::adapters::parsing::optional_string_field(&yaml, "version", "1.0.0");
 
-        let executable = super::parsing::find_executable_sync(tool_path, &tool_name)
+        let executable = crate::extensions::adapters::parsing::find_executable_sync(tool_path, &tool_name)
             .with_context(|| {
                 format!(
                     "Failed to find executable for tool '{}' in {:?}",
@@ -303,7 +303,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
 
         // Parameters schema
         if let Some(params) = yaml.get("parameters") {
-            manifest.set("parameters", super::parsing::yaml_to_json(params.clone()));
+            manifest.set("parameters", crate::extensions::adapters::parsing::yaml_to_json(params.clone()));
         }
 
         // LLM description
@@ -313,7 +313,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
 
         // Reserved parameters
         if let Some(reserved) = yaml.get("reserved_parameters") {
-            manifest.set("reserved_parameters", super::parsing::yaml_to_json(reserved.clone()));
+            manifest.set("reserved_parameters", crate::extensions::adapters::parsing::yaml_to_json(reserved.clone()));
         }
 
         Ok(manifest)
@@ -368,11 +368,11 @@ impl UniversalToolAdapter {
     ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
         use anyhow::Context;
 
-        let tool_manifest: crate::extensions::protocols::universal::Manifest = serde_json::from_str(content)
+        let tool_manifest: crate::extensions::universal::protocol::Manifest = serde_json::from_str(content)
             .with_context(|| format!("Failed to parse universal tool manifest at {path:?}"))?;
 
         let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
-        let executable = super::parsing::find_executable_sync(tool_path, &tool_manifest.name)
+        let executable = crate::extensions::adapters::parsing::find_executable_sync(tool_path, &tool_manifest.name)
             .with_context(|| {
                 format!(
                     "Failed to find executable for tool '{}' in {:?}",
@@ -426,7 +426,7 @@ impl HookHandler for UniversalToolExecuteHandler {
                 &exec_config,
                 None::<fn(&mut serde_json::Value, Option<&str>)>,
                 move |merged_params| async move {
-                    let adapter = crate::extensions::protocols::universal::UniversalToolAdapter::from_manifest(
+                    let adapter = crate::extensions::universal::protocol::UniversalToolAdapter::from_manifest(
                         &manifest_path,
                         &executable,
                     )

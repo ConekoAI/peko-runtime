@@ -288,7 +288,7 @@ pub struct LegacySkill {
 #[derive(Debug, Clone)]
 pub struct LegacyMcpServer {
     pub name: String,
-    pub config: crate::mcp::config::McpServerConfig,
+    pub config: crate::extensions::mcp::protocol::config::McpServerConfig,
 }
 
 /// Legacy universal tool information
@@ -416,7 +416,7 @@ pub async fn discover_legacy_mcp_servers() -> Result<Vec<LegacyMcpServer>> {
         .await
         .with_context(|| format!("Failed to read MCP config from {mcp_toml:?}"))?;
 
-    let config: crate::mcp::config::McpConfig = toml::from_str(&content)
+    let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(&content)
         .with_context(|| format!("Failed to parse MCP config from {mcp_toml:?}"))?;
 
     for server_config in config.servers {
@@ -615,8 +615,8 @@ async fn create_mcp_extension_dir(server: &LegacyMcpServer) -> Result<PathBuf> {
         "mcp_config": {
             "name": server.config.name,
             "transport": match server.config.transport {
-                crate::mcp::config::TransportType::Stdio => "stdio",
-                crate::mcp::config::TransportType::Sse => "sse",
+                crate::extensions::mcp::protocol::config::TransportType::Stdio => "stdio",
+                crate::extensions::mcp::protocol::config::TransportType::Sse => "sse",
             },
             "command": server.config.command,
             "args": server.config.args,

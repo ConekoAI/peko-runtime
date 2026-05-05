@@ -50,14 +50,14 @@ pub const MCP_HOOK_PRIORITY: i32 = 50;
 pub const MCP_TOOL_PREFIX: &str = "mcp";
 
 /// Global MCP manager instance shared across all adapters
-static GLOBAL_MCP_MANAGER: OnceLock<Arc<RwLock<crate::mcp::McpManager>>> = OnceLock::new();
+static GLOBAL_MCP_MANAGER: OnceLock<Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>> = OnceLock::new();
 
 /// Get or initialize the global MCP manager
-fn get_global_mcp_manager() -> Arc<RwLock<crate::mcp::McpManager>> {
+fn get_global_mcp_manager() -> Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>> {
     GLOBAL_MCP_MANAGER
         .get_or_init(|| {
-            let config = crate::mcp::McpConfig::default();
-            Arc::new(RwLock::new(crate::mcp::McpManager::new(config)))
+            let config = crate::extensions::mcp::protocol::config::McpConfig::default();
+            Arc::new(RwLock::new(crate::extensions::mcp::protocol::manager::McpManager::new(config)))
         })
         .clone()
 }
@@ -65,7 +65,7 @@ fn get_global_mcp_manager() -> Arc<RwLock<crate::mcp::McpManager>> {
 /// MCP adapter for Extension system
 pub struct McpAdapter {
     /// Shared MCP manager for all servers
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
 }
 
 impl std::fmt::Debug for McpAdapter {
@@ -78,7 +78,7 @@ impl std::fmt::Debug for McpAdapter {
 
 impl McpAdapter {
     /// Create a new MCP adapter
-    pub fn new(manager: Arc<RwLock<crate::mcp::McpManager>>) -> Self {
+    pub fn new(manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>) -> Self {
         Self { manager }
     }
 
@@ -94,8 +94,8 @@ impl McpAdapter {
     #[cfg(test)]
     #[must_use]
     pub fn with_fresh_manager() -> Self {
-        let config = crate::mcp::McpConfig::default();
-        let manager = Arc::new(RwLock::new(crate::mcp::McpManager::new(config)));
+        let config = crate::extensions::mcp::protocol::config::McpConfig::default();
+        let manager = Arc::new(RwLock::new(crate::extensions::mcp::protocol::manager::McpManager::new(config)));
         Self { manager }
     }
 
@@ -176,13 +176,13 @@ impl McpAdapter {
             .await
             .with_context(|| format!("Failed to read config {path:?}"))?;
 
-        let server_configs: Vec<crate::mcp::McpServerConfig> =
+        let server_configs: Vec<crate::extensions::mcp::protocol::config::McpServerConfig> =
             if path.extension().is_some_and(|e| e == "toml") {
-                let config: crate::mcp::McpConfig = toml::from_str(&content)
+                let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(&content)
                     .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
                 config.servers
             } else {
-                let config: crate::mcp::McpConfig = serde_json::from_str(&content)
+                let config: crate::extensions::mcp::protocol::config::McpConfig = serde_json::from_str(&content)
                     .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
                 config.servers
             };
@@ -212,18 +212,18 @@ impl McpAdapter {
     }
 
     /// Load server config from a file
-    async fn load_server_config(path: &Path) -> Result<crate::mcp::McpServerConfig> {
+    async fn load_server_config(path: &Path) -> Result<crate::extensions::mcp::protocol::config::McpServerConfig> {
         let content = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read config {path:?}"))?;
 
-        let server_configs: Vec<crate::mcp::McpServerConfig> =
+        let server_configs: Vec<crate::extensions::mcp::protocol::config::McpServerConfig> =
             if path.extension().is_some_and(|e| e == "toml") {
-                let config: crate::mcp::McpConfig = toml::from_str(&content)
+                let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(&content)
                     .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
                 config.servers
             } else {
-                let config: crate::mcp::McpConfig = serde_json::from_str(&content)
+                let config: crate::extensions::mcp::protocol::config::McpConfig = serde_json::from_str(&content)
                     .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
                 config.servers
             };
@@ -236,7 +236,7 @@ impl McpAdapter {
 
     /// Get the MCP manager
     #[must_use]
-    pub fn manager(&self) -> Arc<RwLock<crate::mcp::McpManager>> {
+    pub fn manager(&self) -> Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>> {
         self.manager.clone()
     }
 
@@ -294,7 +294,7 @@ impl McpAdapter {
                 }
             }
 
-            let mut server_config: crate::mcp::McpServerConfig =
+            let mut server_config: crate::extensions::mcp::protocol::config::McpServerConfig =
                 serde_json::from_value(server_json)
                     .with_context(|| format!("Failed to parse mcp_servers config for '{server_name}'"))?;
 
@@ -525,7 +525,7 @@ impl McpAdapter {
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse MCP YAML manifest at {path:?}"))?;
 
-        let (id, name, version, description) = super::parsing::extract_extension_fields(&yaml)?;
+        let (id, name, version, description) = crate::extensions::adapters::parsing::extract_extension_fields(&yaml)?;
 
         let mut manifest = ExtensionManifest::new(
             &id,
@@ -538,7 +538,7 @@ impl McpAdapter {
 
         // Store mcp_servers config if present
         if let Some(mcp_servers) = yaml.get("mcp_servers") {
-            manifest.set("mcp_servers", super::parsing::yaml_to_json(mcp_servers.clone()));
+            manifest.set("mcp_servers", crate::extensions::adapters::parsing::yaml_to_json(mcp_servers.clone()));
         }
 
         // Store any additional metadata
@@ -548,7 +548,7 @@ impl McpAdapter {
                     if !["id", "name", "version", "description", "extension_type", "mcp_servers"]
                         .contains(&key)
                     {
-                        manifest.set(key, super::parsing::yaml_to_json(v.clone()));
+                        manifest.set(key, crate::extensions::adapters::parsing::yaml_to_json(v.clone()));
                     }
                 }
             }
@@ -565,13 +565,13 @@ impl McpAdapter {
     ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
         use anyhow::Context;
 
-        let server_configs: Vec<crate::mcp::McpServerConfig> =
+        let server_configs: Vec<crate::extensions::mcp::protocol::config::McpServerConfig> =
             if path.extension().is_some_and(|e| e == "toml") {
-                let config: crate::mcp::McpConfig = toml::from_str(content)
+                let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(content)
                     .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
                 config.servers
             } else {
-                let config: crate::mcp::McpConfig = serde_json::from_str(content)
+                let config: crate::extensions::mcp::protocol::config::McpConfig = serde_json::from_str(content)
                     .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
                 config.servers
             };
@@ -627,7 +627,7 @@ impl McpAdapter {
         let mut tool_instances: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
 
         for tool in server_tools {
-            let proxy = crate::extensions::runtime::mcp_tool_proxy::McpToolProxy::new(
+            let proxy = crate::extensions::mcp::runtime::tool_proxy::McpToolProxy::new(
                 server_name.to_string(),
                 tool,
                 self.manager.clone(),
@@ -731,7 +731,7 @@ impl ExtensionTypeAdapter for McpAdapter {
                 info!(server_name = %server_name, "MCP server started");
                 Ok(ExtensionState::Unit)
             }
-            Err(crate::mcp::manager::ManagerError::ServerNotFound(_)) => {
+            Err(crate::extensions::mcp::protocol::manager::ManagerError::ServerNotFound(_)) => {
                 debug!(server_name = %server_name, "MCP server not yet configured, will start on demand");
                 Ok(ExtensionState::Unit)
             }
@@ -801,7 +801,7 @@ pub struct DiscoveredMcpServer {
 /// Factory for MCP server init handlers
 #[derive(Clone)]
 struct McpServerInitFactory {
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
     server_name: String,
     config_path: PathBuf,
     /// ADR-024: Embedded mcp_servers config from unified manifest (used when config_path is empty)
@@ -832,7 +832,7 @@ impl HookHandlerFactory for McpServerInitFactory {
 /// Handler that initializes MCP server on agent init
 #[derive(Clone)]
 struct McpServerInitHandler {
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
     server_name: String,
     config_path: PathBuf,
     /// ADR-024: Embedded mcp_servers config from unified manifest
@@ -959,7 +959,7 @@ impl McpServerInitHandler {
     async fn load_server_config_from_json(
         mcp_servers: &serde_json::Value,
         server_name: &str,
-    ) -> Result<crate::mcp::McpServerConfig> {
+    ) -> Result<crate::extensions::mcp::protocol::config::McpServerConfig> {
         let servers_map = mcp_servers
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("mcp_servers must be an object"))?;
@@ -976,7 +976,7 @@ impl McpServerInitHandler {
             }
         }
 
-        let server_config: crate::mcp::McpServerConfig = serde_json::from_value(server_json)
+        let server_config: crate::extensions::mcp::protocol::config::McpServerConfig = serde_json::from_value(server_json)
             .with_context(|| format!("Failed to parse mcp_servers config for '{server_name}'"))?;
 
         Ok(server_config)
@@ -986,7 +986,7 @@ impl McpServerInitHandler {
 /// Factory for MCP server shutdown handlers
 #[derive(Clone)]
 struct McpServerShutdownFactory {
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
     server_name: String,
 }
 
@@ -1011,7 +1011,7 @@ impl HookHandlerFactory for McpServerShutdownFactory {
 /// Handler that stops MCP server on agent shutdown
 #[derive(Clone)]
 struct McpServerShutdownHandler {
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
     server_name: String,
 }
 
@@ -1062,7 +1062,7 @@ impl HookHandler for McpServerShutdownHandler {
 /// Handler that executes MCP tools via the MCP manager.
 #[derive(Clone)]
 struct McpToolExecuteHandler {
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
     server_name: String,
     tool_name: String,
 }
@@ -1138,16 +1138,16 @@ impl HookHandler for McpToolExecuteHandler {
                         let json_result = serde_json::json!({
                             "success": !mcp_result.is_error,
                             "contents": mcp_result.content.iter().map(|c| match c {
-                                crate::mcp::types::ToolResultContent::Text(t) => serde_json::json!({
+                                crate::extensions::mcp::protocol::types::ToolResultContent::Text(t) => serde_json::json!({
                                     "type": "text",
                                     "text": t.text
                                 }),
-                                crate::mcp::types::ToolResultContent::Image(i) => serde_json::json!({
+                                crate::extensions::mcp::protocol::types::ToolResultContent::Image(i) => serde_json::json!({
                                     "type": "image",
                                     "data": i.data,
                                     "mime_type": i.mime_type
                                 }),
-                                crate::mcp::types::ToolResultContent::Resource(r) => serde_json::json!({
+                                crate::extensions::mcp::protocol::types::ToolResultContent::Resource(r) => serde_json::json!({
                                     "type": "resource",
                                     "resource": r.resource
                                 }),
@@ -1182,7 +1182,7 @@ impl HookHandler for McpToolExecuteHandler {
 /// Load MCP servers from directory using the adapter
 pub async fn load_servers_from_directory(
     path: &Path,
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
 ) -> Vec<DiscoveredMcpServer> {
     let adapter = McpAdapter::new(manager);
     adapter.discover_servers(path).await
@@ -1192,7 +1192,7 @@ pub async fn load_servers_from_directory(
 pub async fn load_and_register_servers(
     core: &crate::extensions::ExtensionCore,
     servers_dir: impl AsRef<Path>,
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
 ) -> Result<usize> {
     let adapter = McpAdapter::new(manager.clone());
     let servers = adapter.discover_servers(servers_dir.as_ref()).await;
@@ -1282,8 +1282,8 @@ auto_start = true
 
     #[tokio::test]
     async fn test_mcp_tool_execute_handler() {
-        let manager = Arc::new(RwLock::new(crate::mcp::McpManager::new(
-            crate::mcp::McpConfig::default(),
+        let manager = Arc::new(RwLock::new(crate::extensions::mcp::protocol::manager::McpManager::new(
+            crate::extensions::mcp::protocol::config::McpConfig::default(),
         )));
 
         let handler = McpToolExecuteHandler {

@@ -9,7 +9,7 @@
 
 use crate::daemon::background_runtime::adapter::{BackgroundRuntimeAdapter, CrashAction};
 use crate::daemon::background_runtime::supervisor::ManagedRuntime;
-use crate::mcp::{
+use crate::extensions::mcp::protocol::{
     client::{ClientError, McpClient},
     config::McpServerConfig,
     transport::{StdioTransport, TransportError},
@@ -348,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_insert_get_remove() {
-        use crate::mcp::transport::InMemoryTransport;
+        use crate::extensions::mcp::protocol::transport::InMemoryTransport;
 
         let registry = McpClientRegistry::new();
 

@@ -123,10 +123,10 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         "gateway"
     }
 
-    fn manifest_format(&self) -> super::ManifestFormat {
+    fn manifest_format(&self) -> crate::extensions::adapters::ManifestFormat {
         // ADR-024: Gateway uses pure YAML manifest.yaml with extension_type: "gateway".
         // gateway_type remains a required type-specific field for transport selection.
-        super::ManifestFormat::Yaml {
+        crate::extensions::adapters::ManifestFormat::Yaml {
             schema: "gateway".to_string(),
             file_name: "manifest.yaml",
         }
@@ -142,10 +142,10 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse gateway manifest at {path:?}"))?;
 
-        let (id, name, version, description) = super::parsing::extract_extension_fields(&yaml)?;
+        let (id, name, version, description) = crate::extensions::adapters::parsing::extract_extension_fields(&yaml)?;
 
         // Validate extension_type
-        let ext_type = super::parsing::require_string_field(&yaml, "extension_type")
+        let ext_type = crate::extensions::adapters::parsing::require_string_field(&yaml, "extension_type")
             .with_context(|| format!("Gateway manifest at {path:?} is missing required field 'extension_type'"))?;
         if ext_type != "gateway" {
             anyhow::bail!(
@@ -155,7 +155,7 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         }
 
         // Validate gateway_type (required type-specific transport discriminator)
-        let gateway_type = super::parsing::require_string_field(&yaml, "gateway_type")
+        let gateway_type = crate::extensions::adapters::parsing::require_string_field(&yaml, "gateway_type")
             .with_context(|| format!("Gateway manifest at {path:?} is missing required field 'gateway_type'"))?;
 
         let mut manifest = ExtensionManifest::new(
@@ -171,13 +171,13 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         manifest.set("gateway_type", gateway_type);
 
         if let Some(config) = yaml.get("config") {
-            manifest.set("config", super::parsing::yaml_to_json(config.clone()));
+            manifest.set("config", crate::extensions::adapters::parsing::yaml_to_json(config.clone()));
         }
         if let Some(hooks) = yaml.get("hooks") {
-            manifest.set("hooks", super::parsing::yaml_to_json(hooks.clone()));
+            manifest.set("hooks", crate::extensions::adapters::parsing::yaml_to_json(hooks.clone()));
         }
         if let Some(tools) = yaml.get("tools") {
-            manifest.set("tools", super::parsing::yaml_to_json(tools.clone()));
+            manifest.set("tools", crate::extensions::adapters::parsing::yaml_to_json(tools.clone()));
         }
 
         Ok(manifest)
