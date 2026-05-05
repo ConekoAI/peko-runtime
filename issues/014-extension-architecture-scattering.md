@@ -1,7 +1,7 @@
 # Issue 014: Extension System Architecture Scattered Across Modules
 
 **Severity:** HIGH  
-**Status:** 🟢 **Resolved** (Phases 1–6 completed, committed `d6e9557`, 2026-05-05)  
+**Status:** 🟢 **Resolved** (Phases 1–7 completed, 2026-05-05)  
 **Labels:** `architecture`, `extensions`, `adr-017`, `refactor`, `module-boundaries`  
 **Reported:** 2026-05-05  
 **Related:** ADR-017 (Unified Extension Architecture), Issue 001, Issue 002, Issue 006
@@ -17,12 +17,15 @@ This issue has been resolved through a phased migration:
 - **Phase 4** ✅ — `BuiltinToolRegistrar` merged into `BuiltinToolAdapter` in `src/extensions/adapters/builtin_tool_adapter.rs`; `src/tools/registry/builtin.rs` deleted.
 - **Phase 5** ✅ — MCP runtime adapter and tool proxies moved from `src/mcp/` to `src/extensions/runtime/`. `src/mcp/` now contains only protocol client, transport, and types.
 - **Phase 6** ✅ — Dependency audit completed. `src/extensions/core/` has zero imports from `crate::mcp`, `crate::daemon`, or `crate::tools`.
+- **Phase 7** ✅ — Gateway runtime concerns consolidated into `src/extensions/`:
+  - `gateway_adapter.rs` → `src/extensions/runtime/gateway_runtime_adapter.rs`
+  - `gateway_starter.rs` → `src/extensions/runtime/gateway_starter.rs`
+  - `router.rs` → `src/extensions/runtime/gateway_router.rs`
+  - `protocol.rs` → `src/extensions/protocols/gateway/protocol.rs`
+  - `mcp_starter.rs` → `src/extensions/runtime/mcp_starter.rs` (symmetry with gateway)
 
 ### Remaining Work (Deferred)
-- **MCP/Gateway starters** (`mcp_starter.rs`, `gateway_starter.rs`) remain in `src/daemon/background_runtime/` because they are thin orchestration wrappers deeply coupled to `StarterContext` and `BackgroundRuntimeManager`. Moving them would require either (a) moving those daemon infrastructure types to `extensions`, or (b) trait abstractions that add complexity without clear benefit. This can be revisited if the project moves to workspace crates (Phase 7 option).
 - **CI lint** for preventing `extensions/core/` from importing `mcp`/`daemon`/`tools` is not yet implemented.
-- **`src/daemon/background_runtime/gateway_adapter.rs`** remains in daemon. It is a `BackgroundRuntimeAdapter` implementation for gateways, conceptually similar to the MCP runtime adapter. It could move to `src/extensions/runtime/` in a follow-up.
-- **`src/daemon/background_runtime/router.rs`** and **`protocol.rs`** remain in daemon. These are gateway-specific but tightly coupled to the daemon's gateway starter. If the gateway starter ever moves, these should move with it.
 
 ---
 
@@ -66,12 +69,14 @@ src/agent.rs, src/agentic_loop.rs  ← Agent init wires extensions, skills, buil
 
 ```
 src/extensions/              ← Core + Adapters + Manager + Protocols + AsyncExec + Runtime (consolidated)
-│   ├── protocols/universal/ ← Was src/tools/framework/universal/
-│   ├── protocols/shared/    ← Was src/tools/framework/shared/
+│   ├── protocols/
+│   │   ├── gateway/         ← Gateway IPC protocol (was src/daemon/background_runtime/protocol.rs)
+│   │   ├── universal/       ← Was src/tools/framework/universal/
+│   │   └── shared/          ← Was src/tools/framework/shared/
 │   ├── async_exec/executor/ ← Was src/tools/framework/async_executor/
-│   └── runtime/             ← MCP runtime adapter + tool proxies (was src/mcp/)
+│   └── runtime/             ← MCP + Gateway runtime adapters, starters, router (was src/mcp/ + src/daemon/background_runtime/)
 src/mcp/                     ← MCP protocol client, transport, types only
-src/daemon/background_runtime/  ← Process supervisor + MCP/Gateway starters (starters deferred)
+src/daemon/background_runtime/  ← Generic process supervision ONLY (all extension-specific code moved out)
 src/tools/                   ← Built-in tools, core traits, factory only (framework deleted)
 ```
 
@@ -89,18 +94,19 @@ src/tools/                   ← Built-in tools, core traits, factory only (fram
 | MCP runtime adapter | `src/mcp/runtime_adapter.rs` → `src/extensions/runtime/mcp_runtime_adapter.rs` | ✅ Moved to extension runtime layer |
 | MCP tool proxies | `src/mcp/tool_proxy.rs`, `injectable_proxy.rs` → `src/extensions/runtime/` | ✅ Moved to extension runtime layer |
 | MCP extension adapter | `src/extensions/adapters/mcp_adapter.rs` | ✅ Correctly placed |
-| MCP runtime starter | `src/daemon/background_runtime/mcp_starter.rs` | ⚠️ Remains in daemon (thin orchestration wrapper; deferred) |
+| MCP runtime starter | `src/daemon/background_runtime/mcp_starter.rs` → `src/extensions/runtime/mcp_starter.rs` | ✅ Moved to extension runtime layer |
 
-**To understand MCP end-to-end, you must read:** `src/mcp/`, `src/extensions/adapters/mcp_adapter.rs`, `src/daemon/background_runtime/mcp_starter.rs`, and `src/mcp/runtime_adapter.rs`.
+**To understand MCP end-to-end, you must read:** `src/mcp/`, `src/extensions/adapters/mcp_adapter.rs`, and `src/extensions/runtime/`.
 
 ### 2. Gateway Concerns Split Across 3 Modules
 
 | Concern | Location | Assessment |
 |---------|----------|------------|
 | Gateway extension adapter | `src/extensions/adapters/gateway_adapter.rs` | ✅ Correctly placed |
-| Gateway runtime starter | `src/daemon/background_runtime/gateway_starter.rs` | ⚠️ Remains in daemon (thin orchestration wrapper; deferred) |
-| Gateway runtime adapter | `src/daemon/background_runtime/gateway_adapter.rs` | ⚠️ Remains in daemon (could move to `extensions/runtime/` in follow-up) |
-| Gateway router | `src/daemon/background_runtime/router.rs` | ⚠️ Remains in daemon (tightly coupled to gateway starter) |
+| Gateway runtime starter | `src/daemon/background_runtime/gateway_starter.rs` → `src/extensions/runtime/gateway_starter.rs` | ✅ Moved to extension runtime layer |
+| Gateway runtime adapter | `src/daemon/background_runtime/gateway_adapter.rs` → `src/extensions/runtime/gateway_runtime_adapter.rs` | ✅ Moved to extension runtime layer |
+| Gateway router | `src/daemon/background_runtime/router.rs` → `src/extensions/runtime/gateway_router.rs` | ✅ Moved to extension runtime layer |
+| Gateway protocol | `src/daemon/background_runtime/protocol.rs` → `src/extensions/protocols/gateway/protocol.rs` | ✅ Moved to extension protocols |
 
 ### 3. Universal Tool Protocol in Wrong Module
 
@@ -134,12 +140,20 @@ The `src/daemon/background_runtime/` module is a **generic process supervisor** 
 
 - ~~`mcp_starter.rs` — knows `McpServerConfig`, `TransportType`, parses `mcp_servers` from YAML~~
 - ~~`gateway_starter.rs` — knows gateway manifest format, `GatewayRoutingConfig`~~
+- ~~`gateway_adapter.rs` — `BackgroundRuntimeAdapter` implementation for gateways~~
+- ~~`router.rs` — routes gateway messages to agents~~
+- ~~`protocol.rs` — gateway IPC protocol types and codec~~
 - ~~`runtime_adapter.rs` (in `src/mcp/`) — bridges MCP to the daemon runtime~~
 
 **Post-migration status:**
-- `mcp_starter.rs` and `gateway_starter.rs` remain in daemon as thin orchestration wrappers. They delegate to `extensions::runtime` adapters, so the extension-specific logic is no longer in the generic runtime layer.
-- `runtime_adapter.rs`, `tool_proxy.rs`, and `injectable_proxy.rs` have been moved to `src/extensions/runtime/`.
-- The remaining concern is that `gateway_adapter.rs`, `router.rs`, and `protocol.rs` are still gateway-specific code in the daemon module. These could move to `extensions/runtime/` in a follow-up if desired.
+- All extension-specific runtime code has been moved out of `src/daemon/background_runtime/`.
+- `mcp_starter.rs` → `src/extensions/runtime/mcp_starter.rs`
+- `gateway_starter.rs` → `src/extensions/runtime/gateway_starter.rs`
+- `gateway_adapter.rs` → `src/extensions/runtime/gateway_runtime_adapter.rs`
+- `router.rs` → `src/extensions/runtime/gateway_router.rs`
+- `protocol.rs` → `src/extensions/protocols/gateway/protocol.rs`
+- `runtime_adapter.rs`, `tool_proxy.rs`, and `injectable_proxy.rs` → `src/extensions/runtime/` (done in Phase 5).
+- `src/daemon/background_runtime/` now contains **only** generic process supervision infrastructure: `adapter.rs`, `supervisor.rs`, `manager.rs`, `starter.rs`, `starter_registry.rs`.
 
 ---
 
@@ -173,7 +187,7 @@ src/tools/                  ←── depends on extensions (tool adapter implem
 src/agent/                  ←── depends on extensions (ExtensionCore, BuiltinToolAdapter)
 ```
 
-The `src/extensions/` ↔ `src/tools/` bidirectional dependency is resolved. The `src/mcp/` ↔ `src/daemon/` dependency is simplified: `mcp` no longer depends on `daemon` (the runtime adapter moved to `extensions/runtime/`). `daemon` still depends on `mcp` protocol types via the starters, which is acceptable.
+The `src/extensions/` ↔ `src/tools/` bidirectional dependency is resolved. The `src/mcp/` ↔ `src/daemon/` dependency is simplified: `mcp` no longer depends on `daemon` (the runtime adapter moved to `extensions/runtime/`). `daemon` still depends on `mcp` protocol types via the starters, which is acceptable. The `src/daemon/background_runtime/` → `src/agent/` dependency (via `GatewayRouter` using `StatelessAgentService`) is also resolved: `GatewayRouter` now lives in `src/extensions/runtime/`.
 
 ### Target (Clean)
 
@@ -374,6 +388,13 @@ src/daemon/background_runtime/gateway_starter.rs → src/extensions/runtime/gate
 
 # Phase 6: Dependency inversion
 # (no file moves — trait extractions and import cleanups)
+
+# Phase 7: Gateway runtime consolidation
+src/daemon/background_runtime/gateway_adapter.rs → src/extensions/runtime/gateway_runtime_adapter.rs
+src/daemon/background_runtime/gateway_starter.rs → src/extensions/runtime/gateway_starter.rs
+src/daemon/background_runtime/router.rs          → src/extensions/runtime/gateway_router.rs
+src/daemon/background_runtime/protocol.rs        → src/extensions/protocols/gateway/protocol.rs
+src/daemon/background_runtime/mcp_starter.rs     → src/extensions/runtime/mcp_starter.rs
 ```
 
 ---
@@ -390,7 +411,7 @@ The following are **correctly placed** and should not be moved:
 | Extension core | `src/extensions/core/` | Well-isolated, correct |
 | Extension types | `src/extensions/types/` | Well-isolated, correct |
 | Extension adapters | `src/extensions/adapters/` | Correctly placed |
-| Generic background runtime | `src/daemon/background_runtime/manager.rs`, `supervisor.rs` | Correctly generic |
+| Generic background runtime | `src/daemon/background_runtime/manager.rs`, `supervisor.rs`, `adapter.rs`, `starter.rs`, `starter_registry.rs` | Correctly generic |
 
 ---
 
@@ -398,7 +419,7 @@ The following are **correctly placed** and should not be moved:
 
 - [x] A developer can understand how a single extension type works by reading files in `src/extensions/` and at most one other module (e.g., `src/mcp/` for protocol details).
 - [x] `src/extensions/core/` has no imports from `crate::mcp`, `crate::daemon`, or `crate::tools`.
-- [x] `src/daemon/background_runtime/` has no extension-specific runtime adapters. (Starters remain as thin orchestration wrappers.)
+- [x] `src/daemon/background_runtime/` has no extension-specific runtime adapters or starters.
 - [x] `src/tools/framework/` no longer exists.
 - [x] `cargo test` passes at the end of each phase.
 - [x] `AGENTS.md` is updated to reflect the new module structure.

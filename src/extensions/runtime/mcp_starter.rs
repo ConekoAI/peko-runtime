@@ -6,7 +6,7 @@
 //! or legacy `config.toml`/`config.json`), creates `McpRuntimeAdapter`s, and starts
 /// them via the shared `BackgroundRuntimeManager`.
 
-use super::starter::{ExtensionRuntimeStarter, StarterContext};
+use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
 use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
 use crate::mcp::{
     config::{McpServerConfig, TransportType},

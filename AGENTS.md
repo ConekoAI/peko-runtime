@@ -163,12 +163,12 @@ cargo test --all-features
 - **Session durability:** JSONL is the source of truth; SQLite (`state.db`) is a rebuildable index.
 - **Credential isolation:** API keys are never passed to tool subprocesses. The `process` tool strips `*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`.
 - **Module Boundaries (Issue 014):** `src/extensions/` is the center of gravity for all extension concerns. After the Issue 014 migration:
-  - `src/extensions/protocols/` contains the Universal Tool Protocol and shared utilities (migrated from `src/tools/framework/`).
+  - `src/extensions/protocols/` contains the Universal Tool Protocol, shared utilities (migrated from `src/tools/framework/`), and the Gateway IPC Protocol.
   - `src/extensions/async_exec/` contains the async task execution framework (migrated from `src/tools/framework/async_executor/`).
-  - `src/extensions/runtime/` contains MCP runtime adapters and tool proxies (migrated from `src/mcp/`).
+  - `src/extensions/runtime/` contains MCP runtime adapters, MCP tool proxies, MCP starters, Gateway runtime adapters, Gateway router, and Gateway starters (migrated from `src/mcp/` and `src/daemon/background_runtime/`).
   - `src/tools/framework/` has been removed.
   - `src/mcp/` now contains only the MCP protocol client, transport, and types.
-  - `src/daemon/background_runtime/` contains only generic process supervision code.
+  - `src/daemon/background_runtime/` contains only generic process supervision code (traits, manager, supervisor, starter registry). All extension-specific runtime adapters and starters live in `src/extensions/runtime/`.
   - `src/extensions/core/` has zero dependencies on `crate::mcp`, `crate::daemon`, or `crate::tools`.
 
 ---

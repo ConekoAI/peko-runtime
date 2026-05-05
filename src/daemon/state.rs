@@ -4,10 +4,12 @@
 //! This is the daemon's composition root — all services are initialized here.
 
 use crate::daemon::background_runtime::{
-    BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, GatewayRouter, GatewayRuntimeStarter,
-    McpRuntimeStarter, StarterContext,
+    BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
 };
-use crate::extensions::runtime::McpClientRegistry;
+use crate::extensions::runtime::{
+    GatewayRouter, GatewayRuntimeStarter, McpRuntimeStarter, McpClientRegistry,
+};
+
 use crate::extensions::async_exec::executor::AsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;

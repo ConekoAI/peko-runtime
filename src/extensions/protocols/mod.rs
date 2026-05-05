@@ -1,9 +1,11 @@
 //! Extension protocols - shared protocols for extension implementations
 //!
 //! This module contains protocol implementations used by extension adapters:
+//! - `gateway`: Gateway IPC Protocol (stdio-line JSON for gateway extensions)
 //! - `universal`: Universal Tool Protocol (JSON-RPC over stdio)
 //! - `shared`: Common utilities used by multiple extension protocols
 
+pub mod gateway;
 pub mod shared;
 pub mod universal;
 

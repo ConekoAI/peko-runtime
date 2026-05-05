@@ -10,11 +10,10 @@
 //!
 //! See ADR-025 Section 6 for the full specification.
 
-use super::adapter::{BackgroundRuntimeAdapter, CrashAction};
-use super::protocol::{encode_packet, GatewayPacket, GatewayResponse, GatewayRoutingConfig};
-use super::router::GatewayRouter;
-use super::supervisor::ManagedRuntime;
-use crate::daemon::background_runtime::supervisor::RuntimeKind;
+use crate::daemon::background_runtime::adapter::{BackgroundRuntimeAdapter, CrashAction};
+use crate::daemon::background_runtime::supervisor::{ManagedRuntime, RuntimeKind};
+use crate::extensions::protocols::gateway::protocol::{encode_packet, GatewayPacket, GatewayResponse};
+use crate::extensions::runtime::gateway_router::{GatewayRouter, GatewayRoutingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -242,7 +241,7 @@ impl GatewayRuntimeAdapter {
             while let Ok(Some(line)) = lines.next_line().await {
                 debug!("Gateway '{}' stdout: {}", gateway_id, line.trim());
 
-                match super::protocol::decode_response(&line) {
+                match crate::extensions::protocols::gateway::protocol::decode_response(&line) {
                     Ok(response) => {
                         adapter
                             .handle_gateway_response(&gateway_id, response, &router, &pending)
