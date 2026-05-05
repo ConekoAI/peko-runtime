@@ -55,6 +55,40 @@ pub mod universal;
 /// Legacy extension migration utilities.
 pub mod migration;
 
+// ============================================================================
+// Built-in Adapter Provider
+// ============================================================================
+
+use std::sync::Arc;
+
+/// Built-in adapter provider
+///
+/// Constructs all built-in extension type adapters. Lives in `src/extensions/`
+/// (plural) because it depends on all extension type implementations.
+pub struct BuiltInAdapters;
+
+impl BuiltInAdapters {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn adapters(&self) -> Vec<Box<dyn crate::extension::adapters::ExtensionTypeAdapter>> {
+        vec![
+            Box::new(skill::adapter::SkillAdapter::new()),
+            Box::new(universal::adapter::UniversalToolAdapter::new()),
+            Box::new(mcp::adapter::McpAdapter::with_default_manager()),
+            Box::new(gateway::adapter::GatewayAdapter::new(Arc::new(crate::extension::core::ExtensionCore::new()))),
+            Box::new(general::adapter::GeneralExtensionAdapter::new()),
+        ]
+    }
+}
+
+impl Default for BuiltInAdapters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Extension type identifiers and validation.
 pub mod extension_types {
     /// Skill extension type (SKILL.md)
@@ -111,5 +145,13 @@ mod tests {
         assert!(types.contains(&"skill"));
         assert!(types.contains(&"mcp"));
         assert!(types.contains(&"gateway"));
+    }
+
+    #[test]
+    fn test_built_in_adapters() {
+        let provider = BuiltInAdapters::new();
+        let adapters = provider.adapters();
+        assert!(!adapters.is_empty());
+        assert_eq!(adapters.len(), 5);
     }
 }

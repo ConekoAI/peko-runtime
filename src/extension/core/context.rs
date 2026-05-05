@@ -135,17 +135,15 @@ impl HookContext {
         }
     }
 
-    /// Get tool context from state if available
-    ///
-    /// This is used for runtime parameter resolution during tool execution.
+    /// Get a typed value from state
     #[must_use]
-    pub fn as_tool_context(&self) -> Option<&crate::tools::ToolContext> {
-        self.state.get::<crate::tools::ToolContext>("tool_context")
+    pub fn get_state<T: Any + Send + Sync>(&self, key: &str) -> Option<&T> {
+        self.state.get::<T>(key)
     }
 
-    /// Set tool context in state for runtime parameter resolution
-    pub fn set_tool_context(&mut self, ctx: crate::tools::ToolContext) {
-        self.state.insert("tool_context", ctx);
+    /// Set a typed value in state
+    pub fn set_state<T: Any + Send + Sync>(&mut self, key: impl Into<String>, value: T) {
+        self.state.insert(key, value);
     }
 }
 

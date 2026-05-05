@@ -154,7 +154,7 @@ impl Agent {
                 self.config.name
             );
             // Use ExtensionManager for unified tool discovery
-            use crate::extension::adapters::BuiltInAdapters;
+            use crate::extensions::BuiltInAdapters;
             use crate::extension::manager::ExtensionManager;
             let mut manager = ExtensionManager::with_core(self.extension_core.clone());
             for adapter in BuiltInAdapters::new().adapters() {

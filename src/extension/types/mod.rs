@@ -75,6 +75,56 @@ pub const USER_HOOK_PRIORITY: HookPriority = 100;
 /// Priority for fallback handlers (lowest)
 pub const FALLBACK_HOOK_PRIORITY: HookPriority = 0;
 
+/// Runtime context fields for tool execution within the extension framework.
+///
+/// This is a framework-native struct that carries the subset of `ToolContext`
+/// fields needed for reserved parameter resolution. It lives in `extension::types`
+/// so the framework can construct and store it without depending on `tools::ToolContext`.
+#[derive(Debug, Clone, Default)]
+pub struct ToolRuntimeContext {
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub peer_id: Option<String>,
+    pub workspace: Option<String>,
+    pub run_id: Option<String>,
+}
+
+impl ToolRuntimeContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.agent_id = Some(agent_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_peer_id(mut self, peer_id: impl Into<String>) -> Self {
+        self.peer_id = Some(peer_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.run_id = Some(run_id.into());
+        self
+    }
+}
+
 // Submodules
 pub mod async_types;
 pub mod hook_io;

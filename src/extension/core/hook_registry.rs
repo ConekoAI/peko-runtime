@@ -429,11 +429,10 @@ impl HookRegistry {
             // Create context
             let mut ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
 
-            // For tool calls, inject ToolContext into state for reserved parameter resolution
-            if let HookInput::ToolCall { ref agent_id, ref session_id, ref workspace, ref tool_name, .. } = input {
-                let abort_signal = crate::tools::AbortSignal::new();
-                let tool_ctx = abort_signal
-                    .create_context("hook_run", &hook_id.to_string(), tool_name)
+            // For tool calls, inject runtime context into state for reserved parameter resolution
+            if let HookInput::ToolCall { ref agent_id, ref session_id, ref workspace, .. } = input {
+                let tool_ctx = crate::extension::types::ToolRuntimeContext::new()
+                    .with_run_id("hook_run")
                     .with_agent_id(agent_id.clone().unwrap_or_else(|| "unknown".to_string()))
                     .with_session_id(session_id.clone().unwrap_or_else(|| "unknown".to_string()));
                 let tool_ctx = if let Some(ref ws) = workspace {
@@ -441,7 +440,7 @@ impl HookRegistry {
                 } else {
                     tool_ctx
                 };
-                ctx.set_tool_context(tool_ctx);
+                ctx.set_state("tool_context", tool_ctx);
             }
 
             // Invoke handler

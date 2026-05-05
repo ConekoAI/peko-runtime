@@ -1,9 +1,15 @@
 //! Unified Context Resolver
 //!
 //! Provides a single source of truth for resolving runtime context fields
-//! (`agent_id`, `session_id`, etc.) from `ToolContext` or `ExecutionContext`.
+//! (`agent_id`, `session_id`, etc.) from any context source.
 //!
 //! This eliminates duplication between Universal Tools and MCP implementations.
+//!
+//! # Module Boundary Note
+//!
+//! This module is part of the generic framework (`src/extension/`). The adapter
+//! structs that bridge external types (ToolContext, ExecutionContext) to
+//! `ContextSource` live in their respective consumer modules, not here.
 
 use serde_json::Value;
 
@@ -14,6 +20,10 @@ use serde_json::Value;
 pub struct ContextResolver;
 
 /// Context sources that can be resolved
+///
+/// Implement this trait for any type that provides runtime context fields.
+/// Adapters for specific types (e.g., ToolContext, ExecutionContext) should
+/// live in the module that owns those types, not in this framework module.
 pub trait ContextSource {
     fn get_session_id(&self) -> Option<String>;
     fn get_agent_id(&self) -> Option<String>;
@@ -22,98 +32,12 @@ pub trait ContextSource {
     fn get_run_id(&self) -> Option<String>;
 }
 
-/// `ToolContext` adapter for `ContextSource`
-pub struct ToolContextAdapter<'a> {
-    ctx: &'a crate::tools::ToolContext,
-}
-
-impl std::fmt::Debug for ToolContextAdapter<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToolContextAdapter")
-            .field("agent_id", &self.ctx.agent_id)
-            .field("session_id", &self.ctx.session_id)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<'a> ToolContextAdapter<'a> {
-    #[must_use]
-    pub fn new(ctx: &'a crate::tools::ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl ContextSource for ToolContextAdapter<'_> {
-    fn get_session_id(&self) -> Option<String> {
-        self.ctx.session_id.clone()
-    }
-
-    fn get_agent_id(&self) -> Option<String> {
-        self.ctx.agent_id.clone()
-    }
-
-    fn get_peer_id(&self) -> Option<String> {
-        self.ctx.peer_id.clone()
-    }
-
-    fn get_workspace(&self) -> Option<String> {
-        self.ctx.workspace.clone()
-    }
-
-    fn get_run_id(&self) -> Option<String> {
-        Some(self.ctx.run_id.clone())
-    }
-}
-
-/// `ExecutionContext` adapter for `ContextSource`
-pub struct ExecutionContextAdapter {
-    ctx: crate::extensions::universal::protocol::protocol::ExecutionContext,
-}
-
-impl std::fmt::Debug for ExecutionContextAdapter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ExecutionContextAdapter")
-            .field("agent_id", &self.ctx.agent_id)
-            .field("session_id", &self.ctx.session_id)
-            .finish_non_exhaustive()
-    }
-}
-
-impl ExecutionContextAdapter {
-    #[must_use]
-    pub fn new(ctx: crate::extensions::universal::protocol::protocol::ExecutionContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl ContextSource for ExecutionContextAdapter {
-    fn get_session_id(&self) -> Option<String> {
-        Some(self.ctx.session_id.clone())
-    }
-
-    fn get_agent_id(&self) -> Option<String> {
-        Some(self.ctx.agent_id.clone())
-    }
-
-    fn get_peer_id(&self) -> Option<String> {
-        self.ctx.peer_id.clone()
-    }
-
-    fn get_workspace(&self) -> Option<String> {
-        Some(self.ctx.workspace.clone())
-    }
-
-    fn get_run_id(&self) -> Option<String> {
-        self.ctx.run_id.clone()
-    }
-}
-
 impl ContextResolver {
     /// Resolve a runtime field by name from any context source
     ///
     /// # Supported Fields
     /// - `session_id`: The current session identifier
-    /// - `agent_id`: The current agent identifier  
+    /// - `agent_id`: The current agent identifier
     /// - `peer_id`: The peer/user identifier (optional)
     /// - `workspace`: The workspace directory path
     /// - `run_id`: The unique run identifier

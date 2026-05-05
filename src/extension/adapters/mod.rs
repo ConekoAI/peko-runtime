@@ -495,44 +495,12 @@ pub fn extract_extension_type_from_yaml(path: &std::path::Path) -> anyhow::Resul
 #[derive(Debug)]
 pub enum ExtensionState {
     Unit,
-    #[cfg(feature = "mcp")]
-    McpClient(crate::extensions::mcp::protocol::client::McpClient),
     Boxed(Box<dyn std::any::Any + Send + Sync>),
 }
 
 impl ExtensionState {
     pub fn is_unit(&self) -> bool {
         matches!(self, Self::Unit)
-    }
-}
-
-/// Adapter registration trait
-pub trait AdapterProvider {
-    fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>>;
-}
-
-/// Built-in adapter provider
-pub struct BuiltInAdapters;
-
-impl BuiltInAdapters {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>> {
-        vec![
-            Box::new(crate::extensions::skill::adapter::SkillAdapter::new()),
-            Box::new(crate::extensions::universal::adapter::UniversalToolAdapter::new()),
-            Box::new(crate::extensions::mcp::adapter::McpAdapter::with_default_manager()),
-            Box::new(crate::extensions::gateway::adapter::GatewayAdapter::new(Arc::new(crate::extension::core::ExtensionCore::new()))),
-            Box::new(crate::extensions::general::adapter::GeneralExtensionAdapter::new()),
-        ]
-    }
-}
-
-impl Default for BuiltInAdapters {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -561,13 +529,8 @@ mod tests {
         assert!(state.is_unit());
     }
 
-    #[test]
-    fn test_built_in_adapters() {
-        let provider = BuiltInAdapters::new();
-        let adapters = provider.adapters();
-        assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 5);
-    }
+    // Note: BuiltInAdapters test moved to src/extensions/mod.rs tests
+    // because BuiltInAdapters depends on extension type implementations
 
     #[test]
     fn test_extract_extension_type_from_yaml_with_type() {

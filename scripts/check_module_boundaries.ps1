@@ -30,10 +30,9 @@ Write-Host ""
 
 # Known violations that are tracked but not yet fixed
 $knownViolations = @{
-    "src/extension/core/context.rs" = "ToolContext integration (Issue 015 follow-up)"
-    "src/extension/core/hook_registry.rs" = "AbortSignal integration (Issue 015 follow-up)"
-    "src/extension/protocols/shared/context_resolver.rs" = "ExecutionContext from universal protocol (Issue 015 follow-up)"
-    "src/extension/adapters/mod.rs" = "BuiltInAdapters constructs all extension types (by design, needs trait refactor)"
+    # All pre-existing violations from Issue 015 have been fixed.
+    # This hash table is kept for future known violations that need
+    # non-blocking treatment while being tracked for follow-up.
 }
 
 function Is-KnownViolation($filePath) {

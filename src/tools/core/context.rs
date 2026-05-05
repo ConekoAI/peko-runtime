@@ -5,8 +5,15 @@
 //! - Progress updates during tool execution
 //! - Tool monitoring and visibility
 //! - Optional timeout handling
+//!
+//! # Module Boundary Note
+//!
+//! This module is part of the `tools` crate, not the extension framework.
+//! The `ToolContextAdapter` bridges `ToolContext` to the extension framework's
+//! `ContextSource` trait for reserved parameter resolution.
 
 use crate::engine::AgenticEvent;
+use crate::extension::protocols::shared::context_resolver::ContextSource;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -117,6 +124,32 @@ impl ToolContext {
         Self {
             run_id: "hook".to_string(),
             tool_id: "hook".to_string(),
+            tool_name: tool_name.into(),
+            event_tx: None,
+            abort_rx,
+            progress_throttle_ms: 500,
+            last_progress_update: Arc::new(tokio::sync::Mutex::new(None)),
+            timeout: None,
+            agent_id: None,
+            session_id: None,
+            peer_id: None,
+            workspace: None,
+        }
+    }
+
+    /// Create a tool context for hook-based execution without an external abort signal.
+    ///
+    /// This is used by the extension framework when injecting tool context into
+    /// hook invocations for reserved parameter resolution.
+    pub fn for_hook_run(
+        run_id: impl Into<String>,
+        tool_id: impl Into<String>,
+        tool_name: impl Into<String>,
+    ) -> Self {
+        let (_tx, abort_rx) = tokio::sync::watch::channel(false);
+        Self {
+            run_id: run_id.into(),
+            tool_id: tool_id.into(),
             tool_name: tool_name.into(),
             event_tx: None,
             abort_rx,
@@ -408,6 +441,48 @@ impl AbortSignal {
 impl Default for AbortSignal {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// ContextSource Adapter
+// ============================================================================
+
+/// Adapter that implements `ContextSource` for `ToolContext`
+///
+/// This bridges the tools module to the extension framework's context resolver
+/// for reserved parameter injection. Lives here (in `tools`) rather than in
+/// the extension framework to maintain module boundaries.
+pub struct ToolContextAdapter<'a> {
+    ctx: &'a ToolContext,
+}
+
+impl<'a> ToolContextAdapter<'a> {
+    #[must_use]
+    pub fn new(ctx: &'a ToolContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl ContextSource for ToolContextAdapter<'_> {
+    fn get_session_id(&self) -> Option<String> {
+        self.ctx.session_id.clone()
+    }
+
+    fn get_agent_id(&self) -> Option<String> {
+        self.ctx.agent_id.clone()
+    }
+
+    fn get_peer_id(&self) -> Option<String> {
+        self.ctx.peer_id.clone()
+    }
+
+    fn get_workspace(&self) -> Option<String> {
+        self.ctx.workspace.clone()
+    }
+
+    fn get_run_id(&self) -> Option<String> {
+        Some(self.ctx.run_id.clone())
     }
 }
 

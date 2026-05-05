@@ -500,13 +500,13 @@ impl AsyncExecutionRouter {
         let exec_service = ctx.services.tool_execution();
 
         // 4. Build execution context
-        let tool_ctx = match ctx.as_tool_context() {
+        let tool_ctx = match ctx.get_state::<crate::extension::types::ToolRuntimeContext>("tool_context") {
             Some(tc) => ToolExecutionContext::new(
                 tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
                 tc.session_id
                     .clone()
                     .unwrap_or_else(|| "unknown".to_string()),
-                tc.run_id.clone(),
+                tc.run_id.clone().unwrap_or_else(|| "unknown".to_string()),
             )
             .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
             None => {
