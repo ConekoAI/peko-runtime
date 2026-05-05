@@ -7,7 +7,7 @@
 //! - Cancellation counts
 //! - Tool capability detection
 
-use crate::tools::framework::async_executor::{AsyncTaskId, AsyncTaskStatus};
+use crate::extensions::async_exec::executor::{AsyncTaskId, AsyncTaskStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

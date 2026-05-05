@@ -12,7 +12,7 @@
 use super::manager::BackgroundRuntimeManager;
 use super::router::GatewayRouter;
 use crate::agent::stateless_service::StatelessAgentService;
-use crate::mcp::runtime_adapter::McpClientRegistry;
+use crate::extensions::runtime::mcp_runtime_adapter::McpClientRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
 

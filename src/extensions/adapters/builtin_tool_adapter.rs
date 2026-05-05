@@ -18,7 +18,59 @@ use crate::extensions::HookResult;
 use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/// Configuration for built-in tool registration
+#[derive(Debug, Clone)]
+pub struct BuiltinToolRegistrarConfig {
+    /// Workspace directory for tools
+    pub workspace_dir: PathBuf,
+    /// Enable granular filesystem tools (`read_file`, `write_file`, glob, grep, `str_replace_file`)
+    pub enable_granular_fs: bool,
+    /// Enable write tools (`write_file`, `str_replace_file`)
+    pub enable_granular_write: bool,
+    /// Enable shell tool
+    pub enable_shell: bool,
+    /// Enable session introspection tools
+    pub enable_session_tools: bool,
+    /// Enable cron tool
+    pub enable_cron: bool,
+    /// Enable universal task management tools (task_status, task_list)
+    pub enable_task_management: bool,
+    /// Path to cron database
+    pub cron_db_path: Option<PathBuf>,
+    /// Instance ID for cron persistence
+    pub instance_id: Option<String>,
+    /// List of disabled tool names
+    pub disabled_tools: Vec<String>,
+}
+
+impl Default for BuiltinToolRegistrarConfig {
+    fn default() -> Self {
+        Self {
+            workspace_dir: PathBuf::from("."),
+            enable_granular_fs: true,
+            enable_granular_write: true,
+            enable_shell: true,
+            enable_session_tools: true,
+            enable_cron: true,
+            enable_task_management: true,
+            cron_db_path: None,
+            instance_id: None,
+            disabled_tools: Vec::new(),
+        }
+    }
+}
+
+// ============================================================================
+// Adapter
+// ============================================================================
 
 /// Adapter for registering built-in tools with `ExtensionCore`
 #[derive(Debug)]
@@ -58,6 +110,148 @@ impl BuiltinToolAdapter {
             Self::register_tool(core, tool).await?;
         }
         Ok(())
+    }
+
+    /// Register all enabled built-in tools with `ExtensionCore`
+    ///
+    /// This is the single entry point for registering built-in tools.
+    /// All tools are registered as hooks in `ExtensionCore`, making them
+    /// discoverable via `ToolRegister` hook and executable via `ToolExecute` hook.
+    pub async fn register_all(
+        core: &ExtensionCore,
+        config: &BuiltinToolRegistrarConfig,
+    ) -> Result<()> {
+        use crate::tools::builtin::{
+            CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
+            TaskTool, WriteFileTool,
+        };
+
+        let disabled_set: HashSet<String> = config
+            .disabled_tools
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+
+        let workspace = config.workspace_dir.clone();
+
+        // Shell tool
+        let shell_enabled = config.enable_shell;
+        let shell_disabled = disabled_set.contains("shell");
+        if shell_enabled && !shell_disabled {
+            let shell = Arc::new(ShellTool::new().with_workspace(&workspace));
+            Self::register_tool(core, shell).await?;
+        }
+
+        // Granular filesystem tools
+        if config.enable_granular_fs {
+            // read_file
+            if !disabled_set.contains("read_file") {
+                let tool = Arc::new(ReadFileTool::new().with_workspace(&workspace));
+                Self::register_tool(core, tool).await?;
+            }
+
+            // write_file
+            if config.enable_granular_write && !disabled_set.contains("write_file") {
+                let tool = Arc::new(WriteFileTool::new().with_workspace(&workspace));
+                Self::register_tool(core, tool).await?;
+            }
+
+            // glob
+            if !disabled_set.contains("glob") {
+                let tool = Arc::new(GlobTool::new().with_workspace(&workspace));
+                Self::register_tool(core, tool).await?;
+            }
+
+            // grep
+            if !disabled_set.contains("grep") {
+                let tool = Arc::new(GrepTool::new().with_workspace(&workspace));
+                Self::register_tool(core, tool).await?;
+            }
+
+            // str_replace_file
+            if config.enable_granular_write && !disabled_set.contains("str_replace_file") {
+                let tool = Arc::new(StrReplaceFileTool::new().with_workspace(&workspace));
+                Self::register_tool(core, tool).await?;
+            }
+        }
+
+        // Session introspection tool (unified)
+        if config.enable_session_tools && !disabled_set.contains("session") {
+            let registry = crate::tools::SessionCache::new("main");
+            let tool = Arc::new(SessionTool::new(Box::new(registry)));
+            Self::register_tool(core, tool).await?;
+        }
+
+        // Cron tool
+        if config.enable_cron && !disabled_set.contains("cron") {
+            let tool = Arc::new(CronTool::new());
+            Self::register_tool(core, tool).await?;
+        }
+
+        // Universal task management tool (global registration)
+        // Registered globally so it's available even before an agent is created.
+        // It searches across all per-agent registries at runtime.
+        if config.enable_task_management && !disabled_set.contains("task") {
+            let tool = Arc::new(TaskTool::global());
+            Self::register_tool(core, tool).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get list of globally-registered built-in tool names.
+    ///
+    /// These tools are registered once at daemon startup by
+    /// `BuiltinToolAdapter::register_all()` and are shared across all agents.
+    #[must_use]
+    pub fn global_tool_names() -> Vec<&'static str> {
+        vec![
+            "shell",
+            "read_file",
+            "write_file",
+            "glob",
+            "grep",
+            "str_replace_file",
+            "session",
+            "cron",
+            "task",
+        ]
+    }
+
+    /// Get list of agent-specific built-in tool names.
+    ///
+    /// These tools require agent-specific runtime dependencies
+    /// (e.g. `SubagentExecutor`, caller identity) and are registered
+    /// per-agent in `Agent::init_builtins_async()`.
+    #[must_use]
+    pub fn agent_specific_tool_names() -> Vec<&'static str> {
+        vec!["agent_spawn", "a2a_send"]
+    }
+
+    /// Get list of ALL built-in tool names (global + agent-specific).
+    #[must_use]
+    pub fn all_tool_names() -> Vec<&'static str> {
+        let mut names = Self::global_tool_names();
+        names.extend(Self::agent_specific_tool_names());
+        names
+    }
+
+    /// Check if a tool name is a built-in tool (global or agent-specific).
+    #[must_use]
+    pub fn is_builtin(name: &str) -> bool {
+        let name_lower = name.to_lowercase();
+        Self::all_tool_names()
+            .iter()
+            .any(|&n| n.to_lowercase() == name_lower)
+    }
+
+    /// Check if a tool name is an agent-specific built-in (registered per-agent).
+    #[must_use]
+    pub fn is_agent_specific_builtin(name: &str) -> bool {
+        let name_lower = name.to_lowercase();
+        Self::agent_specific_tool_names()
+            .iter()
+            .any(|&n| n.to_lowercase() == name_lower)
     }
 }
 
@@ -301,5 +495,55 @@ mod tests {
 
         let prompt_handler = BuiltinPromptHandler::new(tool);
         assert_eq!(prompt_handler.name(), "BuiltinPrompt(test_tool)");
+    }
+
+    #[test]
+    fn test_is_builtin() {
+        // Global tools
+        assert!(BuiltinToolAdapter::is_builtin("shell"));
+        assert!(BuiltinToolAdapter::is_builtin("read_file"));
+        assert!(BuiltinToolAdapter::is_builtin("SHELL")); // case insensitive
+        // Agent-specific tools
+        assert!(BuiltinToolAdapter::is_builtin("agent_spawn"));
+        assert!(BuiltinToolAdapter::is_builtin("a2a_send"));
+        assert!(BuiltinToolAdapter::is_builtin("A2A_SEND")); // case insensitive
+        // Unknown
+        assert!(!BuiltinToolAdapter::is_builtin("unknown_tool"));
+    }
+
+    #[test]
+    fn test_all_tool_names() {
+        let names = BuiltinToolAdapter::all_tool_names();
+        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"agent_spawn"));
+        assert!(names.contains(&"a2a_send"));
+    }
+
+    #[test]
+    fn test_global_tool_names() {
+        let names = BuiltinToolAdapter::global_tool_names();
+        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"task"));
+        assert!(!names.contains(&"agent_spawn")); // agent-specific, not global
+        assert!(!names.contains(&"a2a_send")); // agent-specific, not global
+    }
+
+    #[test]
+    fn test_agent_specific_tool_names() {
+        let names = BuiltinToolAdapter::agent_specific_tool_names();
+        assert!(names.contains(&"agent_spawn"));
+        assert!(names.contains(&"a2a_send"));
+        assert!(!names.contains(&"shell")); // global, not agent-specific
+    }
+
+    #[test]
+    fn test_is_agent_specific_builtin() {
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin("agent_spawn"));
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin("a2a_send"));
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT_SPAWN")); // case insensitive
+        assert!(!BuiltinToolAdapter::is_agent_specific_builtin("shell"));
+        assert!(!BuiltinToolAdapter::is_agent_specific_builtin("session"));
+        assert!(!BuiltinToolAdapter::is_agent_specific_builtin("unknown"));
     }
 }

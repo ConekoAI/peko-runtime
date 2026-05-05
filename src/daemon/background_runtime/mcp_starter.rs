@@ -10,8 +10,8 @@ use super::starter::{ExtensionRuntimeStarter, StarterContext};
 use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
 use crate::mcp::{
     config::{McpServerConfig, TransportType},
-    runtime_adapter::McpRuntimeAdapter,
 };
+use crate::extensions::runtime::mcp_runtime_adapter::McpRuntimeAdapter;
 use std::sync::Arc;
 use tracing::{info, warn};
 

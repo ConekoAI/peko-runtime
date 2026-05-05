@@ -7,7 +7,7 @@ use crate::mcp::{
     manager::McpManager,
     types::{CallToolResult, Tool as McpTool, ToolResultContent},
 };
-use crate::tools::framework::shared::proxy_utils::{estimate_tool_duration, execute_with_context_handling};
+use crate::extensions::protocols::shared::proxy_utils::{estimate_tool_duration, execute_with_context_handling};
 use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::json;

@@ -627,7 +627,7 @@ impl McpAdapter {
         let mut tool_instances: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
 
         for tool in server_tools {
-            let proxy = crate::mcp::tool_proxy::McpToolProxy::new(
+            let proxy = crate::extensions::runtime::mcp_tool_proxy::McpToolProxy::new(
                 server_name.to_string(),
                 tool,
                 self.manager.clone(),

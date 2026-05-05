@@ -7,8 +7,8 @@ use crate::daemon::background_runtime::{
     BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, GatewayRouter, GatewayRuntimeStarter,
     McpRuntimeStarter, StarterContext,
 };
-use crate::mcp::runtime_adapter::McpClientRegistry;
-use crate::tools::framework::async_executor::AsyncExecutor;
+use crate::extensions::runtime::McpClientRegistry;
+use crate::extensions::async_exec::executor::AsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{

@@ -66,10 +66,8 @@ pub use discovery::{
     discover_servers, ensure_default_config, is_server_installed, mcp_config_path, mcp_install_dir,
     DiscoveredServer, McpServerStatus,
 };
-pub use injectable_proxy::InjectableMcpToolProxy;
 pub use manager::{ManagerError, McpManager, ServerState};
-pub use runtime_adapter::{McpClientRegistry, McpRuntimeAdapter};
-pub use tool_proxy::{create_tool_proxies, McpToolProxy};
+pub use crate::extensions::runtime::{InjectableMcpToolProxy, McpClientRegistry, McpRuntimeAdapter, create_tool_proxies, McpToolProxy};
 pub use transport::{
     InMemoryTransport, McpTransport, SseTransport, StdioTransport, TransportError,
 };
@@ -79,10 +77,7 @@ pub use types::*;
 pub mod client;
 pub mod config;
 pub mod discovery;
-pub mod injectable_proxy;
 pub mod manager;
-pub mod runtime_adapter;
-pub mod tool_proxy;
 pub mod transport;
 pub mod types;
 

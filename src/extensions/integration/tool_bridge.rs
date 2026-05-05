@@ -80,14 +80,14 @@ impl Tool for ExtensionAsyncTool {
             .await?;
 
         match result {
-            crate::tools::WaitResult::Completed { result } => Ok(result.to_json()),
-            crate::tools::WaitResult::Failed { error } => {
+            crate::extensions::async_exec::executor::WaitResult::Completed { result } => Ok(result.to_json()),
+            crate::extensions::async_exec::executor::WaitResult::Failed { error } => {
                 Err(anyhow::anyhow!("Async execution failed: {error}"))
             }
-            crate::tools::WaitResult::Cancelled => {
+            crate::extensions::async_exec::executor::WaitResult::Cancelled => {
                 Err(anyhow::anyhow!("Async execution was cancelled"))
             }
-            crate::tools::WaitResult::Timeout => {
+            crate::extensions::async_exec::executor::WaitResult::Timeout => {
                 Err(anyhow::anyhow!("Async execution timed out"))
             }
         }

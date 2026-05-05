@@ -24,7 +24,7 @@ use crate::agent::subagent_types::{SubagentResult, SubagentRunView, SubagentStat
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
-use crate::tools::framework::async_executor::{
+use crate::extensions::async_exec::executor::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskStatus,
     AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, AsyncExecutor,
     SubagentMetadata, TaskMetadata, WaitResult,

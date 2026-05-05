@@ -67,7 +67,7 @@ impl ContextSource for ToolContextAdapter<'_> {
 
 /// `ExecutionContext` adapter for `ContextSource`
 pub struct ExecutionContextAdapter {
-    ctx: crate::tools::framework::universal::protocol::ExecutionContext,
+    ctx: crate::extensions::protocols::universal::protocol::ExecutionContext,
 }
 
 impl std::fmt::Debug for ExecutionContextAdapter {
@@ -81,7 +81,7 @@ impl std::fmt::Debug for ExecutionContextAdapter {
 
 impl ExecutionContextAdapter {
     #[must_use]
-    pub fn new(ctx: crate::tools::framework::universal::protocol::ExecutionContext) -> Self {
+    pub fn new(ctx: crate::extensions::protocols::universal::protocol::ExecutionContext) -> Self {
         Self { ctx }
     }
 }

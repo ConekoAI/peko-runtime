@@ -91,12 +91,27 @@ pub use services::{
     Services as ExtensionServicesContainer, ToolExecutionConfig, ToolExecutionService,
 };
 
+// Re-export protocols
+pub use protocols::{
+    ContextResolver, ProcessConfig, ProcessTransport, ProcessTransportBuilder,
+    DescribeResult, ErrorObject, ExecuteParams, ExecuteResult, ExecutionContext, Manifest,
+    ProtocolConfig, Request, Response, ResponseResult,
+    UniversalToolAdapter, UniversalToolBuilder, PROTOCOL_VERSION,
+    filter_reserved_params, validate_no_reserved_params_leak, ValidationError,
+    estimate_tool_duration, execute_with_context_handling, format_status,
+    load_and_register_tools, load_tools_from_directory,
+    DiscoveredUniversalTool, ExtensionUniversalToolAdapter,
+};
+
 // Submodules
 pub mod adapters;
+pub mod async_exec;
 pub mod core;
 pub mod integration;
 pub mod manager;
 pub mod migration;
+pub mod protocols;
+pub mod runtime;
 pub mod services;
 pub mod transport;
 pub mod types;

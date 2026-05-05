@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::agent::subagent_error::SpawnError;
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::session::types::SpawnCleanupPolicy;
-use crate::tools::framework::async_executor::TaskMetadata;
+use crate::extensions::async_exec::executor::TaskMetadata;
 use crate::tools::core::Tool;
 
 /// Maximum allowed spawn depth (safety limit)
@@ -258,7 +258,7 @@ impl AgentSpawnTool {
             Ok(run) => {
                 // Return inline result — the subagent's output is available immediately
                 let status_str = run.status.as_str();
-                let success = matches!(run.status, crate::tools::AsyncTaskStatus::Completed { .. });
+                let success = matches!(run.status, crate::extensions::async_exec::executor::AsyncTaskStatus::Completed { .. });
 
                 let mut result = json!({
                     "status": status_str,

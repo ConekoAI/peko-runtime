@@ -20,10 +20,10 @@ use crate::daemon::background_runtime::{BackgroundRuntimeManager, RuntimeState};
 use crate::mcp::{
     client::{ClientError, McpClient},
     config::{McpConfig, McpServerConfig, TransportType},
-    runtime_adapter::{McpClientRegistry, McpRuntimeAdapter, McpServerInfo},
     transport::{SseTransport, StdioTransport},
     types::Tool,
 };
+use crate::extensions::runtime::{McpClientRegistry, McpRuntimeAdapter, McpServerInfo};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -521,8 +521,7 @@ impl McpManager {
     /// # Returns
     /// A vector of `Arc<dyn Tool>` containing all MCP tools from running servers
     pub async fn get_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::mcp::injectable_proxy::InjectableMcpToolProxy;
-        use crate::mcp::tool_proxy::McpToolProxy;
+        use crate::extensions::runtime::{InjectableMcpToolProxy, McpToolProxy};
 
         let servers = self.servers.read().await;
         let manager_arc = Arc::new(RwLock::new(self.clone()));

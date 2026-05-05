@@ -58,7 +58,7 @@ pub mod skill_adapter;
 pub mod universal_tool_adapter;
 
 // Re-export built-in tool adapter
-pub use builtin_tool_adapter::BuiltinToolAdapter;
+pub use builtin_tool_adapter::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
 
 // Re-export skill adapter types
 pub use skill_adapter::{
