@@ -162,6 +162,6 @@ The generated manifest is cached in `~/.pekobot/tools/{tool_name}/manifest.yaml`
 The test auto-installs the SDK, but you can install it manually:
 
 ```bash
-cd tools/python/pekobot_tool
+cd sdks/python/pekobot_tool
 pip install -e .
 ```
