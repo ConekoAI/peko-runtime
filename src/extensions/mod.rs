@@ -21,7 +21,6 @@
 //! ├── gateway/     # Gateway adapter, protocol, runtime
 //! ├── general/     # General extension adapter
 //! ├── mcp/         # MCP adapter, protocol, runtime
-//! ├── migration/   # Legacy extension migration utilities
 //! ├── skill/       # Skill adapter
 //! └── universal/   # Universal tool adapter and protocol
 //! ```
@@ -51,9 +50,6 @@ pub mod universal;
 // ============================================================================
 // Utilities
 // ============================================================================
-
-/// Legacy extension migration utilities.
-pub mod migration;
 
 // ============================================================================
 // Built-in Adapter Provider
