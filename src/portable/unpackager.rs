@@ -3,7 +3,7 @@
 //! Extracts and imports .agent files into the local Pekobot runtime
 #![allow(dead_code)]
 
-use crate::extensions::services::ReservedParamsConfig;
+use crate::extension::services::ReservedParamsConfig;
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::extensions::mcp::protocol::config::{McpConfig, McpServerConfig, TransportType};
 use crate::portable::{

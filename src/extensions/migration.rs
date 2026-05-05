@@ -31,8 +31,8 @@
 //! ```
 
 use crate::common::paths::default_data_dir;
-use crate::extensions::adapters::parsing;
-use crate::extensions::manager::ExtensionManager;
+use crate::extension::adapters::parsing;
+use crate::extension::manager::ExtensionManager;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

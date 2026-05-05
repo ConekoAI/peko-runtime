@@ -40,6 +40,7 @@ pub use protocols::shared::{
 };
 
 // Submodules
+pub mod adapters;
 pub mod async_exec;
 pub mod core;
 pub mod integration;

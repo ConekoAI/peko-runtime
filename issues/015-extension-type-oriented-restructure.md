@@ -1,7 +1,7 @@
 # Issue 015: Extension Type-Oriented Module Restructure
 
 **Severity:** MEDIUM  
-**Status:** 🟡 **Open** — Phase 2 complete, Phases 3–5 pending  
+**Status:** 🟡 **Open** — Phase 3 complete, Phases 4–5 pending  
 **Labels:** `architecture`, `extensions`, `adr-017`, `refactor`, `module-boundaries`  
 **Reported:** 2026-05-05  
 **Related:** ADR-017 (Unified Extension Architecture), Issue 014 (closed), `AGENTS.md`
@@ -258,7 +258,7 @@ src/portable/                ← depends on extensions/mcp/protocol/config
 
 ### Phase 3: Consumer Updates
 
-**Status:** 🟡 **Partially complete** — `src/mcp/` deleted and consumer `use` statements updated during Phase 2. Remaining: delete backward-compatibility `mod.rs` layers once all consumers migrated.
+**Status:** ✅ **Complete**
 
 **Goal:** Update all non-extension code that references old paths.
 
@@ -273,30 +273,32 @@ src/portable/                ← depends on extensions/mcp/protocol/config
 1. ✅ Audit all `use crate::mcp::` and `use crate::extensions::` across non-extension modules.
 2. ✅ Update to new paths.
 3. ✅ Delete `src/mcp/` once all references are gone.
-4. 🔄 Delete `src/extensions/adapters/`, `src/extensions/runtime/`, `src/extensions/protocols/` once empty (pending Phase 4).
+4. ✅ Delete `src/extensions/adapters/`, `src/extensions/runtime/`, `src/extensions/protocols/` once empty.
 
 **Acceptance Criteria:**
 - [x] `cargo check` passes.
 - [x] `cargo test` passes.
 - [x] `src/mcp/` no longer exists.
-- [ ] `src/extensions/adapters/`, `runtime/`, `protocols/` no longer exist as mixed directories (deferred to Phase 4).
+- [x] `src/extensions/adapters/`, `runtime/`, `protocols/` no longer exist as mixed directories.
 
 ### Phase 4: Cleanup & Documentation
+
+**Status:** 🟡 **In Progress** — `src/extensions/mod.rs` cleaned up, `AGENTS.md` updated. Remaining: `API_SURFACE.md`, `src/lib.rs` public re-exports, module-boundary comments.
 
 **Goal:** Remove backward-compatibility re-exports and update all documentation.
 
 **Steps:**
-1. Remove temporary re-exports in `src/extensions/mod.rs`.
-2. Update `AGENTS.md` module boundary section.
-3. Update `API_SURFACE.md` if public API paths changed.
-4. Update `src/lib.rs` public re-exports.
-5. Add module-boundary comments to `src/extension/mod.rs` and `src/extensions/mod.rs`.
+1. ✅ Remove temporary re-exports in `src/extensions/mod.rs`.
+2. ✅ Update `AGENTS.md` module boundary section.
+3. 🔄 Update `API_SURFACE.md` if public API paths changed.
+4. 🔄 Update `src/lib.rs` public re-exports.
+5. 🔄 Add module-boundary comments to `src/extension/mod.rs` and `src/extensions/mod.rs`.
 
 **Acceptance Criteria:**
 - [ ] `cargo check` passes.
 - [ ] `cargo test` passes.
 - [ ] `cargo clippy` passes.
-- [ ] `AGENTS.md` accurately describes the new structure.
+- [x] `AGENTS.md` accurately describes the new structure.
 
 ### Phase 5: CI Lint (Optional but Recommended)
 

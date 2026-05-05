@@ -11,10 +11,10 @@
 //! BuiltinToolAdapter::register_tool(&core, shell).await?;
 //! ```
 
-use crate::extensions::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
-use crate::extensions::services::ReservedParamsConfig;
-use crate::extensions::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
-use crate::extensions::HookResult;
+use crate::extension::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
+use crate::extension::services::ReservedParamsConfig;
+use crate::extension::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
+use crate::extension::HookResult;
 use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -288,7 +288,7 @@ impl HookHandler for BuiltinExecuteHandler {
         let tool_name_for_ctx = tool_name.clone();
 
         let exec_config =
-            crate::extensions::services::ToolExecutionConfig::with_schema(self.tool.parameters());
+            crate::extension::services::ToolExecutionConfig::with_schema(self.tool.parameters());
 
         ctx.services
             .async_router()

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::extensions::async_exec::executor::{
+use crate::extension::async_exec::executor::{
     cancel_task_across_all_registries, find_task_across_all_registries,
     list_all_tasks_across_all_registries, CancelResult, SharedAsyncTaskRegistry, TaskView,
 };
@@ -268,7 +268,7 @@ Returns structured data appropriate to the action."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::async_exec::executor::{AsyncTaskEntry, AsyncTaskStatus, AsyncToolConfig};
+    use crate::extension::async_exec::executor::{AsyncTaskEntry, AsyncTaskStatus, AsyncToolConfig};
 
     #[tokio::test]
     async fn test_task_status_not_found() {
@@ -292,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_status_with_registry() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extensions::async_exec::executor::AsyncTaskRegistry::new()
+            crate::extension::async_exec::executor::AsyncTaskRegistry::new()
         ));
         {
             let mut reg = registry.write().await;
@@ -321,7 +321,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_list_with_registry_filters() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extensions::async_exec::executor::AsyncTaskRegistry::new()
+            crate::extension::async_exec::executor::AsyncTaskRegistry::new()
         ));
         {
             let mut reg = registry.write().await;
@@ -374,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_cancel_success() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extensions::async_exec::executor::AsyncTaskRegistry::new()
+            crate::extension::async_exec::executor::AsyncTaskRegistry::new()
         ));
         {
             let mut reg = registry.write().await;
@@ -402,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_cancel_already_terminal() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extensions::async_exec::executor::AsyncTaskRegistry::new()
+            crate::extension::async_exec::executor::AsyncTaskRegistry::new()
         ));
         {
             let mut reg = registry.write().await;

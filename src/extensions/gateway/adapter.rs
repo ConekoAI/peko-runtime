@@ -43,9 +43,9 @@
 //!     topic: "instance.*"
 //! ```
 
-use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
-use crate::extensions::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
-use crate::extensions::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
+use crate::extension::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
+use crate::extension::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
+use crate::extension::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -112,7 +112,7 @@ impl std::fmt::Debug for GatewayAdapter {
 }
 
 impl GatewayAdapter {
-    pub fn new(_core: Arc<crate::extensions::ExtensionCore>) -> Self {
+    pub fn new(_core: Arc<crate::extension::ExtensionCore>) -> Self {
         Self
     }
 }
@@ -123,10 +123,10 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         "gateway"
     }
 
-    fn manifest_format(&self) -> crate::extensions::adapters::ManifestFormat {
+    fn manifest_format(&self) -> crate::extension::adapters::ManifestFormat {
         // ADR-024: Gateway uses pure YAML manifest.yaml with extension_type: "gateway".
         // gateway_type remains a required type-specific field for transport selection.
-        crate::extensions::adapters::ManifestFormat::Yaml {
+        crate::extension::adapters::ManifestFormat::Yaml {
             schema: "gateway".to_string(),
             file_name: "manifest.yaml",
         }
@@ -136,16 +136,16 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         &self,
         path: &std::path::Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
         use anyhow::Context;
 
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse gateway manifest at {path:?}"))?;
 
-        let (id, name, version, description) = crate::extensions::adapters::parsing::extract_extension_fields(&yaml)?;
+        let (id, name, version, description) = crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
 
         // Validate extension_type
-        let ext_type = crate::extensions::adapters::parsing::require_string_field(&yaml, "extension_type")
+        let ext_type = crate::extension::adapters::parsing::require_string_field(&yaml, "extension_type")
             .with_context(|| format!("Gateway manifest at {path:?} is missing required field 'extension_type'"))?;
         if ext_type != "gateway" {
             anyhow::bail!(
@@ -155,7 +155,7 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         }
 
         // Validate gateway_type (required type-specific transport discriminator)
-        let gateway_type = crate::extensions::adapters::parsing::require_string_field(&yaml, "gateway_type")
+        let gateway_type = crate::extension::adapters::parsing::require_string_field(&yaml, "gateway_type")
             .with_context(|| format!("Gateway manifest at {path:?} is missing required field 'gateway_type'"))?;
 
         let mut manifest = ExtensionManifest::new(
@@ -171,13 +171,13 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         manifest.set("gateway_type", gateway_type);
 
         if let Some(config) = yaml.get("config") {
-            manifest.set("config", crate::extensions::adapters::parsing::yaml_to_json(config.clone()));
+            manifest.set("config", crate::extension::adapters::parsing::yaml_to_json(config.clone()));
         }
         if let Some(hooks) = yaml.get("hooks") {
-            manifest.set("hooks", crate::extensions::adapters::parsing::yaml_to_json(hooks.clone()));
+            manifest.set("hooks", crate::extension::adapters::parsing::yaml_to_json(hooks.clone()));
         }
         if let Some(tools) = yaml.get("tools") {
-            manifest.set("tools", crate::extensions::adapters::parsing::yaml_to_json(tools.clone()));
+            manifest.set("tools", crate::extension::adapters::parsing::yaml_to_json(tools.clone()));
         }
 
         Ok(manifest)
@@ -355,7 +355,7 @@ impl HookHandler for GatewayHookHandler {
 impl GatewayHookHandler {
     /// Handle I/O lifecycle hooks (ChannelInput, ChannelOutput, MessagePreSend, MessagePostReceive)
     async fn handle_io_hook(&self, ctx: &HookContext) -> HookResult {
-        use crate::extensions::core::hook_points::HookPoint;
+        use crate::extension::core::hook_points::HookPoint;
 
         match ctx.point {
             HookPoint::ChannelInput => {
@@ -408,7 +408,7 @@ impl GatewayHookHandler {
 
     /// Handle agent lifecycle hooks (AgentInit, AgentShutdown, AgentIteration)
     async fn handle_agent_hook(&self, ctx: &HookContext) -> HookResult {
-        use crate::extensions::core::hook_points::HookPoint;
+        use crate::extension::core::hook_points::HookPoint;
 
         match ctx.point {
             HookPoint::AgentInit => {
@@ -438,7 +438,7 @@ impl GatewayHookHandler {
 
     /// Handle event lifecycle hooks (EventSubscribe, EventEmit)
     async fn handle_event_hook(&self, ctx: &HookContext) -> HookResult {
-        use crate::extensions::core::hook_points::HookPoint;
+        use crate::extension::core::hook_points::HookPoint;
 
         match ctx.point {
             HookPoint::EventSubscribe { ref topic_pattern } => {
@@ -696,7 +696,7 @@ fn parse_gateway_manifest_toml(
 
 /// Register gateway extensions
 pub async fn register_gateways_with_core(
-    _core: Arc<crate::extensions::ExtensionCore>,
+    _core: Arc<crate::extension::ExtensionCore>,
     gateways: Vec<DiscoveredGateway>,
 ) -> Result<usize> {
     info!("Registered {} gateway extensions", gateways.len());
@@ -705,7 +705,7 @@ pub async fn register_gateways_with_core(
 
 /// Load and register gateway extensions
 pub async fn load_and_register_gateways(
-    core: Arc<crate::extensions::ExtensionCore>,
+    core: Arc<crate::extension::ExtensionCore>,
     gateways_dir: &Path,
 ) -> Result<usize> {
     let gateways = discover_gateway_extensions(gateways_dir).await?;

@@ -6,7 +6,7 @@
 //! - Enable/disable control
 //! - Bundling and packaging
 
-use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter};
+use crate::extension::adapters::{ExtensionState, ExtensionTypeAdapter};
 use crate::extension::core::ExtensionCore;
 // Re-export storage types for backward compatibility
 pub use crate::extension::manager::storage::ExtensionStorage;
@@ -136,7 +136,7 @@ impl ExtensionManager {
     /// Tier 2: Unified manifest (manifest.yaml with `extension_type`)
     /// Tier 3: Legacy fallback (manifest.json, config.toml, untyped manifest.yaml)
     fn detect_extension_type_string(&self, path: &Path) -> Option<String> {
-        use crate::extensions::adapters::extract_extension_type_from_yaml;
+        use crate::extension::adapters::extract_extension_type_from_yaml;
         use tracing::warn;
 
         // ─── TIER 1: Ecosystem Standards ─────────────────────────────────────

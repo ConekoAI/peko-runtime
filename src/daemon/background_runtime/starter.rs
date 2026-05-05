@@ -11,8 +11,8 @@
 
 use super::manager::BackgroundRuntimeManager;
 use crate::agent::stateless_service::StatelessAgentService;
-use crate::extensions::runtime::McpClientRegistry;
-use crate::extensions::runtime::GatewayRouter;
+use crate::extensions::mcp::runtime::McpClientRegistry;
+use crate::extensions::gateway::runtime::GatewayRouter;
 use std::path::PathBuf;
 use std::sync::Arc;
 

@@ -24,7 +24,7 @@ use crate::agent::subagent_types::{SubagentResult, SubagentRunView, SubagentStat
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
-use crate::extensions::async_exec::executor::{
+use crate::extension::async_exec::executor::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskStatus,
     AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, AsyncExecutor,
     SubagentMetadata, TaskMetadata, WaitResult,
@@ -300,7 +300,7 @@ impl SubagentExecutor {
         let agent_config_clone = self.agent_config.clone();
         let session_manager_clone = self.session_manager.clone();
         let session_manager_for_cleanup = self.session_manager.clone();
-        let extension_core_clone = crate::extensions::core::global_core();
+        let extension_core_clone = crate::extension::core::global_core();
         let cleanup_policy_clone = config.cleanup;
 
         self.unified_executor
@@ -688,7 +688,7 @@ async fn execute_subagent_task(
     agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
     async_registry: SharedAsyncTaskRegistry,
-    extension_core: Option<Arc<crate::extensions::ExtensionCore>>,
+    extension_core: Option<Arc<crate::extension::ExtensionCore>>,
 ) -> Result<String> {
     info!(
         "Executing subagent task: agent={} session={}",

@@ -18,6 +18,6 @@ pub use protocol::{
     DescribeResult, ErrorObject, ExecuteParams, ExecuteResult, ExecutionContext,
     Request, Response, ResponseResult, PROTOCOL_VERSION,
 };
-pub use crate::extensions::services::ParamSource;
+pub use crate::extension::services::ParamSource;
 pub use crate::extensions::universal::protocol::manifest::ProtocolConfig;
 pub use transport::Transport as UniversalToolTransport;

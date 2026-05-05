@@ -1,36 +1,14 @@
-//! Extension Type Adapters — Backward Compatibility Re-exports
+//! Extension Type Adapter Framework
 //!
-//! This module is preserved during Phase 2 migration as a compatibility layer.
-//! All adapter implementations have moved to `src/extensions/<type>/adapter.rs`.
-//!
-//! # New Locations
-//! - `crate::extensions::mcp::adapter` — MCP adapter
-//! - `crate::extensions::gateway::adapter` — Gateway adapter
-//! - `crate::extensions::universal::adapter` — Universal tool adapter
-//! - `crate::extensions::skill::adapter` — Skill adapter
-//! - `crate::extensions::builtin::adapter` — Built-in tool adapter
-//! - `crate::extensions::general::adapter` — General extension adapter
+//! This module contains the generic adapter framework that all extension type
+//! implementations must use. Extension-specific adapters live in
+//! `crate::extensions::<type>::adapter`, not here.
 
-// Re-export from new type-oriented locations for backward compatibility
-pub use crate::extensions::builtin::adapter::*;
-pub use crate::extensions::gateway::adapter::*;
-pub use crate::extensions::general::adapter::*;
-pub use crate::extensions::mcp::adapter::*;
-pub use crate::extensions::skill::adapter::*;
-pub use crate::extensions::universal::adapter::*;
-
-// Module-level backward compatibility aliases
-pub use crate::extensions::builtin::adapter as builtin_tool_adapter;
-pub use crate::extensions::gateway::adapter as gateway_adapter;
-pub use crate::extensions::general::adapter as general_adapter;
-pub use crate::extensions::mcp::adapter as mcp_adapter;
-pub use crate::extensions::skill::adapter as skill_adapter;
-pub use crate::extensions::universal::adapter as universal_tool_adapter;
-
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Re-export from core for convenience
-pub use crate::extensions::core::HookBinding;
+pub use crate::extension::core::HookBinding;
 
 /// Adapter trait definition
 ///
@@ -44,12 +22,12 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     fn manifest_format(&self) -> ManifestFormat;
 
     /// Resolve hook bindings for a manifest
-    fn resolve_hooks(&self, manifest: &crate::extensions::ExtensionManifest) -> Vec<HookBinding>;
+    fn resolve_hooks(&self, manifest: &crate::extension::types::ExtensionManifest) -> Vec<HookBinding>;
 
     /// Initialize the extension
     async fn initialize(
         &self,
-        _manifest: &crate::extensions::ExtensionManifest,
+        _manifest: &crate::extension::types::ExtensionManifest,
     ) -> anyhow::Result<ExtensionState> {
         Ok(ExtensionState::Unit)
     }
@@ -67,8 +45,8 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     /// Register tools provided by this extension with the unified registry.
     async fn register_tools(
         &self,
-        _core: &crate::extensions::core::ExtensionCore,
-        _manifest: &crate::extensions::ExtensionManifest,
+        _core: &crate::extension::core::ExtensionCore,
+        _manifest: &crate::extension::types::ExtensionManifest,
     ) -> anyhow::Result<usize> {
         Ok(0)
     }
@@ -78,7 +56,7 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
         &self,
         path: &std::path::Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extension::types::ExtensionManifest> {
         use anyhow::Context;
 
         match self.manifest_format() {
@@ -103,7 +81,7 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
 fn parse_yaml_frontmatter_markdown(
     path: &std::path::Path,
     content: &str,
-) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+) -> anyhow::Result<crate::extension::types::ExtensionManifest> {
     use anyhow::Context;
 
     let mut lines = content.lines().peekable();
@@ -130,7 +108,7 @@ fn parse_yaml_frontmatter_markdown(
 
     let frontmatter = frontmatter_lines.join("\n");
 
-    let mut manifest: crate::extensions::ExtensionManifest = serde_yaml::from_str(&frontmatter)
+    let mut manifest: crate::extension::types::ExtensionManifest = serde_yaml::from_str(&frontmatter)
         .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
 
     manifest.path = path
@@ -145,7 +123,7 @@ fn parse_yaml_frontmatter_markdown(
 fn parse_pure_yaml_manifest(
     path: &std::path::Path,
     content: &str,
-) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+) -> anyhow::Result<crate::extension::types::ExtensionManifest> {
     use anyhow::Context;
 
     let yaml: serde_yaml::Value = serde_yaml::from_str(content)
@@ -301,9 +279,9 @@ pub mod parsing {
         yaml: &serde_yaml::Value,
         extension_type: &str,
         path: &Path,
-    ) -> Result<crate::extensions::ExtensionManifest> {
+    ) -> Result<crate::extension::types::ExtensionManifest> {
         let (id, name, version, description) = extract_extension_fields(yaml)?;
-        let mut manifest = crate::extensions::ExtensionManifest::new(
+        let mut manifest = crate::extension::types::ExtensionManifest::new(
             &id,
             extension_type,
             &name,
@@ -327,9 +305,9 @@ pub mod parsing {
         toml: &toml::Value,
         extension_type: &str,
         path: &Path,
-    ) -> Result<crate::extensions::ExtensionManifest> {
+    ) -> Result<crate::extension::types::ExtensionManifest> {
         let (id, name, version, description) = extract_extension_fields_toml(toml)?;
-        let mut manifest = crate::extensions::ExtensionManifest::new(
+        let mut manifest = crate::extension::types::ExtensionManifest::new(
             &id,
             extension_type,
             &name,
@@ -546,7 +524,7 @@ impl BuiltInAdapters {
             Box::new(crate::extensions::skill::adapter::SkillAdapter::new()),
             Box::new(crate::extensions::universal::adapter::UniversalToolAdapter::new()),
             Box::new(crate::extensions::mcp::adapter::McpAdapter::with_default_manager()),
-            Box::new(crate::extensions::gateway::adapter::GatewayAdapter::new(Arc::new(crate::extensions::core::ExtensionCore::new()))),
+            Box::new(crate::extensions::gateway::adapter::GatewayAdapter::new(Arc::new(crate::extension::core::ExtensionCore::new()))),
             Box::new(crate::extensions::general::adapter::GeneralExtensionAdapter::new()),
         ]
     }

@@ -26,11 +26,11 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 // ADR-022 Phase 3: Extension hook imports for compaction
-use crate::extensions::core::hook_points::HookPoint;
-use crate::extensions::types::{HookInput, SessionSnapshot};
+use crate::extension::core::hook_points::HookPoint;
+use crate::extension::types::{HookInput, SessionSnapshot};
 
 // Extension Core imports for skill loading and tool execution
-use crate::extensions::adapters::skill_adapter::{register_skills_with_core, SkillAdapter};
+use crate::extensions::skill::{register_skills_with_core, SkillAdapter};
 
 /// Result of running the agentic loop
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ pub struct AgenticLoop {
     max_iterations: usize,
     system_prompt: String,
     /// Extension core for skill loading and tool registration.
-    extension_core: Arc<crate::extensions::ExtensionCore>,
+    extension_core: Arc<crate::extension::ExtensionCore>,
 }
 
 impl AgenticLoop {
@@ -76,7 +76,7 @@ impl AgenticLoop {
     pub async fn new(
         agent: Arc<Agent>,
         provider: Arc<crate::providers::Provider>,
-        extension_core: Arc<crate::extensions::ExtensionCore>,
+        extension_core: Arc<crate::extension::ExtensionCore>,
     ) -> Self {
         let system_prompt = build_system_prompt(&agent, &extension_core).await;
 
@@ -98,7 +98,7 @@ impl AgenticLoop {
 
     /// Get the extension core
     #[must_use]
-    pub fn extension_core(&self) -> &Arc<crate::extensions::ExtensionCore> {
+    pub fn extension_core(&self) -> &Arc<crate::extension::ExtensionCore> {
         &self.extension_core
     }
 
@@ -410,8 +410,8 @@ impl AgenticLoop {
                 });
 
                 // 1. Invoke SessionCompaction hook — extensions get first shot
-                use crate::extensions::core::hook_points::HookPoint;
-                use crate::extensions::types::HookInput;
+                use crate::extension::core::hook_points::HookPoint;
+                use crate::extension::types::HookInput;
 
                 // Build compaction preparation using turn boundaries
                 let threshold_tokens = context_window
@@ -458,8 +458,8 @@ impl AgenticLoop {
                     .await;
 
                 match hook_result {
-                    crate::extensions::types::HookResult::Replace(
-                        crate::extensions::types::HookOutput::MessageVec(custom_messages),
+                    crate::extension::types::HookResult::Replace(
+                        crate::extension::types::HookOutput::MessageVec(custom_messages),
                     ) => {
                         // Extension provided custom compacted messages
                         info!(
@@ -470,7 +470,7 @@ impl AgenticLoop {
                         messages = custom_messages;
                         compaction_performed = true;
                     }
-                    crate::extensions::types::HookResult::Handled => {
+                    crate::extension::types::HookResult::Handled => {
                         // Extension cancelled compaction
                         info!("SessionCompaction hook cancelled compaction");
                     }
@@ -580,8 +580,8 @@ impl AgenticLoop {
                     .invoke_hook(HookPoint::SessionCompactionPost, post_input)
                     .await;
 
-                if let crate::extensions::types::HookResult::Replace(
-                    crate::extensions::types::HookOutput::MessageVec(modified),
+                if let crate::extension::types::HookResult::Replace(
+                    crate::extension::types::HookOutput::MessageVec(modified),
                 ) = post_result
                 {
                     info!(
@@ -1300,7 +1300,7 @@ impl AgenticLoop {
 /// Skills are loaded via the `ExtensionCore` using the `SkillAdapter`.
 async fn build_system_prompt(
     agent: &Agent,
-    extension_core: &Arc<crate::extensions::ExtensionCore>,
+    extension_core: &Arc<crate::extension::ExtensionCore>,
 ) -> String {
     info!(
         "Building initial system prompt for agent '{}'",
@@ -1380,7 +1380,7 @@ async fn load_and_register_skills(
     agent_name: &str,
     enabled_skills: &[String],
     path_resolver: &crate::common::paths::PathResolver,
-    extension_core: &Arc<crate::extensions::ExtensionCore>,
+    extension_core: &Arc<crate::extension::ExtensionCore>,
 ) -> usize {
     // Use PathResolver for consistent path resolution
     let skills_dir = path_resolver.skills_dir();

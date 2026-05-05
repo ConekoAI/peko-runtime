@@ -3,70 +3,13 @@
 //! This module contains **extension type implementations** (MCP, Gateway, Skill,
 //! Builtin, General, Universal). The generic framework lives in `crate::extension`
 //! (singular).
-//!
-//! During Phase 1 migration, this module re-exports all framework items from
-//! `crate::extension` for backward compatibility. These re-exports will be
-//! removed in Phase 4.
-
-// ============================================================================
-// Temporary backward-compatibility re-exports from framework (Phase 1)
-// These will be removed in Phase 4.
-// ============================================================================
-
-// Re-export core types
-pub use crate::extension::core::{
-    common,
-    binding::{HookBinding, HookBindingBuilder},
-    config::{ExtensionConfig, ExtensionServices, TelemetryService},
-    context::{HookContext, HookState},
-    handler::{HookHandler, HookHandlerFactory},
-    hook_points::{HookPoint, HookPointBuilder},
-    registry::{global_core, init_global_core, ExtensionCore, RegisteredHook},
-};
-
-// Re-export types
-pub use crate::extension::types::{
-    AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookInput, HookOutput, HookPriority,
-    HookResult, MessageEnvelope, PromptBuildState, SessionSnapshot, ToolMetadata,
-    ToolRegistryAccess, ToolSource, DEFAULT_HOOK_PRIORITY, FALLBACK_HOOK_PRIORITY,
-    SYSTEM_HOOK_PRIORITY, USER_HOOK_PRIORITY,
-};
-
-// Re-export services
-pub use crate::extension::services::{
-    ParamSource, ReservedParamsConfig, ReservedParamsService,
-    Services as ExtensionServicesContainer, ToolExecutionConfig, ToolExecutionService,
-};
-
-// Re-export protocols
-pub use crate::extension::protocols::shared::{
-    ContextResolver, ProcessConfig, ProcessTransport, ProcessTransportBuilder,
-    filter_reserved_params, validate_no_reserved_params_leak, ValidationError,
-    estimate_tool_duration, execute_with_context_handling, format_status,
-};
-
-// Re-export framework submodules for backward compatibility
-pub use crate::extension::async_exec;
-pub use crate::extension::core;
-pub use crate::extension::integration;
-pub use crate::extension::manager;
-pub use crate::extension::services;
-pub use crate::extension::transport;
-pub use crate::extension::types;
-
-// ============================================================================
-// Extension type implementations (staying in src/extensions/)
-// ============================================================================
 
 // Submodules for extension type implementations
-pub mod adapters;
 pub mod builtin;
 pub mod gateway;
 pub mod general;
 pub mod migration;
 pub mod mcp;
-pub mod protocols;
-pub mod runtime;
 pub mod skill;
 pub mod universal;
 
@@ -99,16 +42,6 @@ pub mod extension_types {
     pub fn standard_types() -> Vec<&'static str> {
         vec![SKILL, MCP, UNIVERSAL_TOOL, GATEWAY]
     }
-}
-
-/// Prelude for convenient imports
-pub mod prelude {
-    pub use crate::extension::core::{
-        common, ExtensionCore, HookContext, HookHandler, HookPoint, HookPointBuilder,
-    };
-    pub use crate::extension::types::{
-        ExtensionId, ExtensionManifest, HookId, HookInput, HookOutput, HookResult,
-    };
 }
 
 #[cfg(test)]

@@ -59,8 +59,8 @@ async fn main() {
 ///   so that async tools fail fast with a clear error instead of falling back to
 ///   in-process execution that would be dropped on CLI exit (ADR-020).
 async fn init_extension_core(command: &Commands) {
-    use pekobot::extensions::core::{init_global_core, ExtensionCore, ExtensionServices};
-    use pekobot::extensions::services::AsyncExecutionRouter;
+    use pekobot::extension::core::{init_global_core, ExtensionCore, ExtensionServices};
+    use pekobot::extension::services::AsyncExecutionRouter;
     use std::sync::Arc;
 
     let is_daemon_cmd = matches!(command, Commands::Daemon(_));
@@ -68,16 +68,16 @@ async fn init_extension_core(command: &Commands) {
     let router = if is_daemon_cmd {
         tracing::info!("Initializing ExtensionCore with LocalAsyncTransport (daemon mode)");
         AsyncExecutionRouter::with_transport(
-            pekobot::extensions::services::async_transport::create_local_transport(),
+            pekobot::extension::services::async_transport::create_local_transport(),
         )
     } else {
         tracing::info!("Auto-detecting async transport for CLI mode");
-        match pekobot::extensions::services::async_transport::create_transport().await {
+        match pekobot::extension::services::async_transport::create_transport().await {
             Ok(transport) => AsyncExecutionRouter::with_transport(transport),
             Err(_) => {
                 // Daemon does not auto-start; user must start it manually.
                 AsyncExecutionRouter::with_transport(std::sync::Arc::new(
-                    pekobot::extensions::services::async_transport::UnavailableAsyncTransport::new(
+                    pekobot::extension::services::async_transport::UnavailableAsyncTransport::new(
                         "Pekobot daemon is not running. Async tool execution requires the daemon.\n\
                          Start it with: pekobot daemon start\n\
                          Or use sync mode (remove _async: true from the tool call).",
@@ -98,8 +98,8 @@ async fn init_extension_core(command: &Commands) {
 /// This function checks if legacy extensions need to be migrated to the new
 /// Extension 2.0 system and performs the migration if needed.
 async fn run_extension_migration(_paths: &GlobalPaths) -> anyhow::Result<()> {
-    use pekobot::extensions::core::global_core;
-    use pekobot::extensions::manager::ExtensionManager;
+    use pekobot::extension::core::global_core;
+    use pekobot::extension::manager::ExtensionManager;
     use pekobot::extensions::migration::migrate_legacy_extensions;
 
     let core = global_core()

@@ -8,8 +8,8 @@
 //! - Configure extensions (global, team, agent levels)
 
 use crate::commands::GlobalPaths;
-use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
-use crate::extensions::types::ExtensionId;
+use crate::extension::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
+use crate::extension::types::ExtensionId;
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -203,13 +203,13 @@ pub enum ExtCommands {
 
 /// Create an `ExtensionManager` with all default adapters registered
 async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionManager {
-    use crate::extensions::adapters::{
-        gateway_adapter::GatewayAdapter, general_adapter::GeneralExtensionAdapter,
-        mcp_adapter::McpAdapter, skill_adapter::SkillAdapter,
-        universal_tool_adapter::UniversalToolAdapter,
-    };
-    use crate::extensions::core::global_core;
-    use crate::extensions::adapters::builtin_tool_adapter::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+    use crate::extensions::gateway::GatewayAdapter;
+    use crate::extensions::general::GeneralExtensionAdapter;
+    use crate::extensions::mcp::McpAdapter;
+    use crate::extensions::skill::SkillAdapter;
+    use crate::extensions::universal::UniversalToolAdapter;
+    use crate::extension::core::global_core;
+    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
 
     // Global ExtensionCore is always initialized in main.rs before command dispatch.
     let core = global_core().expect("Global ExtensionCore not initialized");
@@ -370,7 +370,7 @@ async fn handle_list(
     let extensions = manager.list_extensions();
 
     // Get built-in extensions from ExtensionCore
-    let builtins = if let Some(core) = crate::extensions::core::global_core() {
+    let builtins = if let Some(core) = crate::extension::core::global_core() {
         core.list_builtin_extensions().await
     } else {
         Vec::new()
@@ -390,7 +390,7 @@ async fn handle_list(
         .collect();
 
     // Filter built-ins by type
-    let filtered_builtins: Vec<&crate::extensions::core::BuiltinExtensionInfo> = builtins
+    let filtered_builtins: Vec<&crate::extension::core::BuiltinExtensionInfo> = builtins
         .iter()
         .filter(|b| {
             if let Some(ref t) = ext_type {
@@ -590,7 +590,7 @@ async fn handle_enable(
     target: Option<String>,
 ) -> anyhow::Result<()> {
     // Normalize built-in IDs: accept both "shell" and "builtin:tool:shell"
-    let is_builtin = crate::extensions::adapters::BuiltinToolAdapter::is_builtin(&id)
+    let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
         || id.starts_with("builtin:");
     if is_builtin {
         let capability = if id.starts_with("builtin:") {
@@ -753,7 +753,7 @@ async fn handle_enable_builtin(
     }
 
     // Also enable ExtensionCore hooks for immediate effect
-    if let Some(core) = crate::extensions::core::global_core() {
+    if let Some(core) = crate::extension::core::global_core() {
         let builtins = core.list_builtin_extensions().await;
         for b in &builtins {
             if b.name.eq_ignore_ascii_case(capability) {
@@ -778,7 +778,7 @@ async fn handle_disable(
     target: Option<String>,
 ) -> anyhow::Result<()> {
     // Normalize built-in IDs: accept both "shell" and "builtin:tool:shell"
-    let is_builtin = crate::extensions::adapters::BuiltinToolAdapter::is_builtin(&id)
+    let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
         || id.starts_with("builtin:");
     if is_builtin {
         let capability = if id.starts_with("builtin:") {
@@ -842,7 +842,7 @@ async fn handle_disable_builtin(
     }
 
     // Also disable ExtensionCore hooks for immediate effect
-    if let Some(core) = crate::extensions::core::global_core() {
+    if let Some(core) = crate::extension::core::global_core() {
         let builtins = core.list_builtin_extensions().await;
         for b in &builtins {
             if b.name.eq_ignore_ascii_case(capability) {
@@ -1255,13 +1255,11 @@ async fn handle_config(
 /// Tier 2: Unified manifest (manifest.yaml with `extension_type`)
 /// Tier 3: Legacy fallback (manifest.json, config.toml, untyped manifest.yaml)
 async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
-    use crate::extensions::adapters::{
-        extract_extension_type_from_yaml,
-        general_adapter::discover_general_extensions,
-        mcp_adapter::McpAdapter,
-        skill_adapter::SkillAdapter,
-        universal_tool_adapter::UniversalToolAdapter,
-    };
+    use crate::extension::adapters::extract_extension_type_from_yaml;
+    use crate::extensions::general::discover_general_extensions;
+    use crate::extensions::mcp::McpAdapter;
+    use crate::extensions::skill::SkillAdapter;
+    use crate::extensions::universal::UniversalToolAdapter;
 
     println!("Validating extension at: {}", path.display());
     println!();

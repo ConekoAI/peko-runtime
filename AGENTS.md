@@ -76,21 +76,27 @@ src/
 ├── daemon/         # HTTP daemon (Axum-based), health, info endpoints
 │   └── background_runtime/  # Generic process supervision (manager, supervisor, adapter traits)
 ├── engine/         # Core agentic loop execution engine
-├── extensions/     # Unified Extension Architecture (ADR-017) — center of gravity for all extension concerns
-│   ├── adapters/   # Type-specific adapters (skill, mcp, tool, channel, gateway)
+├── extension/      # Extension Framework (singular) — generic, zero external deps
+│   ├── adapters/   # ExtensionTypeAdapter trait, ManifestFormat, BuiltInAdapters, parsing utilities
 │   ├── async_exec/ # Async task execution framework (migrated from tools::framework)
 │   ├── core/       # ExtensionCore — 22 hook-point registry
 │   ├── integration/# Extension integration layer
 │   ├── manager/    # ExtensionManager — lifecycle (install, enable, disable)
-│   ├── protocols/  # Extension protocols (universal tool protocol, shared utilities)
-│   ├── runtime/    # Runtime adapters bridging extensions to daemon background runtime
-│   ├── services/   # Extension services
+│   ├── protocols/  # Shared protocol utilities (process transport, validation, schema filter)
+│   ├── services/   # Extension services (tool execution, reserved params)
 │   ├── transport/  # Extension transport layer
-│   └── types/      # Extension type definitions
+│   └── types/      # Extension type definitions (ExtensionManifest, HookResult, etc.)
+├── extensions/     # Extension Type Implementations (plural) — MCP, Gateway, Skill, Builtin, General, Universal
+│   ├── builtin/    # Built-in tool adapter
+│   ├── gateway/    # Gateway adapter, runtime, protocol
+│   ├── general/    # General extension adapter
+│   ├── mcp/        # MCP adapter, runtime, protocol (absorbed src/mcp/)
+│   ├── migration/  # Legacy extension migration utilities
+│   ├── skill/      # Skill adapter
+│   └── universal/  # Universal tool adapter and protocol
 ├── identity/       # DID identity system, ed25519 keys
 ├── image/          # Agent image manifest, build, registry client
 ├── ipc/            # Inter-process communication
-├── mcp/            # Model Context Protocol client, transport, types (protocol only)
 ├── observability/  # Metrics, logging, tracing
 ├── portable/       # OCI-inspired image packaging (.agent packages)
 ├── prompt/         # Prompt assembly (markdown files, skills injection)
@@ -116,7 +122,8 @@ src/
 | `agent` | Agent instance lifecycle, stateless manager, registration |
 | `daemon` | Axum HTTP server, REST API, WebSocket, SSE streaming |
 | `engine` | Turn-based agentic loop: input → LLM → tools → response |
-| `extensions` | Unified hook-based system for all capabilities (ADR-017). Center of gravity for extension protocols, async execution, and runtime adapters. |
+| `extension` | Generic extension framework (ADR-017) — hook points, registries, types, managers, and shared services. Zero dependencies on extension type implementations. |
+| `extensions` | Extension type implementations (MCP, Gateway, Skill, Builtin, General, Universal). Each type lives in its own directory. |
 | `session` | JSONL persistence, atomic writes, branching, `.index.json` sidecars |
 | `team` | Multi-agent teams, shared bus, shared MCPs, file workspace |
 | `tools` | Built-in tool implementations (filesystem, process, cron, spawn, etc.). Tool traits and factory only — frameworks moved to `extensions`. |
@@ -162,14 +169,15 @@ cargo test --all-features
 - **Daemon default bind:** `127.0.0.1:11435`. Binding to `0.0.0.0` requires explicit config and prints a warning.
 - **Session durability:** JSONL is the source of truth; SQLite (`state.db`) is a rebuildable index.
 - **Credential isolation:** API keys are never passed to tool subprocesses. The `process` tool strips `*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`.
-- **Module Boundaries (Issue 014):** `src/extensions/` is the center of gravity for all extension concerns. After the Issue 014 migration:
-  - `src/extensions/protocols/` contains the Universal Tool Protocol, shared utilities (migrated from `src/tools/framework/`), and the Gateway IPC Protocol.
-  - `src/extensions/async_exec/` contains the async task execution framework (migrated from `src/tools/framework/async_executor/`).
-  - `src/extensions/runtime/` contains MCP runtime adapters, MCP tool proxies, MCP starters, Gateway runtime adapters, Gateway router, and Gateway starters (migrated from `src/mcp/` and `src/daemon/background_runtime/`).
+- **Module Boundaries (Issue 014 / Issue 015):** After the Issue 015 type-oriented restructure:
+  - `src/extension/` (singular) contains the **generic extension framework** — core, types, manager, async_exec, transport, services, protocols/shared, and the new adapters module. It has zero dependencies on `crate::extensions`, `crate::mcp`, `crate::daemon`, or `crate::tools`.
+  - `src/extensions/` (plural) contains **extension type implementations** — each type (mcp, gateway, skill, builtin, general, universal) lives in its own directory with its adapter, runtime, and protocol code.
+  - `src/extensions/mcp/protocol/` absorbed the former `src/mcp/` module (client, transport, types, config, discovery, manager). `src/mcp/` no longer exists.
+  - `src/extensions/mcp/runtime/` contains MCP runtime adapters, tool proxies, and starters (migrated from `src/extensions/runtime/` and `src/mcp/`).
+  - `src/extensions/gateway/runtime/` contains Gateway runtime adapters, router, and starters (migrated from `src/extensions/runtime/` and `src/daemon/background_runtime/`).
+  - `src/daemon/background_runtime/` contains only generic process supervision code (traits, manager, supervisor, starter registry).
   - `src/tools/framework/` has been removed.
-  - `src/mcp/` now contains only the MCP protocol client, transport, and types.
-  - `src/daemon/background_runtime/` contains only generic process supervision code (traits, manager, supervisor, starter registry). All extension-specific runtime adapters and starters live in `src/extensions/runtime/`.
-  - `src/extensions/core/` has zero dependencies on `crate::mcp`, `crate::daemon`, or `crate::tools`.
+  - `src/extension/core/` has zero dependencies on `crate::extensions`, `crate::mcp`, `crate::daemon`, or `crate::tools`.
 
 ---
 

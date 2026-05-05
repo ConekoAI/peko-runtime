@@ -26,13 +26,13 @@
 //! Lifecycle hooks (AgentInit, AgentShutdown) are still declared via
 //! `resolve_hooks()` because they are server-level, not tool-level.
 
-use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, ManifestFormat};
-use crate::extensions::core::{
+use crate::extension::adapters::{ExtensionState, ExtensionTypeAdapter, ManifestFormat};
+use crate::extension::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
     ToolMetadata, ToolSource,
 };
-use crate::extensions::services::ReservedParamsConfig;
-use crate::extensions::types::{ExtensionId, ExtensionManifest, HookResult};
+use crate::extension::services::ReservedParamsConfig;
+use crate::extension::types::{ExtensionId, ExtensionManifest, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -388,7 +388,7 @@ impl McpAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
         use anyhow::Context;
 
         let registry_manifest: serde_json::Value = serde_json::from_str(content)
@@ -519,13 +519,13 @@ impl McpAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
         use anyhow::Context;
 
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse MCP YAML manifest at {path:?}"))?;
 
-        let (id, name, version, description) = crate::extensions::adapters::parsing::extract_extension_fields(&yaml)?;
+        let (id, name, version, description) = crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
 
         let mut manifest = ExtensionManifest::new(
             &id,
@@ -538,7 +538,7 @@ impl McpAdapter {
 
         // Store mcp_servers config if present
         if let Some(mcp_servers) = yaml.get("mcp_servers") {
-            manifest.set("mcp_servers", crate::extensions::adapters::parsing::yaml_to_json(mcp_servers.clone()));
+            manifest.set("mcp_servers", crate::extension::adapters::parsing::yaml_to_json(mcp_servers.clone()));
         }
 
         // Store any additional metadata
@@ -548,7 +548,7 @@ impl McpAdapter {
                     if !["id", "name", "version", "description", "extension_type", "mcp_servers"]
                         .contains(&key)
                     {
-                        manifest.set(key, crate::extensions::adapters::parsing::yaml_to_json(v.clone()));
+                        manifest.set(key, crate::extension::adapters::parsing::yaml_to_json(v.clone()));
                     }
                 }
             }
@@ -562,7 +562,7 @@ impl McpAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
         use anyhow::Context;
 
         let server_configs: Vec<crate::extensions::mcp::protocol::config::McpServerConfig> =
@@ -676,7 +676,7 @@ impl ExtensionTypeAdapter for McpAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
         // Dispatch to the appropriate parser based on file name
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if file_name == "server.json" {
@@ -745,7 +745,7 @@ impl ExtensionTypeAdapter for McpAdapter {
 
     async fn register_tools(
         &self,
-        core: &crate::extensions::core::ExtensionCore,
+        core: &crate::extension::core::ExtensionCore,
         manifest: &ExtensionManifest,
     ) -> Result<usize> {
         // Try legacy config_path first (Tier 3 fallback)
@@ -863,13 +863,13 @@ impl HookHandler for McpServerInitHandler {
                         Ok(config) => config,
                         Err(e) => {
                             warn!(server_name = %self.server_name, error = %e, "Failed to load MCP server config from unified manifest");
-                            return HookResult::Continue(crate::extensions::types::HookOutput::Unit);
+                            return HookResult::Continue(crate::extension::types::HookOutput::Unit);
                         }
                     }
                 }
                 None => {
                     warn!(server_name = %self.server_name, "No config_path or mcp_servers available for MCP server");
-                    return HookResult::Continue(crate::extensions::types::HookOutput::Unit);
+                    return HookResult::Continue(crate::extension::types::HookOutput::Unit);
                 }
             }
         } else {
@@ -877,7 +877,7 @@ impl HookHandler for McpServerInitHandler {
                 Ok(config) => config,
                 Err(e) => {
                     warn!(server_name = %self.server_name, error = %e, "Failed to load MCP server config");
-                    return HookResult::Continue(crate::extensions::types::HookOutput::Unit);
+                    return HookResult::Continue(crate::extension::types::HookOutput::Unit);
                 }
             }
         };
@@ -890,7 +890,7 @@ impl HookHandler for McpServerInitHandler {
             let manager = self.manager.read().await;
             if let Err(e) = manager.add_server_config(server_config).await {
                 warn!(server_name = %self.server_name, error = %e, "Failed to add MCP server config");
-                return HookResult::Continue(crate::extensions::types::HookOutput::Unit);
+                return HookResult::Continue(crate::extension::types::HookOutput::Unit);
             }
             info!(server_name = %self.server_name, "Added MCP server config to manager");
         }
@@ -920,7 +920,7 @@ impl HookHandler for McpServerInitHandler {
 
         // Register tools with unified registry after server is running
         if server_started {
-            if let Some(core) = crate::extensions::core::global_core() {
+            if let Some(core) = crate::extension::core::global_core() {
                 let adapter = McpAdapter::new(self.manager.clone());
                 match adapter
                     .register_server_tools(&core, &self.server_name)
@@ -938,7 +938,7 @@ impl HookHandler for McpServerInitHandler {
             }
         }
 
-        HookResult::Continue(crate::extensions::types::HookOutput::Unit)
+        HookResult::Continue(crate::extension::types::HookOutput::Unit)
     }
 
     fn hook_point(&self) -> HookPoint {
@@ -1033,11 +1033,11 @@ impl HookHandler for McpServerShutdownHandler {
         match manager.stop_server(&self.server_name).await {
             Ok(()) => {
                 info!(server_name = %self.server_name, "MCP server stopped");
-                HookResult::Continue(crate::extensions::types::HookOutput::Unit)
+                HookResult::Continue(crate::extension::types::HookOutput::Unit)
             }
             Err(e) => {
                 warn!(server_name = %self.server_name, error = %e, "Failed to stop MCP server");
-                HookResult::Continue(crate::extensions::types::HookOutput::Unit)
+                HookResult::Continue(crate::extension::types::HookOutput::Unit)
             }
         }
     }
@@ -1117,7 +1117,7 @@ impl HookHandler for McpToolExecuteHandler {
         let server_name = self.server_name.clone();
         let actual_tool = self.tool_name.clone();
 
-        let exec_config = crate::extensions::services::ToolExecutionConfig::new(
+        let exec_config = crate::extension::services::ToolExecutionConfig::new(
             reserved_params,
             serde_json::json!({"type": "object"}),
         );
@@ -1190,7 +1190,7 @@ pub async fn load_servers_from_directory(
 
 /// Load and register MCP servers with an ExtensionCore
 pub async fn load_and_register_servers(
-    core: &crate::extensions::ExtensionCore,
+    core: &crate::extension::ExtensionCore,
     servers_dir: impl AsRef<Path>,
     manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
 ) -> Result<usize> {

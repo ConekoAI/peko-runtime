@@ -168,7 +168,7 @@ pub enum ResponsePacket {
     #[serde(rename = "async_receipt")]
     AsyncReceipt {
         request_id: u64,
-        receipt: crate::extensions::async_exec::executor::AsyncTaskReceipt,
+        receipt: crate::extension::async_exec::executor::AsyncTaskReceipt,
     },
 
     /// Final success/failure marker

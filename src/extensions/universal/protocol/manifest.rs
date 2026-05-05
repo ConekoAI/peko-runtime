@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // Re-export shared types for convenience
-pub use crate::extensions::services::{ParamSource, ReservedParamsConfig};
+pub use crate::extension::services::{ParamSource, ReservedParamsConfig};
 
 /// Tool manifest with reserved parameter support
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,19 +106,19 @@ impl Manifest {
             .map(|s| s.to_string());
 
         let parameters = yaml.get("parameters")
-            .map(|v| crate::extensions::adapters::parsing::yaml_to_json(v.clone()))
+            .map(|v| crate::extension::adapters::parsing::yaml_to_json(v.clone()))
             .unwrap_or_else(|| serde_json::json!({"type": "object"}));
 
         let reserved_parameters: ReservedParamsConfig = yaml.get("reserved_parameters")
             .and_then(|v| {
-                let json_val = crate::extensions::adapters::parsing::yaml_to_json(v.clone());
+                let json_val = crate::extension::adapters::parsing::yaml_to_json(v.clone());
                 serde_json::from_value(json_val).ok()
             })
             .unwrap_or_default();
 
         let protocol = yaml.get("protocol")
             .and_then(|v| {
-                let json_val = crate::extensions::adapters::parsing::yaml_to_json(v.clone());
+                let json_val = crate::extension::adapters::parsing::yaml_to_json(v.clone());
                 serde_json::from_value(json_val).ok()
             })
             .unwrap_or_default();

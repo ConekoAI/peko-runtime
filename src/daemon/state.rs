@@ -6,11 +6,10 @@
 use crate::daemon::background_runtime::{
     BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
 };
-use crate::extensions::runtime::{
-    GatewayRouter, GatewayRuntimeStarter, McpRuntimeStarter, McpClientRegistry,
-};
+use crate::extensions::gateway::runtime::{GatewayRouter, GatewayRuntimeStarter};
+use crate::extensions::mcp::runtime::{McpRuntimeStarter, McpClientRegistry};
 
-use crate::extensions::async_exec::executor::AsyncExecutor;
+use crate::extension::async_exec::executor::AsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
@@ -258,14 +257,14 @@ impl AppState {
         // reuse it and register tools on that instance. Otherwise create a new one.
         // This prevents a race where main.rs sets an empty core and AppState's
         // tool-filled core gets discarded by the OnceLock.
-        let global_core = if let Some(existing) = crate::extensions::core::global_core() {
+        let global_core = if let Some(existing) = crate::extension::core::global_core() {
             tracing::info!("Reusing global ExtensionCore initialized by main.rs");
             existing
         } else {
-            use crate::extensions::core::{init_global_core, ExtensionCore, ExtensionServices};
-            use crate::extensions::services::AsyncExecutionRouter;
+            use crate::extension::core::{init_global_core, ExtensionCore, ExtensionServices};
+            use crate::extension::services::AsyncExecutionRouter;
             let router = AsyncExecutionRouter::with_transport(
-                crate::extensions::services::async_transport::create_local_transport(),
+                crate::extension::services::async_transport::create_local_transport(),
             );
             let services = ExtensionServices::with_async_router_and_agent_service(
                 router,
@@ -634,8 +633,8 @@ mod tests {
     #[tokio::test]
     async fn test_agent_init_preserves_pre_registered_tools() {
         use crate::agent::Agent;
-        use crate::extensions::core::{init_global_core, ExtensionCore};
-        use crate::extensions::{HookInput, HookPoint};
+        use crate::extension::core::{init_global_core, ExtensionCore};
+        use crate::extension::{HookInput, HookPoint};
         use crate::types::agent::AgentConfig;
         use crate::types::provider::{ProviderConfig, ProviderType};
         use std::sync::Arc;
@@ -662,7 +661,7 @@ mod tests {
 
         // Tools should still be available after agent init
         let core = agent.extension_core();
-        let tools: Vec<crate::extensions::types::ToolMetadata> = core.list_tools().await;
+        let tools: Vec<crate::extension::types::ToolMetadata> = core.list_tools().await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(tool_names.contains(&"shell".to_string()), "shell missing after agent init");
         assert!(tool_names.contains(&"grep".to_string()), "grep missing after agent init");

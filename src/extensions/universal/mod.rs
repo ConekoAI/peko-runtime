@@ -15,5 +15,5 @@ pub use protocol::{
     Request, Response, ResponseResult, UniversalToolAdapter as ProtocolUniversalToolAdapter,
     UniversalToolBuilder, PROTOCOL_VERSION,
 };
-pub use crate::extensions::services::ParamSource;
+pub use crate::extension::services::ParamSource;
 pub use crate::extensions::universal::protocol::manifest::ProtocolConfig;

@@ -2,8 +2,8 @@
 
 use crate::agent::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
-use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
-use crate::extensions::core::{global_core, ExtensionCore};
+use crate::extensions::builtin::BuiltinToolAdapter;
+use crate::extension::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::context::SessionContext;
 use crate::session::manager::{ResolvedSession, SessionManager};
@@ -154,8 +154,8 @@ impl Agent {
                 self.config.name
             );
             // Use ExtensionManager for unified tool discovery
-            use crate::extensions::adapters::BuiltInAdapters;
-            use crate::extensions::manager::ExtensionManager;
+            use crate::extension::adapters::BuiltInAdapters;
+            use crate::extension::manager::ExtensionManager;
             let mut manager = ExtensionManager::with_core(self.extension_core.clone());
             for adapter in BuiltInAdapters::new().adapters() {
                 manager.register_adapter(adapter);
@@ -344,8 +344,8 @@ impl Agent {
         let shutdown_result = self
             .extension_core
             .invoke_hook(
-                crate::extensions::core::HookPoint::AgentShutdown,
-                crate::extensions::types::HookInput::Unit,
+                crate::extension::core::HookPoint::AgentShutdown,
+                crate::extension::types::HookInput::Unit,
             )
             .await;
         tracing::info!(
@@ -600,8 +600,8 @@ impl Agent {
         let init_result = self
             .extension_core
             .invoke_hook(
-                crate::extensions::core::HookPoint::AgentInit,
-                crate::extensions::types::HookInput::Unit,
+                crate::extension::core::HookPoint::AgentInit,
+                crate::extension::types::HookInput::Unit,
             )
             .await;
         tracing::info!(
@@ -985,12 +985,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_creation() {
-        use crate::extensions::core::ExtensionCore;
+        use crate::extension::core::ExtensionCore;
         use crate::types::provider::{ProviderConfig, ProviderType};
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        crate::extensions::core::init_global_core(core);
+        crate::extension::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
@@ -1011,12 +1011,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_has_session_manager() {
-        use crate::extensions::core::ExtensionCore;
+        use crate::extension::core::ExtensionCore;
         use crate::types::provider::{ProviderConfig, ProviderType};
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        crate::extensions::core::init_global_core(core);
+        crate::extension::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-session".to_string(),
@@ -1037,13 +1037,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_session_routing() {
-        use crate::extensions::core::ExtensionCore;
+        use crate::extension::core::ExtensionCore;
         use crate::session::types::{ChannelType, Peer};
         use crate::types::provider::{ProviderConfig, ProviderType};
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        crate::extensions::core::init_global_core(core);
+        crate::extension::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-router".to_string(),

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 // Re-export shared types for convenience
-pub use crate::extensions::services::{ParamSource, ReservedParamsConfig};
+pub use crate::extension::services::{ParamSource, ReservedParamsConfig};
 
 /// Transport type for MCP connections
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
