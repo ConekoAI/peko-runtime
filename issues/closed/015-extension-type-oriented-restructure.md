@@ -1,7 +1,7 @@
 # Issue 015: Extension Type-Oriented Module Restructure
 
 **Severity:** MEDIUM  
-**Status:** 🟢 **Complete** — All phases finished  
+**Status:** 🟢 **Closed** — All phases finished, all pre-existing violations resolved (2026-05-05)  
 **Labels:** `architecture`, `extensions`, `adr-017`, `refactor`, `module-boundaries`  
 **Reported:** 2026-05-05  
 **Related:** ADR-017 (Unified Extension Architecture), Issue 014 (closed), `AGENTS.md`
@@ -315,18 +315,23 @@ src/portable/                ← depends on extensions/mcp/protocol/config
 2. ✅ Add module boundary check to `.github/workflows/ci.yml` (non-blocking for now).
 3. ✅ Script supports `-Strict` mode for treating known violations as failures.
 
-**Known Pre-existing Violations (tracked for follow-up):**
-| File | Violation | Note |
-|------|-----------|------|
-| `src/extension/adapters/mod.rs` | Imports from all `extensions::<type>` | `BuiltInAdapters` — needs trait-based discovery refactor |
-| `src/extension/protocols/shared/context_resolver.rs` | Imports `ExecutionContext` from `extensions::universal` | Type should move to framework or use trait |
-| `src/extension/core/context.rs` | Imports `ToolContext` from `tools::` | Tool context integration — needs abstraction |
-| `src/extension/core/hook_registry.rs` | Imports `AbortSignal` from `tools::` | Abort signal integration — needs abstraction |
+**Pre-existing Violations — RESOLVED:**
+All known violations from the initial Phase 5 implementation have been fixed:
+
+| File | Violation | Resolution |
+|------|-----------|------------|
+| `src/extension/adapters/mod.rs` | `BuiltInAdapters` imported from all `extensions::<type>` | Moved to `src/extensions/mod.rs` as `BuiltInExtensionAdapters` |
+| `src/extension/protocols/shared/context_resolver.rs` | `ToolContextAdapter` imported `ToolContext` from `tools::` | Moved `ToolContextAdapter` to `src/tools/core/context.rs`; deleted unused `ExecutionContextAdapter` |
+| `src/extension/core/context.rs` | `as_tool_context()`/`set_tool_context()` depended on `tools::ToolContext` | Removed; callers use generic `state.get::<ToolRuntimeContext>()/state.insert()` |
+| `src/extension/core/hook_registry.rs` | Constructed `tools::ToolContext` for reserved param injection | Replaced with framework-native `ToolRuntimeContext` |
+| `src/extension/transport/async_router.rs` | Read `ToolContext` from hook state | Now reads `ToolRuntimeContext` |
+| `src/extension/services/reserved_params.rs` | `ParamSource::resolve()` took `Option<&ToolContext>` | Changed to `Option<&ToolRuntimeContext>` |
+| `src/extension/services/tool_execution.rs` | `inject_reserved_params()` took `Option<&ToolContext>` | Changed to `Option<&ToolRuntimeContext>` |
 
 **Acceptance Criteria:**
 - [x] CI runs module boundary check.
 - [x] Script detects new violations (Rule 2: cross-extension imports — currently clean).
-- [ ] CI fails if `src/extension/` imports from `src/extensions/` (deferred until known violations fixed).
+- [x] CI fails if `src/extension/` imports from `src/extensions/` (all violations fixed).
 
 ---
 
