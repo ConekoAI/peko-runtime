@@ -90,7 +90,10 @@ pub mod providers;
 /// MCP (Model Context Protocol) support
 pub mod mcp;
 
-/// Unified Extension Architecture (ADR-017)
+/// Unified Extension Framework (generic, no external deps)
+pub mod extension;
+
+/// Extension type implementations (MCP, Gateway, Skill, etc.)
 pub mod extensions;
 
 // ============================================================================

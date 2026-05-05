@@ -1,73 +1,20 @@
-//! Extensions module - Unified Extension Architecture
+//! Extensions module — Extension Type Implementations
 //!
-//! This module implements the Unified Extension Architecture (ADR-017) which provides
-//! a single, consistent way to extend Pekobot's capabilities.
+//! This module contains **extension type implementations** (MCP, Gateway, Skill,
+//! Builtin, General, Universal). The generic framework lives in `crate::extension`
+//! (singular).
 //!
-//! # Overview
-//!
-//! The architecture consists of three layers:
-//!
-//! 1. **Extension Core** (`core/`): Defines all hook points in the agentic loop
-//!    and manages registration/invocation of handlers.
-//!
-//! 2. **Extension Type Adapters** (`adapters/`): Map specific extension formats
-//!    (SKILL.md, MCP config, etc.) to hook points.
-//!
-//! 3. **Extension Manager** (`manager/`): Provides unified lifecycle management
-//!    (install/enable/disable/uninstall/bundle) and CLI commands.
-//!
-//! # Extension Types
-//!
-//! | Type | Description | Hook Points |
-//! |------|-------------|-------------|
-//! | `skill` | Documentation-based skills | `PromptSystemSection(skills)` |
-//! | `mcp` | MCP servers | `ToolRegister`, `PromptSystemSection(tools)`, `ToolExecute` |
-//! | `universal-tool` | Universal tool protocol | `ToolRegister`, `PromptSystemSection(tools)`, `ToolExecute` |
-//! | `gateway` | Messaging gateways | `ChannelInput`, `ChannelOutput`, `ToolRegister`, `EventEmit` |
-//!
-//! # Quick Start
-//!
-//! ## Using the Extension Core directly
-//!
-//! ```rust,ignore
-//! use pekobot::extensions::{
-//!     ExtensionCore,
-//!     HookPoint,
-//!     HookHandler,
-//!     HookContext,
-//!     HookResult,
-//! };
-//!
-//! // Create and register a handler
-//! let core = ExtensionCore::new();
-//! let handler = Arc::new(MyHandler);
-//!
-//! core.register_hook(
-//!     HookPoint::PromptSystemSection { section: "custom".to_string(), priority: 100 },
-//!     handler,
-//!     &ExtensionId::new("my-extension"),
-//! ).await?;
-//!
-//! // Invoke hooks
-//! let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
-//! ```
-//!
-//! ## Using the Extension Manager (future)
-//!
-//! ```bash
-//! # Install an extension
-//! pekobot ext install ./my-skill
-//!
-//! # List extensions
-//! pekobot ext list
-//!
-//! # Enable/disable
-//! pekobot ext enable my-skill
-//! pekobot ext disable my-skill
-//! ```
+//! During Phase 1 migration, this module re-exports all framework items from
+//! `crate::extension` for backward compatibility. These re-exports will be
+//! removed in Phase 4.
+
+// ============================================================================
+// Temporary backward-compatibility re-exports from framework (Phase 1)
+// These will be removed in Phase 4.
+// ============================================================================
 
 // Re-export core types
-pub use core::{
+pub use crate::extension::core::{
     common,
     binding::{HookBinding, HookBindingBuilder},
     config::{ExtensionConfig, ExtensionServices, TelemetryService},
@@ -78,7 +25,7 @@ pub use core::{
 };
 
 // Re-export types
-pub use types::{
+pub use crate::extension::types::{
     AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookInput, HookOutput, HookPriority,
     HookResult, MessageEnvelope, PromptBuildState, SessionSnapshot, ToolMetadata,
     ToolRegistryAccess, ToolSource, DEFAULT_HOOK_PRIORITY, FALLBACK_HOOK_PRIORITY,
@@ -86,35 +33,36 @@ pub use types::{
 };
 
 // Re-export services
-pub use services::{
+pub use crate::extension::services::{
     ParamSource, ReservedParamsConfig, ReservedParamsService,
     Services as ExtensionServicesContainer, ToolExecutionConfig, ToolExecutionService,
 };
 
 // Re-export protocols
-pub use protocols::{
+pub use crate::extension::protocols::shared::{
     ContextResolver, ProcessConfig, ProcessTransport, ProcessTransportBuilder,
-    DescribeResult, ErrorObject, ExecuteParams, ExecuteResult, ExecutionContext, Manifest,
-    ProtocolConfig, Request, Response, ResponseResult,
-    UniversalToolAdapter, UniversalToolBuilder, PROTOCOL_VERSION,
     filter_reserved_params, validate_no_reserved_params_leak, ValidationError,
     estimate_tool_duration, execute_with_context_handling, format_status,
-    load_and_register_tools, load_tools_from_directory,
-    DiscoveredUniversalTool, ExtensionUniversalToolAdapter,
 };
 
-// Submodules
+// Re-export framework submodules for backward compatibility
+pub use crate::extension::async_exec;
+pub use crate::extension::core;
+pub use crate::extension::integration;
+pub use crate::extension::manager;
+pub use crate::extension::services;
+pub use crate::extension::transport;
+pub use crate::extension::types;
+
+// ============================================================================
+// Extension type implementations (staying in src/extensions/)
+// ============================================================================
+
+// Submodules for extension type implementations
 pub mod adapters;
-pub mod async_exec;
-pub mod core;
-pub mod integration;
-pub mod manager;
 pub mod migration;
 pub mod protocols;
 pub mod runtime;
-pub mod services;
-pub mod transport;
-pub mod types;
 
 /// Extension type identifiers
 pub mod extension_types {
@@ -149,10 +97,10 @@ pub mod extension_types {
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use super::core::{
+    pub use crate::extension::core::{
         common, ExtensionCore, HookContext, HookHandler, HookPoint, HookPointBuilder,
     };
-    pub use super::types::{
+    pub use crate::extension::types::{
         ExtensionId, ExtensionManifest, HookId, HookInput, HookOutput, HookResult,
     };
 }
