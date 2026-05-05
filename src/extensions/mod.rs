@@ -3,17 +3,59 @@
 //! This module contains **extension type implementations** (MCP, Gateway, Skill,
 //! Builtin, General, Universal). The generic framework lives in `crate::extension`
 //! (singular).
+//!
+//! # Module Boundaries
+//!
+//! Each extension type lives in its own directory with its adapter, runtime,
+//! and protocol code. Cross-extension dependencies should go through the
+//! framework (`crate::extension`), not directly between extension types.
+//!
+//! Extension types must NOT be added to this module's submodules without
+//! also providing an `ExtensionTypeAdapter` implementation.
+//!
+//! # Directory Layout
+//!
+//! ```text
+//! src/extensions/
+//! ├── builtin/     # Built-in tool adapter
+//! ├── gateway/     # Gateway adapter, protocol, runtime
+//! ├── general/     # General extension adapter
+//! ├── mcp/         # MCP adapter, protocol, runtime
+//! ├── migration/   # Legacy extension migration utilities
+//! ├── skill/       # Skill adapter
+//! └── universal/   # Universal tool adapter and protocol
+//! ```
 
-// Submodules for extension type implementations
+// ============================================================================
+// Extension Type Submodules
+// ============================================================================
+
+/// Built-in tool adapter — registers native Tool trait implementations with ExtensionCore.
 pub mod builtin;
+
+/// Gateway extension — platform gateway adapters (HTTP, WebSocket, pub/sub).
 pub mod gateway;
+
+/// General extension adapter — unconstrained access to all 22 hook points.
 pub mod general;
-pub mod migration;
+
+/// MCP extension — Model Context Protocol server integration.
 pub mod mcp;
+
+/// Skill extension adapter — SKILL.md-based capabilities with YAML frontmatter.
 pub mod skill;
+
+/// Universal tool extension — external executable tools with manifest.json.
 pub mod universal;
 
-/// Extension type identifiers
+// ============================================================================
+// Utilities
+// ============================================================================
+
+/// Legacy extension migration utilities.
+pub mod migration;
+
+/// Extension type identifiers and validation.
 pub mod extension_types {
     /// Skill extension type (SKILL.md)
     pub const SKILL: &str = "skill";

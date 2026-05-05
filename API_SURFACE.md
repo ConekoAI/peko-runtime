@@ -9,13 +9,249 @@ This document defines the public API surface for Pekobot, including the new Unif
 
 ## Table of Contents
 
-1. [Module: `extensions`](#module-extensions) - NEW: Unified Extension System
-2. [Module: `agent`](#module-agent)
-3. [Module: `providers`](#module-providers)
-4. [Module: `common::services`](#module-commonservices)
-5. [Module: `tools::factory`](#module-toolsfactory)
-6. [Module: `session::context`](#module-sessioncontext)
-7. [Compatibility Notes](#compatibility-notes)
+1. [Module: `extension`](#module-extension) - Generic Extension Framework (ADR-017)
+2. [Module: `extensions`](#module-extensions) - Extension Type Implementations
+3. [Module: `agent`](#module-agent)
+4. [Module: `providers`](#module-providers)
+5. [Module: `common::services`](#module-commonservices)
+6. [Module: `tools::factory`](#module-toolsfactory)
+7. [Module: `session::context`](#module-sessioncontext)
+8. [Compatibility Notes](#compatibility-notes)
+
+---
+
+## Module: `extension`
+
+**Status:** ACTIVE (New in 0.1.0)  
+**ADR:** ADR-017: Unified Extension Architecture
+
+The `extension` module (singular) contains the **generic extension framework** — hook points, registries, types, managers, and shared services. It has **zero dependencies** on extension type implementations.
+
+### `extension::core`
+
+#### `ExtensionCore`
+
+Central registry for all extension hooks.
+
+```rust
+pub struct ExtensionCore { ... }
+
+impl ExtensionCore {
+    /// Register a hook handler
+    pub async fn register_hook(
+        &self,
+        point: HookPoint,
+        handler: Arc<dyn HookHandler>,
+        extension_id: &ExtensionId,
+    ) -> Result<HookId>
+    
+    /// Unregister a hook
+    pub async fn unregister_hook(&self, hook_id: &HookId) -> Result<()>
+    
+    /// Enable/disable hooks
+    pub async fn enable_hook(&self, hook_id: &HookId) -> Result<()>
+    pub async fn disable_hook(&self, hook_id: &HookId) -> Result<()>
+    
+    /// Invoke hooks at a specific point
+    pub async fn invoke_hooks(
+        &self,
+        point: HookPoint,
+        context: HookContext,
+    ) -> Result<Vec<HookResult>>
+    
+    /// List all registered tools
+    pub async fn list_tools(&self) -> Vec<ToolMetadata>
+    
+    /// List tool definitions for LLM API
+    pub async fn list_tool_definitions(&self) -> Vec<ToolDefinition>
+}
+```
+
+#### `HookPoint`
+
+All 22 extension hook points:
+
+```rust
+pub enum HookPoint {
+    // Prompt lifecycle
+    PromptSystemSection { section: String, priority: i32 },
+    PromptPreProcess,
+    PromptPostProcess,
+    
+    // Tool lifecycle
+    ToolRegister,
+    ToolExecute { tool_name: String },
+    ToolExecuteAsync { tool_name: String },
+    ToolCheckStatus { tool_name: String },
+    ToolCancel { tool_name: String },
+    ToolResultTransform,
+    
+    // Session lifecycle
+    SessionStateChange,
+    SessionCompaction,
+    SessionContextBuild,
+    
+    // I/O lifecycle
+    ChannelInput,
+    ChannelOutput,
+    MessagePreSend,
+    MessagePostReceive,
+    
+    // Event lifecycle
+    EventSubscribe { topic_pattern: String },
+    EventEmit,
+    
+    // Agent lifecycle
+    AgentInit,
+    AgentShutdown,
+    AgentIteration { iteration: usize },
+}
+```
+
+#### `HookHandler` Trait
+
+```rust
+#[async_trait]
+pub trait HookHandler: Send + Sync + std::fmt::Debug {
+    async fn handle(&self, ctx: HookContext) -> HookResult;
+    fn hook_point(&self) -> HookPoint;
+    fn priority(&self) -> i32 { 100 }
+    fn name(&self) -> String;
+}
+```
+
+---
+
+### `extension::manager`
+
+#### `ExtensionManager`
+
+Unified lifecycle management for all extension types.
+
+```rust
+pub struct ExtensionManager { ... }
+
+impl ExtensionManager {
+    /// Create new manager
+    pub fn new() -> Self
+    
+    /// Install extension from path
+    pub async fn install(&mut self, path: &Path) -> Result<ExtensionId>
+    
+    /// List all loaded extensions
+    pub fn list_extensions(&self) -> Vec<&LoadedExtension>
+    
+    /// Enable/disable extensions
+    pub async fn enable(&mut self, id: &ExtensionId) -> Result<()>
+    pub async fn disable(&mut self, id: &ExtensionId) -> Result<()>
+    
+    /// Uninstall extension
+    pub async fn uninstall(&mut self, id: &ExtensionId) -> Result<()>
+    
+    /// Create extension bundle
+    pub fn create_bundle(&self, ids: Vec<ExtensionId>, name: &str) -> Result<ExtensionBundle>
+    
+    /// Install bundle
+    pub async fn install_bundle(&mut self, bundle: ExtensionBundle) -> Result<Vec<ExtensionId>>
+    
+    /// Scan directory for extensions
+    pub async fn scan_directory(&self, path: &Path) -> Result<Vec<DiscoveredExtension>>
+    
+    /// Load extensions from directory
+    pub async fn load_from_directory(&mut self, path: &Path) -> Result<Vec<ExtensionId>>
+}
+```
+
+---
+
+### `extension::adapters`
+
+#### `ExtensionTypeAdapter` Trait
+
+```rust
+#[async_trait]
+pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
+    fn extension_type(&self) -> &'static str;
+    fn manifest_format(&self) -> ManifestFormat;
+    fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding>;
+    async fn initialize(&self, manifest: &ExtensionManifest) -> Result<ExtensionState>;
+    async fn shutdown(&self, state: ExtensionState) -> Result<()>;
+    async fn is_healthy(&self, state: &ExtensionState) -> bool;
+    async fn register_tools(&self, core: &ExtensionCore, manifest: &ExtensionManifest) -> Result<usize>;
+}
+```
+
+#### `BuiltInAdapters`
+
+```rust
+pub struct BuiltInAdapters;
+
+impl BuiltInAdapters {
+    pub fn new() -> Self;
+    pub fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>>;
+}
+```
+
+#### `ManifestFormat`
+
+```rust
+pub enum ManifestFormat {
+    YamlFrontmatterMarkdown { required_fields: Vec<&'static str>, file_name: &'static str },
+    Yaml { schema: String, file_name: &'static str },
+    Json { schema: String, file_name: &'static str },
+    Toml { schema: String, file_name: &'static str },
+    Custom { detector: fn(&Path) -> bool },
+}
+```
+
+---
+
+### `extension::types`
+
+#### Core Types
+
+```rust
+pub struct ExtensionManifest { ... }
+pub struct ExtensionId(pub String);
+pub struct HookId(pub String);
+pub enum HookResult { ... }
+pub enum HookOutput { ... }
+pub struct HookInput { ... }
+pub struct ToolMetadata { ... }
+pub enum ToolSource { ... }
+```
+
+---
+
+### `extension::services`
+
+#### `ToolExecutionService`
+
+```rust
+pub struct ToolExecutionService { ... }
+pub struct ToolExecutionConfig { ... }
+pub struct ReservedParamsConfig { ... }
+pub enum ParamSource { ... }
+```
+
+---
+
+### `extension::protocols::shared`
+
+#### Process Transport
+
+```rust
+pub struct ProcessTransport { ... }
+pub struct ProcessTransportBuilder { ... }
+pub struct ProcessConfig { ... }
+```
+
+#### Validation
+
+```rust
+pub fn filter_reserved_params(schema: &Value, reserved: &[String]) -> Result<Value>
+pub fn validate_no_reserved_params_leak(params: &Value, reserved: &[String]) -> Result<()>
+```
 
 ---
 
@@ -24,9 +260,73 @@ This document defines the public API surface for Pekobot, including the new Unif
 **Status:** ACTIVE (New in 0.1.0)  
 **ADR:** ADR-017: Unified Extension Architecture
 
-The extensions module provides a unified system for all agent capabilities (tools, skills, MCP servers, channels, gateways) through 22 hook points.
+The `extensions` module (plural) contains **extension type implementations**. Each extension type lives in its own directory with its adapter, runtime, and protocol code.
 
-### `extensions::core`
+### Extension Type Directory Layout
+
+```
+src/extensions/
+├── mcp/           # MCP server integration
+│   ├── adapter.rs
+│   ├── runtime/
+│   │   ├── adapter.rs
+│   │   ├── starter.rs
+│   │   ├── tool_proxy.rs
+│   │   └── injectable_proxy.rs
+│   └── protocol/
+│       ├── client.rs
+│       ├── transport.rs
+│       ├── types.rs
+│       ├── config.rs
+│       ├── discovery.rs
+│       └── manager.rs
+├── gateway/       # Platform gateways
+│   ├── adapter.rs
+│   ├── protocol.rs
+│   └── runtime/
+│       ├── adapter.rs
+│       ├── starter.rs
+│       └── router.rs
+├── universal/     # Executable tools
+│   ├── adapter.rs
+│   └── protocol/
+│       ├── manifest.rs
+│       ├── protocol.rs
+│       ├── transport.rs
+│       └── adapter.rs
+├── skill/         # SKILL.md capabilities
+│   └── adapter.rs
+├── builtin/       # Core built-in tools
+│   └── adapter.rs
+└── general/       # Multi-hook extensions
+    └── adapter.rs
+```
+
+### `extensions::<type>::adapter`
+
+Each extension type provides an adapter implementing `ExtensionTypeAdapter`:
+
+| Adapter | Module Path | Type |
+|---------|-------------|------|
+| `SkillAdapter` | `extensions::skill::adapter` | `skill` |
+| `McpAdapter` | `extensions::mcp::adapter` | `mcp` |
+| `UniversalToolAdapter` | `extensions::universal::adapter` | `universal-tool` |
+| `BuiltinToolAdapter` | `extensions::builtin::adapter` | `builtin` |
+| `GatewayAdapter` | `extensions::gateway::adapter` | `gateway` |
+| `GeneralExtensionAdapter` | `extensions::general::adapter` | `general` |
+
+### `extensions::extension_types`
+
+```rust
+pub const SKILL: &str = "skill";
+pub const MCP: &str = "mcp";
+pub const UNIVERSAL_TOOL: &str = "universal-tool";
+pub const GATEWAY: &str = "gateway";
+pub const CUSTOM_PREFIX: &str = "custom:";
+
+pub fn is_valid_type(ext_type: &str) -> bool;
+pub fn standard_types() -> Vec<&'static str>;
+```
 
 #### `ExtensionCore`
 
@@ -118,106 +418,6 @@ pub trait HookHandler: Send + Sync + std::fmt::Debug {
     fn name(&self) -> String;
 }
 ```
-
----
-
-### `extensions::manager`
-
-#### `ExtensionManager`
-
-Unified lifecycle management for all extension types.
-
-```rust
-pub struct ExtensionManager { ... }
-
-impl ExtensionManager {
-    /// Create new manager with discovery
-    pub async fn new() -> Result<Self>
-    
-    /// Install extension from path
-    pub async fn install(&mut self, path: &Path) -> Result<ExtensionId>
-    
-    /// List all extensions
-    pub async fn list_extensions(&self, filter: ExtensionFilter) -> Vec<ExtensionInfo>
-    
-    /// Enable/disable extensions
-    pub async fn enable(&mut self, id: &ExtensionId) -> Result<()>
-    pub async fn disable(&mut self, id: &ExtensionId) -> Result<()>
-    
-    /// Uninstall extension
-    pub async fn uninstall(&mut self, id: &ExtensionId) -> Result<()>
-    
-    /// Get extension info
-    pub async fn get_info(&self, id: &ExtensionId) -> Result<ExtensionInfo>
-    
-    /// Validate extension at path
-    pub async fn validate(&self, path: &Path) -> Result<ValidationReport>
-    
-    /// Debug: show resolved hooks
-    pub async fn debug_extension(&self, id: &ExtensionId) -> Result<DebugInfo>
-    
-    /// Create extension bundle
-    pub async fn bundle_create(
-        &self,
-        name: &str,
-        extension_ids: Vec<ExtensionId>,
-    ) -> Result<PathBuf>
-    
-    /// Install bundle
-    pub async fn bundle_install(&mut self, path: &Path) -> Result<Vec<ExtensionId>>
-}
-```
-
-#### ExtensionFilter
-
-```rust
-pub struct ExtensionFilter {
-    pub enabled_only: bool,
-    pub extension_type: Option<ExtensionType>,
-    pub search: Option<String>,
-}
-
-pub enum ExtensionType {
-    Skill,
-    Mcp,
-    UniversalTool,
-    Channel,
-    Hook,
-    Gateway,
-    General,
-    Builtin,
-}
-```
-
----
-
-### `extensions::adapters`
-
-#### `ExtensionTypeAdapter` Trait
-
-```rust
-#[async_trait]
-pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
-    fn extension_type(&self) -> &'static str;
-    fn manifest_format(&self) -> ManifestFormat;
-    fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding>;
-    async fn initialize(&self, manifest: &ExtensionManifest) -> Result<ExtensionState>;
-    async fn shutdown(&self, state: ExtensionState) -> Result<()>;
-    async fn is_healthy(&self, state: &ExtensionState) -> bool;
-}
-```
-
-#### Built-in Adapters
-
-| Adapter | Type | Purpose |
-|---------|------|---------|
-| `SkillAdapter` | `skill` | SKILL.md-based capabilities |
-| `McpAdapter` | `mcp` | MCP server integration |
-| `UniversalToolAdapter` | `universal-tool` | Executable tools |
-| `BuiltinToolAdapter` | `builtin` | Core built-in tools |
-| `ChannelAdapter` | `channel` | I/O channels |
-| `GatewayAdapter` | `gateway` | Platform gateways |
-| `GeneralAdapter` | `general` | Multi-hook extensions |
 
 ---
 
@@ -420,13 +620,20 @@ pub struct SessionKeyContext {
 
 ### New APIs (0.1.0)
 
-| Component | Status | Purpose |
-|-----------|--------|---------|
-| `ExtensionCore` | ✅ New | Central hook registry |
-| `ExtensionManager` | ✅ New | Extension lifecycle |
-| `HookPoint` (22 variants) | ✅ New | Extension hook points |
-| `HookHandler` trait | ✅ New | Hook implementation |
-| `ExtensionTypeAdapter` trait | ✅ New | Extension type implementations |
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `ExtensionCore` | `extension::core` | ✅ New | Central hook registry |
+| `ExtensionManager` | `extension::manager` | ✅ New | Extension lifecycle |
+| `HookPoint` (22 variants) | `extension::core` | ✅ New | Extension hook points |
+| `HookHandler` trait | `extension::core` | ✅ New | Hook implementation |
+| `ExtensionTypeAdapter` trait | `extension::adapters` | ✅ New | Extension type adapter trait |
+| `BuiltInAdapters` | `extension::adapters` | ✅ New | Built-in adapter provider |
+| `SkillAdapter` | `extensions::skill::adapter` | ✅ New | SKILL.md-based capabilities |
+| `McpAdapter` | `extensions::mcp::adapter` | ✅ New | MCP server integration |
+| `UniversalToolAdapter` | `extensions::universal::adapter` | ✅ New | Executable tools |
+| `BuiltinToolAdapter` | `extensions::builtin::adapter` | ✅ New | Core built-in tools |
+| `GatewayAdapter` | `extensions::gateway::adapter` | ✅ New | Platform gateways |
+| `GeneralExtensionAdapter` | `extensions::general::adapter` | ✅ New | Multi-hook extensions |
 
 ### Type Aliases for Backward Compatibility
 
@@ -486,4 +693,4 @@ The following operations must be tested:
 
 ---
 
-*Version 0.1.0 · Post-ADR-017 · 2026-04-11*
+*Version 0.1.0 · Post-ADR-017 · Post-Issue-015 · 2026-05-05*

@@ -28,10 +28,10 @@
 //! Extensions use the Unified Extension Architecture (ADR-017):
 //!
 //! ```rust,ignore
-//! use pekobot::extensions::{
+//! use pekobot::extension::{
 //!     ExtensionManager, ExtensionManifest,
-//!     adapters::gateway_adapter::GatewayAdapter
 //! };
+//! use pekobot::extensions::gateway::adapter::GatewayAdapter;
 //!
 //! async fn example() {
 //!     let manager = ExtensionManager::new();
@@ -85,12 +85,18 @@ pub mod watcher;
 /// LLM provider integrations
 pub mod providers;
 
-/// Tool registry and management
-/// Unified capability framework (tools, MCP, skills)
-/// Unified Extension Framework (generic, no external deps)
+/// Extension Framework (generic, no external deps)
+///
+/// Contains the unified extension architecture: hook points, registries,
+/// types, managers, and shared services. Zero dependencies on extension
+/// type implementations.
 pub mod extension;
 
-/// Extension type implementations (MCP, Gateway, Skill, etc.)
+/// Extension Type Implementations (MCP, Gateway, Skill, Builtin, General, Universal)
+///
+/// Each extension type lives in its own directory with its adapter,
+/// runtime, and protocol code. Depends on `crate::extension` for the
+/// generic framework.
 pub mod extensions;
 
 // ============================================================================

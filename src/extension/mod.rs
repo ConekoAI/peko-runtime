@@ -6,6 +6,16 @@
 //!
 //! Extension type implementations (MCP, Gateway, Skill, etc.) live in
 //! `crate::extensions` (plural), not here.
+//!
+//! # Module Boundaries
+//!
+//! This module (`src/extension/`) must NOT import from:
+//! - `crate::extensions` (extension type implementations)
+//! - `crate::mcp` (absorbed into `crate::extensions::mcp`)
+//! - `crate::daemon` (daemon-specific code)
+//! - `crate::tools` (tool implementations)
+//!
+//! Dependency direction: `extension::core` → `extension::types` → `extension::manager|services|protocols|async_exec|transport`
 
 // Re-export core types
 pub use core::{
@@ -39,15 +49,35 @@ pub use protocols::shared::{
     estimate_tool_duration, execute_with_context_handling, format_status,
 };
 
-// Submodules
+// ============================================================================
+// Framework Submodules
+// ============================================================================
+
+/// Extension type adapter trait, manifest formats, and built-in adapter provider.
 pub mod adapters;
+
+/// Async task execution framework.
 pub mod async_exec;
+
+/// Hook points, registry, handler traits — the core of the extension system.
 pub mod core;
+
+/// Extension integration layer (tool bridge).
 pub mod integration;
+
+/// Extension lifecycle management (install, enable, disable, discover, bundle).
 pub mod manager;
+
+/// Shared protocol utilities (process transport, validation, schema filter).
 pub mod protocols;
+
+/// Param injection, tool execution, validation.
 pub mod services;
+
+/// Async task transport layer.
 pub mod transport;
+
+/// Extension type definitions (ExtensionManifest, HookResult, etc.).
 pub mod types;
 
 /// Prelude for convenient imports

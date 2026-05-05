@@ -40,6 +40,15 @@ jobs:
       
       - name: Run tests
         run: cargo test --verbose
+      
+      - name: Check module boundaries
+        run: |
+          if command -v pwsh &> /dev/null; then
+            pwsh -File scripts/check_module_boundaries.ps1
+          else
+            echo "PowerShell not available, skipping module boundary check"
+          fi
+        continue-on-error: true
 
   build-release:
     name: Build Release
