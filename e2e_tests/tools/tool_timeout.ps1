@@ -20,23 +20,6 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
-pushd "$PSScriptRoot/../.."
-$env:RUSTFLAGS = "-A warnings"
-cargo build --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Build failed"
-    exit 1
-}
-popd
-
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-$DataDir = "$env:APPDATA/pekobot"
-if (Test-Path $pekobotDir) { Remove-Item -Recurse -Force $pekobotDir }
-if (Test-Path $DataDir) { Remove-Item -Recurse -Force $DataDir }
-
 # Set API key
 pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green

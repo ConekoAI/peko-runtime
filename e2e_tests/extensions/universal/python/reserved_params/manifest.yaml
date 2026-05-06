@@ -1,0 +1,30 @@
+id: "slow_calculator"
+name: "slow_calculator"
+version: "1.0.0"
+description: "A slow calculator that sleeps before returning results. Used to test _async reserved parameter."
+extension_type: "universal-tool"
+parameters:
+  type: object
+  properties:
+    operation:
+      type: string
+      enum: ["add", "subtract", "multiply", "divide"]
+      description: "The arithmetic operation to perform"
+    a:
+      type: number
+      description: "First operand"
+    b:
+      type: number
+      description: "Second operand"
+    delay_seconds:
+      type: number
+      description: "How many seconds to sleep before returning the result"
+      default: 5
+  required: ["operation", "a", "b"]
+reserved_parameters:
+  session_id:
+    source: "runtime"
+    field: "session_id"
+  agent_id:
+    source: "runtime"
+    field: "agent_id"
