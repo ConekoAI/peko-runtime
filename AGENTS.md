@@ -169,8 +169,8 @@ cargo test --all-features
 - **Daemon default bind:** `127.0.0.1:11435`. Binding to `0.0.0.0` requires explicit config and prints a warning.
 - **Session durability:** JSONL is the source of truth; SQLite (`state.db`) is a rebuildable index.
 - **Credential isolation:** API keys are never passed to tool subprocesses. The `process` tool strips `*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`.
-- **Module Boundaries (Issue 014 / Issue 015):** After the Issue 015 type-oriented restructure:
-  - `src/extension/` (singular) contains the **generic extension framework** — core, types, manager, async_exec, transport, services, protocols/shared, and the new adapters module. It has zero dependencies on `crate::extensions`, `crate::mcp`, `crate::daemon`, or `crate::tools`.
+- **Module Boundaries (Issue 014 / Issue 015 / Issue 016):** After the Issue 015 type-oriented restructure and Issue 016 boundary cleanup:
+  - `src/extension/` (singular) contains the **generic extension framework** — core, types, manager, async_exec, transport, services, protocols/shared, and the new adapters module. It has **zero dependencies** on `crate::extensions`, `crate::mcp`, `crate::daemon`, or `crate::tools`.
   - `src/extensions/` (plural) contains **extension type implementations** — each type (mcp, gateway, skill, builtin, general, universal) lives in its own directory with its adapter, runtime, and protocol code.
   - `src/extensions/mcp/protocol/` absorbed the former `src/mcp/` module (client, transport, types, config, discovery, manager). `src/mcp/` no longer exists.
   - `src/extensions/mcp/runtime/` contains MCP runtime adapters, tool proxies, and starters (migrated from `src/extensions/runtime/` and `src/mcp/`).
@@ -178,6 +178,8 @@ cargo test --all-features
   - `src/daemon/background_runtime/` contains only generic process supervision code (traits, manager, supervisor, starter registry).
   - `src/tools/framework/` has been removed.
   - `src/extension/core/` has zero dependencies on `crate::extensions`, `crate::mcp`, `crate::daemon`, or `crate::tools`.
+  - **Execution primitives** (`ToolContext`, `ToolError`, `AbortSignal`, `ToolResult`, `ToolWithContext`, `ToolContextAdapter`) live in `extension::types::tool_exec` so the generic framework can use them without depending on `crate::tools`. `tools::core` re-exports them for convenience.
+  - **Dependency direction:** `extension` → (no tools deps). `tools::core` → imports execution primitives from `extension::types`. `tools::builtin` may import `async_exec` from `extension` (acceptable: tools depends on extension). The bidirectional loop is broken.
 
 ---
 

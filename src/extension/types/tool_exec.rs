@@ -1,21 +1,24 @@
-//! Tool context for execution with abort signals and progress callbacks
+//! Tool execution primitives for the Extension framework
 //!
-//! This module provides the infrastructure for:
-//! - Aborting long-running tools via `AbortSignal`
-//! - Progress updates during tool execution
-//! - Tool monitoring and visibility
-//! - Optional timeout handling
+//! This module provides the fundamental types used during tool execution:
+//! - `ToolContext`: execution context with abort signals and progress reporting
+//! - `ToolError`: error types for tool execution
+//! - `AbortSignal`: sender side of the abort mechanism
+//! - `ToolResult`: structured result of a tool execution
+//! - `ToolWithContext`: marker trait for context-aware tools
 //!
 //! # Module Boundary Note
 //!
-//! This module is part of the `tools` crate, not the extension framework.
-//! The `ToolContextAdapter` bridges `ToolContext` to the extension framework's
-//! `ContextSource` trait for reserved parameter resolution.
+//! These primitives live in `extension::types` so the generic extension framework
+//! can use them without depending on `crate::tools`. The `tools::core` module
+//! re-exports them for backward compatibility.
 
 use crate::engine::AgenticEvent;
 use crate::extension::protocols::shared::context_resolver::ContextSource;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// Errors that can occur during tool execution
@@ -53,8 +56,6 @@ impl From<anyhow::Error> for ToolError {
         }
     }
 }
-
-use std::time::Duration;
 
 /// Context passed to tools during execution
 ///
@@ -247,20 +248,6 @@ impl ToolContext {
     ///
     /// Tools should call this periodically during long-running operations
     /// and return early if aborted.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// async fn execute_with_context(&self, params: Value, ctx: &ToolContext) -> Result<Value> {
-    ///     for i in 0..100 {
-    ///         if ctx.is_aborted() {
-    ///             return Err(ToolError::Aborted.into());
-    ///         }
-    ///         // Do work...
-    ///         ctx.report_progress(i, 100, Some(format!("Processing item {}", i))).await;
-    ///     }
-    ///     Ok(Value::Null)
-    /// }
-    /// ```
     #[must_use]
     pub fn is_aborted(&self) -> bool {
         *self.abort_rx.borrow()
@@ -302,11 +289,6 @@ impl ToolContext {
     /// Emits a `ToolUpdate` event if an event channel is configured
     /// and the throttle interval has passed. If throttled, the update
     /// is silently dropped.
-    ///
-    /// # Arguments
-    /// * `current` - Current progress value
-    /// * `total` - Total progress value
-    /// * `message` - Optional status message
     pub async fn report_progress(&self, current: usize, total: usize, message: Option<String>) {
         if self.event_tx.is_none() {
             return;
@@ -444,15 +426,11 @@ impl Default for AbortSignal {
     }
 }
 
-// ============================================================================
-// ContextSource Adapter
-// ============================================================================
-
 /// Adapter that implements `ContextSource` for `ToolContext`
 ///
-/// This bridges the tools module to the extension framework's context resolver
-/// for reserved parameter injection. Lives here (in `tools`) rather than in
-/// the extension framework to maintain module boundaries.
+/// This bridges the tool execution primitives to the extension framework's
+/// context resolver for reserved parameter injection. Lives here (in `extension`)
+/// so the framework does not depend on `crate::tools`.
 pub struct ToolContextAdapter<'a> {
     ctx: &'a ToolContext,
 }
@@ -492,7 +470,7 @@ impl ContextSource for ToolContextAdapter<'_> {
 /// All `Tool` implementations already have `execute_with_context` via
 /// the default implementation on the `Tool` trait.
 #[async_trait::async_trait]
-pub trait ToolWithContext: super::Tool {
+pub trait ToolWithContext: Send + Sync {
     /// Check if this tool supports progress updates
     fn supports_progress(&self) -> bool {
         true
@@ -500,8 +478,78 @@ pub trait ToolWithContext: super::Tool {
 }
 
 // Blanket implementation: all Tools are ToolWithContext
-#[async_trait::async_trait]
-impl<T: super::Tool + Send + Sync> ToolWithContext for T {}
+// Note: This blanket impl is intentionally not provided here because
+// `Tool` lives in `tools::core::traits` and we cannot reference it from
+// `extension::types` without creating a circular dependency.
+// Instead, `tools::core` provides the blanket impl after importing
+// `ToolWithContext` from here.
+
+/// Result of a tool execution
+///
+/// This is a structured result that can represent success or failure,
+/// with optional metadata for async tool execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolResult {
+    /// Whether the tool execution succeeded
+    pub success: bool,
+    /// The result data (if success)
+    pub data: Option<Value>,
+    /// Error message (if failure)
+    pub error: Option<String>,
+    /// Optional metadata
+    pub metadata: Option<Value>,
+}
+
+impl ToolResult {
+    /// Create a successful tool result
+    pub fn success(data: impl Into<Value>) -> Self {
+        Self {
+            success: true,
+            data: Some(data.into()),
+            error: None,
+            metadata: None,
+        }
+    }
+
+    /// Create a failed tool result
+    pub fn failure(error: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            data: None,
+            error: Some(error.into()),
+            metadata: None,
+        }
+    }
+
+    /// Create a failed tool result with a standard error
+    #[must_use]
+    pub fn error(err: anyhow::Error) -> Self {
+        Self::failure(err.to_string())
+    }
+
+    /// Add metadata to the result
+    pub fn with_metadata(mut self, metadata: impl Into<Value>) -> Self {
+        self.metadata = Some(metadata.into());
+        self
+    }
+
+    /// Convert to JSON value for LLM consumption
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).unwrap_or_else(|_| {
+            serde_json::json!({
+                "success": false,
+                "error": "Failed to serialize tool result"
+            })
+        })
+    }
+}
+
+impl From<ToolResult> for crate::extension::types::HookOutput {
+    fn from(result: ToolResult) -> Self {
+        Self::Json(result.to_json())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -607,5 +655,30 @@ mod tests {
         } else {
             panic!("No event received");
         }
+    }
+
+    #[test]
+    fn test_tool_result_success() {
+        let result = ToolResult::success(serde_json::json!({"key": "value"}));
+        assert!(result.success);
+        assert_eq!(result.data, Some(serde_json::json!({"key": "value"})));
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_tool_result_failure() {
+        let result = ToolResult::failure("something went wrong");
+        assert!(!result.success);
+        assert!(result.data.is_none());
+        assert_eq!(result.error, Some("something went wrong".to_string()));
+    }
+
+    #[test]
+    fn test_tool_result_to_json() {
+        let result = ToolResult::success(42).with_metadata(serde_json::json!({"time": 1}));
+        let json = result.to_json();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"], 42);
+        assert_eq!(json["metadata"], serde_json::json!({"time": 1}));
     }
 }

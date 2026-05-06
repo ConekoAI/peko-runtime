@@ -333,7 +333,7 @@ mod tests {
                 AsyncToolConfig::default(),
             );
             entry1.status = AsyncTaskStatus::Completed {
-                result: crate::tools::core::traits::ToolResult::success(json!({"done": true})),
+                result: crate::tools::ToolResult::success(json!({"done": true})),
             };
             reg.register(entry1);
 
@@ -414,7 +414,7 @@ mod tests {
                 AsyncToolConfig::default(),
             );
             entry.status = AsyncTaskStatus::Completed {
-                result: crate::tools::core::traits::ToolResult::success(json!({})),
+                result: crate::tools::ToolResult::success(json!({})),
             };
             reg.register(entry);
         }

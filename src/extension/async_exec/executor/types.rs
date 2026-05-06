@@ -1,6 +1,6 @@
 //! Core types for the async executor framework
 
-use crate::tools::core::traits::ToolResult;
+use crate::extension::types::ToolResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

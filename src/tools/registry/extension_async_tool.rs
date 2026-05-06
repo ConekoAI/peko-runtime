@@ -1,10 +1,14 @@
-//! Integration between `ExtensionAsyncAdapter` and the async executor framework
+//! Extension Async Tool wrapper
 //!
-//! This module provides the [`ExtensionAsyncTool`] wrapper that implements the
-//! [`Tool`] trait by delegating to an [`ExtensionAsyncAdapter`].
+//! Provides the [`ExtensionAsyncTool`] wrapper that implements the [`Tool`] trait
+//! by delegating to an [`ExtensionAsyncAdapter`].
+//!
+//! This module lives in `tools::registry` (not `extension::integration`) because
+//! it implements the `Tool` trait — a tool-world concept. The generic extension
+//! framework must not depend on `crate::tools` per ADR-017.
 
 use crate::extension::core::ExtensionAsyncAdapter;
-use crate::tools::Tool;
+use crate::tools::core::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;

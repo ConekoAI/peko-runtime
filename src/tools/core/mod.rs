@@ -4,9 +4,17 @@
 //! - `Tool` trait: the interface all tools implement
 //! - `ToolContext`: execution context with abort signals and progress reporting
 //! - `ToolError` / `ToolResult`: error and result types
+//!
+//! # Module Boundary Note
+//!
+//! Execution primitives (`ToolContext`, `ToolError`, `AbortSignal`, `ToolResult`,
+//! `ToolWithContext`) have been moved to `extension::types::tool_exec` so the
+//! generic extension framework can use them without depending on `crate::tools`.
+//! This module re-exports them for convenience.
 
-pub mod context;
 pub mod traits;
 
-pub use context::{AbortSignal, ToolContext, ToolError, ToolWithContext};
-pub use traits::{Tool, ToolResult};
+pub use crate::extension::types::{
+    AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolResult, ToolWithContext,
+};
+pub use traits::Tool;

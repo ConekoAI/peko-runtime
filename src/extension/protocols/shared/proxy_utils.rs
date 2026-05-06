@@ -3,7 +3,7 @@
 //! Provides common functionality for wrapping external tools (MCP, Universal, etc.)
 //! with consistent context handling, abort/timeout checks, and progress reporting.
 
-use crate::tools::core::{ToolContext, ToolError};
+use crate::extension::types::{ToolContext, ToolError};
 use serde_json::Value;
 use std::time::Instant;
 

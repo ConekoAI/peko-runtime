@@ -9,6 +9,7 @@ pub use self::hook_io::{HookInput, HookOutput, HookResult, tool_result_from_hook
 pub use self::manifest::ExtensionManifest;
 pub use self::session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
 pub use self::tool::{ToolMetadata, ToolSource};
+pub use self::tool_exec::{AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolResult, ToolWithContext};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -131,6 +132,7 @@ pub mod hook_io;
 pub mod manifest;
 pub mod session;
 pub mod tool;
+pub mod tool_exec;
 
 #[cfg(test)]
 mod tests {

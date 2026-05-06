@@ -329,7 +329,7 @@ impl AsyncExecutionRouter {
         info!(timeout = timeout_secs, "Executing tool synchronously");
 
         // Build the context for parameter injection
-        let abort_signal = crate::tools::AbortSignal::new();
+        let abort_signal = crate::extension::types::AbortSignal::new();
         let ctx = abort_signal
             .create_context(&tool_context.run_id, "tool_exec", "async_router")
             .with_agent_id(&tool_context.agent_id)
