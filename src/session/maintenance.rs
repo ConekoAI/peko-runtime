@@ -3,17 +3,16 @@
 //! Runs periodic maintenance tasks:
 //! - Session pruning (remove old sessions)
 //! - Session capping (limit count per agent)
-//! - Index rotation (prevent large files)
 //!
 //! Only active in daemon mode.
 
 use crate::common::paths::PathResolver;
-use crate::session::index::{MaintenanceConfig, MaintenanceMode};
+use crate::session::index::MaintenanceConfig;
 use crate::session::metadata_controller::MetadataController;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Maintenance scheduler for daemon mode
 pub struct MaintenanceScheduler {
@@ -47,8 +46,8 @@ impl MaintenanceScheduler {
     /// Start the maintenance scheduler (runs indefinitely)
     pub async fn start(self) {
         info!(
-            "Starting session maintenance scheduler (interval: {:?}, mode: {:?})",
-            self.interval, self.config.mode
+            "Starting session maintenance scheduler (interval: {:?}, prune_after: {:?}, max_sessions: {})",
+            self.interval, self.config.prune_after, self.config.max_sessions
         );
 
         let mut ticker = interval(self.interval);
@@ -56,17 +55,12 @@ impl MaintenanceScheduler {
         loop {
             ticker.tick().await;
 
-            if self.config.mode == MaintenanceMode::Off {
-                debug!("Maintenance mode is Off, skipping");
-                continue;
-            }
-
             match self.run_maintenance().await {
                 Ok(report) => {
-                    if !report.is_empty() {
+                    if report.pruned > 0 || report.total > 0 {
                         info!(
-                            "Maintenance complete: pruned={}, capped={}, rotated={}, reclaimed={} bytes",
-                            report.pruned, report.capped, if report.rotated { 1 } else { 0 }, report.bytes_reclaimed
+                            "Maintenance complete: pruned={}, total={}",
+                            report.pruned, report.total
                         );
                     } else {
                         debug!("Maintenance completed with no actions needed");
@@ -79,19 +73,15 @@ impl MaintenanceScheduler {
         }
     }
 
-    /// Run maintenance once (for manual triggering)
-    pub async fn run_maintenance(&self
-) -> anyhow::Result<crate::session::index::MaintenanceReport> {
+    /// Run maintenance once (for manual triggering).
+    ///
+    /// Walks the `agents_dir` looking for `sessions/` subdirectories and
+    /// runs `MetadataController::maintenance` in each one.
+    pub async fn run_maintenance(&self) -> anyhow::Result<crate::session::index::MaintenanceReport> {
         use crate::session::index::MaintenanceReport;
 
-        let mut total_report = MaintenanceReport {
-            pruned: 0,
-            capped: 0,
-            rotated: false,
-            bytes_reclaimed: 0,
-        };
+        let mut total_report = MaintenanceReport::default();
 
-        // List all agents
         let mut entries = tokio::fs::read_dir(&self.agents_dir).await?;
 
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -107,18 +97,12 @@ impl MaintenanceScheduler {
                 continue;
             }
 
-            // Use MetadataController instead of direct SessionIndex access
             let mut controller = MetadataController::new(&sessions_dir);
 
-            // Run maintenance via controller
             match controller.maintenance(&self.config).await {
                 Ok(report) => {
                     total_report.pruned += report.pruned;
-                    total_report.capped += report.capped;
-                    if report.rotated {
-                        total_report.rotated = true;
-                    }
-                    total_report.bytes_reclaimed += report.bytes_reclaimed;
+                    total_report.total += report.total;
                 }
                 Err(e) => {
                     error!("Maintenance failed for {}: {}", agent_name, e);
@@ -130,8 +114,7 @@ impl MaintenanceScheduler {
     }
 
     /// Run maintenance once at startup
-    pub async fn run_at_startup(&self
-) -> anyhow::Result<crate::session::index::MaintenanceReport> {
+    pub async fn run_at_startup(&self) -> anyhow::Result<crate::session::index::MaintenanceReport> {
         info!("Running initial maintenance at startup");
         self.run_maintenance().await
     }
@@ -146,10 +129,7 @@ pub async fn maintain_agent(
     let resolver = PathResolver::new();
     let sessions_dir = resolver.agent_sessions_dir(agent_name, team);
 
-    // Use MetadataController instead of direct SessionIndex access
     let mut controller = MetadataController::new(&sessions_dir);
-
-    // Run maintenance via controller
     controller.maintenance(config).await
 }
 
@@ -180,6 +160,7 @@ mod tests {
         let scheduler = MaintenanceScheduler::new(temp.path().to_path_buf());
 
         let report = scheduler.run_maintenance().await.unwrap();
-        assert!(report.is_empty());
+        assert_eq!(report.pruned, 0);
+        assert_eq!(report.total, 0);
     }
 }

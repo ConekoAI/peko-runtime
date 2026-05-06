@@ -40,6 +40,7 @@ pub mod spawn;
 pub mod subagent_key;
 pub mod sync;
 pub mod types;
+pub mod maintenance;
 pub mod presentation;
 pub mod unified;
 
@@ -82,6 +83,7 @@ pub use manager::{
 
 // Re-export recovery
 pub use directory::SessionDirectory;
+pub use maintenance::{maintain_agent, MaintenanceScheduler};
 pub use recovery::{RecoveryReport, RecoveryState, SessionRecovery};
 pub use sync::SyncSessionStorage;
 

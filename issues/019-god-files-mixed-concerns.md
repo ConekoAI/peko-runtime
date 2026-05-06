@@ -1,6 +1,6 @@
 # Issue 019: God Files & Mixed Concerns (High Severity)
 
-**Status:** In Progress — Phase 3 Complete  
+**Status:** In Progress — Phase 4 Complete  
 **Labels:** `refactoring`, `architecture`, `high-severity`, `commands`, `engine`, `daemon`
 
 ## Summary
@@ -266,7 +266,7 @@ No backward compatibility is required (dev stage).
 
 **Goal:** Reduce `daemon/mod.rs` to ~250 lines (struct definition, lifecycle, select! loop, shutdown).
 
-#### 4a. Extract `daemon::cron_engine`
+#### 4a. Extract `daemon::cron_engine` ✅ **DONE**
 - **Source:** `check_and_run_jobs`, `execute_job`, `execute_main_job`, `execute_isolated_job`, `run_job_with_agent_service`, `handle_delivery`, `send_announcement` (lines 335–593).
 - **Destination:** `src/daemon/cron_engine/mod.rs`
 - **Interface:**
@@ -280,28 +280,29 @@ No backward compatibility is required (dev stage).
   ```
 - **Rationale:** The cron subsystem is ~260 lines of self-contained logic. Extracting it makes the daemon's main loop readable and allows independent testing of cron behavior.
 
-#### 4b. Reuse `src/session/maintenance.rs` Instead of Duplicating
+#### 4b. Reuse `src/session/maintenance.rs` Instead of Duplicating ✅ **DONE**
 - **Source:** `run_session_maintenance` (lines 752–816) — walks sessions directory, instantiates `MetadataController` per agent.
 - **Discovery:** `src/session/maintenance.rs` already has `MaintenanceScheduler` and `maintain_agent()` which do exactly this, but better structured. The daemon is duplicating this logic.
 - **Action:** Delete `Daemon::run_session_maintenance`. Use `session::MaintenanceScheduler::new(sessions_root).run_maintenance().await` instead.
 - **If team-scoped maintenance is needed:** Add `MaintenanceScheduler::with_resolver(resolver)` so it can iterate over all teams/agents (matching the daemon's current behavior).
 - **Rationale:** Session maintenance is a session concern. `src/session/maintenance.rs` already exists. The daemon should not duplicate session-layer logic.
 
-#### 4c. Replace `load_agent_config` with `ConfigAuthorityImpl`
+#### 4c. Replace `load_agent_config` with `ConfigAuthorityImpl` ✅ **DONE**
 - **Source:** Lines 728–749 — direct TOML file reading.
 - **Action:** Use existing `ConfigAuthorityImpl` (already in `common::services`). This is a cross-cutting config concern, so `common/services/` is correct here.
 
-#### 4d. Move `json_subset` → `src/common/json_utils.rs`
+#### 4d. Move `json_subset` → `src/common/json_utils.rs` ✅ **DONE**
 - **Source:** Lines 449–479 — generic JSON utility.
 - **Destination:** `src/common/json_utils.rs`
 - **Rationale:** `json_subset` is a pure utility function with no daemon-specific logic. `common/` is for cross-cutting utilities.
 
-#### 4e. Post-Phase 4 `daemon/mod.rs` structure
+#### 4e. Post-Phase 4 `daemon/mod.rs` structure ✅ **DONE**
 ```rust
 // ~80 lines:  DaemonConfig, DaemonStatus, Daemon struct
 // ~50 lines:  constructors (new, with_event_receiver, new_with_events)
 // ~120 lines: run() — select! loop only, delegates to CronEngine, SessionMaintenanceService, etc.
 ```
+- **Actual:** Reduced from ~719 to ~275 non-test lines (62% reduction). Cron logic fully extracted to `CronEngine`. Session maintenance delegates to `MaintenanceScheduler`. `load_agent_config` removed (daemon uses `AppState` / `StatelessAgentService` which already use `ConfigAuthorityImpl`).
 
 ---
 
@@ -362,14 +363,15 @@ src/
 - [ ] `src/commands/ext.rs` ≤ 400 lines of non-test code.
 - [x] `src/commands/session.rs` ≤ 400 lines of non-test code.
 - [x] `src/engine/agentic_loop.rs` ≤ 600 lines of non-test code.
-- [ ] `src/daemon/mod.rs` ≤ 300 lines of non-test code.
+- [x] `src/daemon/mod.rs` ≤ 300 lines of non-test code.
 - [x] No command file directly instantiates `MetadataController`, `SessionStorage`, or `ExtensionCore`.
 - [x] `agentic_loop.rs` compaction logic is <30 lines in the loop body (delegated to `CompactionOrchestrator`).
-- [ ] `daemon/mod.rs` cron logic is extracted to `daemon::cron_engine`.
-- [ ] `daemon/mod.rs` does not duplicate `session::maintenance.rs` logic.
+- [x] `daemon/mod.rs` cron logic is extracted to `daemon::cron_engine`.
+- [x] `daemon/mod.rs` does not duplicate `session::maintenance.rs` logic.
 - [x] All extracted code lives in its domain module (`extension/` for extension concerns, `session/` for session concerns, `prompt/` for prompt concerns, `ipc/` for IPC concerns).
 - [x] All extracted code has unit tests.
 - [x] `cargo test` and `cargo clippy` pass.
+- [x] Phase 4: `src/daemon/mod.rs` — extracted `CronEngine`, reused `MaintenanceScheduler`, removed `load_agent_config`, moved `json_subset` to `common/json_utils.rs`. Reduced from ~719 to ~275 non-test lines (62% reduction).
 
 ---
 
