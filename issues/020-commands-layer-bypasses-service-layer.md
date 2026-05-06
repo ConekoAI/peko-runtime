@@ -1,6 +1,6 @@
 # Issue 020: Commands Layer Directly Manipulates Internals (High Severity)
 
-**Status:** Open  
+**Status:** Open — Partially Resolved  
 **Labels:** `refactoring`, `architecture`, `high-severity`, `commands`, `service-layer`
 
 ## Summary
@@ -9,133 +9,91 @@ Multiple command files bypass the established service layer and directly touch m
 
 Positive examples exist (`team.rs`, `agent/handlers.rs`) where all business logic is delegated to `TeamService`/`AgentService` and handlers only perform CLI rendering. These should be the model.
 
+---
+
+## Progress Overview
+
+| File | Status | Notes |
+|------|--------|-------|
+| `src/commands/session.rs` | **Resolved** | All direct `MetadataController`/`SessionStorage`/`Session::open_by_id` usage removed. Now delegates to `SessionService`. |
+| `src/commands/ext.rs` | **Partially Resolved** | Direct `enable_hook`/`disable_hook` calls extracted into `Services::enable_builtin_hooks`/`disable_builtin_hooks`, but `global_core()` is still accessed directly in the command file (lines 138, 289) and inside the service methods themselves. |
+| `src/commands/daemon.rs` | **Unchanged** | Still reimplements all process lifecycle primitives inline. |
+| `src/commands/auth.rs` | **Unchanged** | `CredentialsStore` and file I/O still live inline in the command handler. |
+
+---
+
 ## Affected Files & Violations
 
-### `src/commands/ext.rs` — Direct ExtensionCore Hook Manipulation
+### `src/commands/ext.rs` — Direct `global_core()` Access Remains
 
-**Lines:** 372–377, 756–768, 844–857  
-**Violation:** Calls `global_core().list_builtin_extensions()`, `core.enable_hook()`, `core.disable_hook()` directly from a command handler.
+**Lines:** 138, 289–290  
+**Status:** Partially fixed — hook manipulation moved to `Services`, but global core access persists.
 
 ```rust
-// Line 372-377
+// Line 138 — still directly accesses global core
+let core = crate::extension::core::global_core().expect("Global ExtensionCore not initialized");
+
+// Lines 289–290 — still directly accesses global core
 let builtins = if let Some(core) = crate::extension::core::global_core() {
     core.list_builtin_extensions().await
 } else {
     Vec::new()
 };
-
-// Line 756-768 (inside handle_enable_builtin)
-if let Some(core) = crate::extension::core::global_core() {
-    let builtins = core.list_builtin_extensions().await;
-    for b in &builtins {
-        if b.name.eq_ignore_ascii_case(capability) {
-            let ext_id = ExtensionId::new(&b.id);
-            let hooks = core.get_hooks_for_extension(&ext_id).await;
-            for hook in hooks {
-                let _ = core.enable_hook(&hook.id).await;
-            }
-        }
-    }
-}
 ```
+
+The previous inline `enable_hook`/`disable_hook` loops (original issue lines 756–768, 844–857) were extracted into `extension::services::Services::enable_builtin_hooks()` and `disable_builtin_hooks()`. However, those service methods **still internally access `global_core()` directly** — the violation was moved down one layer, not eliminated.
 
 **Why this is wrong:**
 - `ExtensionCore` is an internal registry. Command handlers should not reach into global state.
-- `ExtensionService` (or `AgentConfigService`) should encapsulate enable/disable semantics.
-- Makes it impossible to unit-test the command handler without initializing the global core.
+- `Services::enable_builtin_hooks` / `disable_builtin_hooks` are static methods that internally reach for global state — they cannot be unit-tested without initializing the global core.
+- The service layer should receive its dependencies via constructor injection, not reach for globals.
 
 **Recommended fix:**
-- Add `ExtensionService::list_builtins()`, `ExtensionService::enable_builtin(capability, target)`, `ExtensionService::disable_builtin(capability, target)`.
-- Command handler delegates to the service.
+- Refactor `Services` to accept an `Arc<ExtensionCore>` at construction time (or add a dedicated `ExtensionCoreService` wrapper).
+- Replace `Services::enable_builtin_hooks(capability)` with a method on an injected service instance: `extension_service.enable_builtin_hooks(capability).await`.
+- Remove all `global_core()` calls from `ext.rs`.
 
 ---
 
-### `src/commands/session.rs` — Direct MetadataController / SessionStorage / Session::open_by_id
+### `src/commands/session.rs` — Resolved ✅
 
-**Lines:** 17, 345, 453, 745, 782, 860, 969  
-**Violation:** Directly imports and uses `MetadataController`, `SessionStorage`, and `Session::open_by_id` instead of routing through `SessionService`.
+**Status:** Fixed in recent commits.
 
-```rust
-// Line 17
-use crate::session::metadata_controller::MetadataController;
+All direct imports and usage of `MetadataController`, `SessionStorage`, and `Session::open_by_id` have been removed from the command handler. The file now delegates entirely to `SessionService`:
 
-// Line 345
-let mut controller = MetadataController::new(sessions_dir);
-let metadata_list = controller.list_metadata(true).await?;
+- `SessionService::list_sessions()` / `list_sessions_synced()`
+- `SessionService::get_session()` / `get_session_synced()`
+- `SessionService::delete_session()`
+- `SessionService::open_session()`
+- `SessionService::get_history()`
+- `SessionService::branch_session()`
 
-// Line 453
-let mut controller = MetadataController::new(&loc.sessions_dir);
-let Some(metadata) = controller.get_metadata(session_id, true).await? else { ... };
+`SessionService` itself still uses `MetadataController` and `SyncSessionStorage` internally, which is acceptable — the service layer is the correct place to encapsulate those implementation details.
 
-// Line 745
-let mut controller = crate::session::MetadataController::new(&loc.sessions_dir);
-
-// Line 782
-let deleted = controller.delete_session(session_id).await?;
-
-// Line 860
-let session = crate::session::Session::open_by_id(
-    agent, session_id, &loc.sessions_dir, Some(&peer)
-).await?;
-
-// Line 969
-let storage = crate::session::jsonl::SessionStorage::new(loc.sessions_dir.clone());
-```
-
-**Why this is wrong:**
-- `SessionService` already exists (`src/common/services/session_service.rs`) and provides `get_history`, but the command handler bypasses it for all other operations.
-- `MetadataController` is an internal implementation detail of the session subsystem. CLI should not know it exists.
-- `Session::open_by_id` is a low-level constructor. The service layer should manage session lifecycle.
-
-**Recommended fix:**
-- Extend `SessionService` with: `list_sessions`, `get_metadata`, `delete_session`, `open_session`, `count_compactions`.
-- Replace all direct `MetadataController`/`SessionStorage`/`Session::open_by_id` usage in `session.rs` with `SessionService` calls.
+**Remaining concern:** File is ~450 lines (slightly over the 400-line target). Consider extracting presentation helpers into `session::presentation` if they haven't been already.
 
 ---
 
 ### `src/commands/daemon.rs` — Reimplements PID Management, Process Spawn/Kill, Readiness Polling
 
-**Lines:** 219–246, 332–481, 498–538, 540–587  
-**Violation:** Reimplements process supervision primitives inline despite `src/common/process/` existing.
+**Lines:** 220–246, 333–496, 499–538, 544–587  
+**Status:** Unchanged since issue opened.
 
 ```rust
-// Line 219-246: Inline process-running check
+// Line 220-246: Inline process-running check
 fn is_process_running(pid: u32) -> bool {
-    #[cfg(windows)] {
-        let output = Command::new("powershell")
-            .args([...])
-            .output();
-        ...
-    }
-    #[cfg(unix)] {
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-    }
+    #[cfg(windows)] { /* PowerShell Get-Process */ }
+    #[cfg(unix)] { unsafe { libc::kill(pid as libc::pid_t, 0) == 0 } }
 }
 
-// Line 332-481: Inline graceful shutdown + PID kill + fallback kill
-async fn stop_daemon(force: bool) -> anyhow::Result<()> {
-    // 1. Try IPC graceful shutdown
-    // 2. PID-based taskkill/kill
-    // 3. Wait loop
-    // 4. Final verification + fallback process kill
-}
+// Line 333-496: Inline graceful shutdown + PID kill + fallback kill
+async fn stop_daemon(force: bool) -> anyhow::Result<()> { ... }
 
-// Line 498-538: Inline daemon spawn
-async fn spawn_daemon(paths: &GlobalPaths, interval: u64) -> anyhow::Result<()> {
-    let mut cmd = Command::new(&exe_path);
-    cmd.arg("daemon").arg("start").arg("--foreground")...;
-    let mut child = cmd.spawn()?;
-    let daemon_ready = wait_for_daemon_ready().await;
-    ...
-}
+// Line 499-538: Inline daemon spawn
+async fn spawn_daemon(paths: &GlobalPaths, interval: u64) -> anyhow::Result<()> { ... }
 
-// Line 540-587: Inline readiness polling
-async fn wait_for_daemon_ready() -> bool {
-    for i in 0..40 {
-        tokio::time::sleep(...).await;
-        match ConnectionManager::try_connect().await { ... }
-    }
-}
+// Line 544-587: Inline readiness polling
+async fn wait_for_daemon_ready() -> bool { ... }
 ```
 
 **Why this is wrong:**
@@ -145,15 +103,15 @@ async fn wait_for_daemon_ready() -> bool {
 
 **Recommended fix:**
 - Refactor `daemon.rs` to use `common::process::{spawn_process, graceful_shutdown, HealthCheckLoop}`.
-- If the common primitives are insufficient, extend them rather than inlining.
-- Consider creating a `DaemonProcessService` that encapsulates spawn/stop/status/status-check logic.
+- If the common primitives are insufficient (e.g., they don't cover PID-file-based kill or IPC graceful shutdown), **extend them** rather than inlining.
+- Consider creating a `DaemonProcessService` that encapsulates spawn/stop/status/status-check logic and manages the PID file.
 
 ---
 
 ### `src/commands/auth.rs` — Full CredentialsStore with File I/O and Serialization
 
-**Lines:** 42–103  
-**Violation:** Contains a complete `CredentialsStore` implementation with JSON serialization, file I/O, and permission management inline in a command handler file.
+**Lines:** 42–125  
+**Status:** Unchanged since issue opened.
 
 ```rust
 // Lines 42-87
@@ -163,45 +121,77 @@ pub struct CredentialsStore {
     pub credentials: HashMap<String, Credential>,
 }
 
-impl CredentialsStore {
-    pub fn get(&self, provider: &str) -> Option<&Credential> { ... }
-    pub fn set(&mut self, provider: &str, api_key: String) { ... }
-    pub fn remove(&mut self, provider: &str) -> bool { ... }
-    pub fn providers(&self) -> Vec<String> { ... }
-}
+impl CredentialsStore { /* get, set, remove, providers */ }
 
-// Lines 89-103
+// Lines 90-125
 fn load_credentials(paths: &GlobalPaths) -> Result<CredentialsStore> { ... }
 fn save_credentials(paths: &GlobalPaths, store: &CredentialsStore) -> Result<()> { ... }
 ```
 
 **Why this is wrong:**
-- `CredentialsStore` is a data model + persistence layer. It should live in `src/common/` or `src/identity/` (if auth-related), not in a command handler.
+- `CredentialsStore` is a data model + persistence layer. It should live in `src/common/` or `src/identity/`, not in a command handler.
 - File I/O (`std::fs::read_to_string`, `std::fs::write`, permission setting) is a low-level concern.
 - The command handler should call `CredentialsService::load()`, `CredentialsService::save()`, etc.
 
 **Recommended fix:**
-- Move `CredentialsStore`, `Credential`, `load_credentials`, `save_credentials` to `src/common/credentials.rs` or `src/identity/credentials_store.rs`.
+- Move `CredentialsStore`, `Credential`, `load_credentials`, `save_credentials` to `src/common/credentials_store.rs`.
 - Create a `CredentialsService` that wraps load/save/validate operations.
 - `auth.rs` should only handle CLI argument parsing and rendering.
+
+---
 
 ## Positive Examples (Model to Follow)
 
 - **`src/commands/team.rs`** — delegates all business logic to `TeamService`. The handler only maps CLI args to service calls and formats output.
 - **`src/commands/agent/handlers.rs`** — delegates to `AgentService`. No direct filesystem access, no direct config parsing.
+- **`src/commands/session.rs`** — now delegates to `SessionService` after recent fixes.
 
-## Recommended Actions
+---
 
-1. **Audit all `src/commands/*.rs`** for direct imports of `metadata_controller`, `jsonl`, `SessionStorage`, `ExtensionCore`, `global_core`, `MetadataController`, or inline file I/O.
-2. **Create missing service methods** where the service layer is incomplete (e.g., `SessionService::delete_session`, `ExtensionService::enable_builtin`).
-3. **Move data models + persistence** out of command handlers (`CredentialsStore`, `ExtensionConfig`).
-4. **Reuse `common::process`** primitives in `daemon.rs` instead of reimplementing.
-5. **Add an architectural lint** (or code-review checklist) that flags any command file importing from `session::metadata_controller`, `session::jsonl`, or `extension::core::global_core`.
+## Migration Plan (Updated)
 
-## Acceptance Criteria
+### Phase 1 — `auth.rs` (Quick Win, ~1–2 hours)
+1. Create `src/common/credentials_store.rs` containing `Credential`, `CredentialsStore`, `load_credentials`, `save_credentials`.
+2. Create `src/common/services/credentials_service.rs` with `CredentialsService::new(paths)`, `.load()`, `.save()`, `.set(provider, key)`, `.remove(provider)`, `.list()`.
+3. Update `auth.rs` to use `CredentialsService`. Remove all inline data model and I/O code.
+4. Target: `auth.rs` <150 lines.
 
-- [ ] `ext.rs` does not import `extension::core::global_core` or call `enable_hook`/`disable_hook` directly.
-- [ ] `session.rs` does not import `metadata_controller` or `jsonl::SessionStorage`.
+### Phase 2 — `daemon.rs` (Medium, ~4–6 hours)
+1. Audit `common::process` primitives against daemon needs:
+   - Does `spawn_process` support `Stdio::null()`, `kill_on_drop(false)`, env injection? If not, extend `ProcessSpawnConfig`.
+   - Does `graceful_shutdown` support PID-file-based termination (not just `Child` handle)? If not, add `graceful_shutdown_by_pid(pid, force)` to `common::process::kill`.
+   - Does `HealthCheckLoop` support one-shot readiness polling? If not, add `wait_for_healthy(check_fn, timeout, interval)`.
+2. Create `src/common/services/daemon_process_service.rs` encapsulating:
+   - `spawn_daemon(paths, interval) -> Result<Child>`
+   - `stop_daemon(force) -> Result<()>`
+   - `is_daemon_running() -> bool`
+   - `wait_for_daemon_ready(timeout) -> bool`
+   - PID file read/write helpers.
+3. Refactor `daemon.rs` to delegate to `DaemonProcessService`.
+4. Target: `daemon.rs` <300 lines.
+
+### Phase 3 — `ext.rs` (Medium, ~3–4 hours)
+1. Refactor `Services` (or create `ExtensionCoreService`) to accept `Arc<ExtensionCore>` via constructor instead of calling `global_core()` internally.
+2. Update `create_manager_with_adapters()` to receive the core from the caller (e.g., from an already-injected service).
+3. Replace `global_core()` calls in `ext.rs` with service method calls.
+4. Target: `ext.rs` <500 lines (may require splitting subcommand handlers into `src/commands/ext/` submodules).
+
+### Phase 4 — Cleanup & Linting
+1. Add an architectural lint (or code-review checklist) that flags any command file importing from:
+   - `session::metadata_controller`
+   - `session::jsonl`
+   - `session::sync`
+   - `extension::core::global_core`
+   - `std::fs` / `tokio::fs` (with exceptions for path resolution)
+2. Verify all four files meet line-count targets.
+3. Add unit tests for extracted services (`CredentialsService`, `DaemonProcessService`, `ExtensionCoreService`).
+
+---
+
+## Acceptance Criteria (Updated)
+
+- [ ] `ext.rs` does not import `extension::core::global_core` or call `enable_hook`/`disable_hook` directly (including transitively through static `Services` methods).
+- [x] `session.rs` does not import `metadata_controller` or `jsonl::SessionStorage`.
 - [ ] `daemon.rs` uses `common::process` primitives for spawn/kill/health checks.
 - [ ] `auth.rs` does not contain `CredentialsStore` or file I/O logic.
 - [ ] All four files have <400 lines of non-test code.
