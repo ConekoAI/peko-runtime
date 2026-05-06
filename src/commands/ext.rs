@@ -7,6 +7,7 @@
 //! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
 use crate::commands::GlobalPaths;
+use crate::extension::core::ExtensionCore;
 use crate::extension::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extension::services::{ConfigScope, ExtensionConfigService, Services};
 use crate::extension::types::ExtensionId;
@@ -14,6 +15,7 @@ use crate::ipc::client_service::DaemonClientService;
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Extension management subcommands
 #[derive(Subcommand)]
@@ -127,15 +129,16 @@ pub enum ExtCommands {
 }
 
 /// Create an `ExtensionManager` with all default adapters registered
-async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionManager {
+async fn create_manager_with_adapters(
+    core: Arc<ExtensionCore>,
+    storage: Option<ExtensionStorage>,
+) -> ExtensionManager {
     use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::gateway::GatewayAdapter;
     use crate::extensions::general::GeneralExtensionAdapter;
     use crate::extensions::mcp::McpAdapter;
     use crate::extensions::skill::SkillAdapter;
     use crate::extensions::universal::UniversalToolAdapter;
-
-    let core = crate::extension::core::global_core().expect("Global ExtensionCore not initialized");
 
     if let Err(e) = BuiltinToolAdapter::register_all(&core, &BuiltinToolRegistrarConfig::default()).await {
         tracing::warn!("Failed to register built-in tools with ExtensionCore: {}", e);
@@ -157,6 +160,12 @@ async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> Exte
 
 /// Handle extension subcommands
 pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> anyhow::Result<()> {
+    // Get the global ExtensionCore — initialized by main.rs before command dispatch.
+    // We extract it once and pass it down to eliminate direct global_core() calls
+    // in subcommand handlers.
+    let core = crate::extension::core::global_core()
+        .expect("Global ExtensionCore not initialized");
+
     match command {
         ExtCommands::Validate { path, verbose } => {
             let report = crate::extension::adapters::ExtensionValidationService::validate(&path, verbose).await?;
@@ -165,22 +174,28 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
         }
         ExtCommands::Debug { id } => {
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
-            let mut manager = create_manager_with_adapters(Some(storage)).await;
+            let mut manager = create_manager_with_adapters(core, Some(storage)).await;
             manager.load_all().await?;
             handle_debug(&manager, id).await
         }
         _ => {
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
-            let mut manager = create_manager_with_adapters(Some(storage)).await;
+            let mut manager = create_manager_with_adapters(core.clone(), Some(storage)).await;
             manager.load_all().await?;
+
+            let ext_services = Services::with_core(core);
 
             match command {
                 ExtCommands::Install { path, r#type } => handle_install(&mut manager, path, r#type).await,
                 ExtCommands::List { enabled_only, r#type, agent, team } => {
-                    handle_list(&manager, paths, enabled_only, r#type, agent, team).await
+                    handle_list(&manager, &ext_services, paths, enabled_only, r#type, agent, team).await
                 }
-                ExtCommands::Enable { id, target } => handle_enable(&mut manager, paths, id, target).await,
-                ExtCommands::Disable { id, target } => handle_disable(&mut manager, paths, id, target).await,
+                ExtCommands::Enable { id, target } => {
+                    handle_enable(&mut manager, &ext_services, paths, id, target).await
+                }
+                ExtCommands::Disable { id, target } => {
+                    handle_disable(&mut manager, &ext_services, paths, id, target).await
+                }
                 ExtCommands::Uninstall { id } => handle_uninstall(&mut manager, id).await,
                 ExtCommands::Info { id } => handle_info(&manager, id),
                 ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
@@ -279,6 +294,7 @@ async fn handle_install(
 
 async fn handle_list(
     manager: &ExtensionManager,
+    ext_services: &Services,
     paths: &GlobalPaths,
     _enabled_only: bool,
     ext_type: Option<String>,
@@ -286,11 +302,7 @@ async fn handle_list(
     team_filter: Option<String>,
 ) -> anyhow::Result<()> {
     let extensions = manager.list_extensions();
-    let builtins = if let Some(core) = crate::extension::core::global_core() {
-        core.list_builtin_extensions().await
-    } else {
-        Vec::new()
-    };
+    let builtins = ext_services.list_builtin_extensions().await;
 
     let filtered_installed: Vec<&LoadedExtension> = extensions
         .into_iter()
@@ -490,6 +502,7 @@ fn format_access_for_agent_configs(
 
 async fn handle_enable(
     manager: &mut ExtensionManager,
+    ext_services: &Services,
     paths: &GlobalPaths,
     id: String,
     target: Option<String>,
@@ -501,7 +514,7 @@ async fn handle_enable(
         } else {
             id.clone()
         };
-        return handle_enable_builtin(paths, &capability, target.as_deref()).await;
+        return handle_enable_builtin(ext_services, paths, &capability, target.as_deref()).await;
     }
 
     let ext_id = ExtensionId::new(&id);
@@ -568,6 +581,7 @@ async fn add_tool_to_agent_whitelist(
 }
 
 async fn handle_enable_builtin(
+    ext_services: &Services,
     paths: &GlobalPaths,
     capability: &str,
     target: Option<&str>,
@@ -594,12 +608,13 @@ async fn handle_enable_builtin(
         println!("Enabled '{capability}' for team '{team}'");
     }
 
-    Services::enable_builtin_hooks(capability).await;
+    ext_services.enable_builtin_hooks(capability).await;
     Ok(())
 }
 
 async fn handle_disable(
     manager: &mut ExtensionManager,
+    ext_services: &Services,
     paths: &GlobalPaths,
     id: String,
     target: Option<String>,
@@ -611,7 +626,7 @@ async fn handle_disable(
         } else {
             id.clone()
         };
-        return handle_disable_builtin(paths, &capability, target.as_deref()).await;
+        return handle_disable_builtin(ext_services, paths, &capability, target.as_deref()).await;
     }
 
     let ext_id = ExtensionId::new(&id);
@@ -632,6 +647,7 @@ async fn handle_disable(
 }
 
 async fn handle_disable_builtin(
+    ext_services: &Services,
     paths: &GlobalPaths,
     capability: &str,
     target: Option<&str>,
@@ -658,7 +674,7 @@ async fn handle_disable_builtin(
         println!("Disabled '{capability}' for team '{team}'");
     }
 
-    Services::disable_builtin_hooks(capability).await;
+    ext_services.disable_builtin_hooks(capability).await;
     Ok(())
 }
 
