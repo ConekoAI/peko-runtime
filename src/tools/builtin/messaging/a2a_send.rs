@@ -133,17 +133,6 @@ Send a message to another agent and receive its response. This is the primary me
 }
 ```
 
-## Async Execution
-For long-running delegation, use the framework-level async parameter:
-```json
-{
-  "target_agent": "analyzer",
-  "message": "Run a 10-minute benchmark",
-  "_async": true,
-  "_timeout": 600
-}
-```
-
 ## Response
 ```json
 {

@@ -361,8 +361,6 @@ impl Tool for AgentSpawnTool {
 
 Default mode (blocking): The parent waits for the subagent to complete its agentic loop and returns the result inline.
 
-Async mode: Use `_async: true` to spawn the subagent in the background. A receipt is returned immediately. Use the `task` tool with action="status" and the runId to check progress.
-
 Parameters:
 - task: Description of the task to execute (required)
 - label: Label for this spawn (optional)
@@ -373,9 +371,6 @@ Parameters:
 Examples:
 // Blocking spawn (default) - parent waits for result
 {"task": "Use write_file to create report.txt with a summary"}
-
-// Async spawn - background execution
-{"task": "Long running analysis", "_async": true, "_timeout": 300}
 
 // Isolated context - fresh session
 {"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}"#

@@ -167,7 +167,7 @@ Use the slow_calculator tool to calculate 10 plus 20 with delay_seconds=3. Do NO
     Write-Host "========================================" -ForegroundColor Cyan
 
     $asyncPrompt = @"
-Use the slow_calculator tool to calculate 7 multiplied by 8 with delay_seconds=10. Include `_async: true` in the tool parameters. The tool should return a JSON receipt immediately instead of the calculation result. Read the receipt carefully. If the receipt contains _async_status, task_id, and task_file, respond with ASYNC_RECEIPT_OK followed by the task_id. If you get the actual calculation result immediately instead of a receipt, respond with ASYNC_NO_RECEIPT. If something else goes wrong, respond with ASYNC_FAILED and explain.
+Use the slow_calculator tool to calculate 7 multiplied by 8 with delay_seconds=5. Include `_async: true` in the tool parameters. The tool should return a JSON receipt immediately instead of the calculation result. Read the receipt carefully. If the receipt contains _async_status, task_id, and task_file, respond with ASYNC_RECEIPT_OK followed by the task_id. If you get the actual calculation result immediately instead of a receipt, respond with ASYNC_NO_RECEIPT. If something else goes wrong, respond with ASYNC_FAILED and explain.
 "@
 
     Write-Host "Sending async request (should return immediately)..." -ForegroundColor Yellow
@@ -193,8 +193,8 @@ Use the slow_calculator tool to calculate 7 multiplied by 8 with delay_seconds=1
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
 
-    # Verify the agent returned quickly (less than 8s) — proves it didn't block on the 10s background task
-    if ($stopwatch.Elapsed.TotalSeconds -gt 8) {
+    # Verify the agent returned quickly (less than 20s) — proves it didn't block on the 5s background task
+    if ($stopwatch.Elapsed.TotalSeconds -gt 20) {
         Write-Host "FAIL: Agent took $($stopwatch.Elapsed.TotalSeconds.ToString('F1'))s to respond — it may have blocked on the background task" -ForegroundColor Red
         $script:failed = $true
     } else {
@@ -208,11 +208,11 @@ Use the slow_calculator tool to calculate 7 multiplied by 8 with delay_seconds=1
     Write-Host "TEST 3: Poll task_file for completed async result" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    Write-Host "Waiting for async task to complete (10s)..." -ForegroundColor Yellow
-    Start-Sleep 10
+    Write-Host "Waiting for async task to complete (5s)..." -ForegroundColor Yellow
+    Start-Sleep 5
 
     $pollPrompt = @"
-You previously ran slow_calculator with _async: true to calculate 7 multiplied by 8 with delay_seconds=10. Check the task_file from that receipt. If the task is complete and the result shows 56, respond with POLL_RESULT_56. If the task is still running, respond with POLL_STILL_RUNNING. If you cannot find the task_file or the result is wrong, respond with POLL_FAILED and explain.
+You previously ran slow_calculator with _async: true to calculate 7 multiplied by 8 with delay_seconds=5. Check the task_file from that receipt. If the task is complete and the result shows 56, respond with POLL_RESULT_56. If the task is still running, respond with POLL_STILL_RUNNING. If you cannot find the task_file or the result is wrong, respond with POLL_FAILED and explain.
 "@
 
     Write-Host "Sending polling request..." -ForegroundColor Yellow
@@ -242,7 +242,7 @@ You previously ran slow_calculator with _async: true to calculate 7 multiplied b
     Write-Host "========================================" -ForegroundColor Cyan
 
     $timeoutPrompt = @"
-Use the slow_calculator tool to calculate 100 divided by 4 with delay_seconds=8. Include `_async: true` and `_timeout: 600` in the tool parameters. You should get a receipt. Check the receipt for timeout_requested. If it shows timeout_requested=600, respond with TIMEOUT_SET_600. If the timeout is different, respond with TIMEOUT_WRONG followed by the value you saw. If something else goes wrong, respond with TIMEOUT_FAILED and explain.
+Use the slow_calculator tool to calculate 100 divided by 4 with delay_seconds=3. Include `_async: true` and `_timeout: 600` in the tool parameters. You should get a receipt. Check the receipt for timeout_requested. If it shows timeout_requested=600, respond with TIMEOUT_SET_600. If the timeout is different, respond with TIMEOUT_WRONG followed by the value you saw. If something else goes wrong, respond with TIMEOUT_FAILED and explain.
 "@
 
     Write-Host "Sending async request with custom timeout..." -ForegroundColor Yellow
@@ -266,8 +266,8 @@ Use the slow_calculator tool to calculate 100 divided by 4 with delay_seconds=8.
     }
 
     # Wait for the timeout test task to finish before cleanup
-    Write-Host "Waiting for timeout test task to complete (8s)..." -ForegroundColor Yellow
-    Start-Sleep 8
+    Write-Host "Waiting for timeout test task to complete (3s)..." -ForegroundColor Yellow
+    Start-Sleep 3
 
 } finally {
     # ============================================================

@@ -201,13 +201,6 @@ With redirection:
 Environment variables:
 ```json
 {env_cmd}
-```
-
-## Async Execution
-
-For long-running commands, use the framework-level async parameter:
-```json
-{{"command": "./long-build-script.sh", "_async": true, "_timeout": 300}}
 ```"#
         )
     }
