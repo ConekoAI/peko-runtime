@@ -165,6 +165,7 @@ pub enum Commands {
 /// This struct wraps the common `PathResolver` to provide CLI-specific
 /// path resolution. It delegates all path operations to the underlying
 /// `PathResolver` for consistency with the API.
+#[derive(Clone, Debug)]
 pub struct GlobalPaths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,

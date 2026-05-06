@@ -18,7 +18,7 @@ Positive examples exist (`team.rs`, `agent/handlers.rs`) where all business logi
 | `src/commands/session.rs` | **Resolved** | All direct `MetadataController`/`SessionStorage`/`Session::open_by_id` usage removed. Now delegates to `SessionService`. |
 | `src/commands/ext.rs` | **Partially Resolved** | Direct `enable_hook`/`disable_hook` calls extracted into `Services::enable_builtin_hooks`/`disable_builtin_hooks`, but `global_core()` is still accessed directly in the command file (lines 138, 289) and inside the service methods themselves. |
 | `src/commands/daemon.rs` | **Unchanged** | Still reimplements all process lifecycle primitives inline. |
-| `src/commands/auth.rs` | **Unchanged** | `CredentialsStore` and file I/O still live inline in the command handler. |
+| `src/commands/auth.rs` | **Resolved** | `CredentialsStore`, `Credential`, and all file I/O extracted to `src/common/credentials_store.rs`. `CredentialsService` created in `src/common/services/credentials_service.rs`. `auth.rs` now delegates entirely to the service layer. Reduced from ~275 to ~175 lines. |
 
 ---
 
@@ -150,11 +150,13 @@ fn save_credentials(paths: &GlobalPaths, store: &CredentialsStore) -> Result<()>
 
 ## Migration Plan (Updated)
 
-### Phase 1 — `auth.rs` (Quick Win, ~1–2 hours)
-1. Create `src/common/credentials_store.rs` containing `Credential`, `CredentialsStore`, `load_credentials`, `save_credentials`.
-2. Create `src/common/services/credentials_service.rs` with `CredentialsService::new(paths)`, `.load()`, `.save()`, `.set(provider, key)`, `.remove(provider)`, `.list()`.
-3. Update `auth.rs` to use `CredentialsService`. Remove all inline data model and I/O code.
-4. Target: `auth.rs` <150 lines.
+### Phase 1 — `auth.rs` (Quick Win, ~1–2 hours) ✅ **COMPLETE**
+1. ✅ Create `src/common/credentials_store.rs` containing `Credential`, `CredentialsStore`, `load_credentials`, `save_credentials`.
+2. ✅ Create `src/common/services/credentials_service.rs` with `CredentialsService::new(paths)`, `.load()`, `.save()`, `.set(provider, key)`, `.remove(provider)`, `.list()`, `.get()`, `.get_api_key()`, `.test_provider()`, `.credentials_path()`.
+3. ✅ Update `auth.rs` to use `CredentialsService`. Removed all inline data model and I/O code. `handle_auth` is now synchronous (no async needed).
+4. ✅ Target met: `auth.rs` reduced from ~275 to ~175 lines.
+5. ✅ Added `Clone` + `Debug` to `GlobalPaths` so services can own it.
+6. ✅ Unit tests: 8 for `CredentialsStore` + 8 for `CredentialsService` = 16 new tests, all passing.
 
 ### Phase 2 — `daemon.rs` (Medium, ~4–6 hours)
 1. Audit `common::process` primitives against daemon needs:
@@ -193,7 +195,7 @@ fn save_credentials(paths: &GlobalPaths, store: &CredentialsStore) -> Result<()>
 - [ ] `ext.rs` does not import `extension::core::global_core` or call `enable_hook`/`disable_hook` directly (including transitively through static `Services` methods).
 - [x] `session.rs` does not import `metadata_controller` or `jsonl::SessionStorage`.
 - [ ] `daemon.rs` uses `common::process` primitives for spawn/kill/health checks.
-- [ ] `auth.rs` does not contain `CredentialsStore` or file I/O logic.
+- [x] `auth.rs` does not contain `CredentialsStore` or file I/O logic.
 - [ ] All four files have <400 lines of non-test code.
 - [ ] Unit tests for the extracted services exist.
 

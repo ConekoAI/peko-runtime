@@ -4,6 +4,7 @@
 //! ensuring consistency in path resolution, configuration handling, etc.
 
 pub mod config_path;
+pub mod credentials_store;
 pub mod identifiers;
 pub mod json_utils;
 pub mod paths;

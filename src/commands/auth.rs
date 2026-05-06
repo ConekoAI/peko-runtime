@@ -1,9 +1,9 @@
 //! Auth command - Manage API keys and credentials
 
 use crate::commands::GlobalPaths;
+use crate::common::services::CredentialsService;
 use anyhow::Result;
 use clap::Subcommand;
-use std::collections::HashMap;
 use std::io::Write;
 
 /// Auth subcommands
@@ -38,92 +38,6 @@ pub enum AuthCommands {
     },
 }
 
-/// Credential entry
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Credential {
-    pub provider: String,
-    pub api_key: String,
-    pub created_at: String,
-}
-
-/// Credentials store
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-pub struct CredentialsStore {
-    pub version: u32,
-    pub credentials: HashMap<String, Credential>, // key: provider name
-}
-
-impl CredentialsStore {
-    #[must_use]
-    pub fn get(&self, provider: &str) -> Option<&Credential> {
-        self.credentials.get(provider)
-    }
-
-    pub fn set(&mut self, provider: &str, api_key: String) {
-        let credential = Credential {
-            provider: provider.to_string(),
-            api_key,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-        self.credentials.insert(provider.to_string(), credential);
-    }
-
-    pub fn remove(&mut self, provider: &str) -> bool {
-        self.credentials.remove(provider).is_some()
-    }
-
-    #[must_use]
-    pub fn providers(&self) -> Vec<String> {
-        let mut providers: Vec<String> = self
-            .credentials
-            .values()
-            .map(|c| c.provider.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        providers.sort();
-        providers
-    }
-}
-
-/// Load credentials from file
-fn load_credentials(paths: &GlobalPaths) -> Result<CredentialsStore> {
-    let path = paths.config_dir.join("credentials.json");
-
-    if !path.exists() {
-        return Ok(CredentialsStore {
-            version: 1,
-            credentials: HashMap::new(),
-        });
-    }
-
-    let content = std::fs::read_to_string(&path)?;
-    let store: CredentialsStore = serde_json::from_str(&content)?;
-    Ok(store)
-}
-
-/// Save credentials to file with restricted permissions
-fn save_credentials(paths: &GlobalPaths, store: &CredentialsStore) -> Result<()> {
-    let path = paths.config_dir.join("credentials.json");
-
-    // Ensure config dir exists
-    std::fs::create_dir_all(&paths.config_dir)?;
-
-    let content = serde_json::to_string_pretty(store)?;
-    std::fs::write(&path, content)?;
-
-    // Set restrictive permissions (owner read/write only)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&path)?.permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(&path, perms)?;
-    }
-
-    Ok(())
-}
-
 /// Mask API key for display
 fn mask_key(key: &str) -> String {
     if key.len() <= 8 {
@@ -143,7 +57,9 @@ fn normalize_provider(provider: &str) -> &str {
 }
 
 /// Handle auth commands
-pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
+pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
+    let service = CredentialsService::new(paths.clone());
+
     match cmd {
         AuthCommands::Set { provider, key } => {
             let canonical_provider = normalize_provider(&provider);
@@ -163,24 +79,18 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
                 anyhow::bail!("API key cannot be empty");
             }
 
-            // Load, update, save
-            let mut store = load_credentials(paths)?;
-            store.set(canonical_provider, api_key);
-            save_credentials(paths, &store)?;
+            service.set(canonical_provider, api_key)?;
 
             println!("✓ API key saved for {canonical_provider}");
-            println!(
-                "  Location: {}",
-                paths.config_dir.join("credentials.json").display()
-            );
+            println!("  Location: {}", service.credentials_path().display());
 
             Ok(())
         }
 
         AuthCommands::List { show } => {
-            let store = load_credentials(paths)?;
+            let providers = service.list_providers()?;
 
-            if store.credentials.is_empty() {
+            if providers.is_empty() {
                 println!("No credentials configured.");
                 println!("  Use 'pekobot auth set <provider> <key>' to add one.");
                 return Ok(());
@@ -189,14 +99,15 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             println!("Configured credentials:");
             println!();
 
-            for provider in store.providers() {
-                let cred = store.get(&provider).unwrap();
-                let key_display = if show {
-                    &cred.api_key
-                } else {
-                    &mask_key(&cred.api_key)
-                };
-                println!("  {provider}: {key_display}");
+            for provider in providers {
+                if let Some(cred) = service.get(&provider)? {
+                    let key_display = if show {
+                        cred.api_key
+                    } else {
+                        mask_key(&cred.api_key)
+                    };
+                    println!("  {provider}: {key_display}");
+                }
             }
 
             println!();
@@ -208,9 +119,7 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
         }
 
         AuthCommands::Remove { provider } => {
-            let mut store = load_credentials(paths)?;
-            if store.remove(&provider) {
-                save_credentials(paths, &store)?;
+            if service.remove(&provider)? {
                 println!("✓ Removed credential for {provider}");
             } else {
                 println!("✗ No credential found for {provider}");
@@ -220,11 +129,9 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
         }
 
         AuthCommands::Test { provider } => {
-            let store = load_credentials(paths)?;
-
             let providers_to_test = match provider {
                 Some(p) => vec![p],
-                None => store.providers(),
+                None => service.list_providers()?,
             };
 
             if providers_to_test.is_empty() {
@@ -236,15 +143,8 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             println!();
 
             for provider in providers_to_test {
-                match store.get(&provider) {
-                    Some(cred) => {
-                        // Simple test - just verify key format
-                        let valid = match provider.as_str() {
-                            "openai" => cred.api_key.starts_with("sk-"),
-                            "anthropic" => cred.api_key.starts_with("sk-ant-"),
-                            _ => cred.api_key.len() > 10,
-                        };
-
+                match service.test_provider(&provider)? {
+                    Some(valid) => {
                         if valid {
                             println!("  ✓ {provider}: Valid format");
                         } else {
@@ -264,12 +164,12 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
 
 /// Get API key for a provider (used by agent creation)
 pub fn get_api_key(paths: &GlobalPaths, provider: &str) -> Result<Option<String>> {
-    let store = load_credentials(paths)?;
-    Ok(store.get(provider).map(|c| c.api_key.clone()))
+    let service = CredentialsService::new(paths.clone());
+    service.get_api_key(provider)
 }
 
 /// Auto-detect available providers
 pub fn detect_available_providers(paths: &GlobalPaths) -> Result<Vec<String>> {
-    let store = load_credentials(paths)?;
-    Ok(store.providers())
+    let service = CredentialsService::new(paths.clone());
+    service.list_providers()
 }
