@@ -1,6 +1,6 @@
 # Issue 019: God Files & Mixed Concerns (High Severity)
 
-**Status:** In Progress — Phase 1 Complete  
+**Status:** In Progress — Phase 2 Complete  
 **Labels:** `refactoring`, `architecture`, `high-severity`, `commands`, `engine`, `daemon`
 
 ## Summary
@@ -13,7 +13,8 @@ Multiple files in the codebase violate the Single Responsibility Principle by mi
 |------|-------|----------------|
 | `src/commands/ext.rs` | ~919 | Extension lifecycle, whitelist manipulation, config persistence, validation, daemon IPC, Tier 1/2/3 manifest detection |
 | `src/commands/ext.rs` (target) | ~400 | (Phase 1 complete — extracted to domain modules, remaining is CLI dispatch + rendering) |
-| `src/commands/session.rs` | ~1,026 | Session ops, compaction algorithm, history display, path resolution, active-session resolution |
+| `src/commands/session.rs` | ~450 (391 non-test) | Session ops, compaction algorithm, history display, path resolution, active-session resolution |
+| `src/commands/session.rs` (target) | ~400 | (Phase 2 complete — extracted to `SessionService`, `session/presentation.rs`, `compaction/cli.rs`; remaining is CLI dispatch + thin rendering) |
 | `src/engine/agentic_loop.rs` | ~1,248 | LLM iteration, tool execution, system prompt construction, skill loading, session management, compaction, event emission, legacy fallbacks |
 | `src/daemon/mod.rs` | ~719 | Cron execution engine, job delivery, session janitor, async task janitor, daemon lifecycle, event filtering, agent config loading |
 
@@ -113,67 +114,61 @@ No backward compatibility is required (dev stage).
 
 **Goal:** Reduce `session.rs` to ~300 lines (enum definition + dispatch + rendering).
 
-#### 2a. Deduplicate Active-Session Resolution
+#### 2a. Deduplicate Active-Session Resolution ✅ **DONE**
 - **Source:** Copy-pasted block (lines 189–203, 217–231, 272–286).
-- **Action:** Extract a single helper:
-  ```rust
-  async fn resolve_session_id(
-      paths: &GlobalPaths,
-      agent: &str,
-      team: &str,
-      session_id: Option<String>,
-      json: bool,
-      label: &str, // e.g. "Using active session"
-  ) -> Result<String> { ... }
-  ```
-  Or better: move the resolution logic into `SessionService::resolve_session_id(agent, team, user, session_id)`.
+- **Action:** Moved into `SessionService::resolve_session_id(agent, team, user, session_id)`.
+- **Result:** All three commands (`show`, `branch`, `compact`) now call the single service method.
 
-#### 2b. Move Compaction CLI Logic to `src/compaction/`
+#### 2b. Move Compaction CLI Logic to `src/compaction/` ✅ **DONE**
 - **Source:** `compact_session` (lines 844–1038) — truncation logic, summary generation, token estimation, recording.
 - **Destination:** `src/compaction/cli.rs` (new module)
 - **Interface:**
   ```rust
   pub struct SessionCompactor;
   impl SessionCompactor {
-      pub async fn compact(
-          &self,
-          session: &Session,
-          dry_run: bool,
-          instruction: Option<String>,
-      ) -> Result<CompactionResult>;
-
-      pub async fn dry_run(
-          &self,
-          session: &Session,
-      ) -> Result<DryRunReport>;
+      pub async fn compact(&mut self, session: &mut Session, instruction: Option<String>) -> Result<CliCompactionResult>;
+      pub async fn dry_run(&self, session: &Session, _instruction: Option<String>) -> Result<DryRunReport>;
   }
+  pub struct CliCompactionResult { pub messages: Vec<LlmMessage>, pub entry: CompactionEntry, pub tokens_saved: usize; }
+  pub struct DryRunReport { pub estimated_tokens: usize, pub context_window: usize, pub percent: usize, pub message_count: usize, pub messages_to_compact: usize; }
   ```
-- **Rationale:** The compaction algorithm is a compaction concern. `src/compaction/` already has `background.rs`, `registry.rs`, `turn_boundaries.rs`, etc. The CLI-specific compaction flow belongs here, next to the `Compactor` it uses. This is not a generic "service" — it's domain-specific compaction logic.
+- **Rationale:** The compaction algorithm is a compaction concern. `src/compaction/` already has `background.rs`, `registry.rs`, `turn_boundaries.rs`, etc. The CLI-specific compaction flow belongs here, next to the `Compactor` it uses.
+- **Tests:** `test_dry_run_empty_session`, `test_compact_truncates_messages`.
 
-#### 2c. Move History Presentation to `src/session/presentation.rs`
+#### 2c. Move History Presentation to `src/session/presentation.rs` ✅ **DONE**
 - **Source:** `HistoryDisplayEntry`, `history_event_to_display`, `print_history_event` (lines 525–679).
 - **Destination:** `src/session/presentation.rs`
 - **Interface:**
   ```rust
   pub fn format_history_event(index: usize, event: &HistoryDisplayEntry) -> String;
   pub fn history_event_to_display(event: HistoryEvent) -> Option<HistoryDisplayEntry>;
+  pub fn render_session_list(sessions: &[SessionInfo], team: &str, agent: &str, active_session_id: Option<&str>);
+  pub fn render_session_details(entry: &SessionInfo, team: &str, agent: &str);
+  pub fn render_session_history(events: &[HistoryDisplayEntry]);
+  pub fn render_branch_success(...);
+  pub fn render_delete_prompt(...);
+  pub fn render_compact_dry_run(...);
+  pub fn render_compact_success(...);
   ```
 - **Rationale:** Presentation converts `session::HistoryEvent` (a session type) into display format. It belongs in `src/session/` because it operates on session types. Different channels (CLI, TUI, web) can reuse the same DTOs but format them differently.
+- **Tests:** `test_truncate`, `test_history_event_to_display_message`, `test_format_history_event_session`.
 
-#### 2d. Replace Direct `MetadataController` / `SessionStorage` Usage
+#### 2d. Replace Direct `MetadataController` / `SessionStorage` Usage ✅ **DONE**
 - **Source:** Direct `MetadataController::new` (lines 345, 453, 745), `Session::open_by_id` (line 860), `SessionStorage::new` (line 969).
 - **Action:** Route all operations through `SessionService` (already in `common/services/`):
-  - `list_sessions_from_disk` → `SessionService::list_sessions(agent, team)`
+  - `list_sessions_from_disk` → `SessionService::list_sessions_synced(agent, team)`
   - `MetadataController::delete_session` → `SessionService::delete_session(agent, team, session_id)`
-  - `Session::open_by_id` → `SessionService::open_session(agent, team, session_id)`
-  - `SessionStorage::append_compaction` → `session::compaction::SessionCompactor::record_compaction(...)` (calls into `src/compaction/cli.rs`)
+  - `Session::open_by_id` → `SessionService::open_session(agent, team, session_id, user)`
+  - `SessionStorage::append_compaction` → `Session::record_compaction(...)` (via `SessionCompactor` in `src/compaction/cli.rs`)
+- **Additional methods added to `SessionService`:** `resolve_session_id`, `open_session`, `list_sessions_synced`, `get_session_synced`, `get_sessions_dir`.
 
-#### 2e. Post-Phase 2 `session.rs` structure
+#### 2e. Post-Phase 2 `session.rs` structure ✅ **DONE**
 ```rust
-// ~160 lines: SessionCommands enum + handle_session dispatcher
-// ~4 lines each: list_sessions, show_session, branch_session, delete_session, switch_session, compact_session (delegate to SessionService/CompactionService)
-// ~100 lines: render functions (CLI-specific output formatting)
+// ~95 lines: SessionCommands enum
+// ~70 lines: handle_session dispatcher
+// ~230 lines: thin command implementations (delegate to SessionService/SessionCompactor)
 ```
+- **Actual:** 450 total lines, 391 non-test lines.
 
 ---
 
@@ -360,17 +355,18 @@ src/
 ## Acceptance Criteria
 
 - [x] Phase 1: `src/commands/ext.rs` — extracted `ExtensionConfigService`, `ExtensionValidationService`, `DaemonClientService`; simplified enable/disable. Reduced from ~1,359 to ~919 lines (32% reduction). Remaining rendering functions keep it above 400; further reduction possible in follow-up.
+- [x] Phase 2: `src/commands/session.rs` — extracted active-session resolution to `SessionService`, compaction CLI logic to `compaction/cli.rs`, history presentation to `session/presentation.rs`. Eliminated direct `MetadataController`/`SessionStorage` usage. Reduced from ~1,026 to ~450 lines (391 non-test). All extracted modules have unit tests.
 - [ ] `src/commands/ext.rs` ≤ 400 lines of non-test code.
-- [ ] `src/commands/session.rs` ≤ 400 lines of non-test code.
+- [x] `src/commands/session.rs` ≤ 400 lines of non-test code.
 - [ ] `src/engine/agentic_loop.rs` ≤ 600 lines of non-test code.
 - [ ] `src/daemon/mod.rs` ≤ 300 lines of non-test code.
-- [ ] No command file directly instantiates `MetadataController`, `SessionStorage`, or `ExtensionCore`.
+- [x] No command file directly instantiates `MetadataController`, `SessionStorage`, or `ExtensionCore`.
 - [ ] `agentic_loop.rs` compaction logic is <30 lines in the loop body (delegated to `CompactionOrchestrator`).
 - [ ] `daemon/mod.rs` cron logic is extracted to `daemon::cron_engine`.
 - [ ] `daemon/mod.rs` does not duplicate `session::maintenance.rs` logic.
-- [ ] All extracted code lives in its domain module (`extension/` for extension concerns, `session/` for session concerns, `prompt/` for prompt concerns, `ipc/` for IPC concerns).
-- [ ] All extracted code has unit tests.
-- [ ] `cargo test` and `cargo clippy` pass.
+- [x] All extracted code lives in its domain module (`extension/` for extension concerns, `session/` for session concerns, `prompt/` for prompt concerns, `ipc/` for IPC concerns).
+- [x] All extracted code has unit tests.
+- [x] `cargo test` and `cargo clippy` pass.
 
 ---
 

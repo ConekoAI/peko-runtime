@@ -9,6 +9,7 @@
 //! Based on pi_agent_rust compaction algorithm.
 
 pub mod background;
+pub mod cli;
 pub mod registry;
 pub mod summary_format;
 pub mod turn_boundaries;

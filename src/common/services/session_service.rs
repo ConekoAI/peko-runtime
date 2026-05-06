@@ -7,6 +7,7 @@ use crate::common::paths::PathResolver;
 use crate::session::events::SessionEvent;
 use crate::session::metadata_controller::MetadataController;
 use crate::session::sync::SyncSessionStorage;
+use crate::session::types::Peer;
 use crate::session::SessionEntry;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
@@ -14,7 +15,7 @@ use std::path::PathBuf;
 use tracing::{debug, info};
 
 /// Session information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionInfo {
     pub id: String,
     pub agent_name: String,
@@ -117,7 +118,7 @@ pub struct HistoryResult {
 }
 
 /// Branch result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct BranchResult {
     pub new_session_id: String,
     pub parent_session_id: String,
@@ -413,11 +414,91 @@ impl SessionService {
         Ok(storage.session_exists(session_id).await)
     }
 
-    /// Get sessions directory for an agent
-    async fn get_sessions_dir(&self, agent_name: &str, team: Option<&str>) -> Result<PathBuf> {
-        // Use path resolver directly
-        let sessions_dir = self.path_resolver.agent_sessions_dir(agent_name, team);
+    /// Resolve a session ID, falling back to the active session if none provided
+    pub async fn resolve_session_id(
+        &self,
+        agent_name: &str,
+        team: Option<&str>,
+        user: &str,
+        session_id: Option<String>,
+    ) -> Result<String> {
+        match session_id {
+            Some(id) => Ok(id),
+            None => {
+                let mut manager =
+                    SessionManager::for_cli(self.path_resolver.clone(), agent_name, team, user);
+                let peer = Peer::User(user.to_string());
+                match manager.get_active_session_id(&peer).await? {
+                    Some(id) => Ok(id),
+                    None => Err(anyhow::anyhow!(
+                        "No active session for agent '{agent_name}'. \
+                         Run 'pekobot session list {agent_name}' to see available sessions, \
+                         or specify a session ID explicitly."
+                    )),
+                }
+            }
+        }
+    }
 
+    /// Open a session by ID (returns the unified Session)
+    pub async fn open_session(
+        &self,
+        agent_name: &str,
+        team: Option<&str>,
+        session_id: &str,
+        user: &str,
+    ) -> Result<crate::session::unified::Session> {
+        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let peer = Peer::User(user.to_string());
+        crate::session::unified::Session::open_by_id(agent_name, session_id, &sessions_dir, Some(&peer))
+            .await
+            .with_context(|| format!("Failed to open session '{session_id}'"))
+    }
+
+    /// List sessions with metadata synced from JSONL (source of truth)
+    pub async fn list_sessions_synced(
+        &self,
+        agent_name: &str,
+        team: Option<&str>,
+    ) -> Result<Vec<SessionInfo>> {
+        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+
+        if !sessions_dir.exists() {
+            return Ok(vec![]);
+        }
+
+        let mut controller = MetadataController::new(&sessions_dir);
+        let entries = controller.list_metadata(true).await?;
+
+        let sessions: Vec<SessionInfo> = entries
+            .into_iter()
+            .map(|e| e.to_entry().into())
+            .collect();
+
+        Ok(sessions)
+    }
+
+    /// Get session metadata synced from JSONL
+    pub async fn get_session_synced(
+        &self,
+        agent_name: &str,
+        team: Option<&str>,
+        session_id: &str,
+    ) -> Result<Option<SessionInfo>> {
+        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+
+        if !sessions_dir.exists() {
+            return Ok(None);
+        }
+
+        let mut controller = MetadataController::new(&sessions_dir);
+        let metadata = controller.get_metadata(session_id, true).await?;
+        Ok(metadata.map(|m| m.to_entry().into()))
+    }
+
+    /// Get sessions directory for an agent
+    pub async fn get_sessions_dir(&self, agent_name: &str, team: Option<&str>) -> Result<PathBuf> {
+        let sessions_dir = self.path_resolver.agent_sessions_dir(agent_name, team);
         Ok(sessions_dir)
     }
 

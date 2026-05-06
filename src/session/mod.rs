@@ -40,6 +40,7 @@ pub mod spawn;
 pub mod subagent_key;
 pub mod sync;
 pub mod types;
+pub mod presentation;
 pub mod unified;
 
 // Re-export Session (replaces both BaseSession and SimpleSession)
