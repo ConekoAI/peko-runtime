@@ -8,5 +8,7 @@
 pub mod bootstrap;
 pub mod builder;
 pub mod placeholder;
+pub mod service;
 
 pub use builder::{PromptMode, SystemPromptBuilder};
+pub use service::SystemPromptService;

@@ -13,24 +13,16 @@
 
 use crate::agent::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase};
-use crate::prompt::{PromptMode, SystemPromptBuilder};
+use crate::prompt::SystemPromptService;
 use crate::providers::{ChatOptions, MessageRole, StopReason, ToolDefinition, TokenUsage};
 use chrono::Utc;
 use std::collections::HashMap;
 use crate::session::Session;
 use crate::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
-
-// ADR-022 Phase 3: Extension hook imports for compaction
-use crate::extension::core::hook_points::HookPoint;
-use crate::extension::types::{HookInput, SessionSnapshot};
-
-// Extension Core imports for skill loading and tool execution
-use crate::extensions::skill::{register_skills_with_core, SkillAdapter};
 
 /// Result of running the agentic loop
 #[derive(Debug, Clone)]
@@ -78,7 +70,7 @@ impl AgenticLoop {
         provider: Arc<crate::providers::Provider>,
         extension_core: Arc<crate::extension::ExtensionCore>,
     ) -> Self {
-        let system_prompt = build_system_prompt(&agent, &extension_core).await;
+        let system_prompt = SystemPromptService::build(&agent, &extension_core).await;
 
         Self {
             agent,
@@ -124,8 +116,6 @@ impl AgenticLoop {
 
     /// Run the agent with streaming support, optionally resuming from an existing session.
     ///
-    /// Run the agent with streaming support, optionally resuming from an existing session.
-    ///
     /// Uses `DeliveryMode::Live` or `DeliveryMode::Block` for real-time output.
     /// The core loop is the same as `run_with_resume`; only the orchestrator config differs.
     pub async fn run_streaming_with_resume(
@@ -151,10 +141,6 @@ impl AgenticLoop {
             error: None,
         });
 
-        let session_id = {
-            let s = session.read().await;
-            s.id.clone()
-        };
         info!(
             "Starting v4 streaming agentic loop for agent: {} (session: {})",
             self.agent.name(),
@@ -286,89 +272,15 @@ impl AgenticLoop {
         let mut iteration = 0;
         let mut total_usage = TokenUsage::default();
 
-        // Load previous compaction summary from session for cumulative updates
-        let previous_summary = {
-            let s = session.read().await;
-            s.load_previous_compaction_summary().await.ok().flatten()
-        };
-        if previous_summary.is_some() {
-            info!("Found previous compaction summary for cumulative updates");
-        }
+        // Initialize compaction orchestrator
+        let mut compaction_orchestrator =
+            crate::engine::compaction_orchestrator::CompactionOrchestrator::new(
+                self.provider.clone(),
+                &self.agent.config,
+            );
 
-        // Initialize background compactor
-        let background_compactor =
-            crate::compaction::background::BackgroundCompactor::new(self.provider.clone());
-
-        // Track pending compaction
-        let mut pending_compaction: Option<
-            tokio::sync::oneshot::Receiver<crate::compaction::background::CompactionResponse>,
-        > = None;
-
-        // Initialize compactor config for quota checks
-        // Load from global config file if present, otherwise use defaults
-        let compaction_config = {
-            let config_path = dirs::home_dir()
-                .map(|h| h.join(".pekobot").join("config.toml"))
-                .filter(|p| p.exists());
-            if let Some(path) = config_path {
-                match std::fs::read_to_string(&path) {
-                    Ok(contents) => {
-                        // Parse the full TOML and extract the [compaction] section
-                        match toml::from_str::<toml::Value>(&contents) {
-                            Ok(root) => {
-                                if let Some(compaction_table) = root.get("compaction") {
-                                    match compaction_table.clone().try_into::<crate::compaction::CompactionConfig>() {
-                                        Ok(cfg) => cfg,
-                                        Err(_e) => {
-                                            crate::compaction::CompactionConfig::default()
-                                        }
-                                    }
-                                } else {
-                                    crate::compaction::CompactionConfig::default()
-                                }
-                            }
-                            Err(_e) => {
-                                crate::compaction::CompactionConfig::default()
-                            }
-                        }
-                    }
-                    Err(_e) => {
-                        crate::compaction::CompactionConfig::default()
-                    }
-                }
-            } else {
-                crate::compaction::CompactionConfig::default()
-            }
-        };
-        let mut registry = crate::compaction::registry::ModelContextRegistry::new();
-        // Merge any model_limits overrides from compaction_config
-        let override_registry = crate::compaction::registry::ModelContextRegistry {
-            default_limit: registry.default_limit,
-            limits: compaction_config.model_limits.clone(),
-        };
-        registry.merge(&override_registry);
-        let provider_str = self.agent.config.provider.provider_type.to_string();
-        let context_window = registry.get(&provider_str, &self.agent.config.provider.default_model);
-
-        // DEBUG: Write compaction config state to a marker file for e2e verification
-        let marker_path = std::path::PathBuf::from(r"C:\Users\Megad\AppData\Roaming\pekobot\compaction_debug.marker");
-        let _ = std::fs::write(
-            &marker_path,
-            format!("context_window={}\nauto_threshold={}\nreserve={}\nmodel_limits_keys={:?}\nprovider={}\nmodel={}\n",
-                context_window,
-                compaction_config.auto_threshold_percent,
-                compaction_config.reserve_tokens,
-                compaction_config.model_limits.keys().collect::<Vec<_>>(),
-                provider_str,
-                self.agent.config.provider.default_model
-            ),
-        );
-
-        // ADR-022 Phase 3: Track whether compaction was performed this iteration
-        let mut compaction_performed = false;
-
-        // Track the last compaction result for the post-hook
-        let mut last_compaction_result: Option<crate::compaction::CompactionResult> = None;
+        // Initialize tool executor
+        let tool_executor = crate::engine::tool_executor::ToolExecutor;
 
         loop {
             iteration += 1;
@@ -380,229 +292,22 @@ impl AgenticLoop {
 
             // ADR-019 Phase 3: Rebuild system prompt dynamically
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
-                let fresh_prompt = self.build_system_prompt_fresh().await;
+                let fresh_prompt = SystemPromptService::build_fresh(&self.agent, &self.extension_core).await;
                 messages[0] = LlmMessage::system(fresh_prompt);
             }
 
             // ============================================================
             // ADR-022 Phase 3: Compaction with Extension Hooks
             // ============================================================
-
-            // Check if compaction is needed before LLM call
-            let estimated_tokens = crate::compaction::Compactor::estimate_tokens(&messages);
-
-            // Start background compaction if needed and not already running
-            if pending_compaction.is_none()
-                && background_compactor
-                    .should_request(estimated_tokens, context_window, &compaction_config)
-                    .await
-            {
-                info!(
-                    "Context window approaching limit ({} tokens), checking compaction...",
-                    estimated_tokens
-                );
-                on_event(AgenticEvent::Thinking {
-                    run_id: run_id.clone(),
-                    text: "Session is getting long. Summarizing older messages...".to_string(),
-                    is_delta: false,
-                    is_final: false,
-                    signature: None,
-                });
-
-                // 1. Invoke SessionCompaction hook — extensions get first shot
-                use crate::extension::core::hook_points::HookPoint;
-                use crate::extension::types::HookInput;
-
-                // Build compaction preparation using turn boundaries
-                let threshold_tokens = context_window
-                    .saturating_sub(compaction_config.reserve_tokens);
-                let keep_recent_tokens = compaction_config.keep_recent_tokens;
-
-                let (messages_to_summarize, _messages_to_keep, is_split_turn) =
-                    crate::compaction::turn_boundaries::select_messages_respecting_boundaries(
-                        &messages,
-                        keep_recent_tokens,
-                    );
-
-                let turn_prefix_messages = if is_split_turn {
-                    let split_point = messages_to_summarize.len();
-                    crate::compaction::turn_boundaries::extract_turn_prefix(&messages, split_point)
-                        .unwrap_or_default()
-                } else {
-                    vec![]
-                };
-
-                let prev_summary = {
-                    let s = session.read().await;
-                    s.load_previous_compaction_summary().await.ok().flatten()
-                };
-
-                let file_ops = crate::compaction::summary_format::extract_file_ops_from_messages(
-                    &messages_to_summarize,
-                );
-
-                let hook_input = HookInput::CompactionPreparation {
-                    messages_to_summarize,
-                    turn_prefix_messages,
-                    is_split_turn,
-                    previous_summary: prev_summary.clone(),
-                    file_ops,
-                    estimated_tokens,
-                    threshold_tokens,
-                    model_context_limit: context_window,
-                    settings: compaction_config.clone(),
-                };
-                let hook_result = self
-                    .extension_core
-                    .invoke_hook(HookPoint::SessionCompaction, hook_input)
-                    .await;
-
-                match hook_result {
-                    crate::extension::types::HookResult::Replace(
-                        crate::extension::types::HookOutput::MessageVec(custom_messages),
-                    ) => {
-                        // Extension provided custom compacted messages
-                        info!(
-                            "SessionCompaction hook replaced messages: {} → {}",
-                            messages.len(),
-                            custom_messages.len()
-                        );
-                        messages = custom_messages;
-                        compaction_performed = true;
-                    }
-                    crate::extension::types::HookResult::Handled => {
-                        // Extension cancelled compaction
-                        info!("SessionCompaction hook cancelled compaction");
-                    }
-                    _ => {
-                        // PassThrough or other — run built-in background compactor
-                        match background_compactor
-                            .request_compaction(messages.clone(), prev_summary)
-                            .await
-                        {
-                            Ok(receiver) => {
-                                pending_compaction = Some(receiver);
-                            }
-                            Err(e) => {
-                                warn!("Failed to start background compaction: {}", e);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Check if background compaction has completed
-            if let Some(ref mut receiver) = pending_compaction {
-                match tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver).await
-                {
-                    Ok(Ok(response)) => {
-                        match response {
-                            crate::compaction::background::CompactionResponse::Completed(
-                                result,
-                            ) => {
-                                messages = result.messages.clone();
-                                compaction_performed = true;
-                                last_compaction_result = Some(result.clone());
-                                info!(
-                                    "Background compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
-                                    result.entry.compaction_number,
-                                    result.entry.messages_compacted,
-                                    result.entry.tokens_before - result.entry.tokens_after,
-                                    result.entry.tokens_before,
-                                    result.entry.tokens_after
-                                );
-
-                                // Record compaction entry in session
-                                {
-                                    let mut s = session.write().await;
-                                    if let Err(e) = s
-                                        .record_compaction(
-                                            &result.entry.summary,
-                                            result.entry.messages_compacted,
-                                            result.entry.tokens_before,
-                                            result.entry.tokens_after,
-                                            result.entry.compaction_number,
-                                            result.entry.details.as_ref(),
-                                        )
-                                        .await
-                                    {
-                                        warn!("Failed to record compaction entry: {}", e);
-                                    }
-                                }
-                            }
-                            crate::compaction::background::CompactionResponse::NotNeeded => {
-                                debug!("Background compaction: not needed");
-                            }
-                            crate::compaction::background::CompactionResponse::Skipped(reason) => {
-                                debug!("Background compaction skipped: {}", reason);
-                            }
-                            crate::compaction::background::CompactionResponse::Failed(err) => {
-                                warn!("Background compaction failed: {}", err);
-                            }
-                        }
-                        pending_compaction = None;
-                    }
-                    Ok(Err(_)) => {
-                        warn!("Background compaction channel closed");
-                        pending_compaction = None;
-                    }
-                    Err(_) => {
-                        // Timeout - compaction still in progress, continue with LLM call
-                    }
-                }
-            }
-
-            // 3. Post-compaction hook — augment/validate/log the result
-            if compaction_performed {
-                // Build CompactionResult input for the post hook
-                let post_input = if let Some(ref result) = last_compaction_result {
-                    HookInput::CompactionResult {
-                        summary: result.entry.summary.clone(),
-                        messages_compacted: result.entry.messages_compacted,
-                        tokens_before: result.entry.tokens_before,
-                        tokens_after: result.entry.tokens_after,
-                        compaction_number: result.entry.compaction_number,
-                        details: result.entry.details.clone(),
-                        messages_after: messages.clone(),
-                    }
-                } else {
-                    // Fallback: should not happen since compaction_performed is true,
-                    // but provide a safe default
-                    HookInput::SessionState(SessionSnapshot {
-                        session_id: session_id.clone(),
-                        message_count: messages.len(),
-                        context_tokens: crate::compaction::Compactor::estimate_tokens(&messages),
-                        metadata: std::collections::HashMap::new(),
-                    })
-                };
-                let post_result = self
-                    .extension_core
-                    .invoke_hook(HookPoint::SessionCompactionPost, post_input)
-                    .await;
-
-                if let crate::extension::types::HookResult::Replace(
-                    crate::extension::types::HookOutput::MessageVec(modified),
-                ) = post_result
-                {
-                    info!(
-                        "SessionCompactionPost hook modified messages: {} → {}",
-                        messages.len(),
-                        modified.len()
-                    );
-                    messages = modified;
-                }
-
-                // Update context cache after compaction
-                {
-                    let s = session.read().await;
-                    if let Err(e) = s.update_context_cache(&messages).await {
-                        warn!("Failed to update context cache: {}", e);
-                    }
-                }
-
-                compaction_performed = false;
-                last_compaction_result = None;
-            }
+            compaction_orchestrator
+                .check_and_compact(
+                    &mut messages,
+                    &session,
+                    &self.extension_core,
+                    &on_event,
+                    &run_id,
+                )
+                .await?;
 
             if iteration > self.max_iterations {
                 warn!("Max iterations ({}) reached", self.max_iterations);
@@ -686,7 +391,11 @@ impl AgenticLoop {
                 }
             } else {
                 warn!("Provider doesn't support streaming, synthesizing from blocking response");
-                self.synthesize_stream_from_blocking(&messages, &tool_defs, &options).await?
+                let response = self.provider.chat_with_tools(&messages, &tool_defs, &options).await?;
+                crate::providers::synthetic_stream::synthesize_stream_from_blocking(
+                    response,
+                    self.provider.name(),
+                )
             };
 
             info!("Stream started, processing events...");
@@ -880,76 +589,18 @@ impl AgenticLoop {
 
                 // Execute tools
                 for tool_call in &tool_calls {
-                    if let ContentBlock::ToolCall {
-                        id,
-                        name,
-                        arguments,
-                    } = tool_call
-                    {
-                        info!("Executing tool: {} (id: {})", name, id);
-
-                        // Note: ToolStart was already emitted by StreamOrchestrator
-                        // when processing StreamEvent::ToolCallEnd during streaming.
-                        // Do NOT emit it again here to avoid duplicate "[Running tool: X]" output.
-
-                        // Execute tool via ExtensionCore for unified execution (ADR-018a)
-                        let start_time = std::time::Instant::now();
-
-                        let workspace = self
-                            .agent
-                            .config
-                            .workspace
-                            .as_ref()
-                            .map(|p| p.to_string_lossy().to_string());
-
-                        let agent_id = self.agent.name().to_string();
-
-                        let (tool_result_str, tool_result_json, success) =
-                            match crate::runtime::execute_tool_via_core_with_context(
-                                &self.extension_core,
-                                name,
-                                arguments.clone(),
-                                workspace,
-                                Some(agent_id),
-                                Some(session_id.clone()),
-                            )
-                            .await
-                            {
-                                Ok((s, v, ok)) => {
-                                    if ok {
-                                        info!(
-                                            "Tool '{}' executed successfully via ExtensionCore",
-                                            name
-                                        );
-                                    }
-                                    (s, v, ok)
-                                }
-                                Err(e) => {
-                                    warn!("Tool '{}' failed via ExtensionCore: {}", name, e);
-                                    let s = format!("Error: {e}");
-                                    (s.clone(), serde_json::Value::String(s), false)
-                                }
-                            };
-
-                        let duration_ms = start_time.elapsed().as_millis() as u64;
-
-                        // Add to session
-                        {
-                            let mut s = session.write().await;
-                            s.add_tool_result(id, name, &tool_result_str).await?;
-                        }
-
-                        on_event(AgenticEvent::ToolEnd {
-                            run_id: run_id.clone(),
-                            tool_id: id.clone(),
-                            result: tool_result_json,
-                            success,
-                            duration_ms,
-                        });
-
-                        // Add tool result to messages
-                        messages.push(LlmMessage::tool_result(id.clone(), name.clone(), tool_result_str.clone()).with_tool_call_id(id.clone()));
-                    }
+                    let result = tool_executor
+                        .execute(
+                            tool_call,
+                            &self.extension_core,
+                            self.agent.name(),
+                            self.agent.config.workspace.as_ref(),
+                            &session,
+                            &run_id,
+                            &on_event,
+                        )
+                        .await?;
+                    messages.push(result.message);
                 }
 
                 // Continue to next iteration
@@ -1009,32 +660,6 @@ impl AgenticLoop {
         );
 
         defs
-    }
-
-    /// Build system prompt dynamically (ADR-019 Phase 3)
-    ///
-    /// Rebuilds the system prompt from current state, allowing:
-    /// - SYSTEM.md changes to be reflected immediately
-    /// - Tool list updates in prompt
-    /// - Skill/extension changes to be picked up
-    async fn build_system_prompt_fresh(&self) -> String {
-        // Get current tool definitions from ExtensionCore
-        let tool_defs = self.extension_core.list_tool_definitions().await;
-
-        // Use configured workspace if specified
-        let workspace_dir = self
-            .agent
-            .config
-            .workspace
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        SystemPromptBuilder::new(self.agent.name())
-            .with_mode(PromptMode::Full)
-            .with_workspace(&workspace_dir)
-            .with_extension_core(Arc::clone(&self.extension_core))
-            .with_tool_definitions(tool_defs)
-            .build()
     }
 
     /// Get the system prompt
@@ -1149,236 +774,6 @@ impl AgenticLoop {
         self.run_inner(messages, session, on_event, run_id, streaming_config)
             .await
     }
-
-    /// Synthesize a streaming response from a blocking provider.
-    ///
-    /// For providers that don't support SSE streaming, we call `chat_with_tools`
-    /// and emit synthetic `StreamEvent`s so the unified loop can process them
-    /// exactly like real streaming events.
-    async fn synthesize_stream_from_blocking(
-        &self,
-        messages: &[LlmMessage],
-        tools: &[ToolDefinition],
-        options: &ChatOptions,
-    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = anyhow::Result<crate::providers::StreamEvent>> + Send>>>
-    {
-        let response = self.provider.chat_with_tools(messages, tools, options).await?;
-
-        let mut events: Vec<anyhow::Result<crate::providers::StreamEvent>> = Vec::new();
-
-        events.push(Ok(crate::providers::StreamEvent::Start {
-            provider: self.provider.name().to_string(),
-            model: "default".to_string(),
-        }));
-
-        // Emit text content as a single delta
-        let text: String = response
-            .content
-            .iter()
-            .filter_map(|b| {
-                if let ContentBlock::Text { text } = b {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !text.is_empty() {
-            events.push(Ok(crate::providers::StreamEvent::TextDelta {
-                content_index: 0,
-                delta: text,
-            }));
-            events.push(Ok(crate::providers::StreamEvent::TextEnd {
-                content_index: 0,
-                content: String::new(),
-            }));
-        }
-
-        // Emit thinking content
-        let thinking: String = response
-            .content
-            .iter()
-            .filter_map(|b| {
-                if let ContentBlock::Thinking { text, .. } = b {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !thinking.is_empty() {
-            events.push(Ok(crate::providers::StreamEvent::ThinkingDelta {
-                content_index: 0,
-                delta: thinking.clone(),
-            }));
-            events.push(Ok(crate::providers::StreamEvent::ThinkingEnd {
-                content_index: 0,
-                content: thinking,
-            }));
-        }
-
-        // Emit tool calls
-        for (i, tc) in response.tool_calls.iter().enumerate() {
-            if let ContentBlock::ToolCall { .. } = tc {
-                events.push(Ok(crate::providers::StreamEvent::ToolCallEnd {
-                    content_index: i,
-                    tool_call: tc.clone(),
-                }));
-            }
-        }
-
-        // Usage
-        events.push(Ok(crate::providers::StreamEvent::Usage {
-            input: response.usage.input,
-            output: response.usage.output,
-            total: response.usage.total,
-        }));
-
-        // Done
-        events.push(Ok(crate::providers::StreamEvent::Done {
-            stop_reason: response.stop_reason,
-        }));
-
-        Ok(Box::pin(futures::stream::iter(events)))
-    }
-}
-
-/// Build system prompt from agent and tools using `SystemPromptBuilder`
-/// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.) and skills
-///
-/// Skills are loaded via the `ExtensionCore` using the `SkillAdapter`.
-async fn build_system_prompt(
-    agent: &Agent,
-    extension_core: &Arc<crate::extension::ExtensionCore>,
-) -> String {
-    info!(
-        "Building initial system prompt for agent '{}'",
-        agent.name()
-    );
-
-    // Use configured workspace if specified, otherwise use default with team
-    let workspace_dir = agent
-        .config
-        .workspace
-        .clone()
-        .or_else(|| {
-            // Get team from config or default to "default"
-            let team = agent.config.team.as_deref().unwrap_or("default");
-            dirs::data_dir()
-                .map(|d| {
-                    d.join("pekobot")
-                        .join("workspaces")
-                        .join(team)
-                        .join(agent.name())
-                })
-                .or_else(|| {
-                    dirs::home_dir().map(|h| {
-                        h.join(".pekobot")
-                            .join("workspaces")
-                            .join(team)
-                            .join(agent.name())
-                    })
-                })
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    // Load enabled skills from the skills directory using ExtensionCore
-    let path_resolver = crate::common::paths::PathResolver::new();
-    // Skills are now tracked in extensions.enabled alongside other extensions
-    let enabled_skills: Vec<String> = agent
-        .config
-        .extensions
-        .as_ref()
-        .map(|e| e.enabled.clone())
-        .unwrap_or_default();
-
-    // Load and register skills with ExtensionCore
-    let _skills_loaded = load_and_register_skills(
-        agent.name(),
-        &enabled_skills,
-        &path_resolver,
-        extension_core,
-    )
-    .await;
-
-    // Extract custom bootstrap files from agent config if specified
-    let bootstrap_files = agent
-        .config
-        .prompt
-        .as_ref()
-        .and_then(|p| p.system.as_ref())
-        .and_then(|s| s.files.clone());
-
-    SystemPromptBuilder::new(agent.name())
-        .with_mode(PromptMode::Full)
-        .with_workspace(&workspace_dir)
-        .with_extension_core(Arc::clone(extension_core))
-        .with_system_files(bootstrap_files)
-        .build()
-}
-
-/// Load enabled skills for an agent from the skills directory using `ExtensionCore`
-///
-/// This function discovers skills from the filesystem and registers them with the
-/// `ExtensionCore`. Skills are then injected into the system prompt via the
-/// `PromptSystemSection { section: "skills" }` hook point.
-///
-/// # Returns
-/// The number of skills successfully registered with the `ExtensionCore`.
-async fn load_and_register_skills(
-    agent_name: &str,
-    enabled_skills: &[String],
-    path_resolver: &crate::common::paths::PathResolver,
-    extension_core: &Arc<crate::extension::ExtensionCore>,
-) -> usize {
-    // Use PathResolver for consistent path resolution
-    let skills_dir = path_resolver.skills_dir();
-
-    tracing::debug!("Loading skills from: {:?}", skills_dir);
-    tracing::debug!(
-        "Enabled skills for agent {}: {:?}",
-        agent_name,
-        enabled_skills
-    );
-
-    if !skills_dir.exists() {
-        tracing::debug!("Skills directory does not exist: {:?}", skills_dir);
-        return 0;
-    }
-
-    // Discover skills using the SkillAdapter (synchronous)
-    let adapter = SkillAdapter::new();
-    let all_skills = adapter.discover_skills(&skills_dir);
-
-    tracing::debug!("Discovered {} skills from directory", all_skills.len());
-
-    // Filter to only enabled skills
-    let skills_to_register: Vec<_> = all_skills
-        .into_iter()
-        .filter(|s| {
-            let is_enabled = enabled_skills
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(&s.manifest.name));
-            tracing::debug!("Skill '{}' enabled: {}", s.manifest.name, is_enabled);
-            is_enabled
-        })
-        .collect();
-
-    if skills_to_register.is_empty() {
-        tracing::info!("No enabled skills to register for agent {}", agent_name);
-        return 0;
-    }
-
-    // Register skills with ExtensionCore
-    let count = skills_to_register.len();
-    let _ = register_skills_with_core(extension_core, skills_to_register).await;
-
-    tracing::info!(
-        "Registered {} enabled skills for agent {}",
-        count,
-        agent_name
-    );
-    count
 }
 
 #[cfg(test)]

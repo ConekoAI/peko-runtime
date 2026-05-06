@@ -9,6 +9,8 @@ pub mod events;
 pub mod execution;
 pub mod input;
 pub mod agentic_loop;
+pub mod compaction_orchestrator;
+pub mod tool_executor;
 // Note: SimpleSession merged into Session in src/session/unified.rs
 pub mod state;
 pub mod stream_buffer;

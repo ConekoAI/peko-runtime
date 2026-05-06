@@ -1,6 +1,6 @@
 # Issue 019: God Files & Mixed Concerns (High Severity)
 
-**Status:** In Progress — Phase 2 Complete  
+**Status:** In Progress — Phase 3 Complete  
 **Labels:** `refactoring`, `architecture`, `high-severity`, `commands`, `engine`, `daemon`
 
 ## Summary
@@ -15,7 +15,8 @@ Multiple files in the codebase violate the Single Responsibility Principle by mi
 | `src/commands/ext.rs` (target) | ~400 | (Phase 1 complete — extracted to domain modules, remaining is CLI dispatch + rendering) |
 | `src/commands/session.rs` | ~450 (391 non-test) | Session ops, compaction algorithm, history display, path resolution, active-session resolution |
 | `src/commands/session.rs` (target) | ~400 | (Phase 2 complete — extracted to `SessionService`, `session/presentation.rs`, `compaction/cli.rs`; remaining is CLI dispatch + thin rendering) |
-| `src/engine/agentic_loop.rs` | ~1,248 | LLM iteration, tool execution, system prompt construction, skill loading, session management, compaction, event emission, legacy fallbacks |
+| `src/engine/agentic_loop.rs` | ~560 | LLM iteration, tool execution, system prompt construction, skill loading, session management, compaction, event emission, legacy fallbacks |
+| `src/engine/agentic_loop.rs` (target) | ~500 | (Phase 3 complete — extracted `CompactionOrchestrator`, `ToolExecutor`, `SystemPromptService`, `synthetic_stream`; remaining is loop skeleton + stream processing) |
 | `src/daemon/mod.rs` | ~719 | Cron execution engine, job delivery, session janitor, async task janitor, daemon lifecycle, event filtering, agent config loading |
 
 ## Positive Examples (Model to Follow)
@@ -176,7 +177,7 @@ No backward compatibility is required (dev stage).
 
 **Goal:** Reduce `agentic_loop.rs` to ~500 lines (struct definition, public API, loop skeleton). Move all sub-concerns to dedicated modules.
 
-#### 3a. Extract `CompactionOrchestrator`
+#### 3a. Extract `CompactionOrchestrator` ✅ **DONE**
 - **Source:** Compaction integration (lines 298–605) — config parsing, turn-boundary logic, pre/post hook invocation, background compactor coordination, session recording.
 - **Destination:** `src/engine/compaction_orchestrator.rs`
 - **Interface:**
@@ -200,7 +201,7 @@ No backward compatibility is required (dev stage).
   ```
 - **Rationale:** The loop body currently has ~300 lines of compaction logic. An orchestrator encapsulates the entire compaction lifecycle (check → hook → background → record → post-hook) so the loop just calls `orchestrator.check_and_compact(&mut messages, ...).await`.
 
-#### 3b. Extract `SystemPromptService` → `src/prompt/`
+#### 3b. Extract `SystemPromptService` → `src/prompt/` ✅ **DONE**
 - **Source:** `build_system_prompt` (lines 1246–1318), `load_and_register_skills` (lines 1320–1382).
 - **Destination:** `src/prompt/service.rs`
 - **Interface:**
@@ -214,7 +215,7 @@ No backward compatibility is required (dev stage).
   ```
 - **Rationale:** System prompt construction is a prompt-layer concern. `src/prompt/` already has `builder.rs`, `bootstrap.rs`, and `placeholder.rs`. The service belongs here, next to the `SystemPromptBuilder` it uses. The engine should receive a ready-made prompt, not construct it.
 
-#### 3c. Extract `ToolExecutor` → `src/engine/tool_executor.rs`
+#### 3c. Extract `ToolExecutor` → `src/engine/tool_executor.rs` ✅ **DONE**
 - **Source:** Tool execution inline (lines 881–956) — `execute_tool_via_core_with_context`, result parsing, session update, event emission.
 - **Destination:** `src/engine/tool_executor.rs`
 - **Interface:**
@@ -234,7 +235,7 @@ No backward compatibility is required (dev stage).
   ```
 - **Rationale:** Tool execution orchestrates the engine loop, extension core, and session. It is an engine concern (not extension, not session alone). `src/engine/` is the right place.
 
-#### 3d. Move `synthesize_stream_from_blocking` → `src/providers/`
+#### 3d. Move `synthesize_stream_from_blocking` → `src/providers/` ✅ **DONE**
 - **Source:** Lines 1153–1243.
 - **Destination:** `src/providers/synthetic_stream.rs`
 - **Interface:**
@@ -246,16 +247,18 @@ No backward compatibility is required (dev stage).
   ```
 - **Rationale:** Converting a blocking response to a stream is a provider-layer adapter. It operates on `ChatResponse` and `StreamEvent` (both provider types). `src/providers/` is the right place.
 
-#### 3e. Remove Debug Marker File I/O
+#### 3e. Remove Debug Marker File I/O ✅ **DONE**
 - **Source:** Lines 353–365 — hard-coded Windows path `C:\Users\Megad\AppData\Roaming\pekobot\compaction_debug.marker`.
 - **Action:** Delete. If e2e tests need this, inject a `CompactionDebugMarker` trait into `CompactionOrchestrator` for test builds only.
 
-#### 3f. Post-Phase 3 `agentic_loop.rs` structure
+#### 3f. Post-Phase 3 `agentic_loop.rs` structure ✅ **DONE**
 ```rust
 // ~100 lines: struct AgenticLoop + impl (new, with_max_iterations, public run methods)
-// ~300 lines: run_inner skeleton (iteration loop, stream processing, tool call dispatch, final answer)
-// ~100 lines: build_tool_definitions, get_system_prompt helpers
+// ~350 lines: run_inner skeleton (iteration loop, stream processing, tool call dispatch, final answer)
+// ~100 lines: build_tool_definitions, run_streaming helper
 ```
+- **Actual:** Reduced from ~1,248 to ~560 non-test lines (55% reduction). All specified extractions complete. Compaction logic in loop body is ~12 lines (delegated to `CompactionOrchestrator`). Tool execution is a 3-line loop (delegated to `ToolExecutor`). System prompt construction is a 1-liner (delegated to `SystemPromptService`).
+- **Commit:** TBD
 
 ---
 
@@ -358,10 +361,10 @@ src/
 - [x] Phase 2: `src/commands/session.rs` — extracted active-session resolution to `SessionService`, compaction CLI logic to `compaction/cli.rs`, history presentation to `session/presentation.rs`. Eliminated direct `MetadataController`/`SessionStorage` usage. Reduced from ~1,026 to ~450 lines (391 non-test). All extracted modules have unit tests.
 - [ ] `src/commands/ext.rs` ≤ 400 lines of non-test code.
 - [x] `src/commands/session.rs` ≤ 400 lines of non-test code.
-- [ ] `src/engine/agentic_loop.rs` ≤ 600 lines of non-test code.
+- [x] `src/engine/agentic_loop.rs` ≤ 600 lines of non-test code.
 - [ ] `src/daemon/mod.rs` ≤ 300 lines of non-test code.
 - [x] No command file directly instantiates `MetadataController`, `SessionStorage`, or `ExtensionCore`.
-- [ ] `agentic_loop.rs` compaction logic is <30 lines in the loop body (delegated to `CompactionOrchestrator`).
+- [x] `agentic_loop.rs` compaction logic is <30 lines in the loop body (delegated to `CompactionOrchestrator`).
 - [ ] `daemon/mod.rs` cron logic is extracted to `daemon::cron_engine`.
 - [ ] `daemon/mod.rs` does not duplicate `session::maintenance.rs` logic.
 - [x] All extracted code lives in its domain module (`extension/` for extension concerns, `session/` for session concerns, `prompt/` for prompt concerns, `ipc/` for IPC concerns).

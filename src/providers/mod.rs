@@ -14,6 +14,7 @@
 pub mod adapters;
 pub mod core;
 pub mod registry;
+pub mod synthetic_stream;
 pub mod transport;
 pub mod types;
 
