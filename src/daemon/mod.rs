@@ -603,14 +603,7 @@ impl Daemon {
 
         if let Some(service) = &self.agent_service {
             // Resolve agent: use job's agent_id, or try to find any available agent
-            let agent_id = if let Some(ref id) = job.agent_id {
-                id.clone()
-            } else {
-                match self.resolve_default_agent().await {
-                    Some(id) => id,
-                    None => "default".to_string(),
-                }
-            };
+            let agent_id = job.agent_id.clone().unwrap_or_else(|| "default".to_string());
 
             let request = MessageRequest::new(&agent_id, message.clone()).with_timeout(300);
 
@@ -625,21 +618,6 @@ impl Daemon {
         } else {
             warn!("No agent service available for cron job execution");
             Ok(("failed".to_string(), Some("Agent service not available".to_string())))
-        }
-    }
-
-    /// Resolve a default agent when job.agent_id is not set.
-    /// Tries to find the first available agent from the config service.
-    async fn resolve_default_agent(&self) -> Option<String> {
-        // Try to get agent service and list available agents
-        if let Some(service) = &self.agent_service {
-            // The service has a config_service internally but it's not exposed.
-            // For now, we rely on the "default" fallback which the
-            // StatelessAgentService will attempt to resolve.
-            // If the user has only one agent, naming it "default" works.
-            None
-        } else {
-            None
         }
     }
 
@@ -668,48 +646,12 @@ impl Daemon {
     async fn execute_isolated_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         info!("🔧 Isolated job: '{}'", job.message);
 
-        // Use agent service if available
+        // Use agent service if available; otherwise fall back to main job path
         if self.agent_service.is_some() {
             return self.run_job_with_agent_service(job).await;
         }
 
-        // Fallback to stub behavior
-        if self.agent_service.is_none() {
-            warn!("No agent service available for isolated job execution");
-        } else if job.agent_id.is_none() {
-            warn!("Isolated job has no agent_id, using stub execution");
-        }
-
-        // Check if agent is specified
-        let agent_id = if let Some(id) = &job.agent_id {
-            id
-        } else {
-            let msg = "Isolated job requires agent_id".to_string();
-            warn!("   {}", msg);
-            return Ok(("failed".to_string(), Some(msg)));
-        };
-
-        // Load agent config
-        let agent_config = match self.load_agent_config(agent_id).await {
-            Ok(config) => config,
-            Err(e) => {
-                let msg = format!("Failed to load agent config for {agent_id}: {e}");
-                warn!("   {}", msg);
-                return Ok(("failed".to_string(), Some(msg)));
-            }
-        };
-
-        let output = format!(
-            "[cron:{}] Isolated execution prepared for agent '{}':\n{}\n\nNote: Full isolated execution requires AgentManager integration",
-            job.name, agent_config.name, job.message
-        );
-
-        info!(
-            "   Isolated execution prepared for agent: {}",
-            agent_config.name
-        );
-
-        Ok(("success".to_string(), Some(output)))
+        self.execute_main_job(job).await
     }
 
     /// Handle delivery of job results

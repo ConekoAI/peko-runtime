@@ -723,10 +723,6 @@ impl AgenticLoop {
                                         AgenticEvent::AssistantText { text, .. } => {
                                             accumulated_text.push_str(text);
                                         }
-                                        #[allow(deprecated)]
-                                        AgenticEvent::Assistant { text, .. } => {
-                                            accumulated_text.push_str(text);
-                                        }
                                         AgenticEvent::Thinking { text, is_delta, .. } => {
                                             if *is_delta {
                                                 thinking_text.push_str(text);
@@ -785,10 +781,6 @@ impl AgenticLoop {
                 // Also track text accumulation from final events (e.g., AssistantText in FinalOnly mode)
                 match &event {
                     AgenticEvent::AssistantText { text, .. } => {
-                        accumulated_text.push_str(text);
-                    }
-                    #[allow(deprecated)]
-                    AgenticEvent::Assistant { text, .. } => {
                         accumulated_text.push_str(text);
                     }
                     _ => {}
@@ -1049,49 +1041,6 @@ impl AgenticLoop {
     #[must_use]
     pub fn system_prompt(&self) -> &str {
         &self.system_prompt
-    }
-
-    /// Fallback for providers without native tool support
-    #[allow(dead_code)]
-    async fn fallback_chat_with_tools(
-        &self,
-        messages: &[LlmMessage],
-        _prompt: &str,
-    ) -> Result<crate::providers::ChatResponse> {
-        // Convert messages to prompt
-        let prompt = messages_to_prompt(messages);
-
-        // Use legacy completion
-        let response = self.provider.complete(&prompt).await?;
-
-        // Parse response as JSON with content blocks (legacy format)
-        let content_blocks = parse_legacy_response(&response);
-
-        // Extract tool calls
-        let mut tool_calls = Vec::new();
-        let mut text_content = Vec::new();
-
-        for block in &content_blocks {
-            match block {
-                ContentBlock::ToolCall { .. } => tool_calls.push(block.clone()),
-                _ => text_content.push(block.clone()),
-            }
-        }
-
-        let stop_reason = if tool_calls.is_empty() {
-            StopReason::Stop
-        } else {
-            StopReason::ToolUse
-        };
-
-        Ok(crate::providers::ChatResponse {
-            content: text_content,
-            tool_calls,
-            stop_reason,
-            usage: TokenUsage::default(),
-            provider: self.provider.name().to_string(),
-            model: "default".to_string(),
-        })
     }
 
     /// Run the agent with streaming support
@@ -1430,88 +1379,6 @@ async fn load_and_register_skills(
         agent_name
     );
     count
-}
-
-/// Convert chat messages to prompt string (fallback)
-#[allow(dead_code)]
-fn messages_to_prompt(messages: &[LlmMessage]) -> String {
-    messages
-        .iter()
-        .map(|m| {
-            let role = match m.role {
-                MessageRole::System => "System",
-                MessageRole::User => "User",
-                MessageRole::Assistant => "Assistant",
-                MessageRole::Tool => "Tool",
-            };
-            let content = m
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect::<String>();
-            format!("{role}: {content}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Parse legacy JSON response format (fallback)
-#[allow(dead_code)]
-fn parse_legacy_response(response: &str) -> Vec<ContentBlock> {
-    // Try to parse as JSON with content field
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(response.trim()) {
-        if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
-            let mut blocks = Vec::new();
-            for item in content {
-                if let Some(block) = parse_content_block(item) {
-                    blocks.push(block);
-                }
-            }
-            if !blocks.is_empty() {
-                return blocks;
-            }
-        }
-    }
-
-    // Fallback: treat as plain text
-    vec![ContentBlock::Text {
-        text: response.to_string(),
-    }]
-}
-
-/// Parse a single content block from JSON
-#[allow(dead_code)]
-fn parse_content_block(value: &serde_json::Value) -> Option<ContentBlock> {
-    let block_type = value.get("type")?.as_str()?;
-
-    match block_type {
-        "text" => {
-            let text = value.get("text")?.as_str()?.to_string();
-            Some(ContentBlock::Text { text })
-        }
-        "thinking" => {
-            let text = value.get("thinking")?.as_str()?.to_string();
-            let signature = value
-                .get("signature")
-                .and_then(|s| s.as_str())
-                .map(std::string::ToString::to_string);
-            Some(ContentBlock::Thinking { text, signature })
-        }
-        "tool_call" => {
-            let id = value.get("id")?.as_str()?.to_string();
-            let name = value.get("name")?.as_str()?.to_string();
-            let arguments = value.get("arguments")?.clone();
-            Some(ContentBlock::ToolCall {
-                id,
-                name,
-                arguments,
-            })
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]

@@ -84,35 +84,6 @@ pub struct TaskSummary {
     pub duration_ms: u64,
 }
 
-/// Simple task executor - synchronous execution only
-#[derive(Debug, Clone, Default)]
-pub struct TaskExecutor;
-
-impl TaskExecutor {
-    /// Create a new task executor
-    #[must_use]
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Execute a tool synchronously with timeout
-    pub async fn execute<F, Fut, T>(
-        &self,
-        name: &str,
-        f: F,
-        timeout: std::time::Duration,
-    ) -> anyhow::Result<T>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = anyhow::Result<T>>,
-    {
-        match tokio::time::timeout(timeout, f()).await {
-            Ok(result) => result,
-            Err(_) => Err(anyhow::anyhow!("Task '{name}' timed out after {timeout:?}")),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,35 +100,5 @@ mod tests {
     fn test_execution_mode() {
         let mode = ExecutionMode::with_timeout(60);
         assert_eq!(mode.timeout.as_secs(), 60);
-    }
-
-    #[tokio::test]
-    async fn test_executor_success() {
-        let executor = TaskExecutor::new();
-        let result = executor
-            .execute(
-                "test",
-                || async { Ok(42) },
-                std::time::Duration::from_secs(5),
-            )
-            .await;
-        assert_eq!(result.unwrap(), 42);
-    }
-
-    #[tokio::test]
-    async fn test_executor_timeout() {
-        let executor = TaskExecutor::new();
-        let result = executor
-            .execute(
-                "slow",
-                || async {
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    Ok(())
-                },
-                std::time::Duration::from_millis(100),
-            )
-            .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("timed out"));
     }
 }

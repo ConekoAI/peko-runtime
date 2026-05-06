@@ -129,10 +129,6 @@ impl EventProcessor {
         let mut actions = Vec::new();
 
         match event {
-            #[allow(deprecated)]
-            AgenticEvent::Assistant { text, is_final, .. } => {
-                self.process_legacy_assistant(text, *is_final, &mut actions);
-            }
             AgenticEvent::AssistantText {
                 text,
                 is_interstitial,
@@ -267,40 +263,6 @@ impl EventProcessor {
         }
     }
 
-    /// Process legacy Assistant event (for backward compatibility)
-    fn process_legacy_assistant(
-        &mut self,
-        text: &str,
-        is_final: bool,
-        actions: &mut Vec<ChannelAction>,
-    ) {
-        if text.is_empty() {
-            return;
-        }
-
-        // Start turn if needed
-        if !self.state.has_started_turn {
-            actions.push(ChannelAction::StartTurn(self.config.agent_name.clone()));
-            self.state.has_started_turn = true;
-        }
-
-        // Legacy semantics: is_final=false means tool calls are coming (interstitial)
-        let is_interstitial = !is_final;
-
-        if is_interstitial {
-            actions.push(ChannelAction::Print(text.to_string()));
-            actions.push(ChannelAction::Flush);
-            self.state.is_interstitial = true;
-            self.state.last_was_interstitial = true;
-        } else {
-            actions.push(ChannelAction::Println(text.to_string()));
-            actions.push(ChannelAction::EndTurn);
-            self.state.has_started_turn = false;
-            self.state.is_interstitial = false;
-            self.state.last_was_interstitial = false;
-        }
-    }
-
     /// Process thinking content
     fn process_thinking(&mut self, text: &str, actions: &mut Vec<ChannelAction>) {
         if text.is_empty() {
@@ -415,28 +377,4 @@ mod tests {
         assert!(matches!(actions[0], ChannelAction::EndTurn));
     }
 
-    #[test]
-    fn test_legacy_assistant_backward_compat() {
-        let mut processor = EventProcessor::for_agent("testagent");
-
-        // Legacy: is_final=false means interstitial
-        #[allow(deprecated)]
-        let actions = processor.process(&AgenticEvent::Assistant {
-            run_id: "run_1".to_string(),
-            text: "Working on it...".to_string(),
-            is_delta: false,
-            is_final: false,
-        });
-        assert!(matches!(actions[1], ChannelAction::Print(_)));
-
-        // Legacy: is_final=true means final answer
-        #[allow(deprecated)]
-        let actions = processor.process(&AgenticEvent::Assistant {
-            run_id: "run_1".to_string(),
-            text: "Done!".to_string(),
-            is_delta: false,
-            is_final: true,
-        });
-        assert!(matches!(actions[0], ChannelAction::Println(_)));
-    }
 }

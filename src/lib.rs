@@ -75,9 +75,6 @@ pub mod session;
 /// Team runtime (multi-agent teams, event bus, shared services)
 pub mod team;
 
-/// File watcher for development mode
-pub mod watcher;
-
 // ============================================================================
 // External Interfaces
 // ============================================================================

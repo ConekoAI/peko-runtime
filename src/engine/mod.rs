@@ -19,8 +19,8 @@ pub mod tool_stream;
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use stream_types::{ChannelOutput, EventStream, StreamingConfig, default_process_stream};
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
-pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
-pub use execution::{ExecutionMode, TaskExecutor, TaskId, TaskStatus, TaskSummary};
+pub use events::{AgenticEvent, LifecyclePhase};
+pub use execution::{ExecutionMode, TaskId, TaskStatus, TaskSummary};
 pub use input::{A2AMessageType, AgentInput, HookType, InputContext};
 pub use agentic_loop::{AgenticLoop, AgenticResult, ToolCall};
 // SimpleSession now unified - use crate::session::Session

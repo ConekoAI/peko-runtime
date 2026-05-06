@@ -24,8 +24,6 @@ pub use stateless_service::{
 pub mod lifecycle;
 pub use lifecycle::{ExecutionRecord, LifecycleManager};
 
-pub mod registry;
-
 // Manager submodules
 pub mod context;
 pub mod types;

@@ -55,27 +55,6 @@ pub enum AgenticEvent {
         error: Option<String>,
     },
 
-    /// Assistant text delta or block (DEPRECATED: use `AssistantText` instead)
-    ///
-    /// In streaming mode, text arrives as deltas.
-    /// In block mode, text arrives as complete blocks.
-    ///
-    /// # Deprecation Note
-    /// This variant is deprecated in favor of `AssistantText` which has clearer semantics.
-    /// The `is_delta` and `is_final` fields were confusing - they mixed presentation
-    /// concerns with content semantics.
-    #[deprecated(since = "0.1.0", note = "Use AssistantText instead")]
-    Assistant {
-        /// Run identifier
-        run_id: RunId,
-        /// Text content (delta or complete)
-        text: String,
-        /// True if this is a delta (incremental)
-        is_delta: bool,
-        /// True if this is the final chunk
-        is_final: bool,
-    },
-
     /// Assistant text content with clear semantics
     ///
     /// Represents a block of text from the assistant. Unlike the deprecated
@@ -256,8 +235,6 @@ impl AgenticEvent {
     pub fn run_id(&self) -> &str {
         match self {
             AgenticEvent::Lifecycle { run_id, .. } => run_id,
-            #[allow(deprecated)]
-            AgenticEvent::Assistant { run_id, .. } => run_id,
             AgenticEvent::AssistantText { run_id, .. } => run_id,
             AgenticEvent::Thinking { run_id, .. } => run_id,
             AgenticEvent::ToolCallDelta { run_id, .. } => run_id,
@@ -297,63 +274,6 @@ impl AgenticEvent {
     }
 }
 
-/// Event source trait for components that emit events
-#[async_trait::async_trait]
-pub trait EventSource: Send + Sync {
-    /// Subscribe to events from this source
-    ///
-    /// Returns a channel receiver for events.
-    fn subscribe(&self) -> tokio::sync::mpsc::Receiver<AgenticEvent>;
-
-    /// Emit an event to all subscribers
-    async fn emit(&self, event: AgenticEvent);
-}
-
-/// Event router for distributing events to multiple consumers
-pub struct EventRouter {
-    subscribers: Vec<tokio::sync::mpsc::Sender<AgenticEvent>>,
-}
-
-impl EventRouter {
-    /// Create a new event router
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            subscribers: Vec::new(),
-        }
-    }
-
-    /// Add a subscriber
-    pub fn subscribe(&mut self) -> tokio::sync::mpsc::Receiver<AgenticEvent> {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
-        self.subscribers.push(tx);
-        rx
-    }
-
-    /// Emit an event to all subscribers
-    pub async fn emit(&self, event: AgenticEvent) {
-        for subscriber in &self.subscribers {
-            // Don't fail if a subscriber is closed
-            let _ = subscriber.send(event.clone()).await;
-        }
-    }
-
-    /// Emit an event, logging errors
-    pub async fn emit_with_log(&self, event: AgenticEvent) {
-        for subscriber in &self.subscribers {
-            if let Err(e) = subscriber.send(event.clone()).await {
-                tracing::warn!("Failed to send event to subscriber: {}", e);
-            }
-        }
-    }
-}
-
-impl Default for EventRouter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,28 +294,6 @@ mod tests {
         };
         assert!(end_event.is_end());
         assert!(!end_event.is_error());
-    }
-
-    #[tokio::test]
-    async fn test_event_router() {
-        let mut router = EventRouter::new();
-        let mut rx = router.subscribe();
-
-        let event = AgenticEvent::Status {
-            run_id: "test-1".to_string(),
-            message: "Thinking...".to_string(),
-            typing: true,
-        };
-
-        router.emit(event.clone()).await;
-
-        let received = rx.recv().await.unwrap();
-        match received {
-            AgenticEvent::Status { message, .. } => {
-                assert_eq!(message, "Thinking...");
-            }
-            _ => panic!("Expected Status event"),
-        }
     }
 
     #[test]

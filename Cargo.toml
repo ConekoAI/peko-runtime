@@ -85,9 +85,6 @@ hkdf = "0.12"
 keyring = "2.3"
 secrecy = "0.10"
 
-# File system watching (orchestration layer)
-notify = "6.1"
-
 # Image building
 walkdir = "2.5"
 tokio-stream = "0.1"
