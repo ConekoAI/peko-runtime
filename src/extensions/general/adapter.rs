@@ -488,26 +488,6 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
             }
         }
 
-        // Check for manifest.json
-        let manifest_path = path.join("manifest.json");
-        if manifest_path.exists() {
-            match parsing::parse_json_file::<serde_json::Value>(&manifest_path).await {
-                Ok(json) => match extract_hooks_from_json(&json) {
-                    Ok(hooks) => match build_manifest_from_json(&json, &path) {
-                        Ok(manifest) => {
-                            discovered.push(DiscoveredGeneralExtension { manifest, hooks });
-                        }
-                        Err(e) => warn!("Failed to build manifest: {}", e),
-                    },
-                    Err(e) => warn!("Failed to extract hooks: {}", e),
-                },
-                Err(e) => warn!(
-                    "Failed to read manifest at {}: {}",
-                    manifest_path.display(),
-                    e
-                ),
-            }
-        }
     }
 
     info!("Discovered {} general extensions", discovered.len());

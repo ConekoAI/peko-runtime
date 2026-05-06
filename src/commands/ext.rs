@@ -1250,10 +1250,9 @@ async fn handle_config(
 
 /// Handle validate command
 ///
-/// Uses the ADR-024 three-tier detection hierarchy:
+/// Uses the ADR-024 two-tier detection hierarchy:
 /// Tier 1: Ecosystem standards (SKILL.md, server.json)
 /// Tier 2: Unified manifest (manifest.yaml with `extension_type`)
-/// Tier 3: Legacy fallback (manifest.json, config.toml, untyped manifest.yaml)
 async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
     use crate::extension::adapters::extract_extension_type_from_yaml;
     use crate::extensions::general::discover_general_extensions;
@@ -1397,7 +1396,7 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
                 return Ok(());
             }
             Ok(None) => {
-                // manifest.yaml exists but has no extension_type — fall through to Tier 3
+                // manifest.yaml exists but has no extension_type
             }
             Err(e) => {
                 warnings.push(format!("Failed to parse manifest.yaml: {}", e));
@@ -1405,86 +1404,12 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
         }
     }
 
-    // ─── TIER 3: Legacy Fallback ─────────────────────────────────────────────
-
-    if path.join("manifest.json").exists() {
-        warnings.push(
-            "Legacy manifest.json detected. Use manifest.yaml with extension_type: 'universal-tool' instead.".to_string()
-        );
-        if verbose {
-            println!("✓ Detected as: universal tool extension (manifest.json) [Tier 3 legacy fallback]");
-        }
-
-        let adapter = UniversalToolAdapter::new();
-        let tools = adapter.discover_tools(&path).await;
-        if tools.is_empty() {
-            errors.push("No valid tools found in directory".to_string());
-        } else if verbose {
-            for tool in &tools {
-                println!(
-                    "  ✓ Tool: {} - {}",
-                    tool.manifest.name, tool.manifest.description
-                );
-            }
-        }
-
-        print_summary(&errors, &warnings)?;
-        return Ok(());
-    }
-
-    if path.join("config.toml").exists() || path.join("config.json").exists() {
-        warnings.push(
-            "Legacy config.toml/config.json detected. Use manifest.yaml with extension_type: 'mcp' or ship a server.json for bare MCP servers instead.".to_string()
-        );
-        if verbose {
-            println!("✓ Detected as: MCP server extension (config.toml/config.json) [Tier 3 legacy fallback]");
-        }
-
-        let adapter = McpAdapter::with_default_manager();
-        let servers = adapter.discover_servers(&path).await;
-        if servers.is_empty() {
-            errors.push("No valid MCP servers found in directory".to_string());
-        } else if verbose {
-            for server in &servers {
-                println!("  ✓ Server: {}", server.manifest.name);
-            }
-        }
-
-        print_summary(&errors, &warnings)?;
-        return Ok(());
-    }
-
-    if manifest_yaml.exists() {
-        warnings.push(
-            "Untyped manifest.yaml detected. Add extension_type: 'general' (or the appropriate type) to silence this warning.".to_string()
-        );
-        if verbose {
-            println!("✓ Detected as: general extension (untyped manifest.yaml) [Tier 3 legacy fallback]");
-        }
-
-        let extensions = discover_general_extensions(&path).await?;
-        if extensions.is_empty() {
-            errors.push("No valid general extensions found in directory".to_string());
-        } else if verbose {
-            for ext in &extensions {
-                println!(
-                    "  ✓ Extension: {} - {}",
-                    ext.manifest.name, ext.manifest.description
-                );
-            }
-        }
-
-        print_summary(&errors, &warnings)?;
-        return Ok(());
-    }
-
     // Nothing detected
     anyhow::bail!(
         "Could not detect extension type. Expected one of:\n\
          - SKILL.md (skill extension) [Tier 1]\n\
          - server.json (bare MCP server) [Tier 1]\n\
-         - manifest.yaml with extension_type (unified manifest) [Tier 2]\n\
-         - manifest.json / config.toml / config.json (legacy fallback) [Tier 3]"
+         - manifest.yaml with extension_type (unified manifest) [Tier 2]"
     );
 }
 

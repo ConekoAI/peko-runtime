@@ -6,8 +6,9 @@
 //!
 //! # MCP Server Format
 //!
-//! MCP servers are configured via config files (TOML/JSON) or discovered
-//! from the `mcp_servers`/ directory:
+//! MCP servers are configured via `server.json` (Tier 1) or `manifest.yaml`
+//! with `extension_type: "mcp"` (Tier 2), or discovered from the
+//! `mcp_servers/` directory:
 //! ```toml
 //! [[servers]]
 //! name = "filesystem"
@@ -131,13 +132,13 @@ impl McpAdapter {
                 continue;
             }
 
-            let config_path = if path.is_dir() {
-                let toml_path = path.join("config.toml");
-                let json_path = path.join("config.json");
-                if toml_path.exists() {
-                    toml_path
-                } else if json_path.exists() {
-                    json_path
+            let manifest_path = if path.is_dir() {
+                let server_json = path.join("server.json");
+                let manifest_yaml = path.join("manifest.yaml");
+                if server_json.exists() {
+                    server_json
+                } else if manifest_yaml.exists() {
+                    manifest_yaml
                 } else {
                     continue;
                 }
@@ -145,70 +146,33 @@ impl McpAdapter {
                 path.clone()
             };
 
-            if let Some(ext) = config_path.extension() {
-                if ext == "toml" || ext == "json" {
-                    match self.parse_server_config(&config_path).await {
-                        Ok(manifest) => {
-                            servers.push(DiscoveredMcpServer {
-                                manifest,
-                                config_path,
-                                server_dir: if path.is_dir() {
-                                    path.clone()
-                                } else {
-                                    path.parent().unwrap_or(Path::new(".")).to_path_buf()
-                                },
-                            });
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse MCP config {:?}: {}", config_path, e);
-                        }
-                    }
+            let content = match tokio::fs::read_to_string(&manifest_path).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to read MCP manifest {:?}: {}", manifest_path, e);
+                    continue;
+                }
+            };
+
+            match self.parse_manifest(&manifest_path, &content) {
+                Ok(manifest) => {
+                    servers.push(DiscoveredMcpServer {
+                        manifest,
+                        config_path: manifest_path.clone(),
+                        server_dir: if path.is_dir() {
+                            path.clone()
+                        } else {
+                            path.parent().unwrap_or(Path::new(".")).to_path_buf()
+                        },
+                    });
+                }
+                Err(e) => {
+                    warn!("Failed to parse MCP manifest {:?}: {}", manifest_path, e);
                 }
             }
         }
 
         servers
-    }
-
-    /// Parse a server config file into an extension manifest
-    async fn parse_server_config(&self, path: &Path) -> Result<ExtensionManifest> {
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read config {path:?}"))?;
-
-        let server_configs: Vec<crate::extensions::mcp::protocol::config::McpServerConfig> =
-            if path.extension().is_some_and(|e| e == "toml") {
-                let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(&content)
-                    .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
-                config.servers
-            } else {
-                let config: crate::extensions::mcp::protocol::config::McpConfig = serde_json::from_str(&content)
-                    .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
-                config.servers
-            };
-
-        let server_config = server_configs
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No server configurations found"))?;
-
-        let mut manifest = ExtensionManifest::new(
-            &server_config.name,
-            MCP_EXTENSION_TYPE,
-            &server_config.name,
-            format!("MCP server: {}", server_config.name),
-            "1.0.0",
-            path.parent().unwrap_or(Path::new(".")).to_path_buf(),
-        );
-
-        manifest.set("config_path", path.to_string_lossy().to_string());
-        manifest.set("transport", format!("{:?}", server_config.transport));
-        manifest.set("command", server_config.command.unwrap_or_default());
-        manifest.set("args", server_config.args);
-        manifest.set("auto_start", server_config.auto_start);
-        manifest.set("endpoint", server_config.endpoint.unwrap_or_default());
-
-        Ok(manifest)
     }
 
     /// Load server config from a file
@@ -557,53 +521,6 @@ impl McpAdapter {
         Ok(manifest)
     }
 
-    /// Parse legacy config.toml / config.json (Tier 3 fallback).
-    fn parse_legacy_config(
-        &self,
-        path: &Path,
-        content: &str,
-    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
-        use anyhow::Context;
-
-        let server_configs: Vec<crate::extensions::mcp::protocol::config::McpServerConfig> =
-            if path.extension().is_some_and(|e| e == "toml") {
-                let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(content)
-                    .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
-                config.servers
-            } else {
-                let config: crate::extensions::mcp::protocol::config::McpConfig = serde_json::from_str(content)
-                    .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
-                config.servers
-            };
-
-        let server_config = server_configs
-            .into_iter()
-            .next()
-            .context("No server configurations found in config file")?;
-
-        let mut manifest = ExtensionManifest::new(
-            &server_config.name,
-            MCP_EXTENSION_TYPE,
-            &server_config.name,
-            format!("MCP server: {}", server_config.name),
-            "1.0.0",
-            path.parent().unwrap_or(Path::new(".")).to_path_buf(),
-        );
-
-        manifest.set("config_path", path.to_string_lossy().to_string());
-        manifest.set("transport", format!("{:?}", server_config.transport));
-        manifest.set("command", server_config.command.unwrap_or_default());
-
-        if !server_config.reserved_parameters.is_empty() {
-            manifest.set(
-                "reserved_parameters",
-                serde_json::to_value(&server_config.reserved_parameters)?,
-            );
-        }
-
-        Ok(manifest)
-    }
-
     /// Create Tool trait instances for all tools provided by an MCP server
     ///
     /// This is a **separate concern** from the Extension registry — it creates
@@ -658,11 +575,10 @@ impl ExtensionTypeAdapter for McpAdapter {
     }
 
     fn manifest_format(&self) -> ManifestFormat {
-        // ADR-024: MCP adapter supports three input paths:
+        // ADR-024: MCP adapter supports two input paths:
         // Tier 1: server.json (MCP Registry standard)
         // Tier 2: manifest.yaml with extension_type: "mcp"
-        // Tier 3: config.toml / config.json (legacy fallback)
-        // We use Custom detection because the adapter must handle all three.
+        // We use Custom detection because the adapter handles both.
         ManifestFormat::Custom {
             detector: |_path| {
                 // Detection is now handled centrally by ExtensionManager's
@@ -681,11 +597,8 @@ impl ExtensionTypeAdapter for McpAdapter {
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if file_name == "server.json" {
             self.parse_server_json(path, content)
-        } else if file_name == "manifest.yaml" {
-            self.parse_unified_yaml_manifest(path, content)
         } else {
-            // Legacy config.toml / config.json
-            self.parse_legacy_config(path, content)
+            self.parse_unified_yaml_manifest(path, content)
         }
     }
 
@@ -748,18 +661,8 @@ impl ExtensionTypeAdapter for McpAdapter {
         core: &crate::extension::core::ExtensionCore,
         manifest: &ExtensionManifest,
     ) -> Result<usize> {
-        // Try legacy config_path first (Tier 3 fallback)
-        if let Some(config_path) = manifest.get("config_path").and_then(|v| v.as_str()) {
-            if let Err(e) = self.ensure_server_config(config_path).await {
-                warn!(
-                    server_name = %manifest.name,
-                    error = %e,
-                    "Failed to ensure MCP server config from config_path"
-                );
-            }
-        }
         // Try unified manifest mcp_servers (Tier 2)
-        else if manifest.get("mcp_servers").is_some() {
+        if manifest.get("mcp_servers").is_some() {
             if let Err(e) = self.ensure_server_config_from_manifest(manifest).await {
                 warn!(
                     server_name = %manifest.name,
@@ -1231,18 +1134,19 @@ mod tests {
     fn create_test_server_config(dir: &Path, name: &str) -> PathBuf {
         let server_dir = dir.join(name);
         std::fs::create_dir_all(&server_dir).unwrap();
-        let config_path = server_dir.join("config.toml");
-        let config = format!(
-            r#"[[server]]
-name = "{name}"
-transport = "stdio"
-command = "echo"
-args = ["test"]
-auto_start = true
-"#
-        );
-        std::fs::write(&config_path, config).unwrap();
-        config_path
+        let server_json_path = server_dir.join("server.json");
+        let manifest = serde_json::json!({
+            "name": name,
+            "version": "1.0.0",
+            "description": format!("MCP server: {name}"),
+            "transport": {
+                "type": "stdio",
+                "command": "echo",
+                "args": ["test"]
+            }
+        });
+        std::fs::write(&server_json_path, manifest.to_string()).unwrap();
+        server_json_path
     }
 
     #[test]
@@ -1269,12 +1173,13 @@ auto_start = true
     }
 
     #[tokio::test]
-    async fn test_parse_server_config() {
+    async fn test_parse_server_json() {
         let temp = TempDir::new().unwrap();
         let config_path = create_test_server_config(temp.path(), "filesystem");
 
         let adapter = McpAdapter::with_default_manager();
-        let manifest = adapter.parse_server_config(&config_path).await.unwrap();
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let manifest = adapter.parse_manifest(&config_path, &content).unwrap();
 
         assert_eq!(manifest.name, "filesystem");
         assert_eq!(manifest.extension_type, "mcp");

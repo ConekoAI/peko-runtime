@@ -355,18 +355,6 @@ impl Compactor {
         registry::should_auto_compact(estimated_tokens, context_window, &self.config)
     }
 
-    /// Legacy check using a hard-coded context window (deprecated).
-    /// Prefer `should_compact(estimated_tokens, context_window)`.
-    #[must_use]
-    pub fn should_compact_legacy(&self, estimated_tokens: usize) -> bool {
-        if !self.config.enabled {
-            return false;
-        }
-        let threshold = 128_000usize
-            .saturating_sub(self.config.reserve_tokens + self.config.keep_recent_tokens);
-        estimated_tokens >= threshold
-    }
-
     /// Select messages to compact vs keep, respecting turn boundaries.
     ///
     /// Never cuts at tool results — they must stay paired with their tool call.

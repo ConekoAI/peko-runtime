@@ -44,7 +44,7 @@ pub mod mcp;
 /// Skill extension adapter — SKILL.md-based capabilities with YAML frontmatter.
 pub mod skill;
 
-/// Universal tool extension — external executable tools with manifest.json.
+/// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
 
 // ============================================================================

@@ -1,22 +1,20 @@
 //! Universal Tool Adapter for the Extension system
 //!
-//! This adapter integrates Universal Tools (external tools with manifest.json)
-//! into the unified Extension Architecture.
+//! This adapter integrates Universal Tools into the unified Extension
+//! Architecture.
 //!
 //! # Universal Tool Format
 //!
-//! Universal tools are external executables with a manifest.json:
-//! ```json
-//! {
-//!   "name": "calculator",
-//!   "description": "Perform calculations",
-//!   "parameters": {
-//!     "type": "object",
-//!     "properties": {
-//!       "expression": { "type": "string" }
-//!     }
-//!   }
-//! }
+//! Universal tools are external executables with a `manifest.yaml`:
+//! ```yaml
+//! name: calculator
+//! extension_type: universal-tool
+//! description: Perform calculations
+//! parameters:
+//!   type: object
+//!   properties:
+//!     expression:
+//!       type: string
 //! ```
 //!
 //! # Registration
@@ -85,10 +83,10 @@ impl UniversalToolAdapter {
                 continue;
             }
 
-            // Look for manifest.json
-            let manifest_path = tool_path.join("manifest.json");
+            // Look for manifest.yaml
+            let manifest_path = tool_path.join("manifest.yaml");
             if !manifest_path.exists() {
-                trace!("No manifest.json found in {}", tool_path.display());
+                trace!("No manifest.yaml found in {}", tool_path.display());
                 continue;
             }
 
@@ -125,38 +123,42 @@ impl UniversalToolAdapter {
             .await
             .with_context(|| format!("Failed to read manifest {manifest_path:?}"))?;
 
-        let tool_manifest: crate::extensions::universal::protocol::Manifest = serde_json::from_str(&content)
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
             .with_context(|| format!("Failed to parse manifest {manifest_path:?}"))?;
 
+        let tool_name = crate::extension::adapters::parsing::require_string_field(&yaml, "name")
+            .or_else(|_| crate::extension::adapters::parsing::require_string_field(&yaml, "id"))?;
+        let description = crate::extension::adapters::parsing::optional_string_field(&yaml, "description", "");
+        let version = crate::extension::adapters::parsing::optional_string_field(&yaml, "version", "1.0.0");
+
         let mut manifest = ExtensionManifest::new(
-            &tool_manifest.name,
+            &tool_name,
             UNIVERSAL_TOOL_EXTENSION_TYPE,
-            &tool_manifest.name,
-            &tool_manifest.description,
-            "1.0.0",
+            &tool_name,
+            &description,
+            &version,
             manifest_path
                 .parent()
                 .unwrap_or(Path::new("."))
                 .to_path_buf(),
         );
 
-        // Store additional metadata
-        manifest.set("parameters", tool_manifest.parameters.clone());
+        // Store parameters schema
+        if let Some(params) = yaml.get("parameters") {
+            manifest.set("parameters", crate::extension::adapters::parsing::yaml_to_json(params.clone()));
+        }
 
-        if let Some(llm_desc) = tool_manifest.llm_description {
+        // LLM description
+        if let Some(llm_desc) = yaml.get("llm_description").and_then(|v| v.as_str()) {
             manifest.set("llm_description", llm_desc);
         }
 
-        // Store reserved parameters
-        let reserved_config = &tool_manifest.reserved_parameters;
-        if !reserved_config.is_empty() {
-            manifest.set(
-                "reserved_parameters",
-                serde_json::to_value(reserved_config).unwrap_or_default(),
-            );
+        // Reserved parameters
+        if let Some(reserved) = yaml.get("reserved_parameters") {
+            manifest.set("reserved_parameters", crate::extension::adapters::parsing::yaml_to_json(reserved.clone()));
         }
 
-        Ok((manifest, tool_manifest.name))
+        Ok((manifest, tool_name))
     }
 
     /// Find executable for a tool (delegates to shared utility)
@@ -252,7 +254,6 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
 
     fn manifest_format(&self) -> ManifestFormat {
         // ADR-024: Primary format is manifest.yaml with extension_type: "universal-tool".
-        // manifest.json is retained as a deprecated Tier 3 fallback.
         ManifestFormat::Yaml {
             schema: "universal-tool".to_string(),
             file_name: "manifest.yaml",
@@ -266,12 +267,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
     ) -> anyhow::Result<crate::extension::ExtensionManifest> {
         use anyhow::Context;
 
-        // If the path ends with manifest.json, use the legacy JSON parser
-        if path.file_name().is_some_and(|n| n == "manifest.json") {
-            return self.parse_legacy_json_manifest(path, content);
-        }
-
-        // Otherwise, parse as unified YAML manifest
+        // Parse as unified YAML manifest
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse universal tool YAML manifest at {path:?}"))?;
 
@@ -357,56 +353,6 @@ struct UniversalToolExecuteHandler {
     executable: PathBuf,
     manifest_path: PathBuf,
     full_schema: serde_json::Value,
-}
-
-impl UniversalToolAdapter {
-    /// Parse legacy manifest.json format (deprecated, Tier 3 fallback).
-    fn parse_legacy_json_manifest(
-        &self,
-        path: &std::path::Path,
-        content: &str,
-    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
-        use anyhow::Context;
-
-        let tool_manifest: crate::extensions::universal::protocol::Manifest = serde_json::from_str(content)
-            .with_context(|| format!("Failed to parse universal tool manifest at {path:?}"))?;
-
-        let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
-        let executable = crate::extension::adapters::parsing::find_executable_sync(tool_path, &tool_manifest.name)
-            .with_context(|| {
-                format!(
-                    "Failed to find executable for tool '{}' in {:?}",
-                    tool_manifest.name, tool_path
-                )
-            })?;
-
-        let mut manifest = ExtensionManifest::new(
-            &tool_manifest.name,
-            UNIVERSAL_TOOL_EXTENSION_TYPE,
-            &tool_manifest.name,
-            &tool_manifest.description,
-            "1.0.0",
-            tool_path.to_path_buf(),
-        );
-
-        manifest.set("executable", executable.to_string_lossy().to_string());
-        manifest.set("manifest_path", path.to_string_lossy().to_string());
-        manifest.set("parameters", tool_manifest.parameters.clone());
-
-        if let Some(llm_desc) = tool_manifest.llm_description {
-            manifest.set("llm_description", llm_desc);
-        }
-
-        let reserved_config = &tool_manifest.reserved_parameters;
-        if !reserved_config.is_empty() {
-            manifest.set(
-                "reserved_parameters",
-                serde_json::to_value(reserved_config).unwrap_or_default(),
-            );
-        }
-
-        Ok(manifest)
-    }
 }
 
 #[async_trait]
@@ -495,19 +441,12 @@ mod tests {
         let tool_dir = dir.join(name);
         std::fs::create_dir(&tool_dir).unwrap();
 
-        let manifest = serde_json::json!({
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "input": { "type": "string" }
-                }
-            }
-        });
+        let manifest = format!(
+            "name: {name}\nextension_type: universal-tool\ndescription: {description}\nversion: \"1.0.0\"\nparameters:\n  type: object\n  properties:\n    input:\n      type: string\n"
+        );
 
-        let manifest_path = tool_dir.join("manifest.json");
-        std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+        let manifest_path = tool_dir.join("manifest.yaml");
+        std::fs::write(&manifest_path, manifest).unwrap();
 
         // Create a dummy executable (script)
         let script_path = tool_dir.join(format!("{name}.py"));

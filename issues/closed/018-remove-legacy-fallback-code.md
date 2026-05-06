@@ -1,6 +1,6 @@
 # Issue 018 — Remove Legacy Fallback Code
 
-**Status:** Open  
+**Status:** Closed (implemented 2026-05-06)  
 **Labels:** `cleanup`, `refactoring`, `legacy-removal`, `breaking-change-ok`  
 **Milestone:** 0.1.0  
 **Backward Compatibility:** Not required (pre-release dev stage)

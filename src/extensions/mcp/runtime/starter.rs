@@ -2,8 +2,8 @@
 //!
 //! Implements `ExtensionRuntimeStarter` for MCP extensions.
 //!
-//! Reads MCP extension manifests (ADR-024 unified format with `mcp_servers` section
-//! or legacy `config.toml`/`config.json`), creates `McpRuntimeAdapter`s, and starts
+//! Reads MCP extension manifests (ADR-024 unified format with `mcp_servers` section),
+//! creates `McpRuntimeAdapter`s, and starts
 /// them via the shared `BackgroundRuntimeManager`.
 
 use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
@@ -17,9 +17,9 @@ use tracing::{info, warn};
 
 /// Starter for MCP extensions.
 ///
-/// Supports both:
+/// Supports:
 /// - **ADR-024 unified manifest** (`manifest.yaml` with `extension_type: "mcp"` and `mcp_servers`)
-/// - **Legacy config** (`config.toml` or `config.json` with server definitions)
+/// - **MCP Registry** (`server.json`)
 #[derive(Debug)]
 pub struct McpRuntimeStarter;
 
@@ -73,28 +73,6 @@ impl McpRuntimeStarter {
             {
                 return Self::parse_mcp_servers_from_json(&mcp_servers);
             }
-        }
-
-        // Fallback: legacy config.toml or config.json
-        let toml_path = ext_dir.join("config.toml");
-        let json_config_path = ext_dir.join("config.json");
-
-        if toml_path.exists() {
-            let content = tokio::fs::read_to_string(&toml_path)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to read config.toml: {e}"))?;
-            let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(&content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse config.toml: {e}"))?;
-            return Ok(config.servers);
-        }
-
-        if json_config_path.exists() {
-            let content = tokio::fs::read_to_string(&json_config_path)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to read config.json: {e}"))?;
-            let config: crate::extensions::mcp::protocol::config::McpConfig = serde_json::from_str(&content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse config.json: {e}"))?;
-            return Ok(config.servers);
         }
 
         anyhow::bail!("No MCP server configuration found in extension directory")

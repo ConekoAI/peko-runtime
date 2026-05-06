@@ -152,12 +152,8 @@ async fn test_discover_universal_tools() {
     tokio::fs::create_dir(&tool_dir).await.unwrap();
 
     // Create manifest in subdirectory
-    let manifest = json!({
-        "name": "test_tool",
-        "description": "Test",
-        "parameters": {"type": "object"}
-    });
-    tokio::fs::write(tool_dir.join("manifest.json"), manifest.to_string())
+    let manifest_yaml = "name: test_tool\nextension_type: universal-tool\ndescription: Test\nversion: \"1.0.0\"\nparameters:\n  type: object\n";
+    tokio::fs::write(tool_dir.join("manifest.yaml"), manifest_yaml)
         .await
         .unwrap();
 
@@ -209,7 +205,7 @@ for line in sys.stdin:
     let discovered = manager.scan_directory(dir).await.unwrap();
 
     assert_eq!(discovered.len(), 1);
-    // The extension type should be "universal-tool" for manifest.json files
+    // The extension type should be "universal-tool" for manifest.yaml files
     assert_eq!(discovered[0].extension_type, "universal-tool");
 }
 

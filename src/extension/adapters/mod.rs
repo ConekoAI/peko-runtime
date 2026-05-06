@@ -396,7 +396,7 @@ pub mod parsing {
             let path = entry.path();
             if path.is_file() {
                 if let Some(name) = path.file_name() {
-                    if name != "manifest.json" {
+                    if name != "manifest.yaml" {
                         return Some(path);
                     }
                 }
@@ -422,7 +422,7 @@ pub mod parsing {
             let path = entry.path();
             if path.is_file() {
                 if let Some(name) = path.file_name() {
-                    if name != "manifest.json" {
+                    if name != "manifest.yaml" {
                         return Some(path);
                     }
                 }
