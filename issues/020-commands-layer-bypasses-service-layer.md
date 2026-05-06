@@ -17,7 +17,7 @@ Positive examples exist (`team.rs`, `agent/handlers.rs`) where all business logi
 |------|--------|-------|
 | `src/commands/session.rs` | **Resolved** | All direct `MetadataController`/`SessionStorage`/`Session::open_by_id` usage removed. Now delegates to `SessionService`. |
 | `src/commands/ext.rs` | **Partially Resolved** | Direct `enable_hook`/`disable_hook` calls extracted into `Services::enable_builtin_hooks`/`disable_builtin_hooks`, but `global_core()` is still accessed directly in the command file (lines 138, 289) and inside the service methods themselves. |
-| `src/commands/daemon.rs` | **Unchanged** | Still reimplements all process lifecycle primitives inline. |
+| `src/commands/daemon.rs` | **Resolved** | All process lifecycle primitives extracted to `DaemonProcessService`. File reduced from ~620 to ~267 lines. |
 | `src/commands/auth.rs` | **Resolved** | `CredentialsStore`, `Credential`, and all file I/O extracted to `src/common/credentials_store.rs`. `CredentialsService` created in `src/common/services/credentials_service.rs`. `auth.rs` now delegates entirely to the service layer. Reduced from ~275 to ~175 lines. |
 
 ---
@@ -74,37 +74,17 @@ All direct imports and usage of `MetadataController`, `SessionStorage`, and `Ses
 
 ---
 
-### `src/commands/daemon.rs` — Reimplements PID Management, Process Spawn/Kill, Readiness Polling
+### `src/commands/daemon.rs` — Resolved ✅
 
-**Lines:** 220–246, 333–496, 499–538, 544–587  
-**Status:** Unchanged since issue opened.
+**Status:** Fixed in Phase 2.
 
-```rust
-// Line 220-246: Inline process-running check
-fn is_process_running(pid: u32) -> bool {
-    #[cfg(windows)] { /* PowerShell Get-Process */ }
-    #[cfg(unix)] { unsafe { libc::kill(pid as libc::pid_t, 0) == 0 } }
-}
+All inline process lifecycle primitives extracted to `DaemonProcessService`:
+- `is_process_running` → `common::process::kill::is_process_running`
+- `kill_by_pid` / `kill_all_by_name` / `wait_for_exit` → `common::process::kill`
+- `wait_for_healthy` → `common::process::health::wait_for_healthy`
+- `spawn_daemon` / `stop_daemon` / `is_daemon_running` / `get_daemon_status` → `common::services::DaemonProcessService`
 
-// Line 333-496: Inline graceful shutdown + PID kill + fallback kill
-async fn stop_daemon(force: bool) -> anyhow::Result<()> { ... }
-
-// Line 499-538: Inline daemon spawn
-async fn spawn_daemon(paths: &GlobalPaths, interval: u64) -> anyhow::Result<()> { ... }
-
-// Line 544-587: Inline readiness polling
-async fn wait_for_daemon_ready() -> bool { ... }
-```
-
-**Why this is wrong:**
-- `src/common/process/` already contains `spawn.rs`, `kill.rs`, and `health.rs` with `spawn_process`, `graceful_shutdown`, `force_kill_child`, and `HealthCheckLoop`.
-- The daemon command handler reimplements all of these concerns with platform-specific code (Windows PowerShell, taskkill, Unix `kill`/`pkill`).
-- `daemon::background_runtime` also contains process supervision code. There are now **three** places with process lifecycle logic.
-
-**Recommended fix:**
-- Refactor `daemon.rs` to use `common::process::{spawn_process, graceful_shutdown, HealthCheckLoop}`.
-- If the common primitives are insufficient (e.g., they don't cover PID-file-based kill or IPC graceful shutdown), **extend them** rather than inlining.
-- Consider creating a `DaemonProcessService` that encapsulates spawn/stop/status/status-check logic and manages the PID file.
+File reduced from ~620 lines to ~267 lines (target: <300).
 
 ---
 
@@ -158,19 +138,19 @@ fn save_credentials(paths: &GlobalPaths, store: &CredentialsStore) -> Result<()>
 5. ✅ Added `Clone` + `Debug` to `GlobalPaths` so services can own it.
 6. ✅ Unit tests: 8 for `CredentialsStore` + 8 for `CredentialsService` = 16 new tests, all passing.
 
-### Phase 2 — `daemon.rs` (Medium, ~4–6 hours)
-1. Audit `common::process` primitives against daemon needs:
-   - Does `spawn_process` support `Stdio::null()`, `kill_on_drop(false)`, env injection? If not, extend `ProcessSpawnConfig`.
-   - Does `graceful_shutdown` support PID-file-based termination (not just `Child` handle)? If not, add `graceful_shutdown_by_pid(pid, force)` to `common::process::kill`.
-   - Does `HealthCheckLoop` support one-shot readiness polling? If not, add `wait_for_healthy(check_fn, timeout, interval)`.
-2. Create `src/common/services/daemon_process_service.rs` encapsulating:
-   - `spawn_daemon(paths, interval) -> Result<Child>`
+### Phase 2 — `daemon.rs` (Medium, ~4–6 hours) ✅ **COMPLETE**
+1. ✅ Extended `common::process::kill` with `is_process_running`, `kill_by_pid`, `kill_all_by_name`, `wait_for_exit`.
+2. ✅ Extended `common::process::health` with `wait_for_healthy` for one-shot readiness polling.
+3. ✅ Created `src/common/services/daemon_process_service.rs` with:
+   - `spawn_daemon(interval_secs) -> Result<Child>`
    - `stop_daemon(force) -> Result<()>`
-   - `is_daemon_running() -> bool`
-   - `wait_for_daemon_ready(timeout) -> bool`
+   - `is_daemon_running() -> Result<bool>`
+   - `wait_for_daemon_ready(timeout) -> Result<bool>`
+   - `get_daemon_status() -> Result<DaemonStatus>`
    - PID file read/write helpers.
-3. Refactor `daemon.rs` to delegate to `DaemonProcessService`.
-4. Target: `daemon.rs` <300 lines.
+4. ✅ Refactored `daemon.rs` to delegate to `DaemonProcessService`.
+5. ✅ Target met: `daemon.rs` reduced from ~620 to ~267 lines.
+6. ✅ Unit tests: 4 for `DaemonProcessService` + 4 for process primitives = 8 new tests, all passing.
 
 ### Phase 3 — `ext.rs` (Medium, ~3–4 hours)
 1. Refactor `Services` (or create `ExtensionCoreService`) to accept `Arc<ExtensionCore>` via constructor instead of calling `global_core()` internally.
@@ -194,7 +174,7 @@ fn save_credentials(paths: &GlobalPaths, store: &CredentialsStore) -> Result<()>
 
 - [ ] `ext.rs` does not import `extension::core::global_core` or call `enable_hook`/`disable_hook` directly (including transitively through static `Services` methods).
 - [x] `session.rs` does not import `metadata_controller` or `jsonl::SessionStorage`.
-- [ ] `daemon.rs` uses `common::process` primitives for spawn/kill/health checks.
+- [x] `daemon.rs` uses `common::process` primitives for spawn/kill/health checks.
 - [x] `auth.rs` does not contain `CredentialsStore` or file I/O logic.
 - [ ] All four files have <400 lines of non-test code.
 - [ ] Unit tests for the extracted services exist.

@@ -6,6 +6,7 @@
 pub mod agent_service;
 pub mod agent_validator;
 pub mod credentials_service;
+pub mod daemon_process_service;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub mod session_service;
 pub mod team_management_service;
@@ -18,6 +19,7 @@ pub use config_authority::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImp
 pub use agent_service::AgentService;
 pub use agent_validator::AgentValidator;
 pub use credentials_service::CredentialsService;
+pub use daemon_process_service::{DaemonProcessService, DaemonStatus};
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub use session_service::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,
