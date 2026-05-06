@@ -504,6 +504,10 @@ impl ExtensionState {
     }
 }
 
+pub mod validation;
+
+pub use validation::{ExtensionValidationService, ValidationReport};
+
 #[cfg(test)]
 mod tests {
     use super::*;

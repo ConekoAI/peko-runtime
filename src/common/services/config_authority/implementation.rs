@@ -392,6 +392,64 @@ impl ConfigAuthorityImpl {
 
         Ok(())
     }
+
+    /// Enable a tool for all agents in a team
+    pub fn enable_tool_for_team(
+        &self,
+        team: &str,
+        tool_name: &str,
+    ) -> anyhow::Result<usize> {
+        let agents_dir = self.path_resolver.agents_dir(Some(team));
+        if !agents_dir.exists() {
+            anyhow::bail!("Team '{team}' not found (no agents directory)");
+        }
+
+        let mut updated_count = 0;
+        for entry in std::fs::read_dir(&agents_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let agent_name = entry.file_name().to_string_lossy().to_string();
+            let config_path = self.config_path(&agent_name, Some(team));
+            if config_path.exists() {
+                self.enable_tool_sync(&agent_name, team, tool_name)?;
+                updated_count += 1;
+            }
+        }
+
+        Ok(updated_count)
+    }
+
+    /// Disable a tool for all agents in a team
+    pub fn disable_tool_for_team(
+        &self,
+        team: &str,
+        tool_name: &str,
+    ) -> anyhow::Result<usize> {
+        let agents_dir = self.path_resolver.agents_dir(Some(team));
+        if !agents_dir.exists() {
+            anyhow::bail!("Team '{team}' not found (no agents directory)");
+        }
+
+        let mut updated_count = 0;
+        for entry in std::fs::read_dir(&agents_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let agent_name = entry.file_name().to_string_lossy().to_string();
+            let config_path = self.config_path(&agent_name, Some(team));
+            if config_path.exists() {
+                self.disable_tool_sync(&agent_name, team, tool_name)?;
+                updated_count += 1;
+            }
+        }
+
+        Ok(updated_count)
+    }
 }
 
 impl Clone for ConfigAuthorityImpl {

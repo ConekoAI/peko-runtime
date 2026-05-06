@@ -12,6 +12,9 @@ pub mod reserved_params;
 // Tool execution module
 pub mod tool_execution;
 
+// Extension configuration service
+pub mod config_service;
+
 // Re-export transport modules for backward compatibility
 pub use crate::extension::transport::async_router;
 pub use crate::extension::transport::async_transport;
@@ -25,6 +28,7 @@ pub use crate::extension::transport::async_transport::{
     LocalAsyncTransport, UnavailableAsyncTransport,
 };
 
+pub use config_service::{ConfigScope, ExtensionConfigService};
 pub use reserved_params::{ParamSource, ReservedParamsConfig, ReservedParamsService};
 pub use tool_execution::{ToolExecutionConfig, ToolExecutionService};
 
@@ -101,6 +105,40 @@ impl Services {
     #[must_use]
     pub fn async_router_arc(&self) -> Arc<AsyncExecutionRouter> {
         self.async_router.clone()
+    }
+
+    /// Enable built-in hooks for a capability in the global ExtensionCore
+    pub async fn enable_builtin_hooks(capability: &str) {
+        if let Some(core) = crate::extension::core::global_core() {
+            let builtins = core.list_builtin_extensions().await;
+            for b in &builtins {
+                if b.name.eq_ignore_ascii_case(capability) {
+                    let ext_id = crate::extension::types::ExtensionId::new(&b.id);
+                    let hooks = core.get_hooks_for_extension(&ext_id).await;
+                    for hook in hooks {
+                        let _ = core.enable_hook(&hook.id).await;
+                    }
+                    tracing::info!("Enabled built-in hooks for '{}'", b.id);
+                }
+            }
+        }
+    }
+
+    /// Disable built-in hooks for a capability in the global ExtensionCore
+    pub async fn disable_builtin_hooks(capability: &str) {
+        if let Some(core) = crate::extension::core::global_core() {
+            let builtins = core.list_builtin_extensions().await;
+            for b in &builtins {
+                if b.name.eq_ignore_ascii_case(capability) {
+                    let ext_id = crate::extension::types::ExtensionId::new(&b.id);
+                    let hooks = core.get_hooks_for_extension(&ext_id).await;
+                    for hook in hooks {
+                        let _ = core.disable_hook(&hook.id).await;
+                    }
+                    tracing::info!("Disabled built-in hooks for '{}'", b.id);
+                }
+            }
+        }
     }
 }
 
