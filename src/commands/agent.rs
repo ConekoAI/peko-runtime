@@ -3,6 +3,7 @@
 
 use crate::commands::GlobalPaths;
 use clap::Subcommand;
+use std::path::PathBuf;
 
 // New unified handlers
 mod handlers;
@@ -122,7 +123,7 @@ pub enum AgentCommands {
     /// Build a .agent package from a directory
     Build {
         /// Path to agent directory
-        path: std::path::PathBuf,
+        path: PathBuf,
         /// Tag (name:tag format)
         #[arg(short, long)]
         tag: String,
@@ -236,28 +237,20 @@ pub async fn handle_agent(
             handlers::handle_agent_import(paths, file, name, team).await
         }
         AgentCommands::Inspect { file } => handlers::handle_agent_inspect(file, json).await,
-        AgentCommands::Build { path, tag, json: _ } => {
-            println!("Build command not yet implemented");
-            println!("  Path: {}", path.display());
-            println!("  Tag: {tag}");
-            Ok(())
+        AgentCommands::Build { path, tag, json } => {
+            handlers::handle_agent_build(paths, path, tag, json).await
         }
         AgentCommands::Push {
             local_tag,
             registry_ref,
         } => {
-            println!("Push command not yet implemented");
-            println!("  Local tag: {local_tag}");
-            println!("  Registry: {registry_ref}");
-            Ok(())
+            handlers::handle_agent_push(paths, local_tag, registry_ref, json).await
         }
         AgentCommands::Pull {
             registry_ref,
-            json: _,
+            json,
         } => {
-            println!("Pull command not yet implemented");
-            println!("  Registry: {registry_ref}");
-            Ok(())
+            handlers::handle_agent_pull(paths, registry_ref, json).await
         }
         AgentCommands::Init {
             path,

@@ -35,6 +35,12 @@ impl AgentRegistry {
         }
     }
 
+    /// Get the root path of the registry.
+    #[must_use]
+    pub fn root_path(&self) -> &std::path::Path {
+        &self.root_path
+    }
+
     /// Default registry path (~/.pekobot/registry)
     #[must_use]
     pub fn default_path() -> PathBuf {

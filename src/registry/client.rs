@@ -3,11 +3,13 @@
 //! HTTP client for pushing and pulling images from remote registries.
 //! Implements OCI-inspired distribution protocol.
 
+use crate::portable::registry::AgentRegistry;
 use crate::portable::types::{ImageDigest, Layer};
 use crate::registry::config::{RegistryConfig, RegistrySource, ResolvedAuth};
 use crate::registry::manifest::RegistryManifest;
 use reqwest::Client;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Registry client for push/pull operations
@@ -15,7 +17,7 @@ use std::path::PathBuf;
 pub struct RegistryClient {
     http: Client,
     config: RegistryConfig,
-    registry_path: PathBuf,
+    registry: AgentRegistry,
 }
 
 /// Progress events during pull/push operations
@@ -64,9 +66,23 @@ pub struct RegistryRef {
 impl RegistryRef {
     /// Parse a registry reference string
     /// Format: "host/path/to/image:tag" or "host/path/to/image" (defaults to "latest")
+    /// Also supports "host:port/path/to/image:tag"
     pub fn parse(r#ref: &str) -> anyhow::Result<Self> {
-        // Split by ':' to separate tag
-        let (ref_part, tag) = r#ref.rsplit_once(':').unwrap_or((r#ref, "latest"));
+        // Find the tag (last ':'). Be careful not to split on ':' that's part of a port.
+        // Strategy: find the last ':' that appears after the first '/'.
+        let mut tag_split_idx = None;
+        if let Some(first_slash) = r#ref.find('/') {
+            if let Some(last_colon) = r#ref.rfind(':') {
+                if last_colon > first_slash {
+                    tag_split_idx = Some(last_colon);
+                }
+            }
+        }
+
+        let (ref_part, tag) = match tag_split_idx {
+            Some(idx) => (&r#ref[..idx], &r#ref[idx + 1..]),
+            None => (r#ref, "latest"),
+        };
 
         // Split by '/' to separate host from path
         let parts: Vec<&str> = ref_part.split('/').collect();
@@ -101,11 +117,15 @@ impl RegistryRef {
 
 impl RegistryClient {
     /// Create a new registry client
-    pub fn new(config: RegistryConfig, registry_path: impl Into<PathBuf>) -> Self {
+    pub fn new(config: RegistryConfig, registry: AgentRegistry) -> Self {
+        let http = Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
-            http: Client::new(),
+            http,
             config,
-            registry_path: registry_path.into(),
+            registry,
         }
     }
 
@@ -128,7 +148,7 @@ impl RegistryClient {
             .ok_or_else(|| anyhow::anyhow!("No registry configured for host: {}", reg_ref.host))?;
 
         // Resolve authentication
-        let auth = self.resolve_auth(source)?;
+        let auth = Self::resolve_auth(source)?;
 
         // Get manifest from registry
         let manifest = self
@@ -187,10 +207,12 @@ impl RegistryClient {
             .ok_or_else(|| anyhow::anyhow!("No registry configured for host: {}", reg_ref.host))?;
 
         // Resolve authentication
-        let auth = self.resolve_auth(source)?;
+        let auth = Self::resolve_auth(source)?;
 
         // Check which layers already exist on the registry (mount check)
-        let existing_layers = self.check_existing_layers(&reg_ref, source, &auth)?;
+        let existing_layers = self
+            .check_existing_layers(&reg_ref, source, &auth, &manifest.layers)
+            .await?;
 
         // Push missing layers
         for layer in &manifest.layers {
@@ -226,10 +248,22 @@ impl RegistryClient {
     }
 
     /// Resolve authentication for a registry source
-    fn resolve_auth(&self, source: &RegistrySource) -> anyhow::Result<ResolvedAuth> {
+    fn resolve_auth(source: &RegistrySource) -> anyhow::Result<ResolvedAuth> {
         match &source.auth {
             Some(auth) => auth.resolve(),
             None => Ok(ResolvedAuth::None),
+        }
+    }
+
+    /// Build a registry URL from the source URL, preserving any existing scheme.
+    /// Uses `http://` for localhost/127.0.0.1 to support mock registries in tests.
+    fn registry_url(source: &RegistrySource) -> String {
+        if source.url.starts_with("http://") || source.url.starts_with("https://") {
+            source.url.clone()
+        } else if source.url.starts_with("localhost:") || source.url.starts_with("127.0.0.1:") {
+            format!("http://{}", source.url)
+        } else {
+            format!("https://{}", source.url)
         }
     }
 
@@ -240,10 +274,8 @@ impl RegistryClient {
         source: &RegistrySource,
         auth: &ResolvedAuth,
     ) -> anyhow::Result<RegistryManifest> {
-        let url = format!(
-            "https://{}/v2/{}/manifests/{}",
-            source.url, reg_ref.path, reg_ref.tag
-        );
+        let base_url = Self::registry_url(source);
+        let url = format!("{base_url}/v2/{}/manifests/{}", reg_ref.path, reg_ref.tag);
 
         let req = self.http.get(&url);
         let req = auth.apply(req);
@@ -275,10 +307,8 @@ impl RegistryClient {
     where
         F: FnMut(ProgressEvent),
     {
-        let layer_path = self.layer_path(&layer.digest);
-
         // Check if layer already exists locally
-        if layer_path.exists() {
+        if self.registry.has_layer(&layer.digest) {
             progress(ProgressEvent::Pulling {
                 layer: layer.digest.clone(),
                 bytes_received: Some(layer.size_bytes),
@@ -294,10 +324,8 @@ impl RegistryClient {
         });
 
         // Fetch layer from registry
-        let url = format!(
-            "https://{}/v2/{}/blobs/{}",
-            source.url, reg_ref.path, layer.digest
-        );
+        let base_url = Self::registry_url(source);
+        let url = format!("{base_url}/v2/{}/blobs/{}", reg_ref.path, layer.digest);
 
         let req = self.http.get(&url);
         let req = auth.apply(req);
@@ -333,9 +361,8 @@ impl RegistryClient {
             ));
         }
 
-        // Store layer
-        tokio::fs::create_dir_all(layer_path.parent().unwrap()).await?;
-        tokio::fs::write(&layer_path, &data).await?;
+        // Store layer via AgentRegistry
+        self.registry.store_layer(&layer.digest, &data).await?;
 
         progress(ProgressEvent::Extracting {
             layer: layer.digest.clone(),
@@ -356,13 +383,7 @@ impl RegistryClient {
     where
         F: FnMut(ProgressEvent),
     {
-        let layer_path = self.layer_path(&layer.digest);
-
-        if !layer_path.exists() {
-            return Err(anyhow::anyhow!("Layer not found locally: {}", layer.digest));
-        }
-
-        let data = tokio::fs::read(&layer_path).await?;
+        let data = self.registry.get_layer(&layer.digest).await?;
 
         progress(ProgressEvent::Pushing {
             layer: layer.digest.clone(),
@@ -371,7 +392,8 @@ impl RegistryClient {
         });
 
         // Initiate upload
-        let url = format!("https://{}/v2/{}/blobs/uploads/", source.url, reg_ref.path);
+        let base_url = Self::registry_url(source);
+        let url = format!("{base_url}/v2/{}/blobs/uploads/", reg_ref.path);
         let req = self.http.post(&url);
         let req = auth.apply(req);
 
@@ -393,8 +415,7 @@ impl RegistryClient {
             .unwrap_or_else(|| {
                 // Fallback to standard URL
                 format!(
-                    "https://{}/v2/{}/blobs/uploads/{}",
-                    source.url,
+                    "{base_url}/v2/{}/blobs/uploads/{}",
                     reg_ref.path,
                     uuid::Uuid::new_v4()
                 )
@@ -432,10 +453,8 @@ impl RegistryClient {
         auth: &ResolvedAuth,
         manifest: &RegistryManifest,
     ) -> anyhow::Result<()> {
-        let url = format!(
-            "https://{}/v2/{}/manifests/{}",
-            source.url, reg_ref.path, reg_ref.tag
-        );
+        let base_url = Self::registry_url(source);
+        let url = format!("{base_url}/v2/{}/manifests/{}", reg_ref.path, reg_ref.tag);
 
         let json = manifest.to_json()?;
         let req = self.http.put(&url);
@@ -456,26 +475,39 @@ impl RegistryClient {
         Ok(())
     }
 
-    /// Check which layers already exist on the registry
-    fn check_existing_layers(
+    /// Check which layers already exist on the registry using HEAD requests.
+    async fn check_existing_layers(
         &self,
-        _reg_ref: &RegistryRef,
-        _source: &RegistrySource,
-        _auth: &ResolvedAuth,
-    ) -> anyhow::Result<std::collections::HashSet<String>> {
-        // This is a simplified implementation
-        // In production, would use the registry's HEAD endpoint to check existence
-        let existing = std::collections::HashSet::new();
+        reg_ref: &RegistryRef,
+        source: &RegistrySource,
+        auth: &ResolvedAuth,
+        layers: &[Layer],
+    ) -> anyhow::Result<HashSet<String>> {
+        let base_url = Self::registry_url(source);
+        let mut existing = HashSet::new();
 
-        // For now, just return empty (push all layers)
-        // TODO: Implement proper layer existence checking
+        for layer in layers {
+            let url = format!("{base_url}/v2/{}/blobs/{}", reg_ref.path, layer.digest);
+            let req = self.http.head(&url);
+            let req = auth.apply(req);
+
+            match req.send().await {
+                Ok(response) if response.status().is_success() => {
+                    existing.insert(layer.digest.clone());
+                }
+                _ => {
+                    // Layer does not exist or request failed; treat as missing.
+                }
+            }
+        }
+
         Ok(existing)
     }
 
     /// Store manifest locally
     async fn store_manifest_locally(&self, manifest: &RegistryManifest) -> anyhow::Result<()> {
         let digest = ImageDigest::new(&manifest.digest)?;
-        let image_dir = self.image_dir(&digest);
+        let image_dir = self.registry_manifest_dir(&digest);
 
         tokio::fs::create_dir_all(&image_dir).await?;
 
@@ -485,7 +517,7 @@ impl RegistryClient {
 
         // Also store tag reference if present
         if !manifest.r#ref.is_empty() {
-            let tags_dir = self.registry_path.join("tags");
+            let tags_dir = self.registry.root_path().join("tags");
             tokio::fs::create_dir_all(&tags_dir).await?;
             let tag_path = tags_dir.join(sanitize_tag(&manifest.r#ref));
             tokio::fs::write(&tag_path, &manifest.digest).await?;
@@ -496,7 +528,7 @@ impl RegistryClient {
 
     /// Load manifest from local storage
     async fn load_manifest_local(&self, digest: &ImageDigest) -> anyhow::Result<RegistryManifest> {
-        let image_dir = self.image_dir(digest);
+        let image_dir = self.registry_manifest_dir(digest);
         let manifest_path = image_dir.join("manifest.json");
 
         if !manifest_path.exists() {
@@ -512,17 +544,9 @@ impl RegistryClient {
         Ok(manifest)
     }
 
-    /// Get the path to a layer file
-    fn layer_path(&self, digest: &str) -> PathBuf {
-        let digest = digest.strip_prefix("sha256:").unwrap_or(digest);
-        self.registry_path
-            .join("layers")
-            .join(format!("sha256-{digest}.tar.gz"))
-    }
-
-    /// Get the directory for an image
-    fn image_dir(&self, digest: &ImageDigest) -> PathBuf {
-        self.registry_path.join("images").join(digest.dir_name())
+    /// Get the directory for a registry manifest JSON file
+    fn registry_manifest_dir(&self, digest: &ImageDigest) -> PathBuf {
+        self.registry.root_path().join("registry_manifests").join(digest.dir_name())
     }
 }
 
@@ -637,7 +661,8 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let config = RegistryConfig::default();
-        let _client = RegistryClient::new(config, temp_dir.path());
+        let registry = AgentRegistry::new(temp_dir.path());
+        let _client = RegistryClient::new(config, registry);
 
         // Just verify it can be created without panicking
     }
@@ -652,5 +677,36 @@ mod tests {
         let r#ref = RegistryRef::parse("registry.io/org/team/agent:latest").unwrap();
         assert_eq!(r#ref.full_ref(), "registry.io/org/team/agent:latest");
         assert_eq!(r#ref.repository(), "registry.io/org/team/agent");
+    }
+
+    #[test]
+    fn test_registry_url_scheme_handling() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::new(temp_dir.path());
+        let client = RegistryClient::new(RegistryConfig::default(), registry);
+
+        // URL without scheme should get https:// prepended
+        let source = RegistrySource {
+            url: "pekohub.com".to_string(),
+            priority: 1,
+            auth: None,
+        };
+        assert_eq!(RegistryClient::registry_url(&source), "https://pekohub.com");
+
+        // URL with http:// should be preserved
+        let source = RegistrySource {
+            url: "http://localhost:5000".to_string(),
+            priority: 1,
+            auth: None,
+        };
+        assert_eq!(RegistryClient::registry_url(&source), "http://localhost:5000");
+
+        // URL with https:// should be preserved
+        let source = RegistrySource {
+            url: "https://registry.example.com".to_string(),
+            priority: 1,
+            auth: None,
+        };
+        assert_eq!(RegistryClient::registry_url(&source), "https://registry.example.com");
     }
 }

@@ -7,9 +7,11 @@
 //!
 //! ```rust,ignore
 //! use pekobot::registry::{RegistryClient, RegistryConfig, ProgressEvent};
+//! use pekobot::portable::registry::AgentRegistry;
 //!
 //! let config = RegistryConfig::default();
-//! let client = RegistryClient::new(config, ".pekobot/registry");
+//! let registry = AgentRegistry::new(".pekobot/registry");
+//! let client = RegistryClient::new(config, registry);
 //!
 //! // Pull an image
 //! client.pull("pekohub.com/agents/base:v1", |event| {

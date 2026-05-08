@@ -1,7 +1,7 @@
 # Pekobot Packaging — Implementation Plan v2.2
 
 > **Version**: 2.2-draft  
-> **Status**: In Progress — Phases 1 & 2 Complete  
+> **Status**: In Progress — Phases 1, 2 & 3 Complete  
 > **Source Spec**: [`Packaging_Spec.md`](./Packaging_Spec.md)  
 > **Last Updated**: 2026-05-08  
 > **Key Decisions**: 
@@ -42,6 +42,39 @@
 
 ---
 
+### 2026-05-08 — Phase 3 Complete
+
+**What was done:**
+- Created `e2e_tests/mock_registry/main.py` — FastAPI mock registry server (in-memory + file-backed)
+- Updated `RegistryClient` to use `AgentRegistry` for local layer/manifest storage
+- Implemented `check_existing_layers()` with async HEAD requests to skip already-present layers
+- Fixed `RegistryRef::parse()` to handle ports (`host:port/path:tag`)
+- Fixed `registry_url()` to use `http://` for localhost/127.0.0.1
+- Added `RegistryClient::new()` with `.no_proxy()` to bypass system proxy settings
+- Wired `pekobot agent push` — loads local manifest, converts to `RegistryManifest`, pushes with progress
+- Wired `pekobot agent pull` — pulls manifest + layers, stores in `AgentRegistry`
+- Created `tests/registry_integration.rs` with 4 tests: manifest roundtrip, blob roundtrip, push+pull E2E, layer skip
+- Added `AgentRegistry::root_path()` accessor for `RegistryClient` manifest storage
+
+**Verification:**
+- `cargo build` — ✅ succeeds
+- `cargo test --lib` — ✅ 960 passed, 0 failed
+- `cargo test --test registry_integration -- --ignored` — ✅ 4 passed, 0 failed
+- `cargo clippy --all-targets` — ✅ no errors
+- `pekobot agent push --help` — ✅ works
+- `pekobot agent pull --help` — ✅ works
+
+**Key fixes during implementation:**
+1. **Proxy bypass** — `reqwest` on Windows picked up system proxy settings causing 503 errors. Fixed with `.no_proxy()`.
+2. **Port parsing** — `RegistryRef::parse("127.0.0.1:18765/agent:v1.0")` incorrectly split on the port's `:`. Fixed by only splitting on `:` after the first `/`.
+3. **HTTP for localhost** — `registry_url()` forced `https://` for all URLs. Fixed to use `http://` for localhost/127.0.0.1.
+4. **Digest mismatch** — integration tests used fake digest strings. Fixed by computing real SHA-256 digests.
+
+**What was deferred:**
+- `Packager::build_from_directory()` → Phase 4 (Build CLI)
+
+---
+
 ## How to Use This Document
 
 This plan breaks the spec into **7 sequential phases**. Each phase has:
@@ -74,7 +107,7 @@ This plan breaks the spec into **7 sequential phases**. Each phase has:
 |-------|-------|----------|--------|-------------|
 | [Phase 1](#phase-1-foundation) | Mock registry + CLI scaffolding | 2–3 days | ✅ Complete | Commands parse args; `build`/`push`/`pull`/`export` stubs wired |
 | [Phase 2](#phase-2-clean-manifest--merge-image-into-portable) | Clean manifest + merge `src/image/` into `src/portable/` + remove capabilities | 4–5 days | ✅ Complete | `src/image/` deleted; `AgentRegistry` + portable types created; `RegistryClient` adapted |
-| [Phase 3](#phase-3-registry-integration) | Registry push/pull with mock | 3–4 days | ⬜ Not started | `agent push`/`pull` work end-to-end |
+| [Phase 3](#phase-3-registry-integration) | Registry push/pull with mock | 3–4 days | ✅ Complete | `agent push`/`pull` work end-to-end against mock server |
 | [Phase 4](#phase-4-image-build-cli) | `agent build` command | 1–2 days | ⬜ Not started | Build `.agent` from directory |
 | [Phase 5](#phase-5-team-packaging-hardening) | Team checksums + `team.toml` | 2–3 days | ⬜ Not started | `.team` integrity checks |
 | [Phase 6](#phase-6-extension-packaging) | `.ext` export | 2–3 days | ⬜ Not started | `ext export` creates installable `.ext` |
@@ -496,11 +529,11 @@ impl Packager {
 
 ### Phase 3 Exit Criteria
 
-- [ ] `cargo test registry_integration` passes
-- [ ] `pekobot agent push` works against mock server
-- [ ] `pekobot agent pull` works against mock server
-- [ ] Layer existence check skips already-present layers
-- [ ] `cargo clippy` clean in `src/registry/`
+- [x] `cargo test --test registry_integration -- --ignored` passes (4/4 tests)
+- [x] `pekobot agent push` works against mock server
+- [x] `pekobot agent pull` works against mock server
+- [x] Layer existence check skips already-present layers
+- [x] `cargo clippy --all-targets` has no errors in `src/registry/`
 
 ---
 
