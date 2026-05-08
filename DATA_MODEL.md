@@ -22,14 +22,17 @@ This document defines every on-disk and in-memory data format used by the Pekobo
    - [5.4 Session Index File](#54-session-index-file)
    - [5.5 Context Cache (Derived)](#55-context-cache-derived)
    - [5.6 Compaction](#56-compaction)
-6. [Image Manifest](#6-image-manifest)
-7. [Instance State](#7-instance-state)
-8. [Markdown Files](#8-markdown-files)
-9. [mcp.json — MCP Server Config](#9-mcpjson--mcp-server-config)
-10. [Tool Protocol — stdin/stdout](#10-tool-protocol--stdinstdout)
-11. [Capability Manifest](#11-capability-manifest)
-12. [Type Reference](#12-type-reference)
-13. [Changelog](#13-changelog)
+6. [Agent Package Format (.agent)](#6-agent-package-format-agent)
+7. [Team Package Format (.team)](#7-team-package-format-team)
+8. [Extension Package Format (.ext)](#8-extension-package-format-ext)
+9. [Local Registry Store](#9-local-registry-store)
+10. [Instance State](#10-instance-state)
+11. [Markdown Files](#11-markdown-files)
+12. [mcp.json — MCP Server Config](#12-mcpjson--mcp-server-config)
+13. [Tool Protocol — stdin/stdout](#13-tool-protocol--stdinstdout)
+14. [Extension Manifest](#14-extension-manifest)
+15. [Type Reference](#15-type-reference)
+16. [Changelog](#16-changelog)
 
 ---
 
@@ -960,92 +963,237 @@ File operations are tracked across compactions by scanning tool calls in the mes
 
 ---
 
-## 6. Image Manifest
+## 6. Agent Package Format (.agent)
 
-An image is a content-addressable archive. Its manifest describes the layers that compose it.
+A `.agent` file is a gzip-compressed tar archive containing a portable agent package. It can be built from a source directory, exported from a running agent, pushed to/pulled from a registry, and imported into a new runtime.
 
-**Location:** `.pekobot/registry/images/<digest>/manifest.json`
+### 6.1 Package Structure
 
-### 6.1 Manifest Schema
+```
+my-agent.agent (gzip-compressed tar)
+├── manifest.toml          # Package metadata and layer digests
+├── config/
+│   ├── agent.toml         # Agent configuration (SSOT for behaviour)
+│   └── prompts.toml       # System prompts
+├── identity/
+│   ├── did.json           # DID document
+│   └── keys.enc           # Encrypted private keys
+├── skills/
+│   └── {name}/
+│       └── SKILL.md
+├── workspace/
+│   └── SYSTEM.md
+└── sessions/              # Optional (can be large)
+```
+
+### 6.2 Manifest Schema (TOML)
+
+The manifest contains **only packaging metadata**. Agent behaviour configuration (tools, MCP, skills, extensions) lives in `config/agent.toml` — the single source of truth.
+
+```toml
+[agent]
+name = "researcher"
+version = "1.0.0"
+description = "A web research agent"
+created_at = "2026-05-08T10:00:00Z"
+export_format = "1.1"
+did = "did:pekobot:local:researcher:abc123"
+pekobot_version = "0.1.0"
+
+[identity]
+key_algorithm = "ed25519"
+encrypted = false
+
+[layers]
+config = "sha256:1a2b3c4d..."
+identity = "sha256:5e6f7g8h..."
+skills = "sha256:9i0j1k2l..."
+workspace = "sha256:3m4n5o6p..."
+
+[packaging]
+files = [
+  "config/agent.toml",
+  "config/prompts.toml",
+  "identity/did.json",
+  "identity/keys.enc",
+  "skills/web-search/SKILL.md",
+  "workspace/SYSTEM.md",
+]
+checksums = {
+  "config/agent.toml" = "sha256:abc...",
+  "identity/did.json" = "sha256:def...",
+}
+compression = "gzip"
+archive_format = "tar"
+
+[signatures]
+manifest = "base64url_signature..."
+algorithm = "ed25519"
+```
+
+### 6.3 Clean Manifest Principle
+
+`AgentManifest` explicitly does **NOT** contain:
+- `capabilities` — removed; extension framework is the single source of truth
+- `tools` — lives in `agent.toml` / extension whitelist
+- `mcp` — lives in `agent.toml` / extension configuration
+- `tool_sources` — lives in `agent.toml`
+- `memory` — lives in the sessions layer or external stores
+
+This ensures packaging metadata never competes with `agent.toml` as a source of truth.
+
+### 6.4 Layer Types
+
+| Layer | Source Directory | Required | Contents |
+|-------|------------------|----------|----------|
+| `config` | `config/` | Yes | `agent.toml` (SSOT), `prompts.toml` |
+| `identity` | `identity/` | Yes | `did.json`, `keys.enc` |
+| `skills` | `skills/` | No | Skill directories with `SKILL.md` |
+| `workspace` | `workspace/` | No | Workspace files (`SYSTEM.md`, etc.) |
+| `sessions` | `sessions/` | No | Session history (optional, can be large) |
+| `mcp` | `mcp/` | No | MCP configuration files |
+
+Each layer is stored as a gzip-compressed tar archive in the local registry, deduplicated by SHA-256 digest.
+
+---
+
+## 7. Team Package Format (.team)
+
+A `.team` file is a gzip-compressed tar archive containing multiple agents plus team metadata.
+
+### 7.1 Package Structure
+
+```
+my-team.team (gzip-compressed tar)
+├── team/
+│   ├── manifest.toml      # Team metadata + packaging checksums
+│   └── team.toml          # Original team definition (optional)
+└── agents/
+    └── {agent-name}/
+        ├── config/agent.toml
+        ├── identity/did.json
+        └── ...
+```
+
+### 7.2 Team Manifest Schema (TOML)
+
+```toml
+[team]
+name = "research-squad"
+description = "A team of research agents"
+agent_count = 2
+created_at = "2026-05-08T10:00:00Z"
+pekobot_version = "0.1.0"
+
+[packaging]
+files = [
+  "team/manifest.toml",
+  "team/team.toml",
+  "agents/researcher/config/agent.toml",
+  "agents/writer/config/agent.toml",
+]
+checksums = {
+  "team/team.toml" = "sha256:abc...",
+  "agents/researcher/config/agent.toml" = "sha256:def...",
+}
+compression = "gzip"
+archive_format = "tar"
+```
+
+### 7.3 Checksum Validation
+
+On import, all file checksums are verified before any agent is imported. If a checksum mismatch is detected, the import fails fast with a clear error. Legacy packages without `packaging` metadata import successfully with a warning.
+
+---
+
+## 8. Extension Package Format (.ext)
+
+A `.ext` file is a gzip-compressed tar archive containing an installed extension.
+
+### 8.1 Package Structure
+
+```
+docker-skill.ext (gzip-compressed tar)
+├── manifest.toml          # Extension metadata + checksums
+└── extension/
+    ├── manifest.yaml      # Extension manifest
+    ├── SKILL.md           # Skill definition (for skill types)
+    └── ...
+```
+
+### 8.2 Extension Manifest Schema (TOML)
+
+```toml
+[format]
+version = "1.0"
+pekobot_version = "0.1.0"
+
+[extension]
+id = "docker-skill"
+name = "docker-skill"
+extension_type = "skill"
+version = "1.0.0"
+description = "Manage Docker containers"
+
+[packaging]
+files = ["extension/manifest.yaml", "extension/SKILL.md"]
+checksums = {
+  "extension/manifest.yaml" = "sha256:abc...",
+  "extension/SKILL.md" = "sha256:def...",
+}
+compression = "gzip"
+archive_format = "tar"
+```
+
+---
+
+## 9. Local Registry Store
+
+The local registry is a content-addressable store for `.agent` layers and manifests.
+
+### 9.1 Storage Layout
+
+```
+~/.pekobot/registry/
+├── layers/
+│   └── sha256-abc123.../
+│       └── layer.tar.gz
+├── manifests/
+│   └── sha256-xyz789.../
+│       └── manifest.toml
+├── registry_manifests/
+│   └── sha256-xyz789.../
+│       └── manifest.json    # JSON wire format for registry push/pull
+└── tags/
+    └── my-agent_v1.0        # file contains manifest digest
+```
+
+### 9.2 Registry Manifest (JSON Wire Format)
+
+Used for HTTP push/pull protocol. Converted to/from `AgentManifest` at the boundaries.
 
 ```json
 {
   "schema_version": 1,
   "name": "researcher",
-  "version": "2.5.0",
-  "ref": "pekohub.com/agents/researcher:v2.5",
-  "digest": "sha256:a3b5c7d9e1f2b4d6e8fa0c2e4g6h8j0k2m4n6p8r0s2t4v6w8x0y2z4",
-  "created_at": "2026-03-10T12:00:00.000Z",
-  "source": "registry",
+  "version": "1.0.0",
+  "ref": "pekohub.com/agents/researcher:v1.0",
+  "digest": "sha256:abc123...",
+  "created_at": "2026-05-08T10:00:00Z",
+  "source": "local",
   "layers": [
     {
-      "digest":    "sha256:1a2b3c4d...",
-      "type":      "config",
-      "size_bytes": 512,
-      "path":      "config.toml"
-    },
-    {
-      "digest":    "sha256:5e6f7g8h...",
-      "type":      "markdown",
-      "size_bytes": 4096,
-      "paths":     ["AGENT.md", "BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "TOOLS.md"]
-    },
-    {
-      "digest":    "sha256:9i0j1k2l...",
-      "type":      "tools",
-      "size_bytes": 20480,
-      "paths":     ["tools/web_search.py", "tools/fetch.sh"]
-    },
-    {
-      "digest":    "sha256:3m4n5o6p...",
-      "type":      "projects",
-      "size_bytes": 102400,
-      "paths":     ["projects/"]
-    },
-    {
-      "digest":    "sha256:7q8r9s0t...",
-      "type":      "skills",
-      "size_bytes": 8192,
-      "paths":     ["skills/"]
+      "digest": "sha256:1a2b3c4d...",
+      "type": "config",
+      "size_bytes": 512
     }
-  ],
-  "base": {
-    "ref":    "pekohub.com/agents/base-researcher:v2",
-    "digest": "sha256:basef0ba..."
-  },
-  "capabilities": {
-    "tools":  ["github", "browser"],
-    "skills": ["research"],
-    "mcps":   ["vector-store-memory"]
-  }
+  ]
 }
 ```
 
-### 6.2 Layer Types
-
-| `type` | Contents | Notes |
-|--------|----------|-------|
-| `config` | `config.toml` only | Always present |
-| `markdown` | Root `.md` files | One layer for all markdown files |
-| `tools` | Files in `tools/` | Executable scripts and binaries |
-| `projects` | Files in `projects/` | Potentially large; content-deduplicated |
-| `memories` | Files in `memories/` | Seeded long-term memory |
-| `skills` | Files in `skills/` | Skill definitions |
-| `mcp_config` | `mcp.json` | MCP server configuration |
-
-### 6.3 Layer Storage
-
-Each layer is stored as a gzip-compressed tar archive at:
-
-```
-.pekobot/registry/images/layers/<digest>.tar.gz
-```
-
-Layers are shared across images. If two images contain identical `projects/` content, they reference the same layer digest and the bytes are stored once.
-
 ---
 
-## 7. Instance State
+## 10. Instance State
 
 Runtime state for a running or stopped instance. Stored in SQLite.
 
@@ -1101,7 +1249,7 @@ This is not a user-editable file. It is the daemon's working state — sessions,
 
 ---
 
-## 8. Markdown Files
+## 11. Markdown Files
 
 Optional markdown files in the agent image root provide identity, behavior, and context. All follow the same conventions.
 
@@ -1146,7 +1294,7 @@ When a base image is used, markdown files from the base are loaded first. If the
 
 ---
 
-## 9. mcp.json — MCP Server Config
+## 12. mcp.json — MCP Server Config
 
 Declares MCP servers available to the agent. The runtime starts these processes and proxies tool calls to them.
 
@@ -1192,7 +1340,7 @@ Values in `env` support `${VAR_NAME}` substitution. The variable is resolved fro
 
 ---
 
-## 10. Tool Protocol — stdin/stdout
+## 13. Tool Protocol — stdin/stdout
 
 Custom tools in `tools/` are executables invoked by the runtime via a simple JSON-over-stdin/stdout protocol. Any language that can read stdin and write stdout works.
 
@@ -1277,7 +1425,49 @@ The `parameters` schema is JSON Schema draft-07.
 
 ---
 
-## 11. Capability Manifest
+## 14. Extension Manifest
+
+> **Note:** The pre-extension `capability.toml` / `AgentCapability` system has been removed. The extension framework (`extensions.enabled` whitelist, `ExtensionManager`) is the single mechanism for controlling tool/MCP/skill access.
+
+Every installable extension includes a manifest that describes it.
+
+### 14.1 Extension Types
+
+| Type | Description | Manifest File |
+|------|-------------|---------------|
+| `skill` | Markdown-based skill | `SKILL.md` with YAML frontmatter |
+| `mcp` | MCP server adapter | `manifest.yaml` |
+| `gateway` | Gateway adapter | `manifest.yaml` |
+| `builtin` | Built-in tool | Embedded in runtime |
+| `general` | General extension | `manifest.yaml` |
+| `universal` | Universal tool adapter | `manifest.yaml` |
+
+### 14.2 SKILL.md Frontmatter (Skill Extensions)
+
+```yaml
+---
+name: docker-skill
+description: Manage Docker containers
+version: 1.0.0
+---
+
+# Docker Skill
+
+Skill content in Markdown...
+```
+
+### 14.3 Extension Package Layout
+
+```
+~/.pekobot/extensions/
+├── skill/
+│   └── docker-skill/
+│       ├── SKILL.md
+│       └── templates/
+└── mcp/
+    └── filesystem/
+        └── manifest.yaml
+```
 
 Every installable capability (tool, skill, MCP, session plugin) includes a `capability.toml` that describes it.
 
@@ -1345,7 +1535,7 @@ skills = ["research"]             # Latest installed
 
 ---
 
-## 12. Type Reference
+## 15. Type Reference
 
 Quick-reference table of all primitive types used across formats.
 
@@ -1370,11 +1560,12 @@ Quick-reference table of all primitive types used across formats.
 
 ---
 
-## 13. Changelog
+## 16. Changelog
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 0.1.0 | 2026-04-26 | Initial draft. ADR-022: Session compaction — added `compaction` and `model_change` system events (§5.3), context cache file format (§5.5), compaction semantics including dual-threshold triggers, turn boundaries, split-turn handling, and structured summary format (§5.6) |
+| 0.1.0 | 2026-05-08 | Packaging restructure (Phases 1–7): `src/image/` merged into `src/portable/`. Clean manifest — `AgentManifest` stripped of `capabilities`, `tools`, `mcp`, `tool_sources`, `memory`. Added `layers` section with content-addressable digests. Added `.agent` build from directory (`AgentBuilder`). Added registry push/pull with mock server. Added team checksum validation and `team.toml` preservation. Added `.ext` export for extensions. `agent.toml` is the single source of truth for agent behaviour. |
 
 ---
 

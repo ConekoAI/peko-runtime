@@ -17,7 +17,7 @@ Pekobot is a Rust-based multi-agent runtime with a unified extension architectur
 - **Built-in tools** (filesystem, process, apply_patch, agent_spawn, cron, etc.)
 - **Team runtime** with A2A (agent-to-agent) messaging over an event bus
 - **Extension system** with 22 hook points for tools, skills, MCP servers, channels, and gateways
-- **Registry** for image packaging, push/pull with content-addressable storage
+- **Packaging** — `.agent` build/export/import, `.team` export/import, `.ext` export, registry push/pull with content-addressable storage
 
 ---
 
@@ -124,12 +124,13 @@ src/
 | `engine` | Turn-based agentic loop: input → LLM → tools → response |
 | `extension` | Generic extension framework (ADR-017) — hook points, registries, types, managers, and shared services. Zero dependencies on extension type implementations. |
 | `extensions` | Extension type implementations (MCP, Gateway, Skill, Builtin, General, Universal). Each type lives in its own directory. |
+| `portable` | Unified packaging layer — `.agent` packages (build from directory, export, import), `.team` packages (export/import with checksums), `.ext` packages (extension export), local `AgentRegistry` with content-addressable layer storage. Merged from former `src/image/`. |
 | `session` | JSONL persistence, atomic writes, branching, `.index.json` sidecars |
 | `team` | Multi-agent teams, shared bus, shared MCPs, file workspace |
 | `tools` | Built-in tool implementations (filesystem, process, cron, spawn, etc.). Tool traits and factory only — frameworks moved to `extensions`. |
 | `providers` | LLM client abstractions (chat completions, streaming, tool calling) |
-| `image` | Image building, SHA-256 digests, content-addressable storage |
-| `registry` | Push/pull to remote registries with bearer/basic auth |
+| `portable` | Unified packaging layer — `.agent` build/export/import, `.team` export/import, `.ext` export, local `AgentRegistry` with content-addressable layer storage |
+| `registry` | HTTP client for push/pull to remote registries with bearer/basic auth |
 | `cron` | Persistent cron jobs (`cron.json`), missed-job recovery on restart |
 
 ---

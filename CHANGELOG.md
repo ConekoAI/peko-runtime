@@ -2,6 +2,41 @@
 
 All notable changes to Pekobot.
 
+## [0.1.0] - Packaging System (Phases 1–7) - 2026-05-08
+
+Unified packaging layer with content-addressable storage, registry push/pull, and integrity checks.
+
+### Added
+- **`src/portable/`** — Unified packaging layer (merged from `src/image/`)
+  - `AgentBuilder` — Build `.agent` packages from source directories with content-addressable layers
+  - `AgentRegistry` — Local content-addressable store for layers and manifests
+  - `Packager` / `Unpackager` — Export/import `.agent` packages
+  - `TeamPackager` / `TeamUnpackager` — Export/import `.team` packages with SHA-256 checksums
+  - `ExtensionPackager` / `ExtensionUnpackager` — Export/install `.ext` packages
+- **Registry client** — OCI-inspired HTTP push/pull with layer existence checks (HEAD)
+- **Mock registry server** — FastAPI-based mock for integration testing (`e2e_tests/mock_registry/`)
+- **CLI commands**
+  - `pekobot agent build <path> -t <tag>` — Build `.agent` from directory
+  - `pekobot agent push <tag>` — Push to registry
+  - `pekobot agent pull <ref>` — Pull from registry
+  - `pekobot ext export <id> -o <path>` — Export extension to `.ext`
+
+### Changed
+- **`AgentManifest` clean manifest** — Stripped of `capabilities`, `tools`, `mcp`, `tool_sources`, `memory`. Packaging metadata only. `agent.toml` is the single source of truth.
+- **`src/image/` deleted** — All functionality merged into `src/portable/`
+
+### Removed
+- `AgentCapability`, `TeamCapabilityConfig`, `CapabilitiesConfig` — Superseded by extension framework
+
+### Integration Tests
+- `tests/build_integration.rs` — 3 tests (valid build, missing config, layer deduplication)
+- `tests/registry_integration.rs` — 4 tests (manifest roundtrip, blob roundtrip, push+pull, layer skip)
+- `tests/team_integration.rs` — 4 tests (checksums, import validation, checksum mismatch, legacy warn)
+- `tests/extension_packaging.rs` — 5 tests (export, manifest, install roundtrip, missing ext, checksum mismatch)
+- `tests/packaging_integration.rs` — 3 tests (full pipeline, build→import roundtrip, clean manifest verification)
+
+---
+
 ## [0.1.0] - Documentation Reorganization - 2026-04-11
 
 Major documentation update to reflect the Unified Extension Architecture (ADR-017) implementation.
