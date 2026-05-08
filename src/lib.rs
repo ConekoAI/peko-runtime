@@ -149,11 +149,8 @@ pub(crate) mod prompt;
 // Utilities
 // ============================================================================
 
-/// Portable agent packaging (export/import)
+/// Portable agent packaging (export/import/build/push/pull)
 pub mod portable;
-
-/// Agent image management (images, instances, registry)
-pub mod image;
 
 /// Remote registry client (push/pull)
 pub mod registry;

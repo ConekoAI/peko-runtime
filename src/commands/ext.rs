@@ -70,6 +70,15 @@ pub enum ExtCommands {
     /// Show extension details
     Info { id: String },
 
+    /// Export an installed extension to a .ext package
+    Export {
+        /// Extension ID to export
+        id: String,
+        /// Output path
+        #[arg(short, long)]
+        output: String,
+    },
+
     /// Create a bundle from installed extensions
     Bundle {
         /// Bundle name
@@ -198,6 +207,12 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                 }
                 ExtCommands::Uninstall { id } => handle_uninstall(&mut manager, id).await,
                 ExtCommands::Info { id } => handle_info(&manager, id),
+                ExtCommands::Export { id, output } => {
+                    println!("Export command not yet implemented");
+                    println!("  Extension ID: {id}");
+                    println!("  Output: {output}");
+                    Ok(())
+                }
                 ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
                 ExtCommands::Config { id, show, set, unset, global, team, agent } => {
                     handle_config(paths, id, show, set, unset, global, team, agent).await

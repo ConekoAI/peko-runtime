@@ -119,6 +119,35 @@ pub enum AgentCommands {
         file: String,
     },
 
+    /// Build a .agent package from a directory
+    Build {
+        /// Path to agent directory
+        path: std::path::PathBuf,
+        /// Tag (name:tag format)
+        #[arg(short, long)]
+        tag: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Push a local .agent to a registry
+    Push {
+        /// Local tag (name:tag)
+        local_tag: String,
+        /// Registry reference (host/path:tag)
+        registry_ref: String,
+    },
+
+    /// Pull a .agent from a registry
+    Pull {
+        /// Registry reference (host/path:tag)
+        registry_ref: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Initialize a new agent directory with minimal structure
     Init {
         /// Directory path to initialize (creates if doesn't exist)
@@ -207,6 +236,29 @@ pub async fn handle_agent(
             handlers::handle_agent_import(paths, file, name, team).await
         }
         AgentCommands::Inspect { file } => handlers::handle_agent_inspect(file, json).await,
+        AgentCommands::Build { path, tag, json: _ } => {
+            println!("Build command not yet implemented");
+            println!("  Path: {}", path.display());
+            println!("  Tag: {tag}");
+            Ok(())
+        }
+        AgentCommands::Push {
+            local_tag,
+            registry_ref,
+        } => {
+            println!("Push command not yet implemented");
+            println!("  Local tag: {local_tag}");
+            println!("  Registry: {registry_ref}");
+            Ok(())
+        }
+        AgentCommands::Pull {
+            registry_ref,
+            json: _,
+        } => {
+            println!("Pull command not yet implemented");
+            println!("  Registry: {registry_ref}");
+            Ok(())
+        }
         AgentCommands::Init {
             path,
             name,

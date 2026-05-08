@@ -3,8 +3,9 @@
 //! HTTP client for pushing and pulling images from remote registries.
 //! Implements OCI-inspired distribution protocol.
 
-use crate::image::manifest::{ImageDigest, ImageManifest, Layer};
+use crate::portable::types::{ImageDigest, Layer};
 use crate::registry::config::{RegistryConfig, RegistrySource, ResolvedAuth};
+use crate::registry::manifest::RegistryManifest;
 use reqwest::Client;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -44,7 +45,7 @@ pub enum ProgressEvent {
     /// Verifying layer digest
     Verifying { layer: String },
     /// Operation complete
-    Done { manifest: ImageManifest },
+    Done { manifest: RegistryManifest },
     /// Error occurred
     Error { code: String, message: String },
 }
@@ -108,8 +109,8 @@ impl RegistryClient {
         }
     }
 
-    /// Pull an image from a registry
-    pub async fn pull<F>(&self, r#ref: &str, mut progress: F) -> anyhow::Result<ImageManifest>
+    /// Pull a package from a registry
+    pub async fn pull<F>(&self, r#ref: &str, mut progress: F) -> anyhow::Result<RegistryManifest>
     where
         F: FnMut(ProgressEvent),
     {
@@ -163,13 +164,13 @@ impl RegistryClient {
         Ok(manifest)
     }
 
-    /// Push an image to a registry
+    /// Push a package to a registry
     pub async fn push<F>(
         &self,
         local_digest: &ImageDigest,
         remote_ref: &str,
         mut progress: F,
-    ) -> anyhow::Result<ImageManifest>
+    ) -> anyhow::Result<RegistryManifest>
     where
         F: FnMut(ProgressEvent),
     {
@@ -238,7 +239,7 @@ impl RegistryClient {
         reg_ref: &RegistryRef,
         source: &RegistrySource,
         auth: &ResolvedAuth,
-    ) -> anyhow::Result<ImageManifest> {
+    ) -> anyhow::Result<RegistryManifest> {
         let url = format!(
             "https://{}/v2/{}/manifests/{}",
             source.url, reg_ref.path, reg_ref.tag
@@ -257,7 +258,7 @@ impl RegistryClient {
         }
 
         let json = response.text().await?;
-        let manifest = ImageManifest::from_json(&json)?;
+        let manifest = RegistryManifest::from_json(&json)?;
 
         Ok(manifest)
     }
@@ -429,7 +430,7 @@ impl RegistryClient {
         reg_ref: &RegistryRef,
         source: &RegistrySource,
         auth: &ResolvedAuth,
-        manifest: &ImageManifest,
+        manifest: &RegistryManifest,
     ) -> anyhow::Result<()> {
         let url = format!(
             "https://{}/v2/{}/manifests/{}",
@@ -472,7 +473,7 @@ impl RegistryClient {
     }
 
     /// Store manifest locally
-    async fn store_manifest_locally(&self, manifest: &ImageManifest) -> anyhow::Result<()> {
+    async fn store_manifest_locally(&self, manifest: &RegistryManifest) -> anyhow::Result<()> {
         let digest = ImageDigest::new(&manifest.digest)?;
         let image_dir = self.image_dir(&digest);
 
@@ -494,7 +495,7 @@ impl RegistryClient {
     }
 
     /// Load manifest from local storage
-    async fn load_manifest_local(&self, digest: &ImageDigest) -> anyhow::Result<ImageManifest> {
+    async fn load_manifest_local(&self, digest: &ImageDigest) -> anyhow::Result<RegistryManifest> {
         let image_dir = self.image_dir(digest);
         let manifest_path = image_dir.join("manifest.json");
 
@@ -506,7 +507,7 @@ impl RegistryClient {
         }
 
         let json = tokio::fs::read_to_string(&manifest_path).await?;
-        let manifest = ImageManifest::from_json(&json)?;
+        let manifest = RegistryManifest::from_json(&json)?;
 
         Ok(manifest)
     }
@@ -594,7 +595,7 @@ mod tests {
 
         // Test Done
         let hex = "a".repeat(64);
-        let manifest = ImageManifest::new("test", "1.0.0").with_digest(format!("sha256:{hex}"));
+        let manifest = RegistryManifest::new("test", "1.0.0").with_digest(format!("sha256:{hex}"));
         let event = ProgressEvent::Done { manifest };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("done"));

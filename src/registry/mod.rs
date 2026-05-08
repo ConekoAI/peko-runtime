@@ -24,9 +24,11 @@
 
 pub mod client;
 pub mod config;
+pub mod manifest;
 
 pub use client::{ProgressEvent, RegistryClient, RegistryRef};
 pub use config::{load_from_workspace, AuthConfig, RegistryConfig, RegistrySource, ResolvedAuth};
+pub use manifest::RegistryManifest;
 
 /// Registry errors
 #[derive(Debug, thiserror::Error)]
