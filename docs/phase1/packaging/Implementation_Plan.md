@@ -138,6 +138,40 @@
 
 ---
 
+### 2026-05-08 — Phase 6 Complete
+
+**What was done:**
+- Created `src/extension/manager/packaging.rs` with `ExtensionPackager` and `ExtensionUnpackager`
+- `ExtensionPackager::export()` — exports installed extension to `.ext` tar.gz with SHA-256 checksums
+- `ExtensionUnpackager::install()` — installs `.ext` to target directory with checksum validation
+- `ExtensionUnpackager::inspect()` — reads package manifest without extracting
+- Package format: `manifest.toml` + `extension/` directory in gzip-compressed tar
+- Wired `pekobot ext export <id> -o <path>` in `src/commands/ext.rs`
+- Added `pub mod packaging` to `src/extension/manager/mod.rs`
+- Created `tests/extension_packaging.rs` with 5 tests:
+  - `test_extension_export_creates_valid_ext_package` — verifies gzip output
+  - `test_extension_export_manifest_contents` — verifies manifest structure and checksums
+  - `test_extension_install_from_ext_roundtrip` — export → install, verify files match
+  - `test_extension_export_fails_for_missing_extension` — clear error on missing ID
+  - `test_extension_install_checksum_mismatch_fails` — tampered package fails with checksum error
+- 6 unit tests in `src/extension/manager/packaging.rs` covering serde, export, install, checksum validation
+
+**Verification:**
+- `cargo build --lib` — ✅ succeeds
+- `cargo test --lib` — ✅ 970 passed, 0 failed, 19 ignored
+- `cargo test --test extension_packaging` — ✅ 5 passed, 0 failed
+- `cargo clippy --all-targets` — ✅ no errors in new code
+- `peko ext export --help` — ✅ works
+
+**Key decisions:**
+- `.ext` format mirrors `.team` format: `manifest.toml` at root + content directory (`extension/`)
+- Checksums are SHA-256 hex strings stored as `sha256:...` in manifest
+- `ExtensionPackager` is synchronous (no async I/O needed for tar creation)
+- `ExtensionUnpackager::install()` is synchronous; async not needed for file extraction
+- Extension ID lookup uses `ExtensionManager::get_extension()` — fails fast with clear "not found" error
+
+---
+
 ## How to Use This Document
 
 This plan breaks the spec into **7 sequential phases**. Each phase has:
@@ -173,7 +207,7 @@ This plan breaks the spec into **7 sequential phases**. Each phase has:
 | [Phase 3](#phase-3-registry-integration) | Registry push/pull with mock | 3–4 days | ✅ Complete | `agent push`/`pull` work end-to-end against mock server |
 | [Phase 4](#phase-4-image-build-cli) | `agent build` command | 1–2 days | ✅ Complete | Build `.agent` from directory |
 | [Phase 5](#phase-5-team-packaging-hardening) | Team checksums + `team.toml` | 2–3 days | ✅ Complete | `.team` integrity checks |
-| [Phase 6](#phase-6-extension-packaging) | `.ext` export | 2–3 days | ⬜ Not started | `ext export` creates installable `.ext` |
+| [Phase 6](#phase-6-extension-packaging) | `.ext` export | 2–3 days | ✅ Complete | `ext export` creates installable `.ext` |
 | [Phase 7](#phase-7-final-integration) | Integration tests + docs | 2–3 days | ⬜ Not started | All tests pass, docs updated |
 
 **Total estimated effort**: 16–23 developer-days (3–4 weeks for 1 developer, 2 weeks for 2 developers in parallel)
@@ -783,10 +817,10 @@ docker-skill.ext (gzip-compressed tar)
 
 ### Phase 6 Exit Criteria
 
-- [ ] `pekobot ext export docker-skill -o docker-skill.ext` creates valid `.ext`
-- [ ] `.ext` installs via `pekobot ext install ./docker-skill.ext`
-- [ ] `cargo test extension` passes
-- [ ] `cargo clippy` clean
+- [x] `pekobot ext export docker-skill -o docker-skill.ext` creates valid `.ext`
+- [x] `.ext` installs via `pekobot ext install ./docker-skill.ext`
+- [x] `cargo test extension` passes
+- [x] `cargo clippy` clean
 
 ---
 

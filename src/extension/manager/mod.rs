@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 // Re-export submodules
 pub mod discovery;
+pub mod packaging;
 pub mod storage;
 
 /// Extension Manager - Central management for all extensions

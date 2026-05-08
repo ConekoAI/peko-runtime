@@ -8,6 +8,7 @@
 
 use crate::commands::GlobalPaths;
 use crate::extension::core::ExtensionCore;
+use crate::extension::manager::packaging::ExtensionPackager;
 use crate::extension::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extension::services::{ConfigScope, ExtensionConfigService, Services};
 use crate::extension::types::ExtensionId;
@@ -208,10 +209,7 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                 ExtCommands::Uninstall { id } => handle_uninstall(&mut manager, id).await,
                 ExtCommands::Info { id } => handle_info(&manager, id),
                 ExtCommands::Export { id, output } => {
-                    println!("Export command not yet implemented");
-                    println!("  Extension ID: {id}");
-                    println!("  Output: {output}");
-                    Ok(())
+                    handle_export(&manager, id, output).await
                 }
                 ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
                 ExtCommands::Config { id, show, set, unset, global, team, agent } => {
@@ -740,6 +738,31 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+// --- Export ---
+
+async fn handle_export(manager: &ExtensionManager, id: String, output: String) -> anyhow::Result<()> {
+    let ext_id = ExtensionId::new(&id);
+
+    // Verify extension exists before exporting
+    if manager.get_extension(&ext_id).is_none() {
+        anyhow::bail!("Extension '{id}' not found");
+    }
+
+    println!("Exporting extension '{id}' to {output}...");
+
+    match ExtensionPackager::export(manager, &ext_id, &output) {
+        Ok(path) => {
+            println!("Extension exported successfully");
+            println!("  Package: {}", path.display());
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Failed to export extension: {e}");
+            Err(e)
+        }
+    }
 }
 
 // --- Bundle ---
