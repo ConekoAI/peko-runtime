@@ -9,7 +9,7 @@ e2e_tests/
 ├── README.md              # This file
 ├── agent/                 # Agent management tests
 ├── extensions/            # Extension 2.0 Architecture tests
-├── image/                 # Image export/import tests
+├── packaging/             # Agent/team/extension packaging tests (ADR-027)
 ├── providers/             # Provider tests (minimax)
 ├── send/                  # Message sending tests
 ├── session/               # Session management tests
@@ -48,6 +48,15 @@ cd e2e_tests/extensions
 ```powershell
 ./skill_extension_test.ps1 -Provider minimax
 ```
+
+## Packaging Tests (ADR-027)
+
+The `packaging/` directory contains tests for the unified packaging system:
+
+| Test | Description |
+|------|-------------|
+| `agent_build_export_import.ps1` | Build, export, inspect, import .agent packages |
+| `team_export_import.ps1` | Export, import .team packages with checksum validation |
 
 ## Extension 2.0 Architecture Tests
 
