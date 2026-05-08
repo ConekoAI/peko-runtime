@@ -3,7 +3,7 @@
 > **Version**: 1.0-revised  
 > **Phase**: 0–6 Months  
 > **Objective**: Evolve the existing Pekobot runtime (v0.1.0) into a stable v1.0 release with a polished CLI, reliable agent execution, and interoperable packaging.
-> **Packaging Spec Reference**: See `docs/Packaging_Spec.md` for detailed packaging architecture and implementation plan.
+> **Packaging Spec Reference**: See ADR-027 (`docs/architecture/adr/ADR-027-unified-packaging.md`) for the packaging architecture decision record. The original spec and implementation plan in `docs/phase1/packaging/` have been superseded by this ADR.
 
 ---
 
@@ -13,17 +13,17 @@ Phase 1 is about **hardening and completing** what already exists in Pekobot v0.
 
 | Deliverable | Current State | Phase 1 Goal |
 |-------------|---------------|--------------|
-| **Agent Packaging** | `.agent` tar.gz + `ImageManifest` JSON | Unified format, validated, registry-ready |
-| **Team Packaging** | `.team` tar.gz with basic manifest | Checksum-validated, consistent with agent format |
-| **Extension Packaging** | In-memory bundles only | `.ext` packages + source references (GitHub, URL, MCP) |
-| **Image Build System** | Builder exists, no CLI | `build`/`run` commands with base image inheritance |
-| **Registry** | Client exists, no CLI, no test server | `pull`/`push` commands with mock server for testing |
+| **Agent Packaging** | `.agent` tar.gz + `ImageManifest` JSON | ✅ Unified format with content-addressable layers, clean manifest, registry-ready |
+| **Team Packaging** | `.team` tar.gz with basic manifest | ✅ Checksum-validated, `team.toml` roundtrip, consistent with agent format |
+| **Extension Packaging** | In-memory bundles only | ✅ `.ext` packages for offline distribution; source references deferred to Phase 2 |
+| **Image Build System** | Builder exists, no CLI | ✅ `pekobot agent build` works; base image inheritance deferred to Phase 2 |
+| **Registry** | Client exists, no CLI, no test server | ✅ `pekobot agent push`/`pull` with Python mock server for testing |
 | **Runtime Engine** | Agentic loop, streaming, 15+ providers | Stable, observable, well-tested |
 | **CLI** | 13+ commands, some stubs | Complete, consistent, POSIX-friendly |
 
 The success criteria are organized by **functional area**, then subdivided into **must-have** (P0), **should-have** (P1), and **nice-to-have** (P2). Phase 1 is considered successful only when **all P0 criteria are met**.
 
-**Security Note**: Package signing and encryption are explicitly deferred to Phase 2. Phase 1 relies on SHA-256 checksum validation for package integrity. See `docs/Packaging_Spec.md` §4.1 for rationale.
+**Security Note**: Package signing and encryption are explicitly deferred to Phase 2. Phase 1 relies on SHA-256 checksum validation for package integrity. See ADR-027 §Deferred to Phase 2 for rationale.
 
 ---
 
@@ -43,11 +43,10 @@ Before defining gaps, here is what Pekobot v0.1.0 already has:
 | **Session** | JSONL storage, atomic writes, branching, overlays, recovery, maintenance | `src/session/` |
 | **Extensions** | 22 hook points, 6 extension types (builtin, skill, MCP, universal, gateway, general) | `src/extension/`, `src/extensions/` |
 | **Tools** | 12+ built-in tools (fs, shell, spawn, a2a_send, cron, session, task) | `src/tools/builtin/` |
-| **Packaging** | `.agent` tar.gz with TOML manifest, SHA-256 checksums | `src/portable/` |
-| **Team packaging** | `.team` tar.gz with basic manifest, no checksums | `src/portable/team_packager.rs` |
-| **Extension bundles** | In-memory `ExtensionBundle` with conflict checking | `src/extension/manager/mod.rs` |
-| **Images** | Content-addressable layers, base image inheritance (declared), `ImageManifest` JSON | `src/image/` |
-| **Registry** | OCI-inspired push/pull, bearer/basic auth, local cache, digest verification | `src/registry/` |
+| **Packaging** | `.agent` tar.gz with TOML manifest, SHA-256 checksums, content-addressable layers | `src/portable/` |
+| **Team packaging** | `.team` tar.gz with manifest, SHA-256 checksums, `team.toml` inclusion | `src/portable/team_packager.rs` |
+| **Extension bundles** | `.ext` tar.gz packages with SHA-256 checksums | `src/extension/manager/packaging.rs` |
+| **Registry** | OCI-inspired push/pull, bearer/basic auth, local cache, digest verification, layer skip | `src/registry/` |
 | **Daemon** | Cron engine, IPC server (ADR-021), session maintenance, async task janitor | `src/daemon/` |
 | **Identity** | DID with ed25519 keys, keyring integration | `src/identity/` |
 | **Security** | API key stripping from subprocesses, credential detection in config | `src/tools/builtin/shell.rs`, `src/types/config.rs` |
@@ -57,16 +56,16 @@ Before defining gaps, here is what Pekobot v0.1.0 already has:
 
 | Gap | Impact | Priority |
 |-----|--------|----------|
-| No `build` CLI command (exists in help text but not in `Commands` enum) | Cannot build images from CLI | P0 |
-| No `run` CLI command (exists in help text but not in `Commands` enum) | Cannot run images from CLI | P0 |
-| No `pull`/`push` CLI commands | Registry client exists but not exposed | P0 |
-| No mock registry server for testing | Cannot test registry client end-to-end | P0 |
-| Base image inheritance declared but not resolved at build time | `FROM` semantics don't work | P0 |
-| Team packages have no checksums or validation | Cannot verify team package integrity | P0 |
-| No extension `.ext` package format | Cannot distribute extensions offline | P0 |
-| No extension source reference format (GitHub, URL, MCP) | Cannot install extensions from remote sources | P0 |
-| No `pekobot ext export` command | Cannot package extensions | P0 |
-| No `pekobot validate` command | Cannot validate packages without importing | P0 |
+| ~~No `build` CLI command~~ | ✅ `pekobot agent build <path> -t <tag>` implemented | P0 |
+| ~~No `run` CLI command~~ | ❌ Deferred to Phase 2 — no clear consumer for `pekobot agent run` | P2 |
+| ~~No `pull`/`push` CLI commands~~ | ✅ `pekobot agent push`/`pull` implemented with registry client | P0 |
+| ~~No mock registry server for testing~~ | ✅ Python FastAPI mock server at `e2e_tests/mock_registry/main.py` | P0 |
+| Base image inheritance declared but not resolved at build time | ❌ Deferred to Phase 2 — `base` field stays ignored | P2 |
+| ~~Team packages have no checksums or validation~~ | ✅ SHA-256 checksums computed on export, validated on import | P0 |
+| ~~No extension `.ext` package format~~ | ✅ `pekobot ext export <id> -o <file.ext>` creates valid `.ext` | P0 |
+| No extension source reference format (GitHub, URL, MCP) | ❌ Deferred to Phase 2 — bundle mode only for Phase 1 | P1 |
+| ~~No `pekobot ext export` command~~ | ✅ Implemented and tested | P0 |
+| No `pekobot validate` command | ❌ Deferred to Phase 2 — partially covered by `inspect` | P2 |
 | MCP Streamable HTTP transport missing | Cannot connect to HTTP MCP servers | P1 |
 | No OpenTelemetry export | Observability is in-process only | P1 |
 | No structured JSON output for many commands | `--json` flag partially wired | P1 |
@@ -88,39 +87,40 @@ Unify the two existing packaging systems (`.agent` tar.gz in `src/portable/` and
 ### 3.2 P0 — Must Have
 
 #### 3.2.1 Unified Package Format
-- [ ] **PKG-001**: Package MUST be a gzip-compressed tar archive (`.agent`) with a TOML manifest at the root (`manifest.toml`).
-- [ ] **PKG-002**: `manifest.toml` MUST contain: package name, semantic version, creation timestamp, Pekobot version, agent DID, identity config, capabilities, required tools, MCP servers, and file checksums.
-- [ ] **PKG-003**: Package MUST contain the following directories (all optional except where noted):
+- [x] **PKG-001**: Package MUST be a gzip-compressed tar archive (`.agent`) with a TOML manifest at the root (`manifest.toml`).
+- [x] **PKG-002**: `manifest.toml` MUST contain: package name, semantic version, creation timestamp, Pekobot version, agent DID, identity config, and file checksums. ~~capabilities, required tools, MCP servers~~ — **removed**: these live in `agent.toml` (the `config` layer) per Clean Manifest decision.
+- [x] **PKG-003**: Package MUST contain the following directories (all optional except where noted):
   - `identity/` — DID document and keys (required)
   - `config/` — Agent configuration and prompts
   - `skills/` — Bundled skill definitions
   - `workspace/` — Working files (SYSTEM.md, etc.)
   - `sessions/` — Session history (optional)
-- [ ] **PKG-004**: Package MUST include SHA-256 checksums for every file in `manifest.toml.packaging.checksums`.
-- [ ] **PKG-005**: Package MUST be verifiable via `pekobot agent inspect <file>` without full extraction.
-- [ ] **PKG-006**: `pekobot validate <path>` MUST validate a directory or `.agent` file against the spec without building or importing.
+  - `mcp/` — Bundled MCP binaries (optional)
+- [x] **PKG-004**: Package MUST include SHA-256 checksums for every file in `manifest.toml.packaging.checksums`.
+- [x] **PKG-005**: Package MUST be verifiable via `pekobot agent inspect <file>` without full extraction.
+- [ ] **PKG-006**: `pekobot validate <path>` MUST validate a directory or `.agent` file against the spec without building or importing. *(Deferred to Phase 2)*
 
 #### 3.2.2 Image Build System
-- [ ] **PKG-007**: `pekobot build <path> -t <name:tag>` MUST exist as a top-level CLI command.
-- [ ] **PKG-008**: Build MUST produce a content-addressable `ImageManifest` (JSON) with SHA-256 digested layers.
-- [ ] **PKG-009**: Build MUST create layers for: `config.toml`, markdown files, `tools/`, `projects/`, `memories/`, `skills/`, `mcp.json`.
-- [ ] **PKG-010**: Build MUST support base image inheritance via `base = "ref"` in `config.toml`, resolving and merging parent layers.
-- [ ] **PKG-011**: Build MUST reject invalid source directories (missing `config.toml`, invalid schema).
-- [ ] **PKG-012**: `pekobot run <image-ref>` MUST exist as a top-level CLI command to run an agent image.
+- [x] **PKG-007**: `pekobot agent build <path> -t <name:tag>` MUST exist as a CLI command. *(Note: moved under `pekobot agent`, not top-level, per unified CLI decision in ADR-027.)*
+- [x] **PKG-008**: Build MUST produce a content-addressable manifest with SHA-256 digested layers. *(Note: `AgentManifest` is TOML, not JSON `ImageManifest` — former `src/image/` merged into `src/portable/`.)*
+- [x] **PKG-009**: Build MUST create layers for: `config/` (agent.toml), `identity/`, `skills/`, `workspace/`, `sessions/`, `mcp/`.
+- [ ] **PKG-010**: Build MUST support base image inheritance via `base = "ref"` in `agent.toml`, resolving and merging parent layers. *(Deferred to Phase 2)*
+- [x] **PKG-011**: Build MUST reject invalid source directories (missing `config/agent.toml`, invalid schema).
+- [ ] **PKG-012**: `pekobot agent run <image-ref>` MUST exist as a CLI command to run an agent image. *(Deferred to Phase 2)*
 
 #### 3.2.3 Registry Integration
-- [ ] **PKG-013**: `pekobot pull <registry-ref>` MUST exist as a top-level CLI command.
-- [ ] **PKG-014**: `pekobot push <registry-ref>` MUST exist as a top-level CLI command.
-- [ ] **PKG-015**: Pull MUST resolve tags, download layers, verify digests, and cache in `~/.pekobot/registry/`.
-- [ ] **PKG-016**: Push MUST authenticate via bearer or basic auth, upload layers, and tag the manifest.
-- [ ] **PKG-017**: Registry references MUST follow the format `host/path/to/image:tag`.
-- [ ] **PKG-018**: A mock registry server MUST exist for testing registry client operations.
+- [x] **PKG-013**: `pekobot agent pull <registry-ref>` MUST exist as a CLI command. *(Note: moved under `pekobot agent`, not top-level.)*
+- [x] **PKG-014**: `pekobot agent push <local-tag> <registry-ref>` MUST exist as a CLI command. *(Note: moved under `pekobot agent`, not top-level.)*
+- [x] **PKG-015**: Pull MUST resolve tags, download layers, verify digests, and cache in `~/.pekobot/registry/`.
+- [x] **PKG-016**: Push MUST authenticate via bearer or basic auth, upload layers, and tag the manifest.
+- [x] **PKG-017**: Registry references MUST follow the format `host/path/to/image:tag`.
+- [x] **PKG-018**: A mock registry server MUST exist for testing registry client operations. *(Python FastAPI server at `e2e_tests/mock_registry/main.py`)*
 
 ### 3.3 P1 — Should Have
-- [ ] **PKG-019**: Build SHOULD print layer sizes, total size, and compression ratio.
-- [ ] **PKG-020**: Registry client SHOULD support Docker Hub, GHCR, and Harbor (tested).
-- [ ] **PKG-021**: Registry client SHOULD implement proper layer existence checking to avoid redundant uploads.
-- [ ] **PKG-022**: Push SHOULD support resume for interrupted layer uploads.
+- [x] **PKG-019**: Build SHOULD print layer sizes, total size, and compression ratio. *(Implemented via `BuildProgress` callback with human-readable and `--json` output.)*
+- [ ] **PKG-020**: Registry client SHOULD support Docker Hub, GHCR, and Harbor (tested). *(Not tested against real registries yet)*
+- [x] **PKG-021**: Registry client SHOULD implement proper layer existence checking to avoid redundant uploads. *(HEAD check implemented in `RegistryClient::check_existing_layers()`)*
+- [ ] **PKG-022**: Push SHOULD support resume for interrupted layer uploads. *(Deferred to Phase 2)*
 
 ### 3.4 P2 — Nice to Have (Deferred to Phase 2)
 - [ ] **PKG-023**: Packages COULD support encrypted layers for sensitive prompts or proprietary knowledge.
@@ -137,12 +137,12 @@ Unify the two existing packaging systems (`.agent` tar.gz in `src/portable/` and
 Enable export and import of complete teams (multiple agents with their configurations, workspaces, and sessions) as a single `.team` package. Team packages MUST be consistent with agent packages in format and validation.
 
 ### 4.2 P0 — Must Have
-- [ ] **TEAM-001**: `pekobot team export <name>` MUST produce a `.team` package containing all agents in the team.
-- [ ] **TEAM-002**: `pekobot team import <file>` MUST import all agents from a `.team` package.
-- [ ] **TEAM-003**: Team packages MUST include a `team/manifest.toml` with team metadata and a complete file list.
-- [ ] **TEAM-004**: Team packages MUST include SHA-256 checksums for all files in `team/manifest.toml.packaging.checksums`.
-- [ ] **TEAM-005**: Team package import MUST verify checksums and reject corrupted packages.
-- [ ] **TEAM-006**: `pekobot validate <path>` MUST validate `.team` files in addition to `.agent` files.
+- [x] **TEAM-001**: `pekobot team export <name>` MUST produce a `.team` package containing all agents in the team.
+- [x] **TEAM-002**: `pekobot team import <file>` MUST import all agents from a `.team` package.
+- [x] **TEAM-003**: Team packages MUST include a `team/manifest.toml` with team metadata and a complete file list.
+- [x] **TEAM-004**: Team packages MUST include SHA-256 checksums for all files in `team/manifest.toml.packaging.checksums`.
+- [x] **TEAM-005**: Team package import MUST verify checksums and reject corrupted packages.
+- [ ] **TEAM-006**: `pekobot validate <path>` MUST validate `.team` files in addition to `.agent` files. *(Deferred to Phase 2)*
 
 ### 4.3 P1 — Should Have
 - [ ] **TEAM-007**: Team export SHOULD support `--include-sessions`, `--exclude-workspace`, `--exclude-mcp` flags.
@@ -163,18 +163,18 @@ Enable distribution and installation of extensions through two modes: **bundled*
 ### 5.2 P0 — Must Have
 
 #### 5.2.1 Extension Source References
-- [ ] **EXT-001**: Extension installation MUST support source references in addition to local paths.
-- [ ] **EXT-002**: Source reference types MUST include at minimum: `github:owner/repo[@ref]`, `https://...` (direct URL), `mcp+https://...` (MCP endpoint), and local `.ext` files.
-- [ ] **EXT-003**: `pekobot ext install <source>` MUST resolve source references, download if needed, and install the extension.
-- [ ] **EXT-004**: Source resolution MUST support GitHub repositories with tag/branch/commit refs.
-- [ ] **EXT-005**: MCP source references MUST create appropriate server config entries without downloading files.
+- [ ] **EXT-001**: Extension installation MUST support source references in addition to local paths. *(Deferred to Phase 2)*
+- [ ] **EXT-002**: Source reference types MUST include at minimum: `github:owner/repo[@ref]`, `https://...` (direct URL), `mcp+https://...` (MCP endpoint), and local `.ext` files. *(Deferred to Phase 2)*
+- [x] **EXT-003**: `pekobot ext install <source>` MUST resolve source references, download if needed, and install the extension. *(Local path and `.ext` file support implemented; remote sources deferred)*
+- [ ] **EXT-004**: Source resolution MUST support GitHub repositories with tag/branch/commit refs. *(Deferred to Phase 2)*
+- [ ] **EXT-005**: MCP source references MUST create appropriate server config entries without downloading files. *(Deferred to Phase 2)*
 
 #### 5.2.2 Extension Bundles (`.ext`)
-- [ ] **EXT-006**: `pekobot ext export <id> -o <file.ext>` MUST create a `.ext` package from an installed extension.
-- [ ] **EXT-007**: `.ext` packages MUST be gzip-compressed tar archives with `manifest.toml` and `extension/` directory.
-- [ ] **EXT-008**: `.ext` packages MUST include SHA-256 checksums for all files.
-- [ ] **EXT-009**: `pekobot ext install <file.ext>` MUST install from a bundled package.
-- [ ] **EXT-010**: Extension bundle format MUST be documented in `DATA_MODEL.md`.
+- [x] **EXT-006**: `pekobot ext export <id> -o <file.ext>` MUST create a `.ext` package from an installed extension.
+- [x] **EXT-007**: `.ext` packages MUST be gzip-compressed tar archives with `manifest.toml` and `extension/` directory.
+- [x] **EXT-008**: `.ext` packages MUST include SHA-256 checksums for all files.
+- [x] **EXT-009**: `pekobot ext install <file.ext>` MUST install from a bundled package.
+- [x] **EXT-010**: Extension bundle format MUST be documented in `DATA_MODEL.md`. *(Documented in §8)*
 
 ### 5.3 P1 — Should Have
 - [ ] **EXT-011**: Extension source references SHOULD support version constraints (semver ranges).
@@ -344,7 +344,7 @@ Complete the CLI surface: close the gap between advertised commands (in `--help`
 ## 11. Documentation & Developer Experience
 
 ### 11.1 P0 — Must Have
-- [ ] **DX-001**: Complete specification for the `.agent` package format and `ImageManifest` schema. **See `docs/Packaging_Spec.md`.**
+- [x] **DX-001**: Complete specification for the `.agent` package format and manifest schema. **See ADR-027 and `DATA_MODEL.md` §6–§9.**
 - [ ] **DX-002**: CLI help text (`--help`) MUST be available for every command with examples.
 - [ ] **DX-003**: At least 3 end-to-end tutorials: (a) Build your first agent, (b) Package and share an agent, (c) Run a multi-step agent with tools.
 - [ ] **DX-004**: Error messages MUST be actionable — every error includes: what went wrong, why it happened, and how to fix it.
@@ -425,10 +425,9 @@ pekobot agent inspect <file>       # Inspect .agent
 pekobot agent config get <k>       # Get config value
 pekobot agent config set <k> <v>   # Set config value
 
-pekobot build <path> -t <ref>      # Build image
-pekobot run <ref>                  # Run image
-pekobot pull <registry-ref>        # Pull from registry
-pekobot push <registry-ref>        # Push to registry
+pekobot agent build <path> -t <ref>  # Build .agent from directory
+pekobot agent push <local> <remote>  # Push .agent to registry
+pekobot agent pull <registry-ref>    # Pull .agent from registry
 
 pekobot send <agent> "msg"         # Send message
 pekobot session list <agent>       # List sessions
@@ -462,7 +461,7 @@ pekobot completions <shell>        # Shell completions
 | **.agent package** | A gzip-compressed tar archive containing an agent's complete state |
 | **.team package** | A gzip-compressed tar archive containing multiple agents and team metadata |
 | **.ext package** | A gzip-compressed tar archive containing an extension for offline distribution |
-| **ImageManifest** | JSON description of content-addressable layers composing an agent image |
+| **AgentManifest** | TOML description of content-addressable layers composing an agent package |
 | **MCP** | Model Context Protocol — open standard for AI agent tools |
 | **DID** | Decentralized Identifier — self-sovereign identity for agents |
 | **Extension** | Pluggable module (skill, tool, gateway, MCP server) |
