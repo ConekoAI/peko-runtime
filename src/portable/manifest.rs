@@ -5,88 +5,43 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// MCP server entry in manifest
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpManifestEntry {
-    /// Server name
-    pub name: String,
-    /// Transport type
-    pub transport: String,
-    /// Command to execute (for stdio)
-    pub command: Option<String>,
-    /// Arguments
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-    /// Environment variables
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
-    /// Whether binary is bundled
-    #[serde(default)]
-    pub bundled: bool,
-    /// Bundled binary path within package (if bundled)
+/// Content-addressable layer digests for .agent packages
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentLayers {
+    /// Config layer digest (contains agent.toml — single source of truth)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bundle_path: Option<String>,
+    pub config: Option<String>,
+    /// Identity layer digest
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    /// Skills layer digest
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<String>,
+    /// Workspace layer digest
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// Sessions layer digest
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<String>,
+    /// MCP layer digest
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<String>,
 }
 
-/// Tool source reference for Universal Tools
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSourceRef {
-    /// Tool name
-    pub name: String,
-    /// Required version (semver range)
-    pub version: String,
-    /// Registry URL or "default" for official registry
-    #[serde(default = "default_registry")]
-    pub source: String,
-}
-
-fn default_registry() -> String {
-    "default".to_string()
-}
-
-/// Backward-compatible alias for `ToolSourceRef`.
-#[deprecated(since = "0.2.0", note = "Use ToolSourceRef instead")]
-pub type ToolRegistryRef = ToolSourceRef;
-
-/// Backward-compatible alias for `ToolSourceConfig`.
-#[deprecated(since = "0.2.0", note = "Use ToolSourceConfig instead")]
-pub type ToolRegistryConfig = ToolSourceConfig;
-
-/// MCP configuration section in manifest
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct McpManifestConfig {
-    /// List of MCP servers
-    #[serde(default, rename = "server")]
-    pub servers: Vec<McpManifestEntry>,
-}
-
-/// Tool source configuration section
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ToolSourceConfig {
-    /// Tools to fetch from registry on import
-    #[serde(default)]
-    pub required: Vec<ToolSourceRef>,
-}
-
-/// Agent manifest - defines metadata for a portable agent package
+/// Agent manifest - defines packaging metadata for a portable agent package
+///
+/// Contains ONLY packaging metadata (file lists, checksums, layer digests).
+/// Agent behavior configuration (tools, MCP, skills, capabilities) lives in
+/// agent.toml inside the config layer — the single source of truth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentManifest {
     /// Agent metadata
     pub agent: AgentMetadata,
     /// Identity configuration
     pub identity: IdentityConfig,
-    /// Memory configuration (kept for backward compatibility)
-    pub memory: MemoryConfig,
-    /// Capabilities exported with this agent
-    pub capabilities: CapabilitiesConfig,
-    /// Tools required by this agent (built-in/universal tool names)
-    pub tools: ToolsConfig,
-    /// MCP servers configuration
-    #[serde(default)]
-    pub mcp: McpManifestConfig,
-    /// Tool source references for Universal Tools
-    #[serde(default, alias = "tool_registry")]
-    pub tool_sources: ToolSourceConfig,
+    /// Content-addressable layer digests
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layers: Option<AgentLayers>,
     /// Packaging metadata
     pub packaging: PackagingMetadata,
     /// Digital signatures
@@ -127,42 +82,7 @@ pub struct IdentityConfig {
     pub kdf_params: Option<HashMap<String, String>>,
 }
 
-/// Memory configuration section
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryConfig {
-    /// Memory type (sqlite, json, etc.)
-    pub memory_type: String,
-    /// Whether memory is encrypted
-    pub encrypted: bool,
-    /// Size in bytes
-    pub size_bytes: u64,
-    /// Number of entries (if known)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entry_count: Option<u64>,
-}
 
-/// Capabilities configuration section
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapabilitiesConfig {
-    /// List of capability names
-    pub names: Vec<String>,
-    /// Capability versions (name -> version)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub versions: Option<HashMap<String, String>>,
-}
-
-/// Tools configuration section
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolsConfig {
-    /// List of required tool names
-    pub required: Vec<String>,
-    /// Tool versions (name -> version)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub versions: Option<HashMap<String, String>>,
-    /// Optional tools (can be missing)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub optional: Option<Vec<String>>,
-}
 
 /// Packaging metadata section
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,23 +132,7 @@ impl AgentManifest {
                 kdf: None,
                 kdf_params: None,
             },
-            memory: MemoryConfig {
-                memory_type: "deprecated".to_string(), // Core memory removed
-                encrypted: false,
-                size_bytes: 0,
-                entry_count: None,
-            },
-            capabilities: CapabilitiesConfig {
-                names: Vec::new(),
-                versions: None,
-            },
-            tools: ToolsConfig {
-                required: Vec::new(),
-                versions: None,
-                optional: None,
-            },
-            mcp: McpManifestConfig::default(),
-            tool_sources: ToolSourceConfig::default(),
+            layers: None,
             packaging: PackagingMetadata {
                 files: Vec::new(),
                 checksums: HashMap::new(),
@@ -240,22 +144,6 @@ impl AgentManifest {
                 algorithm: "ed25519".to_string(),
             },
         }
-    }
-
-    /// Add an MCP server entry to the manifest
-    pub fn add_mcp_server(&mut self, entry: McpManifestEntry) {
-        self.mcp.servers.push(entry);
-    }
-
-    /// Add a tool source reference
-    pub fn add_tool_source_ref(&mut self, tool_ref: ToolSourceRef) {
-        self.tool_sources.required.push(tool_ref);
-    }
-
-    /// Backward-compatible wrapper for `add_tool_source_ref`.
-    #[deprecated(since = "0.2.0", note = "Use add_tool_source_ref instead")]
-    pub fn add_tool_registry_ref(&mut self, tool_ref: ToolSourceRef) {
-        self.add_tool_source_ref(tool_ref);
     }
 
     /// Serialize to TOML string
@@ -312,12 +200,12 @@ mod tests {
         assert_eq!(manifest.agent.version, "1.0.0");
         assert_eq!(manifest.agent.did, "did:pekobot:test");
         assert!(!manifest.identity.encrypted);
+        assert!(manifest.layers.is_none());
     }
 
     #[test]
     fn test_manifest_serialization() {
         let mut manifest = AgentManifest::new("test-agent", "1.0.0", "did:pekobot:test");
-        manifest.capabilities.names = vec!["test".to_string()];
         manifest.add_file("test.txt", b"hello world");
 
         let toml = manifest.to_toml().unwrap();

@@ -19,8 +19,6 @@ pub struct AgentConfig {
     pub team: Option<String>,
     /// Tenant/organization this agent belongs to (legacy, use team)
     pub tenant: Option<String>,
-    /// Agent capabilities
-    pub capabilities: Vec<AgentCapability>,
     /// LLM provider configuration
     pub provider: super::provider::ProviderConfig,
     /// Extension configurations — unified whitelist and settings for all extension types
@@ -90,7 +88,6 @@ impl Default for AgentConfig {
             description: None,
             team: None,
             tenant: None,
-            capabilities: vec![],
             provider: super::provider::ProviderConfig::default(),
             extensions: Some(ExtensionConfig::default()),
             channels: None,
@@ -153,52 +150,6 @@ pub type BootstrapFileConfig = SystemFileConfig;
 
 fn default_max_chars() -> usize {
     20_000
-}
-
-/// Agent capability definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentCapability {
-    /// Unique capability name
-    pub name: String,
-    /// Capability version (semver)
-    #[serde(default = "default_version")]
-    pub version: String,
-    /// Human-readable description
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Input parameters (legacy field)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<Vec<CapabilityParameter>>,
-    /// Required authentication scopes (legacy field)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_auth: Option<Vec<String>>,
-    /// Estimated cost per invocation (if applicable)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_cost: Option<f64>,
-    /// Estimated duration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_duration: Option<String>,
-}
-
-fn default_version() -> String {
-    "1.0".to_string()
-}
-
-/// Capability parameter definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapabilityParameter {
-    /// Parameter name
-    pub name: String,
-    /// Parameter type (string, number, boolean, object, array)
-    pub param_type: String,
-    /// Human-readable description
-    pub description: String,
-    /// Is this parameter required?
-    pub required: bool,
-    /// Default value (JSON)
-    pub default: Option<serde_json::Value>,
-    /// JSON Schema for validation
-    pub schema: Option<serde_json::Value>,
 }
 
 /// Agent runtime state - simplified to Idle/Busy
@@ -424,27 +375,10 @@ mod tests {
     }
 
     #[test]
-    fn test_capability_serialization() {
-        let cap = AgentCapability {
-            name: "test-cap".to_string(),
-            version: "1.0".to_string(),
-            description: Some("Test capability".to_string()),
-            parameters: Some(vec![CapabilityParameter {
-                name: "input".to_string(),
-                param_type: "string".to_string(),
-                description: "Input parameter".to_string(),
-                required: true,
-                default: None,
-                schema: None,
-            }]),
-            required_auth: Some(vec!["read".to_string()]),
-            estimated_cost: None,
-            estimated_duration: Some("1s".to_string()),
-        };
-
-        let json = serde_json::to_string(&cap).unwrap();
-        assert!(json.contains("test-cap"));
-        assert!(json.contains("Test capability"));
+    fn test_extension_config_default() {
+        let config = ExtensionConfig::default();
+        assert!(!config.enabled.is_empty());
+        assert!(config.enabled.contains(&"shell".to_string()));
     }
 
     #[test]

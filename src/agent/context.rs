@@ -27,13 +27,13 @@ impl AgentContext {
         }
     }
 
-    /// Find agents with a specific capability
+    /// Find agents with a specific extension
     #[must_use]
-    pub fn find_by_capability(&self, capability: &str) -> Vec<&AgentSummary> {
+    pub fn find_by_extension(&self, extension: &str) -> Vec<&AgentSummary> {
         self.registry_view
             .agents
             .iter()
-            .filter(|a| a.capabilities.contains(&capability.to_string()))
+            .filter(|a| a.extensions.contains(&extension.to_string()))
             .collect()
     }
 
@@ -72,20 +72,20 @@ pub struct AgentSummary {
     pub did: String,
     /// Agent name
     pub name: String,
-    /// Capabilities
-    pub capabilities: Vec<String>,
+    /// Extensions (enabled extension names)
+    pub extensions: Vec<String>,
     /// Agent description
     pub description: Option<String>,
 }
 
-/// Capability index for fast lookups
+/// Extension index for fast lookups
 #[derive(Debug, Default)]
-pub struct CapabilityIndex {
-    /// Capability -> DIDs mapping
+pub struct ExtensionIndex {
+    /// Extension -> DIDs mapping
     index: HashMap<String, Vec<String>>,
 }
 
-impl CapabilityIndex {
+impl ExtensionIndex {
     /// Create empty index
     #[must_use]
     pub fn new() -> Self {
@@ -94,11 +94,11 @@ impl CapabilityIndex {
         }
     }
 
-    /// Register agent capabilities
-    pub fn register(&mut self, did: &str, capabilities: &[String]) {
-        for cap in capabilities {
+    /// Register agent extensions
+    pub fn register(&mut self, did: &str, extensions: &[String]) {
+        for ext in extensions {
             self.index
-                .entry(cap.clone())
+                .entry(ext.clone())
                 .or_default()
                 .push(did.to_string());
         }
@@ -111,15 +111,15 @@ impl CapabilityIndex {
         }
     }
 
-    /// Find agents by capability
+    /// Find agents by extension
     #[must_use]
-    pub fn find(&self, capability: &str) -> Vec<String> {
-        self.index.get(capability).cloned().unwrap_or_default()
+    pub fn find(&self, extension: &str) -> Vec<String> {
+        self.index.get(extension).cloned().unwrap_or_default()
     }
 
-    /// Get all capabilities
+    /// Get all extensions
     #[must_use]
-    pub fn capabilities(&self) -> Vec<&String> {
+    pub fn extensions(&self) -> Vec<&String> {
         self.index.keys().collect()
     }
 }
@@ -129,8 +129,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_capability_index() {
-        let mut idx = CapabilityIndex::new();
+    fn test_extension_index() {
+        let mut idx = ExtensionIndex::new();
 
         idx.register("did:1", &["search".to_string(), "calc".to_string()]);
         idx.register("did:2", &["search".to_string()]);
@@ -155,14 +155,14 @@ mod tests {
         ctx.registry_view.agents.push(AgentSummary {
             did: "did:1".to_string(),
             name: "SearchAgent".to_string(),
-            capabilities: vec!["search".to_string()],
+            extensions: vec!["search".to_string()],
             description: None,
         });
 
         ctx.agent_states
             .insert("did:1".to_string(), "idle".to_string());
 
-        let searchers = ctx.find_by_capability("search");
+        let searchers = ctx.find_by_extension("search");
         assert_eq!(searchers.len(), 1);
 
         assert!(ctx.is_agent_available("did:1"));

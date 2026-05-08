@@ -37,8 +37,8 @@ pub struct AgentInfo {
     pub name: String,
     /// Current state
     pub state: AgentState,
-    /// Capabilities
-    pub capabilities: Vec<String>,
+    /// Extensions (enabled extension names)
+    pub extensions: Vec<String>,
     /// Uptime (seconds)
     pub uptime_secs: u64,
     /// Identity info
@@ -68,7 +68,7 @@ impl AgentInfo {
             did: did.clone(),
             name,
             state,
-            capabilities: Vec::new(),
+            extensions: Vec::new(),
             uptime_secs: 0,
             identity_info: IdentityInfo {
                 did,

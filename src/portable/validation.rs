@@ -200,10 +200,6 @@ pub fn validate_package(
     if !manifest.identity.encrypted {
         result.add_warning(ValidationWarning::UnencryptedKeys);
     }
-    if !manifest.memory.encrypted {
-        result.add_warning(ValidationWarning::UnencryptedMemory);
-    }
-
     result
 }
 

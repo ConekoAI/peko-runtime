@@ -222,8 +222,6 @@ impl TeamUnpackager {
             rotate_keys: options.rotate_keys,
             import_sessions: options.import_sessions,
             import_workspace: options.import_workspace,
-            import_mcp: options.import_mcp,
-            install_tools_from_registry: false,
             skip_validation: false,
             force: options.force,
         };

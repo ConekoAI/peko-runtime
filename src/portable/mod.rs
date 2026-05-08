@@ -97,8 +97,7 @@ pub async fn get_package_info(path: impl AsRef<Path>) -> anyhow::Result<PackageI
         export_format: manifest.agent.export_format,
         pekobot_version: manifest.agent.pekobot_version,
         encrypted: manifest.identity.encrypted,
-        capabilities: manifest.capabilities.names,
-        required_tools: manifest.tools.required,
+        layers: Vec::new(),
         valid: validation.is_valid(),
         warnings: validation.warnings.len(),
         errors: validation.errors.len(),
@@ -124,10 +123,8 @@ pub struct PackageInfo {
     pub pekobot_version: String,
     /// Whether package is encrypted
     pub encrypted: bool,
-    /// Capabilities
-    pub capabilities: Vec<String>,
-    /// Required tools
-    pub required_tools: Vec<String>,
+    /// Layer digests (content-addressable) — layer name → digest
+    pub layers: Vec<(String, String)>,
     /// Whether validation passed
     pub valid: bool,
     /// Number of warnings
@@ -156,24 +153,6 @@ impl PackageInfo {
 
         if self.encrypted {
             output.push_str("🔒 Encrypted: Yes\n");
-        }
-
-        output.push_str(&format!(
-            "\n⚡ Capabilities ({}):\n",
-            self.capabilities.len()
-        ));
-        for cap in &self.capabilities {
-            output.push_str(&format!("   - {cap}\n"));
-        }
-
-        if !self.required_tools.is_empty() {
-            output.push_str(&format!(
-                "\n🛠️  Required Tools ({}):\n",
-                self.required_tools.len()
-            ));
-            for tool in &self.required_tools {
-                output.push_str(&format!("   - {tool}\n"));
-            }
         }
 
         if self.valid {

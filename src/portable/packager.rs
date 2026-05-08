@@ -4,7 +4,7 @@
 
 use crate::identity::Identity;
 use crate::extensions::mcp::protocol::config::{McpConfig, TransportType};
-use crate::portable::manifest::{AgentManifest, McpManifestEntry, ToolSourceRef};
+use crate::portable::manifest::AgentManifest;
 use crate::types::agent::AgentConfig;
 use anyhow::Context;
 use std::collections::HashMap;
@@ -30,10 +30,6 @@ pub struct ExportOptions {
     pub include_sessions: bool,
     /// Include workspace files (SYSTEM.md, AGENTS.md, etc.)
     pub include_workspace: bool,
-    /// Include MCP servers (bundle binaries if configured)
-    pub include_mcp: bool,
-    /// Include tool source references for Universal Tools
-    pub include_tool_sources: bool,
     /// Rotate keys on import (create new DID)
     pub rotate_keys: bool,
     /// Description for the package
@@ -54,8 +50,6 @@ impl Default for ExportOptions {
 
             include_sessions: false,     // Off by default (can be large)
             include_workspace: true,     // On by default (essential files)
-            include_mcp: true,           // Bundle MCP servers by default
-            include_tool_sources: true, // Include tool source refs by default
             rotate_keys: false,
             description: None,
             output_path: None,
@@ -181,24 +175,7 @@ impl Packager {
                 .context("Failed to export sessions")?;
         }
 
-        // 7. Build capabilities and tools lists
-        self.build_capabilities(&mut manifest);
-
-        // 8. Export MCP servers (if enabled)
-        if options.include_mcp {
-            self.export_mcp_servers(&mut files, &mut manifest, &options)
-                .await
-                .context("Failed to export MCP servers")?;
-        }
-
-        // 9. Build tool registry references (if enabled)
-        if options.include_tool_sources {
-            self.build_tool_source_refs(&mut manifest, &options)
-                .await
-                .context("Failed to build tool source references")?;
-        }
-
-        // 10. Sign manifest
+        // 7. Sign manifest
         self.sign_manifest(&mut manifest)
             .context("Failed to sign manifest")?;
 
@@ -378,197 +355,7 @@ impl Packager {
         Ok(())
     }
 
-    /// Build capabilities list
-    fn build_capabilities(&self, manifest: &mut AgentManifest) {
-        let names: Vec<String> = self
-            .config
-            .capabilities
-            .iter()
-            .map(|c| c.name.clone())
-            .collect();
-
-        let versions: HashMap<String, String> = self
-            .config
-            .capabilities
-            .iter()
-            .map(|c| (c.name.clone(), c.version.clone()))
-            .collect();
-
-        manifest.capabilities.names = names;
-        manifest.capabilities.versions = Some(versions);
-    }
-
-    /// Export MCP servers (bundle binaries if configured)
-    async fn export_mcp_servers(
-        &self,
-        files: &mut HashMap<String, Vec<u8>>,
-        manifest: &mut AgentManifest,
-        options: &ExportOptions,
-    ) -> anyhow::Result<()> {
-        let mcp_config = Self::load_mcp_config(options).await?;
-
-        for server in &mcp_config.servers {
-            let mut entry = McpManifestEntry {
-                name: server.name.clone(),
-                transport: transport_to_string(&server.transport).to_string(),
-                command: server.command.clone(),
-                args: server.args.clone(),
-                env: server.env.clone(),
-                bundled: false,
-                bundle_path: None,
-            };
-
-            if server.is_bundleable() {
-                self.try_bundle_mcp_binary(server, files, manifest, &mut entry)
-                    .await;
-            }
-
-            manifest.add_mcp_server(entry);
-        }
-
-        Ok(())
-    }
-
-    /// Load MCP configuration from file or auto-detect
-    async fn load_mcp_config(options: &ExportOptions) -> anyhow::Result<McpConfig> {
-        if let Some(ref path) = options.mcp_config_path {
-            McpConfig::from_file(path).await
-        } else {
-            McpConfig::load_with_auto_detect(None).await
-        }
-    }
-
-    /// Try to bundle an MCP server binary
-    async fn try_bundle_mcp_binary(
-        &self,
-        server: &crate::extensions::mcp::protocol::config::McpServerConfig,
-        files: &mut HashMap<String, Vec<u8>>,
-        manifest: &mut AgentManifest,
-        entry: &mut McpManifestEntry,
-    ) {
-        let Some(binary_path) = server.bundle_binary_path() else {
-            tracing::warn!(
-                "MCP server '{}' has bundle=true but command path could not be resolved",
-                server.name
-            );
-            return;
-        };
-
-        if !binary_path.exists() {
-            tracing::warn!(
-                "MCP server '{}' has bundle=true but binary not found at {:?}",
-                server.name,
-                binary_path
-            );
-            return;
-        }
-
-        let bundle_path = format!("mcp/{}/bin", server.name);
-
-        match tokio::fs::read(&binary_path).await {
-            Ok(binary_data) => {
-                manifest.add_file(&bundle_path, &binary_data);
-                files.insert(bundle_path.clone(), binary_data);
-
-                entry.bundled = true;
-                entry.bundle_path = Some(bundle_path);
-
-                tracing::info!(
-                    "Bundled MCP server '{}' binary from {:?}",
-                    server.name,
-                    binary_path
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to read MCP server '{}' binary at {:?}: {}",
-                    server.name,
-                    binary_path,
-                    e
-                );
-            }
-        }
-    }
-
-    /// Build tool source references for Universal Tools
-    async fn build_tool_source_refs(
-        &self,
-        manifest: &mut AgentManifest,
-        options: &ExportOptions,
-    ) -> anyhow::Result<()> {
-        // Discover installed Universal Tools and add registry references
-        if let Some(ref tools_dir) = options.tools_dir {
-            if tools_dir.exists() {
-                let mut entries = tokio::fs::read_dir(tools_dir).await?;
-
-                while let Some(entry) = entries.next_entry().await? {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let tool_name = path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-
-                        // Look for manifest.json to get version
-                        let manifest_path = path.join("manifest.json");
-                        let version = if manifest_path.exists() {
-                            match tokio::fs::read_to_string(&manifest_path).await {
-                                Ok(content) => {
-                                    if let Ok(json) =
-                                        serde_json::from_str::<serde_json::Value>(&content)
-                                    {
-                                        json.get("version")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("*")
-                                            .to_string()
-                                    } else {
-                                        "*".to_string()
-                                    }
-                                }
-                                Err(_) => "*".to_string(),
-                            }
-                        } else {
-                            "*".to_string()
-                        };
-
-                        let tool_name_for_log = tool_name.clone();
-                        manifest.add_tool_source_ref(ToolSourceRef {
-                            name: tool_name,
-                            version,
-                            source: "default".to_string(),
-                        });
-
-                        tracing::debug!("Added tool registry ref: {}", tool_name_for_log);
-                    }
-                }
-            }
-        }
-
-        // Also add references from config.extensions.enabled (whitelisted tools)
-        let whitelist = self.config.extension_whitelist();
-        for tool_name in &whitelist {
-            // Skip if already added from tools_dir discovery
-            if manifest
-                .tool_sources
-                .required
-                .iter()
-                .any(|r| r.name == *tool_name)
-            {
-                continue;
-            }
-
-            manifest.add_tool_source_ref(ToolSourceRef {
-                name: tool_name.clone(),
-                version: "*".to_string(),
-                source: "default".to_string(),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Sign the manifest
+    /// Sign manifest
     fn sign_manifest(&self, manifest: &mut AgentManifest) -> anyhow::Result<()> {
         // Create manifest without signature for signing
         let manifest_for_signing = AgentManifest {
@@ -659,9 +446,7 @@ impl Packager {
         // Simple prompts export - can be extended
         let prompts = serde_json::json!({
             "system_prompt": format!("You are {}, a helpful AI assistant.", self.config.name),
-            "capabilities": self.config.capabilities.iter()
-                .map(|c| c.name.clone())
-                .collect::<Vec<_>>(),
+            "extensions": self.config.extension_whitelist(),
         });
 
         toml::to_string_pretty(&prompts).unwrap_or_default()
@@ -692,8 +477,6 @@ mod tests {
         assert!(!opts.encrypt);
         assert!(!opts.include_sessions); // Default: false (large)
         assert!(opts.include_workspace); // Default: true (essential)
-        assert!(opts.include_mcp); // Default: true
-        assert!(opts.include_tool_sources); // Default: true
         assert!(!opts.rotate_keys);
     }
 }

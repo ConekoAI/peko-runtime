@@ -115,8 +115,6 @@ impl TeamPackager {
             passphrase: None,
             include_sessions: options.include_sessions,
             include_workspace: options.include_workspace,
-            include_mcp: options.include_mcp,
-            include_tool_sources: true,
             rotate_keys: false,
             description: None,
             output_path: None,

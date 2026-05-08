@@ -106,7 +106,6 @@ fn build_default_agent_config(name: &str, provider: &str, model: Option<String>)
         description: Some(format!("Pekobot agent: {name}")),
         team: None,
         tenant: None,
-        capabilities: vec![],
         provider: ProviderConfig {
             provider_type,
             api_key,
@@ -595,8 +594,6 @@ impl AgentService {
             passphrase: None,
             include_sessions: true,
             include_workspace: true,
-            include_mcp: true,
-            include_tool_sources: true,
             rotate_keys: false,
             description: Some(format!("Exported agent {agent_name} from team {team}")),
             output_path: Some(output_path.to_string_lossy().to_string()),
@@ -647,8 +644,6 @@ impl AgentService {
             rotate_keys: true, // Always rotate keys on import for security
             import_sessions: true,
             import_workspace: true,
-            import_mcp: true,
-            install_tools_from_registry: false,
             skip_validation: false,
             force: false,
         };

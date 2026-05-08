@@ -88,22 +88,6 @@ pub struct AgentConfigEntry {
 }
 
 impl AgentConfigEntry {
-    /// Get capabilities as a list of strings
-    #[must_use]
-    pub fn capabilities(&self) -> Vec<String> {
-        self.config
-            .capabilities
-            .iter()
-            .map(|c| c.name.clone())
-            .collect()
-    }
-
-    /// Check if agent has a specific capability
-    #[must_use]
-    pub fn has_capability(&self, name: &str) -> bool {
-        self.config.capabilities.iter().any(|c| c.name == name)
-    }
-
     /// Get image reference (backward compatibility)
     #[must_use]
     pub fn image_ref(&self) -> &str {
