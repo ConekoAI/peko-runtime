@@ -108,6 +108,9 @@ impl TeamUnpackager {
         // Parse manifest
         let manifest = self.parse_manifest(&files)?;
 
+        // Validate checksums if packaging metadata is present
+        self.validate_checksums(&manifest, &files)?;
+
         let team_name = options
             .new_name
             .clone()
@@ -122,6 +125,16 @@ impl TeamUnpackager {
         tokio::fs::create_dir_all(&team_dir)
             .await
             .with_context(|| format!("Failed to create team directory: {}", team_dir.display()))?;
+
+        // Restore team.toml if present in package
+        if let Some(team_toml_content) = files.get("team/team.toml") {
+            let team_toml_path = team_dir.join("team.toml");
+            tokio::fs::write(&team_toml_path, team_toml_content)
+                .await
+                .with_context(|| {
+                    format!("Failed to write team.toml: {}", team_toml_path.display())
+                })?;
+        }
 
         // Group files by agent
         let agent_files = self.group_files_by_agent(&files);
@@ -144,6 +157,50 @@ impl TeamUnpackager {
             agents: imported_agents,
             workspace_path: self.base_dir.join("workspaces").join(&team_name),
         })
+    }
+
+    /// Validate checksums for all files in the package
+    fn validate_checksums(
+        &self,
+        manifest: &TeamManifest,
+        files: &HashMap<String, Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        let packaging = match &manifest.packaging {
+            Some(p) => p,
+            None => {
+                // No packaging metadata — warn but continue (legacy package)
+                eprintln!("Warning: Team package has no packaging metadata (checksums). Skipping integrity validation.");
+                return Ok(());
+            }
+        };
+
+        for (path, expected_checksum) in &packaging.checksums {
+            // Skip the manifest itself — it's validated by being parsed
+            if path == "team/manifest.toml" {
+                continue;
+            }
+
+            let content = files.get(path).ok_or_else(|| {
+                anyhow::anyhow!("Package is missing file listed in packaging metadata: {path}")
+            })?;
+
+            let computed = Self::compute_checksum(content);
+            if computed != *expected_checksum {
+                anyhow::bail!(
+                    "Checksum mismatch for '{path}': expected {expected_checksum}, got {computed}"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Compute SHA-256 checksum for data
+    fn compute_checksum(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        format!("sha256:{:x}", hasher.finalize())
     }
 
     /// Extract package files

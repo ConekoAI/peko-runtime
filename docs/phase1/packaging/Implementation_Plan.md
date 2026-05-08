@@ -1,7 +1,7 @@
 # Pekobot Packaging — Implementation Plan v2.2
 
 > **Version**: 2.2-draft  
-> **Status**: In Progress — Phases 1, 2, 3 & 4 Complete  
+> **Status**: In Progress — Phases 1, 2, 3, 4 & 5 Complete  
 > **Source Spec**: [`Packaging_Spec.md`](./Packaging_Spec.md)  
 > **Last Updated**: 2026-05-08  
 > **Key Decisions**: 
@@ -12,6 +12,37 @@
 ---
 
 ## Progress Log
+
+### 2026-05-08 — Phase 5 Complete
+
+**What was done:**
+- Added `TeamPackagingMetadata` struct to `src/portable/team_packager.rs` with `files`, `checksums`, `compression`, `archive_format`
+- Added `packaging: Option<TeamPackagingMetadata>` field to `TeamManifest`
+- `TeamPackager::create_team_archive()` now computes SHA-256 checksums for every file in the archive
+- `TeamPackager` includes `team.toml` in `.team` export if it exists in the team directory (`base_dir/teams/{name}/team.toml`)
+- `TeamUnpackager::import()` validates all checksums before importing agents; fails fast on mismatch with clear error
+- `TeamUnpackager` warns (but continues) if no `packaging` metadata is present (legacy packages)
+- `TeamUnpackager::import()` restores `team/team.toml` to the team directory if present in package
+- Exported `TeamPackagingMetadata` from `src/portable/mod.rs`
+- Created `tests/team_integration.rs` with 4 tests:
+  - `test_team_export_with_checksums` — verifies manifest has packaging metadata, checksums, and team.toml
+  - `test_team_import_with_checksum_validation` — export → import roundtrip with checksum verification
+  - `test_team_import_fails_on_checksum_mismatch` — tampered package fails with "Checksum mismatch"
+  - `test_team_import_warns_without_checksums` — legacy packages (no packaging metadata) import successfully with warning
+
+**Verification:**
+- `cargo build --lib` — ✅ succeeds
+- `cargo test --lib` — ✅ 964 passed, 0 failed, 19 ignored
+- `cargo test --test team_integration` — ✅ 4 passed, 0 failed
+- `cargo clippy --all-targets` — ✅ no errors (only pre-existing warnings)
+
+**Key decisions:**
+- Checksums are computed for ALL files in the package (agent files + team.toml), stored as `sha256:...` hex strings
+- The manifest itself is NOT included in the checksum list (it's validated by TOML parsing)
+- Legacy packages without `packaging` metadata are supported with a warning — no breaking change
+- `team.toml` is optional during export — package succeeds even if it doesn't exist
+
+---
 
 ### 2026-05-08 — Phases 1 & 2 Complete
 
@@ -102,7 +133,7 @@
 - This keeps the two paths (export vs build) cleanly separated.
 
 **What was deferred:**
-- Phase 5 (Team packaging hardening) — can run in parallel with Phase 6
+- Phase 5 (Team packaging hardening) — started next
 - Phase 6 (Extension packaging) — can run in parallel with Phase 5
 
 ---
@@ -141,7 +172,7 @@ This plan breaks the spec into **7 sequential phases**. Each phase has:
 | [Phase 2](#phase-2-clean-manifest--merge-image-into-portable) | Clean manifest + merge `src/image/` into `src/portable/` + remove capabilities | 4–5 days | ✅ Complete | `src/image/` deleted; `AgentRegistry` + portable types created; `RegistryClient` adapted |
 | [Phase 3](#phase-3-registry-integration) | Registry push/pull with mock | 3–4 days | ✅ Complete | `agent push`/`pull` work end-to-end against mock server |
 | [Phase 4](#phase-4-image-build-cli) | `agent build` command | 1–2 days | ✅ Complete | Build `.agent` from directory |
-| [Phase 5](#phase-5-team-packaging-hardening) | Team checksums + `team.toml` | 2–3 days | ⬜ Not started | `.team` integrity checks |
+| [Phase 5](#phase-5-team-packaging-hardening) | Team checksums + `team.toml` | 2–3 days | ✅ Complete | `.team` integrity checks |
 | [Phase 6](#phase-6-extension-packaging) | `.ext` export | 2–3 days | ⬜ Not started | `ext export` creates installable `.ext` |
 | [Phase 7](#phase-7-final-integration) | Integration tests + docs | 2–3 days | ⬜ Not started | All tests pass, docs updated |
 
@@ -689,12 +720,12 @@ Build complete.
 
 ### Phase 5 Exit Criteria
 
-- [ ] `cargo test portable` passes (including team tests)
-- [ ] Exported `.team` includes `packaging.checksums`
-- [ ] Team import fails on checksum mismatch
-- [ ] Team import warns (but continues) without checksums
-- [ ] `team.toml` roundtrips through export/import
-- [ ] `cargo clippy` clean in `src/portable/`
+- [x] `cargo test portable` passes (including team tests)
+- [x] Exported `.team` includes `packaging.checksums`
+- [x] Team import fails on checksum mismatch
+- [x] Team import warns (but continues) without checksums
+- [x] `team.toml` roundtrips through export/import
+- [x] `cargo clippy` clean in `src/portable/`
 
 ---
 

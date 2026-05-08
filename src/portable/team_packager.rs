@@ -184,8 +184,44 @@ impl TeamPackager {
         let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
         let mut tar = tar::Builder::new(enc);
 
-        // Add team manifest
-        let team_manifest = self.create_team_manifest(agent_packages.len(), options);
+        // Collect all files and compute checksums
+        let mut all_files: HashMap<String, Vec<u8>> = HashMap::new();
+
+        // Add each agent as a subdirectory
+        for (name, _config, _identity, files) in agent_packages {
+            for (file_path, content) in files {
+                let package_path = format!("agents/{name}/{file_path}");
+                all_files.insert(package_path, content.clone());
+            }
+        }
+
+        // Try to include team.toml if it exists in the team directory
+        let team_toml_path = self.base_dir.join("teams").join(&self.team_name).join("team.toml");
+        if team_toml_path.exists() {
+            let team_toml_content = tokio::fs::read(&team_toml_path).await.with_context(|| {
+                format!("Failed to read team.toml: {}", team_toml_path.display())
+            })?;
+            all_files.insert("team/team.toml".to_string(), team_toml_content);
+        }
+
+        // Build packaging metadata with checksums
+        let mut packaging = TeamPackagingMetadata {
+            files: Vec::new(),
+            checksums: HashMap::new(),
+            compression: "gzip".to_string(),
+            archive_format: "tar".to_string(),
+        };
+
+        for (path, content) in &all_files {
+            packaging.files.push(path.clone());
+            let checksum = Self::compute_checksum(content);
+            packaging.checksums.insert(path.clone(), checksum);
+        }
+
+        // Create team manifest with packaging metadata
+        let mut team_manifest = self.create_team_manifest(agent_packages.len(), options);
+        team_manifest.packaging = Some(packaging);
+
         let manifest_toml =
             toml::to_string_pretty(&team_manifest).context("Failed to serialize team manifest")?;
 
@@ -196,20 +232,16 @@ impl TeamPackager {
         header.set_cksum();
         tar.append(&header, manifest_toml.as_bytes())?;
 
-        // Add each agent as a subdirectory
-        for (name, _config, _identity, files) in agent_packages {
-            for (file_path, content) in files {
-                let tar_path = format!("agents/{name}/{file_path}");
+        // Add all collected files to archive
+        for (path, content) in &all_files {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(path)?;
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
 
-                let mut header = tar::Header::new_gnu();
-                header.set_path(&tar_path)?;
-                header.set_size(content.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-
-                tar.append(&header, content.as_slice())
-                    .with_context(|| format!("Failed to add file: {tar_path}"))?;
-            }
+            tar.append(&header, content.as_slice())
+                .with_context(|| format!("Failed to add file: {path}"))?;
         }
 
         // Finish archive
@@ -244,7 +276,16 @@ impl TeamPackager {
                 include_workspace: options.include_workspace,
                 include_mcp: options.include_mcp,
             },
+            packaging: None, // populated after files are collected
         }
+    }
+
+    /// Compute SHA-256 checksum for data
+    fn compute_checksum(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        format!("sha256:{:x}", hasher.finalize())
     }
 }
 
@@ -257,6 +298,22 @@ pub struct TeamManifest {
     pub format: TeamFormat,
     /// Export metadata
     pub export: ExportMetadata,
+    /// Packaging metadata (checksums, file list)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packaging: Option<TeamPackagingMetadata>,
+}
+
+/// Team packaging metadata (checksums for integrity verification)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TeamPackagingMetadata {
+    /// List of files in the package (relative paths)
+    pub files: Vec<String>,
+    /// Checksums for each file (path -> "sha256:...")
+    pub checksums: HashMap<String, String>,
+    /// Compression format
+    pub compression: String,
+    /// Archive format
+    pub archive_format: String,
 }
 
 /// Team information
