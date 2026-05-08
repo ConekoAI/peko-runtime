@@ -1,7 +1,7 @@
 # Pekobot Packaging — Implementation Plan v2.2
 
 > **Version**: 2.2-draft  
-> **Status**: In Progress — Phases 1, 2 & 3 Complete  
+> **Status**: In Progress — Phases 1, 2, 3 & 4 Complete  
 > **Source Spec**: [`Packaging_Spec.md`](./Packaging_Spec.md)  
 > **Last Updated**: 2026-05-08  
 > **Key Decisions**: 
@@ -75,6 +75,38 @@
 
 ---
 
+### 2026-05-08 — Phase 4 Complete
+
+**What was done:**
+- Created `src/portable/builder.rs` with `AgentBuilder` struct (separate from `Packager`)
+- Implemented `AgentBuilder::build_from_directory()` — reads source dir, builds content-addressable layers, creates `.agent` package
+- Layer building: required layers (config, identity) + optional layers (skills, workspace, sessions, mcp)
+- Layer digest computation: deterministic (sorted file paths → tarball → SHA-256)
+- Layer storage in `AgentRegistry` (content-addressable, deduplicated)
+- `.agent` archive creation: `manifest.toml` + layer files in flattened structure
+- Wired `handle_agent_build()` in `src/commands/agent/handlers.rs` with human-readable and `--json` output
+- Progress callbacks: `BuildProgress` enum with Reading/Layering/Complete events
+- Created `tests/build_integration.rs` with 3 tests: valid package build, missing config error, layer deduplication
+
+**Verification:**
+- `cargo build --lib` — ✅ succeeds
+- `cargo test --lib` — ✅ 964 passed, 0 failed, 19 ignored
+- `cargo test --test build_integration` — ✅ 3 passed, 0 failed
+- `cargo clippy --all-targets` — ✅ no errors
+- `pekobot agent build --help` — ✅ works
+
+**Architecture decision:**
+- `AgentBuilder` is separate from `Packager`:
+  - `Packager` → exports an already-configured agent from memory (`AgentConfig` + `Identity`)
+  - `AgentBuilder` → builds a `.agent` from a source directory on disk
+- This keeps the two paths (export vs build) cleanly separated.
+
+**What was deferred:**
+- Phase 5 (Team packaging hardening) — can run in parallel with Phase 6
+- Phase 6 (Extension packaging) — can run in parallel with Phase 5
+
+---
+
 ## How to Use This Document
 
 This plan breaks the spec into **7 sequential phases**. Each phase has:
@@ -108,7 +140,7 @@ This plan breaks the spec into **7 sequential phases**. Each phase has:
 | [Phase 1](#phase-1-foundation) | Mock registry + CLI scaffolding | 2–3 days | ✅ Complete | Commands parse args; `build`/`push`/`pull`/`export` stubs wired |
 | [Phase 2](#phase-2-clean-manifest--merge-image-into-portable) | Clean manifest + merge `src/image/` into `src/portable/` + remove capabilities | 4–5 days | ✅ Complete | `src/image/` deleted; `AgentRegistry` + portable types created; `RegistryClient` adapted |
 | [Phase 3](#phase-3-registry-integration) | Registry push/pull with mock | 3–4 days | ✅ Complete | `agent push`/`pull` work end-to-end against mock server |
-| [Phase 4](#phase-4-image-build-cli) | `agent build` command | 1–2 days | ⬜ Not started | Build `.agent` from directory |
+| [Phase 4](#phase-4-image-build-cli) | `agent build` command | 1–2 days | ✅ Complete | Build `.agent` from directory |
 | [Phase 5](#phase-5-team-packaging-hardening) | Team checksums + `team.toml` | 2–3 days | ⬜ Not started | `.team` integrity checks |
 | [Phase 6](#phase-6-extension-packaging) | `.ext` export | 2–3 days | ⬜ Not started | `ext export` creates installable `.ext` |
 | [Phase 7](#phase-7-final-integration) | Integration tests + docs | 2–3 days | ⬜ Not started | All tests pass, docs updated |
@@ -585,10 +617,10 @@ Build complete.
 
 ### Phase 4 Exit Criteria
 
-- [ ] `pekobot agent build ./test-agent -t test:v1.0` produces valid `.agent`
-- [ ] Built `.agent` can be inspected with `pekobot agent inspect`
-- [ ] Built `.agent` can be imported with `pekobot agent import`
-- [ ] `cargo clippy` clean
+- [x] `pekobot agent build ./test-agent -t test:v1.0` produces valid `.agent`
+- [x] Built `.agent` can be inspected with `pekobot agent inspect`
+- [x] Built `.agent` can be imported with `pekobot agent import`
+- [x] `cargo clippy` clean
 
 ---
 

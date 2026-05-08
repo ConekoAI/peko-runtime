@@ -466,13 +466,15 @@ async fn handle_agent_config_set(
     Ok(())
 }
 
-/// Handle agent build command (stub — Phase 4)
+/// Handle agent build command
 pub async fn handle_agent_build(
     _paths: &GlobalPaths,
     path: PathBuf,
     tag: String,
     json: bool,
 ) -> anyhow::Result<()> {
+    use crate::portable::builder::{AgentBuilder, BuildProgress};
+
     if !path.exists() {
         anyhow::bail!("Path does not exist: {}", path.display());
     }
@@ -485,21 +487,88 @@ pub async fn handle_agent_build(
         );
     }
 
+    let registry = AgentRegistry::new(AgentRegistry::default_path());
+    registry.init().await?;
+
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "implemented": false,
-                "message": "Build command not yet fully implemented",
-                "path": path.display().to_string(),
-                "tag": tag,
-            })
-        );
+        let result = AgentBuilder::build_from_directory(&path, &tag, &registry, |_| {}).await?;
+
+        let manifest = &result.manifest;
+        let layers = manifest.layers.as_ref();
+
+        let output = serde_json::json!({
+            "success": true,
+            "package": result.package_path.display().to_string(),
+            "tag": result.tag,
+            "digest": result.manifest_digest,
+            "layers": result.layer_count,
+            "total_size": result.total_size_bytes,
+            "agent": {
+                "name": manifest.agent.name,
+                "version": manifest.agent.version,
+                "description": manifest.agent.description,
+            },
+            "layer_digests": {
+                "config": layers.and_then(|l| l.config.clone()),
+                "identity": layers.and_then(|l| l.identity.clone()),
+                "skills": layers.and_then(|l| l.skills.clone()),
+                "workspace": layers.and_then(|l| l.workspace.clone()),
+                "sessions": layers.and_then(|l| l.sessions.clone()),
+                "mcp": layers.and_then(|l| l.mcp.clone()),
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Build command not yet fully implemented");
-        println!("  Path: {}", path.display());
-        println!("  Tag: {tag}");
-        println!("  (Full build implementation coming in Phase 4)");
+        println!("Reading {}...", path.display());
+
+        let result = AgentBuilder::build_from_directory(&path, &tag, &registry, |progress| {
+            match progress {
+                BuildProgress::Reading { path } => {
+                    println!("Reading {}...", path.display());
+                }
+                BuildProgress::Layering {
+                    layer_type,
+                    digest,
+                    size_bytes,
+                } => {
+                    let short_digest = if digest.len() > 19 {
+                        format!("{}...", &digest[..19])
+                    } else {
+                        digest.clone()
+                    };
+                    println!(
+                        "  Layer {:<10} {} ({})",
+                        layer_type.dir_name(),
+                        short_digest,
+                        format_size(size_bytes)
+                    );
+                }
+                BuildProgress::Complete {
+                    package_path,
+                    tag,
+                    manifest_digest,
+                    layer_count,
+                    total_size_bytes,
+                } => {
+                    let short_digest = if manifest_digest.len() > 19 {
+                        format!("{}...", &manifest_digest[..19])
+                    } else {
+                        manifest_digest.clone()
+                    };
+                    println!();
+                    println!("Build complete.");
+                    println!("  Package: {}", package_path.display());
+                    println!("  Tag: {tag}");
+                    println!("  Digest: {short_digest}");
+                    println!("  Layers: {layer_count}");
+                    println!("  Total size: {}", format_size(total_size_bytes));
+                }
+            }
+        })
+        .await?;
+
+        // Change to the original directory if we created the package there
+        let _ = result;
     }
 
     Ok(())

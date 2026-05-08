@@ -41,6 +41,7 @@
 
 #![allow(dead_code)]
 
+pub mod builder;
 pub mod crypto;
 pub mod manifest;
 pub mod packager;
@@ -51,6 +52,7 @@ pub mod types;
 pub mod unpackager;
 pub mod validation;
 
+pub use builder::{AgentBuilder, BuildProgress, BuildResult};
 pub use crypto::{decrypt_with_passphrase, encrypt_with_passphrase, EncryptedData};
 pub use manifest::AgentManifest;
 pub use packager::{export_agent, ExportOptions, Packager};
