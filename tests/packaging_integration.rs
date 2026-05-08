@@ -23,8 +23,6 @@ use pekobot::registry::{
 use pekobot::types::agent::AgentConfig;
 use std::path::Path;
 
-const MOCK_SERVER_URL: &str = "http://127.0.0.1:18765";
-
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /// Create a minimal agent directory structure for testing.

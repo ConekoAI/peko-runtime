@@ -1,7 +1,7 @@
 # Pekobot Packaging Specification v2.2 — Capabilities Removed
 
-> **Version**: 2.2-draft  
-> **Status**: In Progress — Phase 1  
+> **Version**: 2.2  
+> **Status**: Complete — All Phases 1–7 Done  
 > **Scope**: Unified agent packaging (`.agent`), Team packaging (`.team`), Registry push/pull, Extension packaging  
 > **Related**: `DATA_MODEL.md` §6, `Phase1_Success_Criteria_Revised.md` §3  
 > **Key Decisions**: 
@@ -244,7 +244,7 @@ pekobot agent inspect backup.agent                 ← inspect .agent
 - In-memory or file-backed storage
 - Implements OCI-inspired protocol for `.agent` layer push/pull
 - Supports manifest push/pull, layer push/pull, tag resolution, HEAD checks
-- Lives in `src/registry/mock_server.rs`
+- Lives in `e2e_tests/mock_registry/main.py` (Python FastAPI server)
 
 ### 4.6 Team Packaging: Snapshot vs Definition
 
@@ -676,30 +676,31 @@ pekobot validate <path>           → Deferred
 
 ## 9. Registry Protocol
 
-### 9.1 Mock Registry Server
+### 9.1 Manifest Wire Format
 
-```rust
-// src/registry/mock_server.rs
+The registry protocol uses **JSON** as the manifest wire format (`RegistryManifest`), not TOML. The `RegistryClient` serializes manifests to JSON for push and deserializes from JSON on pull. The local `AgentManifest` (inside `.agent` packages) remains TOML.
 
-pub struct MockRegistryServer {
-    listener: TcpListener,
-    storage: Arc<MockStorage>,
-    auth: Option<MockAuth>,
-}
+### 9.2 Mock Registry Server
 
-impl MockRegistryServer {
-    pub async fn new(port: u16) -> Self;
-    pub async fn start(self) -> ServerHandle;
-    pub fn base_url(&self) -> String;
-}
+A Python-based FastAPI mock registry server is provided for integration testing:
+
+```bash
+python e2e_tests/mock_registry/main.py --port 18765
 ```
 
-### 9.2 Endpoints
+**Implementation**: `e2e_tests/mock_registry/main.py`
+
+**Features**:
+- In-memory or file-backed storage (`--storage-dir`)
+- All OCI-inspired endpoints for `.agent` push/pull
+- Supports manifest push/pull, layer push/pull, tag resolution, HEAD checks
+
+### 9.3 Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v2/` | GET | Registry capability check |
-| `/v2/{name}/manifests/{reference}` | GET/PUT | Manifest pull/push |
+| `/v2/{name}/manifests/{reference}` | GET/PUT | Manifest pull/push (JSON) |
 | `/v2/{name}/blobs/{digest}` | GET | Layer pull |
 | `/v2/{name}/blobs/uploads/` | POST | Initiate layer upload |
 | `/v2/{name}/blobs/uploads/{uuid}` | PUT | Complete layer upload |
@@ -920,7 +921,7 @@ model = "gpt-4"
 |------|---------|
 | `src/portable/types.rs` | `ImageDigest`, `LayerType`, `LayerDigest` (from image/) |
 | `src/portable/registry.rs` | `AgentRegistry` — local content-addressable store |
-| `src/registry/mock_server.rs` | Mock registry server for testing |
+| `e2e_tests/mock_registry/main.py` | Mock registry server for testing (Python FastAPI) |
 | `src/extension/manager/packaging.rs` | `ExtensionPackager` |
 | `src/extension/types/source.rs` | `ExtensionSourceRef` types (minimal) |
 | `tests/registry_integration.rs` | Registry push/pull integration tests |
@@ -956,4 +957,4 @@ model = "gpt-4"
 
 ---
 
-*End of Packaging Specification v2.1*
+*End of Packaging Specification v2.2*
