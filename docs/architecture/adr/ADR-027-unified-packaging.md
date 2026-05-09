@@ -67,7 +67,7 @@ Merge `src/image/` into `src/portable/`, creating a **single `.agent` format** t
 
 ### Neutral
 
-- **Mock registry is Python**: The test fixture is a FastAPI server in `e2e_tests/mock_registry/main.py`, not a Rust in-memory server. This is acceptable because it's test-only infrastructure.
+- **Mock registry is Python**: The test fixture is a FastAPI server in `e2e_tests/packaging/mock_registry/main.py`, not a Rust in-memory server. This is acceptable because it's test-only infrastructure.
 
 ---
 
@@ -263,7 +263,7 @@ The registry protocol uses **JSON** as the manifest wire format (`RegistryManife
 A Python-based FastAPI mock registry server is provided for integration testing:
 
 ```bash
-python e2e_tests/mock_registry/main.py --port 18765
+python e2e_tests/packaging/mock_registry/main.py --port 18765
 ```
 
 ---
