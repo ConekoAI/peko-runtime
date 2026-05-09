@@ -89,10 +89,36 @@ impl ExtensionStorage {
 
         let target_dir = storage_dir.join(&extension_id.0);
 
-        if target_dir.exists() {
-            std::fs::remove_dir_all(&target_dir)
-                .with_context(|| format!("Failed to remove extension at {target_dir:?}"))?;
+        if !target_dir.exists() {
+            return Ok(());
         }
+
+        // Fast path: direct removal.
+        if std::fs::remove_dir_all(&target_dir).is_ok() {
+            return Ok(());
+        }
+
+        // On Windows the directory may still be locked by the daemon or a child
+        // process (MCP server, gateway, etc.).  Unix allows unlinking open files;
+        // Windows does not.  Fall back to an atomic rename so the extension is
+        // logically removed, then best-effort delete the renamed directory.
+        let temp_name = format!(
+            "{}_uninstalled_{}",
+            extension_id.0,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
+        let temp_dir = storage_dir.join(&temp_name);
+
+        std::fs::rename(&target_dir, &temp_dir).with_context(|| {
+            format!("Failed to rename locked extension directory {target_dir:?} to {temp_dir:?}")
+        })?;
+
+        // Best-effort cleanup of the renamed directory.  It may succeed once the
+        // holding process releases its handles.
+        let _ = std::fs::remove_dir_all(&temp_dir);
 
         Ok(())
     }
