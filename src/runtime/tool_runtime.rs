@@ -4,10 +4,10 @@
 //! (and other non-agent contexts) to resolve and execute built-in tools.
 
 use crate::common::paths::PathResolver;
-use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extension::core::{ExtensionCore, ExtensionServices};
 use crate::extension::types::{tool_result_from_hook, HookInput};
 use crate::extension::HookPoint;
+use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::tools::{
     CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, TaskTool, Tool,
     WriteFileTool,

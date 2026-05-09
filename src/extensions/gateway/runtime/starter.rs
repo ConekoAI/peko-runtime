@@ -3,10 +3,10 @@
 //! Implements `ExtensionRuntimeStarter` for gateway extensions.
 //! Extracted from `src/ipc/server.rs` to eliminate hardcoded type dispatch.
 
-use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
-use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
-use super::adapter::{GatewayRuntimeAdapter, GatewayFlavor};
+use super::adapter::{GatewayFlavor, GatewayRuntimeAdapter};
 use super::router::GatewayRouter;
+use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
+use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -38,11 +38,7 @@ impl ExtensionRuntimeStarter for GatewayRuntimeStarter {
         "gateway"
     }
 
-    async fn start(
-        &self,
-        extension_id: &str,
-        ctx: &StarterContext,
-    ) -> anyhow::Result<()> {
+    async fn start(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()> {
         let ext_dir = ctx.data_dir.join("extensions").join(extension_id);
         let manifest_path = ext_dir.join("manifest.yaml");
 
@@ -66,7 +62,9 @@ impl ExtensionRuntimeStarter for GatewayRuntimeStarter {
 
         // Parse and register routing configuration from manifest
         let routing_config = parse_gateway_routing_config(config);
-        router.register_gateway(extension_id, routing_config).await?;
+        router
+            .register_gateway(extension_id, routing_config)
+            .await?;
 
         if gateway_type == "out-of-process" {
             let command = config
@@ -113,7 +111,12 @@ impl ExtensionRuntimeStarter for GatewayRuntimeStarter {
             ));
 
             ctx.background_runtime_manager
-                .start(extension_id.to_string(), spawn_config, adapter, RestartPolicy::default())
+                .start(
+                    extension_id.to_string(),
+                    spawn_config,
+                    adapter,
+                    RestartPolicy::default(),
+                )
                 .await?;
         } else if gateway_type == "external" {
             let endpoint = config
@@ -138,7 +141,12 @@ impl ExtensionRuntimeStarter for GatewayRuntimeStarter {
             ));
 
             ctx.background_runtime_manager
-                .start(extension_id.to_string(), spawn_config, adapter, RestartPolicy::default())
+                .start(
+                    extension_id.to_string(),
+                    spawn_config,
+                    adapter,
+                    RestartPolicy::default(),
+                )
                 .await?;
         } else {
             anyhow::bail!("Unknown gateway_type: {}", gateway_type);
@@ -150,9 +158,7 @@ impl ExtensionRuntimeStarter for GatewayRuntimeStarter {
 }
 
 /// Parse gateway routing configuration from manifest config section
-fn parse_gateway_routing_config(
-    config: &serde_yaml::Value,
-) -> super::router::GatewayRoutingConfig {
+fn parse_gateway_routing_config(config: &serde_yaml::Value) -> super::router::GatewayRoutingConfig {
     use super::router::GatewayRoutingConfig;
 
     let default_agent = config

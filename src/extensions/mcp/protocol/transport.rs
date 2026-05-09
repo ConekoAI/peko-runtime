@@ -132,11 +132,7 @@ impl StdioTransport {
     /// # Returns
     /// A new `StdioTransport` connected to the existing handles
     #[must_use]
-    pub fn from_handles(
-        stdin: ChildStdin,
-        stdout: BufReader<ChildStdout>,
-        pid: u32,
-    ) -> Self {
+    pub fn from_handles(stdin: ChildStdin, stdout: BufReader<ChildStdout>, pid: u32) -> Self {
         Self {
             child: None,
             stdin: Arc::new(Mutex::new(stdin)),

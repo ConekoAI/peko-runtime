@@ -68,11 +68,7 @@ pub fn build_completion_event(task: &AsyncTaskEntry) -> AsyncTaskCompletionEvent
     let result_message = task
         .formatted_result
         .clone()
-        .or_else(|| {
-            task.result
-                .as_ref()
-                .map(|r| task.format_result(r))
-        })
+        .or_else(|| task.result.as_ref().map(|r| task.format_result(r)))
         .unwrap_or_else(|| format!("Task {} completed with no result", task.task_id));
 
     AsyncTaskCompletionEvent {

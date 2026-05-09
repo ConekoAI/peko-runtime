@@ -23,7 +23,6 @@ pub enum PromptMode {
     None,
 }
 
-
 /// System prompt builder
 pub struct SystemPromptBuilder {
     mode: PromptMode,
@@ -255,15 +254,27 @@ impl SystemPromptBuilder {
             lines.push("| Parameter | Type | Default | Description |".to_string());
             lines.push("|-----------|------|---------|-------------|".to_string());
             lines.push("| `_async` | boolean | false | Run asynchronously. Returns an immediate receipt with `task_id` and `task_file` instead of blocking. |".to_string());
-            lines.push("| `_timeout` | integer | 300 (async) / 120 (sync) | Timeout in seconds. |".to_string());
+            lines.push(
+                "| `_timeout` | integer | 300 (async) / 120 (sync) | Timeout in seconds. |"
+                    .to_string(),
+            );
             lines.push("| `_callback` | string | queue | Result delivery mode: `queue`, `stream`, or `blocking`. |".to_string());
-            lines.push("| `_progress` | boolean | true | Request progress updates (async only). |".to_string());
-            lines.push("| `_priority` | string | normal | Task priority: `low`, `normal`, or `high`. |".to_string());
+            lines.push(
+                "| `_progress` | boolean | true | Request progress updates (async only). |"
+                    .to_string(),
+            );
+            lines.push(
+                "| `_priority` | string | normal | Task priority: `low`, `normal`, or `high`. |"
+                    .to_string(),
+            );
             lines.push("| `_retry` | integer | 0 | Number of retries on failure. |".to_string());
             lines.push(String::new());
             lines.push("Example async tool call:".to_string());
             lines.push("```json".to_string());
-            lines.push(r#"{"command": "./long-build-script.sh", "_async": true, "_timeout": 600}"#.to_string());
+            lines.push(
+                r#"{"command": "./long-build-script.sh", "_async": true, "_timeout": 600}"#
+                    .to_string(),
+            );
             lines.push("```".to_string());
         }
 
@@ -430,10 +441,8 @@ Be safe.
 
     #[test]
     fn test_builder_with_skills_via_extension_core() {
-        use crate::extensions::skill::{
-            register_skills_with_core, DiscoveredSkill,
-        };
         use crate::extension::ExtensionManifest;
+        use crate::extensions::skill::{register_skills_with_core, DiscoveredSkill};
         use std::path::PathBuf;
 
         // Create a tokio runtime for async operations
@@ -506,8 +515,6 @@ Level: {{thinking_level}}";
         // Level defaults to "medium" since with_thinking_level was removed
         assert!(prompt.contains("Level: medium"));
     }
-
-
 
     #[test]
     fn test_minimal_mode_basic() {

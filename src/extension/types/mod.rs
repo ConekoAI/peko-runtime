@@ -5,11 +5,13 @@
 
 // Re-export all types to preserve backward compatibility
 pub use self::async_types::{AsyncReceipt, AsyncTaskStatus};
-pub use self::hook_io::{HookInput, HookOutput, HookResult, tool_result_from_hook};
+pub use self::hook_io::{tool_result_from_hook, HookInput, HookOutput, HookResult};
 pub use self::manifest::ExtensionManifest;
 pub use self::session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
 pub use self::tool::{ToolMetadata, ToolSource};
-pub use self::tool_exec::{AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolResult, ToolWithContext};
+pub use self::tool_exec::{
+    AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolResult, ToolWithContext,
+};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

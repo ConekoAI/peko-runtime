@@ -173,7 +173,9 @@ impl Services {
     /// List built-in extensions from the injected ExtensionCore
     ///
     /// Returns an empty vector if no core was injected.
-    pub async fn list_builtin_extensions(&self) -> Vec<crate::extension::core::BuiltinExtensionInfo> {
+    pub async fn list_builtin_extensions(
+        &self,
+    ) -> Vec<crate::extension::core::BuiltinExtensionInfo> {
         match self.core {
             Some(ref core) => core.list_builtin_extensions().await,
             None => Vec::new(),

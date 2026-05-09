@@ -7,7 +7,9 @@ use tokio::time::interval;
 use tracing::warn;
 
 /// Type alias for a health check function
-pub type HealthCheckFn = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync>;
+pub type HealthCheckFn = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync,
+>;
 
 /// A running health check loop
 pub struct HealthCheckLoop {

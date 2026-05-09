@@ -238,8 +238,7 @@ impl CronScheduler {
 
     /// Write the database to disk atomically
     fn write_db(&self, db: &CronDatabase) -> Result<()> {
-        let json = serde_json::to_string_pretty(db)
-            .context("Failed to serialize cron database")?;
+        let json = serde_json::to_string_pretty(db).context("Failed to serialize cron database")?;
 
         // Write to a temp file first, then rename for atomicity
         let tmp_path = self.db_path.with_extension("tmp");
@@ -370,11 +369,7 @@ impl CronScheduler {
     /// Get run history for a job
     pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {
         let db = self.read_db()?;
-        let mut runs: Vec<CronRun> = db
-            .runs
-            .into_iter()
-            .filter(|r| r.job_id == job_id)
-            .collect();
+        let mut runs: Vec<CronRun> = db.runs.into_iter().filter(|r| r.job_id == job_id).collect();
         runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
         runs.truncate(limit);
         Ok(runs)
@@ -420,8 +415,13 @@ impl CronScheduler {
     }
 
     /// Recalculate and update next_run for a job based on its schedule
-    pub fn recalculate_next_run(&self, job_id: &str, after: DateTime<Utc>) -> Result<DateTime<Utc>> {
-        let job = self.get_job(job_id)?
+    pub fn recalculate_next_run(
+        &self,
+        job_id: &str,
+        after: DateTime<Utc>,
+    ) -> Result<DateTime<Utc>> {
+        let job = self
+            .get_job(job_id)?
             .ok_or_else(|| anyhow::anyhow!("Job not found: {job_id}"))?;
         let next_run = calculate_next_run(&job.schedule, after)?;
         let mut db = self.read_db()?;
@@ -434,10 +434,7 @@ impl CronScheduler {
 }
 
 /// Calculate next run time for a schedule (standalone, no storage needed)
-pub fn calculate_next_run(
-    schedule: &ScheduleKind,
-    after: DateTime<Utc>,
-) -> Result<DateTime<Utc>> {
+pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Result<DateTime<Utc>> {
     match schedule {
         ScheduleKind::At { at } => {
             let dt = DateTime::parse_from_rfc3339(at)
@@ -572,7 +569,9 @@ mod tests {
         let past_job = CronJob {
             id: Uuid::new_v4().to_string(),
             name: "Missed Job".to_string(),
-            schedule: ScheduleKind::At { at: (Utc::now() - chrono::Duration::hours(2)).to_rfc3339() },
+            schedule: ScheduleKind::At {
+                at: (Utc::now() - chrono::Duration::hours(2)).to_rfc3339(),
+            },
             target: ExecutionTarget::Main,
             agent_id: None,
             message: "Test".to_string(),
@@ -637,10 +636,14 @@ mod tests {
 
         let after = Utc::now();
         let next_run = scheduler.recalculate_next_run(&job.id, after).unwrap();
-        
+
         // Should be about 60 seconds after `after`
         let diff = (next_run - after).num_milliseconds().abs();
-        assert!(diff >= 59000 && diff <= 61000, "Expected ~60s, got {}ms", diff);
+        assert!(
+            diff >= 59000 && diff <= 61000,
+            "Expected ~60s, got {}ms",
+            diff
+        );
     }
 
     #[test]
@@ -697,7 +700,10 @@ mod tests {
         // Re-open and verify data is intact
         {
             let scheduler = CronScheduler::new(&db_path).unwrap();
-            let job = scheduler.get_job("test-123").unwrap().expect("job should exist");
+            let job = scheduler
+                .get_job("test-123")
+                .unwrap()
+                .expect("job should exist");
             assert_eq!(job.name, "Persisted Job");
             assert_eq!(job.run_count, 42);
         }

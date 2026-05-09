@@ -82,8 +82,6 @@ pub struct IdentityConfig {
     pub kdf_params: Option<HashMap<String, String>>,
 }
 
-
-
 /// Packaging metadata section
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackagingMetadata {

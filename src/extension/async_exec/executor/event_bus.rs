@@ -22,7 +22,10 @@ pub struct AsyncTaskEventBus {
 
 impl AsyncTaskEventBus {
     #[must_use]
-    pub fn new() -> (Self, tokio::sync::mpsc::UnboundedReceiver<AsyncTaskCompletionEvent>) {
+    pub fn new() -> (
+        Self,
+        tokio::sync::mpsc::UnboundedReceiver<AsyncTaskCompletionEvent>,
+    ) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         (Self { sender }, receiver)
     }

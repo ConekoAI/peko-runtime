@@ -69,11 +69,7 @@ foreach ($test in $tests) {
     }
 
     # Reset daemon state between tests
-    $resetScript = Join-Path $testDir "../reset.ps1"
-    if (Test-Path $resetScript) {
-        Write-Host "Running reset between tests..." -ForegroundColor DarkGray
-        & pwsh -NoProfile -ExecutionPolicy Bypass -File $resetScript 2>&1 | Out-Null
-    }
+    ../reset.ps1
 
     $endTime = Get-Date
     $duration = $endTime - $startTime

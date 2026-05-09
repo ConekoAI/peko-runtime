@@ -271,7 +271,8 @@ impl TeamUnpackager {
         // Use the regular Unpackager with in-memory files
         let team_dir = self.base_dir.join("teams").join(team_name);
         let unpackager = Unpackager::new("dummy.agent") // Path doesn't matter for in-memory import
-            .with_base_dir(&team_dir);
+            .with_base_dir(&team_dir)
+            .with_team(team_name);
 
         let agent_opts = AgentImportOptions {
             new_name: Some(name.to_string()),
@@ -281,6 +282,7 @@ impl TeamUnpackager {
             import_workspace: options.import_workspace,
             skip_validation: false,
             force: options.force,
+            team: Some(team_name.to_string()),
         };
 
         let result = unpackager

@@ -23,7 +23,10 @@ impl std::fmt::Display for SpawnError {
                 write!(f, "Maximum spawn depth exceeded: {current} (max: {max})")
             }
             SpawnError::ConcurrentLimitExceeded { current, max } => {
-                write!(f, "Maximum concurrent subagent runs exceeded: {current} (max: {max})")
+                write!(
+                    f,
+                    "Maximum concurrent subagent runs exceeded: {current} (max: {max})"
+                )
             }
             SpawnError::Timeout { seconds } => {
                 write!(f, "Subagent execution timed out after {seconds} seconds")

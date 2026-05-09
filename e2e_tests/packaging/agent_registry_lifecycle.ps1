@@ -200,6 +200,7 @@ default = "You are a helpful test agent. When asked to verify functionality, res
     $registryRef = "127.0.0.1:$RegistryPort/pekobot/agents/lifecycle-agent:v1.0"
     $pushResult = & $pekoCmd agent push "lifecycle-agent:v1.0" $registryRef --json 2>&1 | ConvertFrom-Json
     if ($pushResult.success -ne $true) { Write-Error "Push v1 failed" }
+    $v1RegistryDigest = $pushResult.manifest.digest
 
     $registryStateV1 = Get-RegistryBlobs -Port $RegistryPort
     Write-Host "Push v1 succeeded" -ForegroundColor Green
@@ -221,7 +222,7 @@ default = "You are a helpful test agent. When asked to verify functionality, res
 
     $pullResult = & $pekoCmd agent pull $registryRef --json 2>&1 | ConvertFrom-Json
     if ($pullResult.success -ne $true) { Write-Error "Pull v1 failed" }
-    if ($pullResult.manifest.digest -ne $v1Digest) { Write-Error "Pull v1 digest mismatch" }
+    if ($pullResult.manifest.digest -ne $v1RegistryDigest) { Write-Error "Pull v1 digest mismatch: expected $v1RegistryDigest, got $($pullResult.manifest.digest)" }
     Write-Host "Pull v1 succeeded on fresh machine" -ForegroundColor Green
 
     # ============================================================
@@ -293,6 +294,7 @@ default = "You are a helpful test agent. When asked to verify functionality, res
     $registryRefV2 = "127.0.0.1:$RegistryPort/pekobot/agents/lifecycle-agent:v2.0"
     $pushResult2 = & $pekoCmd agent push "lifecycle-agent:v2.0" $registryRefV2 --json 2>&1 | ConvertFrom-Json
     if ($pushResult2.success -ne $true) { Write-Error "Push v2 failed" }
+    $v2RegistryDigest = $pushResult2.manifest.digest
 
     $registryStateV2 = Get-RegistryBlobs -Port $RegistryPort
     $expectedMinBlobs = $registryStateV1.blobs.Count + 1  # at least 1 new layer
@@ -316,7 +318,7 @@ default = "You are a helpful test agent. When asked to verify functionality, res
 
     $pullResult2 = & $pekoCmd agent pull $registryRefV2 --json 2>&1 | ConvertFrom-Json
     if ($pullResult2.success -ne $true) { Write-Error "Pull v2 failed" }
-    if ($pullResult2.manifest.digest -ne $v2Digest) { Write-Error "Pull v2 digest mismatch" }
+    if ($pullResult2.manifest.digest -ne $v2RegistryDigest) { Write-Error "Pull v2 digest mismatch: expected $v2RegistryDigest, got $($pullResult2.manifest.digest)" }
     Write-Host "Pull v2 succeeded" -ForegroundColor Green
 
     # Verify both tags are available

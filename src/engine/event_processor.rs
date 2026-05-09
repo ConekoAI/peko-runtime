@@ -376,5 +376,4 @@ mod tests {
         });
         assert!(matches!(actions[0], ChannelAction::EndTurn));
     }
-
 }

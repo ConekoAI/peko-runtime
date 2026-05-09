@@ -49,7 +49,8 @@ async fn test_extension_export_creates_valid_ext_package() {
     manager.install(&ext_dir).await.unwrap();
 
     let output_path = temp.path().join("docker-skill.ext");
-    let result = ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path);
+    let result =
+        ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path);
 
     assert!(result.is_ok(), "Export failed: {:?}", result.err());
     assert!(output_path.exists(), "Output file should exist");
@@ -79,9 +80,18 @@ async fn test_extension_export_manifest_contents() {
     assert_eq!(manifest.packaging.compression, "gzip");
     assert_eq!(manifest.packaging.archive_format, "tar");
     assert!(!manifest.packaging.checksums.is_empty());
-    assert!(manifest.packaging.files.contains(&"extension/manifest.yaml".to_string()));
-    assert!(manifest.packaging.files.contains(&"extension/SKILL.md".to_string()));
-    assert!(manifest.packaging.files.contains(&"extension/templates/default.md".to_string()));
+    assert!(manifest
+        .packaging
+        .files
+        .contains(&"extension/manifest.yaml".to_string()));
+    assert!(manifest
+        .packaging
+        .files
+        .contains(&"extension/SKILL.md".to_string()));
+    assert!(manifest
+        .packaging
+        .files
+        .contains(&"extension/templates/default.md".to_string()));
 }
 
 #[tokio::test]
@@ -125,11 +135,15 @@ async fn test_extension_export_fails_for_missing_extension() {
     manager.install(&ext_dir).await.unwrap();
 
     let output_path = temp.path().join("missing.ext");
-    let result = ExtensionPackager::export(&manager, &ExtensionId::new("nonexistent"), &output_path);
+    let result =
+        ExtensionPackager::export(&manager, &ExtensionId::new("nonexistent"), &output_path);
 
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("not found"), "Expected 'not found' error, got: {err}");
+    assert!(
+        err.contains("not found"),
+        "Expected 'not found' error, got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -190,5 +204,8 @@ archive_format = "tar"
 
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("Checksum mismatch"), "Expected checksum mismatch, got: {err}");
+    assert!(
+        err.contains("Checksum mismatch"),
+        "Expected checksum mismatch, got: {err}"
+    );
 }

@@ -48,12 +48,9 @@ fn create_test_identity(name: &str) -> pekobot::identity::Identity {
             // We're in an async context, use block_in_place
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
-                    pekobot::identity::Identity::new(
-                        name,
-                        pekobot::identity::did::DIDScope::Local,
-                    )
-                    .await
-                    .unwrap()
+                    pekobot::identity::Identity::new(name, pekobot::identity::did::DIDScope::Local)
+                        .await
+                        .unwrap()
                 })
             })
         }
@@ -116,7 +113,12 @@ async fn test_team_export_with_checksums() {
     ];
 
     let options = TeamExportOptions {
-        output_path: Some(base_dir.join("test-team.team").to_string_lossy().to_string()),
+        output_path: Some(
+            base_dir
+                .join("test-team.team")
+                .to_string_lossy()
+                .to_string(),
+        ),
         include_sessions: false,
         include_workspace: false,
         include_mcp: false,
@@ -140,10 +142,7 @@ async fn test_team_export_with_checksums() {
         .packaging
         .expect("manifest should have packaging metadata");
     assert!(!packaging.files.is_empty(), "should have file list");
-    assert!(
-        !packaging.checksums.is_empty(),
-        "should have checksums"
-    );
+    assert!(!packaging.checksums.is_empty(), "should have checksums");
     assert_eq!(packaging.compression, "gzip");
     assert_eq!(packaging.archive_format, "tar");
 
@@ -194,7 +193,12 @@ async fn test_team_import_with_checksum_validation() {
     ];
 
     let export_options = TeamExportOptions {
-        output_path: Some(base_dir.join("test-team.team").to_string_lossy().to_string()),
+        output_path: Some(
+            base_dir
+                .join("test-team.team")
+                .to_string_lossy()
+                .to_string(),
+        ),
         include_sessions: false,
         include_workspace: false,
         include_mcp: false,
@@ -228,13 +232,15 @@ async fn test_team_import_with_checksum_validation() {
     assert_eq!(result.agent_count, 2);
 
     // ── team.toml restored ───────────────────────────────────────────
-    let restored_team_toml = import_base.join("teams").join("imported-team").join("team.toml");
-    assert!(
-        restored_team_toml.exists(),
-        "team.toml should be restored"
-    );
+    let restored_team_toml = import_base
+        .join("teams")
+        .join("imported-team")
+        .join("team.toml");
+    assert!(restored_team_toml.exists(), "team.toml should be restored");
 
-    let restored_content = tokio::fs::read_to_string(&restored_team_toml).await.unwrap();
+    let restored_content = tokio::fs::read_to_string(&restored_team_toml)
+        .await
+        .unwrap();
     assert!(restored_content.contains("name = \"test-team\""));
     assert!(restored_content.contains("agent1"));
     assert!(restored_content.contains("agent2"));
@@ -254,7 +260,12 @@ async fn test_team_import_fails_on_checksum_mismatch() {
     let agents = vec![("agent1".to_string(), config1, identity1)];
 
     let export_options = TeamExportOptions {
-        output_path: Some(base_dir.join("test-team.team").to_string_lossy().to_string()),
+        output_path: Some(
+            base_dir
+                .join("test-team.team")
+                .to_string_lossy()
+                .to_string(),
+        ),
         include_sessions: false,
         include_workspace: false,
         include_mcp: false,
@@ -307,7 +318,8 @@ async fn test_team_import_fails_on_checksum_mismatch() {
             header.set_size(content.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            tar.append_data(&mut header, path, content.as_slice()).unwrap();
+            tar.append_data(&mut header, path, content.as_slice())
+                .unwrap();
         }
         tar.finish().unwrap();
     }
@@ -395,7 +407,8 @@ async fn test_team_import_warns_without_checksums() {
             header.set_size(content.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            tar.append_data(&mut header, path, content.as_slice()).unwrap();
+            tar.append_data(&mut header, path, content.as_slice())
+                .unwrap();
         }
         tar.finish().unwrap();
     }
@@ -407,5 +420,9 @@ async fn test_team_import_warns_without_checksums() {
     let import_options = TeamImportOptions::default();
     let result = import_team_with_base_dir(&legacy_path, &import_base, import_options).await;
 
-    assert!(result.is_ok(), "Import should succeed without checksums: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Import should succeed without checksums: {:?}",
+        result.err()
+    );
 }

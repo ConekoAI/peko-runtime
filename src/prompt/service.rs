@@ -22,7 +22,10 @@ impl SystemPromptService {
     ///
     /// Includes bootstrap file injection and skill loading.
     pub async fn build(agent: &Agent, extension_core: &Arc<ExtensionCore>) -> String {
-        info!("Building initial system prompt for agent '{}'", agent.name());
+        info!(
+            "Building initial system prompt for agent '{}'",
+            agent.name()
+        );
 
         // Load and register skills before building the prompt
         let _ = Self::load_and_register_skills(agent, extension_core).await;

@@ -197,7 +197,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     "# Memory Skill`nA skill for testing memory persistence." | Out-File -FilePath "$agentSkillsDir/memory-skill/SKILL.md" -Encoding UTF8
     "# Workspace`nMemory agent workspace." | Out-File -FilePath "$agentWorkspaceDir/README.md" -Encoding UTF8
 
-    $buildResult = & $pekoCmd agent build $agentSourceDir -t "memory-agent:v1.0" --json 2>&1 | ConvertFrom-Json
+    $buildResult = & $pekoCmd agent build $agentSourceDir -t "memory-agent:v1.0" --json | ConvertFrom-Json
     if ($buildResult.tag -ne "memory-agent:v1.0") { Write-Error "Build failed" }
     $packagePath = $buildResult.package
     Write-Host "Built agent: $packagePath" -ForegroundColor Green
@@ -233,7 +233,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
             Write-Host "Immediate memory result unclear" -ForegroundColor Yellow
         }
 
-        $sessionsBefore = & $pekoCmd session list "default/$agentName" --json 2>&1 | ConvertFrom-Json
+        $sessionsBefore = & $pekoCmd session list "default/$agentName" --json | ConvertFrom-Json
         $sessionCountBefore = $sessionsBefore.sessions.Count
         Write-Host "Sessions before export: $sessionCountBefore" -ForegroundColor Gray
     } else {
@@ -308,7 +308,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     Write-Host "Imported agent as $importedName" -ForegroundColor Green
 
     # Verify agent exists
-    $showResult = & $pekoCmd agent show "default/$importedName" --json 2>&1 | ConvertFrom-Json
+    $showResult = & $pekoCmd agent show "default/$importedName" --json | ConvertFrom-Json
     if ($showResult.name -ne $importedName) { Write-Error "Imported agent not found" }
 
     # ============================================================
@@ -318,7 +318,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     Write-Host "STEP 8: Verify sessions preserved" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $sessionsAfter = & $pekoCmd session list "default/$importedName" --json 2>&1 | ConvertFrom-Json
+    $sessionsAfter = & $pekoCmd session list "default/$importedName" --json | ConvertFrom-Json
     $sessionCountAfter = $sessionsAfter.sessions.Count
     Write-Host "Sessions after import: $sessionCountAfter" -ForegroundColor Gray
 
@@ -380,7 +380,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     Write-Host "STEP 10: Verify skills and workspace" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $skillsDir = "$env:APPDATA/pekobot/teams/default/agents/$importedName/skills"
+    $skillsDir = "$env:APPDATA/pekobot/skills"
     if (Test-Path "$skillsDir/memory-skill/SKILL.md") {
         Write-Host "Skills preserved" -ForegroundColor Green
     } else {

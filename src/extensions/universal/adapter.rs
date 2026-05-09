@@ -128,8 +128,10 @@ impl UniversalToolAdapter {
 
         let tool_name = crate::extension::adapters::parsing::require_string_field(&yaml, "name")
             .or_else(|_| crate::extension::adapters::parsing::require_string_field(&yaml, "id"))?;
-        let description = crate::extension::adapters::parsing::optional_string_field(&yaml, "description", "");
-        let version = crate::extension::adapters::parsing::optional_string_field(&yaml, "version", "1.0.0");
+        let description =
+            crate::extension::adapters::parsing::optional_string_field(&yaml, "description", "");
+        let version =
+            crate::extension::adapters::parsing::optional_string_field(&yaml, "version", "1.0.0");
 
         let mut manifest = ExtensionManifest::new(
             &tool_name,
@@ -145,7 +147,10 @@ impl UniversalToolAdapter {
 
         // Store parameters schema
         if let Some(params) = yaml.get("parameters") {
-            manifest.set("parameters", crate::extension::adapters::parsing::yaml_to_json(params.clone()));
+            manifest.set(
+                "parameters",
+                crate::extension::adapters::parsing::yaml_to_json(params.clone()),
+            );
         }
 
         // LLM description
@@ -155,7 +160,10 @@ impl UniversalToolAdapter {
 
         // Reserved parameters
         if let Some(reserved) = yaml.get("reserved_parameters") {
-            manifest.set("reserved_parameters", crate::extension::adapters::parsing::yaml_to_json(reserved.clone()));
+            manifest.set(
+                "reserved_parameters",
+                crate::extension::adapters::parsing::yaml_to_json(reserved.clone()),
+            );
         }
 
         Ok((manifest, tool_name))
@@ -274,16 +282,19 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
         let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
         let tool_name = crate::extension::adapters::parsing::require_string_field(&yaml, "name")
             .or_else(|_| crate::extension::adapters::parsing::require_string_field(&yaml, "id"))?;
-        let description = crate::extension::adapters::parsing::optional_string_field(&yaml, "description", "");
-        let version = crate::extension::adapters::parsing::optional_string_field(&yaml, "version", "1.0.0");
+        let description =
+            crate::extension::adapters::parsing::optional_string_field(&yaml, "description", "");
+        let version =
+            crate::extension::adapters::parsing::optional_string_field(&yaml, "version", "1.0.0");
 
-        let executable = crate::extension::adapters::parsing::find_executable_sync(tool_path, &tool_name)
-            .with_context(|| {
-                format!(
-                    "Failed to find executable for tool '{}' in {:?}",
-                    tool_name, tool_path
-                )
-            })?;
+        let executable =
+            crate::extension::adapters::parsing::find_executable_sync(tool_path, &tool_name)
+                .with_context(|| {
+                    format!(
+                        "Failed to find executable for tool '{}' in {:?}",
+                        tool_name, tool_path
+                    )
+                })?;
 
         let mut manifest = ExtensionManifest::new(
             &tool_name,
@@ -299,7 +310,10 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
 
         // Parameters schema
         if let Some(params) = yaml.get("parameters") {
-            manifest.set("parameters", crate::extension::adapters::parsing::yaml_to_json(params.clone()));
+            manifest.set(
+                "parameters",
+                crate::extension::adapters::parsing::yaml_to_json(params.clone()),
+            );
         }
 
         // LLM description
@@ -309,7 +323,10 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
 
         // Reserved parameters
         if let Some(reserved) = yaml.get("reserved_parameters") {
-            manifest.set("reserved_parameters", crate::extension::adapters::parsing::yaml_to_json(reserved.clone()));
+            manifest.set(
+                "reserved_parameters",
+                crate::extension::adapters::parsing::yaml_to_json(reserved.clone()),
+            );
         }
 
         Ok(manifest)

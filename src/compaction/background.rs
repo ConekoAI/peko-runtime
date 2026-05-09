@@ -243,10 +243,7 @@ impl BackgroundCompactor {
         if let Some(last) = state.last_compaction {
             let elapsed = last.elapsed().as_secs();
             if elapsed < cooldown {
-                debug!(
-                    "Compaction on cooldown: {}s remaining",
-                    cooldown - elapsed
-                );
+                debug!("Compaction on cooldown: {}s remaining", cooldown - elapsed);
                 return false;
             }
         }

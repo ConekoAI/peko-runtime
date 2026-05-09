@@ -309,14 +309,14 @@ impl CronEngine {
         self.execute_main_job(job).await
     }
 
-    async fn run_job_with_agent_service(
-        &self,
-        job: &CronJob,
-    ) -> Result<(String, Option<String>)> {
+    async fn run_job_with_agent_service(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         let message = &job.message;
 
         if let Some(service) = &self.agent_service {
-            let agent_id = job.agent_id.clone().unwrap_or_else(|| "default".to_string());
+            let agent_id = job
+                .agent_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
             let request = MessageRequest::new(&agent_id, message.clone()).with_timeout(300);
 
             match service.execute_message(request).await {
@@ -328,7 +328,10 @@ impl CronEngine {
             }
         } else {
             warn!("No agent service available for cron job execution");
-            Ok(("failed".to_string(), Some("Agent service not available".to_string())))
+            Ok((
+                "failed".to_string(),
+                Some("Agent service not available".to_string()),
+            ))
         }
     }
 
@@ -346,8 +349,8 @@ impl CronEngine {
                 info!("📢 Announcing job '{}' result: {}", job.name, status);
 
                 if *best_effort {
-                    if let Err(e) = self
-                        .send_announcement(job, status, channel.as_deref(), to.as_deref())
+                    if let Err(e) =
+                        self.send_announcement(job, status, channel.as_deref(), to.as_deref())
                     {
                         warn!("Failed to send announcement (best_effort=true): {}", e);
                     }
@@ -412,13 +415,7 @@ mod tests {
         let scheduler = Arc::new(CronScheduler::new(&tmp.path().join("cron.json")).unwrap());
         let idle = Arc::new(IdleDetector::new());
         let obs = Arc::new(Observability::new("daemon"));
-        CronEngine::new(
-            scheduler,
-            idle,
-            obs,
-            tmp.path().join("data"),
-            false,
-        )
+        CronEngine::new(scheduler, idle, obs, tmp.path().join("data"), false)
     }
 
     #[tokio::test]

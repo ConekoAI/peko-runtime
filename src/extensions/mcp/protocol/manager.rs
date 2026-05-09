@@ -23,7 +23,9 @@ use crate::extensions::mcp::protocol::{
     transport::{SseTransport, StdioTransport},
     types::Tool,
 };
-use crate::extensions::mcp::runtime::adapter::{McpClientRegistry, McpRuntimeAdapter, McpServerInfo};
+use crate::extensions::mcp::runtime::adapter::{
+    McpClientRegistry, McpRuntimeAdapter, McpServerInfo,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -521,7 +523,9 @@ impl McpManager {
     /// # Returns
     /// A vector of `Arc<dyn Tool>` containing all MCP tools from running servers
     pub async fn get_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::extensions::mcp::runtime::{injectable_proxy::InjectableMcpToolProxy, tool_proxy::McpToolProxy};
+        use crate::extensions::mcp::runtime::{
+            injectable_proxy::InjectableMcpToolProxy, tool_proxy::McpToolProxy,
+        };
 
         let servers = self.servers.read().await;
         let manager_arc = Arc::new(RwLock::new(self.clone()));
@@ -617,11 +621,7 @@ impl McpManager {
     // =========================================================================
 
     /// Start a managed (stdio) server via BackgroundRuntimeManager
-    async fn start_managed_server(
-        &self,
-        name: &str,
-        config: &McpServerConfig,
-    ) -> Result<()> {
+    async fn start_managed_server(&self, name: &str, config: &McpServerConfig) -> Result<()> {
         use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
 
         let command = config

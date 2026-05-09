@@ -114,10 +114,7 @@ impl Provider {
         temperature: f64,
     ) -> anyhow::Result<String> {
         let messages: Vec<LlmMessage> = if let Some(system) = system_prompt {
-            vec![
-                LlmMessage::system(system),
-                LlmMessage::user(message),
-            ]
+            vec![LlmMessage::system(system), LlmMessage::user(message)]
         } else {
             vec![LlmMessage::user(message)]
         };

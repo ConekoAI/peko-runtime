@@ -18,7 +18,6 @@
 
 use crate::engine::ToolCall;
 use crate::providers::TokenUsage as ProviderTokenUsage;
-use crate::types::message::LlmMessage;
 use crate::session::events::{
     generate_event_id, generate_message_id, EventEnvelope, SessionEvent, ToolCallBlock,
 };
@@ -29,6 +28,7 @@ use crate::session::message_conversion::{
 };
 use crate::session::types::Peer;
 use crate::session::NormalizedEntry;
+use crate::types::message::LlmMessage;
 use crate::types::ContentBlock;
 use anyhow::Result;
 use chrono::Utc;
@@ -945,7 +945,10 @@ mod tests {
 
         // Check tool result preserves tool_call_id
         let tool = &history[1];
-        assert!(matches!(tool.role, crate::types::message::MessageRole::Tool));
+        assert!(matches!(
+            tool.role,
+            crate::types::message::MessageRole::Tool
+        ));
         assert_eq!(tool.content.len(), 1);
         if let ContentBlock::ToolResult {
             tool_call_id,
@@ -1014,7 +1017,10 @@ mod tests {
 
         session.add_system("You are helpful.").await.unwrap();
         session.add_user("Old message 1").await.unwrap();
-        session.add_assistant("Old reply", None, None).await.unwrap();
+        session
+            .add_assistant("Old reply", None, None)
+            .await
+            .unwrap();
 
         // Record compaction
         session
@@ -1023,12 +1029,19 @@ mod tests {
             .unwrap();
 
         session.add_user("New message").await.unwrap();
-        session.add_assistant("New reply", None, None).await.unwrap();
+        session
+            .add_assistant("New reply", None, None)
+            .await
+            .unwrap();
 
         let context = session.build_context().await.unwrap();
 
         // Should have: summary system message + new user + new assistant
-        assert_eq!(context.len(), 3, "Expected summary + 2 messages after compaction");
+        assert_eq!(
+            context.len(),
+            3,
+            "Expected summary + 2 messages after compaction"
+        );
         assert_eq!(context[0].role, crate::providers::MessageRole::System);
         let summary_text = match &context[0].content[0] {
             crate::types::ContentBlock::Text { text } => text.as_str(),
@@ -1112,21 +1125,31 @@ mod tests {
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
         storage.create_session(session_id, None).await.unwrap();
 
-        let session =
-            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
-                .await
-                .unwrap();
+        let session = Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+            .await
+            .unwrap();
 
         let compacted_messages = vec![
             LlmMessage::system("Summary message"),
             LlmMessage::user("Recent user msg"),
         ];
 
-        session.update_context_cache(&compacted_messages).await.unwrap();
+        session
+            .update_context_cache(&compacted_messages)
+            .await
+            .unwrap();
 
         // Cache should be loadable
-        let checksum = session.storage.compute_jsonl_checksum(session_id).await.unwrap();
-        let entry_count = session.storage.count_jsonl_entries(session_id).await.unwrap();
+        let checksum = session
+            .storage
+            .compute_jsonl_checksum(session_id)
+            .await
+            .unwrap();
+        let entry_count = session
+            .storage
+            .count_jsonl_entries(session_id)
+            .await
+            .unwrap();
         let cached = session
             .storage
             .load_context_cache(session_id, &checksum, entry_count)
@@ -1209,20 +1232,32 @@ mod tests {
             .storage
             .load_context_cache(
                 session_id,
-                &session.storage.compute_jsonl_checksum(session_id).await.unwrap(),
-                session.storage.count_jsonl_entries(session_id).await.unwrap(),
+                &session
+                    .storage
+                    .compute_jsonl_checksum(session_id)
+                    .await
+                    .unwrap(),
+                session
+                    .storage
+                    .count_jsonl_entries(session_id)
+                    .await
+                    .unwrap(),
             )
             .await
             .unwrap();
         assert!(cached.is_some(), "Cache should be valid after compaction");
-        assert_eq!(cached.unwrap().len(), 3, "Cached context should have 3 messages");
+        assert_eq!(
+            cached.unwrap().len(),
+            3,
+            "Cached context should have 3 messages"
+        );
     }
 
     #[tokio::test]
     async fn test_append_event_and_build_context() {
-        use tempfile::TempDir;
         use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
         use chrono::Utc;
+        use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
         let peer = crate::session::types::Peer::User("default".to_string());
@@ -1252,6 +1287,10 @@ mod tests {
 
         // Build context — SessionCreated should be ignored
         let context = session.build_context().await.unwrap();
-        assert_eq!(context.len(), 0, "SessionCreated events should not appear in context");
+        assert_eq!(
+            context.len(),
+            0,
+            "SessionCreated events should not appear in context"
+        );
     }
 }

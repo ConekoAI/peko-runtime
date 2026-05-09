@@ -23,6 +23,9 @@ pub mod kill;
 pub mod spawn;
 
 pub use config::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
-pub use health::{HealthCheckLoop, HealthCheckFn, wait_for_healthy};
-pub use kill::{graceful_shutdown, force_kill_child, is_process_running, kill_by_pid, kill_all_by_name, wait_for_exit};
-pub use spawn::{spawn_process, ResolvedCommand, resolve_command};
+pub use health::{wait_for_healthy, HealthCheckFn, HealthCheckLoop};
+pub use kill::{
+    force_kill_child, graceful_shutdown, is_process_running, kill_all_by_name, kill_by_pid,
+    wait_for_exit,
+};
+pub use spawn::{resolve_command, spawn_process, ResolvedCommand};

@@ -955,7 +955,10 @@ mod tests {
 
         assert!(storage.context_cache_path("cache_test").exists());
 
-        storage.invalidate_context_cache("cache_test").await.unwrap();
+        storage
+            .invalidate_context_cache("cache_test")
+            .await
+            .unwrap();
 
         assert!(!storage.context_cache_path("cache_test").exists());
     }
@@ -971,11 +974,17 @@ mod tests {
 
         // After creating session
         storage.create_session("checksum_test", None).await.unwrap();
-        let checksum2 = storage.compute_jsonl_checksum("checksum_test").await.unwrap();
+        let checksum2 = storage
+            .compute_jsonl_checksum("checksum_test")
+            .await
+            .unwrap();
         assert_ne!(checksum2, "empty");
 
         // Checksum should be stable for same content
-        let checksum3 = storage.compute_jsonl_checksum("checksum_test").await.unwrap();
+        let checksum3 = storage
+            .compute_jsonl_checksum("checksum_test")
+            .await
+            .unwrap();
         assert_eq!(checksum2, checksum3);
     }
 

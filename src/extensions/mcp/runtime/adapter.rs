@@ -186,10 +186,7 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
     /// 4. Discover tools
     /// 5. Store the client in the shared registry
     async fn initialize(&self, runtime: &mut ManagedRuntime) -> anyhow::Result<()> {
-        info!(
-            "Initializing MCP runtime adapter for '{}'",
-            runtime.id
-        );
+        info!("Initializing MCP runtime adapter for '{}'", runtime.id);
 
         // Extract stdin/stdout from the process
         let (stdin, stdout, pid) = match &mut runtime.kind {
@@ -229,7 +226,11 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
         match tokio::time::timeout(init_timeout, client.initialize()).await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
-                anyhow::bail!("MCP client initialization failed for '{}': {}", runtime.id, e);
+                anyhow::bail!(
+                    "MCP client initialization failed for '{}': {}",
+                    runtime.id,
+                    e
+                );
             }
             Err(_) => {
                 anyhow::bail!("MCP client initialization timed out for '{}'", runtime.id);
@@ -238,7 +239,10 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
 
         // After initialize(), server_info is stored inside the client
         let (server_name, server_version) = match client.server_info() {
-            Some(info) => (info.server_info.name.clone(), info.server_info.version.clone()),
+            Some(info) => (
+                info.server_info.name.clone(),
+                info.server_info.version.clone(),
+            ),
             None => ("unknown".to_string(), "unknown".to_string()),
         };
 
@@ -259,10 +263,7 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
                     tools
                 }
                 Err(e) => {
-                    warn!(
-                        "MCP server '{}' tool discovery failed: {}",
-                        runtime.id, e
-                    );
+                    warn!("MCP server '{}' tool discovery failed: {}", runtime.id, e);
                     Vec::new()
                 }
             }
@@ -277,9 +278,7 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
             tools,
             server_info: Some(server_info_str),
         };
-        self.client_registry
-            .insert(runtime.id.clone(), info)
-            .await;
+        self.client_registry.insert(runtime.id.clone(), info).await;
 
         info!(
             "MCP runtime adapter for '{}' initialized successfully",
@@ -325,10 +324,7 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
         if let Some(info) = self.client_registry.remove(&runtime.id).await {
             let mut client_guard = info.client.write().await;
             if let Err(e) = client_guard.shutdown().await {
-                warn!(
-                    "Error shutting down MCP client for '{}': {}",
-                    runtime.id, e
-                );
+                warn!("Error shutting down MCP client for '{}': {}", runtime.id, e);
             }
         } else {
             debug!(

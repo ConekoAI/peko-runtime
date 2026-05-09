@@ -130,9 +130,7 @@ pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
         }
     }
 
-    InjectedContext {
-        sections,
-    }
+    InjectedContext { sections }
 }
 
 /// Get default workspace directory

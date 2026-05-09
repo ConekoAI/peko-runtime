@@ -19,8 +19,8 @@
 
 // Re-export core types
 pub use core::{
-    common,
     binding::{HookBinding, HookBindingBuilder},
+    common,
     config::{ExtensionConfig, ExtensionServices, TelemetryService},
     context::{HookContext, HookState},
     handler::{HookHandler, HookHandlerFactory},
@@ -44,9 +44,9 @@ pub use services::{
 
 // Re-export protocols shared utilities
 pub use protocols::shared::{
-    ContextResolver, ProcessConfig, ProcessTransport, ProcessTransportBuilder,
-    filter_reserved_params, validate_no_reserved_params_leak, ValidationError,
-    estimate_tool_duration, execute_with_context_handling, format_status,
+    estimate_tool_duration, execute_with_context_handling, filter_reserved_params, format_status,
+    validate_no_reserved_params_leak, ContextResolver, ProcessConfig, ProcessTransport,
+    ProcessTransportBuilder, ValidationError,
 };
 
 // ============================================================================

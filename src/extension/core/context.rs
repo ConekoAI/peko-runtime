@@ -4,7 +4,7 @@
 //! state container for hook invocations.
 
 use crate::extension::core::hook_points::HookPoint;
-use crate::extension::types::{HookInput};
+use crate::extension::types::HookInput;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +33,11 @@ pub struct HookContext {
 
 impl HookContext {
     /// Create a new hook context
-    pub fn new(point: HookPoint, input: HookInput, services: Arc<super::config::ExtensionServices>) -> Self {
+    pub fn new(
+        point: HookPoint,
+        input: HookInput,
+        services: Arc<super::config::ExtensionServices>,
+    ) -> Self {
         Self {
             invocation_id: format!("hook_{}", uuid::Uuid::new_v4()),
             point,

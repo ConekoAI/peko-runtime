@@ -11,8 +11,8 @@
 
 use super::manager::BackgroundRuntimeManager;
 use crate::agent::stateless_service::StatelessAgentService;
-use crate::extensions::mcp::runtime::McpClientRegistry;
 use crate::extensions::gateway::runtime::GatewayRouter;
+use crate::extensions::mcp::runtime::McpClientRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -53,18 +53,11 @@ pub trait ExtensionRuntimeStarter: Send + Sync + std::fmt::Debug {
     /// The starter reads the extension manifest from disk, validates it,
     /// creates the appropriate BackgroundRuntimeAdapter + RuntimeSpawnConfig,
     /// and calls BackgroundRuntimeManager::start().
-    async fn start(
-        &self,
-        extension_id: &str,
-        ctx: &StarterContext,
-    ) -> anyhow::Result<()>;
+    async fn start(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()>;
 
     /// Optional: called during daemon startup to auto-start extensions
     /// of this type. Return list of extension IDs that were auto-started.
-    async fn auto_start(
-        &self,
-        _ctx: &StarterContext,
-    ) -> anyhow::Result<Vec<String>> {
+    async fn auto_start(&self, _ctx: &StarterContext) -> anyhow::Result<Vec<String>> {
         Ok(Vec::new())
     }
 }

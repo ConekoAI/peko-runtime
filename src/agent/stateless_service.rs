@@ -17,9 +17,9 @@ use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::engine::AgenticEvent;
 use crate::providers::TokenUsage;
-use crate::types::message::LlmMessage;
 use crate::session::manager::SessionManager;
 use crate::session::types::{ChannelType, Peer};
+use crate::types::message::LlmMessage;
 // Note: Session storage uses jsonl module directly
 use crate::types::message::ContentBlock;
 use anyhow::{Context, Result};
@@ -1129,7 +1129,8 @@ mod tests {
 
     #[test]
     fn test_message_request_caller_agent_opt_filters_empty() {
-        let req1 = MessageRequest::new("agent", "hi").with_caller_agent_opt(Some("researcher".to_string()));
+        let req1 = MessageRequest::new("agent", "hi")
+            .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
         let req2 = MessageRequest::new("agent", "hi").with_caller_agent_opt(Some("".to_string()));
@@ -1141,10 +1142,12 @@ mod tests {
 
     #[test]
     fn test_execution_request_caller_agent_opt_filters_empty() {
-        let req1 = ExecutionRequest::new("agent", "session", "hi").with_caller_agent_opt(Some("researcher".to_string()));
+        let req1 = ExecutionRequest::new("agent", "session", "hi")
+            .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
-        let req2 = ExecutionRequest::new("agent", "session", "hi").with_caller_agent_opt(Some("".to_string()));
+        let req2 = ExecutionRequest::new("agent", "session", "hi")
+            .with_caller_agent_opt(Some("".to_string()));
         assert_eq!(req2.caller_agent, None);
 
         let req3 = ExecutionRequest::new("agent", "session", "hi").with_caller_agent_opt(None);

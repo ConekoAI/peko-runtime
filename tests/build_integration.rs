@@ -45,7 +45,11 @@ frequency_penalty = 0.0
     // skills/test-skill/SKILL.md
     let skills_dir = base.join("skills").join("test-skill");
     tokio::fs::create_dir_all(&skills_dir).await?;
-    tokio::fs::write(skills_dir.join("SKILL.md"), "# Test Skill\n\nA skill for testing.").await?;
+    tokio::fs::write(
+        skills_dir.join("SKILL.md"),
+        "# Test Skill\n\nA skill for testing.",
+    )
+    .await?;
 
     // workspace/SYSTEM.md
     let workspace_dir = base.join("workspace");

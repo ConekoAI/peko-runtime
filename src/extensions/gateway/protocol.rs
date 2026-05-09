@@ -76,10 +76,7 @@ pub enum GatewayResponse {
 
     /// Error report
     #[serde(rename = "error")]
-    Error {
-        request_id: u64,
-        message: String,
-    },
+    Error { request_id: u64, message: String },
 }
 
 // =============================================================================
@@ -184,7 +181,10 @@ mod tests {
         let encoded = encode_packet(&response).unwrap();
         let decoded = decode_response(&encoded.trim()).unwrap();
         match decoded {
-            GatewayResponse::Error { request_id, message } => {
+            GatewayResponse::Error {
+                request_id,
+                message,
+            } => {
                 assert_eq!(request_id, 5);
                 assert_eq!(message, "Channel not found");
             }

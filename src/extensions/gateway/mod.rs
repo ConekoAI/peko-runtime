@@ -11,9 +11,12 @@ pub mod runtime;
 
 pub use adapter::{
     discover_gateway_extensions, load_and_register_gateways, register_gateways_with_core,
-    DiscoveredGateway, GatewayAdapter, GatewayExtensionConfig, GatewayHookConfig, GatewayToolConfig,
+    DiscoveredGateway, GatewayAdapter, GatewayExtensionConfig, GatewayHookConfig,
+    GatewayToolConfig,
 };
-pub use protocol::{encode_packet, decode_response, GatewayPacket, GatewayResponse, GatewayRoutingConfig};
+pub use protocol::{
+    decode_response, encode_packet, GatewayPacket, GatewayResponse, GatewayRoutingConfig,
+};
 pub use runtime::{
     adapter::{GatewayFlavor, GatewayRuntimeAdapter},
     router::{GatewayRouter, QueuedMessage},

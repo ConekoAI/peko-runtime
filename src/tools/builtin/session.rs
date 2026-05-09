@@ -24,7 +24,6 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-
 use crate::tools::core::traits::Tool;
 
 // ====================================================================================
@@ -182,7 +181,9 @@ impl SessionTool {
         limit: usize,
         active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
-        self.registry.list_sessions(kinds, limit, active_minutes).await
+        self.registry
+            .list_sessions(kinds, limit, active_minutes)
+            .await
     }
 
     async fn get_history(
@@ -191,7 +192,9 @@ impl SessionTool {
         limit: usize,
         include_tools: bool,
     ) -> anyhow::Result<Vec<HistoryMessage>> {
-        self.registry.get_history(session_key, limit, include_tools).await
+        self.registry
+            .get_history(session_key, limit, include_tools)
+            .await
     }
 
     // ------------------------------------------------------------------
@@ -355,9 +358,7 @@ Returns structured data appropriate to the action."
                 let active_minutes = params.get("active_minutes").and_then(|v| v.as_i64());
 
                 let kinds_ref = kinds.as_deref();
-                let sessions = self
-                    .list_sessions(kinds_ref, limit, active_minutes)
-                    .await?;
+                let sessions = self.list_sessions(kinds_ref, limit, active_minutes).await?;
                 Ok(Self::build_list_response(sessions))
             }
             SessionAction::History => {
@@ -372,9 +373,7 @@ Returns structured data appropriate to the action."
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
 
-                let messages = self
-                    .get_history(&session_key, limit, include_tools)
-                    .await?;
+                let messages = self.get_history(&session_key, limit, include_tools).await?;
                 Ok(Self::build_history_response(&session_key, messages))
             }
         }
@@ -425,8 +424,7 @@ impl SessionRegistry for SessionIntrospector {
             .into_iter()
             .filter(|m| {
                 let kind_match = kinds.map_or(true, |k| k.contains(&m.trigger));
-                let active_match =
-                    cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
+                let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
                 kind_match && active_match
             })
             .take(limit)
@@ -674,7 +672,11 @@ fn llm_message_to_history(msg: &LlmMessage, include_tools: bool) -> Option<Histo
 
         (
             if calls.is_empty() { None } else { Some(calls) },
-            if results.is_empty() { None } else { Some(results) },
+            if results.is_empty() {
+                None
+            } else {
+                Some(results)
+            },
         )
     } else {
         (None, None)

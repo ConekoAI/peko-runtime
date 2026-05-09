@@ -430,7 +430,13 @@ impl HookRegistry {
             let mut ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
 
             // For tool calls, inject runtime context into state for reserved parameter resolution
-            if let HookInput::ToolCall { ref agent_id, ref session_id, ref workspace, .. } = input {
+            if let HookInput::ToolCall {
+                ref agent_id,
+                ref session_id,
+                ref workspace,
+                ..
+            } = input
+            {
                 let tool_ctx = crate::extension::types::ToolRuntimeContext::new()
                     .with_run_id("hook_run")
                     .with_agent_id(agent_id.clone().unwrap_or_else(|| "unknown".to_string()))

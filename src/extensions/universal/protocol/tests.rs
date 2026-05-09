@@ -196,8 +196,8 @@ for line in sys.stdin:
     tokio::fs::write(&script_path, script).await.unwrap();
 
     // Use ExtensionManager for discovery (legacy discovery module removed)
-    use crate::extensions::BuiltInAdapters;
     use crate::extension::manager::ExtensionManager;
+    use crate::extensions::BuiltInAdapters;
     let mut manager = ExtensionManager::new();
     for adapter in BuiltInAdapters::new().adapters() {
         manager.register_adapter(adapter);

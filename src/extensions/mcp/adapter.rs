@@ -51,14 +51,18 @@ pub const MCP_HOOK_PRIORITY: i32 = 50;
 pub const MCP_TOOL_PREFIX: &str = "mcp";
 
 /// Global MCP manager instance shared across all adapters
-static GLOBAL_MCP_MANAGER: OnceLock<Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>> = OnceLock::new();
+static GLOBAL_MCP_MANAGER: OnceLock<
+    Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
+> = OnceLock::new();
 
 /// Get or initialize the global MCP manager
 fn get_global_mcp_manager() -> Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>> {
     GLOBAL_MCP_MANAGER
         .get_or_init(|| {
             let config = crate::extensions::mcp::protocol::config::McpConfig::default();
-            Arc::new(RwLock::new(crate::extensions::mcp::protocol::manager::McpManager::new(config)))
+            Arc::new(RwLock::new(
+                crate::extensions::mcp::protocol::manager::McpManager::new(config),
+            ))
         })
         .clone()
 }
@@ -79,7 +83,9 @@ impl std::fmt::Debug for McpAdapter {
 
 impl McpAdapter {
     /// Create a new MCP adapter
-    pub fn new(manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>) -> Self {
+    pub fn new(
+        manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
+    ) -> Self {
         Self { manager }
     }
 
@@ -96,7 +102,9 @@ impl McpAdapter {
     #[must_use]
     pub fn with_fresh_manager() -> Self {
         let config = crate::extensions::mcp::protocol::config::McpConfig::default();
-        let manager = Arc::new(RwLock::new(crate::extensions::mcp::protocol::manager::McpManager::new(config)));
+        let manager = Arc::new(RwLock::new(
+            crate::extensions::mcp::protocol::manager::McpManager::new(config),
+        ));
         Self { manager }
     }
 
@@ -176,19 +184,23 @@ impl McpAdapter {
     }
 
     /// Load server config from a file
-    async fn load_server_config(path: &Path) -> Result<crate::extensions::mcp::protocol::config::McpServerConfig> {
+    async fn load_server_config(
+        path: &Path,
+    ) -> Result<crate::extensions::mcp::protocol::config::McpServerConfig> {
         let content = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read config {path:?}"))?;
 
         let server_configs: Vec<crate::extensions::mcp::protocol::config::McpServerConfig> =
             if path.extension().is_some_and(|e| e == "toml") {
-                let config: crate::extensions::mcp::protocol::config::McpConfig = toml::from_str(&content)
-                    .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
+                let config: crate::extensions::mcp::protocol::config::McpConfig =
+                    toml::from_str(&content)
+                        .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
                 config.servers
             } else {
-                let config: crate::extensions::mcp::protocol::config::McpConfig = serde_json::from_str(&content)
-                    .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
+                let config: crate::extensions::mcp::protocol::config::McpConfig =
+                    serde_json::from_str(&content)
+                        .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
                 config.servers
             };
 
@@ -259,8 +271,9 @@ impl McpAdapter {
             }
 
             let mut server_config: crate::extensions::mcp::protocol::config::McpServerConfig =
-                serde_json::from_value(server_json)
-                    .with_context(|| format!("Failed to parse mcp_servers config for '{server_name}'"))?;
+                serde_json::from_value(server_json).with_context(|| {
+                    format!("Failed to parse mcp_servers config for '{server_name}'")
+                })?;
 
             // Set working directory to the extension directory if not specified
             if server_config.cwd.is_none() {
@@ -473,7 +486,10 @@ impl McpAdapter {
         }
 
         let mut mcp_servers = serde_json::Map::new();
-        mcp_servers.insert(server_name.to_string(), serde_json::Value::Object(server_config));
+        mcp_servers.insert(
+            server_name.to_string(),
+            serde_json::Value::Object(server_config),
+        );
 
         Some(serde_json::Value::Object(mcp_servers))
     }
@@ -489,7 +505,8 @@ impl McpAdapter {
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse MCP YAML manifest at {path:?}"))?;
 
-        let (id, name, version, description) = crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
+        let (id, name, version, description) =
+            crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
 
         let mut manifest = ExtensionManifest::new(
             &id,
@@ -502,17 +519,30 @@ impl McpAdapter {
 
         // Store mcp_servers config if present
         if let Some(mcp_servers) = yaml.get("mcp_servers") {
-            manifest.set("mcp_servers", crate::extension::adapters::parsing::yaml_to_json(mcp_servers.clone()));
+            manifest.set(
+                "mcp_servers",
+                crate::extension::adapters::parsing::yaml_to_json(mcp_servers.clone()),
+            );
         }
 
         // Store any additional metadata
         if let serde_yaml::Value::Mapping(map) = &yaml {
             for (k, v) in map {
                 if let Some(key) = k.as_str() {
-                    if !["id", "name", "version", "description", "extension_type", "mcp_servers"]
-                        .contains(&key)
+                    if ![
+                        "id",
+                        "name",
+                        "version",
+                        "description",
+                        "extension_type",
+                        "mcp_servers",
+                    ]
+                    .contains(&key)
                     {
-                        manifest.set(key, crate::extension::adapters::parsing::yaml_to_json(v.clone()));
+                        manifest.set(
+                            key,
+                            crate::extension::adapters::parsing::yaml_to_json(v.clone()),
+                        );
                     }
                 }
             }
@@ -879,8 +909,10 @@ impl McpServerInitHandler {
             }
         }
 
-        let server_config: crate::extensions::mcp::protocol::config::McpServerConfig = serde_json::from_value(server_json)
-            .with_context(|| format!("Failed to parse mcp_servers config for '{server_name}'"))?;
+        let server_config: crate::extensions::mcp::protocol::config::McpServerConfig =
+            serde_json::from_value(server_json).with_context(|| {
+                format!("Failed to parse mcp_servers config for '{server_name}'")
+            })?;
 
         Ok(server_config)
     }
@@ -994,8 +1026,10 @@ impl HookHandler for McpToolExecuteHandler {
             None => return HookResult::PassThrough,
         };
 
-        let expected_full_name =
-            format!("{}:{}:{}", MCP_TOOL_PREFIX, self.server_name, self.tool_name);
+        let expected_full_name = format!(
+            "{}:{}:{}",
+            MCP_TOOL_PREFIX, self.server_name, self.tool_name
+        );
         if called_tool_name != expected_full_name {
             return HookResult::PassThrough;
         }
@@ -1065,7 +1099,10 @@ impl HookHandler for McpToolExecuteHandler {
 
     fn hook_point(&self) -> HookPoint {
         HookPoint::ToolExecute {
-            tool_name: format!("{}:{}:{}", MCP_TOOL_PREFIX, self.server_name, self.tool_name),
+            tool_name: format!(
+                "{}:{}:{}",
+                MCP_TOOL_PREFIX, self.server_name, self.tool_name
+            ),
         }
     }
 
@@ -1114,9 +1151,14 @@ pub async fn load_and_register_servers(
         if let Some(config_path) = server.manifest.get("config_path").and_then(|v| v.as_str()) {
             let _ = adapter.ensure_server_config(config_path).await;
         }
-        match adapter.register_server_tools(core, &server.manifest.name).await {
+        match adapter
+            .register_server_tools(core, &server.manifest.name)
+            .await
+        {
             Ok(n) => total_tools += n,
-            Err(e) => warn!(server = %server.manifest.name, error = %e, "Failed to register MCP tools"),
+            Err(e) => {
+                warn!(server = %server.manifest.name, error = %e, "Failed to register MCP tools")
+            }
         }
     }
     Ok(total_tools)
@@ -1187,9 +1229,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_mcp_tool_execute_handler() {
-        let manager = Arc::new(RwLock::new(crate::extensions::mcp::protocol::manager::McpManager::new(
-            crate::extensions::mcp::protocol::config::McpConfig::default(),
-        )));
+        let manager = Arc::new(RwLock::new(
+            crate::extensions::mcp::protocol::manager::McpManager::new(
+                crate::extensions::mcp::protocol::config::McpConfig::default(),
+            ),
+        ));
 
         let handler = McpToolExecuteHandler {
             manager,

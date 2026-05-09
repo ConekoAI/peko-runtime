@@ -11,7 +11,9 @@
 //! `src/commands/daemon.rs` with testable, reusable primitives.
 
 use crate::common::paths::PathResolver;
-use crate::common::process::{is_process_running, kill_all_by_name, kill_by_pid, wait_for_exit, wait_for_healthy};
+use crate::common::process::{
+    is_process_running, kill_all_by_name, kill_by_pid, wait_for_exit, wait_for_healthy,
+};
 use crate::ipc::{ConnectionManager, RequestPacket, ResponsePacket};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -115,10 +117,7 @@ impl DaemonProcessService {
                     return Ok(false);
                 }
                 let mut buf = vec![0u8; 65536];
-                match conn
-                    .recv_timeout(&mut buf, Duration::from_secs(2))
-                    .await
-                {
+                match conn.recv_timeout(&mut buf, Duration::from_secs(2)).await {
                     Ok(len) => match ResponsePacket::from_bytes(&buf[..len]) {
                         Ok(ResponsePacket::Pong { .. }) => Ok(true),
                         _ => Ok(false),
@@ -141,10 +140,7 @@ impl DaemonProcessService {
                 if let Ok(bytes) = ping.to_bytes() {
                     if conn.send(&bytes).await.is_ok() {
                         let mut buf = vec![0u8; 65536];
-                        if let Ok(len) = conn
-                            .recv_timeout(&mut buf, Duration::from_secs(2))
-                            .await
-                        {
+                        if let Ok(len) = conn.recv_timeout(&mut buf, Duration::from_secs(2)).await {
                             if let Ok(ResponsePacket::Pong {
                                 uptime_secs,
                                 version,
@@ -178,9 +174,7 @@ impl DaemonProcessService {
                     uptime_secs: None,
                     pid: Some(pid),
                     ready: false,
-                    error: Some(format!(
-                        "daemon not responding (process {pid} exists)"
-                    )),
+                    error: Some(format!("daemon not responding (process {pid} exists)")),
                 });
             }
         }
@@ -255,9 +249,8 @@ impl DaemonProcessService {
                         if let Ok(bytes) = ping.to_bytes() {
                             if conn.send(&bytes).await.is_ok() {
                                 let mut buf = vec![0u8; 65536];
-                                if let Ok(len) = conn
-                                    .recv_timeout(&mut buf, Duration::from_secs(2))
-                                    .await
+                                if let Ok(len) =
+                                    conn.recv_timeout(&mut buf, Duration::from_secs(2)).await
                                 {
                                     if let Ok(ResponsePacket::Pong { .. }) =
                                         ResponsePacket::from_bytes(&buf[..len])
@@ -306,10 +299,7 @@ impl DaemonProcessService {
                 if let Ok(bytes) = shutdown_req.to_bytes() {
                     if conn.send(&bytes).await.is_ok() {
                         let mut buf = vec![0u8; 65536];
-                        if let Ok(len) = conn
-                            .recv_timeout(&mut buf, Duration::from_secs(3))
-                            .await
-                        {
+                        if let Ok(len) = conn.recv_timeout(&mut buf, Duration::from_secs(3)).await {
                             if let Ok(ResponsePacket::ShuttingDown { .. }) =
                                 ResponsePacket::from_bytes(&buf[..len])
                             {
@@ -325,12 +315,8 @@ impl DaemonProcessService {
         // 2. Wait for graceful shutdown
         if shutdown_sent && !force {
             if let Some(pid) = pid {
-                let exited = wait_for_exit(
-                    pid,
-                    Duration::from_secs(5),
-                    Duration::from_millis(200),
-                )
-                .await?;
+                let exited =
+                    wait_for_exit(pid, Duration::from_secs(5), Duration::from_millis(200)).await?;
                 if exited {
                     self.remove_pid_file();
                     return Ok(());
@@ -344,12 +330,8 @@ impl DaemonProcessService {
             debug!("Killing daemon via PID {pid}");
             let _ = kill_by_pid(pid, force).await;
 
-            let exited = wait_for_exit(
-                pid,
-                Duration::from_secs(6),
-                Duration::from_millis(200),
-            )
-            .await?;
+            let exited =
+                wait_for_exit(pid, Duration::from_secs(6), Duration::from_millis(200)).await?;
             if !exited {
                 warn!("Process {pid} may still be running after kill attempt");
             }
@@ -390,10 +372,7 @@ mod tests {
 
     #[test]
     fn test_write_and_read_pid() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "pekobot_test_{}",
-            std::process::id()
-        ));
+        let temp_dir = std::env::temp_dir().join(format!("pekobot_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -422,10 +401,8 @@ mod tests {
 
     #[test]
     fn test_read_pid_stale_cleanup() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "pekobot_test_stale_{}",
-            std::process::id()
-        ));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pekobot_test_stale_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 

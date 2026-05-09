@@ -28,7 +28,9 @@ impl Transport {
     /// Automatically detects script files (.py, .js) and uses appropriate interpreter.
     /// Uses the shared `ProcessTransport` for unified process management.
     pub async fn spawn(executable: impl AsRef<std::path::Path>) -> Result<Self> {
-        let inner = crate::extension::protocols::shared::ProcessTransport::spawn_default(executable).await?;
+        let inner =
+            crate::extension::protocols::shared::ProcessTransport::spawn_default(executable)
+                .await?;
 
         Ok(Self {
             inner,

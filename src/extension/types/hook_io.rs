@@ -240,7 +240,10 @@ pub enum HookInput {
 ///
 /// This is the single place where `HookResult`→tool output semantics are defined,
 /// ensuring `AgenticLoop` and `ToolRuntime` behave identically.
-pub fn tool_result_from_hook(result: HookResult, tool_name: &str) -> (String, serde_json::Value, bool) {
+pub fn tool_result_from_hook(
+    result: HookResult,
+    tool_name: &str,
+) -> (String, serde_json::Value, bool) {
     match result {
         HookResult::Continue(HookOutput::Json(result)) => {
             let s = result.to_string();
@@ -302,10 +305,7 @@ mod tests {
 
     #[test]
     fn test_hook_output_message_vec() {
-        let messages = vec![
-            LlmMessage::system("System"),
-            LlmMessage::user("User"),
-        ];
+        let messages = vec![LlmMessage::system("System"), LlmMessage::user("User")];
         let output = HookOutput::message_vec(messages);
         match output {
             HookOutput::MessageVec(msgs) => assert_eq!(msgs.len(), 2),

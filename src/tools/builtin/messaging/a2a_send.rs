@@ -206,7 +206,11 @@ Send a message to another agent and receive its response. This is the primary me
                     response: msg_result.content,
                     session_id: msg_result.session_id,
                     iterations: Some(msg_result.iterations),
-                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
                     duration_ms: Some(msg_result.duration_ms),
                     error: msg_result.error,
                 };

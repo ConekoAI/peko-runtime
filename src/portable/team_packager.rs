@@ -196,7 +196,11 @@ impl TeamPackager {
         }
 
         // Try to include team.toml if it exists in the team directory
-        let team_toml_path = self.base_dir.join("teams").join(&self.team_name).join("team.toml");
+        let team_toml_path = self
+            .base_dir
+            .join("teams")
+            .join(&self.team_name)
+            .join("team.toml");
         if team_toml_path.exists() {
             let team_toml_content = tokio::fs::read(&team_toml_path).await.with_context(|| {
                 format!("Failed to read team.toml: {}", team_toml_path.display())

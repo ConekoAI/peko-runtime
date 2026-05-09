@@ -14,7 +14,7 @@ use crate::compaction::{
 };
 use crate::engine::AgenticEvent;
 use crate::extension::core::hook_points::HookPoint;
-use crate::extension::types::{HookInput, HookResult, HookOutput, SessionSnapshot};
+use crate::extension::types::{HookInput, HookOutput, HookResult, SessionSnapshot};
 use crate::extension::ExtensionCore;
 use crate::providers::Provider;
 use crate::session::Session;
@@ -182,8 +182,9 @@ impl CompactionOrchestrator {
             s.load_previous_compaction_summary().await.ok().flatten()
         };
 
-        let file_ops =
-            crate::compaction::summary_format::extract_file_ops_from_messages(&messages_to_summarize);
+        let file_ops = crate::compaction::summary_format::extract_file_ops_from_messages(
+            &messages_to_summarize,
+        );
 
         let hook_input = HookInput::CompactionPreparation {
             messages_to_summarize,

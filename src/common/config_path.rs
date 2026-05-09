@@ -186,7 +186,12 @@ mod tests {
     #[test]
     fn test_set_array_value() {
         let mut config = AgentConfig::default();
-        set_config_value(&mut config, "extensions.enabled", r#"["shell","read_file"]"#).unwrap();
+        set_config_value(
+            &mut config,
+            "extensions.enabled",
+            r#"["shell","read_file"]"#,
+        )
+        .unwrap();
         assert_eq!(
             config.extensions.as_ref().unwrap().enabled,
             vec!["shell", "read_file"]

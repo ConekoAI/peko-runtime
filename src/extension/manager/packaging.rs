@@ -103,8 +103,9 @@ impl ExtensionPackager {
         // Ensure parent directory exists
         if let Some(parent) = output_path.parent() {
             if !parent.exists() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create output directory: {}", parent.display()))?;
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create output directory: {}", parent.display())
+                })?;
             }
         }
 
@@ -149,7 +150,9 @@ impl ExtensionPackager {
         let mut tar = tar::Builder::new(enc);
 
         // Add manifest
-        let manifest_toml = manifest.to_toml().context("Failed to serialize extension package manifest")?;
+        let manifest_toml = manifest
+            .to_toml()
+            .context("Failed to serialize extension package manifest")?;
         let mut header = tar::Header::new_gnu();
         header.set_path("manifest.toml")?;
         header.set_size(manifest_toml.len() as u64);
@@ -169,7 +172,8 @@ impl ExtensionPackager {
                 .with_context(|| format!("Failed to add file: {path}"))?;
         }
 
-        tar.finish().context("Failed to finalize extension archive")?;
+        tar.finish()
+            .context("Failed to finalize extension archive")?;
 
         Ok(output_path.to_path_buf())
     }
@@ -232,8 +236,9 @@ impl ExtensionUnpackager {
 
         // Remove existing if present
         if ext_dir.exists() {
-            std::fs::remove_dir_all(&ext_dir)
-                .with_context(|| format!("Failed to remove existing extension: {}", ext_dir.display()))?;
+            std::fs::remove_dir_all(&ext_dir).with_context(|| {
+                format!("Failed to remove existing extension: {}", ext_dir.display())
+            })?;
         }
 
         // Extract extension files
@@ -280,7 +285,9 @@ impl ExtensionUnpackager {
     }
 
     /// Parse manifest from extracted files
-    fn parse_manifest(files: &HashMap<String, Vec<u8>>) -> anyhow::Result<ExtensionPackageManifest> {
+    fn parse_manifest(
+        files: &HashMap<String, Vec<u8>>,
+    ) -> anyhow::Result<ExtensionPackageManifest> {
         let manifest_bytes = files
             .get("manifest.toml")
             .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml in extension package"))?;
@@ -378,7 +385,8 @@ mod tests {
         let (manager, _ext_dir) = create_manager_with_extension(&temp, "test-skill");
 
         let output_path = temp.path().join("test-skill.ext");
-        let result = ExtensionPackager::export(&manager, &ExtensionId::new("test-skill"), &output_path);
+        let result =
+            ExtensionPackager::export(&manager, &ExtensionId::new("test-skill"), &output_path);
         assert!(result.is_ok(), "Export failed: {:?}", result.err());
         assert!(output_path.exists());
     }
@@ -389,7 +397,8 @@ mod tests {
         let (manager, _ext_dir) = create_manager_with_extension(&temp, "test-skill");
 
         let output_path = temp.path().join("missing.ext");
-        let result = ExtensionPackager::export(&manager, &ExtensionId::new("nonexistent"), &output_path);
+        let result =
+            ExtensionPackager::export(&manager, &ExtensionId::new("nonexistent"), &output_path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -420,7 +429,8 @@ mod tests {
         let (manager, _ext_dir) = create_manager_with_extension(&temp, "docker-skill");
 
         let output_path = temp.path().join("docker-skill.ext");
-        ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path).unwrap();
+        ExtensionPackager::export(&manager, &ExtensionId::new("docker-skill"), &output_path)
+            .unwrap();
 
         let manifest = ExtensionUnpackager::inspect(&output_path).unwrap();
         assert_eq!(manifest.extension.id, "docker-skill");
@@ -488,7 +498,10 @@ archive_format = "tar"
         let result = ExtensionUnpackager::install(&output_path, &install_dir);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Checksum mismatch"), "Expected checksum mismatch error, got: {err}");
+        assert!(
+            err.contains("Checksum mismatch"),
+            "Expected checksum mismatch error, got: {err}"
+        );
     }
 
     #[test]

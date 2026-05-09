@@ -2,8 +2,8 @@
 
 use crate::agent::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
-use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extension::core::{global_core, ExtensionCore};
+use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::context::SessionContext;
 use crate::session::manager::{ResolvedSession, SessionManager};
@@ -72,7 +72,11 @@ impl Agent {
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
         // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
         // all common built-ins on the global ExtensionCore before any Agent is created.
-        let has_shell = self.extension_core.get_tool_metadata("shell").await.is_some();
+        let has_shell = self
+            .extension_core
+            .get_tool_metadata("shell")
+            .await
+            .is_some();
         if !has_shell {
             tracing::error!(
                 "Built-in tools not pre-registered on ExtensionCore. \
@@ -105,14 +109,11 @@ impl Agent {
         // Add a2a_send tool for agent-to-agent messaging (ADR-023)
         if let Some(agent_service) = self.extension_core.services().agent_service() {
             tools.push(Arc::new(
-                crate::tools::A2aSendTool::new(agent_service)
-                    .with_caller(&self.config.name),
+                crate::tools::A2aSendTool::new(agent_service).with_caller(&self.config.name),
             ));
         } else {
             tracing::warn!("StatelessAgentService not available on ExtensionCore — a2a_send tool will not be registered");
         }
-
-
 
         // Filter based on agent config extension whitelist
         let whitelist = self.config.extension_whitelist();
@@ -125,7 +126,10 @@ impl Agent {
                     }
                     if pattern.ends_with('*') {
                         let prefix = &pattern[..pattern.len() - 1];
-                        return tool.name().to_lowercase().starts_with(&prefix.to_lowercase());
+                        return tool
+                            .name()
+                            .to_lowercase()
+                            .starts_with(&prefix.to_lowercase());
                     }
                     false
                 })
@@ -137,9 +141,7 @@ impl Agent {
         // so that permission checks pass during registration.
         let mut ext_config = self.config.extensions.clone().unwrap_or_default();
         ext_config.enabled = self.config.extension_whitelist();
-        self.extension_core
-            .set_tool_config(ext_config)
-            .await;
+        self.extension_core.set_tool_config(ext_config).await;
 
         // Load Universal Tools from extensions directory (where `pekobot ext install` puts them)
         let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
@@ -154,8 +156,8 @@ impl Agent {
                 self.config.name
             );
             // Use ExtensionManager for unified tool discovery
-            use crate::extensions::BuiltInAdapters;
             use crate::extension::manager::ExtensionManager;
+            use crate::extensions::BuiltInAdapters;
             let mut manager = ExtensionManager::with_core(self.extension_core.clone());
             for adapter in BuiltInAdapters::new().adapters() {
                 manager.register_adapter(adapter);
@@ -176,7 +178,11 @@ impl Agent {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("❌ Failed to load extensions from {}: {:#}", extensions_dir.display(), e);
+                    tracing::warn!(
+                        "❌ Failed to load extensions from {}: {:#}",
+                        extensions_dir.display(),
+                        e
+                    );
                     // Continue without extensions
                 }
             }
@@ -526,12 +532,9 @@ impl Agent {
         let extension_core = self.extension_core();
 
         tokio::task::spawn_local(async move {
-            let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
-                agent_arc,
-                provider,
-                extension_core,
-            )
-            .await;
+            let loop_ =
+                crate::engine::agentic_loop::AgenticLoop::new(agent_arc, provider, extension_core)
+                    .await;
 
             let _result = loop_
                 .run(&prompt, move |event| {
@@ -1058,7 +1061,9 @@ mod tests {
 
         // Session manager should be able to route to sessions
         let peer = Peer::User("test_user".to_string());
-        let resolved = agent.resolve_session(&peer, ChannelType::Cli, "default").await;
+        let resolved = agent
+            .resolve_session(&peer, ChannelType::Cli, "default")
+            .await;
 
         // Should succeed (requires filesystem in full test)
         // This just verifies routing is properly initialized

@@ -10,10 +10,10 @@
 //!
 //! See ADR-025 Section 6 for the full specification.
 
+use super::router::{GatewayRouter, GatewayRoutingConfig};
 use crate::daemon::background_runtime::adapter::{BackgroundRuntimeAdapter, CrashAction};
 use crate::daemon::background_runtime::supervisor::{ManagedRuntime, RuntimeKind};
 use crate::extensions::gateway::protocol::{encode_packet, GatewayPacket, GatewayResponse};
-use super::router::{GatewayRouter, GatewayRoutingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -195,17 +195,11 @@ impl GatewayRuntimeAdapter {
                 match encode_packet(&packet) {
                     Ok(line) => {
                         if let Err(e) = stdin.write_all(line.as_bytes()).await {
-                            warn!(
-                                "Failed to write packet to gateway '{}': {}",
-                                gateway_id, e
-                            );
+                            warn!("Failed to write packet to gateway '{}': {}", gateway_id, e);
                             break;
                         }
                         if let Err(e) = stdin.flush().await {
-                            warn!(
-                                "Failed to flush stdin for gateway '{}': {}",
-                                gateway_id, e
-                            );
+                            warn!("Failed to flush stdin for gateway '{}': {}", gateway_id, e);
                             break;
                         }
                         debug!("Sent packet to gateway '{}': {:?}", gateway_id, packet);
@@ -289,17 +283,13 @@ impl GatewayRuntimeAdapter {
                     Ok(agent_response) => {
                         info!(
                             "Gateway '{}' routed message successfully, agent response length: {}",
-                            gateway_id, agent_response.len()
+                            gateway_id,
+                            agent_response.len()
                         );
                         // Deliver response back to gateway via the packet channel
                         let session_id = format!("{}__{}__{}", gateway_id, channel_id, user_id);
                         if let Err(e) = self
-                            .deliver_response(
-                                gateway_id,
-                                &channel_id,
-                                &agent_response,
-                                &session_id,
-                            )
+                            .deliver_response(gateway_id, &channel_id, &agent_response, &session_id)
                             .await
                         {
                             warn!(
@@ -309,7 +299,10 @@ impl GatewayRuntimeAdapter {
                         }
                     }
                     Err(e) => {
-                        error!("Failed to route message from gateway '{}': {}", gateway_id, e);
+                        error!(
+                            "Failed to route message from gateway '{}': {}",
+                            gateway_id, e
+                        );
                     }
                 }
             }
@@ -336,7 +329,10 @@ impl GatewayRuntimeAdapter {
                     });
                 }
             }
-            GatewayResponse::Error { request_id, message } => {
+            GatewayResponse::Error {
+                request_id,
+                message,
+            } => {
                 warn!(
                     "Gateway '{}' error for request {}: {}",
                     gateway_id, request_id, message
@@ -368,16 +364,10 @@ impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
                 let (stdin, stdout) = match &mut runtime.kind {
                     RuntimeKind::Process { stdin, stdout, .. } => {
                         let stdin = stdin.take().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Gateway '{}': stdin already taken",
-                                runtime.id
-                            )
+                            anyhow::anyhow!("Gateway '{}': stdin already taken", runtime.id)
                         })?;
                         let stdout = stdout.take().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Gateway '{}': stdout already taken",
-                                runtime.id
-                            )
+                            anyhow::anyhow!("Gateway '{}': stdout already taken", runtime.id)
                         })?;
                         (stdin, stdout)
                     }
@@ -397,18 +387,14 @@ impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
                 }
 
                 // Spawn stdin writer task (owns ChildStdin)
-                let _stdin_handle =
-                    self.spawn_stdin_writer(runtime.id.clone(), stdin, packet_rx);
+                let _stdin_handle = self.spawn_stdin_writer(runtime.id.clone(), stdin, packet_rx);
 
                 // Spawn stdout read loop (owns ChildStdout)
                 let _stdout_handle = self.start_stdout_loop(runtime.id.clone(), stdout);
 
                 // Send routing config via the packet channel
                 if let Err(e) = self.send_gateway_config(&runtime.id).await {
-                    warn!(
-                        "Failed to send config to gateway '{}': {}",
-                        runtime.id, e
-                    );
+                    warn!("Failed to send config to gateway '{}': {}", runtime.id, e);
                 }
 
                 info!("Out-of-process gateway '{}' initialized", runtime.id);

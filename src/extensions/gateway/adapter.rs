@@ -142,11 +142,17 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse gateway manifest at {path:?}"))?;
 
-        let (id, name, version, description) = crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
+        let (id, name, version, description) =
+            crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
 
         // Validate extension_type
-        let ext_type = crate::extension::adapters::parsing::require_string_field(&yaml, "extension_type")
-            .with_context(|| format!("Gateway manifest at {path:?} is missing required field 'extension_type'"))?;
+        let ext_type =
+            crate::extension::adapters::parsing::require_string_field(&yaml, "extension_type")
+                .with_context(|| {
+                    format!(
+                        "Gateway manifest at {path:?} is missing required field 'extension_type'"
+                    )
+                })?;
         if ext_type != "gateway" {
             anyhow::bail!(
                 "Gateway manifest at {path:?} has extension_type '{}' but expected 'gateway'",
@@ -155,8 +161,11 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         }
 
         // Validate gateway_type (required type-specific transport discriminator)
-        let gateway_type = crate::extension::adapters::parsing::require_string_field(&yaml, "gateway_type")
-            .with_context(|| format!("Gateway manifest at {path:?} is missing required field 'gateway_type'"))?;
+        let gateway_type =
+            crate::extension::adapters::parsing::require_string_field(&yaml, "gateway_type")
+                .with_context(|| {
+                    format!("Gateway manifest at {path:?} is missing required field 'gateway_type'")
+                })?;
 
         let mut manifest = ExtensionManifest::new(
             &id,
@@ -164,20 +173,31 @@ impl ExtensionTypeAdapter for GatewayAdapter {
             &name,
             &description,
             &version,
-            path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+            path.parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf(),
         );
 
         // Store gateway-specific config
         manifest.set("gateway_type", gateway_type);
 
         if let Some(config) = yaml.get("config") {
-            manifest.set("config", crate::extension::adapters::parsing::yaml_to_json(config.clone()));
+            manifest.set(
+                "config",
+                crate::extension::adapters::parsing::yaml_to_json(config.clone()),
+            );
         }
         if let Some(hooks) = yaml.get("hooks") {
-            manifest.set("hooks", crate::extension::adapters::parsing::yaml_to_json(hooks.clone()));
+            manifest.set(
+                "hooks",
+                crate::extension::adapters::parsing::yaml_to_json(hooks.clone()),
+            );
         }
         if let Some(tools) = yaml.get("tools") {
-            manifest.set("tools", crate::extension::adapters::parsing::yaml_to_json(tools.clone()));
+            manifest.set(
+                "tools",
+                crate::extension::adapters::parsing::yaml_to_json(tools.clone()),
+            );
         }
 
         Ok(manifest)
@@ -336,7 +356,10 @@ impl HookHandler for GatewayHookHandler {
             "event" => self.handle_event_hook(&ctx).await,
             "tool" => self.handle_tool_hook(&ctx).await,
             _ => {
-                trace!("Gateway handler passing through for category: {}", ctx.point.category());
+                trace!(
+                    "Gateway handler passing through for category: {}",
+                    ctx.point.category()
+                );
                 HookResult::PassThrough
             }
         }
@@ -360,7 +383,10 @@ impl GatewayHookHandler {
         match ctx.point {
             HookPoint::ChannelInput => {
                 // Extensions return channel configuration JSON
-                debug!("Gateway ChannelInput: registering input channel '{}'", self.handler_name);
+                debug!(
+                    "Gateway ChannelInput: registering input channel '{}'",
+                    self.handler_name
+                );
                 HookResult::Continue(HookOutput::Json(serde_json::json!({
                     "channel": self.handler_name,
                     "type": "input",
@@ -369,7 +395,10 @@ impl GatewayHookHandler {
             }
             HookPoint::ChannelOutput => {
                 // Extensions return output handler configuration
-                debug!("Gateway ChannelOutput: registering output handler '{}'", self.handler_name);
+                debug!(
+                    "Gateway ChannelOutput: registering output handler '{}'",
+                    self.handler_name
+                );
                 HookResult::Continue(HookOutput::Json(serde_json::json!({
                     "channel": self.handler_name,
                     "type": "output",
@@ -379,7 +408,10 @@ impl GatewayHookHandler {
             HookPoint::MessagePreSend => {
                 // Extensions may transform outgoing messages
                 if let Some(msg) = ctx.as_message() {
-                    debug!("Gateway MessagePreSend: processing message for '{}'", self.handler_name);
+                    debug!(
+                        "Gateway MessagePreSend: processing message for '{}'",
+                        self.handler_name
+                    );
                     HookResult::Continue(HookOutput::Json(serde_json::json!({
                         "channel": self.handler_name,
                         "action": "pre_send",
@@ -392,7 +424,10 @@ impl GatewayHookHandler {
             HookPoint::MessagePostReceive => {
                 // Extensions may transform incoming messages
                 if let Some(msg) = ctx.as_message() {
-                    debug!("Gateway MessagePostReceive: processing message for '{}'", self.handler_name);
+                    debug!(
+                        "Gateway MessagePostReceive: processing message for '{}'",
+                        self.handler_name
+                    );
                     HookResult::Continue(HookOutput::Json(serde_json::json!({
                         "channel": self.handler_name,
                         "action": "post_receive",
@@ -412,14 +447,20 @@ impl GatewayHookHandler {
 
         match ctx.point {
             HookPoint::AgentInit => {
-                debug!("Gateway AgentInit: initializing gateway '{}'", self.handler_name);
+                debug!(
+                    "Gateway AgentInit: initializing gateway '{}'",
+                    self.handler_name
+                );
                 HookResult::Continue(HookOutput::Json(serde_json::json!({
                     "gateway": self.handler_name,
                     "status": "initialized"
                 })))
             }
             HookPoint::AgentShutdown => {
-                debug!("Gateway AgentShutdown: cleaning up gateway '{}'", self.handler_name);
+                debug!(
+                    "Gateway AgentShutdown: cleaning up gateway '{}'",
+                    self.handler_name
+                );
                 HookResult::Continue(HookOutput::Json(serde_json::json!({
                     "gateway": self.handler_name,
                     "status": "shutdown"

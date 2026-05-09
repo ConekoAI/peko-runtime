@@ -450,9 +450,14 @@ impl SessionService {
     ) -> Result<crate::session::unified::Session> {
         let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
         let peer = Peer::User(user.to_string());
-        crate::session::unified::Session::open_by_id(agent_name, session_id, &sessions_dir, Some(&peer))
-            .await
-            .with_context(|| format!("Failed to open session '{session_id}'"))
+        crate::session::unified::Session::open_by_id(
+            agent_name,
+            session_id,
+            &sessions_dir,
+            Some(&peer),
+        )
+        .await
+        .with_context(|| format!("Failed to open session '{session_id}'"))
     }
 
     /// List sessions with metadata synced from JSONL (source of truth)
@@ -470,10 +475,7 @@ impl SessionService {
         let mut controller = MetadataController::new(&sessions_dir);
         let entries = controller.list_metadata(true).await?;
 
-        let sessions: Vec<SessionInfo> = entries
-            .into_iter()
-            .map(|e| e.to_entry().into())
-            .collect();
+        let sessions: Vec<SessionInfo> = entries.into_iter().map(|e| e.to_entry().into()).collect();
 
         Ok(sessions)
     }

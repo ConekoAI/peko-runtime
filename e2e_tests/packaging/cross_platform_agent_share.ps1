@@ -267,7 +267,7 @@ summary = "You summarize things concisely."
     Write-Host "STEP 6: Verify config preserved" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $importedConfigPath = "$env:APPDATA/pekobot/teams/default/agents/$importedName/config.toml"
+    $importedConfigPath = "$env:USERPROFILE/.pekobot/teams/default/agents/$importedName/config.toml"
     if (-not (Test-Path $importedConfigPath)) { Write-Error "Imported config not found" }
     $importedConfig = Get-Content $importedConfigPath -Raw
 
@@ -322,7 +322,7 @@ summary = "You summarize things concisely."
     Write-Host "STEP 8: Verify skills preserved" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $skillsDir = "$env:APPDATA/pekobot/teams/default/agents/$importedName/skills"
+    $skillsDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$importedName/skills"
     if (Test-Path "$skillsDir/skill-a/SKILL.md") {
         Write-Host "Skill A preserved" -ForegroundColor Green
     } else {

@@ -3,9 +3,7 @@
 //! Converts a blocking `ChatResponse` into a `Stream` of `StreamEvent`s
 //! so the unified agentic loop can process all providers uniformly.
 
-use crate::providers::{
-    ChatResponse, ContentBlock, StreamEvent,
-};
+use crate::providers::{ChatResponse, ContentBlock, StreamEvent};
 use futures::Stream;
 use std::pin::Pin;
 

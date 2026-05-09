@@ -110,7 +110,10 @@ impl AnnouncementService {
     }
 
     /// Get parent session handle by key
-    async fn get_parent_handle(&self, parent_key: &str) -> Option<crate::session::manager::SessionHandle> {
+    async fn get_parent_handle(
+        &self,
+        parent_key: &str,
+    ) -> Option<crate::session::manager::SessionHandle> {
         let mut manager = self.session_manager.write().await;
         resolve_parent_handle(parent_key, &mut manager).await
     }
@@ -206,7 +209,10 @@ impl ChannelAnnouncementService {
     }
 
     /// Get parent session handle by key
-    async fn get_parent_handle(&self, parent_key: &str) -> Option<crate::session::manager::SessionHandle> {
+    async fn get_parent_handle(
+        &self,
+        parent_key: &str,
+    ) -> Option<crate::session::manager::SessionHandle> {
         let mut manager = self.session_manager.write().await;
         resolve_parent_handle(parent_key, &mut manager).await
     }

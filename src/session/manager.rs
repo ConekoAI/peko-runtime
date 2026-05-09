@@ -230,7 +230,11 @@ impl SessionHandle {
     }
 
     /// Set channel-specific state (if channel overlay)
-    pub async fn set_channel_state(&self, key: impl Into<String>, value: serde_json::Value) -> bool {
+    pub async fn set_channel_state(
+        &self,
+        key: impl Into<String>,
+        value: serde_json::Value,
+    ) -> bool {
         if let Some(OverlayRef::Channel(channel_arc)) = &self.overlay {
             let mut channel = channel_arc.write().await;
             channel.set(key, value);
@@ -1048,13 +1052,9 @@ impl SessionManager {
         };
 
         // 3. Load Session from JSONL with peer info
-        let session = Session::open_by_id(
-            &metadata.agent_name,
-            session_id,
-            &sessions_dir,
-            Some(&peer),
-        )
-        .await?;
+        let session =
+            Session::open_by_id(&metadata.agent_name, session_id, &sessions_dir, Some(&peer))
+                .await?;
         let peer = session.peer.clone();
 
         // 4. Cache and return handle
@@ -1380,11 +1380,7 @@ impl SessionManager {
 
     /// Get an existing base session if it exists
     #[must_use]
-    pub fn get_existing_base(
-        &self,
-        agent: &str,
-        peer: &Peer,
-    ) -> Option<Arc<RwLock<Session>>> {
+    pub fn get_existing_base(&self, agent: &str, peer: &Peer) -> Option<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.get(&key).cloned()
     }
@@ -1593,10 +1589,7 @@ impl SessionManager {
     }
 
     /// Get the parent's base session from a session key (which may be an overlay key)
-    async fn get_parent_base_session(
-        &self,
-        session_key: &str,
-    ) -> Option<Arc<RwLock<Session>>> {
+    async fn get_parent_base_session(&self, session_key: &str) -> Option<Arc<RwLock<Session>>> {
         // Extract base key from overlay key if needed
         let base_key = crate::session::key::base_key_from_overlay(session_key)
             .unwrap_or_else(|| session_key.to_string());
@@ -2087,7 +2080,10 @@ async fn copy_session_context(
                     .content
                     .iter()
                     .filter_map(|c| {
-                        if let ContentBlock::ToolCall { name, arguments, .. } = c {
+                        if let ContentBlock::ToolCall {
+                            name, arguments, ..
+                        } = c
+                        {
                             Some(crate::engine::ToolCall {
                                 name: name.clone(),
                                 parameters: arguments.clone(),
@@ -2104,7 +2100,9 @@ async fn copy_session_context(
                     Some(tool_calls)
                 };
 
-                child_guard.add_assistant(&text, tool_calls_opt, None).await?;
+                child_guard
+                    .add_assistant(&text, tool_calls_opt, None)
+                    .await?;
             }
             MessageRole::Tool => {
                 // Tool results - skip for now as they require tool_call_id linking

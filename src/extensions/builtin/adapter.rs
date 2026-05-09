@@ -303,7 +303,9 @@ impl HookHandler for BuiltinExecuteHandler {
                             // the subagent runs a full agentic loop with its own LLM calls.
                             // Inject a longer default timeout for blocking agent_spawn if none
                             // is provided by the caller.
-                            if tool_name_for_preproc == "agent_spawn" && !obj.contains_key("_timeout") {
+                            if tool_name_for_preproc == "agent_spawn"
+                                && !obj.contains_key("_timeout")
+                            {
                                 obj.insert(
                                     "_timeout".to_string(),
                                     serde_json::Value::Number(300.into()),
@@ -342,8 +344,8 @@ impl HookHandler for BuiltinExecuteHandler {
                                             if let Some(path_str) = path_val.as_str() {
                                                 let path_buf = std::path::PathBuf::from(path_str);
                                                 if !path_buf.is_absolute() {
-                                                    let resolved = std::path::PathBuf::from(ws)
-                                                        .join(path_str);
+                                                    let resolved =
+                                                        std::path::PathBuf::from(ws).join(path_str);
                                                     obj.insert(
                                                         "path".to_string(),
                                                         serde_json::Value::String(
@@ -503,11 +505,11 @@ mod tests {
         assert!(BuiltinToolAdapter::is_builtin("shell"));
         assert!(BuiltinToolAdapter::is_builtin("read_file"));
         assert!(BuiltinToolAdapter::is_builtin("SHELL")); // case insensitive
-        // Agent-specific tools
+                                                          // Agent-specific tools
         assert!(BuiltinToolAdapter::is_builtin("agent_spawn"));
         assert!(BuiltinToolAdapter::is_builtin("a2a_send"));
         assert!(BuiltinToolAdapter::is_builtin("A2A_SEND")); // case insensitive
-        // Unknown
+                                                             // Unknown
         assert!(!BuiltinToolAdapter::is_builtin("unknown_tool"));
     }
 

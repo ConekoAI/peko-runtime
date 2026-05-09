@@ -25,11 +25,11 @@
 //!
 //! Note: Custom tools can also be disabled by name.
 
-use crate::tools::core::traits::Tool;
 use crate::tools::builtin::{
     CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
     WriteFileTool,
 };
+use crate::tools::core::traits::Tool;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -351,16 +351,14 @@ impl ToolFactory {
         // Session introspection tool (unified)
         if config.enable_session_tools {
             registry.register("session", true, || {
-                Arc::new(SessionTool::new(Box::new(
-                    crate::tools::SessionCache::new("main"),
-                )))
+                Arc::new(SessionTool::new(Box::new(crate::tools::SessionCache::new(
+                    "main",
+                ))))
             });
         }
 
         // Cron tool for scheduled jobs
-        registry.register("cron", config.enable_cron, || {
-            Arc::new(CronTool::new())
-        });
+        registry.register("cron", config.enable_cron, || Arc::new(CronTool::new()));
 
         let (tools, disabled) = registry.build();
 

@@ -64,7 +64,10 @@ pub fn format_announcement(run: &SubagentRunView) -> String {
 /// Announce a subagent result to its parent session
 ///
 /// This adds the result as an assistant message to the parent's base session.
-pub async fn announce_to_parent(parent_handle: &SessionHandle, run: &SubagentRunView) -> Result<()> {
+pub async fn announce_to_parent(
+    parent_handle: &SessionHandle,
+    run: &SubagentRunView,
+) -> Result<()> {
     if !run.announce_completion {
         tracing::debug!(
             "Skipping announcement for run {} (announce_completion=false)",

@@ -212,7 +212,10 @@ impl AgentRegistry {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.is_file() {
-                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 let digest = tokio::fs::read_to_string(&path).await?;
                 tags.insert(name, digest.trim().to_string());
             }
@@ -280,7 +283,9 @@ mod tests {
 
         // Has
         assert!(registry.has_layer(&digest));
-        assert!(!registry.has_layer("sha256:nonexistent0000000000000000000000000000000000000000000000"));
+        assert!(
+            !registry.has_layer("sha256:nonexistent0000000000000000000000000000000000000000000000")
+        );
     }
 
     #[tokio::test]

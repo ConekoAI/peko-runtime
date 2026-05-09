@@ -14,9 +14,8 @@ use serde_json::Value;
 ///
 /// Returns `Value` directly — tool-specific formatting is handled at delivery time.
 pub type BoxedExecutionFn = Box<
-    dyn FnOnce() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Value>> + Send>,
-        > + Send,
+    dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
+        + Send,
 >;
 
 /// Transport abstraction for async task execution
@@ -345,13 +344,15 @@ pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTr
 pub fn create_local_transport() -> std::sync::Arc<dyn AsyncTaskTransport> {
     // Use a shared registry from the global cache so that the `task` tool can
     // find async tasks created by the router.
-    let registry = crate::extension::async_exec::executor::get_or_create_registry_for_agent("_global");
-    let queue_manager =
-        std::sync::Arc::new(tokio::sync::RwLock::new(
-            crate::extension::async_exec::executor::AsyncResultQueueManager::new(),
-        ));
-    let executor =
-        crate::extension::async_exec::executor::AsyncExecutor::with_registries(registry, queue_manager);
+    let registry =
+        crate::extension::async_exec::executor::get_or_create_registry_for_agent("_global");
+    let queue_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::extension::async_exec::executor::AsyncResultQueueManager::new(),
+    ));
+    let executor = crate::extension::async_exec::executor::AsyncExecutor::with_registries(
+        registry,
+        queue_manager,
+    );
     std::sync::Arc::new(LocalAsyncTransport::from_executor(executor))
 }
 

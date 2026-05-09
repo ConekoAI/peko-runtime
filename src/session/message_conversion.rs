@@ -56,7 +56,9 @@ pub(crate) fn normalized_entry_to_llm_message(entry: &NormalizedEntry) -> Option
             content: vec![ContentBlock::ToolResult {
                 tool_call_id: tool_call_id.clone(),
                 name: tool_name.clone(),
-                content: vec![ContentBlock::Text { text: content.clone() }],
+                content: vec![ContentBlock::Text {
+                    text: content.clone(),
+                }],
                 is_error: *is_error,
             }],
             timestamp: chrono::Utc::now(),
@@ -126,10 +128,7 @@ mod tests {
 
     #[test]
     fn test_event_to_llm_message_user() {
-        let event = SessionEvent::MessageV2(SessionMessage::user(
-            "Hi there",
-            MessageSource::User,
-        ));
+        let event = SessionEvent::MessageV2(SessionMessage::user("Hi there", MessageSource::User));
 
         let msg = event_to_llm_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::User);

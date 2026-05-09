@@ -592,7 +592,7 @@ impl AgentService {
         let export_opts = PortableExportOptions {
             encrypt: false,
             passphrase: None,
-            include_sessions: true,
+            include_sessions: opts.include_sessions,
             include_workspace: true,
             rotate_keys: false,
             description: Some(format!("Exported agent {agent_name} from team {team}")),
@@ -646,11 +646,14 @@ impl AgentService {
             import_workspace: true,
             skip_validation: false,
             force: false,
+            team: Some(team.to_string()),
         };
 
         // Create unpackager with correct base directory for the team
         let team_dir = self.resolver.team_dir(team);
-        let unpackager = portable::Unpackager::new(file_path).with_base_dir(&team_dir);
+        let unpackager = portable::Unpackager::new(file_path)
+            .with_base_dir(&team_dir)
+            .with_team(team);
 
         // Import the package
         let result = unpackager

@@ -4,8 +4,8 @@
 //! (MCP, Gateway, etc.) implements this trait to customize initialization,
 //! health checks, crash handling, and shutdown.
 
-use async_trait::async_trait;
 use super::supervisor::ManagedRuntime;
+use async_trait::async_trait;
 use std::sync::Arc;
 
 /// Action to take when a runtime crashes

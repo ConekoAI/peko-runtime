@@ -9,8 +9,8 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::providers::MessageRole;
-use crate::types::message::LlmMessage;
 use crate::types::message::ContentBlock;
+use crate::types::message::LlmMessage;
 
 /// Service for recovering meaningful output from subagent session history.
 pub struct ResultRecovery;
@@ -25,13 +25,19 @@ impl ResultRecovery {
             Ok(history) => {
                 // First, try to find the last assistant message with non-empty text
                 if let Some(text) = Self::extract_last_assistant(&history) {
-                    info!("Recovered subagent answer from assistant message: {} chars", text.len());
+                    info!(
+                        "Recovered subagent answer from assistant message: {} chars",
+                        text.len()
+                    );
                     return Some(text);
                 }
 
                 // If no assistant text found, try to extract from tool results
                 if let Some(text) = Self::extract_tool_results(&history) {
-                    info!("Recovered subagent answer from tool results: {} chars", text.len());
+                    info!(
+                        "Recovered subagent answer from tool results: {} chars",
+                        text.len()
+                    );
                     return Some(text);
                 }
 
@@ -189,10 +195,7 @@ mod tests {
 
     #[test]
     fn test_extract_last_assistant_found() {
-        let history = vec![
-            LlmMessage::user("hello"),
-            LlmMessage::assistant("response"),
-        ];
+        let history = vec![LlmMessage::user("hello"), LlmMessage::assistant("response")];
         assert_eq!(
             ResultRecovery::extract_last_assistant(&history),
             Some("response".to_string())
@@ -201,9 +204,7 @@ mod tests {
 
     #[test]
     fn test_extract_last_assistant_empty_text() {
-        let history = vec![
-            LlmMessage::assistant("   "),
-        ];
+        let history = vec![LlmMessage::assistant("   ")];
         assert_eq!(ResultRecovery::extract_last_assistant(&history), None);
     }
 
@@ -218,8 +219,12 @@ mod tests {
         let history = vec![LlmMessage {
             role: MessageRole::Assistant,
             content: vec![
-                ContentBlock::Text { text: "part1".into() },
-                ContentBlock::Text { text: "part2".into() },
+                ContentBlock::Text {
+                    text: "part1".into(),
+                },
+                ContentBlock::Text {
+                    text: "part2".into(),
+                },
             ],
             timestamp: chrono::Utc::now(),
             metadata: std::collections::HashMap::new(),
@@ -233,10 +238,7 @@ mod tests {
 
     #[test]
     fn test_extract_last_assistant_skips_empty() {
-        let history = vec![
-            LlmMessage::assistant(""),
-            LlmMessage::assistant("real"),
-        ];
+        let history = vec![LlmMessage::assistant(""), LlmMessage::assistant("real")];
         assert_eq!(
             ResultRecovery::extract_last_assistant(&history),
             Some("real".to_string())
@@ -247,7 +249,9 @@ mod tests {
     fn test_extract_tool_results_found() {
         let history = vec![LlmMessage {
             role: MessageRole::Tool,
-            content: vec![ContentBlock::Text { text: "tool output".into() }],
+            content: vec![ContentBlock::Text {
+                text: "tool output".into(),
+            }],
             timestamp: chrono::Utc::now(),
             metadata: std::collections::HashMap::new(),
             tool_call_id: None,
@@ -281,14 +285,18 @@ mod tests {
         let history = vec![
             LlmMessage {
                 role: MessageRole::Tool,
-                content: vec![ContentBlock::Text { text: "second".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "second".into(),
+                }],
                 timestamp: chrono::Utc::now(),
                 metadata: std::collections::HashMap::new(),
                 tool_call_id: None,
             },
             LlmMessage {
                 role: MessageRole::Tool,
-                content: vec![ContentBlock::Text { text: "first".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "first".into(),
+                }],
                 timestamp: chrono::Utc::now(),
                 metadata: std::collections::HashMap::new(),
                 tool_call_id: None,

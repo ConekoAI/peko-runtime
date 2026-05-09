@@ -77,7 +77,9 @@ impl MaintenanceScheduler {
     ///
     /// Walks the `agents_dir` looking for `sessions/` subdirectories and
     /// runs `MetadataController::maintenance` in each one.
-    pub async fn run_maintenance(&self) -> anyhow::Result<crate::session::index::MaintenanceReport> {
+    pub async fn run_maintenance(
+        &self,
+    ) -> anyhow::Result<crate::session::index::MaintenanceReport> {
         use crate::session::index::MaintenanceReport;
 
         let mut total_report = MaintenanceReport::default();

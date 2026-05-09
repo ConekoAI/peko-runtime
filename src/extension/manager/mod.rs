@@ -11,7 +11,7 @@ use crate::extension::core::ExtensionCore;
 // Re-export storage types for backward compatibility
 pub use crate::extension::manager::storage::ExtensionStorage;
 
-use crate::extension::manager::discovery::{DiscoveredExtension, discovery_paths};
+use crate::extension::manager::discovery::{discovery_paths, DiscoveredExtension};
 use crate::extension::types::{ExtensionId, ExtensionManifest, HookId};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -110,6 +110,12 @@ impl ExtensionManager {
         self
     }
 
+    /// Get the storage directory if configured
+    #[must_use]
+    pub fn storage_dir(&self) -> Option<&Path> {
+        self.storage.dir()
+    }
+
     #[must_use]
     pub fn core(&self) -> &ExtensionCore {
         &self.core
@@ -166,9 +172,7 @@ impl ExtensionManager {
                 }
                 Ok(None) => {
                     // manifest.yaml exists but has no extension_type
-                    tracing::debug!(
-                        "manifest.yaml exists but has no extension_type"
-                    );
+                    tracing::debug!("manifest.yaml exists but has no extension_type");
                 }
                 Err(e) => {
                     tracing::warn!("Failed to parse manifest.yaml: {}", e);
@@ -196,10 +200,7 @@ impl ExtensionManager {
                     path.to_path_buf()
                 } else if path.is_dir() {
                     // Try to find manifest files in the directory (ADR-024)
-                    let candidates = [
-                        path.join("manifest.yaml"),
-                        path.join("server.json"),
-                    ];
+                    let candidates = [path.join("manifest.yaml"), path.join("server.json")];
                     candidates
                         .into_iter()
                         .find(|p| p.exists())
@@ -232,7 +233,10 @@ impl ExtensionManager {
         }
 
         // Register tools via the unified registry (single canonical path)
-        let tool_count = adapter.register_tools(&self.core, &manifest).await.unwrap_or(0);
+        let tool_count = adapter
+            .register_tools(&self.core, &manifest)
+            .await
+            .unwrap_or(0);
 
         info!(
             "Loaded extension '{}' ({}) with {} hooks and {} tools",
@@ -377,10 +381,7 @@ impl ExtensionManager {
                     path.to_path_buf()
                 } else if path.is_dir() {
                     // For directories with Custom format, look for manifest files
-                    let candidates = vec![
-                        path.join("manifest.yaml"),
-                        path.join("server.json"),
-                    ];
+                    let candidates = vec![path.join("manifest.yaml"), path.join("server.json")];
                     candidates
                         .into_iter()
                         .find(|p| p.exists())
@@ -652,10 +653,7 @@ impl ExtensionManager {
                     p
                 } else {
                     // For Custom formats, check common manifest file names
-                    let candidates = vec![
-                        path.join("manifest.yaml"),
-                        path.join("server.json"),
-                    ];
+                    let candidates = vec![path.join("manifest.yaml"), path.join("server.json")];
                     candidates
                         .into_iter()
                         .find(|p| p.exists())
@@ -683,7 +681,9 @@ impl ExtensionManager {
     /// Returns the IDs of loaded extensions.
     pub async fn load_from_directory(&mut self, path: &Path) -> Result<Vec<ExtensionId>> {
         tracing::info!("Scanning directory for extensions: {}", path.display());
-        let discovered = self.scan_directory(path).await
+        let discovered = self
+            .scan_directory(path)
+            .await
             .with_context(|| format!("Failed to scan directory: {}", path.display()))?;
         tracing::info!("Discovered {} extensions", discovered.len());
         let mut loaded_ids = Vec::new();
@@ -697,16 +697,32 @@ impl ExtensionManager {
             );
 
             // Check if already loaded
-            let manifest_content = tokio::fs::read_to_string(&discovered_ext.manifest_path).await
-                .with_context(|| format!("Failed to read manifest: {}", discovered_ext.manifest_path.display()))?;
+            let manifest_content = tokio::fs::read_to_string(&discovered_ext.manifest_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to read manifest: {}",
+                        discovered_ext.manifest_path.display()
+                    )
+                })?;
             let adapter = self
                 .adapters
                 .get(&discovered_ext.extension_type)
-                .with_context(|| format!("Adapter not found for extension type: {}", discovered_ext.extension_type))?;
+                .with_context(|| {
+                    format!(
+                        "Adapter not found for extension type: {}",
+                        discovered_ext.extension_type
+                    )
+                })?;
 
-            let manifest =
-                adapter.parse_manifest(&discovered_ext.manifest_path, &manifest_content)
-                    .with_context(|| format!("Failed to parse manifest: {}", discovered_ext.manifest_path.display()))?;
+            let manifest = adapter
+                .parse_manifest(&discovered_ext.manifest_path, &manifest_content)
+                .with_context(|| {
+                    format!(
+                        "Failed to parse manifest: {}",
+                        discovered_ext.manifest_path.display()
+                    )
+                })?;
 
             if self.extensions.contains_key(&manifest.id) {
                 debug!("Extension '{}' already loaded, skipping", manifest.id);

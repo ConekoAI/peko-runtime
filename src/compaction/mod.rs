@@ -18,8 +18,8 @@ pub mod turn_boundaries;
 mod integration_tests;
 
 use crate::providers::MessageRole;
-use crate::types::message::LlmMessage;
 use crate::types::message::ContentBlock;
+use crate::types::message::LlmMessage;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -496,21 +496,31 @@ impl Compactor {
         // For split turns, generate two summaries and merge them
         let summary = if is_split_turn && !to_compact.is_empty() {
             // Split turn: generate history summary + turn prefix summary
-            let turn_prefix = turn_boundaries::extract_turn_prefix(&conversation_msgs, conversation_msgs.len() - to_keep_conversation.len())
-                .unwrap_or_default();
-            let history_summary = self.generate_summary_with_llm(&to_compact, provider).await?;
+            let turn_prefix = turn_boundaries::extract_turn_prefix(
+                &conversation_msgs,
+                conversation_msgs.len() - to_keep_conversation.len(),
+            )
+            .unwrap_or_default();
+            let history_summary = self
+                .generate_summary_with_llm(&to_compact, provider)
+                .await?;
             let prefix_summary = if !turn_prefix.is_empty() {
-                self.generate_summary_with_llm(&turn_prefix, provider).await?
+                self.generate_summary_with_llm(&turn_prefix, provider)
+                    .await?
             } else {
                 String::new()
             };
             if prefix_summary.is_empty() {
                 history_summary
             } else {
-                format!("{}\n\n---\n\n**Turn Context (split turn):**\n\n{}", history_summary, prefix_summary)
+                format!(
+                    "{}\n\n---\n\n**Turn Context (split turn):**\n\n{}",
+                    history_summary, prefix_summary
+                )
             }
         } else {
-            self.generate_summary_with_llm(&to_compact, provider).await?
+            self.generate_summary_with_llm(&to_compact, provider)
+                .await?
         };
 
         // Track file operations from messages being summarized
@@ -524,7 +534,8 @@ impl Compactor {
         self.previous_summary = Some(summary.clone());
 
         // Create summary message with structured format and file operations
-        let summary_with_ops = summary_format::format_summary_with_file_ops(&summary, &cumulative_details);
+        let summary_with_ops =
+            summary_format::format_summary_with_file_ops(&summary, &cumulative_details);
         let summary_content = format!(
             "[Conversation Summary - {} messages]:\n{}",
             to_compact.len(),
@@ -680,7 +691,10 @@ mod tests {
         );
         // With many long messages, we should have some to compact
         assert!(!to_compact.is_empty(), "Should have messages to compact");
-        assert!(!is_split, "Normal conversation should not be split turn when to_compact has users");
+        assert!(
+            !is_split,
+            "Normal conversation should not be split turn when to_compact has users"
+        );
         assert_eq!(
             to_compact.len() + to_keep.len(),
             conversation.len(),
@@ -705,7 +719,10 @@ mod tests {
 
         // If tool result is in keep, assistant must also be in keep
         if to_keep.iter().any(|m| m.role == MessageRole::Tool) {
-            let tool_idx = to_keep.iter().position(|m| m.role == MessageRole::Tool).unwrap();
+            let tool_idx = to_keep
+                .iter()
+                .position(|m| m.role == MessageRole::Tool)
+                .unwrap();
             assert!(
                 tool_idx > 0 && to_keep[tool_idx - 1].role == MessageRole::Assistant,
                 "Tool result must follow assistant in kept messages"
@@ -771,7 +788,9 @@ cooldown_seconds = 0
 minimax = { "M2.7" = 4000 }
 "#;
         let root = toml::from_str::<toml::Value>(toml_str).unwrap();
-        let compaction_table = root.get("compaction").expect("compaction section should exist");
+        let compaction_table = root
+            .get("compaction")
+            .expect("compaction section should exist");
         let cfg: CompactionConfig = compaction_table.clone().try_into().expect("should parse");
 
         assert!(cfg.enabled);
@@ -780,6 +799,9 @@ minimax = { "M2.7" = 4000 }
         assert_eq!(cfg.keep_recent_tokens, 1000);
         assert_eq!(cfg.max_compactions_per_session, 100);
         assert_eq!(cfg.cooldown_seconds, 0);
-        assert_eq!(cfg.model_limits.get("minimax").unwrap().get("M2.7"), Some(&4000));
+        assert_eq!(
+            cfg.model_limits.get("minimax").unwrap().get("M2.7"),
+            Some(&4000)
+        );
     }
 }

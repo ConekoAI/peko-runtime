@@ -155,4 +155,5 @@ impl AsyncResultQueueManager {
     }
 }
 
-pub type SharedAsyncResultQueueManager = std::sync::Arc<tokio::sync::RwLock<AsyncResultQueueManager>>;
+pub type SharedAsyncResultQueueManager =
+    std::sync::Arc<tokio::sync::RwLock<AsyncResultQueueManager>>;

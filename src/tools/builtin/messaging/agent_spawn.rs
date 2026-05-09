@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use crate::agent::subagent_error::SpawnError;
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::session::types::SpawnCleanupPolicy;
 use crate::extension::async_exec::executor::TaskMetadata;
+use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::core::Tool;
 
 /// Maximum allowed spawn depth (safety limit)
@@ -191,13 +191,7 @@ impl AgentSpawnTool {
 
         match self
             .executor
-            .spawn_and_execute(
-                task,
-                None,
-                isolated,
-                parent_session_key,
-                config,
-            )
+            .spawn_and_execute(task, None, isolated, parent_session_key, config)
             .await
         {
             Ok(run_id) => {
@@ -258,7 +252,10 @@ impl AgentSpawnTool {
             Ok(run) => {
                 // Return inline result — the subagent's output is available immediately
                 let status_str = run.status.as_str();
-                let success = matches!(run.status, crate::extension::async_exec::executor::AsyncTaskStatus::Completed { .. });
+                let success = matches!(
+                    run.status,
+                    crate::extension::async_exec::executor::AsyncTaskStatus::Completed { .. }
+                );
 
                 let mut result = json!({
                     "status": status_str,
@@ -411,7 +408,8 @@ Examples:
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // Check for _async reserved parameter (extracted by AsyncExecutionRouter,
         // but we also check here for direct tool calls that bypass the router)
-        let async_mode = params.get("_async")
+        let async_mode = params
+            .get("_async")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
@@ -514,20 +512,15 @@ mod tests {
     #[tokio::test]
     async fn test_async_mode_error_response_formatting() {
         // Test typed depth error
-        let depth_err = anyhow::anyhow!(SpawnError::DepthLimitExceeded {
-            current: 4,
-            max: 3,
-        });
+        let depth_err = anyhow::anyhow!(SpawnError::DepthLimitExceeded { current: 4, max: 3 });
         let response = AgentSpawnTool::format_error_response(&depth_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("depth"));
         assert!(response["error"].as_str().unwrap().contains("4"));
 
         // Test typed concurrent error
-        let concurrent_err = anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded {
-            current: 5,
-            max: 5,
-        });
+        let concurrent_err =
+            anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded { current: 5, max: 5 });
         let response = AgentSpawnTool::format_error_response(&concurrent_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("concurrent"));
@@ -539,10 +532,15 @@ mod tests {
         assert!(response["error"].as_str().unwrap().contains("30"));
 
         // Test typed execution failed error
-        let exec_err = anyhow::anyhow!(SpawnError::ExecutionFailed("something went wrong".to_string()));
+        let exec_err = anyhow::anyhow!(SpawnError::ExecutionFailed(
+            "something went wrong".to_string()
+        ));
         let response = AgentSpawnTool::format_error_response(&exec_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "error");
-        assert!(response["error"].as_str().unwrap().contains("something went wrong"));
+        assert!(response["error"]
+            .as_str()
+            .unwrap()
+            .contains("something went wrong"));
 
         // Test fallback string matching for untyped errors
         let untyped = anyhow::anyhow!("Some random depth-related failure");

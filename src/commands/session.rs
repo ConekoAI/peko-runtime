@@ -9,9 +9,9 @@ use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::session_service::{HistoryQuery, SessionService};
 use crate::session::presentation::{
     history_event_to_display, render_branch_success, render_compact_dry_run,
-    render_compact_success, render_delete_prompt, render_delete_success,
-    render_session_details, render_session_history, render_session_list,
-    render_session_list_json, render_session_show_json, render_switch_success,
+    render_compact_success, render_delete_prompt, render_delete_success, render_session_details,
+    render_session_history, render_session_list, render_session_list_json,
+    render_session_show_json, render_switch_success,
 };
 use crate::session::types::Peer;
 use anyhow::Result;
@@ -153,8 +153,16 @@ pub async fn handle_session(
             if !json {
                 println!("📦 Using active session: {resolved}");
             }
-            compact_session(&service, team, agent_name, &resolved, dry_run, instruction, json)
-                .await
+            compact_session(
+                &service,
+                team,
+                agent_name,
+                &resolved,
+                dry_run,
+                instruction,
+                json,
+            )
+            .await
         }
     }
 }
@@ -172,8 +180,12 @@ async fn list_sessions(
 ) -> anyhow::Result<()> {
     let sessions = service.list_sessions_synced(agent, Some(team)).await?;
 
-    let mut manager =
-        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team), paths.user());
+    let mut manager = crate::session::SessionManager::for_cli(
+        paths.resolver.clone(),
+        agent,
+        Some(team),
+        paths.user(),
+    );
     let peer = Peer::User(paths.user().to_string());
     let active_session_id = manager.get_active_session_id(&peer).await.ok().flatten();
 
@@ -193,14 +205,19 @@ async fn show_session(
     show_history: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let Some(entry) = service.get_session_synced(agent, Some(team), session_id).await? else {
+    let Some(entry) = service
+        .get_session_synced(agent, Some(team), session_id)
+        .await?
+    else {
         return Err(anyhow::anyhow!(
             "Session '{session_id}' not found for agent '{agent}'"
         ));
     };
 
     let history_events = if show_history {
-        load_session_history(service, agent, team, session_id).await.ok()
+        load_session_history(service, agent, team, session_id)
+            .await
+            .ok()
     } else {
         None
     };
@@ -233,7 +250,11 @@ async fn load_session_history(
     let result = service
         .get_history(agent, Some(team), session_id, HistoryQuery::default())
         .await?;
-    Ok(result.events.into_iter().filter_map(history_event_to_display).collect())
+    Ok(result
+        .events
+        .into_iter()
+        .filter_map(history_event_to_display)
+        .collect())
 }
 
 async fn branch_session(
@@ -251,7 +272,13 @@ async fn branch_session(
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        render_branch_success(team, agent, session_id, &result.new_session_id, label.as_deref());
+        render_branch_success(
+            team,
+            agent,
+            session_id,
+            &result.new_session_id,
+            label.as_deref(),
+        );
     }
     Ok(())
 }
@@ -264,7 +291,9 @@ async fn delete_session(
     force: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let metadata = service.get_session_synced(agent, Some(team), session_id).await?;
+    let metadata = service
+        .get_session_synced(agent, Some(team), session_id)
+        .await?;
 
     if !force {
         render_delete_prompt(session_id, metadata.as_ref());
@@ -279,10 +308,16 @@ async fn delete_session(
         }
     }
 
-    let deleted = service.delete_session(agent, Some(team), session_id).await?;
+    let deleted = service
+        .delete_session(agent, Some(team), session_id)
+        .await?;
 
     if json {
-        let deleted_items = if deleted { vec!["jsonl", "index"] } else { vec![] };
+        let deleted_items = if deleted {
+            vec!["jsonl", "index"]
+        } else {
+            vec![]
+        };
         println!("{{\"success\": true, \"deleted\": {deleted_items:?}}}");
     } else {
         render_delete_success(session_id, deleted);
@@ -333,7 +368,9 @@ async fn compact_session(
 ) -> anyhow::Result<()> {
     let sessions_dir = service.get_sessions_dir(agent, Some(team)).await?;
     if !sessions_dir.exists() {
-        return Err(anyhow::anyhow!("Agent '{agent}' not found in team '{team}'"));
+        return Err(anyhow::anyhow!(
+            "Agent '{agent}' not found in team '{team}'"
+        ));
     }
 
     let mut session = service

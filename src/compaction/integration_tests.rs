@@ -10,8 +10,12 @@
 
 use crate::compaction::{
     registry::{should_auto_compact, ModelContextRegistry},
-    summary_format::{extract_file_ops_from_messages, format_summary_with_file_ops, CompactionDetails},
-    turn_boundaries::{classify_message, find_cut_points, select_messages_respecting_boundaries, MessageKind},
+    summary_format::{
+        extract_file_ops_from_messages, format_summary_with_file_ops, CompactionDetails,
+    },
+    turn_boundaries::{
+        classify_message, find_cut_points, select_messages_respecting_boundaries, MessageKind,
+    },
     CompactionConfig, CompactionEntry, Compactor,
 };
 use crate::types::message::{ContentBlock, LlmMessage, MessageRole};
@@ -68,7 +72,9 @@ fn test_never_cuts_at_tool_result() {
             content: vec![ContentBlock::ToolResult {
                 tool_call_id: "tc1".to_string(),
                 name: "read_file".to_string(),
-                content: vec![ContentBlock::Text { text: "content".to_string() }],
+                content: vec![ContentBlock::Text {
+                    text: "content".to_string(),
+                }],
                 is_error: false,
             }],
             timestamp: chrono::Utc::now(),
@@ -83,7 +89,10 @@ fn test_never_cuts_at_tool_result() {
 
     // If tool is in keep, assistant MUST also be in keep
     if keep.iter().any(|m| m.role == MessageRole::Tool) {
-        let tool_idx = keep.iter().position(|m| m.role == MessageRole::Tool).unwrap();
+        let tool_idx = keep
+            .iter()
+            .position(|m| m.role == MessageRole::Tool)
+            .unwrap();
         assert!(
             tool_idx > 0 && keep[tool_idx - 1].role == MessageRole::Assistant,
             "Tool result at index {tool_idx} must follow assistant"
@@ -122,7 +131,10 @@ fn test_find_cut_points_excludes_tool_results() {
 
     let cuts = find_cut_points(&messages);
     // Cut points should only be at indices 0, 1, 3 (not 2 which is tool result)
-    assert!(!cuts.contains(&2), "Tool result index should not be a cut point");
+    assert!(
+        !cuts.contains(&2),
+        "Tool result index should not be a cut point"
+    );
     assert!(cuts.contains(&0));
     assert!(cuts.contains(&1));
     assert!(cuts.contains(&3));

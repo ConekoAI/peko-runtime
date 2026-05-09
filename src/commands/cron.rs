@@ -184,7 +184,10 @@ async fn connect_daemon() -> Result<DaemonClient> {
 /// Handle cron commands
 pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) -> Result<()> {
     match cmd {
-        CronCommands::List { all, json: cmd_json } => {
+        CronCommands::List {
+            all,
+            json: cmd_json,
+        } => {
             let client = connect_daemon().await?;
             let use_json = cmd_json || json;
             match client.cron_list(all).await? {
@@ -198,10 +201,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                         for job in jobs {
                             let status = if job.enabled { "✅" } else { "⏸️" };
                             let schedule = job.schedule.display();
-                            let agent = job
-                                .agent_id
-                                .as_deref()
-                                .unwrap_or("default");
+                            let agent = job.agent_id.as_deref().unwrap_or("default");
                             println!(
                                 "  {} {} | {} | agent: {} | next: {}",
                                 status,
@@ -366,7 +366,9 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 DeliveryMode::None
             };
 
-            let schedule_kind = ScheduleKind::Every { every_ms: interval_ms };
+            let schedule_kind = ScheduleKind::Every {
+                every_ms: interval_ms,
+            };
             let next_run = crate::cron::calculate_next_run(&schedule_kind, Utc::now())?;
 
             let job = CronJob {
@@ -412,7 +414,9 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             }
             let client = connect_daemon().await?;
             match client.cron_remove(&job_id).await? {
-                ResponsePacket::CronRemoved { job_id: removed_id, .. } => {
+                ResponsePacket::CronRemoved {
+                    job_id: removed_id, ..
+                } => {
                     println!("✅ Removed job '{removed_id}'");
                     Ok(())
                 }
@@ -545,9 +549,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
         } => {
             let client = connect_daemon().await?;
 
-            let filter_val = filter
-                .map(|f| serde_json::from_str(&f).ok())
-                .flatten();
+            let filter_val = filter.map(|f| serde_json::from_str(&f).ok()).flatten();
 
             let delivery = if announce {
                 DeliveryMode::Announce {

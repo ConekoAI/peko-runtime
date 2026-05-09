@@ -87,36 +87,47 @@ impl Manifest {
         }
 
         // Fall back to YAML (ADR-024 unified manifest format)
-        let yaml: serde_yaml::Value = serde_yaml::from_str(content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse manifest as JSON or YAML at {:?}: {}", path, e))?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(content).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse manifest as JSON or YAML at {:?}: {}",
+                path,
+                e
+            )
+        })?;
 
-        let name = yaml.get("name")
+        let name = yaml
+            .get("name")
             .or_else(|| yaml.get("id"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Manifest missing 'name' or 'id' field at {:?}", path))?
             .to_string();
 
-        let description = yaml.get("description")
+        let description = yaml
+            .get("description")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
 
-        let llm_description = yaml.get("llm_description")
+        let llm_description = yaml
+            .get("llm_description")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let parameters = yaml.get("parameters")
+        let parameters = yaml
+            .get("parameters")
             .map(|v| crate::extension::adapters::parsing::yaml_to_json(v.clone()))
             .unwrap_or_else(|| serde_json::json!({"type": "object"}));
 
-        let reserved_parameters: ReservedParamsConfig = yaml.get("reserved_parameters")
+        let reserved_parameters: ReservedParamsConfig = yaml
+            .get("reserved_parameters")
             .and_then(|v| {
                 let json_val = crate::extension::adapters::parsing::yaml_to_json(v.clone());
                 serde_json::from_value(json_val).ok()
             })
             .unwrap_or_default();
 
-        let protocol = yaml.get("protocol")
+        let protocol = yaml
+            .get("protocol")
             .and_then(|v| {
                 let json_val = crate::extension::adapters::parsing::yaml_to_json(v.clone());
                 serde_json::from_value(json_val).ok()

@@ -452,11 +452,7 @@ mod tests {
     fn test_tool_registration_composite() {
         let ids = vec![HookId::new(), HookId::new(), HookId::new()];
         let primary = ids[0];
-        let reg = ToolRegistration::new(
-            "my_tool",
-            ids.clone(),
-            ExtensionId::new("test:ext"),
-        );
+        let reg = ToolRegistration::new("my_tool", ids.clone(), ExtensionId::new("test:ext"));
 
         assert_eq!(reg.tool_name, "my_tool");
         assert_eq!(reg.hook_count(), 3);

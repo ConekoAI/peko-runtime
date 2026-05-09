@@ -480,6 +480,27 @@ impl SessionIndex {
         Ok(())
     }
 
+    /// Ensure a peer routing exists and set the given session as active.
+    /// If the peer does not exist, it is created. If the session is not yet
+    /// tracked for the peer, it is added.
+    pub async fn ensure_peer_active(&mut self, peer_key: &str, session_id: &str) -> Result<()> {
+        let peers = self.load_peers_mut().await?;
+
+        let peer_info = peers
+            .peers
+            .entry(peer_key.to_string())
+            .or_insert_with(|| PeerInfo::new(session_id.to_string()));
+
+        if !peer_info.session_ids.contains(&session_id.to_string()) {
+            peer_info.session_ids.push(session_id.to_string());
+        }
+        peer_info.active_session_id = session_id.to_string();
+        self.peers_modified = true;
+
+        info!("Ensured peer {} active session: {}", peer_key, session_id);
+        Ok(())
+    }
+
     // =================================================================================
     // Listing Operations
     // =================================================================================

@@ -9,6 +9,8 @@ use crate::portable::{
     manifest::AgentManifest,
     validation::{validate_package, ValidationResult},
 };
+use crate::session::key::derive_base_session_key;
+use crate::session::types::Peer;
 use crate::types::agent::AgentConfig;
 use std::collections::HashMap;
 use std::io::Read;
@@ -32,6 +34,8 @@ pub struct ImportOptions {
     pub skip_validation: bool,
     /// Force import even if DID exists
     pub force: bool,
+    /// Team name for workspace/sessions placement
+    pub team: Option<String>,
 }
 
 impl Default for ImportOptions {
@@ -41,10 +45,11 @@ impl Default for ImportOptions {
             passphrase: None,
             rotate_keys: false,
 
-            import_sessions: true,              // Default: import if present
-            import_workspace: true,             // Default: import if present
+            import_sessions: true,  // Default: import if present
+            import_workspace: true, // Default: import if present
             skip_validation: false,
             force: false,
+            team: None,
         }
     }
 }
@@ -75,6 +80,8 @@ pub struct Unpackager {
     package_path: std::path::PathBuf,
     /// Base directory for imported agents
     base_dir: std::path::PathBuf,
+    /// Team name for workspace/sessions placement
+    team: String,
 }
 
 impl Unpackager {
@@ -85,12 +92,19 @@ impl Unpackager {
             base_dir: dirs::config_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("pekobot"),
+            team: "default".to_string(),
         }
     }
 
     /// Set custom base directory
     pub fn with_base_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.base_dir = dir.as_ref().to_path_buf();
+        self
+    }
+
+    /// Set team name for workspace/sessions placement
+    pub fn with_team(mut self, team: impl Into<String>) -> Self {
+        self.team = team.into();
         self
     }
 
@@ -175,18 +189,36 @@ impl Unpackager {
         }
 
         // Import sessions (if present in package)
-        if options.import_sessions {
+        let sessions_imported = if options.import_sessions {
             self.import_sessions(&files, &name).await?;
+            true
+        } else {
+            false
+        };
+
+        // Compute workspace and sessions paths for result
+        let team = options.team.as_deref().unwrap_or("default");
+
+        // After importing sessions, ensure the most recent session is active
+        // for the default peer. This is critical for memory continuity when
+        // the agent is imported with a different name (peer keys are based on
+        // agent name, so the imported index won't match the new agent).
+        if sessions_imported {
+            if let Err(e) = self.activate_most_recent_session(&name, team).await {
+                tracing::warn!(
+                    "Failed to activate session for imported agent '{}': {}",
+                    name,
+                    e
+                );
+            }
         }
 
         // Save config
         let config_path = self.save_config(&config, &name).await?;
 
-        // Compute workspace and sessions paths for result
-        let team = "default";
         let workspace_path = if options.import_workspace {
             Some(dirs::data_dir().map_or_else(
-                || self.base_dir.join("workspaces").join(&name),
+                || self.base_dir.join("workspaces").join(team).join(&name),
                 |d| d.join("pekobot").join("workspaces").join(team).join(&name),
             ))
         } else {
@@ -195,7 +227,7 @@ impl Unpackager {
 
         let sessions_path = if options.import_sessions {
             Some(dirs::data_dir().map_or_else(
-                || self.base_dir.join("sessions").join(&name),
+                || self.base_dir.join("sessions").join(team).join(&name),
                 |d| d.join("pekobot").join("sessions").join(team).join(&name),
             ))
         } else {
@@ -331,7 +363,9 @@ impl Unpackager {
 
     /// Import skills
     async fn import_skills(&self, files: &HashMap<String, Vec<u8>>) -> anyhow::Result<()> {
-        let skills_dir = self.base_dir.join("skills");
+        let skills_dir = dirs::data_dir()
+            .map(|d| d.join("pekobot").join("skills"))
+            .unwrap_or_else(|| self.base_dir.join("skills"));
         tokio::fs::create_dir_all(&skills_dir).await?;
 
         for (path, content) in files {
@@ -357,17 +391,19 @@ impl Unpackager {
         files: &HashMap<String, Vec<u8>>,
         agent_name: &str,
     ) -> anyhow::Result<()> {
-        // Determine team (default to "default" if not specified)
-        let team = "default"; // Could be extracted from config
-
         let workspace_dir = dirs::data_dir()
             .map(|d| {
                 d.join("pekobot")
                     .join("workspaces")
-                    .join(team)
+                    .join(&self.team)
                     .join(agent_name)
             })
-            .unwrap_or_else(|| self.base_dir.join("workspaces").join(agent_name));
+            .unwrap_or_else(|| {
+                self.base_dir
+                    .join("workspaces")
+                    .join(&self.team)
+                    .join(agent_name)
+            });
 
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
@@ -393,17 +429,19 @@ impl Unpackager {
         files: &HashMap<String, Vec<u8>>,
         agent_name: &str,
     ) -> anyhow::Result<()> {
-        // Determine team (default to "default")
-        let team = "default";
-
         let sessions_dir = dirs::data_dir()
             .map(|d| {
                 d.join("pekobot")
                     .join("sessions")
-                    .join(team)
+                    .join(&self.team)
                     .join(agent_name)
             })
-            .unwrap_or_else(|| self.base_dir.join("sessions").join(agent_name));
+            .unwrap_or_else(|| {
+                self.base_dir
+                    .join("sessions")
+                    .join(&self.team)
+                    .join(agent_name)
+            });
 
         tokio::fs::create_dir_all(&sessions_dir).await?;
 
@@ -418,6 +456,50 @@ impl Unpackager {
 
                 tokio::fs::write(dest_path, content).await?;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Activate the most recent imported session for the default peer.
+    /// This ensures memory continuity works immediately after import.
+    async fn activate_most_recent_session(
+        &self,
+        agent_name: &str,
+        team: &str,
+    ) -> anyhow::Result<()> {
+        let sessions_dir = dirs::data_dir()
+            .map(|d| {
+                d.join("pekobot")
+                    .join("sessions")
+                    .join(team)
+                    .join(agent_name)
+            })
+            .unwrap_or_else(|| self.base_dir.join("sessions").join(team).join(agent_name));
+
+        if !sessions_dir.exists() {
+            return Ok(());
+        }
+
+        let mut controller =
+            crate::session::metadata_controller::MetadataController::new(&sessions_dir);
+
+        // List all sessions and find the most recent one
+        let entries = controller.list_all_from_index().await?;
+        let most_recent = entries.into_iter().max_by_key(|e| e.updated_at);
+
+        if let Some(entry) = most_recent {
+            let peer = Peer::User("default".to_string());
+            let peer_key = derive_base_session_key(agent_name, &peer);
+            controller
+                .ensure_peer_active(&peer_key, &entry.session_id)
+                .await?;
+            tracing::info!(
+                "Activated session {} for imported agent '{}' (peer_key: {})",
+                entry.session_id,
+                agent_name,
+                peer_key
+            );
         }
 
         Ok(())
@@ -439,8 +521,6 @@ impl Unpackager {
 
         Ok(config_path)
     }
-
-
 }
 
 /// Convenience function to import an agent

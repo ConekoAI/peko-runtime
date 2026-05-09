@@ -22,7 +22,10 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     fn manifest_format(&self) -> ManifestFormat;
 
     /// Resolve hook bindings for a manifest
-    fn resolve_hooks(&self, manifest: &crate::extension::types::ExtensionManifest) -> Vec<HookBinding>;
+    fn resolve_hooks(
+        &self,
+        manifest: &crate::extension::types::ExtensionManifest,
+    ) -> Vec<HookBinding>;
 
     /// Initialize the extension
     async fn initialize(
@@ -63,9 +66,7 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
             ManifestFormat::YamlFrontmatterMarkdown { .. } => {
                 parse_yaml_frontmatter_markdown(path, content)
             }
-            ManifestFormat::Yaml { .. } => {
-                parse_pure_yaml_manifest(path, content)
-            }
+            ManifestFormat::Yaml { .. } => parse_pure_yaml_manifest(path, content),
             ManifestFormat::Json { .. } => serde_json::from_str(content)
                 .with_context(|| format!("Failed to parse JSON manifest at {path:?}")),
             ManifestFormat::Toml { .. } => toml::from_str(content)
@@ -108,8 +109,9 @@ fn parse_yaml_frontmatter_markdown(
 
     let frontmatter = frontmatter_lines.join("\n");
 
-    let mut manifest: crate::extension::types::ExtensionManifest = serde_yaml::from_str(&frontmatter)
-        .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
+    let mut manifest: crate::extension::types::ExtensionManifest =
+        serde_yaml::from_str(&frontmatter)
+            .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
 
     manifest.path = path
         .parent()
@@ -244,7 +246,12 @@ pub mod parsing {
             .get("description")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        Ok((id.to_string(), name.to_string(), version.to_string(), description.to_string()))
+        Ok((
+            id.to_string(),
+            name.to_string(),
+            version.to_string(),
+            description.to_string(),
+        ))
     }
 
     pub fn yaml_to_json(yaml: serde_yaml::Value) -> serde_json::Value {
@@ -540,7 +547,11 @@ mod tests {
     fn test_extract_extension_type_from_yaml_with_type() {
         let temp = TempDir::new().unwrap();
         let manifest = temp.path().join("manifest.yaml");
-        std::fs::write(&manifest, "id: test\nname: Test\nextension_type: universal-tool\n").unwrap();
+        std::fs::write(
+            &manifest,
+            "id: test\nname: Test\nextension_type: universal-tool\n",
+        )
+        .unwrap();
         let result = extract_extension_type_from_yaml(&manifest).unwrap();
         assert_eq!(result, Some("universal-tool".to_string()));
     }
@@ -558,7 +569,11 @@ mod tests {
     fn test_extract_extension_type_from_yaml_custom_prefix() {
         let temp = TempDir::new().unwrap();
         let manifest = temp.path().join("manifest.yaml");
-        std::fs::write(&manifest, "id: test\nname: Test\nextension_type: custom:my-org/type\n").unwrap();
+        std::fs::write(
+            &manifest,
+            "id: test\nname: Test\nextension_type: custom:my-org/type\n",
+        )
+        .unwrap();
         let result = extract_extension_type_from_yaml(&manifest).unwrap();
         assert_eq!(result, Some("custom:my-org/type".to_string()));
     }

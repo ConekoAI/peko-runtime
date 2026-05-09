@@ -7,15 +7,15 @@ use crate::daemon::background_runtime::{
     BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
 };
 use crate::extensions::gateway::runtime::{GatewayRouter, GatewayRuntimeStarter};
-use crate::extensions::mcp::runtime::{McpRuntimeStarter, McpClientRegistry};
+use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
-use crate::extension::async_exec::executor::AsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
     AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService, TeamManagementService,
     TeamService,
 };
+use crate::extension::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
 use crate::runtime::ToolRuntime;
@@ -125,7 +125,10 @@ impl std::fmt::Debug for AppState {
             .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
             .field("gateway_router", &"<GatewayRouter>")
             .field("mcp_client_registry", &"<McpClientRegistry>")
-            .field("runtime_starter_registry", &"<ExtensionRuntimeStarterRegistry>")
+            .field(
+                "runtime_starter_registry",
+                &"<ExtensionRuntimeStarterRegistry>",
+            )
             .finish()
     }
 }
@@ -277,7 +280,9 @@ impl AppState {
 
         // ADR-023: Ensure the agent service is set on the ExtensionCore for A2A messaging.
         // If we reused an existing global core, it may not have the agent service yet.
-        global_core.services().set_agent_service(Arc::clone(&agent_service));
+        global_core
+            .services()
+            .set_agent_service(Arc::clone(&agent_service));
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
@@ -608,13 +613,34 @@ mod tests {
 
         // ToolRuntime should have registered built-in tools
         let tool_runtime = state.tool_runtime.clone();
-        assert!(tool_runtime.has_tool("shell").await, "shell tool not registered");
-        assert!(tool_runtime.has_tool("read_file").await, "read_file tool not registered");
-        assert!(tool_runtime.has_tool("write_file").await, "write_file tool not registered");
-        assert!(tool_runtime.has_tool("glob").await, "glob tool not registered");
-        assert!(tool_runtime.has_tool("grep").await, "grep tool not registered");
-        assert!(tool_runtime.has_tool("str_replace_file").await, "str_replace_file tool not registered");
-        assert!(tool_runtime.has_tool("task").await, "task tool not registered");
+        assert!(
+            tool_runtime.has_tool("shell").await,
+            "shell tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("read_file").await,
+            "read_file tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("write_file").await,
+            "write_file tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("glob").await,
+            "glob tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("grep").await,
+            "grep tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("str_replace_file").await,
+            "str_replace_file tool not registered"
+        );
+        assert!(
+            tool_runtime.has_tool("task").await,
+            "task tool not registered"
+        );
 
         // ExtensionCore should list the tools
         let core = tool_runtime.extension_core();
@@ -657,24 +683,41 @@ mod tests {
         let agent = Agent::new(config).await.expect("Failed to create agent");
 
         // init_builtins_async should find pre-registered tools
-        agent.init_builtins_async().await.expect("Failed to init builtins");
+        agent
+            .init_builtins_async()
+            .await
+            .expect("Failed to init builtins");
 
         // Tools should still be available after agent init
         let core = agent.extension_core();
         let tools: Vec<crate::extension::types::ToolMetadata> = core.list_tools().await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-        assert!(tool_names.contains(&"shell".to_string()), "shell missing after agent init");
-        assert!(tool_names.contains(&"grep".to_string()), "grep missing after agent init");
+        assert!(
+            tool_names.contains(&"shell".to_string()),
+            "shell missing after agent init"
+        );
+        assert!(
+            tool_names.contains(&"grep".to_string()),
+            "grep missing after agent init"
+        );
 
         // Prompt section should return tool descriptions
-        let prompt: Option<String> = core.invoke_hook_text(
-            HookPoint::PromptSystemSection { section: "tools".to_string(), priority: 100 },
-            HookInput::Unit,
-        ).await;
+        let prompt: Option<String> = core
+            .invoke_hook_text(
+                HookPoint::PromptSystemSection {
+                    section: "tools".to_string(),
+                    priority: 100,
+                },
+                HookInput::Unit,
+            )
+            .await;
         assert!(prompt.is_some(), "Prompt section returned None");
         let prompt_text = prompt.unwrap();
         assert!(!prompt_text.is_empty(), "Prompt section is empty");
-        assert!(prompt_text.contains("shell"), "Prompt doesn't mention shell");
+        assert!(
+            prompt_text.contains("shell"),
+            "Prompt doesn't mention shell"
+        );
         assert!(prompt_text.contains("grep"), "Prompt doesn't mention grep");
     }
 }

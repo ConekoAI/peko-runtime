@@ -29,10 +29,10 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err.log"
-    if (Test-Path $outLog) { Remove-Item $outLog }
-    if (Test-Path $errLog) { Remove-Item $errLog }
+    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    if (Test-Path $outLog) { Remove-Item $outLog -Force }
+    if (Test-Path $errLog) { Remove-Item $errLog -Force }
 
     $proc = Start-Process -FilePath "python" `
         -ArgumentList "$PSScriptRoot/mock_registry/main.py","--port","$Port","--host","127.0.0.1" `
@@ -210,8 +210,8 @@ try {
     Write-Host "STEP 6: Verify extension enablement in imported agents" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $agentConfig1 = "$env:APPDATA/pekobot/teams/$importedTeamName/agents/$agent1/config.toml"
-    $agentConfig2 = "$env:APPDATA/pekobot/teams/$importedTeamName/agents/$agent2/config.toml"
+    $agentConfig1 = "$env:USERPROFILE/.pekobot/teams/$importedTeamName/agents/$agent1/config.toml"
+    $agentConfig2 = "$env:USERPROFILE/.pekobot/teams/$importedTeamName/agents/$agent2/config.toml"
 
     $config1Ok = $false
     $config2Ok = $false

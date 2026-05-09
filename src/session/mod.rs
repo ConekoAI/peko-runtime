@@ -24,24 +24,24 @@
 pub mod context;
 pub mod directory;
 pub mod events;
-pub mod message_conversion;
 mod index;
 pub mod jsonl;
 pub mod key;
 pub mod lock;
 pub mod lock_utils;
+pub mod maintenance;
 pub mod manager;
 pub mod message;
+pub mod message_conversion;
 pub mod metadata;
 pub mod metadata_controller;
 pub mod overlay;
+pub mod presentation;
 pub mod recovery;
 pub mod spawn;
 pub mod subagent_key;
 pub mod sync;
 pub mod types;
-pub mod maintenance;
-pub mod presentation;
 pub mod unified;
 
 // Re-export Session (replaces both BaseSession and SimpleSession)
@@ -77,8 +77,8 @@ pub use overlay::{ChannelContext, ChannelOverlay, ChannelOverlayData, SessionOve
 pub use spawn::{SpawnOverlay, SpawnOverlayData, SpawnResult, SpawnStatus};
 
 pub use manager::{
-    OverlayRef, ResolutionStrategy, ResolvedSession, SessionCreateOptions,
-    SessionHandle, SessionManager,
+    OverlayRef, ResolutionStrategy, ResolvedSession, SessionCreateOptions, SessionHandle,
+    SessionManager,
 };
 
 // Re-export recovery

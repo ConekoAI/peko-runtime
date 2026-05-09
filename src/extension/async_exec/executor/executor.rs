@@ -2,13 +2,10 @@
 
 use super::delivery::{QueueDelivery, ResultDelivery};
 use super::queue::{AsyncResultQueueManager, SharedAsyncResultQueueManager};
-use super::registry::{
-    AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata,
-};
+use super::registry::{AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata};
 use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{
-    AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
-    DeliveryTarget, WaitResult,
+    AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget, WaitResult,
 };
 use crate::extension::types::ToolResult;
 use anyhow::Result;
@@ -131,9 +128,9 @@ impl AsyncExecutor {
         config: AsyncToolConfig,
         metadata: TaskMetadata,
         execution_fn: Box<
-            dyn FnOnce() -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<Value>> + Send>,
-                > + Send,
+            dyn FnOnce()
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
+                + Send,
         >,
     ) -> Result<AsyncTaskReceipt> {
         // Determine task file path
@@ -339,9 +336,9 @@ impl AsyncExecutor {
 
         // Box the generic closure so it can be passed to the non-generic inner method
         let boxed_fn: Box<
-            dyn FnOnce() -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<Value>> + Send>,
-                > + Send,
+            dyn FnOnce()
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
+                + Send,
         > = Box::new(move || Box::pin(execution_fn()));
 
         self.execute_inner(
@@ -379,9 +376,9 @@ impl AsyncExecutor {
         let parent_session_key = parent_session_key.into();
 
         let boxed_fn: Box<
-            dyn FnOnce() -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<Value>> + Send>,
-                > + Send,
+            dyn FnOnce()
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
+                + Send,
         > = Box::new(move || Box::pin(execution_fn()));
 
         self.execute_inner(
@@ -405,9 +402,9 @@ impl AsyncExecutor {
         parent_session_key: impl Into<String>,
         config: AsyncToolConfig,
         execution_fn: Box<
-            dyn FnOnce() -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<Value>> + Send>,
-                > + Send,
+            dyn FnOnce()
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
+                + Send,
         >,
     ) -> Result<AsyncTaskReceipt> {
         let tool_name = tool_name.into();

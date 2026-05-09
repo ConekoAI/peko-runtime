@@ -402,8 +402,8 @@ default = "You are agent B."
     Write-Host "Imported agent B" -ForegroundColor Green
 
     # Verify shared skill exists in both
-    $skillA = "$env:APPDATA/pekobot/teams/default/agents/agent-a-imported/skills/shared-skill/SKILL.md"
-    $skillB = "$env:APPDATA/pekobot/teams/default/agents/agent-b-imported/skills/shared-skill/SKILL.md"
+    $skillA = "$env:APPDATA/pekobot/skills/shared-skill/SKILL.md"
+    $skillB = "$env:APPDATA/pekobot/skills/shared-skill/SKILL.md"
     if ((Test-Path $skillA) -and (Test-Path $skillB)) {
         Write-Host "Shared skill present in both imported agents" -ForegroundColor Green
     } else {

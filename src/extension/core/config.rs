@@ -4,7 +4,7 @@
 //! handlers, along with [`ExtensionConfig`] and [`TelemetryService`].
 
 use crate::extension::core::hook_points::HookPoint;
-use crate::extension::types::{HookId};
+use crate::extension::types::HookId;
 use std::collections::HashMap;
 use std::sync::Arc;
 

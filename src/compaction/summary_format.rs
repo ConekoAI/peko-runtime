@@ -91,7 +91,10 @@ pub fn extract_file_ops_from_messages(
 
         // Look for tool calls in assistant messages
         for block in &msg.content {
-            if let ContentBlock::ToolCall { name, arguments, .. } = block {
+            if let ContentBlock::ToolCall {
+                name, arguments, ..
+            } = block
+            {
                 let name_lower = name.to_lowercase();
                 if let Ok(_args) = serde_json::to_string(arguments) {
                     // Extract path from arguments if present
@@ -156,8 +159,8 @@ pub fn compute_cumulative_details(
 mod tests {
     use super::*;
     use crate::providers::MessageRole;
-    use crate::types::message::LlmMessage;
     use crate::types::message::ContentBlock;
+    use crate::types::message::LlmMessage;
 
     #[test]
     fn test_format_summary_with_file_ops() {

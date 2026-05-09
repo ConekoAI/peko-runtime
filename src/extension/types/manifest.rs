@@ -96,6 +96,9 @@ mod tests {
         );
 
         manifest.set("key", "value");
-        assert_eq!(manifest.get("key"), Some(&serde_json::Value::String("value".to_string())));
+        assert_eq!(
+            manifest.get("key"),
+            Some(&serde_json::Value::String("value".to_string()))
+        );
     }
 }

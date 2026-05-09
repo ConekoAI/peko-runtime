@@ -42,10 +42,14 @@ impl ExtensionStorage {
             // On Windows, a previous process may still hold a handle to the directory.
             // Try removing; if it fails, try renaming to a unique temp name first.
             if let Err(e) = std::fs::remove_dir_all(&target_dir) {
-                let temp_name = format!("{}_old_{}", extension_id.0, std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs());
+                let temp_name = format!(
+                    "{}_old_{}",
+                    extension_id.0,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                );
                 let temp_dir = storage_dir.join(&temp_name);
                 if std::fs::rename(&target_dir, &temp_dir).is_ok() {
                     // Best-effort cleanup of the renamed directory

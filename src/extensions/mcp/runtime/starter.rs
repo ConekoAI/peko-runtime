@@ -4,13 +4,10 @@
 //!
 //! Reads MCP extension manifests (ADR-024 unified format with `mcp_servers` section),
 //! creates `McpRuntimeAdapter`s, and starts
-/// them via the shared `BackgroundRuntimeManager`.
-
-use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
 use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
-use crate::extensions::mcp::protocol::{
-    config::{McpServerConfig, TransportType},
-};
+/// them via the shared `BackgroundRuntimeManager`.
+use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
+use crate::extensions::mcp::protocol::config::{McpServerConfig, TransportType};
 use crate::extensions::mcp::runtime::adapter::McpRuntimeAdapter;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -103,8 +100,13 @@ impl McpRuntimeStarter {
                 }
             }
 
-            let config: McpServerConfig = serde_json::from_value(server_json)
-                .map_err(|e| anyhow::anyhow!("Failed to parse mcp_servers config for '{}': {}", server_name, e))?;
+            let config: McpServerConfig = serde_json::from_value(server_json).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse mcp_servers config for '{}': {}",
+                    server_name,
+                    e
+                )
+            })?;
 
             configs.push(config);
         }
@@ -132,8 +134,13 @@ impl McpRuntimeStarter {
                 }
             }
 
-            let config: McpServerConfig = serde_json::from_value(server_json)
-                .map_err(|e| anyhow::anyhow!("Failed to parse mcp_servers config for '{}': {}", server_name, e))?;
+            let config: McpServerConfig = serde_json::from_value(server_json).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse mcp_servers config for '{}': {}",
+                    server_name,
+                    e
+                )
+            })?;
 
             configs.push(config);
         }
@@ -214,13 +221,18 @@ impl McpRuntimeStarter {
         }
 
         let mut mcp_servers = serde_json::Map::new();
-        mcp_servers.insert(server_name.to_string(), serde_json::Value::Object(server_config));
+        mcp_servers.insert(
+            server_name.to_string(),
+            serde_json::Value::Object(server_config),
+        );
 
         Some(serde_json::Value::Object(mcp_servers))
     }
 
     /// Try to parse a single server config from a YAML value.
-    fn try_parse_single_server_config(config: &serde_yaml::Value) -> anyhow::Result<McpServerConfig> {
+    fn try_parse_single_server_config(
+        config: &serde_yaml::Value,
+    ) -> anyhow::Result<McpServerConfig> {
         let json = serde_json::to_value(config)
             .map_err(|e| anyhow::anyhow!("Failed to convert config section: {e}"))?;
         let cfg: McpServerConfig = serde_json::from_value(json)
@@ -266,7 +278,10 @@ impl McpRuntimeStarter {
             .start(config.name.clone(), spawn_config, adapter, restart_policy)
             .await?;
 
-        info!("MCP server '{}' started via BackgroundRuntimeManager", config.name);
+        info!(
+            "MCP server '{}' started via BackgroundRuntimeManager",
+            config.name
+        );
         Ok(())
     }
 }
@@ -283,17 +298,16 @@ impl ExtensionRuntimeStarter for McpRuntimeStarter {
         "mcp"
     }
 
-    async fn start(
-        &self,
-        extension_id: &str,
-        ctx: &StarterContext,
-    ) -> anyhow::Result<()> {
+    async fn start(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()> {
         let ext_dir = ctx.data_dir.join("extensions").join(extension_id);
 
         let configs = self.parse_server_configs(&ext_dir).await?;
 
         if configs.is_empty() {
-            anyhow::bail!("No MCP server configurations found in extension '{}'", extension_id);
+            anyhow::bail!(
+                "No MCP server configurations found in extension '{}'",
+                extension_id
+            );
         }
 
         for config in &configs {

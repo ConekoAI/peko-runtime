@@ -33,7 +33,10 @@ impl ExtensionRuntimeStarterRegistry {
     /// If a starter for this type already exists, it is replaced.
     pub fn register(&mut self, starter: Box<dyn ExtensionRuntimeStarter>) {
         let ext_type = starter.extension_type().to_string();
-        info!("Registering runtime starter for extension type: {}", ext_type);
+        info!(
+            "Registering runtime starter for extension type: {}",
+            ext_type
+        );
         self.starters.insert(ext_type, starter);
     }
 
@@ -43,28 +46,21 @@ impl ExtensionRuntimeStarterRegistry {
     /// 2. Extracts the `extension_type` field
     /// 3. Looks up the registered starter for that type
     /// 4. Delegates to `starter.start()`
-    pub async fn start(
-        &self,
-        extension_id: &str,
-        ctx: &StarterContext,
-    ) -> anyhow::Result<()> {
+    pub async fn start(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()> {
         let manifest = Self::read_manifest(extension_id, &ctx.data_dir).await?;
         let ext_type = manifest
             .get("extension_type")
             .and_then(|v| v.as_str())
             .unwrap_or("general");
 
-        let starter = self
-            .starters
-            .get(ext_type)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Extension '{}' has type '{}' which does not support background runtimes. \
+        let starter = self.starters.get(ext_type).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Extension '{}' has type '{}' which does not support background runtimes. \
                      Use 'pekobot ext enable' instead.",
-                    extension_id,
-                    ext_type
-                )
-            })?;
+                extension_id,
+                ext_type
+            )
+        })?;
 
         info!(
             "Starting background runtime for extension '{}' (type: {})",
@@ -77,11 +73,7 @@ impl ExtensionRuntimeStarterRegistry {
     /// Stop the background runtime for an extension.
     ///
     /// This is type-agnostic — it simply calls `BackgroundRuntimeManager::stop()`.
-    pub async fn stop(
-        &self,
-        extension_id: &str,
-        ctx: &StarterContext,
-    ) -> anyhow::Result<()> {
+    pub async fn stop(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()> {
         ctx.background_runtime_manager.stop(extension_id).await
     }
 
@@ -89,11 +81,7 @@ impl ExtensionRuntimeStarterRegistry {
     ///
     /// If the runtime is currently managed, calls `BackgroundRuntimeManager::restart()`.
     /// If not (e.g., was stopped), falls back to `start()` which re-reads the manifest.
-    pub async fn restart(
-        &self,
-        extension_id: &str,
-        ctx: &StarterContext,
-    ) -> anyhow::Result<()> {
+    pub async fn restart(&self, extension_id: &str, ctx: &StarterContext) -> anyhow::Result<()> {
         let runtime_exists = ctx
             .background_runtime_manager
             .get_state(extension_id)
@@ -101,9 +89,7 @@ impl ExtensionRuntimeStarterRegistry {
             .is_some();
 
         if runtime_exists {
-            ctx.background_runtime_manager
-                .restart(extension_id)
-                .await
+            ctx.background_runtime_manager.restart(extension_id).await
         } else {
             self.start(extension_id, ctx).await
         }
@@ -159,10 +145,13 @@ impl ExtensionRuntimeStarterRegistry {
         if manifest_path.exists() {
             let content = tokio::fs::read_to_string(&manifest_path)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to read manifest for '{}': {}", extension_id, e))?;
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to read manifest for '{}': {}", extension_id, e)
+                })?;
 
-            let manifest: serde_yaml::Value = serde_yaml::from_str(&content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse manifest for '{}': {}", extension_id, e))?;
+            let manifest: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|e| {
+                anyhow::anyhow!("Failed to parse manifest for '{}': {}", extension_id, e)
+            })?;
 
             return Ok(manifest);
         }

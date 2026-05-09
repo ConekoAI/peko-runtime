@@ -73,7 +73,9 @@ impl BuiltInAdapters {
             Box::new(skill::adapter::SkillAdapter::new()),
             Box::new(universal::adapter::UniversalToolAdapter::new()),
             Box::new(mcp::adapter::McpAdapter::with_default_manager()),
-            Box::new(gateway::adapter::GatewayAdapter::new(Arc::new(crate::extension::core::ExtensionCore::new()))),
+            Box::new(gateway::adapter::GatewayAdapter::new(Arc::new(
+                crate::extension::core::ExtensionCore::new(),
+            ))),
             Box::new(general::adapter::GeneralExtensionAdapter::new()),
         ]
     }

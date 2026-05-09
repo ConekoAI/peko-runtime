@@ -230,7 +230,8 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse general extension manifest at {path:?}"))?;
 
-        let (id, name, version, description) = crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
+        let (id, name, version, description) =
+            crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
 
         // Validate extension_type if present (absence is allowed for legacy fallback)
         if let Some(ext_type) = yaml.get("extension_type").and_then(|v| v.as_str()) {
@@ -248,22 +249,37 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
             &name,
             &description,
             &version,
-            path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+            path.parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf(),
         );
 
         // Store hooks in manifest metadata
         if let Some(hooks) = yaml.get("hooks") {
-            manifest.set("hooks", crate::extension::adapters::parsing::yaml_to_json(hooks.clone()));
+            manifest.set(
+                "hooks",
+                crate::extension::adapters::parsing::yaml_to_json(hooks.clone()),
+            );
         }
 
         // Store any additional metadata
         if let serde_yaml::Value::Mapping(map) = &yaml {
             for (k, v) in map {
                 if let Some(key) = k.as_str() {
-                    if !["id", "name", "version", "description", "extension_type", "hooks"]
-                        .contains(&key)
+                    if ![
+                        "id",
+                        "name",
+                        "version",
+                        "description",
+                        "extension_type",
+                        "hooks",
+                    ]
+                    .contains(&key)
                     {
-                        manifest.set(key, crate::extension::adapters::parsing::yaml_to_json(v.clone()));
+                        manifest.set(
+                            key,
+                            crate::extension::adapters::parsing::yaml_to_json(v.clone()),
+                        );
                     }
                 }
             }
@@ -487,7 +503,6 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
                 ),
             }
         }
-
     }
 
     info!("Discovered {} general extensions", discovered.len());

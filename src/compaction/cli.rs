@@ -103,9 +103,15 @@ impl SessionCompactor {
         let to_keep = &conversation[split_point..];
 
         let summary_text = if let Some(ref instr) = instruction {
-            format!("[Custom instruction: {instr}]\n\n[{} messages summarized]", to_compact.len())
+            format!(
+                "[Custom instruction: {instr}]\n\n[{} messages summarized]",
+                to_compact.len()
+            )
         } else {
-            format!("[{} messages summarized - conversation history]", to_compact.len())
+            format!(
+                "[{} messages summarized - conversation history]",
+                to_compact.len()
+            )
         };
 
         let summary_message = LlmMessage {

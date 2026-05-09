@@ -11,12 +11,8 @@
 //!
 //!   cargo test --test registry_integration -- --ignored
 
-use pekobot::portable::{
-    manifest::AgentLayers, AgentManifest, AgentRegistry, Layer, LayerType,
-};
-use pekobot::registry::{
-    RegistryClient, RegistryConfig, RegistryManifest, RegistrySource,
-};
+use pekobot::portable::{manifest::AgentLayers, AgentManifest, AgentRegistry, Layer, LayerType};
+use pekobot::registry::{RegistryClient, RegistryConfig, RegistryManifest, RegistrySource};
 use std::time::Duration;
 
 const MOCK_SERVER_URL: &str = "http://127.0.0.1:18765";
@@ -55,7 +51,11 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
 
     let layers = vec![
         Layer::new(&config_digest, LayerType::Config, config_data.len() as u64),
-        Layer::new(&identity_digest, LayerType::Identity, identity_data.len() as u64),
+        Layer::new(
+            &identity_digest,
+            LayerType::Identity,
+            identity_data.len() as u64,
+        ),
         Layer::new(&skills_digest, LayerType::Skills, skills_data.len() as u64),
     ];
 
@@ -176,15 +176,24 @@ async fn test_registry_client_push_and_pull() {
     // Store some fake layers in the local registry
     let layer1_data = b"config layer content";
     let layer1_digest = sha256_digest(layer1_data);
-    registry.store_layer(&layer1_digest, layer1_data).await.unwrap();
+    registry
+        .store_layer(&layer1_digest, layer1_data)
+        .await
+        .unwrap();
 
     let layer2_data = b"identity layer content";
     let layer2_digest = sha256_digest(layer2_data);
-    registry.store_layer(&layer2_digest, layer2_data).await.unwrap();
+    registry
+        .store_layer(&layer2_digest, layer2_data)
+        .await
+        .unwrap();
 
     let layer3_data = b"skills layer content";
     let layer3_digest = sha256_digest(layer3_data);
-    registry.store_layer(&layer3_digest, layer3_data).await.unwrap();
+    registry
+        .store_layer(&layer3_digest, layer3_data)
+        .await
+        .unwrap();
 
     // Create and store a local manifest
     let (agent_manifest, layers) = create_test_manifest("test-agent");
@@ -244,10 +253,9 @@ async fn test_registry_client_push_and_pull() {
 
     let mut pull_events = Vec::new();
     let pull_result = client2
-        .pull(
-            &format!("{}/test-agent:v1.0", host),
-            |event| pull_events.push(event),
-        )
+        .pull(&format!("{}/test-agent:v1.0", host), |event| {
+            pull_events.push(event)
+        })
         .await;
 
     assert!(pull_result.is_ok(), "Pull failed: {:?}", pull_result.err());
@@ -289,11 +297,17 @@ async fn test_registry_client_skips_existing_layers() {
     // Store layers
     let layer1_data = b"config layer";
     let layer1_digest = sha256_digest(layer1_data);
-    registry.store_layer(&layer1_digest, layer1_data).await.unwrap();
+    registry
+        .store_layer(&layer1_digest, layer1_data)
+        .await
+        .unwrap();
 
     let layer2_data = b"identity layer";
     let layer2_digest = sha256_digest(layer2_data);
-    registry.store_layer(&layer2_digest, layer2_data).await.unwrap();
+    registry
+        .store_layer(&layer2_digest, layer2_data)
+        .await
+        .unwrap();
 
     // Create manifest
     let mut agent_manifest = AgentManifest::new("skip-test", "1.0.0", "did:pekobot:test");

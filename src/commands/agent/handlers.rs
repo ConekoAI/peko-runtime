@@ -249,11 +249,13 @@ pub async fn handle_agent_export(
     name: String,
     team: Option<String>,
     output: Option<String>,
+    include_sessions: bool,
 ) -> anyhow::Result<()> {
     let service = paths.services().agent();
 
     let opts = AgentExportOptions {
         output_path: output.map(std::convert::Into::into),
+        include_sessions,
     };
 
     let result = service.export_agent(&name, team.as_deref(), opts).await?;
@@ -354,10 +356,13 @@ pub async fn handle_agent_init(
 
     if json {
         println!(
-            "{{\"success\": true, \"name\": \"{}\", \"path\": \"{}\", \"config\": \"{}\"}}",
-            result.name,
-            result.path.display(),
-            result.config_path.display()
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "name": result.name,
+                "path": result.path.display().to_string(),
+                "config": result.config_path.display().to_string(),
+            })
         );
     } else {
         println!("✅ Initialized agent '{}' in '{}'", result.name, path);
@@ -521,8 +526,8 @@ pub async fn handle_agent_build(
     } else {
         println!("Reading {}...", path.display());
 
-        let result = AgentBuilder::build_from_directory(&path, &tag, &registry, |progress| {
-            match progress {
+        let result =
+            AgentBuilder::build_from_directory(&path, &tag, &registry, |progress| match progress {
                 BuildProgress::Reading { path } => {
                     println!("Reading {}...", path.display());
                 }
@@ -563,9 +568,8 @@ pub async fn handle_agent_build(
                     println!("  Layers: {layer_count}");
                     println!("  Total size: {}", format_size(total_size_bytes));
                 }
-            }
-        })
-        .await?;
+            })
+            .await?;
 
         // Change to the original directory if we created the package there
         let _ = result;
@@ -630,57 +634,55 @@ pub async fn handle_agent_push(
         let mut seen_layers = HashSet::new();
 
         let _manifest = client
-            .push(&digest, &registry_ref, |event| {
-                match event {
-                    ProgressEvent::Resolving { .. } => {
-                        println!("Pushing {local_tag} to {registry_ref}...");
-                    }
-                    ProgressEvent::Pushing {
-                        layer,
-                        bytes_sent,
-                        bytes_total,
-                    } => {
-                        if let Some((layer_type, size)) = layer_info.get(&layer) {
-                            let short_digest = if layer.len() > 19 {
-                                format!("{}...", &layer[..19])
-                            } else {
-                                layer.clone()
-                            };
-                            let size_str = format_size(*size);
-                            let type_name = layer_type.dir_name();
+            .push(&digest, &registry_ref, |event| match event {
+                ProgressEvent::Resolving { .. } => {
+                    println!("Pushing {local_tag} to {registry_ref}...");
+                }
+                ProgressEvent::Pushing {
+                    layer,
+                    bytes_sent,
+                    bytes_total,
+                } => {
+                    if let Some((layer_type, size)) = layer_info.get(&layer) {
+                        let short_digest = if layer.len() > 19 {
+                            format!("{}...", &layer[..19])
+                        } else {
+                            layer.clone()
+                        };
+                        let size_str = format_size(*size);
+                        let type_name = layer_type.dir_name();
 
-                            if bytes_sent == bytes_total && bytes_sent != Some(0) {
-                                if seen_layers.contains(&layer) {
-                                    println!(
-                                        "  Layer {:<10} {} ({})  ✓ uploaded",
-                                        type_name, short_digest, size_str
-                                    );
-                                } else {
-                                    println!(
-                                        "  Layer {:<10} {} ({})  ✓ exists",
-                                        type_name, short_digest, size_str
-                                    );
-                                }
-                            } else if bytes_sent == Some(0) {
-                                seen_layers.insert(layer.clone());
+                        if bytes_sent == bytes_total && bytes_sent != Some(0) {
+                            if seen_layers.contains(&layer) {
                                 println!(
-                                    "  Layer {:<10} {} ({})  → uploading",
+                                    "  Layer {:<10} {} ({})  ✓ uploaded",
+                                    type_name, short_digest, size_str
+                                );
+                            } else {
+                                println!(
+                                    "  Layer {:<10} {} ({})  ✓ exists",
                                     type_name, short_digest, size_str
                                 );
                             }
+                        } else if bytes_sent == Some(0) {
+                            seen_layers.insert(layer.clone());
+                            println!(
+                                "  Layer {:<10} {} ({})  → uploading",
+                                type_name, short_digest, size_str
+                            );
                         }
                     }
-                    ProgressEvent::Done { .. } => {
-                        println!("  Manifest         pushed");
-                        println!("Done.");
-                    }
-                    ProgressEvent::Error { code, message } => {
-                        eprintln!("  Error: {code} - {message}");
-                    }
-                    ProgressEvent::Pulling { .. }
-                    | ProgressEvent::Extracting { .. }
-                    | ProgressEvent::Verifying { .. } => {}
                 }
+                ProgressEvent::Done { .. } => {
+                    println!("  Manifest         pushed");
+                    println!("Done.");
+                }
+                ProgressEvent::Error { code, message } => {
+                    eprintln!("  Error: {code} - {message}");
+                }
+                ProgressEvent::Pulling { .. }
+                | ProgressEvent::Extracting { .. }
+                | ProgressEvent::Verifying { .. } => {}
             })
             .await?;
     }
@@ -733,59 +735,59 @@ pub async fn handle_agent_pull(
         let mut seen_layers = HashSet::new();
 
         let manifest = client
-            .pull(&registry_ref, |event| {
-                match event {
-                    ProgressEvent::Resolving { .. } => {
-                        println!("Pulling {registry_ref}...");
-                        println!("  Resolving...");
-                    }
-                    ProgressEvent::Pulling {
-                        layer,
-                        bytes_received,
-                        bytes_total,
-                    } => {
-                        let short_digest = if layer.len() > 19 {
-                            format!("{}...", &layer[..19])
-                        } else {
-                            layer.clone()
-                        };
-                        let size = bytes_total.unwrap_or(0);
-                        let size_str = format_size(size);
+            .pull(&registry_ref, |event| match event {
+                ProgressEvent::Resolving { .. } => {
+                    println!("Pulling {registry_ref}...");
+                    println!("  Resolving...");
+                }
+                ProgressEvent::Pulling {
+                    layer,
+                    bytes_received,
+                    bytes_total,
+                } => {
+                    let short_digest = if layer.len() > 19 {
+                        format!("{}...", &layer[..19])
+                    } else {
+                        layer.clone()
+                    };
+                    let size = bytes_total.unwrap_or(0);
+                    let size_str = format_size(size);
 
-                        if bytes_received == bytes_total && bytes_received != Some(0) {
-                            if seen_layers.contains(&layer) {
-                                println!(
-                                    "  Layer {:<10} {} ({})  ✓ downloaded",
-                                    "unknown", short_digest, size_str
-                                );
-                            } else {
-                                println!(
-                                    "  Layer {:<10} {} ({})  ✓ cached",
-                                    "unknown", short_digest, size_str
-                                );
-                            }
-                        } else if bytes_received == Some(0) {
-                            seen_layers.insert(layer.clone());
+                    if bytes_received == bytes_total && bytes_received != Some(0) {
+                        if seen_layers.contains(&layer) {
                             println!(
-                                "  Layer {:<10} {} ({})  → downloading",
+                                "  Layer {:<10} {} ({})  ✓ downloaded",
+                                "unknown", short_digest, size_str
+                            );
+                        } else {
+                            println!(
+                                "  Layer {:<10} {} ({})  ✓ cached",
                                 "unknown", short_digest, size_str
                             );
                         }
+                    } else if bytes_received == Some(0) {
+                        seen_layers.insert(layer.clone());
+                        println!(
+                            "  Layer {:<10} {} ({})  → downloading",
+                            "unknown", short_digest, size_str
+                        );
                     }
-                    ProgressEvent::Verifying { layer } => {
-                        println!("  Verifying {layer}...");
-                    }
-                    ProgressEvent::Extracting { layer } => {
-                        let _ = layer;
-                    }
-                    ProgressEvent::Done { manifest: done_manifest } => {
-                        println!("Done. Stored as {}:{}", done_manifest.name, reg_ref.tag);
-                    }
-                    ProgressEvent::Error { code, message } => {
-                        eprintln!("  Error: {code} - {message}");
-                    }
-                    _ => {}
                 }
+                ProgressEvent::Verifying { layer } => {
+                    println!("  Verifying {layer}...");
+                }
+                ProgressEvent::Extracting { layer } => {
+                    let _ = layer;
+                }
+                ProgressEvent::Done {
+                    manifest: done_manifest,
+                } => {
+                    println!("Done. Stored as {}:{}", done_manifest.name, reg_ref.tag);
+                }
+                ProgressEvent::Error { code, message } => {
+                    eprintln!("  Error: {code} - {message}");
+                }
+                _ => {}
             })
             .await?;
 

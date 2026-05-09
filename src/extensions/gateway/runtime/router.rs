@@ -74,7 +74,10 @@ impl GatewayRouter {
 
     /// Mark gateway offline (messages will be queued)
     pub async fn mark_offline(&self, gateway_id: &str) {
-        warn!("Gateway '{}' marked offline — messages will be queued", gateway_id);
+        warn!(
+            "Gateway '{}' marked offline — messages will be queued",
+            gateway_id
+        );
         let mut queues = self.offline_queues.write().await;
         queues.entry(gateway_id.to_string()).or_default();
     }
@@ -89,15 +92,22 @@ impl GatewayRouter {
 
         if let Some(messages) = queued {
             if !messages.is_empty() {
-                info!("Draining {} queued messages for gateway '{}'", messages.len(), gateway_id);
+                info!(
+                    "Draining {} queued messages for gateway '{}'",
+                    messages.len(),
+                    gateway_id
+                );
                 for msg in messages {
-                    if let Err(e) = self.route_incoming(
-                        gateway_id,
-                        &msg.channel_id,
-                        &msg.user_id,
-                        &msg.message,
-                        msg.metadata,
-                    ).await {
+                    if let Err(e) = self
+                        .route_incoming(
+                            gateway_id,
+                            &msg.channel_id,
+                            &msg.user_id,
+                            &msg.message,
+                            msg.metadata,
+                        )
+                        .await
+                    {
                         warn!("Failed to deliver queued message: {}", e);
                     }
                 }
@@ -106,7 +116,12 @@ impl GatewayRouter {
     }
 
     /// Resolve the agent name for a given channel/DM
-    async fn resolve_agent(&self, gateway_id: &str, channel_id: &str, user_id: &str) -> Option<String> {
+    async fn resolve_agent(
+        &self,
+        gateway_id: &str,
+        channel_id: &str,
+        user_id: &str,
+    ) -> Option<String> {
         let table = self.routing_table.read().await;
         let config = table.get(gateway_id)?;
 
@@ -154,11 +169,16 @@ impl GatewayRouter {
             }
         }
 
-        let agent_name = self.resolve_agent(gateway_id, channel_id, user_id).await
-            .ok_or_else(|| anyhow::anyhow!(
-                "No agent configured for gateway '{}', channel '{}'",
-                gateway_id, channel_id
-            ))?;
+        let agent_name = self
+            .resolve_agent(gateway_id, channel_id, user_id)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No agent configured for gateway '{}', channel '{}'",
+                    gateway_id,
+                    channel_id
+                )
+            })?;
 
         warn!(
             "Resolved agent '{}' for gateway '{}' channel '{}'",
@@ -187,7 +207,8 @@ impl GatewayRouter {
             Ok(result) => {
                 info!(
                     "Agent '{}' executed message successfully, response length: {}",
-                    agent_name, result.content.len()
+                    agent_name,
+                    result.content.len()
                 );
                 Ok(result.content)
             }
@@ -225,7 +246,11 @@ impl GatewayRouter {
     }
 
     /// Update the routing configuration for a gateway
-    pub async fn update_routing(&self, gateway_id: &str, config: GatewayRoutingConfig) -> Result<()> {
+    pub async fn update_routing(
+        &self,
+        gateway_id: &str,
+        config: GatewayRoutingConfig,
+    ) -> Result<()> {
         let mut table = self.routing_table.write().await;
         table.insert(gateway_id.to_string(), config);
         Ok(())
@@ -259,7 +284,13 @@ mod tests {
         };
 
         assert_eq!(config.default_agent, "assistant");
-        assert_eq!(config.channel_map.get("#general"), Some(&"assistant".to_string()));
-        assert_eq!(config.dm_agents.get("user_123"), Some(&"personal".to_string()));
+        assert_eq!(
+            config.channel_map.get("#general"),
+            Some(&"assistant".to_string())
+        );
+        assert_eq!(
+            config.dm_agents.get("user_123"),
+            Some(&"personal".to_string())
+        );
     }
 }

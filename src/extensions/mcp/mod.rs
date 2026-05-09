@@ -15,13 +15,11 @@ pub use protocol::{
     client::{ClientError, McpClient},
     config::{ConfigFormat, McpConfig, McpServerConfig, TransportType},
     discovery::{
-        discover_servers, ensure_default_config, is_server_installed, mcp_config_path, mcp_install_dir,
-        DiscoveredServer, McpServerStatus,
+        discover_servers, ensure_default_config, is_server_installed, mcp_config_path,
+        mcp_install_dir, DiscoveredServer, McpServerStatus,
     },
     manager::{ManagerError, McpManager, ServerState},
-    transport::{
-        InMemoryTransport, McpTransport, SseTransport, StdioTransport, TransportError,
-    },
+    transport::{InMemoryTransport, McpTransport, SseTransport, StdioTransport, TransportError},
 };
 pub use runtime::{
     injectable_proxy::InjectableMcpToolProxy,

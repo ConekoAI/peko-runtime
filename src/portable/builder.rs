@@ -41,9 +41,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub enum BuildProgress {
     /// Started reading source directory
-    Reading {
-        path: PathBuf,
-    },
+    Reading { path: PathBuf },
     /// Processing a layer
     Layering {
         layer_type: LayerType,
@@ -128,10 +126,8 @@ impl AgentBuilder {
             .await
             .with_context(|| format!("Failed to read {}", config_toml_path.display()))?;
 
-        let agent_config: crate::types::agent::AgentConfig =
-            toml::from_str(&config_toml).with_context(|| {
-                format!("Failed to parse agent.toml in {}", source_path.display())
-            })?;
+        let agent_config: crate::types::agent::AgentConfig = toml::from_str(&config_toml)
+            .with_context(|| format!("Failed to parse agent.toml in {}", source_path.display()))?;
 
         let agent_name = agent_config.name.clone();
         let description = agent_config.description.clone();
@@ -142,25 +138,15 @@ impl AgentBuilder {
         let mut layer_count: usize = 0;
 
         // Config layer (required)
-        let (config_digest, config_size) = Self::build_layer(
-            source_path,
-            LayerType::Config,
-            registry,
-            &mut progress,
-        )
-        .await?;
+        let (config_digest, config_size) =
+            Self::build_layer(source_path, LayerType::Config, registry, &mut progress).await?;
         layers.config = Some(config_digest.clone());
         total_size += config_size;
         layer_count += 1;
 
         // Identity layer (required)
-        let (identity_digest, identity_size) = Self::build_layer(
-            source_path,
-            LayerType::Identity,
-            registry,
-            &mut progress,
-        )
-        .await?;
+        let (identity_digest, identity_size) =
+            Self::build_layer(source_path, LayerType::Identity, registry, &mut progress).await?;
         layers.identity = Some(identity_digest.clone());
         total_size += identity_size;
         layer_count += 1;
@@ -173,8 +159,7 @@ impl AgentBuilder {
             LayerType::Mcp,
         ] {
             if let Some((digest, size)) =
-                Self::build_optional_layer(source_path, layer_type, registry, &mut progress)
-                    .await?
+                Self::build_optional_layer(source_path, layer_type, registry, &mut progress).await?
             {
                 match layer_type {
                     LayerType::Skills => layers.skills = Some(digest.clone()),
@@ -246,10 +231,7 @@ impl AgentBuilder {
         let layer_dir = source_path.join(dir_name);
 
         if !layer_dir.exists() {
-            anyhow::bail!(
-                "Required layer directory missing: {}/",
-                dir_name
-            );
+            anyhow::bail!("Required layer directory missing: {}/", dir_name);
         }
 
         let (digest, size) = Self::pack_layer(&layer_dir, layer_type, registry).await?;
@@ -429,11 +411,36 @@ impl AgentBuilder {
 
         // Add each layer's files directly (flattened structure for the .agent file)
         if let Some(layers) = &manifest.layers {
-            Self::append_layer_files(&mut tar, source_path, LayerType::Config, layers.config.as_deref())?;
-            Self::append_layer_files(&mut tar, source_path, LayerType::Identity, layers.identity.as_deref())?;
-            Self::append_layer_files(&mut tar, source_path, LayerType::Skills, layers.skills.as_deref())?;
-            Self::append_layer_files(&mut tar, source_path, LayerType::Workspace, layers.workspace.as_deref())?;
-            Self::append_layer_files(&mut tar, source_path, LayerType::Sessions, layers.sessions.as_deref())?;
+            Self::append_layer_files(
+                &mut tar,
+                source_path,
+                LayerType::Config,
+                layers.config.as_deref(),
+            )?;
+            Self::append_layer_files(
+                &mut tar,
+                source_path,
+                LayerType::Identity,
+                layers.identity.as_deref(),
+            )?;
+            Self::append_layer_files(
+                &mut tar,
+                source_path,
+                LayerType::Skills,
+                layers.skills.as_deref(),
+            )?;
+            Self::append_layer_files(
+                &mut tar,
+                source_path,
+                LayerType::Workspace,
+                layers.workspace.as_deref(),
+            )?;
+            Self::append_layer_files(
+                &mut tar,
+                source_path,
+                LayerType::Sessions,
+                layers.sessions.as_deref(),
+            )?;
             Self::append_layer_files(&mut tar, source_path, LayerType::Mcp, layers.mcp.as_deref())?;
         }
 
@@ -549,14 +556,12 @@ frequency_penalty = 0.0
         registry.init().await.unwrap();
 
         let mut progress_events = Vec::new();
-        let result = AgentBuilder::build_from_directory(
-            &agent_dir,
-            "test-agent:v1.0",
-            &registry,
-            |p| progress_events.push(p),
-        )
-        .await
-        .unwrap();
+        let result =
+            AgentBuilder::build_from_directory(&agent_dir, "test-agent:v1.0", &registry, |p| {
+                progress_events.push(p)
+            })
+            .await
+            .unwrap();
 
         assert_eq!(result.tag, "test-agent:v1.0");
         assert_eq!(result.layer_count, 3); // config, identity, skills
@@ -586,7 +591,9 @@ frequency_penalty = 0.0
 
         // Verify progress events
         assert!(!progress_events.is_empty());
-        let has_complete = progress_events.iter().any(|p| matches!(p, BuildProgress::Complete { .. }));
+        let has_complete = progress_events
+            .iter()
+            .any(|p| matches!(p, BuildProgress::Complete { .. }));
         assert!(has_complete);
     }
 
@@ -600,7 +607,8 @@ frequency_penalty = 0.0
         let registry = AgentRegistry::new(temp_dir.path().join("registry"));
         registry.init().await.unwrap();
 
-        let result = AgentBuilder::build_from_directory(&agent_dir, "bad:v1", &registry, |_| {}).await;
+        let result =
+            AgentBuilder::build_from_directory(&agent_dir, "bad:v1", &registry, |_| {}).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("config/agent.toml"));
@@ -610,7 +618,9 @@ frequency_penalty = 0.0
     async fn test_build_missing_identity_fails() {
         let temp_dir = tempfile::tempdir().unwrap();
         let agent_dir = temp_dir.path().join("agent");
-        tokio::fs::create_dir_all(agent_dir.join("config")).await.unwrap();
+        tokio::fs::create_dir_all(agent_dir.join("config"))
+            .await
+            .unwrap();
         tokio::fs::write(
             agent_dir.join("config").join("agent.toml"),
             r#"name = "agent"
@@ -641,7 +651,8 @@ frequency_penalty = 0.0
         let registry = AgentRegistry::new(temp_dir.path().join("registry"));
         registry.init().await.unwrap();
 
-        let result = AgentBuilder::build_from_directory(&agent_dir, "agent:v1", &registry, |_| {}).await;
+        let result =
+            AgentBuilder::build_from_directory(&agent_dir, "agent:v1", &registry, |_| {}).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("identity"));

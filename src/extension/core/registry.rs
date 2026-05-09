@@ -9,9 +9,7 @@ use crate::extension::core::handler::HookHandler;
 use crate::extension::core::hook_points::HookPoint;
 use crate::extension::core::hook_registry::HookRegistry;
 use crate::extension::core::tool_registry::ToolRegistry;
-use crate::extension::types::{
-    ExtensionId, HookId, HookInput, HookResult, ToolMetadata,
-};
+use crate::extension::types::{ExtensionId, HookId, HookInput, HookResult, ToolMetadata};
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::{debug, instrument, trace, warn};
@@ -105,7 +103,9 @@ impl ExtensionCore {
         handler: Arc<dyn super::handler::HookHandler>,
         extension_id: &ExtensionId,
     ) -> Result<RegisteredHook> {
-        self.hook_registry.register_hook(point, handler, extension_id).await
+        self.hook_registry
+            .register_hook(point, handler, extension_id)
+            .await
     }
 
     /// Unregister a hook handler
@@ -141,7 +141,9 @@ impl ExtensionCore {
 
     /// Get all hooks for a specific extension
     pub async fn get_hooks_for_extension(&self, extension_id: &ExtensionId) -> Vec<RegisteredHook> {
-        self.hook_registry.get_hooks_for_extension(extension_id).await
+        self.hook_registry
+            .get_hooks_for_extension(extension_id)
+            .await
     }
 
     /// Get all registered hooks
@@ -342,7 +344,9 @@ impl ExtensionCore {
         }
 
         // ── 7. Index in ToolRegistry for O(1) lookup ────────────────────────────
-        self.tool_registry.register_tool(&tool_name, exec_hook_id).await?;
+        self.tool_registry
+            .register_tool(&tool_name, exec_hook_id)
+            .await?;
 
         debug!(
             tool_name = %tool_name,
@@ -351,7 +355,11 @@ impl ExtensionCore {
             "Registered tool with unified registry"
         );
 
-        Ok(ToolRegistration::new(tool_name, hook_ids, extension_id.clone()))
+        Ok(ToolRegistration::new(
+            tool_name,
+            hook_ids,
+            extension_id.clone(),
+        ))
     }
 
     /// Get tool metadata by name (O(1) lookup)

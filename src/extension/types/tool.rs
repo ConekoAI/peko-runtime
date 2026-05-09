@@ -65,7 +65,8 @@ impl ToolMetadata {
             description: description.into(),
             parameters,
             source,
-            reserved_params: crate::extension::services::reserved_params::ReservedParamsConfig::new(),
+            reserved_params: crate::extension::services::reserved_params::ReservedParamsConfig::new(
+            ),
             companion_hook_ids: None,
         }
     }
@@ -106,7 +107,10 @@ mod tests {
     fn test_tool_source() {
         assert_eq!(ToolSource::BuiltIn.description(), "built-in");
         assert_eq!(
-            ToolSource::Mcp { server: "test".to_string() }.description(),
+            ToolSource::Mcp {
+                server: "test".to_string()
+            }
+            .description(),
             "MCP server: test"
         );
     }

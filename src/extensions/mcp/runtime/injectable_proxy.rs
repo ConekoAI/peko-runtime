@@ -17,10 +17,10 @@
 //! session_id = { source = "runtime", field = "session_id" }
 //! ```
 
-use crate::extension::services::ReservedParamsConfig;
-use crate::extensions::mcp::runtime::tool_proxy::McpToolProxy;
-use crate::extensions::mcp::protocol::types::Tool as McpTool;
 use crate::extension::protocols::shared::proxy_utils::execute_with_context_handling;
+use crate::extension::services::ReservedParamsConfig;
+use crate::extensions::mcp::protocol::types::Tool as McpTool;
+use crate::extensions::mcp::runtime::tool_proxy::McpToolProxy;
 use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::Value;

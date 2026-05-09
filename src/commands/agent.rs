@@ -99,6 +99,9 @@ pub enum AgentCommands {
         /// Output path
         #[arg(short, long)]
         output: Option<String>,
+        /// Include session history
+        #[arg(long)]
+        include_sessions: bool,
     },
 
     /// Import agent from .agent package
@@ -230,9 +233,12 @@ pub async fn handle_agent(
             team,
             to_team,
         } => handlers::handle_agent_move(paths, old_name, new_name, team, to_team, json).await,
-        AgentCommands::Export { name, team, output } => {
-            handlers::handle_agent_export(paths, name, team, output).await
-        }
+        AgentCommands::Export {
+            name,
+            team,
+            output,
+            include_sessions,
+        } => handlers::handle_agent_export(paths, name, team, output, include_sessions).await,
         AgentCommands::Import { file, name, team } => {
             handlers::handle_agent_import(paths, file, name, team).await
         }
@@ -243,13 +249,8 @@ pub async fn handle_agent(
         AgentCommands::Push {
             local_tag,
             registry_ref,
-        } => {
-            handlers::handle_agent_push(paths, local_tag, registry_ref, json).await
-        }
-        AgentCommands::Pull {
-            registry_ref,
-            json,
-        } => {
+        } => handlers::handle_agent_push(paths, local_tag, registry_ref, json).await,
+        AgentCommands::Pull { registry_ref, json } => {
             handlers::handle_agent_pull(paths, registry_ref, json).await
         }
         AgentCommands::Init {

@@ -394,11 +394,7 @@ impl ConfigAuthorityImpl {
     }
 
     /// Enable a tool for all agents in a team
-    pub fn enable_tool_for_team(
-        &self,
-        team: &str,
-        tool_name: &str,
-    ) -> anyhow::Result<usize> {
+    pub fn enable_tool_for_team(&self, team: &str, tool_name: &str) -> anyhow::Result<usize> {
         let agents_dir = self.path_resolver.agents_dir(Some(team));
         if !agents_dir.exists() {
             anyhow::bail!("Team '{team}' not found (no agents directory)");
@@ -423,11 +419,7 @@ impl ConfigAuthorityImpl {
     }
 
     /// Disable a tool for all agents in a team
-    pub fn disable_tool_for_team(
-        &self,
-        team: &str,
-        tool_name: &str,
-    ) -> anyhow::Result<usize> {
+    pub fn disable_tool_for_team(&self, team: &str, tool_name: &str) -> anyhow::Result<usize> {
         let agents_dir = self.path_resolver.agents_dir(Some(team));
         if !agents_dir.exists() {
             anyhow::bail!("Team '{team}' not found (no agents directory)");

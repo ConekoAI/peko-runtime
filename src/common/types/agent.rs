@@ -177,6 +177,7 @@ pub struct AgentUpdateRequest {
 #[derive(Debug, Clone, Default)]
 pub struct AgentExportOptions {
     pub output_path: Option<PathBuf>,
+    pub include_sessions: bool,
 }
 
 /// Agent export result

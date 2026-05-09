@@ -69,11 +69,17 @@ pub enum RequestPacket {
 
     /// List cron jobs
     #[serde(rename = "cron_list")]
-    CronList { request_id: u64, include_disabled: bool },
+    CronList {
+        request_id: u64,
+        include_disabled: bool,
+    },
 
     /// Add a cron job
     #[serde(rename = "cron_add")]
-    CronAdd { request_id: u64, job: crate::cron::CronJob },
+    CronAdd {
+        request_id: u64,
+        job: crate::cron::CronJob,
+    },
 
     /// Remove a cron job
     #[serde(rename = "cron_remove")]
@@ -85,23 +91,39 @@ pub enum RequestPacket {
 
     /// Get cron job history
     #[serde(rename = "cron_history")]
-    CronHistory { request_id: u64, job_id: String, limit: usize },
+    CronHistory {
+        request_id: u64,
+        job_id: String,
+        limit: usize,
+    },
 
     /// Start a background runtime (extension lifecycle — ADR-026)
     #[serde(rename = "ext_start")]
-    ExtStart { request_id: u64, extension_id: String },
+    ExtStart {
+        request_id: u64,
+        extension_id: String,
+    },
 
     /// Stop a background runtime (extension lifecycle — ADR-026)
     #[serde(rename = "ext_stop")]
-    ExtStop { request_id: u64, extension_id: String },
+    ExtStop {
+        request_id: u64,
+        extension_id: String,
+    },
 
     /// Restart a background runtime (extension lifecycle — ADR-026)
     #[serde(rename = "ext_restart")]
-    ExtRestart { request_id: u64, extension_id: String },
+    ExtRestart {
+        request_id: u64,
+        extension_id: String,
+    },
 
     /// Get background runtime status (extension lifecycle — ADR-026)
     #[serde(rename = "ext_status")]
-    ExtStatus { request_id: u64, extension_id: String },
+    ExtStatus {
+        request_id: u64,
+        extension_id: String,
+    },
 }
 
 impl RequestPacket {
@@ -201,7 +223,10 @@ pub enum ResponsePacket {
 
     /// Cron job list response
     #[serde(rename = "cron_list")]
-    CronList { request_id: u64, jobs: Vec<crate::cron::CronJob> },
+    CronList {
+        request_id: u64,
+        jobs: Vec<crate::cron::CronJob>,
+    },
 
     /// Cron job added response
     #[serde(rename = "cron_added")]
@@ -213,23 +238,39 @@ pub enum ResponsePacket {
 
     /// Cron job run started response
     #[serde(rename = "cron_run_started")]
-    CronRunStarted { request_id: u64, job_id: String, run_id: String },
+    CronRunStarted {
+        request_id: u64,
+        job_id: String,
+        run_id: String,
+    },
 
     /// Cron job history response
     #[serde(rename = "cron_history")]
-    CronHistory { request_id: u64, runs: Vec<crate::cron::CronRun> },
+    CronHistory {
+        request_id: u64,
+        runs: Vec<crate::cron::CronRun>,
+    },
 
     /// Background runtime started (ADR-026)
     #[serde(rename = "ext_started")]
-    ExtStarted { request_id: u64, extension_id: String },
+    ExtStarted {
+        request_id: u64,
+        extension_id: String,
+    },
 
     /// Background runtime stopped (ADR-026)
     #[serde(rename = "ext_stopped")]
-    ExtStopped { request_id: u64, extension_id: String },
+    ExtStopped {
+        request_id: u64,
+        extension_id: String,
+    },
 
     /// Background runtime restarted (ADR-026)
     #[serde(rename = "ext_restarted")]
-    ExtRestarted { request_id: u64, extension_id: String },
+    ExtRestarted {
+        request_id: u64,
+        extension_id: String,
+    },
 
     /// Background runtime status response (ADR-026)
     #[serde(rename = "ext_status")]

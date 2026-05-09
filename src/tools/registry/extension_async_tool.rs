@@ -84,7 +84,9 @@ impl Tool for ExtensionAsyncTool {
             .await?;
 
         match result {
-            crate::extension::async_exec::executor::WaitResult::Completed { result } => Ok(result.to_json()),
+            crate::extension::async_exec::executor::WaitResult::Completed { result } => {
+                Ok(result.to_json())
+            }
             crate::extension::async_exec::executor::WaitResult::Failed { error } => {
                 Err(anyhow::anyhow!("Async execution failed: {error}"))
             }

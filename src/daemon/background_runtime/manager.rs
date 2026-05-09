@@ -57,18 +57,27 @@ impl BackgroundRuntimeManager {
         // Create the runtime based on spawn config
         let mut runtime = match &spawn_config {
             RuntimeSpawnConfig::Process(process_config) => {
-                spawn_runtime_process(&id, process_config, adapter, restart_policy, spawn_config.clone()).await?
+                spawn_runtime_process(
+                    &id,
+                    process_config,
+                    adapter,
+                    restart_policy,
+                    spawn_config.clone(),
+                )
+                .await?
             }
             RuntimeSpawnConfig::Task { .. } => {
                 // For tasks, the caller must spawn the task and pass the handle.
                 // This variant is used when the task is created externally.
-                anyhow::bail!(
-                    "Use start_task() for in-process task runtimes"
-                );
+                anyhow::bail!("Use start_task() for in-process task runtimes");
             }
-            RuntimeSpawnConfig::External { endpoint, .. } => {
-                spawn_runtime_external(&id, endpoint.clone(), adapter, restart_policy, spawn_config.clone())
-            }
+            RuntimeSpawnConfig::External { endpoint, .. } => spawn_runtime_external(
+                &id,
+                endpoint.clone(),
+                adapter,
+                restart_policy,
+                spawn_config.clone(),
+            ),
         };
 
         // Initialize via adapter — we must do this before inserting into the map
@@ -109,7 +118,14 @@ impl BackgroundRuntimeManager {
         info!("Starting background task runtime: {}", id);
 
         let spawn_config = RuntimeSpawnConfig::Task { name: id.clone() };
-        let mut runtime = spawn_runtime_task(&id, task, abort_tx, adapter.clone(), restart_policy, spawn_config);
+        let mut runtime = spawn_runtime_task(
+            &id,
+            task,
+            abort_tx,
+            adapter.clone(),
+            restart_policy,
+            spawn_config,
+        );
 
         // Initialize via adapter
         if let Err(e) = adapter.initialize(&mut runtime).await {
@@ -298,7 +314,12 @@ impl BackgroundRuntimeManager {
                                         "Runtime '{}' exceeded max restarts ({}), giving up",
                                         id_owned, runtime.restart_policy.max_restarts
                                     );
-                                    (false, runtime.spawn_config.clone(), runtime.adapter.clone_box(), runtime.restart_policy.clone())
+                                    (
+                                        false,
+                                        runtime.spawn_config.clone(),
+                                        runtime.adapter.clone_box(),
+                                        runtime.restart_policy.clone(),
+                                    )
                                 }
                             };
 
@@ -310,7 +331,7 @@ impl BackgroundRuntimeManager {
                                         let runtimes_guard = runtimes.read().await;
                                         let rt = runtimes_guard.get(&id_owned).unwrap();
                                         rt.restart_count
-                                    }
+                                    },
                                 );
                                 if backoff > std::time::Duration::from_millis(0) {
                                     info!(
@@ -401,15 +422,25 @@ impl BackgroundRuntimeManager {
         // Spawn new process/task/external connection
         let mut runtime = match &spawn_config {
             RuntimeSpawnConfig::Process(process_config) => {
-                spawn_runtime_process(id, process_config, adapter, restart_policy, spawn_config.clone())
-                    .await?
+                spawn_runtime_process(
+                    id,
+                    process_config,
+                    adapter,
+                    restart_policy,
+                    spawn_config.clone(),
+                )
+                .await?
             }
             RuntimeSpawnConfig::Task { .. } => {
                 anyhow::bail!("Task runtime restart not supported from health check");
             }
-            RuntimeSpawnConfig::External { endpoint, .. } => {
-                spawn_runtime_external(id, endpoint.clone(), adapter, restart_policy, spawn_config.clone())
-            }
+            RuntimeSpawnConfig::External { endpoint, .. } => spawn_runtime_external(
+                id,
+                endpoint.clone(),
+                adapter,
+                restart_policy,
+                spawn_config.clone(),
+            ),
         };
 
         // Initialize via adapter

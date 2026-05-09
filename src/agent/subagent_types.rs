@@ -4,13 +4,13 @@
 //! `AsyncTaskEntry` data model. No registry storage uses these types
 //! directly — they are read-only projections constructed on demand.
 
-use crate::session::types::SpawnCleanupPolicy;
 use crate::extension::async_exec::executor::{AsyncTaskEntry, AsyncTaskStatus, TaskMetadata};
+use crate::session::types::SpawnCleanupPolicy;
 use chrono::{DateTime, Utc};
 
 // Re-export SubagentResult and SubagentStatus from the unified registry to avoid duplication.
-pub use crate::extension::async_exec::executor::SubagentResult;
 pub use crate::extension::async_exec::executor::AsyncTaskStatus as SubagentStatus;
+pub use crate::extension::async_exec::executor::SubagentResult;
 
 /// A read-only view of an async task entry, projected into the
 /// subagent domain model.

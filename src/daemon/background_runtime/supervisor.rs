@@ -1,10 +1,11 @@
 //! Runtime supervisor — manages the lifecycle of individual runtimes
 
-use crate::common::process::{graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
+use crate::common::process::{
+    graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Child;
-
 
 use super::adapter::BackgroundRuntimeAdapter;
 
@@ -55,10 +56,7 @@ pub enum RuntimeKind {
         abort_tx: Option<tokio::sync::oneshot::Sender<()>>,
     },
     /// External connection the daemon connects to (HTTP webhook, SSE stream)
-    External {
-        endpoint: String,
-        connected: bool,
-    },
+    External { endpoint: String, connected: bool },
 }
 
 impl std::fmt::Debug for RuntimeKind {
@@ -69,7 +67,10 @@ impl std::fmt::Debug for RuntimeKind {
                 .debug_struct("Task")
                 .field("finished", &handle.is_finished())
                 .finish(),
-            Self::External { endpoint, connected } => f
+            Self::External {
+                endpoint,
+                connected,
+            } => f
                 .debug_struct("External")
                 .field("endpoint", endpoint)
                 .field("connected", connected)
@@ -116,7 +117,12 @@ pub async fn spawn_runtime_process(
 
     Ok(ManagedRuntime {
         id: id.to_string(),
-        kind: RuntimeKind::Process { child, pid, stdin: Some(stdin), stdout: Some(stdout) },
+        kind: RuntimeKind::Process {
+            child,
+            pid,
+            stdin: Some(stdin),
+            stdout: Some(stdout),
+        },
         state: RuntimeState::Starting,
         restart_policy,
         restart_count: 0,
@@ -183,7 +189,13 @@ pub async fn stop_runtime(runtime: &mut ManagedRuntime) -> anyhow::Result<()> {
 
     // Then handle kind-specific termination
     // We replace the kind with a dummy value to take ownership
-    let kind = std::mem::replace(&mut runtime.kind, RuntimeKind::External { endpoint: String::new(), connected: false });
+    let kind = std::mem::replace(
+        &mut runtime.kind,
+        RuntimeKind::External {
+            endpoint: String::new(),
+            connected: false,
+        },
+    );
     match kind {
         RuntimeKind::Process { child, pid, .. } => {
             // stdin/stdout may have been taken() by the adapter; that's fine

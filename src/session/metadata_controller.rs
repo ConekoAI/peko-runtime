@@ -803,6 +803,15 @@ impl MetadataController {
         self.index.save().await
     }
 
+    /// Ensure a peer routing exists and set the given session as active (proxy to `SessionIndex`)
+    ///
+    /// If the peer does not exist, it is created. If the session is not yet
+    /// tracked for the peer, it is added.
+    pub async fn ensure_peer_active(&mut self, peer_key: &str, session_id: &str) -> Result<()> {
+        self.index.ensure_peer_active(peer_key, session_id).await?;
+        self.index.save().await
+    }
+
     /// Get active session for peer (proxy to `SessionIndex`)
     pub async fn get_active_for_peer(&mut self, peer_key: &str) -> Result<Option<SessionEntry>> {
         self.index.get_active_for_peer(peer_key).await

@@ -129,8 +129,8 @@ try {
     }
 
     # Count sessions before export
-    $sessionsBefore1 = & $pekoCmd session list "$teamName/$agent1" --json 2>&1 | ConvertFrom-Json
-    $sessionsBefore2 = & $pekoCmd session list "$teamName/$agent2" --json 2>&1 | ConvertFrom-Json
+    $sessionsBefore1 = & $pekoCmd session list "$teamName/$agent1" --json | ConvertFrom-Json
+    $sessionsBefore2 = & $pekoCmd session list "$teamName/$agent2" --json | ConvertFrom-Json
     $sessionCountBefore = $sessionsBefore1.sessions.Count + $sessionsBefore2.sessions.Count
     Write-Host "Sessions before export: $sessionCountBefore" -ForegroundColor Gray
 
@@ -142,7 +142,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $snapshotWithSessions = "$testDir/memory-team-with-sessions.team"
-    $exportResult = & $pekoCmd team export $teamName -o $snapshotWithSessions --include-sessions --json 2>&1 | ConvertFrom-Json
+    $exportResult = & $pekoCmd team export $teamName -o $snapshotWithSessions --include-sessions --json | ConvertFrom-Json
     if (-not (Test-Path $snapshotWithSessions)) { Write-Error "Export with sessions failed" }
     $sizeWithSessions = (Get-Item $snapshotWithSessions).Length
     Write-Host "Exported with sessions: $sizeWithSessions bytes" -ForegroundColor Green
@@ -155,7 +155,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $snapshotNoSessions = "$testDir/memory-team-no-sessions.team"
-    $exportResult2 = & $pekoCmd team export $teamName -o $snapshotNoSessions --json 2>&1 | ConvertFrom-Json
+    $exportResult2 = & $pekoCmd team export $teamName -o $snapshotNoSessions --json | ConvertFrom-Json
     if (-not (Test-Path $snapshotNoSessions)) { Write-Error "Export without sessions failed" }
     $sizeNoSessions = (Get-Item $snapshotNoSessions).Length
     Write-Host "Exported without sessions: $sizeNoSessions bytes" -ForegroundColor Green
@@ -207,10 +207,10 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $importedTeam = "memory-team-clone"
-    $importResult = & $pekoCmd team import $pulledPath --name $importedTeam --json 2>&1 | ConvertFrom-Json
+    $importResult = & $pekoCmd team import $pulledPath --name $importedTeam --json | ConvertFrom-Json
     if ($importResult.name -ne $importedTeam) { Write-Error "Team import failed" }
 
-    $importedShow = & $pekoCmd team show $importedTeam --json 2>&1 | ConvertFrom-Json
+    $importedShow = & $pekoCmd team show $importedTeam --json | ConvertFrom-Json
     if ($importedShow.agent_count -ne 2) { Write-Error "Imported team has wrong agent count" }
     Write-Host "Imported team with $($importedShow.agent_count) agents" -ForegroundColor Green
 
@@ -221,8 +221,8 @@ try {
     Write-Host "STEP 8: Verify sessions in imported team" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $sessionsAfter1 = & $pekoCmd session list "$importedTeam/$agent1" --json 2>&1 | ConvertFrom-Json
-    $sessionsAfter2 = & $pekoCmd session list "$importedTeam/$agent2" --json 2>&1 | ConvertFrom-Json
+    $sessionsAfter1 = & $pekoCmd session list "$importedTeam/$agent1" --json | ConvertFrom-Json
+    $sessionsAfter2 = & $pekoCmd session list "$importedTeam/$agent2" --json | ConvertFrom-Json
     $sessionCountAfter = $sessionsAfter1.sessions.Count + $sessionsAfter2.sessions.Count
     Write-Host "Sessions after import: $sessionCountAfter" -ForegroundColor Gray
 
@@ -234,8 +234,8 @@ try {
 
     # Verify session content if API key was available
     if ($env:MINIMAX_API_KEY -and $sessionsAfter1.sessions.Count -gt 0) {
-        $sessionId = $sessionsAfter1.sessions[0].session_id
-        $sessionShow = & $pekoCmd session show "$importedTeam/$agent1" --session-id $sessionId --json 2>&1 | ConvertFrom-Json
+        $sessionId = $sessionsAfter1.sessions[0].id
+        $sessionShow = & $pekoCmd session show "$importedTeam/$agent1" --session-id $sessionId --json | ConvertFrom-Json
         # Look for the secret code in session messages
         $sessionJsonlDir = "$env:APPDATA/pekobot/sessions/$importedTeam/$agent1"
         if (Test-Path $sessionJsonlDir) {
@@ -286,10 +286,10 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $noSessionTeam = "memory-team-no-sessions"
-    $importResult2 = & $pekoCmd team import $snapshotNoSessions --name $noSessionTeam --json 2>&1 | ConvertFrom-Json
+    $importResult2 = & $pekoCmd team import $snapshotNoSessions --name $noSessionTeam --json | ConvertFrom-Json
     if ($importResult2.name -ne $noSessionTeam) { Write-Error "No-sessions import failed" }
 
-    $noSessionList = & $pekoCmd session list "$noSessionTeam/$agent1" --json 2>&1 | ConvertFrom-Json
+    $noSessionList = & $pekoCmd session list "$noSessionTeam/$agent1" --json | ConvertFrom-Json
     if ($noSessionList.sessions.Count -eq 0) {
         Write-Host "No sessions in no-sessions import (as expected)" -ForegroundColor Green
     } else {

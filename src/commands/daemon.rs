@@ -187,10 +187,7 @@ pub async fn handle_daemon(
 }
 
 /// Show daemon status
-async fn show_daemon_status(
-    service: &DaemonProcessService,
-    json: bool,
-) -> anyhow::Result<()> {
+async fn show_daemon_status(service: &DaemonProcessService, json: bool) -> anyhow::Result<()> {
     let status = service.get_daemon_status().await?;
 
     if status.responding {

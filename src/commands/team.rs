@@ -233,9 +233,12 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
 fn render_team_created(result: &TeamCreationResult, json: bool) {
     if json {
         println!(
-            "{{\"success\": true, \"name\": \"{}\", \"path\": \"{}\"}}",
-            result.metadata.name,
-            result.path.display()
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "name": result.metadata.name,
+                "path": result.path.display().to_string(),
+            })
         );
     } else {
         println!("✅ Created team '{}'", result.metadata.name);
@@ -406,10 +409,13 @@ fn render_team_moved(result: &TeamMoveResult, json: bool) {
 fn render_team_exported(result: &crate::common::types::team::TeamExportResult, json: bool) {
     if json {
         println!(
-            "{{\"success\": true, \"name\": \"{}\", \"output_path\": \"{}\", \"agent_count\": {}}}",
-            result.name,
-            result.output_path.display(),
-            result.agent_count
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "name": result.name,
+                "output_path": result.output_path.display().to_string(),
+                "agent_count": result.agent_count,
+            })
         );
     } else {
         println!("📦 Exported team '{}'", result.name);
@@ -421,10 +427,13 @@ fn render_team_exported(result: &crate::common::types::team::TeamExportResult, j
 fn render_team_imported(result: &crate::common::types::team::TeamImportResult, json: bool) {
     if json {
         println!(
-            "{{\"success\": true, \"name\": \"{}\", \"path\": \"{}\", \"agents_imported\": {}}}",
-            result.name,
-            result.path.display(),
-            result.agents_imported
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "name": result.name,
+                "path": result.path.display().to_string(),
+                "agents_imported": result.agents_imported,
+            })
         );
     } else {
         println!("📥 Imported team '{}'", result.name);

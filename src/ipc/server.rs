@@ -263,23 +263,30 @@ impl IpcServer {
                 Self::handle_async_cancel(request_id, task_id, state, socket, addr).await?;
             }
 
-            RequestPacket::CronList { request_id, include_disabled } => {
+            RequestPacket::CronList {
+                request_id,
+                include_disabled,
+            } => {
                 let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
-                    Ok(scheduler) => {
-                        match scheduler.list_jobs(include_disabled) {
-                            Ok(jobs) => {
-                                let response = ResponsePacket::CronList { request_id, jobs };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
-                            Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Failed to list jobs: {e}") };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
+                    Ok(scheduler) => match scheduler.list_jobs(include_disabled) {
+                        Ok(jobs) => {
+                            let response = ResponsePacket::CronList { request_id, jobs };
+                            Self::send_packet(&socket, response, addr).await?;
                         }
-                    }
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to list jobs: {e}"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    },
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Cron DB error: {e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -288,20 +295,27 @@ impl IpcServer {
             RequestPacket::CronAdd { request_id, job } => {
                 let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
-                    Ok(scheduler) => {
-                        match scheduler.add_job(&job) {
-                            Ok(()) => {
-                                let response = ResponsePacket::CronAdded { request_id, job_id: job.id };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
-                            Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Failed to add job: {e}") };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
+                    Ok(scheduler) => match scheduler.add_job(&job) {
+                        Ok(()) => {
+                            let response = ResponsePacket::CronAdded {
+                                request_id,
+                                job_id: job.id,
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
                         }
-                    }
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to add job: {e}"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    },
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Cron DB error: {e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -310,24 +324,31 @@ impl IpcServer {
             RequestPacket::CronRemove { request_id, job_id } => {
                 let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
-                    Ok(scheduler) => {
-                        match scheduler.delete_job(&job_id) {
-                            Ok(true) => {
-                                let response = ResponsePacket::CronRemoved { request_id, job_id };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
-                            Ok(false) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Job {job_id} not found") };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
-                            Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Failed to remove job: {e}") };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
+                    Ok(scheduler) => match scheduler.delete_job(&job_id) {
+                        Ok(true) => {
+                            let response = ResponsePacket::CronRemoved { request_id, job_id };
+                            Self::send_packet(&socket, response, addr).await?;
                         }
-                    }
+                        Ok(false) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Job {job_id} not found"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to remove job: {e}"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    },
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Cron DB error: {e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -336,73 +357,108 @@ impl IpcServer {
             RequestPacket::CronRun { request_id, job_id } => {
                 let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
-                    Ok(scheduler) => {
-                        match scheduler.get_job(&job_id) {
-                            Ok(Some(_job)) => {
-                                let now = chrono::Utc::now();
-                                if let Err(e) = scheduler.update_job_after_run(&job_id, "triggered", now) {
-                                    let response = ResponsePacket::Error { request_id, message: format!("Failed to trigger job: {e}") };
-                                    Self::send_packet(&socket, response, addr).await?;
-                                } else {
-                                    let run_id = uuid::Uuid::new_v4().to_string();
-                                    let response = ResponsePacket::CronRunStarted { request_id, job_id, run_id };
-                                    Self::send_packet(&socket, response, addr).await?;
-                                }
-                            }
-                            Ok(None) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Job {job_id} not found") };
+                    Ok(scheduler) => match scheduler.get_job(&job_id) {
+                        Ok(Some(_job)) => {
+                            let now = chrono::Utc::now();
+                            if let Err(e) =
+                                scheduler.update_job_after_run(&job_id, "triggered", now)
+                            {
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: format!("Failed to trigger job: {e}"),
+                                };
                                 Self::send_packet(&socket, response, addr).await?;
-                            }
-                            Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Failed to get job: {e}") };
+                            } else {
+                                let run_id = uuid::Uuid::new_v4().to_string();
+                                let response = ResponsePacket::CronRunStarted {
+                                    request_id,
+                                    job_id,
+                                    run_id,
+                                };
                                 Self::send_packet(&socket, response, addr).await?;
                             }
                         }
-                    }
+                        Ok(None) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Job {job_id} not found"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to get job: {e}"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    },
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Cron DB error: {e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::CronHistory { request_id, job_id, limit } => {
+            RequestPacket::CronHistory {
+                request_id,
+                job_id,
+                limit,
+            } => {
                 let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
-                    Ok(scheduler) => {
-                        match scheduler.get_run_history(&job_id, limit) {
-                            Ok(runs) => {
-                                let response = ResponsePacket::CronHistory { request_id, runs };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
-                            Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Failed to get history: {e}") };
-                                Self::send_packet(&socket, response, addr).await?;
-                            }
+                    Ok(scheduler) => match scheduler.get_run_history(&job_id, limit) {
+                        Ok(runs) => {
+                            let response = ResponsePacket::CronHistory { request_id, runs };
+                            Self::send_packet(&socket, response, addr).await?;
                         }
-                    }
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to get history: {e}"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    },
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Cron DB error: {e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
             // ─── Extension Runtime Lifecycle (ADR-026) ───────────────────────
-
-            RequestPacket::ExtStart { request_id, extension_id } => {
+            RequestPacket::ExtStart {
+                request_id,
+                extension_id,
+            } => {
                 Self::handle_ext_start(request_id, extension_id, state, socket, addr).await?;
             }
 
-            RequestPacket::ExtStop { request_id, extension_id } => {
+            RequestPacket::ExtStop {
+                request_id,
+                extension_id,
+            } => {
                 Self::handle_ext_stop(request_id, extension_id, state, socket, addr).await?;
             }
 
-            RequestPacket::ExtRestart { request_id, extension_id } => {
+            RequestPacket::ExtRestart {
+                request_id,
+                extension_id,
+            } => {
                 Self::handle_ext_restart(request_id, extension_id, state, socket, addr).await?;
             }
 
-            RequestPacket::ExtStatus { request_id, extension_id } => {
+            RequestPacket::ExtStatus {
+                request_id,
+                extension_id,
+            } => {
                 Self::handle_ext_status(request_id, extension_id, state, socket, addr).await?;
             }
         }
@@ -693,11 +749,17 @@ impl IpcServer {
 
         match registry.start(&extension_id, &ctx).await {
             Ok(()) => {
-                let response = ResponsePacket::ExtStarted { request_id, extension_id };
+                let response = ResponsePacket::ExtStarted {
+                    request_id,
+                    extension_id,
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
             Err(e) => {
-                let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: e.to_string(),
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
         }
@@ -718,11 +780,17 @@ impl IpcServer {
 
         match registry.stop(&extension_id, &ctx).await {
             Ok(()) => {
-                let response = ResponsePacket::ExtStopped { request_id, extension_id };
+                let response = ResponsePacket::ExtStopped {
+                    request_id,
+                    extension_id,
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
             Err(e) => {
-                let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: e.to_string(),
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
         }
@@ -743,11 +811,17 @@ impl IpcServer {
 
         match registry.restart(&extension_id, &ctx).await {
             Ok(()) => {
-                let response = ResponsePacket::ExtRestarted { request_id, extension_id };
+                let response = ResponsePacket::ExtRestarted {
+                    request_id,
+                    extension_id,
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
             Err(e) => {
-                let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: e.to_string(),
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
         }

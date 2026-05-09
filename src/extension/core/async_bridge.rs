@@ -41,8 +41,7 @@
 //! ```
 
 use crate::extension::async_exec::executor::{
-    AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, AsyncExecutor,
-    WaitResult,
+    AsyncExecutor, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, WaitResult,
 };
 use crate::extension::core::{ExtensionCore, HookPointBuilder};
 use crate::extension::types::{AsyncReceipt, HookInput, HookOutput, HookResult};
@@ -240,12 +239,8 @@ impl ExtensionAsyncAdapter {
 
                     // Convert HookResult to AsyncTaskResult
                     match result {
-                        HookResult::Continue(HookOutput::Json(json)) => {
-                            Ok(json)
-                        }
-                        HookResult::Continue(HookOutput::Text(text)) => {
-                            Ok(json!({"result": text}))
-                        }
+                        HookResult::Continue(HookOutput::Json(json)) => Ok(json),
+                        HookResult::Continue(HookOutput::Text(text)) => Ok(json!({"result": text})),
                         HookResult::Error(e) => Err(anyhow!("Tool execution failed: {e}")),
                         _ => Err(anyhow!("Unexpected result from sync tool execution")),
                     }

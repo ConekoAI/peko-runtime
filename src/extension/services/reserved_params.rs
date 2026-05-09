@@ -118,7 +118,10 @@ impl ReservedParamsConfig {
     /// # Returns
     /// Map of parameter names to resolved values
     #[must_use]
-    pub fn resolve(&self, ctx: Option<&crate::extension::types::ToolContext>) -> HashMap<String, Value> {
+    pub fn resolve(
+        &self,
+        ctx: Option<&crate::extension::types::ToolContext>,
+    ) -> HashMap<String, Value> {
         let mut result = HashMap::new();
         for (name, source) in &self.params {
             result.insert(name.clone(), source.resolve(ctx));

@@ -14,12 +14,12 @@
 use crate::agent::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::prompt::SystemPromptService;
-use crate::providers::{ChatOptions, MessageRole, StopReason, ToolDefinition, TokenUsage};
-use chrono::Utc;
-use std::collections::HashMap;
+use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
 use crate::session::Session;
 use crate::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
+use chrono::Utc;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -292,7 +292,8 @@ impl AgenticLoop {
 
             // ADR-019 Phase 3: Rebuild system prompt dynamically
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
-                let fresh_prompt = SystemPromptService::build_fresh(&self.agent, &self.extension_core).await;
+                let fresh_prompt =
+                    SystemPromptService::build_fresh(&self.agent, &self.extension_core).await;
                 messages[0] = LlmMessage::system(fresh_prompt);
             }
 
@@ -375,9 +376,16 @@ impl AgenticLoop {
                     tool_defs.iter().map(|d| &d.name).collect::<Vec<_>>()
                 );
                 for (i, def) in tool_defs.iter().enumerate() {
-                    info!("Tool def [{}]: name={}, params={}", i, def.name, def.parameters);
+                    info!(
+                        "Tool def [{}]: name={}, params={}",
+                        i, def.name, def.parameters
+                    );
                 }
-                match self.provider.stream_with_tools(&messages, &tool_defs, &options).await {
+                match self
+                    .provider
+                    .stream_with_tools(&messages, &tool_defs, &options)
+                    .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         debug!("Failed to start stream: {}", e);
@@ -391,7 +399,10 @@ impl AgenticLoop {
                 }
             } else {
                 warn!("Provider doesn't support streaming, synthesizing from blocking response");
-                let response = self.provider.chat_with_tools(&messages, &tool_defs, &options).await?;
+                let response = self
+                    .provider
+                    .chat_with_tools(&messages, &tool_defs, &options)
+                    .await?;
                 crate::providers::synthetic_stream::synthesize_stream_from_blocking(
                     response,
                     self.provider.name(),

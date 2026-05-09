@@ -2,8 +2,8 @@
 //!
 //! Exports agents to `.agent` files (tar.gz archives with manifest)
 
-use crate::identity::Identity;
 use crate::extensions::mcp::protocol::config::{McpConfig, TransportType};
+use crate::identity::Identity;
 use crate::portable::manifest::AgentManifest;
 use crate::types::agent::AgentConfig;
 use anyhow::Context;
@@ -48,8 +48,8 @@ impl Default for ExportOptions {
             encrypt: false,
             passphrase: None,
 
-            include_sessions: false,     // Off by default (can be large)
-            include_workspace: true,     // On by default (essential files)
+            include_sessions: false, // Off by default (can be large)
+            include_workspace: true, // On by default (essential files)
             rotate_keys: false,
             description: None,
             output_path: None,

@@ -546,7 +546,10 @@ impl RegistryClient {
 
     /// Get the directory for a registry manifest JSON file
     fn registry_manifest_dir(&self, digest: &ImageDigest) -> PathBuf {
-        self.registry.root_path().join("registry_manifests").join(digest.dir_name())
+        self.registry
+            .root_path()
+            .join("registry_manifests")
+            .join(digest.dir_name())
     }
 }
 
@@ -699,7 +702,10 @@ mod tests {
             priority: 1,
             auth: None,
         };
-        assert_eq!(RegistryClient::registry_url(&source), "http://localhost:5000");
+        assert_eq!(
+            RegistryClient::registry_url(&source),
+            "http://localhost:5000"
+        );
 
         // URL with https:// should be preserved
         let source = RegistrySource {
@@ -707,6 +713,9 @@ mod tests {
             priority: 1,
             auth: None,
         };
-        assert_eq!(RegistryClient::registry_url(&source), "https://registry.example.com");
+        assert_eq!(
+            RegistryClient::registry_url(&source),
+            "https://registry.example.com"
+        );
     }
 }

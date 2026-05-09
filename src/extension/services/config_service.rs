@@ -142,11 +142,7 @@ impl ExtensionConfigService {
     }
 
     /// Save configuration for an extension
-    pub fn save(
-        &self,
-        extension_id: &str,
-        config: &ExtensionConfigData,
-    ) -> anyhow::Result<()> {
+    pub fn save(&self, extension_id: &str, config: &ExtensionConfigData) -> anyhow::Result<()> {
         config.save(&self.data_dir, extension_id)
     }
 
@@ -171,12 +167,7 @@ impl ExtensionConfigService {
     /// Unset a configuration key at a specific scope
     ///
     /// Returns `true` if the key was found and removed.
-    pub fn unset(
-        &self,
-        extension_id: &str,
-        scope: ConfigScope,
-        key: &str,
-    ) -> anyhow::Result<bool> {
+    pub fn unset(&self, extension_id: &str, scope: ConfigScope, key: &str) -> anyhow::Result<bool> {
         let mut data = ExtensionConfigData::load(&self.data_dir, extension_id)?;
         let (team, agent) = match &scope {
             ConfigScope::Global => (None, None),
@@ -236,7 +227,12 @@ mod tests {
     fn test_set_and_show_global() {
         let (_temp, service) = create_service();
         service
-            .set("test-ext", ConfigScope::Global, "api_key", serde_json::json!("secret"))
+            .set(
+                "test-ext",
+                ConfigScope::Global,
+                "api_key",
+                serde_json::json!("secret"),
+            )
             .unwrap();
 
         let config = service.show("test-ext", ConfigScope::Global).unwrap();
@@ -247,10 +243,17 @@ mod tests {
     fn test_set_and_show_team() {
         let (_temp, service) = create_service();
         service
-            .set("test-ext", ConfigScope::Team("myteam".to_string()), "endpoint", serde_json::json!("https://example.com"))
+            .set(
+                "test-ext",
+                ConfigScope::Team("myteam".to_string()),
+                "endpoint",
+                serde_json::json!("https://example.com"),
+            )
             .unwrap();
 
-        let config = service.show("test-ext", ConfigScope::Team("myteam".to_string())).unwrap();
+        let config = service
+            .show("test-ext", ConfigScope::Team("myteam".to_string()))
+            .unwrap();
         assert_eq!(config.get("endpoint").unwrap(), "https://example.com");
 
         // Global should be empty
@@ -271,7 +274,10 @@ mod tests {
             .unwrap();
 
         let config = service
-            .show("test-ext", ConfigScope::Agent("myteam".to_string(), "myagent".to_string()))
+            .show(
+                "test-ext",
+                ConfigScope::Agent("myteam".to_string(), "myagent".to_string()),
+            )
             .unwrap();
         assert_eq!(config.get("timeout").unwrap(), &serde_json::json!(30));
     }
@@ -280,10 +286,17 @@ mod tests {
     fn test_unset_existing() {
         let (_temp, service) = create_service();
         service
-            .set("test-ext", ConfigScope::Global, "key", serde_json::json!("value"))
+            .set(
+                "test-ext",
+                ConfigScope::Global,
+                "key",
+                serde_json::json!("value"),
+            )
             .unwrap();
 
-        let removed = service.unset("test-ext", ConfigScope::Global, "key").unwrap();
+        let removed = service
+            .unset("test-ext", ConfigScope::Global, "key")
+            .unwrap();
         assert!(removed);
 
         let config = service.show("test-ext", ConfigScope::Global).unwrap();
@@ -293,7 +306,9 @@ mod tests {
     #[test]
     fn test_unset_missing() {
         let (_temp, service) = create_service();
-        let removed = service.unset("test-ext", ConfigScope::Global, "missing").unwrap();
+        let removed = service
+            .unset("test-ext", ConfigScope::Global, "missing")
+            .unwrap();
         assert!(!removed);
     }
 
@@ -301,10 +316,20 @@ mod tests {
     fn test_global_inheritance() {
         let (_temp, service) = create_service();
         service
-            .set("test-ext", ConfigScope::Global, "shared", serde_json::json!("global_value"))
+            .set(
+                "test-ext",
+                ConfigScope::Global,
+                "shared",
+                serde_json::json!("global_value"),
+            )
             .unwrap();
         service
-            .set("test-ext", ConfigScope::Team("myteam".to_string()), "local", serde_json::json!("team_value"))
+            .set(
+                "test-ext",
+                ConfigScope::Team("myteam".to_string()),
+                "local",
+                serde_json::json!("team_value"),
+            )
             .unwrap();
 
         let global = service.global("test-ext").unwrap();

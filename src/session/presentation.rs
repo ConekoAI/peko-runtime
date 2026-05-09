@@ -115,9 +115,7 @@ pub fn format_history_event(index: usize, event: &HistoryDisplayEntry) -> String
             out
         }
         HistoryDisplayEntry::ModelChange { provider, model_id } => {
-            format!(
-                "  [{index}] 🔄 Model Change:\n      Provider: {provider}, Model: {model_id}"
-            )
+            format!("  [{index}] 🔄 Model Change:\n      Provider: {provider}, Model: {model_id}")
         }
         HistoryDisplayEntry::Compaction { summary } => {
             format!(

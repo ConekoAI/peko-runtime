@@ -21,15 +21,14 @@ use tracing::{error, info, warn};
 use crate::agent::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agent::subagent_error::SpawnError;
 use crate::agent::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
+use crate::extension::async_exec::executor::{
+    get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
+    AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
+    SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
+};
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
-use crate::extension::async_exec::executor::{
-    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskStatus,
-    AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, AsyncExecutor,
-    SubagentMetadata, TaskMetadata, WaitResult,
-    get_or_create_registry_for_agent,
-};
 use crate::types::agent::AgentConfig;
 
 /// Channel for announcing completed subagent runs
@@ -111,8 +110,7 @@ impl SubagentExecutor {
         let agent_name = agent_name.into();
         let async_registry = get_or_create_registry_for_agent(&agent_name);
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let unified_executor =
-            AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
         Self {
             unified_executor,
@@ -134,8 +132,7 @@ impl SubagentExecutor {
         max_concurrent: usize,
     ) -> Self {
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let unified_executor =
-            AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
         Self {
             unified_executor,
@@ -360,9 +357,7 @@ impl SubagentExecutor {
                                     "Subagent timed out: run_id={} timeout={}s",
                                     run_id_clone, timeout
                                 );
-                                Err(anyhow::anyhow!(SpawnError::Timeout {
-                                    seconds: timeout,
-                                }))
+                                Err(anyhow::anyhow!(SpawnError::Timeout { seconds: timeout }))
                             }
                         }
                     } else {
@@ -521,9 +516,7 @@ impl SubagentExecutor {
                         break Ok(result);
                     }
                     None => {
-                        break Err(anyhow::anyhow!(
-                            "Run {run_id} not found in async registry"
-                        ));
+                        break Err(anyhow::anyhow!("Run {run_id} not found in async registry"));
                     }
                     _ => {
                         // Still running, sleep and poll again
@@ -584,7 +577,9 @@ impl SubagentExecutor {
     /// Get a run by ID (projected view from unified registry)
     pub async fn get_run(&self, run_id: &str) -> Option<SubagentRunView> {
         let registry = self.registry().read().await;
-        registry.get(&run_id.to_string()).and_then(SubagentRunView::from_entry)
+        registry
+            .get(&run_id.to_string())
+            .and_then(SubagentRunView::from_entry)
     }
 
     /// Cancel a running subagent
@@ -633,9 +628,7 @@ impl SubagentExecutor {
             .list_tasks(None)
             .into_iter()
             .filter(|e| {
-                e.tool_name == "agent_spawn"
-                    && e.status.is_terminal()
-                    && e.result.is_some()
+                e.tool_name == "agent_spawn" && e.status.is_terminal() && e.result.is_some()
             })
             .filter_map(|e| {
                 let view = SubagentRunView::from_entry(&e)?;
@@ -763,13 +756,10 @@ async fn execute_subagent_task(
     );
 
     // Create a subagent that shares the parent's session manager and executor registry.
-    let subagent = crate::agent::Agent::new_with_shared_executor(
-        config,
-        session_manager,
-        shared_executor,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
+    let subagent =
+        crate::agent::Agent::new_with_shared_executor(config, session_manager, shared_executor)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
 
     // If we have an extension core, ensure the subagent uses it.
     // (new_with_shared_executor already pulls from global_core(), so this
@@ -777,9 +767,7 @@ async fn execute_subagent_task(
     let _extension_core = extension_core;
 
     // Update the subagent's session key provider so nested spawns know their parent
-    subagent
-        .session_key_provider()
-        .set_session_key(session_key);
+    subagent.session_key_provider().set_session_key(session_key);
 
     // Build history for the subagent that includes the subagent context.
     // We pass this as `history` to execute_with_session so the agentic loop
@@ -832,7 +820,12 @@ async fn execute_subagent_task(
             // text (accumulated_text is empty), or when the final assistant message
             // has empty text content.
             if final_answer.trim().is_empty() {
-                if let Some(recovered) = crate::agent::subagent_recovery::ResultRecovery::recover_from_session(&child_session_for_recovery).await {
+                if let Some(recovered) =
+                    crate::agent::subagent_recovery::ResultRecovery::recover_from_session(
+                        &child_session_for_recovery,
+                    )
+                    .await
+                {
                     final_answer = recovered;
                 }
             }
@@ -944,7 +937,10 @@ mod tests {
         let parent_peer = Peer::User("parent".to_string());
         {
             let mut mgr = manager.write().await;
-            let parent_handle = mgr.get_or_create_base("test_agent", &parent_peer).await.unwrap();
+            let parent_handle = mgr
+                .get_or_create_base("test_agent", &parent_peer)
+                .await
+                .unwrap();
             let parent_key = {
                 let base = parent_handle.read().await;
                 base.session_key.clone()
@@ -956,7 +952,13 @@ mod tests {
         let child_session_key = {
             let mut mgr = manager.write().await;
             let handle = mgr
-                .create_spawn_overlay("test_agent", &Peer::Agent("child".to_string()), "test task", false, "agent:test_agent:peer:user:parent")
+                .create_spawn_overlay(
+                    "test_agent",
+                    &Peer::Agent("child".to_string()),
+                    "test task",
+                    false,
+                    "agent:test_agent:peer:user:parent",
+                )
                 .await
                 .unwrap();
             handle.full_session_key().await

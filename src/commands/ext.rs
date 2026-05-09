@@ -45,6 +45,9 @@ pub enum ExtCommands {
         /// Show access for all agents in a specific team
         #[arg(long, value_name = "TEAM", conflicts_with = "agent")]
         team: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Enable an extension or built-in capability
@@ -150,8 +153,13 @@ async fn create_manager_with_adapters(
     use crate::extensions::skill::SkillAdapter;
     use crate::extensions::universal::UniversalToolAdapter;
 
-    if let Err(e) = BuiltinToolAdapter::register_all(&core, &BuiltinToolRegistrarConfig::default()).await {
-        tracing::warn!("Failed to register built-in tools with ExtensionCore: {}", e);
+    if let Err(e) =
+        BuiltinToolAdapter::register_all(&core, &BuiltinToolRegistrarConfig::default()).await
+    {
+        tracing::warn!(
+            "Failed to register built-in tools with ExtensionCore: {}",
+            e
+        );
     }
 
     let mut manager = ExtensionManager::with_core(core.clone());
@@ -173,12 +181,13 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
     // Get the global ExtensionCore — initialized by main.rs before command dispatch.
     // We extract it once and pass it down to eliminate direct global_core() calls
     // in subcommand handlers.
-    let core = crate::extension::core::global_core()
-        .expect("Global ExtensionCore not initialized");
+    let core = crate::extension::core::global_core().expect("Global ExtensionCore not initialized");
 
     match command {
         ExtCommands::Validate { path, verbose } => {
-            let report = crate::extension::adapters::ExtensionValidationService::validate(&path, verbose).await?;
+            let report =
+                crate::extension::adapters::ExtensionValidationService::validate(&path, verbose)
+                    .await?;
             print_validation_report(&report, verbose)?;
             Ok(())
         }
@@ -196,9 +205,27 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
             let ext_services = Services::with_core(core);
 
             match command {
-                ExtCommands::Install { path, r#type } => handle_install(&mut manager, path, r#type).await,
-                ExtCommands::List { enabled_only, r#type, agent, team } => {
-                    handle_list(&manager, &ext_services, paths, enabled_only, r#type, agent, team).await
+                ExtCommands::Install { path, r#type } => {
+                    handle_install(&mut manager, path, r#type).await
+                }
+                ExtCommands::List {
+                    enabled_only,
+                    r#type,
+                    agent,
+                    team,
+                    json,
+                } => {
+                    handle_list(
+                        &manager,
+                        &ext_services,
+                        paths,
+                        enabled_only,
+                        r#type,
+                        agent,
+                        team,
+                        json,
+                    )
+                    .await
                 }
                 ExtCommands::Enable { id, target } => {
                     handle_enable(&mut manager, &ext_services, paths, id, target).await
@@ -208,13 +235,17 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                 }
                 ExtCommands::Uninstall { id } => handle_uninstall(&mut manager, id).await,
                 ExtCommands::Info { id } => handle_info(&manager, id),
-                ExtCommands::Export { id, output } => {
-                    handle_export(&manager, id, output).await
-                }
+                ExtCommands::Export { id, output } => handle_export(&manager, id, output).await,
                 ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
-                ExtCommands::Config { id, show, set, unset, global, team, agent } => {
-                    handle_config(paths, id, show, set, unset, global, team, agent).await
-                }
+                ExtCommands::Config {
+                    id,
+                    show,
+                    set,
+                    unset,
+                    global,
+                    team,
+                    agent,
+                } => handle_config(paths, id, show, set, unset, global, team, agent).await,
                 ExtCommands::Start { id } => {
                     DaemonClientService::ext_start(&id).await?;
                     println!("Background runtime for '{}' started", id);
@@ -248,7 +279,10 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
 
 // --- Validation Report Rendering ---
 
-fn print_validation_report(report: &crate::extension::adapters::ValidationReport, verbose: bool) -> anyhow::Result<()> {
+fn print_validation_report(
+    report: &crate::extension::adapters::ValidationReport,
+    verbose: bool,
+) -> anyhow::Result<()> {
     if !verbose {
         println!("Detected type: {}", report.detected_type);
     }
@@ -290,7 +324,30 @@ async fn handle_install(
     if let Some(ref t) = ext_type {
         println!("   Type: {t}");
     }
-    match manager.install(&path).await {
+
+    // Handle .ext package files
+    let install_path = if path.extension().map_or(false, |e| e == "ext") {
+        // Extract to a temp directory first to avoid copy_to_storage deleting the source
+        let temp_dir = std::env::temp_dir().join("pekobot_ext_install").join(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string(),
+        );
+        std::fs::create_dir_all(&temp_dir)?;
+        let extracted =
+            crate::extension::manager::packaging::ExtensionUnpackager::install(&path, &temp_dir)
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
+                })?;
+        println!("   Extracted .ext package to: {}", extracted.display());
+        extracted
+    } else {
+        path
+    };
+
+    match manager.install(&install_path).await {
         Ok(id) => {
             println!("Extension installed successfully");
             println!("   ID: {id}");
@@ -313,6 +370,7 @@ async fn handle_list(
     ext_type: Option<String>,
     agent_filter: Option<String>,
     team_filter: Option<String>,
+    json_output: bool,
 ) -> anyhow::Result<()> {
     let extensions = manager.list_extensions();
     let builtins = ext_services.list_builtin_extensions().await;
@@ -327,18 +385,61 @@ async fn handle_list(
         .collect();
 
     if filtered_installed.is_empty() && filtered_builtins.is_empty() {
-        println!("No extensions match the specified criteria.");
+        if json_output {
+            println!("{{\"extensions\":[],\"total\":0}}");
+        } else {
+            println!("No extensions match the specified criteria.");
+        }
         return Ok(());
     }
 
     let show_permissions = agent_filter.is_some() || team_filter.is_some();
     let agent_configs = if show_permissions {
-        collect_agent_extension_configs(paths, agent_filter.as_deref(), team_filter.as_deref()).await?
+        collect_agent_extension_configs(paths, agent_filter.as_deref(), team_filter.as_deref())
+            .await?
     } else {
         Vec::new()
     };
 
     let runtime_states = fetch_runtime_states(&filtered_installed).await;
+
+    if json_output {
+        let mut ext_json = Vec::new();
+        for b in &filtered_builtins {
+            ext_json.push(serde_json::json!({
+                "id": b.id,
+                "type": b.ext_type,
+                "name": b.name,
+                "source": "built-in",
+                "enabled": b.enabled,
+                "runtime": "n/a",
+            }));
+        }
+        for ext in &filtered_installed {
+            let runtime_status = runtime_states
+                .get(ext.manifest.id.0.as_str())
+                .cloned()
+                .unwrap_or_else(|| "n/a".to_string());
+            ext_json.push(serde_json::json!({
+                "id": ext.manifest.id.0,
+                "type": ext.extension_type,
+                "name": ext.manifest.name,
+                "source": "installed",
+                "enabled": true,
+                "runtime": runtime_status,
+                "version": ext.manifest.version,
+                "description": ext.manifest.description,
+            }));
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "extensions": ext_json,
+                "total": ext_json.len(),
+            })
+        );
+        return Ok(());
+    }
 
     if show_permissions {
         let access_header = if agent_configs.len() == 1 {
@@ -387,7 +488,12 @@ async fn handle_list(
             let access = format_access_for_agent_configs(tool_name, &agent_configs);
             println!(
                 "{:<24} {:<14} {:<18} {:<10} {:<12} {}",
-                ext.manifest.id, ext.extension_type, ext.manifest.name, source, runtime_status, access
+                ext.manifest.id,
+                ext.extension_type,
+                ext.manifest.name,
+                source,
+                runtime_status,
+                access
             );
         } else {
             println!(
@@ -398,7 +504,10 @@ async fn handle_list(
     }
 
     println!();
-    println!("Total: {} extension(s)", filtered_installed.len() + filtered_builtins.len());
+    println!(
+        "Total: {} extension(s)",
+        filtered_installed.len() + filtered_builtins.len()
+    );
 
     if show_permissions {
         if agent_configs.len() > 1 {
@@ -423,11 +532,10 @@ async fn handle_list(
     Ok(())
 }
 
-async fn fetch_runtime_states(
-    extensions: &[&LoadedExtension],
-) -> HashMap<String, String> {
+async fn fetch_runtime_states(extensions: &[&LoadedExtension]) -> HashMap<String, String> {
     let mut states = HashMap::new();
-    let runtime_types: std::collections::HashSet<&str> = ["gateway", "mcp"].iter().cloned().collect();
+    let runtime_types: std::collections::HashSet<&str> =
+        ["gateway", "mcp"].iter().cloned().collect();
 
     let client = match crate::ipc::DaemonClient::connect().await {
         Ok(c) => c,
@@ -439,7 +547,8 @@ async fn fetch_runtime_states(
             continue;
         }
         let id = ext.manifest.id.0.as_str();
-        if let Ok(crate::ipc::ResponsePacket::ExtStatus { state, .. }) = client.ext_status(id).await {
+        if let Ok(crate::ipc::ResponsePacket::ExtStatus { state, .. }) = client.ext_status(id).await
+        {
             states.insert(id.to_string(), state);
         }
     }
@@ -498,12 +607,20 @@ fn format_access_for_agent_configs(
 ) -> String {
     if agent_configs.len() == 1 {
         let (_, _, ext) = &agent_configs[0];
-        if ext.is_extension_enabled(tool_name) { "OK".to_string() } else { "NO".to_string() }
+        if ext.is_extension_enabled(tool_name) {
+            "OK".to_string()
+        } else {
+            "NO".to_string()
+        }
     } else {
         let parts: Vec<String> = agent_configs
             .iter()
             .map(|(team, agent, ext)| {
-                let symbol = if ext.is_extension_enabled(tool_name) { "+" } else { "-" };
+                let symbol = if ext.is_extension_enabled(tool_name) {
+                    "+"
+                } else {
+                    "-"
+                };
                 format!("{symbol}:{team}/{agent}")
             })
             .collect();
@@ -520,7 +637,8 @@ async fn handle_enable(
     id: String,
     target: Option<String>,
 ) -> anyhow::Result<()> {
-    let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id) || id.starts_with("builtin:");
+    let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
+        || id.starts_with("builtin:");
     if is_builtin {
         let capability = if id.starts_with("builtin:") {
             id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
@@ -550,7 +668,11 @@ async fn handle_enable(
                     tool_name.clone()
                 };
                 if let Err(e) = add_tool_to_agent_whitelist(paths, &whitelist_entry, target).await {
-                    tracing::warn!("Failed to add tool '{}' to agent whitelist: {}", whitelist_entry, e);
+                    tracing::warn!(
+                        "Failed to add tool '{}' to agent whitelist: {}",
+                        whitelist_entry,
+                        e
+                    );
                 }
             }
             Ok(())
@@ -579,14 +701,30 @@ async fn add_tool_to_agent_whitelist(
     if let Some(agent_name) = agent {
         config_service.enable_tool_sync(&agent_name, &team, tool_name)?;
         println!("Added '{tool_name}' to agent '{team}/{agent_name}' tool whitelist");
-        tracing::info!("Added '{}' to agent '{}/{}' tool whitelist", tool_name, team, agent_name);
+        tracing::info!(
+            "Added '{}' to agent '{}/{}' tool whitelist",
+            tool_name,
+            team,
+            agent_name
+        );
     } else {
         let updated_count = config_service.enable_tool_for_team(&team, tool_name)?;
         if updated_count > 0 {
-            println!("Added '{tool_name}' to {updated_count} agent(s) in team '{team}' tool whitelist");
-            tracing::info!("Added '{}' to {} agent(s) in team '{}' tool whitelist", tool_name, updated_count, team);
+            println!(
+                "Added '{tool_name}' to {updated_count} agent(s) in team '{team}' tool whitelist"
+            );
+            tracing::info!(
+                "Added '{}' to {} agent(s) in team '{}' tool whitelist",
+                tool_name,
+                updated_count,
+                team
+            );
         } else {
-            tracing::warn!("No agents found in team '{}' to add tool '{}' to", team, tool_name);
+            tracing::warn!(
+                "No agents found in team '{}' to add tool '{}' to",
+                team,
+                tool_name
+            );
         }
     }
 
@@ -632,7 +770,8 @@ async fn handle_disable(
     id: String,
     target: Option<String>,
 ) -> anyhow::Result<()> {
-    let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id) || id.starts_with("builtin:");
+    let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
+        || id.starts_with("builtin:");
     if is_builtin {
         let capability = if id.starts_with("builtin:") {
             id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
@@ -730,7 +869,9 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
     println!("Path:        {}", ext.path.display());
     println!();
     println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
-    println!("Use 'pekobot ext enable {id} --target <team>/<agent>' to enable for a specific agent.");
+    println!(
+        "Use 'pekobot ext enable {id} --target <team>/<agent>' to enable for a specific agent."
+    );
 
     if !ext.hook_ids.is_empty() {
         println!();
@@ -742,7 +883,11 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
 
 // --- Export ---
 
-async fn handle_export(manager: &ExtensionManager, id: String, output: String) -> anyhow::Result<()> {
+async fn handle_export(
+    manager: &ExtensionManager,
+    id: String,
+    output: String,
+) -> anyhow::Result<()> {
     let ext_id = ExtensionId::new(&id);
 
     // Verify extension exists before exporting
@@ -780,7 +925,11 @@ fn handle_bundle(manager: &ExtensionManager, name: String, ids: Vec<String>) -> 
         ext_ids.push(ext_id);
     }
 
-    println!("Creating bundle '{}' with {} extension(s)...", name, ids.len());
+    println!(
+        "Creating bundle '{}' with {} extension(s)...",
+        name,
+        ids.len()
+    );
     match manager.create_bundle(ext_ids, &name) {
         Ok(bundle) => {
             println!("Bundle '{}' created successfully", bundle.name);

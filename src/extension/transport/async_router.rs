@@ -19,8 +19,8 @@ use crate::extension::async_exec::executor::{
     AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget,
 };
 use crate::extension::core::context::HookContext;
-use crate::extension::transport::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
 use crate::extension::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
+use crate::extension::transport::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
 use crate::extension::types::{HookOutput, HookResult};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -500,23 +500,24 @@ impl AsyncExecutionRouter {
         let exec_service = ctx.services.tool_execution();
 
         // 4. Build execution context
-        let tool_ctx = match ctx.get_state::<crate::extension::types::ToolRuntimeContext>("tool_context") {
-            Some(tc) => ToolExecutionContext::new(
-                tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                tc.session_id
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                tc.run_id.clone().unwrap_or_else(|| "unknown".to_string()),
-            )
-            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
-            None => {
-                let ctx = ToolExecutionContext::new("unknown", "unknown", "unknown");
-                match workspace {
-                    Some(ws) => ctx.with_workspace(ws),
-                    None => ctx,
+        let tool_ctx =
+            match ctx.get_state::<crate::extension::types::ToolRuntimeContext>("tool_context") {
+                Some(tc) => ToolExecutionContext::new(
+                    tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    tc.session_id
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    tc.run_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                )
+                .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
+                None => {
+                    let ctx = ToolExecutionContext::new("unknown", "unknown", "unknown");
+                    match workspace {
+                        Some(ws) => ctx.with_workspace(ws),
+                        None => ctx,
+                    }
                 }
-            }
-        };
+            };
 
         // 5. Run preprocessor if provided
         if let Some(pre) = preprocessor {

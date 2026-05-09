@@ -4,7 +4,9 @@
 //! components. Delegates persistence to `CredentialsStore`.
 
 use crate::commands::GlobalPaths;
-use crate::common::credentials_store::{load_credentials, save_credentials, Credential, CredentialsStore};
+use crate::common::credentials_store::{
+    load_credentials, save_credentials, Credential, CredentialsStore,
+};
 use anyhow::Result;
 
 /// Service for managing credentials
@@ -76,12 +78,10 @@ impl CredentialsService {
     /// and `None` if the provider is not found.
     pub fn test_provider(&self, provider: &str) -> Result<Option<bool>> {
         let store = self.load()?;
-        Ok(store.get(provider).map(|cred| {
-            match provider {
-                "openai" => cred.api_key.starts_with("sk-"),
-                "anthropic" => cred.api_key.starts_with("sk-ant-"),
-                _ => cred.api_key.len() > 10,
-            }
+        Ok(store.get(provider).map(|cred| match provider {
+            "openai" => cred.api_key.starts_with("sk-"),
+            "anthropic" => cred.api_key.starts_with("sk-ant-"),
+            _ => cred.api_key.len() > 10,
         }))
     }
 
@@ -184,7 +184,10 @@ mod tests {
         let service = CredentialsService::new(paths);
 
         service.set("openai", "sk-secret".to_string()).unwrap();
-        assert_eq!(service.get_api_key("openai").unwrap(), Some("sk-secret".to_string()));
+        assert_eq!(
+            service.get_api_key("openai").unwrap(),
+            Some("sk-secret".to_string())
+        );
         assert_eq!(service.get_api_key("missing").unwrap(), None);
     }
 
@@ -202,7 +205,9 @@ mod tests {
         assert_eq!(service.test_provider("openai").unwrap(), Some(false));
 
         // Valid Anthropic key format
-        service.set("anthropic", "sk-ant-valid".to_string()).unwrap();
+        service
+            .set("anthropic", "sk-ant-valid".to_string())
+            .unwrap();
         assert_eq!(service.test_provider("anthropic").unwrap(), Some(true));
 
         // Missing provider

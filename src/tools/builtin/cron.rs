@@ -29,9 +29,9 @@ impl CronTool {
 
     /// Connect to the daemon via IPC
     async fn connect_daemon() -> anyhow::Result<DaemonClient> {
-        DaemonClient::connect()
-            .await
-            .map_err(|e| anyhow::anyhow!("Cannot reach daemon for cron operations. Is it running? ({e})"))
+        DaemonClient::connect().await.map_err(|e| {
+            anyhow::anyhow!("Cannot reach daemon for cron operations. Is it running? ({e})")
+        })
     }
 
     /// Build a CronJob from common args
@@ -95,7 +95,9 @@ impl CronTool {
             .label
             .unwrap_or_else(|| format!("every-{}", Uuid::new_v4().simple()));
 
-        let schedule = ScheduleKind::Every { every_ms: interval_ms };
+        let schedule = ScheduleKind::Every {
+            every_ms: interval_ms,
+        };
         let job = Self::build_job(label, task, schedule, false, args.agent_id)?;
         self.register_job_via_daemon(job).await
     }
@@ -141,7 +143,13 @@ impl CronTool {
             minutes: minutes.max(1),
             agent_id: args.agent_id.clone(),
         };
-        let job = Self::build_job(label, task, schedule, !args.repeat.unwrap_or(false), args.agent_id)?;
+        let job = Self::build_job(
+            label,
+            task,
+            schedule,
+            !args.repeat.unwrap_or(false),
+            args.agent_id,
+        )?;
         self.register_job_via_daemon(job).await
     }
 
@@ -202,7 +210,9 @@ impl CronTool {
             ResponsePacket::Error { message, .. } => {
                 Err(anyhow::anyhow!("Failed to list jobs: {message}"))
             }
-            other => Err(anyhow::anyhow!("Unexpected response from daemon: {other:?}")),
+            other => Err(anyhow::anyhow!(
+                "Unexpected response from daemon: {other:?}"
+            )),
         }
     }
 
@@ -244,7 +254,9 @@ impl CronTool {
             ResponsePacket::Error { message, .. } => {
                 Err(anyhow::anyhow!("Failed to cancel job: {message}"))
             }
-            other => Err(anyhow::anyhow!("Unexpected response from daemon: {other:?}")),
+            other => Err(anyhow::anyhow!(
+                "Unexpected response from daemon: {other:?}"
+            )),
         }
     }
 
@@ -265,7 +277,9 @@ impl CronTool {
             ResponsePacket::Error { message, .. } => {
                 Err(anyhow::anyhow!("Failed to register job: {message}"))
             }
-            other => Err(anyhow::anyhow!("Unexpected response from daemon: {other:?}")),
+            other => Err(anyhow::anyhow!(
+                "Unexpected response from daemon: {other:?}"
+            )),
         }
     }
 }

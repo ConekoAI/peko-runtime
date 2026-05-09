@@ -3,11 +3,13 @@
 //! Adapts MCP tools to Pekobot's Tool trait, allowing MCP tools to be used
 //! seamlessly by the agent system.
 
+use crate::extension::protocols::shared::proxy_utils::{
+    estimate_tool_duration, execute_with_context_handling,
+};
 use crate::extensions::mcp::protocol::{
     manager::McpManager,
     types::{CallToolResult, Tool as McpTool, ToolResultContent},
 };
-use crate::extension::protocols::shared::proxy_utils::{estimate_tool_duration, execute_with_context_handling};
 use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::json;
@@ -304,9 +306,11 @@ mod tests {
 
         // Test successful result
         let result = CallToolResult {
-            content: vec![ToolResultContent::Text(crate::extensions::mcp::protocol::types::TextContent {
-                text: "Hello".to_string(),
-            })],
+            content: vec![ToolResultContent::Text(
+                crate::extensions::mcp::protocol::types::TextContent {
+                    text: "Hello".to_string(),
+                },
+            )],
             is_error: false,
         };
 

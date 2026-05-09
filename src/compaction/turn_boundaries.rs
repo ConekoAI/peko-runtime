@@ -5,8 +5,8 @@
 //! Never cut at: tool results (they must stay paired with their tool call).
 
 use crate::providers::MessageRole;
-use crate::types::message::LlmMessage;
 use crate::types::message::ContentBlock;
+use crate::types::message::LlmMessage;
 
 /// A message classification for boundary decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,9 @@ pub fn select_messages_respecting_boundaries(
     // A "split turn" means no complete turns before the cut
     // (the cut landed inside a single turn, so to_compact is empty or only has partial context)
     let is_split_turn = to_compact.is_empty()
-        || !to_compact.iter().any(|m| classify_message(m) == MessageKind::User);
+        || !to_compact
+            .iter()
+            .any(|m| classify_message(m) == MessageKind::User);
 
     (to_compact, to_keep, is_split_turn)
 }
@@ -151,10 +153,7 @@ pub fn estimate_message_tokens(msg: &LlmMessage) -> usize {
 /// that needs its own mini-summary.
 ///
 /// Returns `Some(turn_prefix_messages)` if there is a split turn, `None` otherwise.
-pub fn extract_turn_prefix(
-    messages: &[LlmMessage],
-    split_point: usize,
-) -> Option<Vec<LlmMessage>> {
+pub fn extract_turn_prefix(messages: &[LlmMessage], split_point: usize) -> Option<Vec<LlmMessage>> {
     if split_point == 0 || split_point >= messages.len() {
         return None;
     }
@@ -287,10 +286,7 @@ mod tests {
 
         // With only 10 tokens, we keep minimum 2 messages
         // If the cut would be at a tool result, it's moved back
-        assert!(
-            !keep.is_empty(),
-            "Should always keep at least 2 messages"
-        );
+        assert!(!keep.is_empty(), "Should always keep at least 2 messages");
     }
 
     #[test]

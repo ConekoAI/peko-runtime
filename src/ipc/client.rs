@@ -264,7 +264,10 @@ impl DaemonClient {
     // ------------------------------------------------------------------
 
     /// Start a background runtime for an extension
-    pub async fn ext_start(&self, extension_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+    pub async fn ext_start(
+        &self,
+        extension_id: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::ExtStart {
             request_id,
@@ -278,7 +281,10 @@ impl DaemonClient {
     }
 
     /// Stop a background runtime for an extension
-    pub async fn ext_stop(&self, extension_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+    pub async fn ext_stop(
+        &self,
+        extension_id: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::ExtStop {
             request_id,
@@ -292,7 +298,10 @@ impl DaemonClient {
     }
 
     /// Restart a background runtime for an extension
-    pub async fn ext_restart(&self, extension_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+    pub async fn ext_restart(
+        &self,
+        extension_id: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::ExtRestart {
             request_id,
@@ -306,7 +315,10 @@ impl DaemonClient {
     }
 
     /// Get background runtime status for an extension
-    pub async fn ext_status(&self, extension_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+    pub async fn ext_status(
+        &self,
+        extension_id: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::ExtStatus {
             request_id,

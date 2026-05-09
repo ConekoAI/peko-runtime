@@ -119,7 +119,6 @@ impl StreamRouter {
             warn!("Received packet for unknown request_id: {}", request_id);
         }
     }
-
 }
 
 /// Spawn a background receiver task that reads from the socket and

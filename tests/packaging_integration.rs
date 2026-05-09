@@ -14,12 +14,10 @@
 
 use pekobot::identity::{did::DIDScope, Identity};
 use pekobot::portable::{
-    AgentBuilder, AgentManifest, AgentRegistry, ImportOptions, TeamExportOptions,
-    TeamImportOptions, export_team, import_team_with_base_dir, inspect_team,
+    export_team, import_team_with_base_dir, inspect_team, AgentBuilder, AgentManifest,
+    AgentRegistry, ImportOptions, TeamExportOptions, TeamImportOptions,
 };
-use pekobot::registry::{
-    RegistryClient, RegistryConfig, RegistryManifest, RegistrySource,
-};
+use pekobot::registry::{RegistryClient, RegistryConfig, RegistryManifest, RegistrySource};
 use pekobot::types::agent::AgentConfig;
 use std::path::Path;
 
@@ -74,12 +72,20 @@ frequency_penalty = 0.0
     // skills/test-skill/SKILL.md
     let skills_dir = base.join("skills").join("test-skill");
     tokio::fs::create_dir_all(&skills_dir).await?;
-    tokio::fs::write(skills_dir.join("SKILL.md"), "# Test Skill\n\nIntegration test skill.").await?;
+    tokio::fs::write(
+        skills_dir.join("SKILL.md"),
+        "# Test Skill\n\nIntegration test skill.",
+    )
+    .await?;
 
     // workspace/SYSTEM.md
     let workspace_dir = base.join("workspace");
     tokio::fs::create_dir_all(&workspace_dir).await?;
-    tokio::fs::write(workspace_dir.join("SYSTEM.md"), "# System Notes\n\nFor integration testing.").await?;
+    tokio::fs::write(
+        workspace_dir.join("SYSTEM.md"),
+        "# System Notes\n\nFor integration testing.",
+    )
+    .await?;
 
     Ok(())
 }
@@ -103,18 +109,16 @@ fn build_registry_manifest(
     host: &str,
     tag: &str,
 ) -> anyhow::Result<RegistryManifest> {
-    let mut reg_manifest = RegistryManifest::new(
-        &agent_manifest.agent.name,
-        &agent_manifest.agent.version,
-    )
-    .with_digest(
-        agent_manifest
-            .layers
-            .as_ref()
-            .and_then(|l| l.config.as_ref())
-            .unwrap_or(&"sha256:unknown".to_string()),
-    )
-    .with_ref(format!("{host}/{tag}", tag = tag.replace(':', "_")));
+    let mut reg_manifest =
+        RegistryManifest::new(&agent_manifest.agent.name, &agent_manifest.agent.version)
+            .with_digest(
+                agent_manifest
+                    .layers
+                    .as_ref()
+                    .and_then(|l| l.config.as_ref())
+                    .unwrap_or(&"sha256:unknown".to_string()),
+            )
+            .with_ref(format!("{host}/{tag}", tag = tag.replace(':', "_")));
 
     if let Some(layers) = &agent_manifest.layers {
         if let Some(digest) = &layers.config {
@@ -161,11 +165,7 @@ async fn store_registry_manifest_local(
         .join("registry_manifests")
         .join(digest.dir_name());
     tokio::fs::create_dir_all(&reg_manifests_dir).await?;
-    tokio::fs::write(
-        reg_manifests_dir.join("manifest.json"),
-        manifest.to_json()?,
-    )
-    .await?;
+    tokio::fs::write(reg_manifests_dir.join("manifest.json"), manifest.to_json()?).await?;
     Ok(())
 }
 
@@ -209,12 +209,8 @@ async fn test_full_packaging_pipeline() {
     // 2. PUSH to mock registry
     // ═════════════════════════════════════════════════════════════════
     let host = "127.0.0.1:18765";
-    let reg_manifest = build_registry_manifest(
-        &build_result.manifest,
-        host,
-        "integration-agent:v1.0",
-    )
-    .unwrap();
+    let reg_manifest =
+        build_registry_manifest(&build_result.manifest, host, "integration-agent:v1.0").unwrap();
 
     // Store the RegistryManifest JSON where push() expects it
     store_registry_manifest_local(&build_registry, &reg_manifest)
@@ -224,10 +220,8 @@ async fn test_full_packaging_pipeline() {
     let push_config = test_registry_config(host);
     let push_client = RegistryClient::new(push_config, build_registry.clone());
 
-    let manifest_digest = pekobot::portable::ImageDigest::new(
-        layers.config.as_ref().unwrap(),
-    )
-    .unwrap();
+    let manifest_digest =
+        pekobot::portable::ImageDigest::new(layers.config.as_ref().unwrap()).unwrap();
 
     let mut push_events = Vec::new();
     let push_result = push_client
@@ -256,10 +250,9 @@ async fn test_full_packaging_pipeline() {
 
     let mut pull_events = Vec::new();
     let pull_result = pull_client
-        .pull(
-            &format!("{host}/integration-agent:v1.0"),
-            |event| pull_events.push(event),
-        )
+        .pull(&format!("{host}/integration-agent:v1.0"), |event| {
+            pull_events.push(event)
+        })
         .await;
 
     assert!(pull_result.is_ok(), "Pull failed: {:?}", pull_result.err());
@@ -282,8 +275,8 @@ async fn test_full_packaging_pipeline() {
     let import_base = base_dir.join("imported_agents");
     tokio::fs::create_dir_all(&import_base).await.unwrap();
 
-    let unpackager = pekobot::portable::Unpackager::new(&build_result.package_path)
-        .with_base_dir(&import_base);
+    let unpackager =
+        pekobot::portable::Unpackager::new(&build_result.package_path).with_base_dir(&import_base);
 
     let import_options = ImportOptions {
         new_name: Some("imported-agent".to_string()),
@@ -293,6 +286,7 @@ async fn test_full_packaging_pipeline() {
         skip_validation: false,
         force: false,
         passphrase: None,
+        team: None,
     };
 
     let import_result = unpackager.import(import_options).await.unwrap();
@@ -318,14 +312,20 @@ image = "./imported-agent"
 instances = 1
 "#
     );
-    tokio::fs::write(team_dir.join("team.toml"), team_toml).await.unwrap();
+    tokio::fs::write(team_dir.join("team.toml"), team_toml)
+        .await
+        .unwrap();
 
     // Load the imported agent's config and create an identity for team export
     let imported_config_path = import_result.config_path.clone();
-    let imported_config_toml = tokio::fs::read_to_string(&imported_config_path).await.unwrap();
+    let imported_config_toml = tokio::fs::read_to_string(&imported_config_path)
+        .await
+        .unwrap();
     let imported_config: AgentConfig = toml::from_str(&imported_config_toml).unwrap();
 
-    let imported_identity = Identity::new("imported-agent", DIDScope::Local).await.unwrap();
+    let imported_identity = Identity::new("imported-agent", DIDScope::Local)
+        .await
+        .unwrap();
 
     let agents = vec![(
         "imported-agent".to_string(),
@@ -337,7 +337,12 @@ instances = 1
     // 6. EXPORT team to .team
     // ═════════════════════════════════════════════════════════════════
     let export_options = TeamExportOptions {
-        output_path: Some(base_dir.join("integration-team.team").to_string_lossy().to_string()),
+        output_path: Some(
+            base_dir
+                .join("integration-team.team")
+                .to_string_lossy()
+                .to_string(),
+        ),
         include_sessions: false,
         include_workspace: true,
         include_mcp: false,
@@ -378,13 +383,10 @@ instances = 1
         force: false,
     };
 
-    let team_import_result = import_team_with_base_dir(
-        &team_package_path,
-        &import_team_base,
-        team_import_options,
-    )
-    .await
-    .unwrap();
+    let team_import_result =
+        import_team_with_base_dir(&team_package_path, &import_team_base, team_import_options)
+            .await
+            .unwrap();
 
     assert_eq!(team_import_result.name, "imported-team");
     assert_eq!(team_import_result.agent_count, 1);
@@ -395,7 +397,9 @@ instances = 1
         .join("imported-team")
         .join("team.toml");
     assert!(restored_team_toml.exists(), "team.toml should be restored");
-    let restored_content = tokio::fs::read_to_string(&restored_team_toml).await.unwrap();
+    let restored_content = tokio::fs::read_to_string(&restored_team_toml)
+        .await
+        .unwrap();
     assert!(restored_content.contains("integration-team"));
     assert!(restored_content.contains("imported-agent"));
 
@@ -406,7 +410,10 @@ instances = 1
         .join("imported-team")
         .join("agents")
         .join("imported-agent");
-    assert!(restored_agent_dir.join("config.toml").exists(), "agent config.toml should be restored");
+    assert!(
+        restored_agent_dir.join("config.toml").exists(),
+        "agent config.toml should be restored"
+    );
 }
 
 // ── Additional Phase 7 integration tests ─────────────────────────────
@@ -424,14 +431,10 @@ async fn test_build_then_import_roundtrip() {
     let registry = AgentRegistry::new(base_dir.join("registry"));
     registry.init().await.unwrap();
 
-    let build_result = AgentBuilder::build_from_directory(
-        &agent_dir,
-        "roundtrip-agent:v1.0",
-        &registry,
-        |_p| {},
-    )
-    .await
-    .unwrap();
+    let build_result =
+        AgentBuilder::build_from_directory(&agent_dir, "roundtrip-agent:v1.0", &registry, |_p| {})
+            .await
+            .unwrap();
 
     // Inspect
     let info = pekobot::portable::get_package_info(&build_result.package_path)
@@ -444,8 +447,8 @@ async fn test_build_then_import_roundtrip() {
     let import_base = base_dir.join("imported");
     tokio::fs::create_dir_all(&import_base).await.unwrap();
 
-    let unpackager = pekobot::portable::Unpackager::new(&build_result.package_path)
-        .with_base_dir(&import_base);
+    let unpackager =
+        pekobot::portable::Unpackager::new(&build_result.package_path).with_base_dir(&import_base);
 
     let import_result = unpackager
         .import(ImportOptions {
@@ -469,9 +472,10 @@ async fn test_clean_manifest_has_no_capabilities_tools_mcp() {
     let registry = AgentRegistry::new(temp_dir.path().join("registry"));
     registry.init().await.unwrap();
 
-    let build_result = AgentBuilder::build_from_directory(&agent_dir, "clean:v1", &registry, |_| {})
-        .await
-        .unwrap();
+    let build_result =
+        AgentBuilder::build_from_directory(&agent_dir, "clean:v1", &registry, |_| {})
+            .await
+            .unwrap();
 
     let manifest = build_result.manifest;
 
@@ -496,5 +500,8 @@ async fn test_clean_manifest_has_no_capabilities_tools_mcp() {
     );
 
     // But it SHOULD have layers
-    assert!(toml_str.contains("layers"), "Manifest should contain 'layers'");
+    assert!(
+        toml_str.contains("layers"),
+        "Manifest should contain 'layers'"
+    );
 }
