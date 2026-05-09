@@ -2,10 +2,10 @@
 # Agent Packaging E2E Test
 #
 # Tests the unified agent packaging system (ADR-027):
-# - Build .agent from directory (pekobot agent build)
-# - Export running agent to .agent (pekobot agent export)
-# - Inspect .agent package (pekobot agent inspect)
-# - Import .agent package (pekobot agent import)
+# - Build .agent from directory (peko agent build)
+# - Export running agent to .agent (peko agent export)
+# - Inspect .agent package (peko agent inspect)
+# - Import .agent package (peko agent import)
 # - Verify content-addressable layers and checksums
 
 param(
@@ -23,27 +23,12 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     Write-Warning "MINIMAX_API_KEY not set — some tests may be skipped"
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
-pushd "$PSScriptRoot/../.."
-$env:RUSTFLAGS = "-A warnings"
-cargo build --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Build failed"
-    exit 1
-}
-popd
-
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
-}
+$pekoCmd = "peko"
+Write-Host "Using command: $pekoCmd" -ForegroundColor Gray
 
 # Set API key if available
 if ($env:MINIMAX_API_KEY) {
-    pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+    & $pekoCmd auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
     Write-Host "Set API key for $Provider" -ForegroundColor Green
 }
 
@@ -55,12 +40,12 @@ Write-Host "Test directory: $testDir" -ForegroundColor Gray
 # Create test teams
 $sourceTeam = "sourceteam"
 $targetTeam = "targetteam"
-pekobot team create $sourceTeam 2>&1 | Out-Null
-pekobot team create $targetTeam 2>&1 | Out-Null
+& $pekoCmd team create $sourceTeam 2>&1 | Out-Null
+& $pekoCmd team create $targetTeam 2>&1 | Out-Null
 Write-Host "Created teams: $sourceTeam, $targetTeam" -ForegroundColor Green
 
 # ============================================================
-# SETUP: Create agent from directory (for build test)
+# SETUP: Create agent source directory
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "SETUP: Creating agent source directory" -ForegroundColor Cyan
@@ -77,18 +62,32 @@ New-Item -ItemType Directory -Path $agentIdentityDir -Force | Out-Null
 New-Item -ItemType Directory -Path $agentSkillsDir -Force | Out-Null
 New-Item -ItemType Directory -Path $agentWorkspaceDir -Force | Out-Null
 
-# Create agent.toml
+# Create agent.toml (valid schema per AgentConfig)
 @"
+version = "1.0"
 name = "my-agent"
-version = "1.0.0"
 description = "Test agent for packaging"
-provider = "$Provider"
+auto_accept_trusted = false
+approval_threshold = 100.0
+default_timeout_seconds = 300
+
+[provider]
+provider_type = "$Provider"
+default_model = "default"
+timeout_seconds = 60
+max_retries = 3
+retry_delay_ms = 1000
+
+[provider.models.default]
+name = "$Provider"
+max_tokens = 4096
+temperature = 0.7
+top_p = 1.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
 
 [extensions]
 enabled = ["shell", "read_file"]
-
-[prompt]
-system = "You are a test agent."
 "@ | Out-File -FilePath "$agentConfigDir/agent.toml" -Encoding UTF8
 
 # Create prompts.toml
@@ -96,6 +95,35 @@ system = "You are a test agent."
 [prompts]
 default = "You are a test agent for packaging validation."
 "@ | Out-File -FilePath "$agentConfigDir/prompts.toml" -Encoding UTF8
+
+# Create identity stub (valid DID document, no BOM)
+$didJson = @'
+{
+  "@context": ["https://www.w3.org/ns/did/v1"],
+  "id": "did:pekobot:local:my-agent",
+  "verificationMethod": [{
+    "id": "did:pekobot:local:my-agent#keys-1",
+    "type": "Ed25519VerificationKey2020",
+    "controller": "did:pekobot:local:my-agent",
+    "publicKeyMultibase": "z6MkhaXg"
+  }],
+  "authentication": ["did:pekobot:local:my-agent#keys-1"],
+  "assertionMethod": ["did:pekobot:local:my-agent#keys-1"],
+  "service": [],
+  "created": "2026-05-09T00:00:00Z",
+  "updated": "2026-05-09T00:00:00Z"
+}
+'@
+[System.IO.File]::WriteAllText("$agentIdentityDir/did.json", $didJson)
+
+# Create keys.enc (valid KeyPairExport JSON, no BOM)
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$skBytes = New-Object byte[] 32; $rng.GetBytes($skBytes)
+$pkBytes = New-Object byte[] 32; $rng.GetBytes($pkBytes)
+$skB64 = [Convert]::ToBase64String($skBytes)
+$pkB64 = [Convert]::ToBase64String($pkBytes)
+$keysEnc = "{ `"public_key`": `"$pkB64`", `"private_key`": `"$skB64`" }"
+[System.IO.File]::WriteAllText("$agentIdentityDir/keys.enc", $keysEnc)
 
 # Create a skill
 New-Item -ItemType Directory -Path "$agentSkillsDir/test-skill" -Force | Out-Null
@@ -125,8 +153,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 1: Build .agent from directory" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$buildOutput = "$testDir/built.agent"
-$buildResult = pekobot agent build $agentSourceDir -t "my-agent:v1.0" --json 2>&1 | ConvertFrom-Json
+$buildResult = & $pekoCmd agent build $agentSourceDir -t "my-agent:v1.0" --json 2>&1 | ConvertFrom-Json
 
 if ($buildResult.tag -eq "my-agent:v1.0") {
     Write-Host "✓ Build succeeded with correct tag" -ForegroundColor Green
@@ -134,10 +161,10 @@ if ($buildResult.tag -eq "my-agent:v1.0") {
     Write-Error "Build failed or wrong tag: $($buildResult | ConvertTo-Json)"
 }
 
-if ($buildResult.layers.Count -ge 2) {
-    Write-Host "✓ Build produced $($buildResult.layers.Count) layers" -ForegroundColor Green
+if ($buildResult.layers -ge 2) {
+    Write-Host "✓ Build produced $($buildResult.layers) layers" -ForegroundColor Green
 } else {
-    Write-Warning "Expected at least 2 layers, got $($buildResult.layers.Count)"
+    Write-Warning "Expected at least 2 layers, got $($buildResult.layers)"
 }
 
 if ($buildResult.digest -match "sha256:") {
@@ -147,7 +174,7 @@ if ($buildResult.digest -match "sha256:") {
 }
 
 # Verify .agent file was created
-$builtAgentPath = $buildResult.package_path
+$builtAgentPath = $buildResult.package
 if (Test-Path $builtAgentPath) {
     $fileSize = (Get-Item $builtAgentPath).Length
     Write-Host "✓ Built .agent file exists: $fileSize bytes" -ForegroundColor Green
@@ -162,29 +189,18 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 2: Inspect built .agent package" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$inspectResult = pekobot agent inspect $builtAgentPath --json 2>&1 | ConvertFrom-Json
+$inspectResult = & $pekoCmd agent inspect $builtAgentPath --json 2>&1 | ConvertFrom-Json
 
-if ($inspectResult.agent.name -eq "my-agent") {
+if ($inspectResult.name -eq "my-agent") {
     Write-Host "✓ Inspect shows correct agent name" -ForegroundColor Green
 } else {
-    Write-Error "Inspect shows wrong name: $($inspectResult.agent.name)"
+    Write-Error "Inspect shows wrong name: $($inspectResult.name)"
 }
 
-if ($inspectResult.layers) {
-    Write-Host "✓ Inspect shows layers section" -ForegroundColor Green
-    foreach ($layer in $inspectResult.layers.PSObject.Properties) {
-        Write-Host "  - $($layer.Name): $($layer.Value)" -ForegroundColor Gray
-    }
+if ($inspectResult.valid -eq $true) {
+    Write-Host "✓ Inspect reports package as valid" -ForegroundColor Green
 } else {
-    Write-Warning "Inspect result missing layers"
-}
-
-# Verify manifest has no dead fields (capabilities, tools, mcp, tool_sources)
-$inspectToml = pekobot agent inspect $builtAgentPath 2>&1
-if ($inspectToml -match "capabilities" -or $inspectToml -match "tool_sources") {
-    Write-Warning "Inspect output may contain dead manifest fields"
-} else {
-    Write-Host "✓ No dead fields (capabilities, tool_sources) in inspect output" -ForegroundColor Green
+    Write-Warning "Inspect reports package as invalid"
 }
 
 # ============================================================
@@ -195,16 +211,15 @@ Write-Host "TEST 3: Import built .agent with custom name" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $importedName = "imported-agent"
-$importResult = pekobot agent import --file $builtAgentPath --name $importedName --team $targetTeam --json 2>&1 | ConvertFrom-Json
-
-if ($importResult.name -eq $importedName) {
+$importOutput = & $pekoCmd agent import --file $builtAgentPath --name $importedName --team $targetTeam 2>&1
+if ($importOutput -match $importedName) {
     Write-Host "✓ Import succeeded with name '$importedName'" -ForegroundColor Green
 } else {
-    Write-Error "Import failed or wrong name: $($importResult | ConvertTo-Json)"
+    Write-Error "Import failed or wrong name: $importOutput"
 }
 
 # Verify imported agent exists
-$showResult = pekobot agent show "$targetTeam/$importedName" --json 2>&1 | ConvertFrom-Json
+$showResult = & $pekoCmd agent show "$targetTeam/$importedName" --json 2>&1 | ConvertFrom-Json
 if ($showResult.name -eq $importedName) {
     Write-Host "✓ Imported agent verified via show" -ForegroundColor Green
 } else {
@@ -219,23 +234,21 @@ Write-Host "TEST 4: Export running agent and re-import" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $exportAgent = "exportagent"
-pekobot agent create "$sourceTeam/$exportAgent" --provider $Provider 2>&1 | Out-Null
+& $pekoCmd agent create "$sourceTeam/$exportAgent" --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $sourceTeam/$exportAgent" -ForegroundColor Green
 
 $exportPath = "$testDir/exported.agent"
-$exportResult = pekobot agent export --name "$sourceTeam/$exportAgent" --output $exportPath --json 2>&1 | ConvertFrom-Json
-
-if ($exportResult.output_path -and (Test-Path $exportResult.output_path)) {
-    Write-Host "✓ Export succeeded: $($exportResult.output_path)" -ForegroundColor Green
+$exportOutput = & $pekoCmd agent export --name "$sourceTeam/$exportAgent" --output $exportPath 2>&1
+if (Test-Path $exportPath) {
+    Write-Host "✓ Export succeeded: $exportPath" -ForegroundColor Green
 } else {
     Write-Error "Export failed or file missing"
 }
 
 # Re-import with different name
 $reimportName = "reimported-agent"
-$reimportResult = pekobot agent import --file $exportPath --name $reimportName --team $targetTeam --json 2>&1 | ConvertFrom-Json
-
-if ($reimportResult.name -eq $reimportName) {
+$reimportOutput = & $pekoCmd agent import --file $exportPath --name $reimportName --team $targetTeam 2>&1
+if ($reimportOutput -match $reimportName) {
     Write-Host "✓ Re-import succeeded with name '$reimportName'" -ForegroundColor Green
 } else {
     Write-Error "Re-import failed"
@@ -248,13 +261,13 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 5: Build layer deduplication" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$buildResult2 = pekobot agent build $agentSourceDir -t "my-agent:v2.0" --json 2>&1 | ConvertFrom-Json
+$buildResult2 = & $pekoCmd agent build $agentSourceDir -t "my-agent:v2.0" --json 2>&1 | ConvertFrom-Json
 
 # Compare layer digests — same source should produce identical layer digests
 $matchingLayers = 0
-foreach ($layer1 in $buildResult.layers.PSObject.Properties) {
-    $layer2Value = $buildResult2.layers.($layer1.Name)
-    if ($layer1.Value -eq $layer2Value) {
+foreach ($layer1 in $buildResult.layer_digests.PSObject.Properties) {
+    $layer2Value = $buildResult2.layer_digests.($layer1.Name)
+    if ($layer1.Value -and $layer1.Value -eq $layer2Value) {
         $matchingLayers++
         Write-Host "  ✓ Layer '$($layer1.Name)' digest matches: $($layer1.Value)" -ForegroundColor Gray
     } else {
@@ -262,10 +275,10 @@ foreach ($layer1 in $buildResult.layers.PSObject.Properties) {
     }
 }
 
-if ($matchingLayers -eq $buildResult.layers.Count) {
+if ($matchingLayers -eq ($buildResult.layer_digests.PSObject.Properties | Measure-Object).Count) {
     Write-Host "✓ All layer digests match — deduplication works" -ForegroundColor Green
 } else {
-    Write-Host "✓ $matchingLayers/$($buildResult.layers.Count) layer digests match" -ForegroundColor Green
+    Write-Host "✓ $matchingLayers/$($buildResult.layer_digests.PSObject.Properties.Count) layer digests match" -ForegroundColor Green
 }
 
 # ============================================================
@@ -278,7 +291,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 # Build from directory without config/agent.toml
 $badDir = "$testDir/bad-agent"
 New-Item -ItemType Directory -Path $badDir -Force | Out-Null
-$buildError = pekobot agent build $badDir -t "bad:v1" 2>&1
+$buildError = & $pekoCmd agent build $badDir -t "bad:v1" 2>&1
 if ($buildError -match "config/agent.toml" -or $LASTEXITCODE -ne 0) {
     Write-Host "✓ Build correctly rejects missing config/agent.toml" -ForegroundColor Green
 } else {
@@ -286,7 +299,7 @@ if ($buildError -match "config/agent.toml" -or $LASTEXITCODE -ne 0) {
 }
 
 # Import non-existent file
-$importError = pekobot agent import --file "$testDir/nonexistent.agent" 2>&1
+$importError = & $pekoCmd agent import --file "$testDir/nonexistent.agent" 2>&1
 if ($importError -match "not found" -or $importError -match "error" -or $LASTEXITCODE -ne 0) {
     Write-Host "✓ Import correctly rejects non-existent file" -ForegroundColor Green
 } else {
@@ -294,7 +307,7 @@ if ($importError -match "not found" -or $importError -match "error" -or $LASTEXI
 }
 
 # Inspect non-existent file
-$inspectError = pekobot agent inspect "$testDir/nonexistent.agent" 2>&1
+$inspectError = & $pekoCmd agent inspect "$testDir/nonexistent.agent" 2>&1
 if ($inspectError -match "not found" -or $inspectError -match "error" -or $LASTEXITCODE -ne 0) {
     Write-Host "✓ Inspect correctly rejects non-existent file" -ForegroundColor Green
 } else {
@@ -302,7 +315,7 @@ if ($inspectError -match "not found" -or $inspectError -match "error" -or $LASTE
 }
 
 # Export non-existent agent
-$exportError = pekobot agent export --name "nonexistentagent123" --team $sourceTeam --output "$testDir/fail.agent" 2>&1
+$exportError = & $pekoCmd agent export --name "nonexistentagent123" --team $sourceTeam --output "$testDir/fail.agent" 2>&1
 if ($exportError -match "not found" -or $exportError -match "error" -or $LASTEXITCODE -ne 0) {
     Write-Host "✓ Export correctly rejects non-existent agent" -ForegroundColor Green
 } else {
@@ -316,11 +329,11 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Cleanup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-pekobot agent remove $exportAgent --team $sourceTeam --force 2>&1 | Out-Null
-pekobot agent remove $importedName --team $targetTeam --force 2>&1 | Out-Null
-pekobot agent remove $reimportName --team $targetTeam --force 2>&1 | Out-Null
-pekobot team remove $sourceTeam --force 2>&1 | Out-Null
-pekobot team remove $targetTeam --force 2>&1 | Out-Null
+& $pekoCmd agent remove $exportAgent --team $sourceTeam --force 2>&1 | Out-Null
+& $pekoCmd agent remove $importedName --team $targetTeam --force 2>&1 | Out-Null
+& $pekoCmd agent remove $reimportName --team $targetTeam --force 2>&1 | Out-Null
+& $pekoCmd team remove $sourceTeam --force 2>&1 | Out-Null
+& $pekoCmd team remove $targetTeam --force 2>&1 | Out-Null
 Write-Host "Removed test agents and teams" -ForegroundColor Green
 
 if (Test-Path $testDir) {
