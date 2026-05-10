@@ -30,6 +30,8 @@ pub struct ProcessSpawnConfig {
     pub kill_timeout: Duration,
     /// Auto-detect interpreter for script files (.py, .js)
     pub auto_interpreter: bool,
+    /// On Windows, assign the process to a job object with Kill-On-Close.
+    pub use_job_object: bool,
 }
 
 impl Default for ProcessSpawnConfig {
@@ -42,6 +44,7 @@ impl Default for ProcessSpawnConfig {
             log_stderr: true,
             kill_timeout: DEFAULT_KILL_TIMEOUT,
             auto_interpreter: true,
+            use_job_object: true,
         }
     }
 }
@@ -93,6 +96,13 @@ impl ProcessSpawnConfig {
     #[must_use]
     pub fn auto_interpreter(mut self, enabled: bool) -> Self {
         self.auto_interpreter = enabled;
+        self
+    }
+
+    /// Enable/disable Windows job object assignment
+    #[must_use]
+    pub fn use_job_object(mut self, enabled: bool) -> Self {
+        self.use_job_object = enabled;
         self
     }
 }
@@ -184,7 +194,8 @@ mod tests {
             .env("TOKEN", "secret")
             .cwd("/tmp")
             .log_stderr(false)
-            .kill_timeout(10);
+            .kill_timeout(10)
+            .use_job_object(false);
 
         assert_eq!(config.command, "node");
         assert_eq!(config.args, vec!["bot.js"]);
@@ -192,6 +203,7 @@ mod tests {
         assert_eq!(config.cwd, Some(PathBuf::from("/tmp")));
         assert!(!config.log_stderr);
         assert_eq!(config.kill_timeout, Duration::from_secs(10));
+        assert!(!config.use_job_object);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Graceful and forceful process termination
 
+use super::job_object::JobObject;
 use anyhow::Result;
 use std::time::Duration;
 use tokio::process::Child;
@@ -107,7 +108,15 @@ pub async fn wait_for_exit(pid: u32, timeout: Duration, interval: Duration) -> R
 ///
 /// First attempts graceful shutdown by closing stdin, then waits for the process
 /// to exit. If it doesn't exit within the timeout, it force kills the process.
-pub async fn graceful_shutdown(mut child: Child, kill_timeout: Duration, pid: u32) -> Result<()> {
+/// On Windows, if a `job` is provided it will be dropped (closing its handle)
+/// after the force-kill attempt, which triggers OS-level termination of the
+/// entire process tree via `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+pub async fn graceful_shutdown(
+    mut child: Child,
+    kill_timeout: Duration,
+    pid: u32,
+    job: Option<JobObject>,
+) -> Result<()> {
     // Take stdin to close it and signal EOF to the process
     drop(child.stdin.take());
 
@@ -115,23 +124,33 @@ pub async fn graceful_shutdown(mut child: Child, kill_timeout: Duration, pid: u3
     match timeout(kill_timeout, child.wait()).await {
         Ok(Ok(status)) => {
             debug!("Process[{}] exited gracefully: {:?}", pid, status);
+            // Explicitly close the job handle so the OS cleans up any
+            // surviving descendants (should be a no-op if already exited).
+            drop(job);
             Ok(())
         }
         Ok(Err(e)) => {
             warn!("Process[{}] error waiting: {}", pid, e);
-            force_kill_child(&mut child, pid).await
+            force_kill_child(&mut child, pid).await?;
+            drop(job);
+            Ok(())
         }
         Err(_) => {
             warn!(
                 "Process[{}] did not exit within {:?}, force killing",
                 pid, kill_timeout
             );
-            force_kill_child(&mut child, pid).await
+            force_kill_child(&mut child, pid).await?;
+            drop(job);
+            Ok(())
         }
     }
 }
 
-/// Force kill a child process immediately
+/// Force kill a child process immediately.
+///
+/// On Windows this first attempts `taskkill /T /F /PID` so that the entire
+/// process tree is killed; it falls back to `child.kill()` if that fails.
 pub async fn force_kill_child(child: &mut Child, pid: u32) -> Result<()> {
     #[cfg(unix)]
     {
@@ -144,6 +163,29 @@ pub async fn force_kill_child(child: &mut Child, pid: u32) -> Result<()> {
         }
         // Brief pause for graceful shutdown
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    #[cfg(windows)]
+    {
+        // Try to kill the whole tree first.  This is more reliable than
+        // child.kill() alone because it also targets grandchildren.
+        match tokio::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                debug!("Process[{}] tree killed via taskkill", pid);
+                return Ok(());
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!("taskkill /T /F /PID {} failed: {}", pid, stderr.trim());
+            }
+            Err(e) => {
+                warn!("Failed to spawn taskkill for PID {}: {}", pid, e);
+            }
+        }
     }
 
     match child.kill().await {

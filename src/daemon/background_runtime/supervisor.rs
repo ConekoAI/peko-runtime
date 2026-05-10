@@ -1,7 +1,8 @@
 //! Runtime supervisor — manages the lifecycle of individual runtimes
 
 use crate::common::process::{
-    graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig,
+    graceful_shutdown, spawn_process, JobObject, ProcessSpawnConfig, RestartPolicy,
+    RuntimeSpawnConfig,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,6 +50,10 @@ pub enum RuntimeKind {
         /// stdout of the child process (for receiving data)
         /// Wrapped in Option so adapters can take() ownership during initialize()
         stdout: Option<tokio::io::BufReader<tokio::process::ChildStdout>>,
+        /// Windows job object handle.  When dropped, the OS kills the entire
+        /// process tree (including grandchildren) via JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+        #[cfg(windows)]
+        job: Option<JobObject>,
     },
     /// In-process async task (Rust-native HTTP server, TUI)
     Task {
@@ -113,7 +118,7 @@ pub async fn spawn_runtime_process(
     restart_policy: RestartPolicy,
     spawn_config: RuntimeSpawnConfig,
 ) -> anyhow::Result<ManagedRuntime> {
-    let (child, stdin, stdout, pid) = spawn_process(config).await?;
+    let (child, stdin, stdout, pid, job) = spawn_process(config).await?;
 
     Ok(ManagedRuntime {
         id: id.to_string(),
@@ -122,6 +127,8 @@ pub async fn spawn_runtime_process(
             pid,
             stdin: Some(stdin),
             stdout: Some(stdout),
+            #[cfg(windows)]
+            job,
         },
         state: RuntimeState::Starting,
         restart_policy,
@@ -197,12 +204,25 @@ pub async fn stop_runtime(runtime: &mut ManagedRuntime) -> anyhow::Result<()> {
         },
     );
     match kind {
-        RuntimeKind::Process { child, pid, .. } => {
+        RuntimeKind::Process {
+            child,
+            pid,
+            #[cfg(windows)]
+            job,
+            ..
+        } => {
             // stdin/stdout may have been taken() by the adapter; that's fine
             // because the adapter's transport owns them and will close them
             // when the adapter's shutdown() is called (which happens above).
             let kill_timeout = Duration::from_secs(5);
-            graceful_shutdown(child, kill_timeout, pid).await?;
+            #[cfg(windows)]
+            {
+                graceful_shutdown(child, kill_timeout, pid, job).await?;
+            }
+            #[cfg(not(windows))]
+            {
+                graceful_shutdown(child, kill_timeout, pid, None).await?;
+            }
         }
         RuntimeKind::Task { handle, abort_tx } => {
             if let Some(tx) = abort_tx {

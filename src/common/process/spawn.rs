@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use super::config::ProcessSpawnConfig;
+use super::job_object::JobObject;
 
 /// Resolved command information after interpreter detection
 #[derive(Debug, Clone)]
@@ -60,11 +61,13 @@ pub fn resolve_command(executable: &Path, auto_interpreter: bool) -> ResolvedCom
 
 /// Spawn a child process with the given configuration
 ///
-/// Returns the child handle, stdin, stdout, and resolved command info.
-/// Stderr is optionally logged via a background task.
+/// Returns the child handle, stdin, stdout, PID, and an optional Windows job
+/// object.  On Windows, when `use_job_object` is enabled, the child is
+/// assigned to a job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so
+/// that the entire process tree is terminated when the job handle is closed.
 pub async fn spawn_process(
     config: &ProcessSpawnConfig,
-) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, u32)> {
+) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, u32, Option<JobObject>)> {
     let executable = Path::new(&config.command);
     let cmd_info = resolve_command(executable, config.auto_interpreter);
 
@@ -112,9 +115,33 @@ pub async fn spawn_process(
         }
     }
 
+    // On Windows, assign the process to a job object for automatic tree kill
+    #[cfg(windows)]
+    let job = if config.use_job_object {
+        match JobObject::new() {
+            Ok(job) => {
+                if let Err(e) = job.assign_process(&child) {
+                    warn!("Failed to assign PID {} to job object: {}", pid, e);
+                } else {
+                    debug!("PID {} assigned to job object", pid);
+                }
+                Some(job)
+            }
+            Err(e) => {
+                warn!("Failed to create job object for PID {}: {}", pid, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    #[cfg(not(windows))]
+    let job = None;
+
     debug!("Process spawned with PID {}", pid);
 
-    Ok((child, stdin, BufReader::new(stdout), pid))
+    Ok((child, stdin, BufReader::new(stdout), pid, job))
 }
 
 /// Log stderr output

@@ -69,8 +69,6 @@ function Reset-RegistryStorage {
     Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/reset" -Method DELETE | Out-Null
 }
 
-
-
 # ---------------------------------------------------------------------------
 # Prerequisites
 # ---------------------------------------------------------------------------
@@ -296,6 +294,7 @@ try {
         Write-Host "Uninstalled calculator-skill" -ForegroundColor Yellow
     }
     if ($mcpInstalled) {
+        try { & $pekoCmd ext stop standard-echo 2>&1 | Out-Null } catch {}
         & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
         Write-Host "Uninstalled standard-echo" -ForegroundColor Yellow
     }
@@ -430,7 +429,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     if ($env:MINIMAX_API_KEY) {
-        if (Test-Path $pulledSkillPath) {
+        if ($skillReinstalled) {
             $prompt1 = "Use the calculator skill to compute 15 * 15. If the result is 225, respond CALC_SUCCESS. Otherwise respond CALC_FAILED."
             $response1 = & $pekoCmd send "$importedTeamName/$agent1" $prompt1 --no-stream 2>&1
             Write-Host "Skill response: $response1" -ForegroundColor Gray
@@ -444,7 +443,7 @@ try {
             }
         }
 
-        if (Test-Path $pulledMcpPath) {
+        if ($mcpReinstalled) {
             Write-Host "Starting MCP runtime..." -ForegroundColor Yellow
             & $pekoCmd ext start standard-echo 2>&1 | Out-Null
             Start-Sleep -Seconds 3
@@ -461,7 +460,7 @@ try {
                 Write-Host "MCP result unclear" -ForegroundColor Yellow
             }
 
-            & $pekoCmd ext stop standard-echo 2>&1 | Out-Null
+            try { & $pekoCmd ext stop standard-echo 2>&1 | Out-Null } catch {}
         }
     } else {
         Write-Host "Skipped tool execution tests (no API key)" -ForegroundColor Yellow
@@ -505,8 +504,19 @@ try {
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
-    & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
-    & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
+    $extListCleanupRaw = & $pekoCmd ext list --json 2>&1
+    $extListCleanupJson = $extListCleanupRaw | Where-Object { $_ -match '^\s*\{' } | Select-Object -First 1
+    if ($extListCleanupJson) {
+        $extListCleanup = $extListCleanupJson | ConvertFrom-Json
+        $skillStillInstalled = $extListCleanup.extensions | Where-Object { $_.id -match "calculator" }
+        $mcpStillInstalled = $extListCleanup.extensions | Where-Object { $_.id -match "echo" }
+        if ($skillStillInstalled) {
+            & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
+        }
+        if ($mcpStillInstalled) {
+            & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
+        }
+    }
     Write-Host "Uninstalled test extensions" -ForegroundColor Green
 
     & $pekoCmd team remove $importedTeamName --force 2>&1 | Out-Null
