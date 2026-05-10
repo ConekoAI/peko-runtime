@@ -48,6 +48,8 @@ pub struct TeamPackager {
     skills_dir: Option<std::path::PathBuf>,
     /// Base directory for agent data
     base_dir: std::path::PathBuf,
+    /// Config directory for team metadata (team.toml)
+    config_dir: Option<std::path::PathBuf>,
 }
 
 /// Agent export data within a team package
@@ -66,7 +68,14 @@ impl TeamPackager {
             agents: Vec::new(),
             skills_dir: None,
             base_dir: base_dir.as_ref().to_path_buf(),
+            config_dir: None,
         }
+    }
+
+    /// Set the config directory for reading team metadata
+    pub fn with_config_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.config_dir = Some(dir.as_ref().to_path_buf());
+        self
     }
 
     /// Add an agent to the team package
@@ -196,8 +205,11 @@ impl TeamPackager {
         }
 
         // Try to include team.toml if it exists in the team directory
+        // team.toml lives in the config dir, not the data dir
         let team_toml_path = self
-            .base_dir
+            .config_dir
+            .as_ref()
+            .unwrap_or(&self.base_dir)
             .join("teams")
             .join(&self.team_name)
             .join("team.toml");
@@ -376,6 +388,25 @@ pub async fn export_team(
     options: TeamExportOptions,
 ) -> anyhow::Result<std::path::PathBuf> {
     let mut packager = TeamPackager::new(team_name, team_description, base_dir);
+
+    for (name, config, identity) in agents {
+        packager.add_agent(name, config, identity);
+    }
+
+    packager.export(options).await
+}
+
+/// Convenience function to export a team with config directory
+pub async fn export_team_with_config_dir(
+    team_name: impl Into<String>,
+    team_description: Option<String>,
+    base_dir: impl AsRef<Path>,
+    config_dir: impl AsRef<Path>,
+    agents: Vec<(String, AgentConfig, Identity)>,
+    options: TeamExportOptions,
+) -> anyhow::Result<std::path::PathBuf> {
+    let mut packager = TeamPackager::new(team_name, team_description, base_dir)
+        .with_config_dir(config_dir);
 
     for (name, config, identity) in agents {
         packager.add_agent(name, config, identity);

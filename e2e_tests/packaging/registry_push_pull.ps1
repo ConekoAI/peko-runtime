@@ -377,7 +377,7 @@ This is a test workspace file.
     # Blob count should not increase (all layers skipped)
     $registryState2 = Get-RegistryBlobs -Port $RegistryPort
     if ($registryState2.blobs.Count -ne $registryState.blobs.Count) {
-        Write-Warning "Blob count changed after re-push — layer skip may not be working"
+        Write-Error "Blob count changed after re-push — layer skip not working"
     } else {
         Write-Host "Layer skip verified (no new blobs)" -ForegroundColor Green
     }
@@ -395,7 +395,7 @@ This is a test workspace file.
     if ($pullError -match "not found" -or $pullError -match "error" -or $LASTEXITCODE -ne 0) {
         Write-Host "Pull correctly rejects non-existent image" -ForegroundColor Green
     } else {
-        Write-Warning "Pull may not handle missing images correctly"
+        Write-Error "Pull did not handle missing images correctly"
     }
 
     # Push with invalid local tag
@@ -403,7 +403,7 @@ This is a test workspace file.
     if ($pushError -match "not found" -or $pushError -match "error" -or $LASTEXITCODE -ne 0) {
         Write-Host "Push correctly rejects missing local tag" -ForegroundColor Green
     } else {
-        Write-Warning "Push may not handle missing local tags correctly"
+        Write-Error "Push did not handle missing local tags correctly"
     }
 
 } finally {

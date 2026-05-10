@@ -164,13 +164,13 @@ if ($buildResult.tag -eq "my-agent:v1.0") {
 if ($buildResult.layers -ge 2) {
     Write-Host "✓ Build produced $($buildResult.layers) layers" -ForegroundColor Green
 } else {
-    Write-Warning "Expected at least 2 layers, got $($buildResult.layers)"
+    Write-Error "Expected at least 2 layers, got $($buildResult.layers)"
 }
 
 if ($buildResult.digest -match "sha256:") {
     Write-Host "✓ Build produced manifest digest: $($buildResult.digest)" -ForegroundColor Green
 } else {
-    Write-Warning "Manifest digest missing or invalid"
+    Write-Error "Manifest digest missing or invalid"
 }
 
 # Verify .agent file was created
@@ -200,7 +200,7 @@ if ($inspectResult.name -eq "my-agent") {
 if ($inspectResult.valid -eq $true) {
     Write-Host "✓ Inspect reports package as valid" -ForegroundColor Green
 } else {
-    Write-Warning "Inspect reports package as invalid"
+    Write-Error "Inspect reports package as invalid"
 }
 
 # ============================================================
@@ -295,7 +295,7 @@ $buildError = & $pekoCmd agent build $badDir -t "bad:v1" 2>&1
 if ($buildError -match "config/agent.toml" -or $LASTEXITCODE -ne 0) {
     Write-Host "✓ Build correctly rejects missing config/agent.toml" -ForegroundColor Green
 } else {
-    Write-Warning "Build may not validate config/agent.toml presence"
+    Write-Error "Build did not validate config/agent.toml presence"
 }
 
 # Import non-existent file
@@ -303,7 +303,7 @@ $importError = & $pekoCmd agent import --file "$testDir/nonexistent.agent" 2>&1
 if ($importError -match "not found" -or $importError -match "error" -or $LASTEXITCODE -ne 0) {
     Write-Host "✓ Import correctly rejects non-existent file" -ForegroundColor Green
 } else {
-    Write-Warning "Import may not handle missing files correctly"
+    Write-Error "Import did not handle missing files correctly"
 }
 
 # Inspect non-existent file
@@ -311,7 +311,7 @@ $inspectError = & $pekoCmd agent inspect "$testDir/nonexistent.agent" 2>&1
 if ($inspectError -match "not found" -or $inspectError -match "error" -or $LASTEXITCODE -ne 0) {
     Write-Host "✓ Inspect correctly rejects non-existent file" -ForegroundColor Green
 } else {
-    Write-Warning "Inspect may not handle missing files correctly"
+    Write-Error "Inspect did not handle missing files correctly"
 }
 
 # Export non-existent agent
@@ -319,7 +319,7 @@ $exportError = & $pekoCmd agent export --name "nonexistentagent123" --team $sour
 if ($exportError -match "not found" -or $exportError -match "error" -or $LASTEXITCODE -ne 0) {
     Write-Host "✓ Export correctly rejects non-existent agent" -ForegroundColor Green
 } else {
-    Write-Warning "Export may not handle missing agents correctly"
+    Write-Error "Export did not handle missing agents correctly"
 }
 
 # ============================================================

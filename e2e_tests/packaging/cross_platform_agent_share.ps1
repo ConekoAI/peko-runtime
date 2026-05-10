@@ -274,19 +274,19 @@ summary = "You summarize things concisely."
     if ($importedConfig -match "cross-agent") {
         Write-Host "Agent name preserved in config" -ForegroundColor Green
     } else {
-        Write-Warning "Agent name not found in imported config"
+        Write-Error "Agent name not found in imported config"
     }
 
     if ($importedConfig -match $Provider) {
         Write-Host "Provider preserved in config" -ForegroundColor Green
     } else {
-        Write-Warning "Provider not preserved in config"
+        Write-Error "Provider not preserved in config"
     }
 
     if ($importedConfig -match "write_file") {
         Write-Host "Extensions list preserved in config" -ForegroundColor Green
     } else {
-        Write-Warning "Extensions list not preserved in config"
+        Write-Error "Extensions list not preserved in config"
     }
 
     # ============================================================
@@ -312,7 +312,7 @@ summary = "You summarize things concisely."
     if ($readme -match "Cross-platform test workspace") {
         Write-Host "Workspace content preserved" -ForegroundColor Green
     } else {
-        Write-Warning "Workspace content may differ"
+        Write-Error "Workspace content mismatch"
     }
 
     # ============================================================
@@ -322,16 +322,17 @@ summary = "You summarize things concisely."
     Write-Host "STEP 8: Verify skills preserved" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $skillsDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$importedName/skills"
+    # Skills are stored in the global skills directory, not per-agent
+    $skillsDir = "$env:APPDATA/pekobot/skills"
     if (Test-Path "$skillsDir/skill-a/SKILL.md") {
         Write-Host "Skill A preserved" -ForegroundColor Green
     } else {
-        Write-Warning "Skill A not found"
+        Write-Error "Skill A not found in global skills dir"
     }
     if (Test-Path "$skillsDir/skill-b/SKILL.md") {
         Write-Host "Skill B preserved" -ForegroundColor Green
     } else {
-        Write-Warning "Skill B not found"
+        Write-Error "Skill B not found in global skills dir"
     }
 
     # ============================================================

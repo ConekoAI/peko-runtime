@@ -281,7 +281,7 @@ default = "You are a helpful test agent. When asked to verify functionality, res
     if ($sameLayers -ge 2) {
         Write-Host "Layer deduplication verified ($sameLayers layers identical)" -ForegroundColor Green
     } else {
-        Write-Warning "Expected at least 2 identical layers between v1 and v2"
+        Write-Error "Expected at least 2 identical layers between v1 and v2"
     }
 
     # ============================================================
@@ -338,14 +338,14 @@ default = "You are a helpful test agent. When asked to verify functionality, res
     if ($pullError -match "not found" -or $pullError -match "error" -or $LASTEXITCODE -ne 0) {
         Write-Host "Pull correctly rejects non-existent image" -ForegroundColor Green
     } else {
-        Write-Warning "Pull may not handle missing images correctly"
+        Write-Error "Pull did not handle missing images correctly"
     }
 
     $pushError = & $pekoCmd agent push "nonexistent-tag:v1" $registryRef 2>&1
     if ($pushError -match "not found" -or $pushError -match "error" -or $LASTEXITCODE -ne 0) {
         Write-Host "Push correctly rejects missing local tag" -ForegroundColor Green
     } else {
-        Write-Warning "Push may not handle missing local tags correctly"
+        Write-Error "Push did not handle missing local tags correctly"
     }
 
 } finally {

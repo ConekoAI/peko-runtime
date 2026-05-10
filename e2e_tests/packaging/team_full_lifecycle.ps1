@@ -366,20 +366,19 @@ try {
     $config1 = "$env:USERPROFILE/.pekobot/teams/$importedTeamName/agents/$agent1/config.toml"
     $config2 = "$env:USERPROFILE/.pekobot/teams/$importedTeamName/agents/$agent2/config.toml"
 
+    # NOTE: Skills (ext_type = "skill") are injected via prompts, NOT added to the
+    # agent config whitelist. Only universal-tool and mcp extensions are whitelisted.
     if (Test-Path $config1) {
         $cfg1 = Get-Content $config1 -Raw
-        if ($cfg1 -match "calculator" -or $cfg1 -match "skill") {
-            Write-Host "Agent $agent1 retains extension reference" -ForegroundColor Green
-        } else {
-            Write-Warning "Agent $agent1 may not retain extension reference"
-        }
+        # Verify skill works via tool execution test in STEP 14 instead of config check
+        Write-Host "Agent $agent1 config present (skill is prompt-injected, not whitelisted)" -ForegroundColor Green
     }
     if (Test-Path $config2) {
         $cfg2 = Get-Content $config2 -Raw
         if ($cfg2 -match "echo" -or $cfg2 -match "mcp") {
-            Write-Host "Agent $agent2 retains extension reference" -ForegroundColor Green
+            Write-Host "Agent $agent2 retains MCP extension reference" -ForegroundColor Green
         } else {
-            Write-Warning "Agent $agent2 may not retain extension reference"
+            Write-Error "Agent $agent2 does not retain MCP extension reference"
         }
     }
 
@@ -396,10 +395,10 @@ try {
         if ($wsContent -match "Secret workspace notes") {
             Write-Host "Workspace preserved" -ForegroundColor Green
         } else {
-            Write-Warning "Workspace content mismatch"
+            Write-Error "Workspace content mismatch"
         }
     } else {
-        Write-Warning "Workspace file missing"
+        Write-Error "Workspace file missing"
     }
 
     # ============================================================
@@ -418,7 +417,7 @@ try {
     } elseif ($sessionCountBefore -eq 0) {
         Write-Host "No sessions to verify" -ForegroundColor Yellow
     } else {
-        Write-Warning "Session count changed: before=$sessionCountBefore, after=$sessionCountAfter"
+        Write-Error "Session count changed: before=$sessionCountBefore, after=$sessionCountAfter"
     }
 
     # ============================================================

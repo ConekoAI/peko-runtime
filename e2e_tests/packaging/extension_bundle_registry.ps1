@@ -202,7 +202,7 @@ try {
     if ($skillGone -and $mcpGone) {
         Write-Host "Extensions removed from local environment" -ForegroundColor Green
     } else {
-        Write-Warning "Some extensions may still be installed"
+        Write-Error "Some extensions still installed after uninstall"
     }
 
     # ============================================================
@@ -332,7 +332,7 @@ try {
         if ($info -match "calculator-skill" -and $info -match "skill") {
             Write-Host "Skill extension info valid after registry roundtrip" -ForegroundColor Green
         } else {
-            Write-Warning "Skill extension info may be incomplete"
+            Write-Error "Skill extension info incomplete after registry roundtrip"
         }
     }
     if ($mcpForInfo) {
@@ -340,7 +340,7 @@ try {
         if ($info -match "standard-echo" -and $info -match "mcp") {
             Write-Host "MCP extension info valid after registry roundtrip" -ForegroundColor Green
         } else {
-            Write-Warning "MCP extension info may be incomplete"
+            Write-Error "MCP extension info incomplete after registry roundtrip"
         }
     }
 

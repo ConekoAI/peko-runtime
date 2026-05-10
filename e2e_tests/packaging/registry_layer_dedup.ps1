@@ -352,7 +352,7 @@ default = "You are agent B."
     if ($blobsAfterB -lt $expectedMaxBlobs) {
         Write-Host "Deduplication confirmed: $blobsAfterB blobs < $expectedMaxBlobs max possible" -ForegroundColor Green
     } else {
-        Write-Warning "Deduplication may not be working: $blobsAfterB blobs >= $expectedMaxBlobs max possible"
+        Write-Error "Deduplication not working: $blobsAfterB blobs >= $expectedMaxBlobs max possible"
     }
 
     # If skills layer is shared, blob count should reflect that
@@ -361,7 +361,7 @@ default = "You are agent B."
         if ($blobsAfterB -le $expectedWithDedup) {
             Write-Host "Skill layer deduplication verified" -ForegroundColor Green
         } else {
-            Write-Warning "Skill layer may not be deduplicated"
+            Write-Error "Skill layer not deduplicated"
         }
     }
 

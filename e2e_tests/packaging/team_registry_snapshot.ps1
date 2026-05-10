@@ -181,25 +181,14 @@ try {
     Write-Host "STEP 3: Push snapshot to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    # NOTE: Team push/pull is not yet implemented in CLI; we simulate by
-    # treating the .team file as a generic blob upload to the mock registry.
-    # When team registry commands are added, replace this block.
-    $teamBytes = [System.IO.File]::ReadAllBytes($snapshotPath)
-    $teamDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($teamBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-
-    $baseUrl = "http://127.0.0.1:$RegistryPort"
-    $uploadUrl = "$baseUrl/v2/pekobot/teams/prod-team/blobs/uploads/$([System.Guid]::NewGuid().ToString())?digest=$teamDigest"
-    $headers = @{ "Content-Type" = "application/octet-stream" }
-    Invoke-RestMethod -Uri $uploadUrl -Method PUT -Headers $headers -Body $teamBytes | Out-Null
-
-    # Verify blob exists
-    $headResp = Invoke-WebRequest -Uri "$baseUrl/v2/pekobot/teams/prod-team/blobs/$teamDigest" -Method HEAD
-    if ($headResp.StatusCode -ne 200) {
-        Write-Error "Team snapshot blob not found in registry after upload"
+    $registryRef = "127.0.0.1:$RegistryPort/pekobot/teams/prod-team:latest"
+    $pushResult = & $pekoCmd team push $teamName $registryRef --json 2>&1 | ConvertFrom-Json
+    if ($pushResult.success -ne $true) {
+        Write-Error "Team push failed: $($pushResult | ConvertTo-Json)"
     }
-
     Write-Host "Team snapshot pushed to registry" -ForegroundColor Green
-    Write-Host "  Digest: $teamDigest" -ForegroundColor Gray
+    Write-Host "  Registry ref: $registryRef" -ForegroundColor Gray
+    Write-Host "  Manifest digest: $($pushResult.manifest.digest)" -ForegroundColor Gray
 
     # ============================================================
     # STEP 4: Pull snapshot from registry (simulate "another user")
@@ -208,44 +197,24 @@ try {
     Write-Host "STEP 4: Pull snapshot from registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $pulledSnapshotPath = "$testDir/prod-team-pulled.team"
-    $getResp = Invoke-WebRequest -Uri "$baseUrl/v2/pekobot/teams/prod-team/blobs/$teamDigest" -Method GET
-    if ($getResp.StatusCode -ne 200) {
-        Write-Error "Failed to pull team snapshot from registry"
+    # Clear local registry store to force a real download
+    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    if (Test-Path $localRegistryDir) {
+        Remove-Item -Recurse -Force $localRegistryDir
+        Write-Host "Cleared local registry store" -ForegroundColor Yellow
     }
-    [System.IO.File]::WriteAllBytes($pulledSnapshotPath, $getResp.Content)
-
-    if (-not (Test-Path $pulledSnapshotPath)) {
-        Write-Error "Pulled snapshot file not written"
-    }
-    $pulledSize = (Get-Item $pulledSnapshotPath).Length
-    if ($pulledSize -ne $fileSize) {
-        Write-Error "Pulled snapshot size mismatch: expected $fileSize, got $pulledSize"
-    }
-
-    # Verify checksum of pulled file
-    $pulledBytes = [System.IO.File]::ReadAllBytes($pulledSnapshotPath)
-    $pulledDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($pulledBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    if ($pulledDigest -ne $teamDigest) {
-        Write-Error "Pulled snapshot digest mismatch"
-    }
-
-    Write-Host "Team snapshot pulled and verified" -ForegroundColor Green
-    Write-Host "  Size: $pulledSize bytes" -ForegroundColor Gray
-    Write-Host "  Digest: $pulledDigest" -ForegroundColor Gray
-
-    # ============================================================
-    # STEP 5: Import pulled snapshot as a new team
-    # ============================================================
-    Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 5: Import pulled snapshot" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
 
     $importedTeamName = "prod-team-clone"
-    $importResult = & $pekoCmd team import $pulledSnapshotPath --name $importedTeamName --json 2>&1 | ConvertFrom-Json
-    if ($importResult.name -ne $importedTeamName) {
-        Write-Error "Team import failed or wrong name"
+    $pullResult = & $pekoCmd team pull $registryRef --name $importedTeamName --json 2>&1 | ConvertFrom-Json
+    if ($pullResult.success -ne $true) {
+        Write-Error "Team pull failed: $($pullResult | ConvertTo-Json)"
     }
+    if ($pullResult.name -ne $importedTeamName) {
+        Write-Error "Team pull returned wrong name: $($pullResult.name)"
+    }
+    Write-Host "Team snapshot pulled and imported from registry" -ForegroundColor Green
+    Write-Host "  Name: $($pullResult.name)" -ForegroundColor Gray
+    Write-Host "  Agents imported: $($pullResult.agents_imported)" -ForegroundColor Gray
 
     $importedShow = & $pekoCmd team show $importedTeamName --json 2>&1 | ConvertFrom-Json
     if ($importedShow.agent_count -ne 3) {
@@ -294,8 +263,8 @@ try {
     if ($env:MINIMAX_API_KEY) {
         $sessions1 = & $pekoCmd session list "$importedTeamName/$agent1" --json 2>&1 | ConvertFrom-Json
         $sessions2 = & $pekoCmd session list "$importedTeamName/$agent2" --json 2>&1 | ConvertFrom-Json
-        if ($sessions1.sessions.Count -lt 1) { Write-Warning "No sessions found for imported $agent1" }
-        if ($sessions2.sessions.Count -lt 1) { Write-Warning "No sessions found for imported $agent2" }
+        if ($sessions1.sessions.Count -lt 1) { Write-Error "No sessions found for imported $agent1" }
+        if ($sessions2.sessions.Count -lt 1) { Write-Error "No sessions found for imported $agent2" }
         Write-Host "Sessions verified in imported team" -ForegroundColor Green
     } else {
         Write-Host "Skipped session verification (no API key)" -ForegroundColor Yellow
@@ -308,7 +277,7 @@ try {
     Write-Host "STEP 7: Re-import with --force" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $reimportResult = & $pekoCmd team import $pulledSnapshotPath --name $importedTeamName --force --json 2>&1 | ConvertFrom-Json
+    $reimportResult = & $pekoCmd team import $snapshotPath --name $importedTeamName --force --json 2>&1 | ConvertFrom-Json
     if ($reimportResult.name -ne $importedTeamName) {
         Write-Error "Re-import with --force failed"
     }

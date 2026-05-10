@@ -321,10 +321,12 @@ impl TeamService {
         // Get base directory for workspace/sessions paths
         let base_dir = self.resolver.data_dir();
 
-        // Export the team
-        let output_path = portable::export_team(name, None, &base_dir, agent_exports, export_opts)
-            .await
-            .with_context(|| format!("Failed to export team '{name}'"))?;
+        // Export the team — pass config_dir so team.toml is included
+        let config_dir = self.resolver.config_dir().to_path_buf();
+        let output_path =
+            portable::export_team_with_config_dir(name, None, &base_dir, &config_dir, agent_exports, export_opts)
+                .await
+                .with_context(|| format!("Failed to export team '{name}'"))?;
 
         Ok(TeamExportResult {
             name: name.to_string(),
@@ -376,6 +378,20 @@ impl TeamService {
         let result = portable::import_team_with_base_dir(&path, &config_dir, import_opts)
             .await
             .with_context(|| format!("Failed to import team from '{file_path}'"))?;
+
+        // If the package restored a team.toml, preserve its description
+        let team_toml_path = result_team_dir.join("team.toml");
+        if team_toml_path.exists() {
+            if let Ok(content) = tokio::fs::read_to_string(&team_toml_path).await {
+                if let Ok(mut metadata) = toml::from_str::<TeamMetadata>(&content) {
+                    // Update name in case it was imported with a different name
+                    metadata.name = team_name.to_string();
+                    if let Ok(updated) = toml::to_string_pretty(&metadata) {
+                        let _ = tokio::fs::write(&team_toml_path, updated).await;
+                    }
+                }
+            }
+        }
 
         Ok(TeamImportResult {
             name: result.name,

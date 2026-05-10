@@ -163,7 +163,7 @@ try {
     if ($sizeWithSessions -gt $sizeNoSessions) {
         Write-Host "With-sessions export is larger (as expected)" -ForegroundColor Green
     } else {
-        Write-Warning "With-sessions export is not larger than without-sessions"
+        Write-Error "With-sessions export is not larger than without-sessions"
     }
 
     # ============================================================
@@ -173,42 +173,46 @@ try {
     Write-Host "STEP 5: Push snapshot to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $teamBytes = [System.IO.File]::ReadAllBytes($snapshotWithSessions)
-    $teamDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($teamBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    $baseUrl = "http://127.0.0.1:$RegistryPort"
-    $uploadUrl = "$baseUrl/v2/pekobot/teams/memory-team/blobs/uploads/$([System.Guid]::NewGuid().ToString())?digest=$teamDigest"
-    Invoke-RestMethod -Uri $uploadUrl -Method PUT -Headers @{ "Content-Type" = "application/octet-stream" } -Body $teamBytes | Out-Null
+    $registryRef = "127.0.0.1:$RegistryPort/pekobot/teams/memory-team:latest"
+    $pushResult = & $pekoCmd team push $teamName $registryRef --json 2>&1 | ConvertFrom-Json
+    if ($pushResult.success -ne $true) {
+        Write-Error "Team push failed: $($pushResult | ConvertTo-Json)"
+    }
     Write-Host "Pushed team snapshot to registry" -ForegroundColor Green
-    Write-Host "  Digest: $teamDigest" -ForegroundColor Gray
+    Write-Host "  Registry ref: $registryRef" -ForegroundColor Gray
+    Write-Host "  Manifest digest: $($pushResult.manifest.digest)" -ForegroundColor Gray
 
     # ============================================================
-    # STEP 6: Pull snapshot from registry
+    # STEP 6: Simulate fresh machine — clear local store
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 6: Pull snapshot from registry" -ForegroundColor Cyan
+    Write-Host "STEP 6: Simulate fresh machine" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $pulledPath = "$testDir/memory-team-pulled.team"
-    $getResp = Invoke-WebRequest -Uri "$baseUrl/v2/pekobot/teams/memory-team/blobs/$teamDigest" -Method GET
-    [System.IO.File]::WriteAllBytes($pulledPath, $getResp.Content)
-    $pulledSize = (Get-Item $pulledPath).Length
-    if ($pulledSize -ne $sizeWithSessions) { Write-Error "Pulled size mismatch" }
-
-    $pulledBytes = [System.IO.File]::ReadAllBytes($pulledPath)
-    $pulledDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($pulledBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    if ($pulledDigest -ne $teamDigest) { Write-Error "Pulled digest mismatch" }
-    Write-Host "Pulled and verified snapshot integrity" -ForegroundColor Green
+    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    if (Test-Path $localRegistryDir) {
+        Remove-Item -Recurse -Force $localRegistryDir
+        Write-Host "Cleared local registry store" -ForegroundColor Yellow
+    }
 
     # ============================================================
-    # STEP 7: Import pulled snapshot
+    # STEP 7: Pull snapshot from registry and auto-import
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 7: Import pulled snapshot" -ForegroundColor Cyan
+    Write-Host "STEP 7: Pull snapshot from registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $importedTeam = "memory-team-clone"
-    $importResult = & $pekoCmd team import $pulledPath --name $importedTeam --json | ConvertFrom-Json
-    if ($importResult.name -ne $importedTeam) { Write-Error "Team import failed" }
+    $pullResult = & $pekoCmd team pull $registryRef --name $importedTeam --json 2>&1 | ConvertFrom-Json
+    if ($pullResult.success -ne $true) {
+        Write-Error "Team pull failed: $($pullResult | ConvertTo-Json)"
+    }
+    if ($pullResult.name -ne $importedTeam) {
+        Write-Error "Team pull returned wrong name: $($pullResult.name)"
+    }
+    Write-Host "Pulled and imported team snapshot from registry" -ForegroundColor Green
+    Write-Host "  Name: $($pullResult.name)" -ForegroundColor Gray
+    Write-Host "  Agents imported: $($pullResult.agents_imported)" -ForegroundColor Gray
 
     $importedShow = & $pekoCmd team show $importedTeam --json | ConvertFrom-Json
     if ($importedShow.agent_count -ne 2) { Write-Error "Imported team has wrong agent count" }
@@ -229,7 +233,7 @@ try {
     if ($sessionCountAfter -eq $sessionCountBefore) {
         Write-Host "Session count preserved exactly" -ForegroundColor Green
     } else {
-        Write-Warning "Session count changed: before=$sessionCountBefore, after=$sessionCountAfter"
+        Write-Error "Session count changed: before=$sessionCountBefore, after=$sessionCountAfter"
     }
 
     # Verify session content if API key was available
@@ -251,7 +255,7 @@ try {
             if ($foundCode) {
                 Write-Host "Session content preserved (found ALPHA_123)" -ForegroundColor Green
             } else {
-                Write-Warning "Session content may not be fully preserved"
+                Write-Error "Session content not fully preserved"
             }
         }
     }
@@ -293,7 +297,7 @@ try {
     if ($noSessionList.sessions.Count -eq 0) {
         Write-Host "No sessions in no-sessions import (as expected)" -ForegroundColor Green
     } else {
-        Write-Warning "Unexpected sessions found in no-sessions import"
+        Write-Error "Unexpected sessions found in no-sessions import"
     }
 
 } finally {

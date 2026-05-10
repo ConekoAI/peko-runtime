@@ -309,7 +309,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     } elseif ($sessionCountBefore -eq 0) {
         Write-Host "No sessions to verify (no API key)" -ForegroundColor Yellow
     } else {
-        Write-Warning "Session count changed: before=$sessionCountBefore, after=$sessionCountAfter"
+        Write-Error "Session count changed: before=$sessionCountBefore, after=$sessionCountAfter"
     }
 
     # Verify session content
@@ -328,7 +328,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
             if ($foundCode) {
                 Write-Host "Session content preserved (found OMEGA_999)" -ForegroundColor Green
             } else {
-                Write-Warning "Session content may not be fully preserved"
+                Write-Error "Session content not fully preserved"
             }
         }
     }
@@ -366,7 +366,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     if (Test-Path "$skillsDir/memory-skill/SKILL.md") {
         Write-Host "Skills preserved" -ForegroundColor Green
     } else {
-        Write-Warning "Skills not preserved"
+        Write-Error "Skills not preserved"
     }
 
     $wsDir = "$env:APPDATA/pekobot/workspaces/default/$importedName"
@@ -375,10 +375,10 @@ default = "You are a helpful assistant with excellent memory. When asked about p
         if ($wsContent -match "Memory agent workspace") {
             Write-Host "Workspace preserved" -ForegroundColor Green
         } else {
-            Write-Warning "Workspace content mismatch"
+            Write-Error "Workspace content mismatch"
         }
     } else {
-        Write-Warning "Workspace not preserved"
+        Write-Error "Workspace not preserved"
     }
 
     # ============================================================
@@ -390,7 +390,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
 
     try {
         & $pekoCmd agent pull "127.0.0.1:$RegistryPort/pekobot/agents/nonexistent:latest" 2>&1 | Out-Null
-        Write-Warning "Pull with non-existent image did not fail"
+        Write-Error "Pull with non-existent image did not fail"
     } catch {
         Write-Host "Pull correctly rejects non-existent image" -ForegroundColor Green
     }

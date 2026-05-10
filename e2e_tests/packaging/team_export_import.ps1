@@ -48,6 +48,13 @@ $testTeam = "testteam"
 $agent1 = "agent1"
 $agent2 = "agent2"
 $agent3 = "agent3"
+$importedTeamName = "importedteam"
+
+# Clean up any leftover teams from previous runs
+try { & $pekoCmd team remove $testTeam --force 2>&1 | Out-Null } catch {}
+try { & $pekoCmd team remove $importedTeamName --force 2>&1 | Out-Null } catch {}
+try { & $pekoCmd team remove "crossteam" --force 2>&1 | Out-Null } catch {}
+try { & $pekoCmd team remove "tampered-team" --force 2>&1 | Out-Null } catch {}
 
 & $pekoCmd team create $testTeam --description "Test team for packaging" 2>&1 | Out-Null
 Write-Host "Created team: $testTeam" -ForegroundColor Green
@@ -97,7 +104,7 @@ $fs.Close()
 if ($gzipMagic[0] -eq 0x1f -and $gzipMagic[1] -eq 0x8b) {
     Write-Host "✓ Export file has valid gzip magic bytes" -ForegroundColor Green
 } else {
-    Write-Warning "Export file may not be valid gzip"
+    Write-Error "Export file is not valid gzip"
 }
 
 # ============================================================
@@ -122,7 +129,7 @@ $importedAgentCount = if ($showResult.agents) { $showResult.agents.Count } else 
 if ($importedAgentCount -eq 3) {
     Write-Host "✓ All 3 agents imported correctly" -ForegroundColor Green
 } else {
-    Write-Warning "Agent count mismatch: expected 3, found $importedAgentCount"
+    Write-Error "Agent count mismatch: expected 3, found $importedAgentCount"
 }
 
 # ============================================================
@@ -136,7 +143,7 @@ $reimportOutput = & $pekoCmd team import $teamExportPath --name $importedTeamNam
 if ($reimportOutput -match '"name"' -and $reimportOutput -match $importedTeamName) {
     Write-Host "✓ Team re-import with --force succeeded" -ForegroundColor Green
 } else {
-    Write-Warning "Team re-import with --force may have issues"
+    Write-Error "Team re-import with --force failed"
 }
 
 # ============================================================
@@ -156,7 +163,7 @@ if (Test-Path $noWorkspacePath) {
         Write-Host "  ✓ Excluded workspace reduced file size" -ForegroundColor Green
     }
 } else {
-    Write-Warning "Export with --exclude-workspace failed"
+    Write-Error "Export with --exclude-workspace failed"
 }
 
 # ============================================================
@@ -166,16 +173,40 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 5: Checksum validation on import" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Create a tampered .team package by modifying content
+# Create a tampered .team package by appending garbage bytes
+# (This corrupts the gzip trailer, making it an invalid archive)
 $tamperedPath = "$testDir/tampered.team"
 Copy-Item $teamExportPath $tamperedPath
 
-# Try to corrupt the tampered file (this is a gzip tar, so simple append may not work well,
-# but we can at least verify the import path attempts validation)
-Write-Host "Note: Full tampering test requires tar extraction/modification." -ForegroundColor Yellow
-Write-Host "      The Rust integration test 'test_team_import_fails_on_checksum_mismatch'" -ForegroundColor Yellow
-Write-Host "      covers this comprehensively." -ForegroundColor Yellow
-Write-Host "✓ Checksum validation is covered by Rust integration tests" -ForegroundColor Green
+# Append garbage to corrupt the file
+$garbage = [byte[]]::new(32)
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($garbage)
+$fs = [System.IO.File]::Open($tamperedPath, [System.IO.FileMode]::Append)
+$fs.Write($garbage, 0, $garbage.Length)
+$fs.Close()
+Write-Host "Appended garbage bytes to corrupt package" -ForegroundColor Yellow
+
+# Try to import the tampered package — this MUST fail
+$tamperTeamName = "tampered-team"
+$tamperFailed = $false
+try {
+    & $pekoCmd team import $tamperedPath --name $tamperTeamName --json 2>&1 | Out-Null
+    Write-Error "Import of tampered .team package should have failed but succeeded"
+} catch {
+    $tamperFailed = $true
+    Write-Host "✓ Import correctly rejected tampered package" -ForegroundColor Green
+}
+
+# Also verify via LASTEXITCODE if no exception was thrown
+if (-not $tamperFailed -and $LASTEXITCODE -ne 0) {
+    Write-Host "✓ Import correctly rejected tampered package (non-zero exit)" -ForegroundColor Green
+    $tamperFailed = $true
+}
+
+if (-not $tamperFailed) {
+    Write-Error "Checksum validation did not detect tampered package"
+}
 
 # ============================================================
 # TEST 6: Verify team.toml roundtrip if present
@@ -189,7 +220,7 @@ $originalShow = & $pekoCmd team show $testTeam 2>&1
 if ($originalShow -match "Test team for packaging") {
     Write-Host "✓ Original team description is set" -ForegroundColor Green
 } else {
-    Write-Warning "Original team description may not be preserved"
+    Write-Error "Original team description not preserved"
 }
 
 # Check imported team description
@@ -197,7 +228,7 @@ $importedShow = & $pekoCmd team show $importedTeamName 2>&1
 if ($importedShow -match "Test team for packaging") {
     Write-Host "✓ Imported team description preserved" -ForegroundColor Green
 } else {
-    Write-Warning "Imported team description may not match"
+    Write-Error "Imported team description does not match"
 }
 
 # ============================================================
@@ -239,7 +270,7 @@ $crossOutput = & $pekoCmd agent import --file "$testDir/$agent1.agent" --name $c
 if ($crossOutput -match $crossImportName) {
     Write-Host "✓ Cross-team import succeeded" -ForegroundColor Green
 } else {
-    Write-Warning "Cross-team import may have failed"
+    Write-Error "Cross-team import failed"
 }
 
 # ============================================================
@@ -255,6 +286,8 @@ foreach ($agent in $agents) {
 & $pekoCmd team remove $testTeam --force 2>&1 | Out-Null
 & $pekoCmd team remove $importedTeamName --force 2>&1 | Out-Null
 & $pekoCmd team remove $crossTeam --force 2>&1 | Out-Null
+# Clean up tampered team if it somehow got created
+try { & $pekoCmd team remove $tamperTeamName --force 2>&1 | Out-Null } catch {}
 Write-Host "Removed test teams and agents" -ForegroundColor Green
 
 if (Test-Path $testDir) {

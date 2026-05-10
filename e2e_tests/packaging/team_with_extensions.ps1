@@ -213,16 +213,12 @@ try {
     $agentConfig1 = "$env:USERPROFILE/.pekobot/teams/$importedTeamName/agents/$agent1/config.toml"
     $agentConfig2 = "$env:USERPROFILE/.pekobot/teams/$importedTeamName/agents/$agent2/config.toml"
 
-    $config1Ok = $false
+    # NOTE: Skills (ext_type = "skill") are injected via prompts, NOT added to the
+    # agent config whitelist. Only universal-tool and mcp extensions are whitelisted.
+    # So we verify the MCP whitelist entry for agent2, and verify the skill works
+    # via LLM tool execution in STEP 7 instead of checking config.
     $config2Ok = $false
 
-    if (Test-Path $agentConfig1) {
-        $cfg1 = Get-Content $agentConfig1 -Raw
-        # The extension whitelist should contain the skill reference
-        if ($cfg1 -match "calculator" -or $cfg1 -match "skill") {
-            $config1Ok = $true
-        }
-    }
     if (Test-Path $agentConfig2) {
         $cfg2 = Get-Content $agentConfig2 -Raw
         if ($cfg2 -match "echo" -or $cfg2 -match "mcp") {
@@ -230,15 +226,10 @@ try {
         }
     }
 
-    if ($config1Ok) {
-        Write-Host "Agent $agent1 config retains extension reference" -ForegroundColor Green
-    } else {
-        Write-Warning "Agent $agent1 config may not retain extension reference"
-    }
     if ($config2Ok) {
-        Write-Host "Agent $agent2 config retains extension reference" -ForegroundColor Green
+        Write-Host "Agent $agent2 config retains MCP extension reference" -ForegroundColor Green
     } else {
-        Write-Warning "Agent $agent2 config may not retain extension reference"
+        Write-Error "Agent $agent2 config does not retain MCP extension reference"
     }
 
     # ============================================================
@@ -309,7 +300,7 @@ try {
         if (Test-Path $skillExtPath) {
             Write-Host "Exported calculator-skill to $skillExtPath" -ForegroundColor Green
         } else {
-            Write-Warning "Failed to export calculator-skill"
+            Write-Error "Failed to export calculator-skill"
         }
     }
 
@@ -318,7 +309,7 @@ try {
         if (Test-Path $mcpExtPath) {
             Write-Host "Exported standard-echo to $mcpExtPath" -ForegroundColor Green
         } else {
-            Write-Warning "Failed to export standard-echo"
+            Write-Error "Failed to export standard-echo"
         }
     }
 
@@ -332,19 +323,18 @@ try {
         if ($magic[0] -eq 0x1f -and $magic[1] -eq 0x8b) {
             Write-Host "  $([System.IO.Path]::GetFileName($extFile)) is valid gzip" -ForegroundColor Green
         } else {
-            Write-Warning "  $([System.IO.Path]::GetFileName($extFile)) may not be valid gzip"
+            Write-Error "  $([System.IO.Path]::GetFileName($extFile)) is not valid gzip"
         }
     }
 
-    # Simulate push to registry (blob upload)
-    $baseUrl = "http://127.0.0.1:$RegistryPort"
-    foreach ($extFile in @($skillExtPath, $mcpExtPath)) {
-        if (-not (Test-Path $extFile)) { continue }
-        $bytes = [System.IO.File]::ReadAllBytes($extFile)
-        $digest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-        Invoke-RestMethod -Uri "$baseUrl/v2/pekobot/extensions/$([System.IO.Path]::GetFileNameWithoutExtension($extFile))/blobs/uploads/$([System.Guid]::NewGuid().ToString())?digest=$digest" `
-            -Method PUT -Headers @{ "Content-Type" = "application/octet-stream" } -Body $bytes | Out-Null
-        Write-Host "Pushed $([System.IO.Path]::GetFileName($extFile)) to registry" -ForegroundColor Green
+    # Push extension packages to registry via native CLI
+    if (Test-Path $skillExtPath) {
+        & $pekoCmd ext push calculator-skill "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
+        Write-Host "Pushed calculator-skill to registry" -ForegroundColor Green
+    }
+    if (Test-Path $mcpExtPath) {
+        & $pekoCmd ext push standard-echo "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
+        Write-Host "Pushed standard-echo to registry" -ForegroundColor Green
     }
 
 } finally {
