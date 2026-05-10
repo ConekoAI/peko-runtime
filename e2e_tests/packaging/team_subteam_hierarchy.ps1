@@ -186,11 +186,15 @@ try {
     Write-Host "Pushed all subteams to registry" -ForegroundColor Green
 
     # ============================================================
-    # STEP 5: Simulate fresh machine — clear and pull
+    # STEP 5: Simulate fresh machine — remove originals and pull/import
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "STEP 5: Fresh machine pull" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
+
+    $imported1 = "frontend-clone"
+    $imported2 = "backend-clone"
+    $imported3 = "ops-clone"
 
     # Remove original teams
     & $pekoCmd team remove $subTeam1 --force 2>&1 | Out-Null
@@ -198,26 +202,11 @@ try {
     & $pekoCmd team remove $subTeam3 --force 2>&1 | Out-Null
     Write-Host "Removed original subteams" -ForegroundColor Yellow
 
+    # team pull auto-imports, so we use --name to set the imported team name
     & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/frontend:latest" --name $imported1 2>&1 | Out-Null
     & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/backend:latest" --name $imported2 2>&1 | Out-Null
     & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/ops:latest" --name $imported3 2>&1 | Out-Null
     Write-Host "Pulled and imported all subteams from registry" -ForegroundColor Green
-
-    # ============================================================
-    # STEP 6: Import pulled subteams with new names
-    # ============================================================
-    Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 6: Import pulled subteams" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-
-    $imported1 = "frontend-clone"
-    $imported2 = "backend-clone"
-    $imported3 = "ops-clone"
-
-    & $pekoCmd team import $pulled1 --name $imported1 --json 2>&1 | Out-Null
-    & $pekoCmd team import $pulled2 --name $imported2 --json 2>&1 | Out-Null
-    & $pekoCmd team import $pulled3 --name $imported3 --json 2>&1 | Out-Null
-    Write-Host "Imported all subteams with new names" -ForegroundColor Green
 
     # ============================================================
     # STEP 7: Verify agent counts and workspace isolation
@@ -276,7 +265,7 @@ try {
     Write-Host "STEP 9: Re-import with --force" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $reimport = & $pekoCmd team import $pulled1 --name $imported1 --force --json 2>&1 | ConvertFrom-Json
+    $reimport = & $pekoCmd team import $export1 --name $imported1 --force --json 2>&1 | ConvertFrom-Json
     if ($reimport.name -ne $imported1) { Write-Error "Re-import with --force failed" }
     Write-Host "Re-import with --force succeeded" -ForegroundColor Green
 

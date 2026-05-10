@@ -246,7 +246,7 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     Write-Host "STEP 4: Push snapshot to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    & $pekoCmd agent push "memory-agent:v1.0" "127.0.0.1:$RegistryPort/pekobot/agents/memory-agent:latest" 2>&1 | Out-Null
+    & $pekoCmd agent push "dummy-tag" "127.0.0.1:$RegistryPort/pekobot/agents/memory-agent:latest" --file $snapshotPath 2>&1 | Out-Null
     Write-Host "Pushed snapshot to registry" -ForegroundColor Green
 
     # ============================================================
@@ -266,15 +266,16 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     }
 
     # ============================================================
-    # STEP 6: Pull snapshot from registry
+    # STEP 6: Pull snapshot from registry with --output
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "STEP 6: Pull snapshot from registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $pulledPath = "$testDir/memory-agent-pulled.agent"
-    & $pekoCmd agent pull "127.0.0.1:$RegistryPort/pekobot/agents/memory-agent:latest" 2>&1 | Out-Null
-    Write-Host "Pulled snapshot from registry" -ForegroundColor Green
+    & $pekoCmd agent pull "127.0.0.1:$RegistryPort/pekobot/agents/memory-agent:latest" --output $pulledPath 2>&1 | Out-Null
+    if (-not (Test-Path $pulledPath)) { Write-Error "Pull with --output failed: $pulledPath not found" }
+    Write-Host "Pulled snapshot from registry to $pulledPath" -ForegroundColor Green
 
     # ============================================================
     # STEP 7: Import pulled snapshot on fresh machine
@@ -410,8 +411,8 @@ default = "You are a helpful assistant with excellent memory. When asked about p
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
-    & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null
-    & $pekoCmd agent remove $importedName --team default --force 2>&1 | Out-Null
+    try { & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null } catch {}
+    try { & $pekoCmd agent remove $importedName --team default --force 2>&1 | Out-Null } catch {}
     Write-Host "Removed test agents" -ForegroundColor Green
 }
 

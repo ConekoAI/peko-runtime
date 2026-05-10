@@ -206,7 +206,7 @@ try {
     }
 
     # ============================================================
-    # STEP 5: Pull .ext packages from registry
+    # STEP 5: Pull .ext packages from registry (auto-installs)
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "STEP 5: Pull .ext packages from registry" -ForegroundColor Cyan
@@ -214,42 +214,32 @@ try {
 
     if (Test-Path $skillExtPath) {
         & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
-        Write-Host "Pulled calculator-skill" -ForegroundColor Green
+        Write-Host "Pulled and auto-installed calculator-skill" -ForegroundColor Green
     }
     if (Test-Path $mcpExtPath) {
         & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
-        Write-Host "Pulled standard-echo" -ForegroundColor Green
+        Write-Host "Pulled and auto-installed standard-echo" -ForegroundColor Green
     }
 
     # ============================================================
-    # STEP 6: Install pulled .ext packages
+    # STEP 6: Verify pulled extensions are installed
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 6: Install pulled .ext packages" -ForegroundColor Cyan
+    Write-Host "STEP 6: Verify pulled extensions installed" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    if (Test-Path $pulledSkillPath) {
-        & $pekoCmd ext install $pulledSkillPath 2>&1 | Out-Null
-        Write-Host "Installed pulled calculator-skill" -ForegroundColor Green
-    }
-    if (Test-Path $pulledMcpPath) {
-        & $pekoCmd ext install $pulledMcpPath 2>&1 | Out-Null
-        Write-Host "Installed pulled standard-echo" -ForegroundColor Green
-    }
-
-    # Verify installation
     $extListFinal = & $pekoCmd ext list --json 2>&1 | ConvertFrom-Json
     $skillReinstalled = $extListFinal.extensions | Where-Object { $_.id -match "calculator" }
     $mcpReinstalled = $extListFinal.extensions | Where-Object { $_.id -match "echo" }
     if ($skillReinstalled) {
         Write-Host "calculator-skill confirmed installed" -ForegroundColor Green
     } else {
-        Write-Error "calculator-skill not found after install"
+        Write-Error "calculator-skill not found after pull"
     }
     if ($mcpReinstalled) {
         Write-Host "standard-echo confirmed installed" -ForegroundColor Green
     } else {
-        Write-Error "standard-echo not found after install"
+        Write-Error "standard-echo not found after pull"
     }
 
     # ============================================================
@@ -268,11 +258,15 @@ try {
     & $pekoCmd agent create "$teamName/$agent2" --provider $Provider 2>&1 | Out-Null
     Write-Host "Created team with 2 agents" -ForegroundColor Green
 
-    if (Test-Path $pulledSkillPath) {
+    $extListForEnable = & $pekoCmd ext list --json 2>&1 | ConvertFrom-Json
+    $skillInstalled = $extListForEnable.extensions | Where-Object { $_.id -match "calculator" }
+    $mcpInstalled = $extListForEnable.extensions | Where-Object { $_.id -match "echo" }
+
+    if ($skillInstalled) {
         & $pekoCmd ext enable calculator-skill --target "$teamName/$agent1" 2>&1 | Out-Null
         Write-Host "Enabled calculator-skill for $agent1" -ForegroundColor Green
     }
-    if (Test-Path $pulledMcpPath) {
+    if ($mcpInstalled) {
         & $pekoCmd ext enable standard-echo --target "$teamName/$agent2" 2>&1 | Out-Null
         Write-Host "Enabled standard-echo for $agent2" -ForegroundColor Green
     }
@@ -285,7 +279,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     if ($env:MINIMAX_API_KEY) {
-        if (Test-Path $pulledSkillPath) {
+        if ($skillInstalled) {
             $prompt1 = "Use the calculator skill to compute 9 * 9. If the result is 81, respond CALC_SUCCESS. Otherwise respond CALC_FAILED."
             $response1 = & $pekoCmd send "$teamName/$agent1" $prompt1 --no-stream 2>&1
             Write-Host "Skill response: $response1" -ForegroundColor Gray
@@ -299,7 +293,7 @@ try {
             }
         }
 
-        if (Test-Path $pulledMcpPath) {
+        if ($mcpInstalled) {
             Write-Host "Starting MCP runtime..." -ForegroundColor Yellow
             & $pekoCmd ext start standard-echo 2>&1 | Out-Null
             Start-Sleep -Seconds 3
@@ -329,7 +323,11 @@ try {
     Write-Host "STEP 9: Extension manifest integrity" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    if (Test-Path $pulledSkillPath) {
+    $extListForInfo = & $pekoCmd ext list --json 2>&1 | ConvertFrom-Json
+    $skillForInfo = $extListForInfo.extensions | Where-Object { $_.id -match "calculator" }
+    $mcpForInfo = $extListForInfo.extensions | Where-Object { $_.id -match "echo" }
+
+    if ($skillForInfo) {
         $info = & $pekoCmd ext info calculator-skill 2>&1
         if ($info -match "calculator-skill" -and $info -match "skill") {
             Write-Host "Skill extension info valid after registry roundtrip" -ForegroundColor Green
@@ -337,7 +335,7 @@ try {
             Write-Warning "Skill extension info may be incomplete"
         }
     }
-    if (Test-Path $pulledMcpPath) {
+    if ($mcpForInfo) {
         $info = & $pekoCmd ext info standard-echo 2>&1
         if ($info -match "standard-echo" -and $info -match "mcp") {
             Write-Host "MCP extension info valid after registry roundtrip" -ForegroundColor Green

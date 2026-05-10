@@ -4,10 +4,11 @@
 
 use crate::extensions::mcp::protocol::config::{McpConfig, TransportType};
 use crate::identity::Identity;
-use crate::portable::manifest::AgentManifest;
+use crate::portable::manifest::{AgentLayers, AgentManifest};
+use crate::portable::types::{compute_digest, LayerType};
 use crate::types::agent::AgentConfig;
 use anyhow::Context;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 /// Convert transport type to string representation
@@ -175,15 +176,79 @@ impl Packager {
                 .context("Failed to export sessions")?;
         }
 
-        // 7. Sign manifest
+        // 7. Compute layer digests from collected files
+        manifest.layers = Some(Self::compute_layers(&files)?);
+
+        // 8. Sign manifest
         self.sign_manifest(&mut manifest)
             .context("Failed to sign manifest")?;
 
-        // 11. Add manifest to files
+        // 9. Add manifest to files
         let manifest_toml = manifest.to_toml().context("Failed to serialize manifest")?;
         files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
 
         Ok((files, manifest))
+    }
+
+    /// Compute layer digests from the collected files map.
+    ///
+    /// Groups files by their top-level directory prefix (config/, identity/, etc.),
+    /// builds a gzipped tarball for each group, and computes its SHA-256 digest.
+    fn compute_layers(files: &HashMap<String, Vec<u8>>) -> anyhow::Result<AgentLayers> {
+        let mut layers = AgentLayers::default();
+
+        let layer_types = [
+            (LayerType::Config, "config"),
+            (LayerType::Identity, "identity"),
+            (LayerType::Skills, "skills"),
+            (LayerType::Workspace, "workspace"),
+            (LayerType::Sessions, "sessions"),
+            (LayerType::Mcp, "mcp"),
+        ];
+
+        for (layer_type, prefix) in layer_types {
+            // Collect files for this layer prefix
+            let mut layer_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+            for (path, content) in files {
+                if path.starts_with(&format!("{prefix}/")) {
+                    let layer_path = path.strip_prefix(&format!("{prefix}/")).unwrap_or(path);
+                    layer_files.insert(layer_path.to_string(), content.clone());
+                }
+            }
+
+            if !layer_files.is_empty() {
+                let digest = Self::build_layer_digest(&layer_files)?;
+                match layer_type {
+                    LayerType::Config => layers.config = Some(digest),
+                    LayerType::Identity => layers.identity = Some(digest),
+                    LayerType::Skills => layers.skills = Some(digest),
+                    LayerType::Workspace => layers.workspace = Some(digest),
+                    LayerType::Sessions => layers.sessions = Some(digest),
+                    LayerType::Mcp => layers.mcp = Some(digest),
+                }
+            }
+        }
+
+        Ok(layers)
+    }
+
+    /// Build a gzipped tarball from a map of files and compute its digest.
+    fn build_layer_digest(files: &BTreeMap<String, Vec<u8>>) -> anyhow::Result<String> {
+        let mut buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            for (path, content) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(path)?;
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append(&header, content.as_slice())?;
+            }
+            tar.finish()?;
+        }
+        Ok(compute_digest(&buf))
     }
 
     /// Export identity files

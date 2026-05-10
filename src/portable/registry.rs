@@ -17,8 +17,9 @@
 //! ```
 
 use crate::portable::manifest::AgentManifest;
-use crate::portable::types::ImageDigest;
+use crate::portable::types::{ImageDigest, LayerType};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::PathBuf;
 
 /// Local content-addressable store for .agent packages
@@ -241,6 +242,120 @@ impl AgentRegistry {
     fn layer_dir(&self, digest: &str) -> PathBuf {
         let digest = digest.strip_prefix("sha256:").unwrap_or(digest);
         self.layers_dir().join(format!("sha256-{digest}"))
+    }
+
+    /// Export a tagged manifest to a `.agent` package file.
+    ///
+    /// Reconstructs the package by reading the manifest and each layer from
+    /// the registry, extracting layer tarballs, and creating a new `.agent`
+    /// archive with `manifest.toml` and all layer files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tag, manifest, or any layer is missing,
+    /// or if archive creation fails.
+    pub async fn export_package(
+        &self,
+        tag: &str,
+        output_path: impl AsRef<std::path::Path>,
+    ) -> anyhow::Result<PathBuf> {
+        let mut manifest = self.get_manifest_by_tag(tag).await?;
+        let output_path = output_path.as_ref().to_path_buf();
+
+        // First pass: collect all files from layers and compute checksums
+        let mut files: HashMap<String, Vec<u8>> = HashMap::new();
+
+        if let Some(ref layers) = manifest.layers {
+            if let Some(ref digest) = layers.config {
+                Self::collect_layer_files(digest, LayerType::Config, self, &mut files).await?;
+            }
+            if let Some(ref digest) = layers.identity {
+                Self::collect_layer_files(digest, LayerType::Identity, self, &mut files).await?;
+            }
+            if let Some(ref digest) = layers.skills {
+                Self::collect_layer_files(digest, LayerType::Skills, self, &mut files).await?;
+            }
+            if let Some(ref digest) = layers.workspace {
+                Self::collect_layer_files(digest, LayerType::Workspace, self, &mut files).await?;
+            }
+            if let Some(ref digest) = layers.sessions {
+                Self::collect_layer_files(digest, LayerType::Sessions, self, &mut files).await?;
+            }
+            if let Some(ref digest) = layers.mcp {
+                Self::collect_layer_files(digest, LayerType::Mcp, self, &mut files).await?;
+            }
+        }
+
+        // Update manifest packaging metadata with actual files and checksums
+        let mut packaging_files = Vec::new();
+        let mut packaging_checksums = HashMap::new();
+        for (path, content) in &files {
+            packaging_files.push(path.clone());
+            packaging_checksums.insert(path.clone(), AgentManifest::compute_checksum(content));
+        }
+        // Sort files for deterministic output
+        packaging_files.sort();
+        manifest.packaging.files = packaging_files;
+        manifest.packaging.checksums = packaging_checksums;
+        manifest.packaging.compression = "gzip".to_string();
+        manifest.packaging.archive_format = "tar".to_string();
+
+        // Create archive
+        let tar_gz = std::fs::File::create(&output_path)?;
+        let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+
+        // Add manifest.toml (updated with packaging metadata)
+        let manifest_toml = manifest.to_toml()?;
+        let manifest_bytes = manifest_toml.into_bytes();
+        let mut header = tar::Header::new_gnu();
+        header.set_path("manifest.toml")?;
+        header.set_size(manifest_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append(&header, manifest_bytes.as_slice())?;
+
+        // Add all collected files
+        for (path, content) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(&path)?;
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append(&header, content.as_slice())?;
+        }
+
+        tar.finish()?;
+        Ok(output_path)
+    }
+
+    /// Collect files from a registry layer tarball into a map.
+    async fn collect_layer_files(
+        digest: &str,
+        layer_type: LayerType,
+        registry: &AgentRegistry,
+        files: &mut HashMap<String, Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        let layer_data = registry.get_layer(digest).await?;
+        let tar_prefix = layer_type.dir_name();
+
+        // The layer is itself a gzipped tarball
+        let decoder = flate2::read::GzDecoder::new(layer_data.as_slice());
+        let mut layer_tar = tar::Archive::new(decoder);
+
+        for entry in layer_tar.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+            let path_str = path.to_string_lossy().to_string();
+
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)?;
+
+            let tar_path = format!("{tar_prefix}/{path_str}");
+            files.insert(tar_path, content);
+        }
+
+        Ok(())
     }
 }
 

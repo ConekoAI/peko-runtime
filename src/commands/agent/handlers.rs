@@ -7,6 +7,7 @@
 use crate::commands::agent::AgentConfigCommands;
 use crate::commands::GlobalPaths;
 use crate::common::config_path;
+use std::io::Read;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::ConfigAuthority;
 use crate::common::types::agent::{
@@ -583,15 +584,21 @@ pub async fn handle_agent_push(
     _paths: &GlobalPaths,
     local_tag: String,
     registry_ref: String,
+    file: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
     let registry = AgentRegistry::new(AgentRegistry::default_path());
     registry.init().await?;
 
-    let agent_manifest = registry
-        .get_manifest_by_tag(&local_tag)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to load local tag '{local_tag}': {e}"))?;
+    let agent_manifest = if let Some(ref file_path) = file {
+        // Load .agent file and store layers in local registry
+        load_agent_file_into_registry(&file_path, &registry).await?
+    } else {
+        registry
+            .get_manifest_by_tag(&local_tag)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to load local tag '{local_tag}': {e}"))?
+    };
 
     let reg_ref = RegistryRef::parse(&registry_ref)?;
     let mut config = RegistryConfig::default();
@@ -610,11 +617,14 @@ pub async fn handle_agent_push(
     // Ensure RegistryClient can find the manifest
     store_registry_manifest_for_client(&registry, &registry_manifest).await?;
 
+    let push_tag = if file.is_some() { "<file>".to_string() } else { local_tag.clone() };
+    let push_tag_ref: &str = &push_tag;
+
     if json {
         let manifest = client.push(&digest, &registry_ref, |_| {}).await?;
         let output = serde_json::json!({
             "success": true,
-            "local_tag": local_tag,
+            "local_tag": push_tag,
             "registry_ref": registry_ref,
             "manifest": {
                 "name": manifest.name,
@@ -636,7 +646,7 @@ pub async fn handle_agent_push(
         let _manifest = client
             .push(&digest, &registry_ref, |event| match event {
                 ProgressEvent::Resolving { .. } => {
-                    println!("Pushing {local_tag} to {registry_ref}...");
+                    println!("Pushing {push_tag_ref} to {registry_ref}...");
                 }
                 ProgressEvent::Pushing {
                     layer,
@@ -690,10 +700,86 @@ pub async fn handle_agent_push(
     Ok(())
 }
 
+/// Load a `.agent` file into the local registry, storing layers and returning the manifest.
+async fn load_agent_file_into_registry(
+    file_path: &str,
+    registry: &AgentRegistry,
+) -> anyhow::Result<AgentManifest> {
+    let file = std::fs::File::open(file_path)?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+
+    let mut files = std::collections::HashMap::new();
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        let path_str = path.to_string_lossy().to_string();
+
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content)?;
+        files.insert(path_str, content);
+    }
+
+    let manifest_bytes = files
+        .get("manifest.toml")
+        .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml in package"))?;
+    let manifest_str = std::str::from_utf8(manifest_bytes)?;
+    let manifest = AgentManifest::from_toml(manifest_str)?;
+
+    // Store each layer in the registry
+    if let Some(ref layers) = manifest.layers {
+        let layer_types = [
+            (layers.config.as_ref(), LayerType::Config),
+            (layers.identity.as_ref(), LayerType::Identity),
+            (layers.skills.as_ref(), LayerType::Skills),
+            (layers.workspace.as_ref(), LayerType::Workspace),
+            (layers.sessions.as_ref(), LayerType::Sessions),
+            (layers.mcp.as_ref(), LayerType::Mcp),
+        ];
+
+        for (digest_opt, layer_type) in layer_types {
+            if let Some(digest) = digest_opt {
+                let prefix = layer_type.dir_name();
+                // Collect all files for this layer
+                let mut layer_files: std::collections::BTreeMap<String, Vec<u8>> =
+                    std::collections::BTreeMap::new();
+                for (path, content) in &files {
+                    if path.starts_with(&format!("{prefix}/")) {
+                        let layer_path = path.strip_prefix(&format!("{prefix}/")).unwrap_or(path);
+                        layer_files.insert(layer_path.to_string(), content.clone());
+                    }
+                }
+
+                if !layer_files.is_empty() {
+                    // Build tarball
+                    let mut buf = Vec::new();
+                    {
+                        let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+                        let mut tar = tar::Builder::new(enc);
+                        for (path, content) in layer_files {
+                            let mut header = tar::Header::new_gnu();
+                            header.set_path(&path)?;
+                            header.set_size(content.len() as u64);
+                            header.set_mode(0o644);
+                            header.set_cksum();
+                            tar.append(&header, content.as_slice())?;
+                        }
+                        tar.finish()?;
+                    }
+                    registry.store_layer(digest, &buf).await?;
+                }
+            }
+        }
+    }
+
+    Ok(manifest)
+}
+
 /// Handle agent pull command
 pub async fn handle_agent_pull(
     _paths: &GlobalPaths,
     registry_ref: String,
+    output: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
@@ -709,7 +795,7 @@ pub async fn handle_agent_pull(
 
     let client = RegistryClient::new(config, agent_registry.clone());
 
-    if json {
+    let manifest = if json {
         let manifest = client.pull(&registry_ref, |_| {}).await?;
 
         // Store in AgentRegistry format as well
@@ -719,7 +805,7 @@ pub async fn handle_agent_pull(
             .store_manifest(&agent_manifest, Some(&tag))
             .await?;
 
-        let output = serde_json::json!({
+        let output_json = serde_json::json!({
             "success": true,
             "registry_ref": registry_ref,
             "manifest": {
@@ -730,7 +816,8 @@ pub async fn handle_agent_pull(
                 "total_size": manifest.total_size_bytes(),
             }
         });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!("{}", serde_json::to_string_pretty(&output_json)?);
+        manifest
     } else {
         let mut seen_layers = HashSet::new();
 
@@ -797,6 +884,17 @@ pub async fn handle_agent_pull(
         agent_registry
             .store_manifest(&agent_manifest, Some(&tag))
             .await?;
+
+        manifest
+    };
+
+    // If --output was specified, export the pulled package to a .agent file
+    if let Some(output_path) = output {
+        let tag = format!("{}:{}", manifest.name, reg_ref.tag);
+        let exported = agent_registry.export_package(&tag, &output_path).await?;
+        if !json {
+            println!("📦 Saved package to {}", exported.display());
+        }
     }
 
     Ok(())

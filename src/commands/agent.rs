@@ -137,16 +137,22 @@ pub enum AgentCommands {
 
     /// Push a local .agent to a registry
     Push {
-        /// Local tag (name:tag)
+        /// Local tag (name:tag) — ignored when --file is used
         local_tag: String,
         /// Registry reference (host/path:tag)
         registry_ref: String,
+        /// Push a .agent file directly instead of a local tag
+        #[arg(short, long)]
+        file: Option<String>,
     },
 
     /// Pull a .agent from a registry
     Pull {
         /// Registry reference (host/path:tag)
         registry_ref: String,
+        /// Output file path (optional, saves as .agent package)
+        #[arg(short, long)]
+        output: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -249,10 +255,13 @@ pub async fn handle_agent(
         AgentCommands::Push {
             local_tag,
             registry_ref,
-        } => handlers::handle_agent_push(paths, local_tag, registry_ref, json).await,
-        AgentCommands::Pull { registry_ref, json } => {
-            handlers::handle_agent_pull(paths, registry_ref, json).await
-        }
+            file,
+        } => handlers::handle_agent_push(paths, local_tag, registry_ref, file, json).await,
+        AgentCommands::Pull {
+            registry_ref,
+            output,
+            json,
+        } => handlers::handle_agent_pull(paths, registry_ref, output, json).await,
         AgentCommands::Init {
             path,
             name,
