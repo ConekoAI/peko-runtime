@@ -74,8 +74,6 @@ function Start-MockRegistry { param([int]$Port) ... }
 function Stop-MockRegistry { param($Proc) ... }
 function Reset-RegistryStorage { param([int]$Port) ... }
 function Get-RegistryBlobs { param([int]$Port) ... }
-function Push-BlobToRegistry { param([int]$Port, [string]$Repo, [string]$FilePath) ... }
-function Pull-BlobFromRegistry { param([int]$Port, [string]$Repo, [string]$Digest, [string]$OutPath) ... }
 ```
 
 ## Running Tests
@@ -105,4 +103,4 @@ cd e2e_tests/packaging
    pekobot daemon start
    ```
 2. **Fresh state** — Each test resets `~/.pekobot` and `%APPDATA%/pekobot` at the start.
-3. **Best UX flow** — Some CLI commands (e.g., `pekobot team push`, `pekobot team pull`) may not be fully implemented yet. Tests use direct blob upload/download via the mock registry API as a fallback, with comments indicating where CLI commands should be substituted when available.
+3. **Best UX flow** — All registry operations use native CLI commands (`pekobot agent push/pull`, `pekobot team push/pull`, `pekobot ext push/pull`). No raw blob upload/download is needed.

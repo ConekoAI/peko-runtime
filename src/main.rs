@@ -92,7 +92,7 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         Commands::Team(cmd) => team::handle_team(cmd, paths, json).await,
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),
-        Commands::Ext(cmd) => ext::handle_ext_command(cmd, paths).await,
+        Commands::Ext(cmd) => ext::handle_ext_command(cmd, paths, json).await,
         Commands::Session(cmd) => session::handle_session(cmd, paths, json).await,
         Commands::Config(cmd) => config::handle_config(cmd, paths, json).await,
         Commands::System(cmd) => system::handle_system(cmd, paths, json).await,

@@ -14,6 +14,9 @@ pub const REGISTRY_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub struct RegistryManifest {
     /// Schema version
     pub schema_version: u32,
+    /// Package kind: "agent", "extension", or "team"
+    #[serde(default = "default_kind")]
+    pub kind: String,
     /// Agent name
     pub name: String,
     /// Package version
@@ -30,11 +33,16 @@ pub struct RegistryManifest {
     pub layers: Vec<Layer>,
 }
 
+fn default_kind() -> String {
+    "agent".to_string()
+}
+
 impl RegistryManifest {
     /// Create a new manifest
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             schema_version: REGISTRY_MANIFEST_SCHEMA_VERSION,
+            kind: default_kind(),
             name: name.into(),
             version: version.into(),
             r#ref: String::new(),
@@ -43,6 +51,13 @@ impl RegistryManifest {
             source: "local".to_string(),
             layers: Vec::new(),
         }
+    }
+
+    /// Set the kind.
+    #[must_use]
+    pub fn with_kind(mut self, kind: impl Into<String>) -> Self {
+        self.kind = kind.into();
+        self
     }
 
     /// Set the reference.
@@ -113,6 +128,7 @@ mod tests {
         assert!(json.contains("\"schema_version\": 1"));
         assert!(json.contains("\"name\": \"test-agent\""));
         assert!(json.contains("\"type\": \"config\""));
+        assert!(json.contains("\"kind\": \"agent\""));
     }
 
     #[test]
@@ -121,5 +137,29 @@ mod tests {
         manifest.add_layer(Layer::new("sha256:a", LayerType::Config, 100));
         manifest.add_layer(Layer::new("sha256:b", LayerType::Skills, 200));
         assert_eq!(manifest.total_size_bytes(), 300);
+    }
+
+    #[test]
+    fn test_kind_field() {
+        let manifest = RegistryManifest::new("test", "1.0.0");
+        assert_eq!(manifest.kind, "agent");
+
+        let manifest = RegistryManifest::new("test", "1.0.0").with_kind("extension");
+        assert_eq!(manifest.kind, "extension");
+
+        let manifest = RegistryManifest::new("test", "1.0.0").with_kind("team");
+        assert_eq!(manifest.kind, "team");
+    }
+
+    #[test]
+    fn test_kind_serialization() {
+        let manifest = RegistryManifest::new("test", "1.0.0").with_kind("extension");
+        let json = manifest.to_json().unwrap();
+        assert!(json.contains("\"kind\": \"extension\""));
+
+        // Default kind should be serialized too
+        let manifest = RegistryManifest::new("test", "1.0.0");
+        let json = manifest.to_json().unwrap();
+        assert!(json.contains("\"kind\": \"agent\""));
     }
 }

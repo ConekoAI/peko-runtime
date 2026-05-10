@@ -67,20 +67,6 @@ function Reset-RegistryStorage {
     Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/reset" -Method DELETE | Out-Null
 }
 
-function Push-BlobToRegistry {
-    param([int]$Port, [string]$Repo, [string]$FilePath)
-    $bytes = [System.IO.File]::ReadAllBytes($FilePath)
-    $digest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    $url = "http://127.0.0.1:$Port/v2/$Repo/blobs/uploads/$([System.Guid]::NewGuid().ToString())?digest=$digest"
-    Invoke-RestMethod -Uri $url -Method PUT -Headers @{ "Content-Type" = "application/octet-stream" } -Body $bytes | Out-Null
-    return $digest
-}
-
-function Pull-BlobFromRegistry {
-    param([int]$Port, [string]$Repo, [string]$Digest, [string]$OutPath)
-    $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v2/$Repo/blobs/$Digest" -Method GET
-    [System.IO.File]::WriteAllBytes($OutPath, $resp.Content)
-}
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -194,9 +180,9 @@ try {
     Write-Host "STEP 4: Push subteam snapshots to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $digest1 = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/teams/frontend" -FilePath $export1
-    $digest2 = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/teams/backend" -FilePath $export2
-    $digest3 = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/teams/ops" -FilePath $export3
+    & $pekoCmd team push $subTeam1 "127.0.0.1:$RegistryPort/pekobot/teams/frontend:latest" 2>&1 | Out-Null
+    & $pekoCmd team push $subTeam2 "127.0.0.1:$RegistryPort/pekobot/teams/backend:latest" 2>&1 | Out-Null
+    & $pekoCmd team push $subTeam3 "127.0.0.1:$RegistryPort/pekobot/teams/ops:latest" 2>&1 | Out-Null
     Write-Host "Pushed all subteams to registry" -ForegroundColor Green
 
     # ============================================================
@@ -212,26 +198,10 @@ try {
     & $pekoCmd team remove $subTeam3 --force 2>&1 | Out-Null
     Write-Host "Removed original subteams" -ForegroundColor Yellow
 
-    $pulled1 = "$testDir/frontend-pulled.team"
-    $pulled2 = "$testDir/backend-pulled.team"
-    $pulled3 = "$testDir/ops-pulled.team"
-
-    Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/teams/frontend" -Digest $digest1 -OutPath $pulled1
-    Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/teams/backend" -Digest $digest2 -OutPath $pulled2
-    Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/teams/ops" -Digest $digest3 -OutPath $pulled3
-    Write-Host "Pulled all subteams from registry" -ForegroundColor Green
-
-    # Verify integrity
-    foreach ($pair in @(@($export1,$pulled1), @($export2,$pulled2), @($export3,$pulled3))) {
-        $origBytes = [System.IO.File]::ReadAllBytes($pair[0])
-        $pullBytes = [System.IO.File]::ReadAllBytes($pair[1])
-        $origDigest = [System.Security.Cryptography.SHA256]::Create().ComputeHash($origBytes)
-        $pullDigest = [System.Security.Cryptography.SHA256]::Create().ComputeHash($pullBytes)
-        $origHash = ($origDigest | ForEach-Object { $_.ToString("x2") }) -join ""
-        $pullHash = ($pullDigest | ForEach-Object { $_.ToString("x2") }) -join ""
-        if ($origHash -ne $pullHash) { Write-Error "Digest mismatch for pulled team" }
-    }
-    Write-Host "All pulled snapshots verified by digest" -ForegroundColor Green
+    & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/frontend:latest" --name $imported1 2>&1 | Out-Null
+    & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/backend:latest" --name $imported2 2>&1 | Out-Null
+    & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/ops:latest" --name $imported3 2>&1 | Out-Null
+    Write-Host "Pulled and imported all subteams from registry" -ForegroundColor Green
 
     # ============================================================
     # STEP 6: Import pulled subteams with new names

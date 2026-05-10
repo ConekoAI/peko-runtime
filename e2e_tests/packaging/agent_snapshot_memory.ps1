@@ -70,20 +70,6 @@ function Get-RegistryBlobs {
     return Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/blobs" -Method GET
 }
 
-function Push-BlobToRegistry {
-    param([int]$Port, [string]$Repo, [string]$FilePath)
-    $bytes = [System.IO.File]::ReadAllBytes($FilePath)
-    $digest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    $url = "http://127.0.0.1:$Port/v2/$Repo/blobs/uploads/$([System.Guid]::NewGuid().ToString())?digest=$digest"
-    Invoke-RestMethod -Uri $url -Method PUT -Headers @{ "Content-Type" = "application/octet-stream" } -Body $bytes | Out-Null
-    return $digest
-}
-
-function Pull-BlobFromRegistry {
-    param([int]$Port, [string]$Repo, [string]$Digest, [string]$OutPath)
-    $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v2/$Repo/blobs/$Digest" -Method GET
-    [System.IO.File]::WriteAllBytes($OutPath, $resp.Content)
-}
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -260,9 +246,8 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     Write-Host "STEP 4: Push snapshot to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $snapshotDigest = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/agents/memory-agent" -FilePath $snapshotPath
+    & $pekoCmd agent push "memory-agent:v1.0" "127.0.0.1:$RegistryPort/pekobot/agents/memory-agent:latest" 2>&1 | Out-Null
     Write-Host "Pushed snapshot to registry" -ForegroundColor Green
-    Write-Host "  Digest: $snapshotDigest" -ForegroundColor Gray
 
     # ============================================================
     # STEP 5: Simulate fresh machine — clear everything
@@ -288,12 +273,8 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     Write-Host "========================================" -ForegroundColor Cyan
 
     $pulledPath = "$testDir/memory-agent-pulled.agent"
-    Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/agents/memory-agent" -Digest $snapshotDigest -OutPath $pulledPath
-
-    $pulledBytes = [System.IO.File]::ReadAllBytes($pulledPath)
-    $pulledDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($pulledBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    if ($pulledDigest -ne $snapshotDigest) { Write-Error "Pulled digest mismatch" }
-    Write-Host "Pulled and verified snapshot integrity" -ForegroundColor Green
+    & $pekoCmd agent pull "127.0.0.1:$RegistryPort/pekobot/agents/memory-agent:latest" 2>&1 | Out-Null
+    Write-Host "Pulled snapshot from registry" -ForegroundColor Green
 
     # ============================================================
     # STEP 7: Import pulled snapshot on fresh machine
@@ -406,12 +387,11 @@ default = "You are a helpful assistant with excellent memory. When asked about p
     Write-Host "STEP 11: Error cases" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $badDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     try {
-        Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/agents/memory-agent" -Digest $badDigest -OutPath "$testDir/bad.agent"
-        Write-Warning "Pull with bad digest did not fail"
+        & $pekoCmd agent pull "127.0.0.1:$RegistryPort/pekobot/agents/nonexistent:latest" 2>&1 | Out-Null
+        Write-Warning "Pull with non-existent image did not fail"
     } catch {
-        Write-Host "Pull correctly rejects non-existent blob" -ForegroundColor Green
+        Write-Host "Pull correctly rejects non-existent image" -ForegroundColor Green
     }
 
 } finally {

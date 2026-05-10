@@ -11,6 +11,11 @@ use crate::common::time::format_timestamp;
 use crate::common::types::team::{
     TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMoveResult,
 };
+use crate::portable::registry::AgentRegistry;
+use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
+use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
+use crate::registry::config::{RegistryConfig, RegistrySource};
+use crate::registry::manifest::RegistryManifest;
 use anyhow::Result;
 use clap::Subcommand;
 
@@ -108,6 +113,26 @@ pub enum TeamCommands {
         /// Don't rotate keys on import
         #[arg(long)]
         no_rotate_keys: bool,
+    },
+
+    /// Push a team snapshot to a registry
+    Push {
+        /// Team name to push
+        name: String,
+        /// Registry reference (host/path:tag)
+        registry_ref: String,
+    },
+
+    /// Pull a team snapshot from a registry
+    Pull {
+        /// Registry reference (host/path:tag)
+        registry_ref: String,
+        /// New team name (optional, uses package name if not specified)
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -223,6 +248,17 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             render_team_imported(&result, json);
             Ok(())
         }
+
+        TeamCommands::Push {
+            name,
+            registry_ref,
+        } => handle_team_push(&service, &name, &registry_ref, json).await,
+
+        TeamCommands::Pull {
+            registry_ref,
+            name,
+            json: pull_json,
+        } => handle_team_pull(&service, &registry_ref, name, pull_json).await,
     }
 }
 
@@ -455,6 +491,231 @@ fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
     std::io::stdin().read_line(&mut input)?;
 
     Ok(input.trim().eq_ignore_ascii_case("y"))
+}
+
+async fn handle_team_push(
+    service: &crate::common::services::team_service::TeamService,
+    name: &str,
+    registry_ref: &str,
+    json: bool,
+) -> Result<()> {
+    // Export team to a temp .team file
+    let temp_dir = std::env::temp_dir().join("pekobot_team_push");
+    std::fs::create_dir_all(&temp_dir)?;
+    let temp_path = temp_dir.join(format!("{name}.team"));
+
+    let export_result = service
+        .export_team(name, Some(temp_path.to_string_lossy().to_string()), false, false, false)
+        .await?;
+
+    // Read file bytes and compute digest
+    let data = tokio::fs::read(&export_result.output_path).await?;
+    let layer_digest = compute_digest(&data);
+
+    // Store as layer in AgentRegistry
+    let registry = AgentRegistry::new(AgentRegistry::default_path());
+    registry.init().await?;
+    registry.store_layer(&layer_digest, &data).await?;
+
+    // Build RegistryManifest with kind="team", single layer
+    let mut manifest = RegistryManifest::new(name.to_string(), "1.0.0".to_string())
+        .with_kind("team")
+        .with_ref(registry_ref);
+    manifest.add_layer(Layer::new(
+        layer_digest.clone(),
+        LayerType::Config,
+        data.len() as u64,
+    ));
+
+    // Compute manifest digest
+    let manifest_json = manifest.to_json()?;
+    let manifest_digest = ImageDigest::from_bytes(manifest_json.as_bytes());
+    manifest.digest = manifest_digest.as_str().to_string();
+
+    // Store manifest for RegistryClient
+    store_registry_manifest_for_client(&registry, &manifest).await?;
+
+    // Parse registry ref and configure client
+    let reg_ref = RegistryRef::parse(registry_ref)?;
+    let mut config = RegistryConfig::default();
+    config.add_source(RegistrySource {
+        url: reg_ref.host.clone(),
+        priority: 1,
+        auth: None,
+    });
+
+    let client = RegistryClient::new(config, registry);
+
+    if json {
+        let result = client.push(&manifest_digest, registry_ref, |_| {}).await?;
+        let output = serde_json::json!({
+            "success": true,
+            "team_name": name,
+            "registry_ref": registry_ref,
+            "manifest": {
+                "name": result.name,
+                "version": result.version,
+                "digest": result.digest,
+                "kind": result.kind,
+                "layers": result.layers.len(),
+                "total_size": result.total_size_bytes(),
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Pushing team '{name}' to {registry_ref}...");
+        let _result = client
+            .push(&manifest_digest, registry_ref, |event| match event {
+                ProgressEvent::Resolving { .. } => {}
+                ProgressEvent::Pushing {
+                    layer,
+                    bytes_sent,
+                    bytes_total,
+                } => {
+                    if bytes_sent == bytes_total && bytes_sent != Some(0) {
+                        println!("  Layer {}  ✓ uploaded", &layer[..19.min(layer.len())]);
+                    } else if bytes_sent == Some(0) {
+                        println!("  Layer {}  → uploading", &layer[..19.min(layer.len())]);
+                    }
+                }
+                ProgressEvent::Done { .. } => {
+                    println!("  Manifest         pushed");
+                    println!("Done.");
+                }
+                ProgressEvent::Error { code, message } => {
+                    eprintln!("  Error: {code} - {message}");
+                }
+                _ => {}
+            })
+            .await?;
+    }
+
+    // Clean up temp file
+    let _ = tokio::fs::remove_file(&export_result.output_path).await;
+
+    Ok(())
+}
+
+async fn handle_team_pull(
+    service: &crate::common::services::team_service::TeamService,
+    registry_ref: &str,
+    new_name: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
+    agent_registry.init().await?;
+
+    let reg_ref = RegistryRef::parse(registry_ref)?;
+    let mut config = RegistryConfig::default();
+    config.add_source(RegistrySource {
+        url: reg_ref.host.clone(),
+        priority: 1,
+        auth: None,
+    });
+
+    let client = RegistryClient::new(config, agent_registry.clone());
+
+    let manifest = if json {
+        client.pull(registry_ref, |_| {}).await?
+    } else {
+        println!("Pulling team snapshot {registry_ref}...");
+        client
+            .pull(registry_ref, |event| match event {
+                ProgressEvent::Resolving { .. } => {
+                    println!("  Resolving...");
+                }
+                ProgressEvent::Pulling {
+                    layer,
+                    bytes_received,
+                    bytes_total,
+                } => {
+                    if bytes_received == bytes_total && bytes_received != Some(0) {
+                        println!("  Layer {}  ✓ downloaded", &layer[..19.min(layer.len())]);
+                    } else if bytes_received == Some(0) {
+                        println!("  Layer {}  → downloading", &layer[..19.min(layer.len())]);
+                    }
+                }
+                ProgressEvent::Verifying { layer } => {
+                    println!("  Verifying {layer}...");
+                }
+                ProgressEvent::Done { .. } => {
+                    println!("Done.");
+                }
+                ProgressEvent::Error { code, message } => {
+                    eprintln!("  Error: {code} - {message}");
+                }
+                _ => {}
+            })
+            .await?
+    };
+
+    // Read the layer bytes from AgentRegistry
+    let layer = manifest
+        .layers
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Manifest has no layers"))?;
+    let data = agent_registry.get_layer(&layer.digest).await?;
+
+    // Write to a temp .team file
+    let temp_dir = std::env::temp_dir().join("pekobot_team_pull");
+    std::fs::create_dir_all(&temp_dir)?;
+    let temp_path = temp_dir.join(format!("{}.team", manifest.name));
+    tokio::fs::write(&temp_path, &data).await?;
+
+    // Import the team
+    let result = service
+        .import_team(
+            temp_path.to_string_lossy().as_ref(),
+            new_name.clone(),
+            true,
+            true,
+        )
+        .await?;
+
+    if json {
+        let output = serde_json::json!({
+            "success": true,
+            "registry_ref": registry_ref,
+            "name": result.name,
+            "path": result.path.display().to_string(),
+            "agents_imported": result.agents_imported,
+            "manifest": {
+                "name": manifest.name,
+                "version": manifest.version,
+                "digest": manifest.digest,
+                "kind": manifest.kind,
+                "layers": manifest.layers.len(),
+                "total_size": manifest.total_size_bytes(),
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("📥 Imported team '{}'", result.name);
+        println!("   Agents: {}", result.agents_imported);
+        println!("   Path: {}", result.path.display());
+    }
+
+    // Clean up temp file
+    let _ = tokio::fs::remove_file(&temp_path).await;
+
+    Ok(())
+}
+
+/// Store a `RegistryManifest` in the format expected by `RegistryClient`
+async fn store_registry_manifest_for_client(
+    registry: &AgentRegistry,
+    manifest: &RegistryManifest,
+) -> anyhow::Result<ImageDigest> {
+    let digest = ImageDigest::new(&manifest.digest)?;
+    let image_dir = registry
+        .root_path()
+        .join("registry_manifests")
+        .join(digest.dir_name());
+    tokio::fs::create_dir_all(&image_dir).await?;
+    let manifest_path = image_dir.join("manifest.json");
+    let json = manifest.to_json()?;
+    tokio::fs::write(&manifest_path, json).await?;
+    Ok(digest)
 }
 
 fn confirm_team_move(old_name: &str, new_name: &str, agent_count: usize) -> Result<bool> {

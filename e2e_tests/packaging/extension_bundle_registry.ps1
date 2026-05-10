@@ -65,20 +65,6 @@ function Reset-RegistryStorage {
     Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/reset" -Method DELETE | Out-Null
 }
 
-function Push-BlobToRegistry {
-    param([int]$Port, [string]$Repo, [string]$FilePath)
-    $bytes = [System.IO.File]::ReadAllBytes($FilePath)
-    $digest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    $url = "http://127.0.0.1:$Port/v2/$Repo/blobs/uploads/$([System.Guid]::NewGuid().ToString())?digest=$digest"
-    Invoke-RestMethod -Uri $url -Method PUT -Headers @{ "Content-Type" = "application/octet-stream" } -Body $bytes | Out-Null
-    return $digest
-}
-
-function Pull-BlobFromRegistry {
-    param([int]$Port, [string]$Repo, [string]$Digest, [string]$OutPath)
-    $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v2/$Repo/blobs/$Digest" -Method GET
-    [System.IO.File]::WriteAllBytes($OutPath, $resp.Content)
-}
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -184,17 +170,13 @@ try {
     Write-Host "STEP 3: Push .ext packages to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $skillDigest = $null
-    $mcpDigest = $null
     if (Test-Path $skillExtPath) {
-        $skillDigest = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/extensions/calculator-skill" -FilePath $skillExtPath
+        & $pekoCmd ext push calculator-skill "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
         Write-Host "Pushed calculator-skill to registry" -ForegroundColor Green
-        Write-Host "  Digest: $skillDigest" -ForegroundColor Gray
     }
     if (Test-Path $mcpExtPath) {
-        $mcpDigest = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/extensions/standard-echo" -FilePath $mcpExtPath
+        & $pekoCmd ext push standard-echo "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
         Write-Host "Pushed standard-echo to registry" -ForegroundColor Green
-        Write-Host "  Digest: $mcpDigest" -ForegroundColor Gray
     }
 
     # ============================================================
@@ -230,23 +212,13 @@ try {
     Write-Host "STEP 5: Pull .ext packages from registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $pulledSkillPath = "$testDir/pulled-calculator-skill.ext"
-    $pulledMcpPath = "$testDir/pulled-standard-echo.ext"
-
-    if ($skillDigest) {
-        Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/extensions/calculator-skill" -Digest $skillDigest -OutPath $pulledSkillPath
-        $pulledSkillBytes = [System.IO.File]::ReadAllBytes($pulledSkillPath)
-        $pulledSkillDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($pulledSkillBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-        if ($pulledSkillDigest -ne $skillDigest) { Write-Error "Pulled skill digest mismatch" }
-        Write-Host "Pulled calculator-skill and verified digest" -ForegroundColor Green
+    if (Test-Path $skillExtPath) {
+        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
+        Write-Host "Pulled calculator-skill" -ForegroundColor Green
     }
-
-    if ($mcpDigest) {
-        Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/extensions/standard-echo" -Digest $mcpDigest -OutPath $pulledMcpPath
-        $pulledMcpBytes = [System.IO.File]::ReadAllBytes($pulledMcpPath)
-        $pulledMcpDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($pulledMcpBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-        if ($pulledMcpDigest -ne $mcpDigest) { Write-Error "Pulled MCP digest mismatch" }
-        Write-Host "Pulled standard-echo and verified digest" -ForegroundColor Green
+    if (Test-Path $mcpExtPath) {
+        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
+        Write-Host "Pulled standard-echo" -ForegroundColor Green
     }
 
     # ============================================================

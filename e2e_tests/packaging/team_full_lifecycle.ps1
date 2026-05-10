@@ -69,20 +69,7 @@ function Reset-RegistryStorage {
     Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/reset" -Method DELETE | Out-Null
 }
 
-function Push-BlobToRegistry {
-    param([int]$Port, [string]$Repo, [string]$FilePath)
-    $bytes = [System.IO.File]::ReadAllBytes($FilePath)
-    $digest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    $url = "http://127.0.0.1:$Port/v2/$Repo/blobs/uploads/$([System.Guid]::NewGuid().ToString())?digest=$digest"
-    Invoke-RestMethod -Uri $url -Method PUT -Headers @{ "Content-Type" = "application/octet-stream" } -Body $bytes | Out-Null
-    return $digest
-}
 
-function Pull-BlobFromRegistry {
-    param([int]$Port, [string]$Repo, [string]$Digest, [string]$OutPath)
-    $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v2/$Repo/blobs/$Digest" -Method GET
-    [System.IO.File]::WriteAllBytes($OutPath, $resp.Content)
-}
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -152,6 +139,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $teamName = "full-lifecycle-team"
+    $importedTeamName = "full-lifecycle-clone"
     $agent1 = "math-agent"
     $agent2 = "echo-agent"
     $agent3 = "memory-agent"
@@ -280,20 +268,15 @@ try {
     Write-Host "STEP 6: Push to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $teamDigest = $null
-    $skillDigest = $null
-    $mcpDigest = $null
-
-    $teamDigest = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/teams/full-lifecycle" -FilePath $teamSnapshotPath
+    & $pekoCmd team push $teamName "127.0.0.1:$RegistryPort/pekobot/teams/full-lifecycle:latest" 2>&1 | Out-Null
     Write-Host "Pushed team snapshot" -ForegroundColor Green
-    Write-Host "  Digest: $teamDigest" -ForegroundColor Gray
 
     if (Test-Path $skillExtPath) {
-        $skillDigest = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/extensions/calculator-skill" -FilePath $skillExtPath
+        & $pekoCmd ext push calculator-skill "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
         Write-Host "Pushed calculator-skill .ext" -ForegroundColor Green
     }
     if (Test-Path $mcpExtPath) {
-        $mcpDigest = Push-BlobToRegistry -Port $RegistryPort -Repo "pekobot/extensions/standard-echo" -FilePath $mcpExtPath
+        & $pekoCmd ext push standard-echo "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
         Write-Host "Pushed standard-echo .ext" -ForegroundColor Green
     }
 
@@ -307,17 +290,15 @@ try {
     & $pekoCmd team remove $teamName --force 2>&1 | Out-Null
     Write-Host "Removed original team" -ForegroundColor Yellow
 
-    # NOTE: On Windows, ext uninstall may leave an empty directory locked by the
-    # daemon, causing subsequent ext install to fail. We skip uninstall here and
-    # rely on ext install's overwrite behavior (or test the .ext packages directly).
-    # if ($skillInstalled) {
-    #     & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
-    #     Write-Host "Uninstalled calculator-skill" -ForegroundColor Yellow
-    # }
-    # if ($mcpInstalled) {
-    #     & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
-    #     Write-Host "Uninstalled standard-echo" -ForegroundColor Yellow
-    # }
+    # Uninstall extensions to simulate a fresh machine before pulling from registry.
+    if ($skillInstalled) {
+        & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
+        Write-Host "Uninstalled calculator-skill" -ForegroundColor Yellow
+    }
+    if ($mcpInstalled) {
+        & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
+        Write-Host "Uninstalled standard-echo" -ForegroundColor Yellow
+    }
 
     $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
     if (Test-Path $localRegistryDir) {
@@ -332,81 +313,45 @@ try {
     Write-Host "STEP 8: Pull from registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $pulledTeamPath = "$testDir/pulled-team.team"
-    Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/teams/full-lifecycle" -Digest $teamDigest -OutPath $pulledTeamPath
-    $pulledTeamBytes = [System.IO.File]::ReadAllBytes($pulledTeamPath)
-    $pulledTeamDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($pulledTeamBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-    if ($pulledTeamDigest -ne $teamDigest) { Write-Error "Team digest mismatch after pull" }
-    Write-Host "Pulled team snapshot and verified digest" -ForegroundColor Green
+    & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/full-lifecycle:latest" --name $importedTeamName 2>&1 | Out-Null
+    Write-Host "Pulled and imported team snapshot" -ForegroundColor Green
 
-    $pulledSkillPath = "$testDir/pulled-skill.ext"
-    $pulledMcpPath = "$testDir/pulled-mcp.ext"
-
-    if ($skillDigest) {
-        Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/extensions/calculator-skill" -Digest $skillDigest -OutPath $pulledSkillPath
-        $pulledSkillBytes = [System.IO.File]::ReadAllBytes($pulledSkillPath)
-        $pulledSkillDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($pulledSkillBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-        if ($pulledSkillDigest -ne $skillDigest) { Write-Error "Skill digest mismatch after pull" }
-        Write-Host "Pulled calculator-skill and verified digest" -ForegroundColor Green
+    if ($skillInstalled) {
+        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
+        Write-Host "Pulled calculator-skill" -ForegroundColor Green
     }
-    if ($mcpDigest) {
-        Pull-BlobFromRegistry -Port $RegistryPort -Repo "pekobot/extensions/standard-echo" -Digest $mcpDigest -OutPath $pulledMcpPath
-        $pulledMcpBytes = [System.IO.File]::ReadAllBytes($pulledMcpPath)
-        $pulledMcpDigest = "sha256:" + ([System.Security.Cryptography.SHA256]::Create().ComputeHash($pulledMcpBytes) | ForEach-Object { $_.ToString("x2") }) -join ""
-        if ($pulledMcpDigest -ne $mcpDigest) { Write-Error "MCP digest mismatch after pull" }
-        Write-Host "Pulled standard-echo and verified digest" -ForegroundColor Green
+    if ($mcpInstalled) {
+        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
+        Write-Host "Pulled standard-echo" -ForegroundColor Green
     }
 
     # ============================================================
-    # STEP 9: Install pulled extensions
+    # STEP 9: Verify pulled extensions are installed
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 9: Install pulled extensions" -ForegroundColor Cyan
+    Write-Host "STEP 9: Verify pulled extensions" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    # Install from pulled .ext packages. Since we didn't uninstall the originals,
-    # this tests the overwrite/reinstall path.
-    if (Test-Path $pulledSkillPath) {
-        $skillInstallOutput = & $pekoCmd ext install $pulledSkillPath 2>&1 | Out-String
-        if ($skillInstallOutput -match "Extension installed successfully") {
-            Write-Host "Installed pulled calculator-skill" -ForegroundColor Green
-        } else {
-            Write-Warning "calculator-skill .ext install did not report success"
-        }
-    }
-    if (Test-Path $pulledMcpPath) {
-        $mcpInstallOutput = & $pekoCmd ext install $pulledMcpPath 2>&1 | Out-String
-        if ($mcpInstallOutput -match "Extension installed successfully") {
-            Write-Host "Installed pulled standard-echo" -ForegroundColor Green
-        } else {
-            Write-Host "standard-echo .ext install skipped (original still present)" -ForegroundColor Yellow
-        }
-    }
-
-    $extList = & $pekoCmd ext list --json | Where-Object { $_.Trim().Substring(0,1) -eq '{' -or $_.Trim().Substring(0,1) -eq '[' } | ConvertFrom-Json
+    $extList = & $pekoCmd ext list --json | ConvertFrom-Json
     $skillReinstalled = $extList.extensions | Where-Object { $_.id -match "calculator" }
     $mcpReinstalled = $extList.extensions | Where-Object { $_.id -match "echo" }
     if ($skillReinstalled) {
         Write-Host "calculator-skill confirmed installed" -ForegroundColor Green
-    } elseif ((Test-Path $pulledSkillPath) -or (Test-Path $skillSource)) {
-        Write-Warning "calculator-skill not found after install"
+    } elseif ($skillInstalled) {
+        Write-Error "calculator-skill not found after pull"
     }
     if ($mcpReinstalled) {
         Write-Host "standard-echo confirmed installed" -ForegroundColor Green
-    } elseif ((Test-Path $pulledMcpPath) -or (Test-Path $mcpSource)) {
-        Write-Host "standard-echo using original installation" -ForegroundColor Yellow
+    } elseif ($mcpInstalled) {
+        Write-Error "standard-echo not found after pull"
     }
 
     # ============================================================
-    # STEP 10: Import pulled team
+    # STEP 10: Verify pulled team is imported
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 10: Import pulled team" -ForegroundColor Cyan
+    Write-Host "STEP 10: Verify pulled team" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
-
-    $importedTeamName = "full-lifecycle-clone"
-    $importResult = & $pekoCmd team import $pulledTeamPath --name $importedTeamName --json | ConvertFrom-Json
-    if ($importResult.name -ne $importedTeamName) { Write-Error "Team import failed" }
 
     $importedShow = & $pekoCmd team show $importedTeamName --json | ConvertFrom-Json
     if ($importedShow.agent_count -ne 3) { Write-Error "Imported team has wrong agent count: $($importedShow.agent_count)" }
@@ -562,7 +507,7 @@ try {
 
     & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
     & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
-    Write-Host "Uninstalled test extensions (best effort)" -ForegroundColor Green
+    Write-Host "Uninstalled test extensions" -ForegroundColor Green
 
     & $pekoCmd team remove $importedTeamName --force 2>&1 | Out-Null
     Write-Host "Removed imported team" -ForegroundColor Green

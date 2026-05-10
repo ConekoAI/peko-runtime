@@ -13,6 +13,11 @@ use crate::extension::manager::{ExtensionManager, ExtensionStorage, LoadedExtens
 use crate::extension::services::{ConfigScope, ExtensionConfigService, Services};
 use crate::extension::types::ExtensionId;
 use crate::ipc::client_service::DaemonClientService;
+use crate::portable::registry::AgentRegistry;
+use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
+use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
+use crate::registry::config::{RegistryConfig, RegistrySource};
+use crate::registry::manifest::RegistryManifest;
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -139,6 +144,23 @@ pub enum ExtCommands {
 
     /// Show background runtime status for an extension
     Status { id: String },
+
+    /// Push an installed extension to a registry
+    Push {
+        /// Extension ID to push
+        id: String,
+        /// Registry reference (host/path:tag)
+        registry_ref: String,
+    },
+
+    /// Pull an extension from a registry
+    Pull {
+        /// Registry reference (host/path:tag)
+        registry_ref: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Create an `ExtensionManager` with all default adapters registered
@@ -177,7 +199,7 @@ async fn create_manager_with_adapters(
 }
 
 /// Handle extension subcommands
-pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> anyhow::Result<()> {
+pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths, json: bool) -> anyhow::Result<()> {
     // Get the global ExtensionCore — initialized by main.rs before command dispatch.
     // We extract it once and pass it down to eliminate direct global_core() calls
     // in subcommand handlers.
@@ -270,6 +292,12 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                         println!("  Last error:     {}", err);
                     }
                     Ok(())
+                }
+                ExtCommands::Push { id, registry_ref } => {
+                    handle_ext_push(&manager, &id, &registry_ref, json).await
+                }
+                ExtCommands::Pull { registry_ref, json: pull_json } => {
+                    handle_ext_pull(&mut manager, &registry_ref, pull_json).await
                 }
                 ExtCommands::Validate { .. } | ExtCommands::Debug { .. } => unreachable!(),
             }
@@ -1046,6 +1074,237 @@ async fn handle_config(
     }
 
     Ok(())
+}
+
+// --- Push / Pull ---
+
+async fn handle_ext_push(
+    manager: &ExtensionManager,
+    id: &str,
+    registry_ref: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    let ext_id = ExtensionId::new(id);
+
+    // Verify extension exists before exporting
+    let ext = manager
+        .get_extension(&ext_id)
+        .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
+
+    // Export to a temp .ext file
+    let temp_dir = std::env::temp_dir().join("pekobot_ext_push");
+    std::fs::create_dir_all(&temp_dir)?;
+    let temp_path = temp_dir.join(format!("{}.ext", ext.manifest.id.0));
+
+    ExtensionPackager::export(manager, &ext_id, temp_path.to_string_lossy().as_ref())?;
+
+    // Read file bytes and compute digest
+    let data = tokio::fs::read(&temp_path).await?;
+    let layer_digest = compute_digest(&data);
+
+    // Store as layer in AgentRegistry
+    let registry = AgentRegistry::new(AgentRegistry::default_path());
+    registry.init().await?;
+    registry.store_layer(&layer_digest, &data).await?;
+
+    // Build RegistryManifest with kind="extension", single layer
+    let mut manifest = RegistryManifest::new(ext.manifest.name.clone(), ext.manifest.version.clone())
+        .with_kind("extension")
+        .with_ref(registry_ref);
+    manifest.add_layer(Layer::new(
+        layer_digest.clone(),
+        LayerType::Config,
+        data.len() as u64,
+    ));
+
+    // Compute manifest digest
+    let manifest_json = manifest.to_json()?;
+    let manifest_digest = ImageDigest::from_bytes(manifest_json.as_bytes());
+    manifest.digest = manifest_digest.as_str().to_string();
+
+    // Store manifest for RegistryClient
+    store_registry_manifest_for_client(&registry, &manifest).await?;
+
+    // Parse registry ref and configure client
+    let reg_ref = RegistryRef::parse(registry_ref)?;
+    let mut config = RegistryConfig::default();
+    config.add_source(RegistrySource {
+        url: reg_ref.host.clone(),
+        priority: 1,
+        auth: None,
+    });
+
+    let client = RegistryClient::new(config, registry);
+
+    if json {
+        let result = client.push(&manifest_digest, registry_ref, |_| {}).await?;
+        let output = serde_json::json!({
+            "success": true,
+            "extension_id": id,
+            "registry_ref": registry_ref,
+            "manifest": {
+                "name": result.name,
+                "version": result.version,
+                "digest": result.digest,
+                "kind": result.kind,
+                "layers": result.layers.len(),
+                "total_size": result.total_size_bytes(),
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Pushing extension '{id}' to {registry_ref}...");
+        let _result = client
+            .push(&manifest_digest, registry_ref, |event| match event {
+                ProgressEvent::Resolving { .. } => {}
+                ProgressEvent::Pushing {
+                    layer,
+                    bytes_sent,
+                    bytes_total,
+                } => {
+                    if bytes_sent == bytes_total && bytes_sent != Some(0) {
+                        println!("  Layer {}  ✓ uploaded", &layer[..19.min(layer.len())]);
+                    } else if bytes_sent == Some(0) {
+                        println!("  Layer {}  → uploading", &layer[..19.min(layer.len())]);
+                    }
+                }
+                ProgressEvent::Done { .. } => {
+                    println!("  Manifest         pushed");
+                    println!("Done.");
+                }
+                ProgressEvent::Error { code, message } => {
+                    eprintln!("  Error: {code} - {message}");
+                }
+                _ => {}
+            })
+            .await?;
+    }
+
+    // Clean up temp file
+    let _ = tokio::fs::remove_file(&temp_path).await;
+
+    Ok(())
+}
+
+async fn handle_ext_pull(
+    manager: &mut ExtensionManager,
+    registry_ref: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
+    agent_registry.init().await?;
+
+    let reg_ref = RegistryRef::parse(registry_ref)?;
+    let mut config = RegistryConfig::default();
+    config.add_source(RegistrySource {
+        url: reg_ref.host.clone(),
+        priority: 1,
+        auth: None,
+    });
+
+    let client = RegistryClient::new(config, agent_registry.clone());
+
+    let manifest = if json {
+        client.pull(registry_ref, |_| {}).await?
+    } else {
+        println!("Pulling extension {registry_ref}...");
+        client
+            .pull(registry_ref, |event| match event {
+                ProgressEvent::Resolving { .. } => {
+                    println!("  Resolving...");
+                }
+                ProgressEvent::Pulling {
+                    layer,
+                    bytes_received,
+                    bytes_total,
+                } => {
+                    if bytes_received == bytes_total && bytes_received != Some(0) {
+                        println!("  Layer {}  ✓ downloaded", &layer[..19.min(layer.len())]);
+                    } else if bytes_received == Some(0) {
+                        println!("  Layer {}  → downloading", &layer[..19.min(layer.len())]);
+                    }
+                }
+                ProgressEvent::Verifying { layer } => {
+                    println!("  Verifying {layer}...");
+                }
+                ProgressEvent::Done { .. } => {
+                    println!("Done.");
+                }
+                ProgressEvent::Error { code, message } => {
+                    eprintln!("  Error: {code} - {message}");
+                }
+                _ => {}
+            })
+            .await?
+    };
+
+    // Read the layer bytes from AgentRegistry
+    let layer = manifest
+        .layers
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Manifest has no layers"))?;
+    let data = agent_registry.get_layer(&layer.digest).await?;
+
+    // Write to a temp .ext file
+    let temp_dir = std::env::temp_dir().join("pekobot_ext_pull");
+    std::fs::create_dir_all(&temp_dir)?;
+    let temp_path = temp_dir.join(format!("{}.ext", manifest.name));
+    tokio::fs::write(&temp_path, &data).await?;
+
+    if json {
+        let install_output = handle_install(manager, temp_path.clone(), None).await;
+        match install_output {
+            Ok(()) => {
+                let output = serde_json::json!({
+                    "success": true,
+                    "registry_ref": registry_ref,
+                    "manifest": {
+                        "name": manifest.name,
+                        "version": manifest.version,
+                        "digest": manifest.digest,
+                        "kind": manifest.kind,
+                        "layers": manifest.layers.len(),
+                        "total_size": manifest.total_size_bytes(),
+                    }
+                });
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+            Err(e) => {
+                let output = serde_json::json!({
+                    "success": false,
+                    "registry_ref": registry_ref,
+                    "error": e.to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&output)?);
+                return Err(e);
+            }
+        }
+    } else {
+        println!("Installing extension from pulled package...");
+        handle_install(manager, temp_path.clone(), None).await?;
+    }
+
+    // Clean up temp file
+    let _ = tokio::fs::remove_file(&temp_path).await;
+
+    Ok(())
+}
+
+/// Store a `RegistryManifest` in the format expected by `RegistryClient`
+async fn store_registry_manifest_for_client(
+    registry: &AgentRegistry,
+    manifest: &RegistryManifest,
+) -> anyhow::Result<ImageDigest> {
+    let digest = ImageDigest::new(&manifest.digest)?;
+    let image_dir = registry
+        .root_path()
+        .join("registry_manifests")
+        .join(digest.dir_name());
+    tokio::fs::create_dir_all(&image_dir).await?;
+    let manifest_path = image_dir.join("manifest.json");
+    let json = manifest.to_json()?;
+    tokio::fs::write(&manifest_path, json).await?;
+    Ok(digest)
 }
 
 // --- Debug ---
