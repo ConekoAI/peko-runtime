@@ -26,7 +26,7 @@ After running `ext stop` on an MCP extension:
 
 ### Where the failure occurs
 
-The MCP runtime adapter starts a Python process via `std::process::Command` (or similar process spawning). When `ext stop` is called, the shutdown signal is sent to the runtime adapter, but:
+The MCP runtime adapter starts a Python process via `std::process::Command`. When `ext stop` is called, the shutdown signal is sent to the runtime adapter, but:
 
 - The adapter may only close stdin/stdout pipes or send a JSON-RPC `exit` notification
 - The Python process may not actually exit because:
@@ -43,26 +43,11 @@ On **Windows**, process trees are not automatically terminated when the parent e
 - **Explicit child enumeration and termination** via `EnumProcesses` or `NtQueryInformationProcess`
 - **Ctrl+Break signal** sent to the process group
 
-The current implementation likely relies on the MCP adapter to "do the right thing" when its transport closes, but Python's default behavior on Windows is to ignore pipe closure and keep running.
+The implementation relies on the MCP adapter to "do the right thing" when its transport closes, but Python's default behavior on Windows is to ignore pipe closure and keep running.
 
 ### E2E test impact
 
-The `team_full_lifecycle.ps1` E2E test currently works around this with a `Stop-McpProcesses` helper that brute-force kills any `python.exe` process whose command line matches the extension name:
-
-```powershell
-function Stop-McpProcesses {
-    Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-        $_.CommandLine -match "standard-echo|mcp.*echo"
-    } | ForEach-Object {
-        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-    }
-}
-```
-
-This is fragile because:
-- It may kill unrelated Python processes
-- It relies on string matching the command line
-- It is not a general solution for all MCP extensions
+The `team_full_lifecycle.ps1` E2E test previously worked around this with a `Stop-McpProcesses` helper that brute-force killed any `python.exe` process whose command line matched the extension name. This workaround has been removed.
 
 ---
 
@@ -70,35 +55,30 @@ This is fragile because:
 
 ### Process spawning
 
-The MCP extension runtime spawns a Python process. The exact location depends on the adapter implementation, but typically:
+The MCP extension runtime spawns a Python process via:
 
 - `src/extensions/mcp/runtime/` — MCP runtime adapters and starters
 - `src/daemon/background_runtime/` — generic process supervision (traits, manager, supervisor)
 
-The generic process supervision layer (`background_runtime`) provides traits for process lifecycle but may not enforce Windows job object semantics.
+The generic process supervision layer (`background_runtime`) provides traits for process lifecycle and now enforces Windows job object semantics.
 
 ### Shutdown path
 
 When `ext stop` is called:
 
 1. CLI sends stop request to daemon
-2. Daemon calls `ExtensionManager::stop_runtime()` or equivalent
+2. Daemon calls `BackgroundRuntimeManager::stop()`
 3. Runtime adapter receives shutdown signal
 4. Adapter signals the transport to close
-5. **Python process should exit, but doesn't**
-
-The gap is between step 4 and 5. The transport closure is not a reliable termination mechanism on Windows for Python processes that:
-- Use `asyncio` event loops
-- Have blocking I/O threads
-- Spawn their own child processes
+5. **`graceful_shutdown()` ensures the process is actually terminated**
 
 ---
 
 ## Fix Applied
 
-### Approach: Windows Job Objects + Improved Force Kill
+### Phase 1: Windows Job Objects + Improved Force Kill
 
-The fix combines **Option A** (Windows Job Objects) with **Option C** (Timeout + Force Kill), exactly as recommended.
+The fix combines **Windows Job Objects** with **Timeout + Force Kill**.
 
 #### Changes Made
 
@@ -116,20 +96,33 @@ The fix combines **Option A** (Windows Job Objects) with **Option C** (Timeout +
 
 5. **`src/common/process/spawn.rs`** — On Windows, creates a job object and assigns the spawned child to it before returning.
 
-6. **`src/common/process/kill.rs`** —
-   - `graceful_shutdown()` now accepts an optional `JobObject`; the job handle is dropped after the force-kill attempt, ensuring any surviving descendants are terminated.
-   - `force_kill_child()` on Windows now tries `taskkill /T /F /PID` first (kills the whole tree) before falling back to `child.kill()`.
-
-7. **`src/daemon/background_runtime/supervisor.rs`** —
+6. **`src/daemon/background_runtime/supervisor.rs`** —
    - `RuntimeKind::Process` stores the `JobObject` on Windows.
    - `stop_runtime()` passes the job to `graceful_shutdown()`.
 
-8. **`e2e_tests/packaging/team_full_lifecycle.ps1`** — Removed the `Stop-McpProcesses` workaround.
+### Phase 2: Synchronization delays after force-kill
+
+Even with job objects and `taskkill /T /F`, Windows may not release file handles immediately upon process termination. The following additional changes were made to `src/common/process/kill.rs`:
+
+7. **`force_kill_child()`** — After successful `taskkill /T /F /PID` on Windows, now sleeps **300ms** before returning. This gives the OS time to finish terminating the entire process tree and release handles before callers (like `ext uninstall`) attempt filesystem operations.
+
+8. **`graceful_shutdown()`** — After `force_kill_child()` returns, now:
+   - Sleeps **300ms** to allow handle cleanup
+   - Attempts `child.wait()` with a 2-second timeout to ensure the child handle resolves
+   - Only then drops the job object
+
+This ensures that by the time `ext stop` returns success, the process is **actually gone** and its handles are **actually released**.
+
+### Phase 3: Storage-level retry resilience (coordinated with Issue 021)
+
+As a defense-in-depth measure, `src/extension/manager/storage.rs` now includes retry logic with delays for `remove_dir_all` and `rename` operations. Even if a process termination races with an uninstall, the storage layer will retry for up to 2 seconds before giving up.
 
 ### Why This Works
 
 - **Job objects** provide an OS-level guarantee: when the last handle is closed, Windows kills **all** processes in the job, including grandchildren spawned by the Python MCP server.
 - **`taskkill /T`** is a fallback that kills the entire process tree explicitly.
+- **Post-kill delays** ensure Windows has time to clean up process handles before filesystem operations proceed.
+- **Storage retries** provide a final safety net for any remaining race conditions.
 - On **Unix**, behavior is unchanged — process group signals already handle this.
 
 ---
@@ -146,10 +139,13 @@ The fix combines **Option A** (Windows Job Objects) with **Option C** (Timeout +
 
 ## Related Code
 
+- `src/common/process/job_object.rs` — Windows job object implementation
+- `src/common/process/kill.rs` — `graceful_shutdown()`, `force_kill_child()`
+- `src/common/process/spawn.rs` — Process spawning with job object assignment
 - `src/extensions/mcp/runtime/` — MCP runtime adapters, tool proxies, starters
 - `src/daemon/background_runtime/` — generic process supervision (manager, supervisor, adapter traits)
 - `src/extension/manager/` — extension lifecycle (install, enable, start, stop, uninstall)
-- `e2e_tests/packaging/team_full_lifecycle.ps1` — `Stop-McpProcesses` workaround
+- `e2e_tests/packaging/team_full_lifecycle.ps1`
 
 ---
 

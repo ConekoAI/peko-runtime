@@ -55,7 +55,7 @@ static GLOBAL_MCP_MANAGER: OnceLock<
     Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
 > = OnceLock::new();
 
-/// Get or initialize the global MCP manager
+/// Get or initialize the global MCP manager (standalone mode).
 fn get_global_mcp_manager() -> Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>> {
     GLOBAL_MCP_MANAGER
         .get_or_init(|| {
@@ -65,6 +65,26 @@ fn get_global_mcp_manager() -> Arc<RwLock<crate::extensions::mcp::protocol::mana
             ))
         })
         .clone()
+}
+
+/// Initialize the global MCP manager with shared daemon resources.
+///
+/// This should be called once during daemon startup **before** any code
+/// calls `McpAdapter::with_default_manager()`.  After this call the global
+/// manager will use the daemon-wide `BackgroundRuntimeManager` and
+/// `McpClientRegistry` so that `ext start` / `ext stop` control the same
+/// runtimes that agent-init and tool-proxy code paths see.
+pub fn init_global_mcp_manager_with_shared_resources(
+    runtime_manager: Arc<crate::daemon::background_runtime::BackgroundRuntimeManager>,
+    client_registry: Arc<crate::extensions::mcp::runtime::McpClientRegistry>,
+) {
+    let config = crate::extensions::mcp::protocol::config::McpConfig::default();
+    let manager = crate::extensions::mcp::protocol::manager::McpManager::with_shared_resources(
+        config,
+        runtime_manager,
+        client_registry,
+    );
+    let _ = GLOBAL_MCP_MANAGER.set(Arc::new(RwLock::new(manager)));
 }
 
 /// MCP adapter for Extension system
@@ -828,36 +848,26 @@ impl HookHandler for McpServerInitHandler {
             info!(server_name = %self.server_name, "Added MCP server config to manager");
         }
 
+        // Do NOT auto-start the server here.  Starting the server on every
+        // AgentInit hook (which fires for *any* agent, not just the one that
+        // enabled this extension) causes `ext start` to fail with "Runtime
+        // already exists".  The server will be started on demand by
+        // `ext start` or `McpToolProxy::call_with_auto_start()`.
         let manager = self.manager.read().await;
-        let was_running = match manager.get_server_state(&self.server_name).await {
+        let is_running = match manager.get_server_state(&self.server_name).await {
             Ok(state) if state.running => true,
             _ => false,
         };
         drop(manager);
 
-        let server_started = if was_running {
-            true
-        } else {
-            let manager = self.manager.write().await;
-            match manager.start_server(&self.server_name).await {
-                Ok(()) => {
-                    info!(server_name = %self.server_name, "MCP server started");
-                    true
-                }
-                Err(e) => {
-                    warn!(server_name = %self.server_name, error = %e, "Failed to start MCP server");
-                    false
-                }
-            }
-        };
-
-        // Register tools with unified registry after server is running
-        if server_started {
-            if let Some(core) = crate::extension::core::global_core() {
-                let adapter = McpAdapter::new(self.manager.clone());
-                match adapter
-                    .register_server_tools(&core, &self.server_name)
-                    .await
+        // Register tools with unified registry so the agent can use them.
+        // Registration does not require the server to be running; tool
+        // metadata was discovered when the extension was installed.
+        if let Some(core) = crate::extension::core::global_core() {
+            let adapter = McpAdapter::new(self.manager.clone());
+            match adapter
+                .register_server_tools(&core, &self.server_name)
+                .await
                 {
                     Ok(count) => {
                         info!(server_name = %self.server_name, count = count, "Registered MCP tools with unified registry");
@@ -869,7 +879,6 @@ impl HookHandler for McpServerInitHandler {
             } else {
                 warn!("No global ExtensionCore available for MCP tool registration");
             }
-        }
 
         HookResult::Continue(crate::extension::types::HookOutput::Unit)
     }

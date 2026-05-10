@@ -10,7 +10,10 @@ pub mod protocol;
 pub mod runtime;
 
 // Re-export key types for convenience
-pub use adapter::{load_servers_from_directory, DiscoveredMcpServer, McpAdapter};
+pub use adapter::{
+    init_global_mcp_manager_with_shared_resources, load_servers_from_directory,
+    DiscoveredMcpServer, McpAdapter,
+};
 pub use protocol::{
     client::{ClientError, McpClient},
     config::{ConfigFormat, McpConfig, McpServerConfig, TransportType},

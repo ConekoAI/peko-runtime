@@ -132,6 +132,10 @@ pub async fn graceful_shutdown(
         Ok(Err(e)) => {
             warn!("Process[{}] error waiting: {}", pid, e);
             force_kill_child(&mut child, pid).await?;
+            // Give the OS a moment to finish terminating the process tree,
+            // then wait for the child handle to resolve.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = timeout(Duration::from_secs(2), child.wait()).await;
             drop(job);
             Ok(())
         }
@@ -141,6 +145,10 @@ pub async fn graceful_shutdown(
                 pid, kill_timeout
             );
             force_kill_child(&mut child, pid).await?;
+            // Give the OS a moment to finish terminating the process tree,
+            // then wait for the child handle to resolve.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = timeout(Duration::from_secs(2), child.wait()).await;
             drop(job);
             Ok(())
         }
@@ -176,6 +184,9 @@ pub async fn force_kill_child(child: &mut Child, pid: u32) -> Result<()> {
         {
             Ok(output) if output.status.success() => {
                 debug!("Process[{}] tree killed via taskkill", pid);
+                // taskkill is asynchronous; give the OS a moment to actually
+                // terminate the processes before callers assume handles are free.
+                tokio::time::sleep(Duration::from_millis(300)).await;
                 return Ok(());
             }
             Ok(output) => {

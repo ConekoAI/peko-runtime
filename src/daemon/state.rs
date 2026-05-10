@@ -304,6 +304,14 @@ impl AppState {
         // ADR-025: Shared MCP client registry — populated by McpRuntimeAdapter
         let mcp_client_registry = Arc::new(McpClientRegistry::new());
 
+        // Ensure the global MCP manager uses the daemon-wide shared resources.
+        // This unifies the runtime paths so `ext start` / `ext stop` control the
+        // same processes that agent-init and tool-proxy code paths see.
+        crate::extensions::mcp::init_global_mcp_manager_with_shared_resources(
+            Arc::clone(&background_runtime_manager),
+            Arc::clone(&mcp_client_registry),
+        );
+
         // ADR-025/026: Extension runtime starter registry
         let mut runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
         runtime_starter_registry.register(Box::new(GatewayRuntimeStarter::new()));

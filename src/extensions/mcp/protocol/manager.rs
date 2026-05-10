@@ -426,19 +426,21 @@ impl McpManager {
             .get(name)
             .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))?;
 
-        if !handle.state.running {
-            return Err(ManagerError::ServerNotRunning(name.to_string()));
-        }
-
         if handle.managed {
-            // Client lives in the shared registry
+            // For managed servers, the client lives in the shared registry.
+            // The server may have been started by BackgroundRuntimeManager
+            // (e.g. via `peko ext start`) rather than by McpManager::start_server(),
+            // so handle.state.running may be false even though the runtime is alive.
             drop(servers);
             self.client_registry()
                 .get_client(name)
                 .await
                 .ok_or_else(|| ManagerError::ServerNotRunning(name.to_string()))
         } else {
-            // Client lives directly in the handle
+            if !handle.state.running {
+                return Err(ManagerError::ServerNotRunning(name.to_string()));
+            }
+            // Client lives directly in the handle (SSE/direct mode)
             handle
                 .client
                 .clone()
@@ -455,19 +457,25 @@ impl McpManager {
             .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))?;
 
         // For managed servers, sync state from BackgroundRuntimeManager
-        if handle.managed && handle.state.running {
+        if handle.managed {
+            // Check if the runtime is actually running in BackgroundRuntimeManager,
+            // even if handle.state.running is false (server started via `peko ext start`
+            // rather than McpManager::start_server()).
             if let Some(runtime_state) = self.runtime_manager().get_state(name).await {
                 match runtime_state {
-                    RuntimeState::Healthy => {
-                        handle.state.healthy = true;
-                    }
-                    RuntimeState::Running => {
-                        handle.state.healthy = true;
+                    RuntimeState::Healthy | RuntimeState::Running | RuntimeState::Starting => {
+                        handle.state.running = true;
+                        handle.state.healthy = matches!(runtime_state, RuntimeState::Healthy | RuntimeState::Running);
                     }
                     RuntimeState::Unhealthy | RuntimeState::Crashed => {
+                        if handle.state.running {
+                            handle.state.healthy = false;
+                        }
+                    }
+                    RuntimeState::Stopped | RuntimeState::Stopping => {
+                        handle.state.running = false;
                         handle.state.healthy = false;
                     }
-                    _ => {}
                 }
             }
 

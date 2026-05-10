@@ -236,9 +236,28 @@ impl ExtensionUnpackager {
 
         // Remove existing if present
         if ext_dir.exists() {
-            std::fs::remove_dir_all(&ext_dir).with_context(|| {
-                format!("Failed to remove existing extension: {}", ext_dir.display())
-            })?;
+            // On Windows a previous process may hold a lock; retry briefly.
+            let mut last_err = None;
+            for attempt in 0..10 {
+                match std::fs::remove_dir_all(&ext_dir) {
+                    Ok(()) => {
+                        last_err = None;
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                        if attempt + 1 < 10 {
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                return Err(anyhow::anyhow!(
+                    "Failed to remove existing extension: {}: {e}",
+                    ext_dir.display()
+                ));
+            }
         }
 
         // Extract extension files
