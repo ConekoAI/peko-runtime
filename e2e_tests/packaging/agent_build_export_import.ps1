@@ -292,34 +292,34 @@ Write-Host "========================================" -ForegroundColor Cyan
 $badDir = "$testDir/bad-agent"
 New-Item -ItemType Directory -Path $badDir -Force | Out-Null
 $buildError = & $pekoCmd agent build $badDir -t "bad:v1" 2>&1
-if ($buildError -match "config/agent.toml" -or $LASTEXITCODE -ne 0) {
+if ($LASTEXITCODE -ne 0 -and $buildError -match "config/agent.toml") {
     Write-Host "✓ Build correctly rejects missing config/agent.toml" -ForegroundColor Green
 } else {
-    Write-Error "Build did not validate config/agent.toml presence"
+    Write-Error "Build did not validate config/agent.toml presence (exit: $LASTEXITCODE, output: $buildError)"
 }
 
 # Import non-existent file
 $importError = & $pekoCmd agent import --file "$testDir/nonexistent.agent" 2>&1
-if ($importError -match "not found" -or $importError -match "error" -or $LASTEXITCODE -ne 0) {
+if ($LASTEXITCODE -ne 0 -and $importError -match "not found") {
     Write-Host "✓ Import correctly rejects non-existent file" -ForegroundColor Green
 } else {
-    Write-Error "Import did not handle missing files correctly"
+    Write-Error "Import did not handle missing files correctly (exit: $LASTEXITCODE, output: $importError)"
 }
 
 # Inspect non-existent file
 $inspectError = & $pekoCmd agent inspect "$testDir/nonexistent.agent" 2>&1
-if ($inspectError -match "not found" -or $inspectError -match "error" -or $LASTEXITCODE -ne 0) {
+if ($LASTEXITCODE -ne 0 -and $inspectError -match "not found") {
     Write-Host "✓ Inspect correctly rejects non-existent file" -ForegroundColor Green
 } else {
-    Write-Error "Inspect did not handle missing files correctly"
+    Write-Error "Inspect did not handle missing files correctly (exit: $LASTEXITCODE, output: $inspectError)"
 }
 
 # Export non-existent agent
 $exportError = & $pekoCmd agent export --name "nonexistentagent123" --team $sourceTeam --output "$testDir/fail.agent" 2>&1
-if ($exportError -match "not found" -or $exportError -match "error" -or $LASTEXITCODE -ne 0) {
+if ($LASTEXITCODE -ne 0 -and $exportError -match "not found") {
     Write-Host "✓ Export correctly rejects non-existent agent" -ForegroundColor Green
 } else {
-    Write-Error "Export did not handle missing agents correctly"
+    Write-Error "Export did not handle missing agents correctly (exit: $LASTEXITCODE, output: $exportError)"
 }
 
 # ============================================================

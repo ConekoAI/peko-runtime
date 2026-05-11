@@ -87,13 +87,12 @@ Write-Host "TEST 1: Team export" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $teamExportPath = "$testDir/team_export.team"
-$exportOutput = & $pekoCmd team export $testTeam -o $teamExportPath --json 2>&1
-# Workaround: JSON may contain unescaped Windows backslashes; verify file exists directly
-if (Test-Path $teamExportPath) {
-    $fileSize = (Get-Item $teamExportPath).Length
+$exportOutput = & $pekoCmd team export $testTeam -o $teamExportPath --json 2>&1 | ConvertFrom-Json
+if ($exportOutput.output_path -and (Test-Path $exportOutput.output_path)) {
+    $fileSize = (Get-Item $exportOutput.output_path).Length
     Write-Host "✓ Team exported successfully: $fileSize bytes" -ForegroundColor Green
 } else {
-    Write-Error "Team export failed or file missing: $exportOutput"
+    Write-Error "Team export failed or file missing: $($exportOutput | ConvertTo-Json)"
 }
 
 # Verify the .team file is a valid gzip tar
@@ -115,12 +114,11 @@ Write-Host "TEST 2: Team import with custom name" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $importedTeamName = "importedteam"
-$importOutput = & $pekoCmd team import $teamExportPath --name $importedTeamName --json 2>&1
-# Workaround: JSON may contain unescaped Windows backslashes; use text match
-if ($importOutput -match '"name"' -and $importOutput -match $importedTeamName) {
+$importOutput = & $pekoCmd team import $teamExportPath --name $importedTeamName --json 2>&1 | ConvertFrom-Json
+if ($importOutput.name -eq $importedTeamName) {
     Write-Host "✓ Team imported successfully as '$importedTeamName'" -ForegroundColor Green
 } else {
-    Write-Error "Team import failed: $importOutput"
+    Write-Error "Team import failed: $($importOutput | ConvertTo-Json)"
 }
 
 # Verify imported team has all agents

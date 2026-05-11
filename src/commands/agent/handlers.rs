@@ -296,8 +296,7 @@ pub async fn handle_agent_inspect(file: String, json: bool) -> anyhow::Result<()
     use crate::portable::get_package_info;
 
     if !std::path::Path::new(&file).exists() {
-        eprintln!("❌ File not found: {file}");
-        return Ok(());
+        anyhow::bail!("File not found: {file}");
     }
 
     let info = get_package_info(&file).await?;

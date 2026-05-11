@@ -335,17 +335,17 @@ default = "You are a helpful test agent. When asked to verify functionality, res
 
     $badRef = "127.0.0.1:$RegistryPort/pekobot/agents/nonexistent:latest"
     $pullError = & $pekoCmd agent pull $badRef 2>&1
-    if ($pullError -match "not found" -or $pullError -match "error" -or $LASTEXITCODE -ne 0) {
+    if ($LASTEXITCODE -ne 0 -and $pullError -match "not found") {
         Write-Host "Pull correctly rejects non-existent image" -ForegroundColor Green
     } else {
-        Write-Error "Pull did not handle missing images correctly"
+        Write-Error "Pull did not handle missing images correctly (exit: $LASTEXITCODE, output: $pullError)"
     }
 
     $pushError = & $pekoCmd agent push "nonexistent-tag:v1" $registryRef 2>&1
-    if ($pushError -match "not found" -or $pushError -match "error" -or $LASTEXITCODE -ne 0) {
+    if ($LASTEXITCODE -ne 0 -and $pushError -match "not found") {
         Write-Host "Push correctly rejects missing local tag" -ForegroundColor Green
     } else {
-        Write-Error "Push did not handle missing local tags correctly"
+        Write-Error "Push did not handle missing local tags correctly (exit: $LASTEXITCODE, output: $pushError)"
     }
 
 } finally {
