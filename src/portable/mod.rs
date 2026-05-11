@@ -46,6 +46,7 @@ pub mod crypto;
 pub mod manifest;
 pub mod packager;
 pub mod registry;
+pub mod team_layer_builder;
 pub mod team_packager;
 pub mod team_unpackager;
 pub mod types;
@@ -57,6 +58,7 @@ pub use crypto::{decrypt_with_passphrase, encrypt_with_passphrase, EncryptedData
 pub use manifest::AgentManifest;
 pub use packager::{export_agent, ExportOptions, Packager};
 pub use registry::AgentRegistry;
+pub use team_layer_builder::{decompose_team_archive, DecomposedTeamLayers, LayerBytes};
 pub use team_packager::{
     export_team, export_team_with_config_dir, AgentLayerRef, TeamAgentIndex, TeamExportOptions,
     TeamManifest, TeamPackager, TeamPackagingMetadata,

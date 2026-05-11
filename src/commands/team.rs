@@ -12,6 +12,7 @@ use crate::common::types::team::{
     TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMoveResult,
 };
 use crate::portable::registry::AgentRegistry;
+use crate::portable::team_layer_builder::decompose_team_archive;
 use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
 use crate::registry::config::{RegistryConfig, RegistrySource};
@@ -499,7 +500,7 @@ async fn handle_team_push(
     registry_ref: &str,
     json: bool,
 ) -> Result<()> {
-    // Export team to a temp .team file
+    // ── 1. Export team to a temp .team file ─────────────────────────────
     let temp_dir = std::env::temp_dir().join("pekobot_team_push");
     std::fs::create_dir_all(&temp_dir)?;
     let temp_path = temp_dir.join(format!("{name}.team"));
@@ -508,24 +509,48 @@ async fn handle_team_push(
         .export_team(name, Some(temp_path.to_string_lossy().to_string()), false, false, false)
         .await?;
 
-    // Read file bytes and compute digest
-    let data = tokio::fs::read(&export_result.output_path).await?;
-    let layer_digest = compute_digest(&data);
+    // ── 2. Extract .team archive in-memory ──────────────────────────────
+    let archive_bytes = tokio::fs::read(&export_result.output_path).await?;
+    let files = extract_team_archive_bytes(&archive_bytes)?;
 
-    // Store as layer in AgentRegistry
+    // ── 3. Decompose into content-addressable layers ────────────────────
+    let decomposed = decompose_team_archive(&files)?;
+
+    // ── 4. Store layers in AgentRegistry ────────────────────────────────
     let registry = AgentRegistry::new(AgentRegistry::default_path());
     registry.init().await?;
-    registry.store_layer(&layer_digest, &data).await?;
 
-    // Build RegistryManifest with kind="team", single layer
+    // TeamConfig layer
+    registry
+        .store_layer(&decomposed.team_config_layer.digest, &decomposed.team_config_layer.bytes)
+        .await?;
+
+    // Per-agent layers (deduplication happens naturally via digest)
+    let mut all_layers: Vec<(String, LayerType, u64)> = Vec::new();
+    all_layers.push((
+        decomposed.team_config_layer.digest.clone(),
+        LayerType::TeamConfig,
+        decomposed.team_config_layer.size,
+    ));
+
+    for (agent_name, layers) in &decomposed.agent_layers {
+        for (layer_type, layer_bytes) in layers {
+            registry
+                .store_layer(&layer_bytes.digest, &layer_bytes.bytes)
+                .await?;
+            all_layers.push((layer_bytes.digest.clone(), *layer_type, layer_bytes.size));
+        }
+        let _ = agent_name; // used in debug context
+    }
+
+    // ── 5. Build RegistryManifest with kind="team" ──────────────────────
     let mut manifest = RegistryManifest::new(name.to_string(), "1.0.0".to_string())
         .with_kind("team")
         .with_ref(registry_ref);
-    manifest.add_layer(Layer::new(
-        layer_digest.clone(),
-        LayerType::Config,
-        data.len() as u64,
-    ));
+
+    for (digest, layer_type, size) in all_layers {
+        manifest.add_layer(Layer::new(digest, layer_type, size));
+    }
 
     // Compute manifest digest
     let manifest_json = manifest.to_json()?;
@@ -535,7 +560,7 @@ async fn handle_team_push(
     // Store manifest for RegistryClient
     store_registry_manifest_for_client(&registry, &manifest).await?;
 
-    // Parse registry ref and configure client
+    // ── 6. Push via RegistryClient ──────────────────────────────────────
     let reg_ref = RegistryRef::parse(registry_ref)?;
     let mut config = RegistryConfig::default();
     config.add_source(RegistrySource {
@@ -594,6 +619,29 @@ async fn handle_team_push(
     let _ = tokio::fs::remove_file(&export_result.output_path).await;
 
     Ok(())
+}
+
+/// Extract a `.team` tar.gz archive into a map of file paths to bytes.
+fn extract_team_archive_bytes(data: &[u8]) -> anyhow::Result<std::collections::HashMap<String, Vec<u8>>> {
+    use std::collections::HashMap;
+    use std::io::Read;
+
+    let tar = flate2::read::GzDecoder::new(data);
+    let mut archive = tar::Archive::new(tar);
+
+    let mut files = HashMap::new();
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_string_lossy().to_string();
+
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content)?;
+
+        files.insert(path, content);
+    }
+
+    Ok(files)
 }
 
 async fn handle_team_pull(
