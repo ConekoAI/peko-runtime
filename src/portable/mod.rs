@@ -47,6 +47,7 @@ pub mod manifest;
 pub mod packager;
 pub mod registry;
 pub mod team_layer_builder;
+pub mod team_layer_reconstructor;
 pub mod team_packager;
 pub mod team_unpackager;
 pub mod types;
@@ -59,6 +60,9 @@ pub use manifest::AgentManifest;
 pub use packager::{export_agent, ExportOptions, Packager};
 pub use registry::AgentRegistry;
 pub use team_layer_builder::{decompose_team_archive, DecomposedTeamLayers, LayerBytes};
+pub use team_layer_reconstructor::{
+    extract_team_config_index, reconstruct_agent_files, reconstruct_team, ReconstructedTeam,
+};
 pub use team_packager::{
     export_team, export_team_with_config_dir, AgentLayerRef, TeamAgentIndex, TeamExportOptions,
     TeamManifest, TeamPackager, TeamPackagingMetadata,

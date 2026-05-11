@@ -206,7 +206,7 @@ fn build_team_config_layer(
 }
 
 /// Build a gzipped tarball from a map of `(relative_path, bytes)`.
-fn build_tarball(files: &BTreeMap<String, Vec<u8>>) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn build_tarball(files: &BTreeMap<String, Vec<u8>>) -> anyhow::Result<Vec<u8>> {
     let mut buf = Vec::new();
     {
         let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());

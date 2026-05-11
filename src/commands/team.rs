@@ -13,11 +13,12 @@ use crate::common::types::team::{
 };
 use crate::portable::registry::AgentRegistry;
 use crate::portable::team_layer_builder::decompose_team_archive;
+use crate::portable::team_layer_reconstructor::reconstruct_team;
 use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Subcommand;
 
 /// Team management subcommands
@@ -650,6 +651,7 @@ async fn handle_team_pull(
     new_name: Option<String>,
     json: bool,
 ) -> Result<()> {
+    // ── 1. Pull manifest and layers from registry ───────────────────────
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
 
@@ -697,36 +699,72 @@ async fn handle_team_pull(
             .await?
     };
 
-    // Read the layer bytes from AgentRegistry
-    let layer = manifest
+    // Verify this is a team manifest
+    if manifest.kind != "team" {
+        anyhow::bail!(
+            "Expected manifest kind 'team', got '{}'",
+            manifest.kind
+        );
+    }
+
+    // ── 2. Find TeamConfig layer ────────────────────────────────────────
+    let team_config_layer = manifest
         .layers
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("Manifest has no layers"))?;
-    let data = agent_registry.get_layer(&layer.digest).await?;
+        .iter()
+        .find(|l| l.layer_type == LayerType::TeamConfig)
+        .ok_or_else(|| anyhow::anyhow!("Team manifest missing TeamConfig layer"))?;
 
-    // Write to a temp .team file
-    let temp_dir = std::env::temp_dir().join("pekobot_team_pull");
-    std::fs::create_dir_all(&temp_dir)?;
-    let temp_path = temp_dir.join(format!("{}.team", manifest.name));
-    tokio::fs::write(&temp_path, &data).await?;
+    // ── 3. Reconstruct team from layers ─────────────────────────────────
+    let reconstructed = reconstruct_team(&agent_registry, &team_config_layer.digest)
+        .await
+        .context("Failed to reconstruct team from layers")?;
 
-    // Import the team
-    let result = service
-        .import_team(
-            temp_path.to_string_lossy().as_ref(),
-            new_name.clone(),
-            true,
-            true,
+    let team_name = new_name
+        .clone()
+        .unwrap_or_else(|| reconstructed.team_info.team.name.clone());
+
+    // ── 4. Create team directory and write team.toml ────────────────────
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("pekobot");
+    let team_dir = config_dir.join("teams").join(&team_name);
+
+    if team_dir.exists() {
+        anyhow::bail!("Team '{team_name}' already exists.");
+    }
+
+    tokio::fs::create_dir_all(&team_dir).await?;
+
+    if let Some(team_toml) = reconstructed.team_toml {
+        tokio::fs::write(team_dir.join("team.toml"), team_toml).await?;
+    }
+
+    // ── 5. Import each agent directly from reconstructed files ──────────
+    let mut imported_agents = Vec::new();
+
+    for (agent_name, files) in &reconstructed.agent_files {
+        let result = import_agent_from_files(
+            agent_name,
+            files,
+            &team_name,
+            &team_dir,
         )
-        .await?;
+        .await
+        .with_context(|| format!("Failed to import agent: {agent_name}"))?;
 
+        imported_agents.push(result);
+    }
+
+    let agent_count = imported_agents.len();
+
+    // ── 6. Output results ───────────────────────────────────────────────
     if json {
         let output = serde_json::json!({
             "success": true,
             "registry_ref": registry_ref,
-            "name": result.name,
-            "path": result.path.display().to_string(),
-            "agents_imported": result.agents_imported,
+            "name": team_name,
+            "path": team_dir.display().to_string(),
+            "agents_imported": agent_count,
             "manifest": {
                 "name": manifest.name,
                 "version": manifest.version,
@@ -738,15 +776,47 @@ async fn handle_team_pull(
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("📥 Imported team '{}'", result.name);
-        println!("   Agents: {}", result.agents_imported);
-        println!("   Path: {}", result.path.display());
+        println!("📥 Imported team '{team_name}'");
+        println!("   Agents: {agent_count}");
+        println!("   Path: {}", team_dir.display());
     }
 
-    // Clean up temp file
-    let _ = tokio::fs::remove_file(&temp_path).await;
-
     Ok(())
+}
+
+/// Import a single agent from in-memory reconstructed files.
+async fn import_agent_from_files(
+    name: &str,
+    files: &std::collections::HashMap<String, Vec<u8>>,
+    team_name: &str,
+    team_dir: &std::path::Path,
+) -> anyhow::Result<crate::portable::team_unpackager::AgentImportSummary> {
+    use crate::portable::unpackager::{ImportOptions, Unpackager};
+
+    let unpackager = Unpackager::new("dummy.agent")
+        .with_base_dir(team_dir)
+        .with_team(team_name);
+
+    let agent_opts = ImportOptions {
+        new_name: Some(name.to_string()),
+        passphrase: None,
+        rotate_keys: true,
+        import_sessions: true,
+        import_workspace: true,
+        skip_validation: false,
+        force: true,
+        team: Some(team_name.to_string()),
+    };
+
+    let result = unpackager
+        .import_from_files(files.clone(), agent_opts)
+        .await?;
+
+    Ok(crate::portable::team_unpackager::AgentImportSummary {
+        name: result.name,
+        did: result.did,
+        keys_rotated: result.keys_rotated,
+    })
 }
 
 /// Store a `RegistryManifest` in the format expected by `RegistryClient`
