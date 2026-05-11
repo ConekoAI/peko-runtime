@@ -1104,6 +1104,84 @@ archive_format = "tar"
 
 On import, all file checksums are verified before any agent is imported. If a checksum mismatch is detected, the import fails fast with a clear error. Legacy packages without `packaging` metadata import successfully with a warning.
 
+### 7.4 Team Registry Format (Push/Pull)
+
+When a team is pushed to a registry via `peko team push`, it is **not** stored as a single opaque blob. Instead, the team is decomposed into content-addressable layers, enabling cross-team agent deduplication.
+
+#### Layer Types
+
+| Layer Type | `LayerType` variant | Contents |
+|-----------|---------------------|----------|
+| TeamConfig | `TeamConfig` | `team.toml` (optional) + `manifest.toml` with agent index |
+| Config | `Config` | `config/agent.toml`, `config/prompts.toml` |
+| Identity | `Identity` | `identity/did.json`, `identity/keys.enc` |
+| Skills | `Skills` | `skills/{name}/SKILL.md` |
+| Workspace | `Workspace` | `workspace/` files |
+| Sessions | `Sessions` | `sessions/` JSONL files |
+| MCP | `Mcp` | `mcp/` configuration |
+
+#### TeamConfig Layer
+
+The `TeamConfig` layer is a gzipped tarball containing:
+
+```
+manifest.toml   # TeamAgentIndex: team metadata + agent → layer digest mapping
+```
+
+The `manifest.toml` inside the `TeamConfig` layer uses this schema:
+
+```toml
+[team]
+name = "prod-team"
+version = "1.0.0"
+agent_count = 3
+
+[agents]
+# agent_name → layer digests (same format as AgentManifest.layers)
+researcher = { config = "sha256:abc...", identity = "sha256:def...", skills = "sha256:ghi..." }
+coder = { config = "sha256:jkl...", identity = "sha256:mno..." }
+reviewer = { config = "sha256:pqr...", identity = "sha256:stu...", workspace = "sha256:vwx..." }
+```
+
+#### RegistryManifest for Teams
+
+```json
+{
+  "schema_version": 1,
+  "kind": "team",
+  "name": "prod-team",
+  "version": "1.0.0",
+  "ref": "pekohub.com/teams/prod-team:v1.0",
+  "digest": "sha256:...",
+  "created_at": "2026-05-08T10:00:00Z",
+  "source": "local",
+  "layers": [
+    { "digest": "sha256:tc...", "type": "team_config", "size_bytes": 256 },
+    { "digest": "sha256:a1c...", "type": "config", "size_bytes": 512 },
+    { "digest": "sha256:a1i...", "type": "identity", "size_bytes": 384 },
+    { "digest": "sha256:a2c...", "type": "config", "size_bytes": 512 },
+    { "digest": "sha256:a2i...", "type": "identity", "size_bytes": 384 }
+  ]
+}
+```
+
+#### Deduplication Mechanics
+
+When two teams share the same agent:
+
+1. **Team A push**: Stores `TeamConfig(A)` + `Config(X)` + `Identity(X)` + ... as new blobs
+2. **Team B push**: `HEAD /blobs/Config(X)` → 200 (exists), skipped. Only `TeamConfig(B)` + any unique agent layers are uploaded
+
+Registry storage grows with **unique agent count**, not team count. The existing `RegistryClient::check_existing_layers()` handles this automatically.
+
+#### Pull Flow
+
+1. `client.pull()` downloads all layers into local `AgentRegistry`
+2. Find the `TeamConfig` layer, extract `manifest.toml`
+3. Parse the agent index to discover which agents exist and their layer digests
+4. Reconstruct each agent's files from its layers in-memory
+5. Import each agent directly via `Unpackager::import_from_files()` — no temporary `.team` file is created
+
 ---
 
 ## 8. Extension Package Format (.ext)
@@ -1566,6 +1644,7 @@ Quick-reference table of all primitive types used across formats.
 |---------|------|---------|
 | 0.1.0 | 2026-04-26 | Initial draft. ADR-022: Session compaction — added `compaction` and `model_change` system events (§5.3), context cache file format (§5.5), compaction semantics including dual-threshold triggers, turn boundaries, split-turn handling, and structured summary format (§5.6) |
 | 0.1.0 | 2026-05-08 | Packaging restructure (Phases 1–7): `src/image/` merged into `src/portable/`. Clean manifest — `AgentManifest` stripped of `capabilities`, `tools`, `mcp`, `tool_sources`, `memory`. Added `layers` section with content-addressable digests. Added `.agent` build from directory (`AgentBuilder`). Added registry push/pull with mock server. Added team checksum validation and `team.toml` preservation. Added `.ext` export for extensions. `agent.toml` is the single source of truth for agent behaviour. |
+| 0.1.0 | 2026-05-11 | Issue 023: Team registry push/pull now decomposes teams into content-addressable layers (`TeamConfig` + per-agent `Config`/`Identity`/`Skills`/etc.) instead of a single opaque blob. Added `TeamAgentIndex` and `AgentLayerRef` types. Added `TeamLayerBuilder` and `TeamLayerReconstructor`. Cross-team agent deduplication works automatically via existing `RegistryClient::check_existing_layers()`. Pull reconstructs agents directly from layers without temporary `.team` files. Documented in §7.4. |
 
 ---
 

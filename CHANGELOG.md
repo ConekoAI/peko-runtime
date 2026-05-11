@@ -2,6 +2,28 @@
 
 All notable changes to Pekobot.
 
+## [0.1.0] - Team Registry Layer Deduplication (Issue 023) - 2026-05-11
+
+Team registry push/pull now uses content-addressable layers instead of a single opaque blob, enabling cross-team agent deduplication.
+
+### Added
+- **`LayerType::TeamConfig`** — New layer type for team metadata (agent index) in registry manifests
+- **`TeamAgentIndex`** / **`AgentLayerRef`** — Types for the agent → layer digest mapping inside `TeamConfig` layers
+- **`TeamLayerBuilder`** (`src/portable/team_layer_builder.rs`) — Decomposes `.team` archives into content-addressable layers
+- **`TeamLayerReconstructor`** (`src/portable/team_layer_reconstructor.rs`) — Reconstructs agents from registry layers for direct in-memory import
+- **E2E test** — `e2e_tests/packaging/team_registry_dedup.ps1` — Verifies cross-team agent deduplication on mock registry
+
+### Changed
+- **`handle_team_push`** (`src/commands/team.rs`) — Now decomposes team into `TeamConfig` + per-agent standard layers (`Config`, `Identity`, `Skills`, etc.) instead of storing a single opaque blob. Shared agents across teams are automatically deduplicated via `RegistryClient::check_existing_layers()`.
+- **`handle_team_pull`** (`src/commands/team.rs`) — Now reconstructs agents directly from registry layers without creating a temporary `.team` file. Imports each agent via `Unpackager::import_from_files()`.
+- **`LayerType`** — Now implements `Hash` (required for use as `HashMap` key in layer builders)
+
+### Integration Tests
+- `portable::team_layer_builder::tests` — 9 tests (basic decomposition, empty team, all layer types, shared content, digest determinism)
+- `portable::team_layer_reconstructor::tests` — 6 tests (roundtrip, missing optional layers, empty index, error handling)
+
+---
+
 ## [0.1.0] - Packaging System (Phases 1–7) - 2026-05-08
 
 Unified packaging layer with content-addressable storage, registry push/pull, and integrity checks.
