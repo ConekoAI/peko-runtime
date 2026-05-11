@@ -147,17 +147,30 @@ try {
     }
 
     # ============================================================
-    # STEP 3: Create Team B with Agent X (same agent, different team)
+    # STEP 3: Create Team B with the SAME Agent X (imported from Team A)
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "STEP 3: Create Team B with same Agent X" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
+    # Export Agent X from Team A so Team B gets the exact same agent
+    # (same identity, same config → identical layers → deduplication)
+    $agentExportPath = "$testDir/shared-agent.agent"
+    & $pekoCmd agent export --name "$teamA/$agentX" --output "$agentExportPath" 2>&1 | Out-Null
+    if (-not (Test-Path $agentExportPath)) {
+        Write-Error "Failed to export agent from Team A"
+    }
+    Write-Host "Exported Agent X from Team A" -ForegroundColor Green
+
     $teamB = "team-beta"
 
     & $pekoCmd team create $teamB --description "Team B for dedup testing" 2>&1 | Out-Null
-    & $pekoCmd agent create "$teamB/$agentX" --provider $Provider 2>&1 | Out-Null
-    Write-Host "Created Team B with agent '$agentX'" -ForegroundColor Green
+    & $pekoCmd agent import --file "$agentExportPath" --name $agentX --team $teamB 2>&1 | Out-Null
+    $verifyImport = & $pekoCmd agent show "$teamB/$agentX" --json 2>&1 | ConvertFrom-Json
+    if ($verifyImport.name -ne $agentX) {
+        Write-Error "Failed to import agent into Team B"
+    }
+    Write-Host "Created Team B with imported agent '$agentX'" -ForegroundColor Green
 
     # Add the SAME workspace content (identical → same layer digest)
     $wsB = "$env:APPDATA/pekobot/workspaces/$teamB/$agentX"

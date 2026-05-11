@@ -51,6 +51,9 @@ pub fn decompose_team_archive(
     // Parse the team manifest to get metadata
     let team_manifest = extract_team_manifest(files)?;
 
+    // Extract team.toml if present in the archive
+    let team_toml = files.get("team/team.toml").cloned();
+
     // Group files by agent
     let agent_files = group_agent_files(files);
 
@@ -66,7 +69,7 @@ pub fn decompose_team_archive(
     }
 
     // Build TeamConfig layer
-    let team_config_layer = build_team_config_layer(&team_manifest, &agent_index)?;
+    let team_config_layer = build_team_config_layer(&team_manifest, &agent_index, team_toml.as_ref())?;
 
     Ok(DecomposedTeamLayers {
         team_config_layer,
@@ -173,6 +176,7 @@ fn agent_layers_to_ref(layers: &HashMap<LayerType, LayerBytes>) -> AgentLayerRef
 fn build_team_config_layer(
     team_manifest: &TeamManifest,
     agent_index: &HashMap<String, AgentLayerRef>,
+    team_toml: Option<&Vec<u8>>,
 ) -> anyhow::Result<LayerBytes> {
     let team_info = TeamInfo {
         name: team_manifest.team.name.clone(),
@@ -193,6 +197,10 @@ fn build_team_config_layer(
     // Build tarball with manifest.toml (agent index) and optionally team.toml
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     files.insert("manifest.toml".to_string(), index_toml.into_bytes());
+
+    if let Some(toml_bytes) = team_toml {
+        files.insert("team.toml".to_string(), toml_bytes.clone());
+    }
 
     let bytes = build_tarball(&files)?;
     let digest = compute_digest(&bytes);
@@ -605,5 +613,90 @@ include_mcp = false
         let ref_b = result.agent_index.get("agent_b").unwrap();
         assert_eq!(ref_a.config, ref_b.config);
         assert_eq!(ref_a.identity, ref_b.identity);
+    }
+
+    #[test]
+    fn test_team_toml_included_in_team_config_layer() {
+        let mut files = HashMap::new();
+        files.insert(
+            "team/manifest.toml".to_string(),
+            br#"
+[team]
+name = "team-with-toml"
+version = "1.0.0"
+agent_count = 1
+
+[format]
+version = "1.0"
+pekobot_version = "0.1.0"
+
+[export]
+created_at = "2024-01-01T00:00:00Z"
+include_sessions = false
+include_workspace = false
+include_mcp = false
+"#
+            .to_vec(),
+        );
+
+        // Include team.toml in the archive
+        let team_toml_content = b"name = \"team-with-toml\"\ndescription = \"A test team\"\n";
+        files.insert("team/team.toml".to_string(), team_toml_content.to_vec());
+
+        files.insert(
+            "agents/single/config/agent.toml".to_string(),
+            b"name = \"single\"\n".to_vec(),
+        );
+        files.insert(
+            "agents/single/identity/did.json".to_string(),
+            br#"{"id":"did:pekobot:single"}"#.to_vec(),
+        );
+
+        let result = decompose_team_archive(&files).unwrap();
+
+        // The TeamConfig layer should contain both manifest.toml AND team.toml
+        let decoder = flate2::read::GzDecoder::new(result.team_config_layer.bytes.as_slice());
+        let mut archive = tar::Archive::new(decoder);
+
+        let mut found_manifest = false;
+        let mut found_team_toml = false;
+        let mut team_toml_extracted = Vec::new();
+
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().to_string();
+            if path == "manifest.toml" {
+                found_manifest = true;
+            }
+            if path == "team.toml" {
+                found_team_toml = true;
+                std::io::Read::read_to_end(&mut entry, &mut team_toml_extracted).unwrap();
+            }
+        }
+
+        assert!(found_manifest, "manifest.toml should be in TeamConfig layer");
+        assert!(found_team_toml, "team.toml should be in TeamConfig layer");
+        assert_eq!(team_toml_extracted, team_toml_content);
+    }
+
+    #[test]
+    fn test_team_toml_absent_when_not_in_archive() {
+        // make_test_team_files() does NOT include team/team.toml
+        let files = make_test_team_files();
+        let result = decompose_team_archive(&files).unwrap();
+
+        let decoder = flate2::read::GzDecoder::new(result.team_config_layer.bytes.as_slice());
+        let mut archive = tar::Archive::new(decoder);
+
+        let mut found_team_toml = false;
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().to_string();
+            if path == "team.toml" {
+                found_team_toml = true;
+            }
+        }
+
+        assert!(!found_team_toml, "team.toml should NOT be in TeamConfig layer when absent from archive");
     }
 }

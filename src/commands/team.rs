@@ -132,6 +132,9 @@ pub enum TeamCommands {
         /// New team name (optional, uses package name if not specified)
         #[arg(short, long)]
         name: Option<String>,
+        /// Force overwrite if team already exists
+        #[arg(short, long)]
+        force: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -259,8 +262,9 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
         TeamCommands::Pull {
             registry_ref,
             name,
+            force,
             json: pull_json,
-        } => handle_team_pull(&service, &registry_ref, name, pull_json).await,
+        } => handle_team_pull(&service, &registry_ref, name, force, pull_json).await,
     }
 }
 
@@ -534,14 +538,13 @@ async fn handle_team_push(
         decomposed.team_config_layer.size,
     ));
 
-    for (agent_name, layers) in &decomposed.agent_layers {
+    for (_agent_name, layers) in &decomposed.agent_layers {
         for (layer_type, layer_bytes) in layers {
             registry
                 .store_layer(&layer_bytes.digest, &layer_bytes.bytes)
                 .await?;
             all_layers.push((layer_bytes.digest.clone(), *layer_type, layer_bytes.size));
         }
-        let _ = agent_name; // used in debug context
     }
 
     // ── 5. Build RegistryManifest with kind="team" ──────────────────────
@@ -646,9 +649,10 @@ fn extract_team_archive_bytes(data: &[u8]) -> anyhow::Result<std::collections::H
 }
 
 async fn handle_team_pull(
-    service: &crate::common::services::team_service::TeamService,
+    _service: &crate::common::services::team_service::TeamService,
     registry_ref: &str,
     new_name: Option<String>,
+    force: bool,
     json: bool,
 ) -> Result<()> {
     // ── 1. Pull manifest and layers from registry ───────────────────────
@@ -724,13 +728,16 @@ async fn handle_team_pull(
         .unwrap_or_else(|| reconstructed.team_info.team.name.clone());
 
     // ── 4. Create team directory and write team.toml ────────────────────
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("pekobot");
+    let config_dir = crate::common::paths::default_config_dir();
     let team_dir = config_dir.join("teams").join(&team_name);
 
-    if team_dir.exists() {
-        anyhow::bail!("Team '{team_name}' already exists.");
+    if team_dir.exists() && !force {
+        anyhow::bail!("Team '{team_name}' already exists. Use --force to overwrite.");
+    }
+
+    if team_dir.exists() && force {
+        // Remove existing team directory to allow clean re-import
+        tokio::fs::remove_dir_all(&team_dir).await?;
     }
 
     tokio::fs::create_dir_all(&team_dir).await?;
@@ -791,11 +798,20 @@ async fn import_agent_from_files(
     team_name: &str,
     team_dir: &std::path::Path,
 ) -> anyhow::Result<crate::portable::team_unpackager::AgentImportSummary> {
+    use crate::portable::manifest::AgentManifest;
     use crate::portable::unpackager::{ImportOptions, Unpackager};
 
     let unpackager = Unpackager::new("dummy.agent")
         .with_base_dir(team_dir)
         .with_team(team_name);
+
+    // Reconstruct a minimal manifest.toml if missing (layers don't include it).
+    let mut files = files.clone();
+    if !files.contains_key("manifest.toml") {
+        let manifest = build_minimal_manifest(name, &files)?;
+        let manifest_toml = manifest.to_toml()?;
+        files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
+    }
 
     let agent_opts = ImportOptions {
         new_name: Some(name.to_string()),
@@ -809,7 +825,7 @@ async fn import_agent_from_files(
     };
 
     let result = unpackager
-        .import_from_files(files.clone(), agent_opts)
+        .import_from_files(files, agent_opts)
         .await?;
 
     Ok(crate::portable::team_unpackager::AgentImportSummary {
@@ -817,6 +833,30 @@ async fn import_agent_from_files(
         did: result.did,
         keys_rotated: result.keys_rotated,
     })
+}
+
+/// Build a minimal AgentManifest from reconstructed files for import validation.
+fn build_minimal_manifest(
+    name: &str,
+    files: &std::collections::HashMap<String, Vec<u8>>,
+) -> anyhow::Result<crate::portable::manifest::AgentManifest> {
+    use crate::portable::manifest::AgentManifest;
+
+    let did = if let Some(did_bytes) = files.get("identity/did.json") {
+        let did_doc: crate::identity::DIDDocument = serde_json::from_slice(did_bytes)?;
+        did_doc.id
+    } else {
+        format!("did:pekobot:local:{name}")
+    };
+
+    let mut manifest = AgentManifest::new(name, "1.0.0", &did);
+
+    // Add all present files to the manifest so validation passes
+    for (path, content) in files {
+        manifest.add_file(path, content);
+    }
+
+    Ok(manifest)
 }
 
 /// Store a `RegistryManifest` in the format expected by `RegistryClient`

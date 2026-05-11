@@ -71,7 +71,7 @@ foreach ($test in $tests) {
     }
 
     # Reset daemon state between tests
-    ../reset.ps1
+    & (Join-Path $testDir "../reset.ps1")
 
     $endTime = Get-Date
     $duration = $endTime - $startTime
