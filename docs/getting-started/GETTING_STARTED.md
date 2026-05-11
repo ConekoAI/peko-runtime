@@ -53,13 +53,6 @@ export KIMI_API_KEY="your-kimi-key"
 ./target/release/pekobot agent create my-agent --provider minimax
 ```
 
-Or initialize an agent directory:
-
-```bash
-# Initialize a new agent directory
-./target/release/pekobot agent init ./my-agent/ --provider minimax
-```
-
 This creates:
 ```
 my-agent/
@@ -124,7 +117,6 @@ You'll see the agent's response streamed to your terminal.
 # Agent lifecycle
 pekobot agent list                  # List all agents
 pekobot agent create my-agent --provider minimax  # Create a new agent
-pekobot agent init ./my-agent/      # Initialize agent directory
 pekobot agent show my-agent         # Show agent details
 pekobot agent remove my-agent       # Remove an agent
 
@@ -184,7 +176,7 @@ sudo apt-get install libssl-dev pkg-config
 
 ✅ **Time to first agent:** Under 5 minutes  
 ✅ **No configuration required:** Sensible defaults  
-✅ **Git-friendly:** `pekobot agent init` creates proper `.gitignore`  
+✅ **Git-friendly:** `pekobot agent create` creates proper `.gitignore`  
 ✅ **Actionable errors:** All errors include suggested fixes
 
 ---

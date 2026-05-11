@@ -37,16 +37,8 @@ export OPENAI_API_KEY="sk-..."
 pekobot agent create my-first-agent --provider minimax
 ```
 
-This creates an agent configuration in Pekobot's config directory.
+This creates an agent configuration in Pekobot's config directory with the following structure:
 
-Alternatively, you can initialize an agent directory for version control:
-
-```bash
-# Initialize an agent directory
-pekobot agent init ./my-first-agent --provider minimax
-```
-
-This creates:
 ```
 my-first-agent/
 ├── config.toml      # Agent configuration
@@ -60,7 +52,7 @@ my-first-agent/
 
 ## Step 2: Customize Your Agent
 
-Edit `my-first-agent/AGENT.md` (if using `agent init`) to give your agent a personality:
+Edit `my-first-agent/AGENT.md` to give your agent a personality:
 
 ```markdown
 # My First Agent

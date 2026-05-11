@@ -12,7 +12,6 @@ use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::ConfigAuthority;
 use crate::common::types::agent::{
     AgentCreateRequest, AgentDeleteOptions, AgentExportOptions, AgentImportOptions,
-    AgentInitRequest,
 };
 use crate::portable::manifest::{AgentLayers, AgentManifest};
 use crate::portable::registry::AgentRegistry;
@@ -319,64 +318,6 @@ pub async fn handle_agent_inspect(file: String, json: bool) -> anyhow::Result<()
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("{}", info.format());
-    }
-
-    Ok(())
-}
-
-/// Handle agent init command
-pub async fn handle_agent_init(
-    paths: &GlobalPaths,
-    path: String,
-    name: Option<String>,
-    provider: String,
-    model: Option<String>,
-    force: bool,
-    json: bool,
-) -> anyhow::Result<()> {
-    let service = paths.services().agent();
-
-    let request = AgentInitRequest::new(&path)
-        .with_provider(&provider)
-        .with_force(force);
-
-    let request = if let Some(name) = name {
-        request.with_name(name)
-    } else {
-        request
-    };
-
-    let request = if let Some(model) = model {
-        request.with_model(model)
-    } else {
-        request
-    };
-
-    let result = service.init_agent(request).await?;
-
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "success": true,
-                "name": result.name,
-                "path": result.path.display().to_string(),
-                "config": result.config_path.display().to_string(),
-            })
-        );
-    } else {
-        println!("✅ Initialized agent '{}' in '{}'", result.name, path);
-        println!();
-        println!("📁 Structure created:");
-        println!("   config.toml    - Agent configuration");
-        println!("   AGENT.md       - Agent description");
-        println!("   .gitignore     - Excludes sessions/, workspace/, memories/");
-        println!("   tools/         - Custom tools directory");
-        println!("   skills/        - Skills directory");
-        println!("   workspace/     - Working directory");
-        println!();
-        println!("🚀 Run the agent:");
-        println!("   pekobot send default/{} \"Hello\"", result.name);
     }
 
     Ok(())

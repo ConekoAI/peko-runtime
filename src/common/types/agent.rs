@@ -114,58 +114,6 @@ pub struct AgentDeleteResult {
     pub sessions_deleted: bool,
 }
 
-/// Agent initialization request
-#[derive(Debug, Clone)]
-pub struct AgentInitRequest {
-    pub path: PathBuf,
-    pub name: Option<String>,
-    pub provider: String,
-    pub model: Option<String>,
-    pub force: bool,
-}
-
-impl AgentInitRequest {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self {
-            path: path.into(),
-            name: None,
-            provider: "openai".to_string(),
-            model: None,
-            force: false,
-        }
-    }
-
-    pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
-        self
-    }
-
-    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
-        self.provider = provider.into();
-        self
-    }
-
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_force(mut self, force: bool) -> Self {
-        self.force = force;
-        self
-    }
-}
-
-/// Agent initialization result
-#[derive(Debug, Clone)]
-pub struct AgentInitResult {
-    pub name: String,
-    pub path: PathBuf,
-    pub config_path: PathBuf,
-    pub provider: String,
-}
-
 /// Agent update request
 #[derive(Debug, Clone, Default)]
 pub struct AgentUpdateRequest {

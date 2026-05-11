@@ -121,7 +121,6 @@ pekobot agent move <NAME> --team <TEAM>              # Move agent to team
 pekobot agent export <NAME> [--output <PATH>]        # Export to .agent package
 pekobot agent import <FILE> [--name <NEW_NAME>]      # Import from .agent package
 pekobot agent inspect <FILE>                         # Inspect package without importing
-pekobot agent init <PATH> --provider <PROVIDER>      # Initialize agent in directory
 pekobot agent config <NAME>                          # Edit agent configuration
 ```
 
@@ -293,7 +292,7 @@ Extensions hook into the agentic loop at 22 different points:
 - **Session Hooks**: `SessionStateChange`, `SessionCompaction`, `SessionContextBuild`
 - **I/O Hooks**: `ChannelInput`, `ChannelOutput`, `MessagePreSend`, `MessagePostReceive`
 - **Event Hooks**: `EventSubscribe`, `EventEmit`
-- **Lifecycle Hooks**: `AgentInit`, `AgentShutdown`, `AgentIteration`
+- **Lifecycle Hooks**: `AgentShutdown`, `AgentIteration`
 
 Learn more: [Extension System Documentation](docs/architecture/EXTENSION_SYSTEM.md)
 

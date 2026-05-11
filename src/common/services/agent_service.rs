@@ -12,7 +12,7 @@ use crate::common::services::TeamService;
 use crate::common::types::agent::{
     AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult,
     AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult, AgentInfo,
-    AgentInitRequest, AgentInitResult, AgentRenameResult, AgentSummary, AgentUpdateRequest,
+    AgentRenameResult, AgentSummary, AgentUpdateRequest,
 };
 use crate::identity::Identity;
 use crate::portable::{
@@ -445,56 +445,6 @@ impl AgentService {
             from_team: from_team.to_string(),
             to_team: target_team.to_string(),
             new_config_path,
-        })
-    }
-
-    /// Initialize a new agent directory structure
-    ///
-    /// Creates a standalone agent directory (not in the teams structure).
-    pub async fn init_agent(&self, request: AgentInitRequest) -> Result<AgentInitResult> {
-        let dir = request.path;
-        let config_path = dir.join("config.toml");
-
-        // Check if directory already exists and has files
-        if dir.exists() {
-            let entries: Vec<_> = std::fs::read_dir(&dir)?.collect();
-            if !entries.is_empty() && !request.force {
-                anyhow::bail!("Directory not empty: {}", dir.display());
-            }
-            // If force is true, remove existing directory
-            if request.force {
-                tokio::fs::remove_dir_all(&dir).await?;
-            }
-        }
-
-        // Create directory
-        tokio::fs::create_dir_all(&dir).await?;
-
-        // Determine agent name from directory if not provided
-        let agent_name = request.name.unwrap_or_else(|| {
-            dir.file_name()
-                .map_or_else(|| "agent".to_string(), |n| n.to_string_lossy().to_string())
-        });
-
-        // Determine workspace path (agent_dir/workspace for standalone agents)
-        let workspace_dir = dir.join("workspace");
-        tokio::fs::create_dir_all(&workspace_dir).await?;
-
-        // Create config with workspace set
-        let mut config = build_default_agent_config(&agent_name, &request.provider, request.model);
-        config.workspace = Some(workspace_dir.clone());
-        let config_content = toml::to_string_pretty(&config)?;
-        tokio::fs::write(&config_path, config_content).await?;
-
-        // Bootstrap workspace with bootstrap files
-        self.bootstrap_agent_workspace(&dir, &agent_name, &workspace_dir)
-            .await?;
-
-        Ok(AgentInitResult {
-            name: agent_name,
-            path: dir.clone(),
-            config_path,
-            provider: request.provider,
         })
     }
 

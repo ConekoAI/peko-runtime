@@ -41,8 +41,7 @@ use std::path::PathBuf;
   pekobot daemon start                          # Start the daemon
   pekobot team create myteam                    # Create a new team
   pekobot agent create myteam/my-agent --provider kimi  # Create agent in team
-  pekobot agent init ./my-agent --provider openai  # Create new agent
-  pekobot build ./my-agent/ -t my-agent:v1.0    # Build agent image
+  pekobot agent build ./my-agent/ -t my-agent:v1.0    # Build agent image
   pekobot run my-agent:v1.0                     # Run agent instance
   pekobot ps                                    # List instances
   pekobot session list myteam/my-agent          # List sessions

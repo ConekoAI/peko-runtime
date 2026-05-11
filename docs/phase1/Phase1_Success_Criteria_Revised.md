@@ -251,8 +251,7 @@ Complete the CLI surface: close the gap between advertised commands (in `--help`
 ### 7.2 P0 — Must Have
 
 #### 7.2.1 Core Commands
-- [ ] **CLI-001**: `pekobot agent init <path>` — Initialize a new agent directory with `config.toml`, `SYSTEM.md`, and workspace structure.
-- [ ] **CLI-002**: `pekobot agent create <name>` — Create a registered agent from an initialized directory.
+- [x] **CLI-001**: `pekobot agent create <name>` — Create a registered agent with `config.toml`, `AGENT.md`, and workspace structure.
 - [ ] **CLI-003**: `pekobot build <path> -t <name:tag>` — Build an agent image from a directory.
 - [ ] **CLI-004**: `pekobot run <image-ref>` — Run an agent image (local path, registry ref, or digest).
 - [ ] **CLI-005**: `pekobot pull <registry-ref>` — Pull an image from a registry.
@@ -413,8 +412,7 @@ Phase 1 is **officially complete** when:
 ## Appendix A: Command Reference (Target v1.0)
 
 ```
-pekobot agent init <path>          # Initialize agent directory
-pekobot agent create <name>        # Register agent
+pekobot agent create <name>        # Create a registered agent
 pekobot agent list                 # List agents
 pekobot agent show <name>          # Show agent details
 pekobot agent remove <name>        # Remove agent

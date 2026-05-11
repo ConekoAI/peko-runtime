@@ -102,7 +102,6 @@ pub enum HookPoint {
     EventEmit,
     
     // Agent lifecycle
-    AgentInit,
     AgentShutdown,
     AgentIteration { iteration: usize },
 }
@@ -501,7 +500,6 @@ impl AgentService {
     pub async fn create_agent(&self, request: AgentCreateRequest) -> Result<AgentCreationResult>
     pub async fn delete_agent(&self, name: &str, team: Option<&str>, opts: AgentDeleteOptions) -> Result<AgentDeleteResult>
     pub async fn rename_agent(&self, old_name: &str, new_name: &str, team: Option<&str>, to_team: Option<&str>) -> Result<AgentRenameResult>
-    pub async fn init_agent(&self, request: AgentInitRequest) -> Result<AgentInitResult>
     pub async fn update_agent(&self, name: &str, team: Option<&str>, update: AgentUpdateRequest) -> Result<AgentInfo>
     pub async fn export_agent(&self, name: &str, team: Option<&str>, opts: AgentExportOptions) -> Result<AgentExportResult>
     pub async fn import_agent(&self, file_path: &Path, opts: AgentImportOptions) -> Result<AgentImportResult>

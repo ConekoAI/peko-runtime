@@ -127,9 +127,6 @@ export KIMI_API_KEY="your-kimi-key"
 ```bash
 # Create a new agent
 ./target/release/pekobot agent create my-agent --provider minimax
-
-# Or initialize an agent directory
-./target/release/pekobot agent init ./my-agent --provider minimax
 ```
 
 ### 3. Send a Message
@@ -154,7 +151,7 @@ You'll see the agent's response streamed to your terminal.
 
 ### Agent Configuration
 
-Agents are configured via `config.toml` in the agent directory (when using `agent init`) or stored in the config directory (when using `agent create`).
+Agents are configured via `config.toml` stored in the config directory.
 
 Example `config.toml`:
 

@@ -11,9 +11,6 @@ mod handlers;
 /// Agent management subcommands
 ///
 /// Examples:
-///   # Initialize a new agent directory
-///   pekobot agent init ./my-agent --provider openai
-///
 ///   # Send a message to an agent (non-interactive only)
 ///   pekobot agent start my-agent --message "Hello"
 ///
@@ -158,24 +155,6 @@ pub enum AgentCommands {
         json: bool,
     },
 
-    /// Initialize a new agent directory with minimal structure
-    Init {
-        /// Directory path to initialize (creates if doesn't exist)
-        path: String,
-        /// Agent name (defaults to directory name)
-        #[arg(short, long)]
-        name: Option<String>,
-        /// Provider to use
-        #[arg(short, long, default_value = "minimax")]
-        provider: String,
-        /// Model name
-        #[arg(short, long)]
-        model: Option<String>,
-        /// Force overwrite if directory exists (non-interactive)
-        #[arg(short, long)]
-        force: bool,
-    },
-
     /// Manage agent configuration
     #[command(subcommand)]
     Config(AgentConfigCommands),
@@ -262,13 +241,6 @@ pub async fn handle_agent(
             output,
             json,
         } => handlers::handle_agent_pull(paths, registry_ref, output, json).await,
-        AgentCommands::Init {
-            path,
-            name,
-            provider,
-            model,
-            force,
-        } => handlers::handle_agent_init(paths, path, name, provider, model, force, json).await,
         AgentCommands::Config(cmd) => handlers::handle_agent_config(cmd, paths, json).await,
     }
 }

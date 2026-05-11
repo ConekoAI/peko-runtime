@@ -60,9 +60,6 @@ pekobot agent create my-agent --provider minimax
 # Create an agent in a specific team
 pekobot agent create myteam/my-agent --provider kimi
 
-# Initialize a new agent directory
-pekobot agent init ./my-agent --provider minimax
-
 # Show agent details
 pekobot agent show my-agent
 
@@ -530,7 +527,6 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 # Agent management
 pekobot agent list
 pekobot agent create my-agent --provider minimax
-pekobot agent init ./my-agent --provider minimax
 pekobot agent show my-agent
 pekobot agent remove my-agent
 
