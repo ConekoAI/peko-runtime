@@ -4,3 +4,4 @@ target/
 *.sqlite3
 __pycache__/
 *.agent
+*.team
