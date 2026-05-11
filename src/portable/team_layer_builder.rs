@@ -376,4 +376,234 @@ include_mcp = false
         let entries: Vec<_> = archive.entries().unwrap().collect();
         assert!(!entries.is_empty());
     }
+
+    #[test]
+    fn test_empty_team_no_agents() {
+        let mut files = HashMap::new();
+        files.insert(
+            "team/manifest.toml".to_string(),
+            br#"
+[team]
+name = "empty-team"
+version = "1.0.0"
+agent_count = 0
+
+[format]
+version = "1.0"
+pekobot_version = "0.1.0"
+
+[export]
+created_at = "2024-01-01T00:00:00Z"
+include_sessions = false
+include_workspace = false
+include_mcp = false
+"#
+            .to_vec(),
+        );
+
+        let result = decompose_team_archive(&files).unwrap();
+
+        // Should have a valid TeamConfig layer
+        assert!(!result.team_config_layer.digest.is_empty());
+        assert!(result.team_config_layer.size > 0);
+
+        // No agents
+        assert!(result.agent_layers.is_empty());
+        assert!(result.agent_index.is_empty());
+    }
+
+    #[test]
+    fn test_agent_with_only_config_and_identity() {
+        let mut files = HashMap::new();
+        files.insert(
+            "team/manifest.toml".to_string(),
+            br#"
+[team]
+name = "minimal-team"
+version = "1.0.0"
+agent_count = 1
+
+[format]
+version = "1.0"
+pekobot_version = "0.1.0"
+
+[export]
+created_at = "2024-01-01T00:00:00Z"
+include_sessions = false
+include_workspace = false
+include_mcp = false
+"#
+            .to_vec(),
+        );
+
+        files.insert(
+            "agents/minimal/config/agent.toml".to_string(),
+            b"name = \"minimal\"\n".to_vec(),
+        );
+        files.insert(
+            "agents/minimal/identity/did.json".to_string(),
+            br#"{"id":"did:pekobot:minimal"}"#.to_vec(),
+        );
+
+        let result = decompose_team_archive(&files).unwrap();
+
+        assert_eq!(result.agent_layers.len(), 1);
+        assert_eq!(result.agent_index.len(), 1);
+
+        let layer_ref = result.agent_index.get("minimal").unwrap();
+        assert!(!layer_ref.config.is_empty());
+        assert!(!layer_ref.identity.is_empty());
+        assert!(layer_ref.skills.is_none());
+        assert!(layer_ref.workspace.is_none());
+        assert!(layer_ref.sessions.is_none());
+        assert!(layer_ref.mcp.is_none());
+
+        let layers = result.agent_layers.get("minimal").unwrap();
+        assert!(layers.contains_key(&LayerType::Config));
+        assert!(layers.contains_key(&LayerType::Identity));
+        assert!(!layers.contains_key(&LayerType::Skills));
+        assert!(!layers.contains_key(&LayerType::Workspace));
+        assert!(!layers.contains_key(&LayerType::Sessions));
+        assert!(!layers.contains_key(&LayerType::Mcp));
+    }
+
+    #[test]
+    fn test_agent_with_all_layer_types() {
+        let mut files = HashMap::new();
+        files.insert(
+            "team/manifest.toml".to_string(),
+            br#"
+[team]
+name = "full-team"
+version = "1.0.0"
+agent_count = 1
+
+[format]
+version = "1.0"
+pekobot_version = "0.1.0"
+
+[export]
+created_at = "2024-01-01T00:00:00Z"
+include_sessions = true
+include_workspace = true
+include_mcp = true
+"#
+            .to_vec(),
+        );
+
+        files.insert(
+            "agents/full/config/agent.toml".to_string(),
+            b"name = \"full\"\n".to_vec(),
+        );
+        files.insert(
+            "agents/full/identity/did.json".to_string(),
+            br#"{"id":"did:pekobot:full"}"#.to_vec(),
+        );
+        files.insert(
+            "agents/full/skills/rust/SKILL.md".to_string(),
+            b"# Rust skill".to_vec(),
+        );
+        files.insert(
+            "agents/full/workspace/notes.txt".to_string(),
+            b"some notes".to_vec(),
+        );
+        files.insert(
+            "agents/full/sessions/session_1.jsonl".to_string(),
+            b"{}\n".to_vec(),
+        );
+        files.insert(
+            "agents/full/mcp/servers.json".to_string(),
+            br#"{"servers":[]}"#.to_vec(),
+        );
+
+        let result = decompose_team_archive(&files).unwrap();
+
+        assert_eq!(result.agent_layers.len(), 1);
+        assert_eq!(result.agent_index.len(), 1);
+
+        let layer_ref = result.agent_index.get("full").unwrap();
+        assert!(!layer_ref.config.is_empty());
+        assert!(!layer_ref.identity.is_empty());
+        assert!(layer_ref.skills.is_some());
+        assert!(layer_ref.workspace.is_some());
+        assert!(layer_ref.sessions.is_some());
+        assert!(layer_ref.mcp.is_some());
+
+        let layers = result.agent_layers.get("full").unwrap();
+        assert!(layers.contains_key(&LayerType::Config));
+        assert!(layers.contains_key(&LayerType::Identity));
+        assert!(layers.contains_key(&LayerType::Skills));
+        assert!(layers.contains_key(&LayerType::Workspace));
+        assert!(layers.contains_key(&LayerType::Sessions));
+        assert!(layers.contains_key(&LayerType::Mcp));
+    }
+
+    #[test]
+    fn test_shared_agent_content_different_names() {
+        let mut files = HashMap::new();
+        files.insert(
+            "team/manifest.toml".to_string(),
+            br#"
+[team]
+name = "shared-team"
+version = "1.0.0"
+agent_count = 2
+
+[format]
+version = "1.0"
+pekobot_version = "0.1.0"
+
+[export]
+created_at = "2024-01-01T00:00:00Z"
+include_sessions = false
+include_workspace = false
+include_mcp = false
+"#
+            .to_vec(),
+        );
+
+        // Two agents with identical config and identity content
+        files.insert(
+            "agents/agent_a/config/agent.toml".to_string(),
+            b"name = \"shared\"\n".to_vec(),
+        );
+        files.insert(
+            "agents/agent_a/identity/did.json".to_string(),
+            br#"{"id":"did:pekobot:shared"}"#.to_vec(),
+        );
+        files.insert(
+            "agents/agent_b/config/agent.toml".to_string(),
+            b"name = \"shared\"\n".to_vec(),
+        );
+        files.insert(
+            "agents/agent_b/identity/did.json".to_string(),
+            br#"{"id":"did:pekobot:shared"}"#.to_vec(),
+        );
+
+        let result = decompose_team_archive(&files).unwrap();
+
+        assert_eq!(result.agent_layers.len(), 2);
+        assert_eq!(result.agent_index.len(), 2);
+
+        let agent_a = result.agent_layers.get("agent_a").unwrap();
+        let agent_b = result.agent_layers.get("agent_b").unwrap();
+
+        // Config layers should have identical digests (same content)
+        assert_eq!(
+            agent_a.get(&LayerType::Config).unwrap().digest,
+            agent_b.get(&LayerType::Config).unwrap().digest
+        );
+
+        // Identity layers should have identical digests (same content)
+        assert_eq!(
+            agent_a.get(&LayerType::Identity).unwrap().digest,
+            agent_b.get(&LayerType::Identity).unwrap().digest
+        );
+
+        // AgentLayerRef digests should also match
+        let ref_a = result.agent_index.get("agent_a").unwrap();
+        let ref_b = result.agent_index.get("agent_b").unwrap();
+        assert_eq!(ref_a.config, ref_b.config);
+        assert_eq!(ref_a.identity, ref_b.identity);
+    }
 }

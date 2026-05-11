@@ -14,7 +14,8 @@
 #  10. cross_platform_agent_share.ps1   — Cross-platform agent build/share/config verification
 #  11. agent_snapshot_memory.ps1        — Agent snapshot with sessions, registry push/pull, memory LLM verify
 #  12. registry_layer_dedup.ps1         — Cross-agent layer deduplication in registry
-#  13. team_full_lifecycle.ps1          — Comprehensive team lifecycle (extensions + sessions + registry + tools + memory)
+#  13. team_registry_dedup.ps1          — Cross-team agent layer deduplication in registry (Issue 023)
+#  14. team_full_lifecycle.ps1          — Comprehensive team lifecycle (extensions + sessions + registry + tools + memory)
 #
 # Usage:
 #   .\packaging_all.ps1 -Provider minimax
@@ -47,6 +48,7 @@ $tests = @(
     @{ Name = "Cross-Platform Agent Share"; Script = "cross_platform_agent_share.ps1"; NeedsRegistry = $true },
     @{ Name = "Agent Snapshot with Memory"; Script = "agent_snapshot_memory.ps1"; NeedsRegistry = $true },
     @{ Name = "Registry Layer Deduplication"; Script = "registry_layer_dedup.ps1"; NeedsRegistry = $true },
+    @{ Name = "Team Registry Deduplication"; Script = "team_registry_dedup.ps1"; NeedsRegistry = $true },
     @{ Name = "Team Full Lifecycle"; Script = "team_full_lifecycle.ps1"; NeedsRegistry = $true }
 )
 

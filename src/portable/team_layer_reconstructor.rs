@@ -313,4 +313,136 @@ include_mcp = false
             assert_eq!(content1, content2, "Mismatch for {path}");
         }
     }
+
+    #[tokio::test]
+    async fn test_reconstruct_agent_missing_optional_layers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::new(temp_dir.path());
+        registry.init().await.unwrap();
+
+        // Build a team with an agent that only has config and identity
+        let mut files = HashMap::new();
+        files.insert(
+            "team/manifest.toml".to_string(),
+            br#"
+[team]
+name = "minimal-team"
+version = "1.0.0"
+agent_count = 1
+
+[format]
+version = "1.0"
+pekobot_version = "0.1.0"
+
+[export]
+created_at = "2024-01-01T00:00:00Z"
+include_sessions = false
+include_workspace = false
+include_mcp = false
+"#
+            .to_vec(),
+        );
+        files.insert(
+            "agents/minimal/config/agent.toml".to_string(),
+            b"name = \"minimal\"\n".to_vec(),
+        );
+        files.insert(
+            "agents/minimal/identity/did.json".to_string(),
+            br#"{"id":"did:pekobot:minimal"}"#.to_vec(),
+        );
+
+        let decomposed = decompose_team_archive(&files).unwrap();
+
+        // Store only config and identity layers
+        let minimal_layers = decomposed.agent_layers.get("minimal").unwrap();
+        registry
+            .store_layer(
+                &minimal_layers.get(&LayerType::Config).unwrap().digest,
+                &minimal_layers.get(&LayerType::Config).unwrap().bytes,
+            )
+            .await
+            .unwrap();
+        registry
+            .store_layer(
+                &minimal_layers.get(&LayerType::Identity).unwrap().digest,
+                &minimal_layers.get(&LayerType::Identity).unwrap().bytes,
+            )
+            .await
+            .unwrap();
+
+        let agent_ref = decomposed.agent_index.get("minimal").unwrap();
+        let reconstructed = reconstruct_agent_files(&registry, agent_ref).await.unwrap();
+
+        // Should only have config and identity entries
+        assert_eq!(reconstructed.len(), 2);
+        assert!(reconstructed.contains_key("config/agent.toml"));
+        assert!(reconstructed.contains_key("identity/did.json"));
+        assert!(!reconstructed.contains_key("skills/rust/SKILL.md"));
+        assert!(!reconstructed.contains_key("workspace/notes.txt"));
+        assert!(!reconstructed.contains_key("sessions/session_1.jsonl"));
+        assert!(!reconstructed.contains_key("mcp/servers.json"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_agent_index() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::new(temp_dir.path());
+        registry.init().await.unwrap();
+
+        // Build a team with no agents
+        let mut files = HashMap::new();
+        files.insert(
+            "team/manifest.toml".to_string(),
+            br#"
+[team]
+name = "empty-team"
+version = "1.0.0"
+agent_count = 0
+
+[format]
+version = "1.0"
+pekobot_version = "0.1.0"
+
+[export]
+created_at = "2024-01-01T00:00:00Z"
+include_sessions = false
+include_workspace = false
+include_mcp = false
+"#
+            .to_vec(),
+        );
+
+        let decomposed = decompose_team_archive(&files).unwrap();
+
+        // Store the TeamConfig layer
+        registry
+            .store_layer(&decomposed.team_config_layer.digest, &decomposed.team_config_layer.bytes)
+            .await
+            .unwrap();
+
+        // Reconstruct the team
+        let reconstructed = reconstruct_team(&registry, &decomposed.team_config_layer.digest)
+            .await
+            .unwrap();
+
+        assert_eq!(reconstructed.team_info.team.name, "empty-team");
+        assert_eq!(reconstructed.team_info.team.agent_count, 0);
+        assert!(reconstructed.agent_files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_team_config_missing_manifest_toml() {
+        // Build a tarball that does NOT contain manifest.toml
+        let mut files: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+        files.insert("other_file.txt".to_string(), b"some content".to_vec());
+        let bad_layer = build_tarball(&files).unwrap();
+
+        let result = extract_team_config_index(&bad_layer);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("manifest.toml") || err_msg.contains("not found"),
+            "Error should mention missing manifest.toml, got: {err_msg}"
+        );
+    }
 }
