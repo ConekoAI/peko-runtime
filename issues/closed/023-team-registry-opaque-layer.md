@@ -1,6 +1,6 @@
 # Issue 023: Team Registry Push/Pull Uses Single Opaque Layer
 
-**Status:** Open  
+**Status:** Closed  
 **Priority:** P1  
 **Area:** Packaging / Registry / Teams  
 **Related:** ADR-027 (Unified Packaging), `src/commands/team.rs`, `src/portable/team_packager.rs`
