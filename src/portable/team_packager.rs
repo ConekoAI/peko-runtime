@@ -305,6 +305,43 @@ impl TeamPackager {
     }
 }
 
+/// Agent layer reference within a team registry manifest.
+///
+/// Maps an agent name to the content-addressable digests of its constituent layers.
+/// Used inside the `TeamConfig` layer to enable cross-team deduplication.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentLayerRef {
+    /// Config layer digest
+    pub config: String,
+    /// Identity layer digest
+    pub identity: String,
+    /// Skills layer digest (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<String>,
+    /// Workspace layer digest (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// Sessions layer digest (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<String>,
+    /// MCP layer digest (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<String>,
+}
+
+/// Team agent index — maps agent names to their layer references.
+///
+/// Serialized into the `TeamConfig` layer's `manifest.toml` so that
+/// `handle_team_pull` can reconstruct each agent from its layers.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TeamAgentIndex {
+    /// Team metadata
+    #[serde(flatten)]
+    pub team: TeamInfo,
+    /// Agent name → layer reference mapping
+    pub agents: HashMap<String, AgentLayerRef>,
+}
+
 /// Team manifest structure
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TeamManifest {

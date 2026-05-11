@@ -225,6 +225,10 @@ impl Packager {
                     LayerType::Workspace => layers.workspace = Some(digest),
                     LayerType::Sessions => layers.sessions = Some(digest),
                     LayerType::Mcp => layers.mcp = Some(digest),
+                    LayerType::TeamConfig => {
+                        // TeamConfig is not part of an agent manifest;
+                        // it only appears in team registry manifests.
+                    }
                 }
             }
         }

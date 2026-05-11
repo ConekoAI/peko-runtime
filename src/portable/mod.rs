@@ -58,8 +58,8 @@ pub use manifest::AgentManifest;
 pub use packager::{export_agent, ExportOptions, Packager};
 pub use registry::AgentRegistry;
 pub use team_packager::{
-    export_team, export_team_with_config_dir, TeamExportOptions, TeamManifest, TeamPackager,
-    TeamPackagingMetadata,
+    export_team, export_team_with_config_dir, AgentLayerRef, TeamAgentIndex, TeamExportOptions,
+    TeamManifest, TeamPackager, TeamPackagingMetadata,
 };
 pub use team_unpackager::{
     import_team, import_team_with_base_dir, inspect_team, TeamImportOptions, TeamImportResult,

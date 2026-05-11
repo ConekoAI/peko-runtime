@@ -113,6 +113,9 @@ pub enum LayerType {
     Sessions,
     /// MCP layer
     Mcp,
+    /// Team config layer (team.toml, manifest.toml, agent index)
+    /// Used for team registry push/pull to enable cross-team agent deduplication.
+    TeamConfig,
 }
 
 impl LayerType {
@@ -127,6 +130,7 @@ impl LayerType {
             LayerType::Workspace => "workspace",
             LayerType::Sessions => "sessions",
             LayerType::Mcp => "mcp",
+            LayerType::TeamConfig => "team",
         }
     }
 }
@@ -235,6 +239,7 @@ mod tests {
         assert_eq!(LayerType::Workspace.dir_name(), "workspace");
         assert_eq!(LayerType::Sessions.dir_name(), "sessions");
         assert_eq!(LayerType::Mcp.dir_name(), "mcp");
+        assert_eq!(LayerType::TeamConfig.dir_name(), "team");
     }
 
     #[test]

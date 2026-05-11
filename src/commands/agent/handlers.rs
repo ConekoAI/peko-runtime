@@ -967,6 +967,10 @@ fn registry_to_agent_manifest(registry_manifest: &RegistryManifest) -> AgentMani
             LayerType::Workspace => layers.workspace = Some(layer.digest.clone()),
             LayerType::Sessions => layers.sessions = Some(layer.digest.clone()),
             LayerType::Mcp => layers.mcp = Some(layer.digest.clone()),
+            LayerType::TeamConfig => {
+                // TeamConfig layers are not part of agent manifests;
+                // they are skipped when reconstructing an agent manifest.
+            }
         }
     }
     agent_manifest.layers = Some(layers);

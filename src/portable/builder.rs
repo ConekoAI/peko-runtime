@@ -166,7 +166,9 @@ impl AgentBuilder {
                     LayerType::Workspace => layers.workspace = Some(digest.clone()),
                     LayerType::Sessions => layers.sessions = Some(digest.clone()),
                     LayerType::Mcp => layers.mcp = Some(digest.clone()),
-                    _ => unreachable!(),
+                    LayerType::Config | LayerType::Identity | LayerType::TeamConfig => {
+                        unreachable!()
+                    }
                 }
                 total_size += size;
                 layer_count += 1;
