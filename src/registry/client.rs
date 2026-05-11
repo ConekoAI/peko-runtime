@@ -421,8 +421,9 @@ impl RegistryClient {
                 )
             });
 
-        // Upload layer data
-        let req = self.http.put(&upload_url);
+        // Upload layer data with digest query parameter (OCI spec compliance)
+        let upload_url_with_digest = format!("{}?digest={}", upload_url, layer.digest);
+        let req = self.http.put(&upload_url_with_digest);
         let req = auth.apply(req);
         let req = req.header("Content-Type", "application/octet-stream");
         let req = req.body(data.clone());

@@ -209,15 +209,30 @@ async def complete_upload(
     request: Request,
     digest: str | None = None,
 ) -> Response:
-    """Complete a blob upload."""
+    """Complete a blob upload.
+
+    Validates that the client sends the ?digest=sha256:... query parameter
+    and that the provided digest matches the body content.
+    """
     body = await request.body()
 
-    # Compute digest from body if not provided in query
+    # Require digest query parameter (OCI spec compliance)
     if digest is None or not digest:
-        computed = hashlib.sha256(body).hexdigest()
-        digest = f"sha256:{computed}"
-    else:
-        digest = _normalize_digest(digest)
+        return Response(
+            status_code=400,
+            content="Missing required digest query parameter",
+        )
+
+    digest = _normalize_digest(digest)
+    hex_part = digest.removeprefix("sha256:")
+
+    # Validate digest matches body content
+    computed = hashlib.sha256(body).hexdigest()
+    if computed != hex_part:
+        return Response(
+            status_code=400,
+            content=f"Digest mismatch: expected sha256:{computed}, got {digest}",
+        )
 
     storage.put_blob(digest, body)
 
