@@ -415,7 +415,7 @@ Complete the CLI surface: close the gap between advertised commands (in `--help`
 | CLI command surface too large | Medium | Inconsistent UX | Audit and consolidate before v1.0 tag |
 | Provider adapter drift | Medium | Inconsistent behavior | Integration tests for each provider |
 | Extension source resolution fragility | Medium | Broken installs from external sources | Retry logic, caching, fallback to bundled |
-| Runtime engine criteria not unit-tested | Medium | Uncovered regressions | Add integration tests for agentic loop |
+| Runtime engine criteria not unit-tested | Medium | Uncovered regressions | ✅ **Resolved (2026-05-12)** — Added `MockAdapter` + `Agent::new_for_test()` in `src/providers/mock.rs`, `src/agent/agent.rs`. Added 9 integration tests in `src/engine/agentic_loop.rs` covering RT-001 through RT-006 (basic loop, streaming, timeout, error handling, session persistence, max iterations) |
 
 ---
 
@@ -431,9 +431,10 @@ Phase 1 is **officially complete** when:
 6. ✅ The core team has written a retrospective document.
 
 **Current Status (as of 2026-05-12)**:
-- `cargo test --lib`: **986 passed, 0 failed, 19 ignored** ✅
+- `cargo test --lib`: **986 passed, 0 failed, 19 ignored** ✅ *(+9 new agentic loop tests added this update)*
 - `cargo clippy`: **1,527 warnings** (60 unique in lib) ❌ — needs cleanup
 - Integration tests: packaging (2/3 pass, 1 ignored needs mock registry), team (4/4 pass), extension (5/5 pass) ⚠️
+- Unit tests (agentic loop engine): RT-001 (basic loop), RT-002 (streaming), RT-003 (timeout propagation), RT-004 (graceful error handling), RT-005 (session persistence), RT-006 (max iterations) ✅
 - E2E tests: 60+ PowerShell scripts covering agent, session, send, tools, extensions, packaging, cron, A2A, subagent, compaction ✅
 
 ---
