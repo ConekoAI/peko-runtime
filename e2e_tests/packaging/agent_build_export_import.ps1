@@ -90,12 +90,6 @@ frequency_penalty = 0.0
 enabled = ["shell", "read_file"]
 "@ | Out-File -FilePath "$agentConfigDir/agent.toml" -Encoding UTF8
 
-# Create prompts.toml
-@"
-[prompts]
-default = "You are a test agent for packaging validation."
-"@ | Out-File -FilePath "$agentConfigDir/prompts.toml" -Encoding UTF8
-
 # Create identity stub (valid DID document, no BOM)
 $didJson = @'
 {

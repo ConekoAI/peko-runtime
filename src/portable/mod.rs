@@ -11,7 +11,6 @@
 //! - `identity/did.json` - DID document
 //! - `identity/keys.enc` - Encrypted private keys (AES-256-GCM)
 //! - `config/agent.toml` - Agent configuration
-//! - `config/prompts.toml` - System prompts
 //! - `skills/{name}/SKILL.md` - Bundled skills (full directories)
 //! - `workspace/` - Workspace files (SYSTEM.md, AGENTS.md, etc.)
 //! - `sessions/` - Session history (optional, can be large)

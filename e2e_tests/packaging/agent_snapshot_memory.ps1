@@ -147,11 +147,6 @@ frequency_penalty = 0.0
 enabled = ["shell", "read_file"]
 "@ | Out-File -FilePath "$agentConfigDir/agent.toml" -Encoding UTF8
 
-    @"
-[prompts]
-default = "You are a helpful assistant with excellent memory. When asked about previously shared secrets, respond accurately. Use exact keywords when requested."
-"@ | Out-File -FilePath "$agentConfigDir/prompts.toml" -Encoding UTF8
-
     $didJson = @'
 {
   "@context": ["https://www.w3.org/ns/did/v1"],

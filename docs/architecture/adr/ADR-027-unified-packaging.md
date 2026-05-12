@@ -121,8 +121,7 @@ my-agent.agent (gzip-compressed tar)
 │   ├── did.json
 │   └── keys.json
 ├── config/
-│   ├── agent.toml          # Single source of truth for behavior
-│   └── prompts.toml
+│   └── agent.toml          # Single source of truth for behavior
 ├── skills/
 │   └── {name}/
 │       └── SKILL.md
@@ -166,7 +165,7 @@ archive_format = "tar"
 
 | Layer | Source Files | Optional | Contains Behavior Config? |
 |-------|-------------|----------|---------------------------|
-| `config` | `config/agent.toml`, `config/prompts.toml` | No | ✅ Yes — agent.toml is the SSOT |
+| `config` | `config/agent.toml` | No | ✅ Yes — agent.toml is the SSOT |
 | `identity` | `identity/did.json`, `identity/keys.json` | No | ❌ No |
 | `skills` | `skills/**` | Yes | ❌ No |
 | `workspace` | `workspace/**` | Yes | ❌ No |

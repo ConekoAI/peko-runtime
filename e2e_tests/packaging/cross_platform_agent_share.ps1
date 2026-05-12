@@ -146,12 +146,6 @@ frequency_penalty = 0.0
 enabled = ["shell", "read_file", "write_file"]
 "@ | Out-File -FilePath "$agentConfigDir/agent.toml" -Encoding UTF8
 
-    @"
-[prompts]
-default = "You are a cross-platform test agent. Respond with exact keywords when asked."
-summary = "You summarize things concisely."
-"@ | Out-File -FilePath "$agentConfigDir/prompts.toml" -Encoding UTF8
-
     $didJson = @'
 {
   "@context": ["https://www.w3.org/ns/did/v1"],

@@ -295,11 +295,6 @@ impl Packager {
         files.insert("config/agent.toml".to_string(), config_toml.into_bytes());
         manifest.add_file("config/agent.toml", &files["config/agent.toml"]);
 
-        // Export prompts/personality
-        let prompts = self.export_prompts();
-        files.insert("config/prompts.toml".to_string(), prompts.into_bytes());
-        manifest.add_file("config/prompts.toml", &files["config/prompts.toml"]);
-
         Ok(())
     }
 
@@ -510,16 +505,7 @@ impl Packager {
         portable
     }
 
-    /// Export prompts/personality
-    fn export_prompts(&self) -> String {
-        // Simple prompts export - can be extended
-        let prompts = serde_json::json!({
-            "system_prompt": format!("You are {}, a helpful AI assistant.", self.config.name),
-            "extensions": self.config.extension_whitelist(),
-        });
 
-        toml::to_string_pretty(&prompts).unwrap_or_default()
-    }
 }
 
 /// Convenience function to export an agent

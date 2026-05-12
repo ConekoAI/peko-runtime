@@ -974,7 +974,7 @@ my-agent.agent (gzip-compressed tar)
 ├── manifest.toml          # Package metadata and layer digests
 ├── config/
 │   ├── agent.toml         # Agent configuration (SSOT for behaviour)
-│   └── prompts.toml       # System prompts
+│   └── (no other files — prompts are built dynamically at runtime)
 ├── identity/
 │   ├── did.json           # DID document
 │   └── keys.enc           # Encrypted private keys
@@ -1013,7 +1013,7 @@ workspace = "sha256:3m4n5o6p..."
 [packaging]
 files = [
   "config/agent.toml",
-  "config/prompts.toml",
+
   "identity/did.json",
   "identity/keys.enc",
   "skills/web-search/SKILL.md",
@@ -1046,7 +1046,7 @@ This ensures packaging metadata never competes with `agent.toml` as a source of 
 
 | Layer | Source Directory | Required | Contents |
 |-------|------------------|----------|----------|
-| `config` | `config/` | Yes | `agent.toml` (SSOT), `prompts.toml` |
+| `config` | `config/` | Yes | `agent.toml` (SSOT) |
 | `identity` | `identity/` | Yes | `did.json`, `keys.enc` |
 | `skills` | `skills/` | No | Skill directories with `SKILL.md` |
 | `workspace` | `workspace/` | No | Workspace files (`SYSTEM.md`, etc.) |
@@ -1113,7 +1113,7 @@ When a team is pushed to a registry via `peko team push`, it is **not** stored a
 | Layer Type | `LayerType` variant | Contents |
 |-----------|---------------------|----------|
 | TeamConfig | `TeamConfig` | `team.toml` (optional) + `manifest.toml` with agent index |
-| Config | `Config` | `config/agent.toml`, `config/prompts.toml` |
+| Config | `Config` | `config/agent.toml` |
 | Identity | `Identity` | `identity/did.json`, `identity/keys.enc` |
 | Skills | `Skills` | `skills/{name}/SKILL.md` |
 | Workspace | `Workspace` | `workspace/` files |

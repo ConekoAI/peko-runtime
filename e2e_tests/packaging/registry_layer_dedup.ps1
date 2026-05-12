@@ -142,11 +142,6 @@ frequency_penalty = 0.0
 enabled = ["shell", "read_file"]
 "@ | Out-File -FilePath "$configADir/agent.toml" -Encoding UTF8
 
-    @"
-[prompts]
-default = "You are agent A."
-"@ | Out-File -FilePath "$configADir/prompts.toml" -Encoding UTF8
-
     $didJson = @'
 {
   "@context": ["https://www.w3.org/ns/did/v1"],
@@ -232,11 +227,6 @@ frequency_penalty = 0.0
 [extensions]
 enabled = ["shell", "read_file", "write_file"]
 "@ | Out-File -FilePath "$configBDir/agent.toml" -Encoding UTF8
-
-    @"
-[prompts]
-default = "You are agent B."
-"@ | Out-File -FilePath "$configBDir/prompts.toml" -Encoding UTF8
 
     # Same DID structure but different ID
     $didJsonB = @'
