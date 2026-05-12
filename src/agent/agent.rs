@@ -868,6 +868,77 @@ impl Agent {
         }
     }
 
+    /// Create an agent for unit tests with isolated storage.
+    ///
+    /// Uses a temporary directory for identity and session storage so tests
+    /// do not conflict with each other or the user's real data.
+    #[cfg(test)]
+    pub async fn new_for_test(
+        config: AgentConfig,
+        temp_dir: &std::path::Path,
+    ) -> Result<Self> {
+        use crate::identity::storage::KeyStorage;
+
+        let path_resolver = PathResolver::with_dirs(
+            temp_dir.join("config"),
+            temp_dir.join("data"),
+            temp_dir.join("cache"),
+        );
+        let session_manager = SessionManager::new()
+            .with_path_resolver(path_resolver, &config.name, config.team.as_deref())
+            .await?;
+        let session_manager = Arc::new(TokioRwLock::new(session_manager));
+
+        // Load or create identity in temp storage
+        let identity = {
+            let storage = KeyStorage::with_path(temp_dir.join("data").join("identities"))?;
+            let tenant = config.tenant.as_deref().unwrap_or("default");
+            let identity_name = format!("{}-{}", tenant, config.name);
+            if let Ok(identity) = storage.load(&identity_name) {
+                identity
+            } else {
+                let identity = Identity::generate(DIDScope::Local, Some(tenant))?;
+                storage.store(&identity)?;
+                identity
+            }
+        };
+
+        let provider = Self::init_provider(&config).await?;
+
+        let subagent_executor_base = SubagentExecutor::new(
+            Arc::clone(&session_manager),
+            config.name.clone(),
+            5,
+        );
+        let subagent_executor = match &provider {
+            Some(p) => Arc::new(
+                subagent_executor_base
+                    .with_provider(p.clone())
+                    .with_agent_config(config.clone()),
+            ),
+            None => Arc::new(subagent_executor_base),
+        };
+
+        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
+            "agent:{}:cli:default",
+            config.name
+        )));
+
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+
+        Ok(Self {
+            config,
+            state: Arc::new(RwLock::new(AgentState::Idle)),
+            identity,
+            provider,
+            session_manager,
+            subagent_executor,
+            session_key_provider,
+            current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
+            extension_core,
+        })
+    }
+
     // Private helper methods
 
     async fn load_or_create_identity(config: &AgentConfig) -> Result<Identity> {

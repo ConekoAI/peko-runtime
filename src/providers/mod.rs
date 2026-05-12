@@ -13,6 +13,7 @@
 
 pub mod adapters;
 pub mod core;
+pub mod mock;
 pub mod registry;
 pub mod synthetic_stream;
 pub mod transport;
@@ -23,6 +24,7 @@ pub use adapters::{
     AnthropicAdapter, AnyAdapter, ApiAdapter, OpenAiAdapter, OpenAiCompatibleAdapter,
 };
 pub use core::Provider;
+pub use mock::{MockAdapter, MockResponse};
 pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
 pub use transport::{AuthConfig, HttpClient, SseParser};
 pub use types::{

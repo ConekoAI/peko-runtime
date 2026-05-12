@@ -34,26 +34,38 @@ impl Provider {
         config: ProviderConfig,
     ) -> anyhow::Result<Self> {
         let api_key = api_key.into();
-        if api_key.is_empty() {
-            return Err(anyhow::anyhow!("API key is required"));
-        }
 
-        let auth = adapter.auth_config(&api_key);
-        let extra_headers = adapter.extra_headers();
-        let mut client = HttpClient::with_headers(
-            adapter.base_url(),
-            auth,
-            config.timeout_seconds,
-            extra_headers,
-        )?;
+        // Mock adapter does not need a real HTTP client or API key
+        let client = if matches!(adapter, AnyAdapter::Mock(_)) {
+            HttpClient::with_headers(
+                adapter.base_url(),
+                adapter.auth_config(&api_key),
+                config.timeout_seconds,
+                adapter.extra_headers(),
+            )?
+        } else {
+            if api_key.is_empty() {
+                return Err(anyhow::anyhow!("API key is required"));
+            }
 
-        // Wire retry configuration from ProviderConfig
-        if let Some(retry_policy) = crate::providers::transport::RetryPolicy::from_config(
-            config.max_retries,
-            config.retry_delay_ms,
-        ) {
-            client = client.with_retry_policy(retry_policy);
-        }
+            let auth = adapter.auth_config(&api_key);
+            let extra_headers = adapter.extra_headers();
+            let mut client = HttpClient::with_headers(
+                adapter.base_url(),
+                auth,
+                config.timeout_seconds,
+                extra_headers,
+            )?;
+
+            // Wire retry configuration from ProviderConfig
+            if let Some(retry_policy) = crate::providers::transport::RetryPolicy::from_config(
+                config.max_retries,
+                config.retry_delay_ms,
+            ) {
+                client = client.with_retry_policy(retry_policy);
+            }
+            client
+        };
 
         let model_name = config
             .default_model_config()
@@ -152,6 +164,11 @@ impl Provider {
         tools: &[ToolDefinition],
         options: &ChatOptions,
     ) -> anyhow::Result<ChatResponse> {
+        // Short-circuit to mock adapter when testing
+        if let AnyAdapter::Mock(mock) = &self.adapter {
+            return mock.chat_with_tools(messages, Some(tools), options);
+        }
+
         let (path, body) = self
             .adapter
             .build_request(messages, Some(tools), options, false)?;
@@ -167,6 +184,11 @@ impl Provider {
         options: &ChatOptions,
     ) -> anyhow::Result<Pin<Box<dyn futures::Stream<Item = anyhow::Result<StreamEvent>> + Send>>>
     {
+        // Short-circuit to mock adapter when testing
+        if let AnyAdapter::Mock(mock) = &self.adapter {
+            return mock.stream_with_tools(messages, Some(tools), options);
+        }
+
         let (path, body) = self
             .adapter
             .build_request(messages, Some(tools), options, true)?;

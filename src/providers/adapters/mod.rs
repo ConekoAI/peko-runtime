@@ -5,6 +5,7 @@
 //! - Anthropic: Messages API
 //! - OpenAI-Compatible: Same as `OpenAI` with different base URL
 
+use crate::providers::mock::MockAdapter;
 use crate::providers::transport::AuthConfig;
 use crate::providers::types::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StreamEvent, ToolDefinition,
@@ -229,6 +230,7 @@ pub enum AnyAdapter {
     OpenAi(OpenAiAdapter),
     Anthropic(AnthropicAdapter),
     OpenAiCompatible(OpenAiCompatibleAdapter),
+    Mock(MockAdapter),
 }
 
 impl ApiAdapter for AnyAdapter {
@@ -237,6 +239,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.name(),
             Self::Anthropic(a) => a.name(),
             Self::OpenAiCompatible(a) => a.name(),
+            Self::Mock(a) => a.name(),
         }
     }
 
@@ -245,6 +248,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.default_model(),
             Self::Anthropic(a) => a.default_model(),
             Self::OpenAiCompatible(a) => a.default_model(),
+            Self::Mock(a) => a.default_model(),
         }
     }
 
@@ -253,6 +257,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.base_url(),
             Self::Anthropic(a) => a.base_url(),
             Self::OpenAiCompatible(a) => a.base_url(),
+            Self::Mock(a) => a.base_url(),
         }
     }
 
@@ -267,6 +272,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.build_request(messages, tools, options, stream),
             Self::Anthropic(a) => a.build_request(messages, tools, options, stream),
             Self::OpenAiCompatible(a) => a.build_request(messages, tools, options, stream),
+            Self::Mock(a) => a.build_request(messages, tools, options, stream),
         }
     }
 
@@ -275,6 +281,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.parse_response(response),
             Self::Anthropic(a) => a.parse_response(response),
             Self::OpenAiCompatible(a) => a.parse_response(response),
+            Self::Mock(a) => a.parse_response(response),
         }
     }
 
@@ -283,6 +290,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.parse_sse_event(data),
             Self::Anthropic(a) => a.parse_sse_event(data),
             Self::OpenAiCompatible(a) => a.parse_sse_event(data),
+            Self::Mock(a) => a.parse_sse_event(data),
         }
     }
 
@@ -291,6 +299,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.auth_config(api_key),
             Self::Anthropic(a) => a.auth_config(api_key),
             Self::OpenAiCompatible(a) => a.auth_config(api_key),
+            Self::Mock(a) => a.auth_config(api_key),
         }
     }
 
@@ -299,6 +308,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.extra_headers(),
             Self::Anthropic(a) => a.extra_headers(),
             Self::OpenAiCompatible(a) => a.extra_headers(),
+            Self::Mock(a) => a.extra_headers(),
         }
     }
 
@@ -307,6 +317,7 @@ impl ApiAdapter for AnyAdapter {
             Self::OpenAi(a) => a.supports_native_tools(),
             Self::Anthropic(a) => a.supports_native_tools(),
             Self::OpenAiCompatible(a) => a.supports_native_tools(),
+            Self::Mock(a) => a.supports_native_tools(),
         }
     }
 }
