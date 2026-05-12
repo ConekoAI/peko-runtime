@@ -17,8 +17,11 @@ use pekobot::portable::{
     export_team, import_team_with_base_dir, inspect_team, AgentManifest,
     AgentRegistry, ExportOptions, ImportOptions, Packager, TeamExportOptions, TeamImportOptions,
 };
+use pekobot::portable::manifest::AgentLayers;
 use pekobot::registry::{RegistryClient, RegistryConfig, RegistryManifest, RegistrySource};
 use pekobot::types::agent::AgentConfig;
+use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -141,18 +144,13 @@ fn test_registry_config(host: &str) -> RegistryConfig {
 /// RegistryClient::push() can load it from local storage.
 fn build_registry_manifest(
     agent_manifest: &AgentManifest,
+    manifest_digest: &str,
     host: &str,
     tag: &str,
 ) -> anyhow::Result<RegistryManifest> {
     let mut reg_manifest =
         RegistryManifest::new(&agent_manifest.agent.name, &agent_manifest.agent.version)
-            .with_digest(
-                agent_manifest
-                    .layers
-                    .as_ref()
-                    .and_then(|l| l.config.as_ref())
-                    .unwrap_or(&"sha256:unknown".to_string()),
-            )
+            .with_digest(manifest_digest)
             .with_ref(format!("{host}/{tag}", tag = tag.replace(':', "_")));
 
     if let Some(layers) = &agent_manifest.layers {
@@ -204,6 +202,89 @@ async fn store_registry_manifest_local(
     Ok(())
 }
 
+/// Extract a `.agent` package and store its layer tarballs in the registry.
+///
+/// This reconstructs the same gzipped tarballs that `Packager::compute_layers`
+/// builds, ensuring the layer digests in the manifest match the stored data.
+async fn store_agent_layers_in_registry(
+    package_path: &Path,
+    registry: &AgentRegistry,
+    layers: &AgentLayers,
+) -> anyhow::Result<()> {
+    // Extract the .agent package (tar.gz)
+    let file = std::fs::File::open(package_path)?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+
+    let mut files: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        let path_str = path.to_string_lossy().to_string();
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content)?;
+        files.insert(path_str, content);
+    }
+
+    // Layer prefixes matching Packager::compute_layers
+    let layer_prefixes = [
+        (layers.config.as_ref(), "config"),
+        (layers.identity.as_ref(), "identity"),
+        (layers.skills.as_ref(), "skills"),
+        (layers.workspace.as_ref(), "workspace"),
+        (layers.sessions.as_ref(), "sessions"),
+        (layers.mcp.as_ref(), "mcp"),
+    ];
+
+    for (expected_digest, prefix) in layer_prefixes {
+        let Some(expected_digest) = expected_digest else {
+            continue;
+        };
+
+        // Collect files for this layer
+        let mut layer_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for (path, content) in &files {
+            if path.starts_with(&format!("{prefix}/")) {
+                let layer_path = path.strip_prefix(&format!("{prefix}/")).unwrap_or(path);
+                layer_files.insert(layer_path.to_string(), content.clone());
+            }
+        }
+
+        if layer_files.is_empty() {
+            continue;
+        }
+
+        // Build gzipped tarball matching Packager::build_layer_digest
+        let mut buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            for (path, content) in &layer_files {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(path)?;
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append(&header, content.as_slice())?;
+            }
+            tar.finish()?;
+        }
+
+        // Verify digest matches
+        let computed_digest = pekobot::portable::types::compute_digest(&buf);
+        if computed_digest != *expected_digest {
+            anyhow::bail!(
+                "Layer digest mismatch for {prefix}: expected {expected_digest}, got {computed_digest}"
+            );
+        }
+
+        // Store in registry
+        registry.store_layer(expected_digest, &buf).await?;
+    }
+
+    Ok(())
+}
+
 // ── The full integration test ────────────────────────────────────────
 
 #[tokio::test]
@@ -231,12 +312,17 @@ async fn test_full_packaging_pipeline() {
     assert!(layers.skills.is_some());
     assert!(layers.workspace.is_some());
 
-    // Store manifest in a local registry so push can resolve layers
+    // Store manifest and layers in a local registry so push can resolve them
     let build_registry_dir = base_dir.join("build_registry");
     let build_registry = AgentRegistry::new(&build_registry_dir);
     build_registry.init().await.unwrap();
-    build_registry
+    let manifest_digest = build_registry
         .store_manifest(&manifest, Some("integration-agent:v1.0"))
+        .await
+        .unwrap();
+
+    // Reconstruct and store layer tarballs so push_layer can read them
+    store_agent_layers_in_registry(&package_path, &build_registry, &layers)
         .await
         .unwrap();
 
@@ -245,7 +331,8 @@ async fn test_full_packaging_pipeline() {
     // ═════════════════════════════════════════════════════════════════
     let host = "127.0.0.1:18765";
     let reg_manifest =
-        build_registry_manifest(&manifest, host, "integration-agent:v1.0").unwrap();
+        build_registry_manifest(&manifest, manifest_digest.as_str(), host, "integration-agent:v1.0")
+            .unwrap();
 
     // Store the RegistryManifest JSON where push() expects it
     store_registry_manifest_local(&build_registry, &reg_manifest)
@@ -254,9 +341,6 @@ async fn test_full_packaging_pipeline() {
 
     let push_config = test_registry_config(host);
     let push_client = RegistryClient::new(push_config, build_registry.clone());
-
-    let manifest_digest =
-        pekobot::portable::ImageDigest::new(layers.config.as_ref().unwrap()).unwrap();
 
     let mut push_events = Vec::new();
     let push_result = push_client
