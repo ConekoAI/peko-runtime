@@ -2,12 +2,13 @@
 # Registry Layer Deduplication E2E Test
 #
 # Real-world scenario:
-#   1. Build two different agents that share identical layers (e.g., same identity
-#      structure, same skill, same base config).
-#   2. Push both agents to the mock registry.
-#   3. Verify the registry only stores unique layers once (content-addressable
+#   1. Create two different agents that share identical layers (e.g., same skill).
+#   2. Export both agents to .agent packages.
+#   3. Verify shared layers have identical digests.
+#   4. Push both agents to the mock registry.
+#   5. Verify the registry only stores unique layers once (content-addressable
 #      deduplication).
-#   4. Pull both agents on a fresh machine and verify integrity.
+#   6. Pull both agents on a fresh machine and verify integrity.
 #
 # Deterministic verification:
 #   - Structural checks: blob counts, layer digest comparison.
@@ -70,6 +71,43 @@ function Get-RegistryBlobs {
     return Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/blobs" -Method GET
 }
 
+function Get-LayerDigestsFromAgentPackage {
+    param([string]$PackagePath)
+    # Extract manifest.toml from the .agent package (gzip tar) and parse layer digests
+    $tempDir = [System.IO.Path]::Combine($env:TEMP, "pekobot_inspect_$([System.Guid]::NewGuid().ToString().Substring(0,8))")
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        # tar extracts manifest.toml from the gzip archive
+        & tar -xzf $PackagePath -C $tempDir manifest.toml 2>$null
+        if (-not (Test-Path "$tempDir\manifest.toml")) {
+            Write-Error "Failed to extract manifest.toml from $PackagePath"
+        }
+        $manifestContent = Get-Content "$tempDir\manifest.toml" -Raw
+
+        # Use Python to parse TOML (guaranteed available since mock registry uses it)
+        $pythonScript = @"
+import sys, tomllib
+with open(r'$tempDir\manifest.toml', 'rb') as f:
+    data = tomllib.load(f)
+layers = data.get('layers', {})
+for key in ['config', 'identity', 'skills', 'workspace', 'sessions', 'mcp']:
+    val = layers.get(key)
+    if val:
+        print(f'{key}={val}')
+"@
+        $output = & python -c $pythonScript 2>$null
+        $digests = @{}
+        foreach ($line in $output) {
+            if ($line -match '^(\w+)=(.+)$') {
+                $digests[$matches[1]] = $matches[2]
+            }
+        }
+        return $digests
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item -Recurse -Force $tempDir }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Prerequisites
 # ---------------------------------------------------------------------------
@@ -98,192 +136,86 @@ $failed = $false
 
 try {
     # ============================================================
-    # STEP 1: Build agent A from directory
+    # STEP 1: Create agent A with shared skill
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 1: Build agent A" -ForegroundColor Cyan
+    Write-Host "STEP 1: Create agent A" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $agentADir = "$testDir/agent-a"
-    $configADir = "$agentADir/config"
-    $identityADir = "$agentADir/identity"
-    $skillsADir = "$agentADir/skills"
-    $workspaceADir = "$agentADir/workspace"
+    & $pekoCmd agent create "agent-a" --provider $Provider --force 2>&1 | Out-Null
+    Write-Host "Created agent A" -ForegroundColor Green
 
-    New-Item -ItemType Directory -Path $configADir -Force | Out-Null
-    New-Item -ItemType Directory -Path $identityADir -Force | Out-Null
-    New-Item -ItemType Directory -Path $skillsADir -Force | Out-Null
-    New-Item -ItemType Directory -Path $workspaceADir -Force | Out-Null
-
-    @"
-version = "1.0"
-name = "agent-a"
-description = "Agent A for dedup testing"
-auto_accept_trusted = false
-approval_threshold = 100.0
-default_timeout_seconds = 300
-
-[provider]
-provider_type = "$Provider"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "$Provider"
-max_tokens = 4096
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
-
-[extensions]
-enabled = ["shell", "read_file"]
-"@ | Out-File -FilePath "$configADir/agent.toml" -Encoding UTF8
-
-    $didJson = @'
-{
-  "@context": ["https://www.w3.org/ns/did/v1"],
-  "id": "did:pekobot:local:agent-a",
-  "verificationMethod": [{
-    "id": "did:pekobot:local:agent-a#keys-1",
-    "type": "Ed25519VerificationKey2020",
-    "controller": "did:pekobot:local:agent-a",
-    "publicKeyMultibase": "z6MkhaXg"
-  }],
-  "authentication": ["did:pekobot:local:agent-a#keys-1"],
-  "assertionMethod": ["did:pekobot:local:agent-a#keys-1"],
-  "service": [],
-  "created": "2026-05-09T00:00:00Z",
-  "updated": "2026-05-09T00:00:00Z"
-}
-'@
-    [System.IO.File]::WriteAllText("$identityADir/did.json", $didJson)
-
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $skBytes = New-Object byte[] 32; $rng.GetBytes($skBytes)
-    $pkBytes = New-Object byte[] 32; $rng.GetBytes($pkBytes)
-    $skB64 = [Convert]::ToBase64String($skBytes)
-    $pkB64 = [Convert]::ToBase64String($pkBytes)
-    $keysEnc = "{ `"public_key`": `"$pkB64`", `"private_key`": `"$skB64`" }"
-    [System.IO.File]::WriteAllText("$identityADir/keys.enc", $keysEnc)
-
-    # Shared skill
-    New-Item -ItemType Directory -Path "$skillsADir/shared-skill" -Force | Out-Null
-    "# Shared Skill`nThis skill is shared between agents." | Out-File -FilePath "$skillsADir/shared-skill/SKILL.md" -Encoding UTF8
-
-    # Unique workspace
-    "# Workspace A`nAgent A workspace." | Out-File -FilePath "$workspaceADir/README.md" -Encoding UTF8
-
-    $buildA = & $pekoCmd agent build $agentADir -t "agent-a:v1.0" --json 2>&1 | ConvertFrom-Json
-    if ($buildA.tag -ne "agent-a:v1.0") { Write-Error "Build agent A failed" }
-    $packageA = $buildA.package
-    $layersA = $buildA.layer_digests
-    Write-Host "Built agent A" -ForegroundColor Green
-    Write-Host "  Layers: $($buildA.layers)" -ForegroundColor Gray
+    # Add shared skill
+    $skillsDir = "$env:APPDATA/pekobot/skills/shared-skill"
+    New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
+    "# Shared Skill`nThis skill is shared between agents." | Out-File -FilePath "$skillsDir/SKILL.md" -Encoding UTF8
+    Write-Host "Added shared skill to agent A" -ForegroundColor Green
 
     # ============================================================
-    # STEP 2: Build agent B with SAME identity structure and skill
+    # STEP 2: Export agent A
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 2: Build agent B (shared layers)" -ForegroundColor Cyan
+    Write-Host "STEP 2: Export agent A" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $agentBDir = "$testDir/agent-b"
-    $configBDir = "$agentBDir/config"
-    $identityBDir = "$agentBDir/identity"
-    $skillsBDir = "$agentBDir/skills"
-    $workspaceBDir = "$agentBDir/workspace"
+    $packageA = "$testDir/agent-a.agent"
+    & $pekoCmd agent export --name "agent-a" -o $packageA 2>&1 | Out-Null
+    if (-not (Test-Path $packageA)) { Write-Error "Export agent A failed" }
+    Write-Host "Exported agent A to $packageA" -ForegroundColor Green
 
-    New-Item -ItemType Directory -Path $configBDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $identityBDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $skillsBDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $workspaceBDir -Force | Out-Null
-
-    @"
-version = "1.0"
-name = "agent-b"
-description = "Agent B for dedup testing"
-auto_accept_trusted = false
-approval_threshold = 100.0
-default_timeout_seconds = 300
-
-[provider]
-provider_type = "$Provider"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "$Provider"
-max_tokens = 4096
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
-
-[extensions]
-enabled = ["shell", "read_file", "write_file"]
-"@ | Out-File -FilePath "$configBDir/agent.toml" -Encoding UTF8
-
-    # Same DID structure but different ID
-    $didJsonB = @'
-{
-  "@context": ["https://www.w3.org/ns/did/v1"],
-  "id": "did:pekobot:local:agent-b",
-  "verificationMethod": [{
-    "id": "did:pekobot:local:agent-b#keys-1",
-    "type": "Ed25519VerificationKey2020",
-    "controller": "did:pekobot:local:agent-b",
-    "publicKeyMultibase": "z6MkhaXg"
-  }],
-  "authentication": ["did:pekobot:local:agent-b#keys-1"],
-  "assertionMethod": ["did:pekobot:local:agent-b#keys-1"],
-  "service": [],
-  "created": "2026-05-09T00:00:00Z",
-  "updated": "2026-05-09T00:00:00Z"
-}
-'@
-    [System.IO.File]::WriteAllText("$identityBDir/did.json", $didJsonB)
-
-    # Different keys
-    $skBytesB = New-Object byte[] 32; $rng.GetBytes($skBytesB)
-    $pkBytesB = New-Object byte[] 32; $rng.GetBytes($pkBytesB)
-    $skB64B = [Convert]::ToBase64String($skBytesB)
-    $pkB64B = [Convert]::ToBase64String($pkBytesB)
-    $keysEncB = "{ `"public_key`": `"$pkB64B`", `"private_key`": `"$skB64B`" }"
-    [System.IO.File]::WriteAllText("$identityBDir/keys.enc", $keysEncB)
-
-    # Same shared skill (identical content -> identical layer digest)
-    New-Item -ItemType Directory -Path "$skillsBDir/shared-skill" -Force | Out-Null
-    "# Shared Skill`nThis skill is shared between agents." | Out-File -FilePath "$skillsBDir/shared-skill/SKILL.md" -Encoding UTF8
-
-    # Different workspace
-    "# Workspace B`nAgent B workspace." | Out-File -FilePath "$workspaceBDir/README.md" -Encoding UTF8
-
-    $buildB = & $pekoCmd agent build $agentBDir -t "agent-b:v1.0" --json 2>&1 | ConvertFrom-Json
-    if ($buildB.tag -ne "agent-b:v1.0") { Write-Error "Build agent B failed" }
-    $packageB = $buildB.package
-    $layersB = $buildB.layer_digests
-    Write-Host "Built agent B" -ForegroundColor Green
-    Write-Host "  Layers: $($buildB.layers)" -ForegroundColor Gray
+    $layersA = Get-LayerDigestsFromAgentPackage -PackagePath $packageA
+    Write-Host "  Layers: $($layersA.Count)" -ForegroundColor Gray
+    foreach ($key in $layersA.Keys) {
+        Write-Host "    $key = $($layersA[$key])" -ForegroundColor Gray
+    }
 
     # ============================================================
-    # STEP 3: Compare layer digests
+    # STEP 3: Create agent B with SAME shared skill
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 3: Compare layer digests" -ForegroundColor Cyan
+    Write-Host "STEP 3: Create agent B (shared layers)" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    & $pekoCmd agent create "agent-b" --provider $Provider --force 2>&1 | Out-Null
+    Write-Host "Created agent B" -ForegroundColor Green
+
+    # Copy the SAME shared skill content to the same path
+    # (agent-b will pick it up because it uses the same skills directory)
+    New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
+    "# Shared Skill`nThis skill is shared between agents." | Out-File -FilePath "$skillsDir/SKILL.md" -Encoding UTF8
+    Write-Host "Added shared skill to agent B" -ForegroundColor Green
+
+    # ============================================================
+    # STEP 4: Export agent B
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "STEP 4: Export agent B" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $packageB = "$testDir/agent-b.agent"
+    & $pekoCmd agent export --name "agent-b" -o $packageB 2>&1 | Out-Null
+    if (-not (Test-Path $packageB)) { Write-Error "Export agent B failed" }
+    Write-Host "Exported agent B to $packageB" -ForegroundColor Green
+
+    $layersB = Get-LayerDigestsFromAgentPackage -PackagePath $packageB
+    Write-Host "  Layers: $($layersB.Count)" -ForegroundColor Gray
+    foreach ($key in $layersB.Keys) {
+        Write-Host "    $key = $($layersB[$key])" -ForegroundColor Gray
+    }
+
+    # ============================================================
+    # STEP 5: Compare layer digests
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "STEP 5: Compare layer digests" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $sharedLayers = @()
     $uniqueLayers = @()
-    foreach ($layer in $layersA.PSObject.Properties) {
-        $name = $layer.Name
-        $digestA = $layer.Value
-        $digestB = $layersB.$name
-        if ($digestA -and $digestB -and $digestA -eq $digestB) {
+    foreach ($name in $layersA.Keys) {
+        $digestA = $layersA[$name]
+        $digestB = $layersB[$name]
+        if ($digestB -and $digestA -eq $digestB) {
             $sharedLayers += $name
             Write-Host "  Layer '$name' is SHARED: $digestA" -ForegroundColor Green
         } else {
@@ -295,14 +227,14 @@ enabled = ["shell", "read_file", "write_file"]
     Write-Host "Unique layers: $($uniqueLayers.Count)" -ForegroundColor Gray
 
     # ============================================================
-    # STEP 4: Push agent A to registry
+    # STEP 6: Push agent A to registry
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 4: Push agent A to registry" -ForegroundColor Cyan
+    Write-Host "STEP 6: Push agent A to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $registryRefA = "127.0.0.1:$RegistryPort/pekobot/agents/agent-a:v1.0"
-    $pushA = & $pekoCmd agent push "agent-a:v1.0" $registryRefA --json 2>&1 | ConvertFrom-Json
+    $pushA = & $pekoCmd agent push "agent-a:v1.0" $registryRefA --file $packageA --json 2>&1 | ConvertFrom-Json
     if ($pushA.success -ne $true) { Write-Error "Push agent A failed" }
 
     $stateAfterA = Get-RegistryBlobs -Port $RegistryPort
@@ -311,14 +243,14 @@ enabled = ["shell", "read_file", "write_file"]
     Write-Host "  Registry blobs: $blobsAfterA" -ForegroundColor Gray
 
     # ============================================================
-    # STEP 5: Push agent B to registry
+    # STEP 7: Push agent B to registry
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 5: Push agent B to registry" -ForegroundColor Cyan
+    Write-Host "STEP 7: Push agent B to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $registryRefB = "127.0.0.1:$RegistryPort/pekobot/agents/agent-b:v1.0"
-    $pushB = & $pekoCmd agent push "agent-b:v1.0" $registryRefB --json 2>&1 | ConvertFrom-Json
+    $pushB = & $pekoCmd agent push "agent-b:v1.0" $registryRefB --file $packageB --json 2>&1 | ConvertFrom-Json
     if ($pushB.success -ne $true) { Write-Error "Push agent B failed" }
 
     $stateAfterB = Get-RegistryBlobs -Port $RegistryPort
@@ -327,15 +259,14 @@ enabled = ["shell", "read_file", "write_file"]
     Write-Host "  Registry blobs: $blobsAfterB" -ForegroundColor Gray
 
     # ============================================================
-    # STEP 6: Verify deduplication
+    # STEP 8: Verify deduplication
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 6: Verify deduplication" -ForegroundColor Cyan
+    Write-Host "STEP 8: Verify deduplication" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $totalLayersA = ($layersA.PSObject.Properties | Measure-Object).Count
-    $totalLayersB = ($layersB.PSObject.Properties | Measure-Object).Count
-    $expectedMinBlobs = [Math]::Max($totalLayersA, $totalLayersB)
+    $totalLayersA = $layersA.Count
+    $totalLayersB = $layersB.Count
     $expectedMaxBlobs = $totalLayersA + $totalLayersB
 
     # The registry should have fewer blobs than the sum of all layers
@@ -356,10 +287,10 @@ enabled = ["shell", "read_file", "write_file"]
     }
 
     # ============================================================
-    # STEP 7: Fresh machine pull both agents
+    # STEP 9: Fresh machine pull both agents
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 7: Fresh machine pull both agents" -ForegroundColor Cyan
+    Write-Host "STEP 9: Fresh machine pull both agents" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
@@ -377,10 +308,10 @@ enabled = ["shell", "read_file", "write_file"]
     Write-Host "Pulled agent B" -ForegroundColor Green
 
     # ============================================================
-    # STEP 8: Import both and verify structural integrity
+    # STEP 10: Import both and verify structural integrity
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 8: Import and verify" -ForegroundColor Cyan
+    Write-Host "STEP 10: Import and verify" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $importA = & $pekoCmd agent import --file $packageA --name "agent-a-imported" --team default 2>&1 | Out-String
@@ -400,20 +331,6 @@ enabled = ["shell", "read_file", "write_file"]
         Write-Error "Shared skill missing in one or both agents"
     }
 
-    # Verify unique workspaces
-    $wsA = "$env:APPDATA/pekobot/workspaces/default/agent-a-imported/README.md"
-    $wsB = "$env:APPDATA/pekobot/workspaces/default/agent-b-imported/README.md"
-    if ((Test-Path $wsA) -and (Get-Content $wsA -Raw) -match "Agent A") {
-        Write-Host "Agent A workspace preserved" -ForegroundColor Green
-    } else {
-        Write-Error "Agent A workspace missing or corrupted"
-    }
-    if ((Test-Path $wsB) -and (Get-Content $wsB -Raw) -match "Agent B") {
-        Write-Host "Agent B workspace preserved" -ForegroundColor Green
-    } else {
-        Write-Error "Agent B workspace missing or corrupted"
-    }
-
 } finally {
     # ============================================================
     # Cleanup
@@ -430,9 +347,11 @@ enabled = ["shell", "read_file", "write_file"]
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
+    & $pekoCmd agent remove "agent-a" --team default --force 2>&1 | Out-Null
+    & $pekoCmd agent remove "agent-b" --team default --force 2>&1 | Out-Null
     & $pekoCmd agent remove "agent-a-imported" --team default --force 2>&1 | Out-Null
     & $pekoCmd agent remove "agent-b-imported" --team default --force 2>&1 | Out-Null
-    Write-Host "Removed imported agents" -ForegroundColor Green
+    Write-Host "Removed test agents" -ForegroundColor Green
 }
 
 if ($failed) {

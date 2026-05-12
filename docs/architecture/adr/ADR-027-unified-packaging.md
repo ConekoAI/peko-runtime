@@ -82,7 +82,7 @@ src/
 │   ├── manifest.rs         # Clean AgentManifest — packaging metadata only
 │   ├── packager.rs         # Export agent to .agent
 │   ├── unpackager.rs       # Import .agent
-│   ├── builder.rs          # AgentBuilder — build .agent from directory
+│   ├── ~~builder.rs~~      # ~~AgentBuilder~~ — removed; use Packager + export_agent
 │   ├── registry.rs         # AgentRegistry — local content-addressable store
 │   ├── types.rs            # ImageDigest, LayerType, LayerDigest
 │   ├── team_packager.rs    # Export team to .team with checksums
@@ -106,7 +106,7 @@ src/
 │
 └── commands/
     ├── mod.rs              # Top-level Commands (Build/Push/Pull removed)
-    ├── agent.rs            # AgentCommands with Build, Push, Pull subcommands
+    ├── agent.rs            # AgentCommands with Export, Push, Pull subcommands
     └── ext.rs              # ExtCommands with Export subcommand
 ```
 
@@ -274,7 +274,7 @@ python e2e_tests/packaging/mock_registry/main.py --port 18765
 | Phase 1 | Mock registry + CLI scaffolding | ✅ Complete |
 | Phase 2 | Clean manifest + merge `src/image/` into `src/portable/` | ✅ Complete |
 | Phase 3 | Registry push/pull with mock server | ✅ Complete |
-| Phase 4 | `agent build` command | ✅ Complete |
+| Phase 4 | ~~`agent build` command~~ → removed in favor of unified `export` | ✅ Removed |
 | Phase 5 | Team checksums + `team.toml` | ✅ Complete |
 | Phase 6 | `.ext` export | ✅ Complete |
 | Phase 7 | Integration tests + docs | ✅ Complete |
@@ -289,7 +289,7 @@ python e2e_tests/packaging/mock_registry/main.py --port 18765
 | `tests/registry_integration.rs` | 4 | ✅ All pass |
 | `tests/team_integration.rs` | 4 | ✅ All pass |
 | `tests/extension_packaging.rs` | 5 | ✅ All pass |
-| `tests/build_integration.rs` | 3 | ✅ All pass |
+| ~~`tests/build_integration.rs`~~ | — | ✅ Removed — merged into `packaging_integration.rs` |
 | `cargo test --lib` | 970 | ✅ All pass |
 
 ---

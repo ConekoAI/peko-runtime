@@ -3,7 +3,6 @@
 
 use crate::commands::GlobalPaths;
 use clap::Subcommand;
-use std::path::PathBuf;
 
 // New unified handlers
 mod handlers;
@@ -120,18 +119,6 @@ pub enum AgentCommands {
         file: String,
     },
 
-    /// Build a .agent package from a directory
-    Build {
-        /// Path to agent directory
-        path: PathBuf,
-        /// Tag (name:tag format)
-        #[arg(short, long)]
-        tag: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
     /// Push a local .agent to a registry
     Push {
         /// Local tag (name:tag) — ignored when --file is used
@@ -228,9 +215,6 @@ pub async fn handle_agent(
             handlers::handle_agent_import(paths, file, name, team).await
         }
         AgentCommands::Inspect { file } => handlers::handle_agent_inspect(file, json).await,
-        AgentCommands::Build { path, tag, json } => {
-            handlers::handle_agent_build(paths, path, tag, json).await
-        }
         AgentCommands::Push {
             local_tag,
             registry_ref,

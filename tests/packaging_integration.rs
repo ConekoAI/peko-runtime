@@ -1,7 +1,7 @@
 //! Full packaging integration test (Phase 7 — PKG-I1)
 //!
 //! End-to-end pipeline:
-//!   build .agent → push → pull → import → create team → export .team → import team
+//!   export .agent → push → pull → import → create team → export .team → import team
 //!
 //! This test is marked `#[ignore]` because it requires the Python mock registry
 //! server to be running. Start it first:
@@ -14,8 +14,8 @@
 
 use pekobot::identity::{did::DIDScope, Identity};
 use pekobot::portable::{
-    export_team, import_team_with_base_dir, inspect_team, AgentBuilder, AgentManifest,
-    AgentRegistry, ImportOptions, TeamExportOptions, TeamImportOptions,
+    export_team, import_team_with_base_dir, inspect_team, AgentManifest,
+    AgentRegistry, ExportOptions, ImportOptions, Packager, TeamExportOptions, TeamImportOptions,
 };
 use pekobot::registry::{RegistryClient, RegistryConfig, RegistryManifest, RegistrySource};
 use pekobot::types::agent::AgentConfig;
@@ -88,6 +88,41 @@ frequency_penalty = 0.0
     .await?;
 
     Ok(())
+}
+
+/// Build a `.agent` package from a test directory using the canonical Packager.
+async fn build_agent_package_from_dir(
+    agent_dir: &Path,
+    output_path: &Path,
+) -> anyhow::Result<AgentManifest> {
+    let config_path = agent_dir.join("config").join("agent.toml");
+    let config_toml = tokio::fs::read_to_string(&config_path).await?;
+    let config: AgentConfig = toml::from_str(&config_toml)?;
+
+    let identity_dir = agent_dir.join("identity");
+    let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await?;
+    let did_doc: pekobot::identity::DIDDocument = serde_json::from_str(&did_json)?;
+    let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
+    let key_export: pekobot::identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
+    let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
+
+    let skills_dir = agent_dir.join("skills");
+    let workspace_dir = agent_dir.join("workspace");
+
+    let packager = Packager::new(config, identity, None)
+        .with_skills_dir(&skills_dir)
+        .with_workspace_dir(&workspace_dir);
+
+    let export_opts = ExportOptions {
+        output_path: Some(output_path.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    let _path = packager.export(export_opts).await?;
+
+    // Inspect to get the manifest (with layers computed)
+    let (manifest, _validation) = pekobot::portable::inspect_agent(output_path, None).await?;
+    Ok(manifest)
 }
 
 /// Create a test registry config pointing at the mock server
@@ -178,39 +213,39 @@ async fn test_full_packaging_pipeline() {
     let base_dir = temp_dir.path();
 
     // ═════════════════════════════════════════════════════════════════
-    // 1. BUILD .agent from directory
+    // 1. EXPORT .agent from directory (canonical Packager path)
     // ═════════════════════════════════════════════════════════════════
     let agent_dir = base_dir.join("integration-agent");
     create_test_agent_dir(&agent_dir).await.unwrap();
 
-    let build_registry_dir = base_dir.join("build_registry");
-    let build_registry = AgentRegistry::new(&build_registry_dir);
-    build_registry.init().await.unwrap();
+    let package_path = base_dir.join("integration-agent.agent");
+    let manifest = build_agent_package_from_dir(&agent_dir, &package_path)
+        .await
+        .unwrap();
 
-    let build_result = AgentBuilder::build_from_directory(
-        &agent_dir,
-        "integration-agent:v1.0",
-        &build_registry,
-        |_progress| {},
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(build_result.tag, "integration-agent:v1.0");
-    assert!(build_result.package_path.exists());
-    assert!(build_result.manifest.layers.is_some());
-    let layers = build_result.manifest.layers.clone().unwrap();
+    assert!(package_path.exists(), ".agent package should exist");
+    assert!(manifest.layers.is_some());
+    let layers = manifest.layers.clone().unwrap();
     assert!(layers.config.is_some());
     assert!(layers.identity.is_some());
     assert!(layers.skills.is_some());
     assert!(layers.workspace.is_some());
+
+    // Store manifest in a local registry so push can resolve layers
+    let build_registry_dir = base_dir.join("build_registry");
+    let build_registry = AgentRegistry::new(&build_registry_dir);
+    build_registry.init().await.unwrap();
+    build_registry
+        .store_manifest(&manifest, Some("integration-agent:v1.0"))
+        .await
+        .unwrap();
 
     // ═════════════════════════════════════════════════════════════════
     // 2. PUSH to mock registry
     // ═════════════════════════════════════════════════════════════════
     let host = "127.0.0.1:18765";
     let reg_manifest =
-        build_registry_manifest(&build_result.manifest, host, "integration-agent:v1.0").unwrap();
+        build_registry_manifest(&manifest, host, "integration-agent:v1.0").unwrap();
 
     // Store the RegistryManifest JSON where push() expects it
     store_registry_manifest_local(&build_registry, &reg_manifest)
@@ -270,13 +305,11 @@ async fn test_full_packaging_pipeline() {
     // ═════════════════════════════════════════════════════════════════
     // 4. IMPORT .agent package
     // ═════════════════════════════════════════════════════════════════
-    // Use the originally built package for import (the pulled data is in
-    // RegistryManifest / layer format, not a .agent archive).
     let import_base = base_dir.join("imported_agents");
     tokio::fs::create_dir_all(&import_base).await.unwrap();
 
     let unpackager =
-        pekobot::portable::Unpackager::new(&build_result.package_path).with_base_dir(&import_base);
+        pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
 
     let import_options = ImportOptions {
         new_name: Some("imported-agent".to_string()),
@@ -418,26 +451,24 @@ instances = 1
 
 // ── Additional Phase 7 integration tests ─────────────────────────────
 
-/// Test that a built .agent can be inspected and imported without registry
+/// Test that an exported .agent can be inspected and imported without registry
 #[tokio::test]
-async fn test_build_then_import_roundtrip() {
+async fn test_export_then_import_roundtrip() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_dir = temp_dir.path();
 
-    // Build
+    // Create source agent directory
     let agent_dir = base_dir.join("roundtrip-agent");
     create_test_agent_dir(&agent_dir).await.unwrap();
 
-    let registry = AgentRegistry::new(base_dir.join("registry"));
-    registry.init().await.unwrap();
-
-    let build_result =
-        AgentBuilder::build_from_directory(&agent_dir, "roundtrip-agent:v1.0", &registry, |_p| {})
-            .await
-            .unwrap();
+    // Export using Packager
+    let package_path = base_dir.join("roundtrip-agent.agent");
+    let manifest = build_agent_package_from_dir(&agent_dir, &package_path)
+        .await
+        .unwrap();
 
     // Inspect
-    let info = pekobot::portable::get_package_info(&build_result.package_path)
+    let info = pekobot::portable::get_package_info(&package_path)
         .await
         .unwrap();
     assert_eq!(info.name, "integration-agent");
@@ -448,7 +479,7 @@ async fn test_build_then_import_roundtrip() {
     tokio::fs::create_dir_all(&import_base).await.unwrap();
 
     let unpackager =
-        pekobot::portable::Unpackager::new(&build_result.package_path).with_base_dir(&import_base);
+        pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
 
     let import_result = unpackager
         .import(ImportOptions {
@@ -466,18 +497,15 @@ async fn test_build_then_import_roundtrip() {
 #[tokio::test]
 async fn test_clean_manifest_has_no_capabilities_tools_mcp() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let agent_dir = temp_dir.path().join("clean-agent");
+    let base_dir = temp_dir.path();
+
+    let agent_dir = base_dir.join("clean-agent");
     create_test_agent_dir(&agent_dir).await.unwrap();
 
-    let registry = AgentRegistry::new(temp_dir.path().join("registry"));
-    registry.init().await.unwrap();
-
-    let build_result =
-        AgentBuilder::build_from_directory(&agent_dir, "clean:v1", &registry, |_| {})
-            .await
-            .unwrap();
-
-    let manifest = build_result.manifest;
+    let package_path = base_dir.join("clean-agent.agent");
+    let manifest = build_agent_package_from_dir(&agent_dir, &package_path)
+        .await
+        .unwrap();
 
     // Clean manifest: these fields should not exist on AgentManifest
     // We verify by serializing to TOML and checking the output

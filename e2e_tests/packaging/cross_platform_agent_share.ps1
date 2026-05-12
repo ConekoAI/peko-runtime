@@ -2,12 +2,14 @@
 # Cross-Platform Agent Share E2E Test
 #
 # Real-world scenario:
-#   1. Build an agent on "machine A" (source directory with config, identity, skills, workspace).
-#   2. Push the .agent to a registry.
-#   3. "Machine B" pulls the .agent and imports it.
-#   4. Verify the imported agent has identical config, skills, and workspace.
-#   5. Verify the agent can be renamed on import and still works.
-#   6. Verify layer deduplication when the same source is built again.
+#   1. Create an agent on "machine A" using canonical UX flow.
+#   2. Add skills and workspace files.
+#   3. Export to .agent package.
+#   4. Push the .agent to a registry.
+#   5. "Machine B" pulls the .agent and imports it.
+#   6. Verify the imported agent has identical config, skills, and workspace.
+#   7. Verify the agent can be renamed on import and still works.
+#   8. Verify layer deduplication when the same agent is exported again.
 #
 # Deterministic verification:
 #   - File-by-file checksum comparison between original source and imported agent.
@@ -98,135 +100,95 @@ $failed = $false
 
 try {
     # ============================================================
-    # STEP 1: Build rich agent from directory
+    # STEP 1: Create rich agent using canonical UX flow
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 1: Build rich agent from directory" -ForegroundColor Cyan
+    Write-Host "STEP 1: Create rich agent" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $agentSourceDir = "$testDir/cross-agent"
-    $agentConfigDir = "$agentSourceDir/config"
-    $agentIdentityDir = "$agentSourceDir/identity"
-    $agentSkillsDir = "$agentSourceDir/skills"
-    $agentWorkspaceDir = "$agentSourceDir/workspace"
-    $agentSessionsDir = "$agentSourceDir/sessions"
-    $agentMcpDir = "$agentSourceDir/mcp"
+    $agentName = "cross-agent"
+    $teamName = "default"
 
-    New-Item -ItemType Directory -Path $agentConfigDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $agentIdentityDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $agentSkillsDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $agentWorkspaceDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $agentSessionsDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $agentMcpDir -Force | Out-Null
+    & $pekoCmd agent create $agentName --provider $Provider --team $teamName 2>&1 | Out-Null
+    Write-Host "Created agent: $teamName/$agentName" -ForegroundColor Green
 
-    @"
-version = "1.0"
-name = "cross-agent"
-description = "Cross-platform share test agent"
-auto_accept_trusted = false
-approval_threshold = 100.0
-default_timeout_seconds = 300
-
-[provider]
-provider_type = "$Provider"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "$Provider"
-max_tokens = 4096
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
-
-[extensions]
-enabled = ["shell", "read_file", "write_file"]
-"@ | Out-File -FilePath "$agentConfigDir/agent.toml" -Encoding UTF8
-
-    $didJson = @'
-{
-  "@context": ["https://www.w3.org/ns/did/v1"],
-  "id": "did:pekobot:local:cross-agent",
-  "verificationMethod": [{
-    "id": "did:pekobot:local:cross-agent#keys-1",
-    "type": "Ed25519VerificationKey2020",
-    "controller": "did:pekobot:local:cross-agent",
-    "publicKeyMultibase": "z6MkhaXg"
-  }],
-  "authentication": ["did:pekobot:local:cross-agent#keys-1"],
-  "assertionMethod": ["did:pekobot:local:cross-agent#keys-1"],
-  "service": [],
-  "created": "2026-05-09T00:00:00Z",
-  "updated": "2026-05-09T00:00:00Z"
-}
-'@
-    [System.IO.File]::WriteAllText("$agentIdentityDir/did.json", $didJson)
-
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $skBytes = New-Object byte[] 32; $rng.GetBytes($skBytes)
-    $pkBytes = New-Object byte[] 32; $rng.GetBytes($pkBytes)
-    $skB64 = [Convert]::ToBase64String($skBytes)
-    $pkB64 = [Convert]::ToBase64String($pkBytes)
-    $keysEnc = "{ `"public_key`": `"$pkB64`", `"private_key`": `"$skB64`" }"
-    [System.IO.File]::WriteAllText("$agentIdentityDir/keys.enc", $keysEnc)
-
-    # Multiple skills
-    New-Item -ItemType Directory -Path "$agentSkillsDir/skill-a" -Force | Out-Null
-    "# Skill A`nSkill A content for testing." | Out-File -FilePath "$agentSkillsDir/skill-a/SKILL.md" -Encoding UTF8
-    New-Item -ItemType Directory -Path "$agentSkillsDir/skill-b" -Force | Out-Null
-    "# Skill B`nSkill B content for testing." | Out-File -FilePath "$agentSkillsDir/skill-b/SKILL.md" -Encoding UTF8
-
-    # Workspace files
-    "# README`nCross-platform test workspace." | Out-File -FilePath "$agentWorkspaceDir/README.md" -Encoding UTF8
-    "# Guide`nUsage guide for the agent." | Out-File -FilePath "$agentWorkspaceDir/GUIDE.md" -Encoding UTF8
-    "data = 42" | Out-File -FilePath "$agentWorkspaceDir/data.toml" -Encoding UTF8
-
-    # Fake session JSONL
-    '{"role":"user","content":"hello"}' | Out-File -FilePath "$agentSessionsDir/session1.jsonl" -Encoding UTF8
-    '{"role":"assistant","content":"hi"}' | Out-File -FilePath "$agentSessionsDir/session1.jsonl" -Encoding UTF8 -Append
-
-    # Fake MCP config
-    '{"servers":[]}' | Out-File -FilePath "$agentMcpDir/mcp.json" -Encoding UTF8
-
-    $buildResult = & $pekoCmd agent build $agentSourceDir -t "cross-agent:v1.0" --json 2>&1 | ConvertFrom-Json
-    if ($buildResult.tag -ne "cross-agent:v1.0") { Write-Error "Build failed" }
-    $packagePath = $buildResult.package
-    Write-Host "Built agent with all layers" -ForegroundColor Green
-    Write-Host "  Layers: $($buildResult.layers)" -ForegroundColor Gray
-    Write-Host "  Digest: $($buildResult.digest)" -ForegroundColor Gray
+    # Customize config via CLI
+    & $pekoCmd agent config set $agentName description "Cross-platform share test agent" 2>&1 | Out-Null
+    & $pekoCmd agent config set $agentName default_timeout_seconds 300 2>&1 | Out-Null
+    Write-Host "Customized agent config" -ForegroundColor Green
 
     # ============================================================
-    # STEP 2: Inspect package before sharing
+    # STEP 2: Add multiple skills
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 2: Inspect package" -ForegroundColor Cyan
+    Write-Host "STEP 2: Add skills" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $skillsDir = "$env:APPDATA/pekobot/skills"
+    New-Item -ItemType Directory -Path "$skillsDir/skill-a" -Force | Out-Null
+    "# Skill A`nSkill A content for testing." | Out-File -FilePath "$skillsDir/skill-a/SKILL.md" -Encoding UTF8
+    New-Item -ItemType Directory -Path "$skillsDir/skill-b" -Force | Out-Null
+    "# Skill B`nSkill B content for testing." | Out-File -FilePath "$skillsDir/skill-b/SKILL.md" -Encoding UTF8
+    Write-Host "Added skills: skill-a, skill-b" -ForegroundColor Green
+
+    # ============================================================
+    # STEP 3: Add workspace files
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "STEP 3: Add workspace files" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $workspaceDir = "$env:APPDATA/pekobot/workspaces/$teamName/$agentName"
+    New-Item -ItemType Directory -Path $workspaceDir -Force | Out-Null
+    "# README`nCross-platform test workspace." | Out-File -FilePath "$workspaceDir/README.md" -Encoding UTF8
+    "# Guide`nUsage guide for the agent." | Out-File -FilePath "$workspaceDir/GUIDE.md" -Encoding UTF8
+    "data = 42" | Out-File -FilePath "$workspaceDir/data.toml" -Encoding UTF8
+    Write-Host "Added workspace files" -ForegroundColor Green
+
+    # ============================================================
+    # STEP 4: Export to .agent package
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "STEP 4: Export agent to .agent package" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $packagePath = "$testDir/cross-agent-v1.agent"
+    $exportOutput = & $pekoCmd agent export --name "$teamName/$agentName" --output $packagePath 2>&1
+    if (-not (Test-Path $packagePath)) { Write-Error "Export failed: $exportOutput" }
+    Write-Host "Exported agent to $packagePath" -ForegroundColor Green
+
+    # ============================================================
+    # STEP 5: Inspect package before sharing
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "STEP 5: Inspect package" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $inspect = & $pekoCmd agent inspect $packagePath --json 2>&1 | ConvertFrom-Json
-    if ($inspect.name -ne "cross-agent") { Write-Error "Inspect name mismatch" }
+    if ($inspect.name -ne $agentName) { Write-Error "Inspect name mismatch" }
     if ($inspect.valid -ne $true) { Write-Error "Inspect reports invalid package" }
     Write-Host "Inspection passed" -ForegroundColor Green
 
+    # Capture layer digests from first export for dedup verification
+    $firstExportLayers = $inspect.layers
+
     # ============================================================
-    # STEP 3: Push to registry
+    # STEP 6: Push to registry
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 3: Push to registry" -ForegroundColor Cyan
+    Write-Host "STEP 6: Push to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $registryRef = "127.0.0.1:$RegistryPort/pekobot/agents/cross-agent:v1.0"
-    $pushResult = & $pekoCmd agent push "cross-agent:v1.0" $registryRef --json 2>&1 | ConvertFrom-Json
+    $pushResult = & $pekoCmd agent push "cross-agent:v1.0" $registryRef --file $packagePath --json 2>&1 | ConvertFrom-Json
     if ($pushResult.success -ne $true) { Write-Error "Push failed" }
     Write-Host "Push succeeded" -ForegroundColor Green
 
     # ============================================================
-    # STEP 4: Fresh machine pull
+    # STEP 7: Fresh machine pull
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 4: Fresh machine pull" -ForegroundColor Cyan
+    Write-Host "STEP 7: Fresh machine pull" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
@@ -240,32 +202,32 @@ enabled = ["shell", "read_file", "write_file"]
     Write-Host "Pull succeeded on fresh machine" -ForegroundColor Green
 
     # ============================================================
-    # STEP 5: Import with custom name
+    # STEP 8: Import with custom name
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 5: Import with custom name" -ForegroundColor Cyan
+    Write-Host "STEP 8: Import with custom name" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $importedName = "cross-agent-imported"
-    $importOutput = & $pekoCmd agent import --file $packagePath --name $importedName --team default 2>&1 | Out-String
+    $importOutput = & $pekoCmd agent import --file $packagePath --name $importedName --team $teamName 2>&1 | Out-String
     if ($importOutput -notmatch "Imported") { Write-Error "Import failed: $importOutput" }
 
-    $showResult = & $pekoCmd agent show "default/$importedName" --json 2>&1 | ConvertFrom-Json
+    $showResult = & $pekoCmd agent show "$teamName/$importedName" --json 2>&1 | ConvertFrom-Json
     if ($showResult.name -ne $importedName) { Write-Error "Imported agent not found" }
     Write-Host "Import with custom name succeeded" -ForegroundColor Green
 
     # ============================================================
-    # STEP 6: Verify config preserved
+    # STEP 9: Verify config preserved
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 6: Verify config preserved" -ForegroundColor Cyan
+    Write-Host "STEP 9: Verify config preserved" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $importedConfigPath = "$env:USERPROFILE/.pekobot/teams/default/agents/$importedName/config.toml"
+    $importedConfigPath = "$env:USERPROFILE/.pekobot/teams/$teamName/agents/$importedName/config.toml"
     if (-not (Test-Path $importedConfigPath)) { Write-Error "Imported config not found" }
     $importedConfig = Get-Content $importedConfigPath -Raw
 
-    if ($importedConfig -match "cross-agent") {
+    if ($importedConfig -match $agentName) {
         Write-Host "Agent name preserved in config" -ForegroundColor Green
     } else {
         Write-Error "Agent name not found in imported config"
@@ -277,20 +239,21 @@ enabled = ["shell", "read_file", "write_file"]
         Write-Error "Provider not preserved in config"
     }
 
-    if ($importedConfig -match "write_file") {
+    # Default extensions include write_file, read_file, shell, etc.
+    if ($importedConfig -match "write_file" -or $importedConfig -match "read_file") {
         Write-Host "Extensions list preserved in config" -ForegroundColor Green
     } else {
         Write-Error "Extensions list not preserved in config"
     }
 
     # ============================================================
-    # STEP 7: Verify workspace files preserved
+    # STEP 10: Verify workspace files preserved
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 7: Verify workspace files" -ForegroundColor Cyan
+    Write-Host "STEP 10: Verify workspace files" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $wsDir = "$env:APPDATA/pekobot/workspaces/default/$importedName"
+    $wsDir = "$env:APPDATA/pekobot/workspaces/$teamName/$importedName"
     $expectedFiles = @("README.md", "GUIDE.md", "data.toml")
     foreach ($file in $expectedFiles) {
         $path = "$wsDir/$file"
@@ -310,10 +273,10 @@ enabled = ["shell", "read_file", "write_file"]
     }
 
     # ============================================================
-    # STEP 8: Verify skills preserved
+    # STEP 11: Verify skills preserved
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 8: Verify skills preserved" -ForegroundColor Cyan
+    Write-Host "STEP 11: Verify skills preserved" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Skills are stored in the global skills directory, not per-agent
@@ -330,14 +293,14 @@ enabled = ["shell", "read_file", "write_file"]
     }
 
     # ============================================================
-    # STEP 9: LLM verification
+    # STEP 12: LLM verification
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 9: LLM verification" -ForegroundColor Cyan
+    Write-Host "STEP 12: LLM verification" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     if ($env:MINIMAX_API_KEY) {
-        $response = & $pekoCmd send "default/$importedName" "Respond with exactly: CROSS_PLATFORM_SUCCESS" --no-stream 2>&1
+        $response = & $pekoCmd send "$teamName/$importedName" "Respond with exactly: CROSS_PLATFORM_SUCCESS" --no-stream 2>&1
         Write-Host "Response: $response" -ForegroundColor Gray
         if ($response -match "CROSS_PLATFORM_SUCCESS") {
             Write-Host "LLM verification passed" -ForegroundColor Green
@@ -350,21 +313,27 @@ enabled = ["shell", "read_file", "write_file"]
     }
 
     # ============================================================
-    # STEP 10: Rebuild identical source and verify dedup
+    # STEP 13: Re-export identical agent and verify dedup
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 10: Rebuild and verify dedup" -ForegroundColor Cyan
+    Write-Host "STEP 13: Re-export and verify dedup" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $buildResult2 = & $pekoCmd agent build $agentSourceDir -t "cross-agent:v2.0" --json 2>&1 | ConvertFrom-Json
+    $packagePath2 = "$testDir/cross-agent-v2.agent"
+    $exportOutput2 = & $pekoCmd agent export --name "$teamName/$agentName" --output $packagePath2 2>&1
+    if (-not (Test-Path $packagePath2)) { Write-Error "Second export failed" }
+
+    $inspect2 = & $pekoCmd agent inspect $packagePath2 --json 2>&1 | ConvertFrom-Json
+
     $allMatch = $true
-    foreach ($layer in $buildResult.layer_digests.PSObject.Properties) {
+    foreach ($layer in $firstExportLayers.PSObject.Properties) {
+        $layerName = $layer.Name
         $v1 = $layer.Value
-        $v2 = $buildResult2.layer_digests.($layer.Name)
+        $v2 = $inspect2.layers.$layerName
         if ($v1 -and $v1 -eq $v2) {
-            Write-Host "  Layer '$($layer.Name)' dedup verified" -ForegroundColor Gray
+            Write-Host "  Layer '$layerName' dedup verified" -ForegroundColor Gray
         } elseif ($v1) {
-            Write-Host "  Layer '$($layer.Name)' differs" -ForegroundColor Yellow
+            Write-Host "  Layer '$layerName' differs" -ForegroundColor Yellow
             $allMatch = $false
         }
     }
@@ -390,8 +359,9 @@ enabled = ["shell", "read_file", "write_file"]
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
-    & $pekoCmd agent remove $importedName --team default --force 2>&1 | Out-Null
-    Write-Host "Removed imported agent" -ForegroundColor Green
+    & $pekoCmd agent remove $agentName --team $teamName --force 2>&1 | Out-Null
+    & $pekoCmd agent remove $importedName --team $teamName --force 2>&1 | Out-Null
+    Write-Host "Removed test agents" -ForegroundColor Green
 }
 
 if ($failed) {
