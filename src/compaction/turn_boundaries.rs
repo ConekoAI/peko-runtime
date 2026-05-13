@@ -252,7 +252,7 @@ mod tests {
         ];
 
         // Small keep_recent_tokens to force a cut near the tool result
-        let (compact, keep, _split) = select_messages_respecting_boundaries(&messages, 50);
+        let (_compact, keep, _split) = select_messages_respecting_boundaries(&messages, 50);
 
         // The kept messages should include the assistant AND its tool result
         // (never cut between them)
@@ -282,7 +282,7 @@ mod tests {
         ];
 
         // Very small keep — forces split turn
-        let (compact, keep, is_split) = select_messages_respecting_boundaries(&messages, 10);
+        let (_compact, keep, _is_split) = select_messages_respecting_boundaries(&messages, 10);
 
         // With only 10 tokens, we keep minimum 2 messages
         // If the cut would be at a tool result, it's moved back

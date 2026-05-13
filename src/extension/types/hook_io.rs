@@ -265,7 +265,7 @@ pub fn tool_result_from_hook(
                 (s.clone(), serde_json::Value::String(s), false)
             }
         }
-        HookResult::Continue(other) => {
+        HookResult::Continue(_other) => {
             let s = format!("Error: Unexpected output type from tool '{tool_name}'");
             (s.clone(), serde_json::Value::String(s), false)
         }
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn test_tool_result_from_hook() {
         let result = HookResult::Continue(HookOutput::json(serde_json::json!({"ok": true})));
-        let (s, v, ok) = tool_result_from_hook(result, "test");
+        let (_s, v, ok) = tool_result_from_hook(result, "test");
         assert!(ok);
         assert_eq!(v, serde_json::json!({"ok": true}));
 

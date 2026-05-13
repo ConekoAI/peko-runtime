@@ -121,7 +121,7 @@ impl<K, V> SimpleRegistry<K, V> {
     }
 
     /// Get a mutable entry for the given key.
-    pub fn entry(&mut self, key: K) -> std::collections::hash_map::Entry<K, V>
+    pub fn entry(&mut self, key: K) -> std::collections::hash_map::Entry<'_, K, V>
     where
         K: Eq + Hash,
     {
@@ -142,7 +142,7 @@ impl<K, V> SimpleRegistry<K, V> {
     }
 
     /// Drain all entries into an iterator.
-    pub fn drain(&mut self) -> std::collections::hash_map::Drain<K, V> {
+    pub fn drain(&mut self) -> std::collections::hash_map::Drain<'_, K, V> {
         self.inner.drain()
     }
 

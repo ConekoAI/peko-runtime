@@ -450,8 +450,8 @@ pub async fn load_and_register_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extension::types::HookInput;
-    use std::sync::Arc;
+    
+    
     use tempfile::TempDir;
 
     fn create_test_tool(dir: &Path, name: &str, description: &str) -> PathBuf {

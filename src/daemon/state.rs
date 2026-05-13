@@ -667,11 +667,11 @@ mod tests {
     #[tokio::test]
     async fn test_agent_init_preserves_pre_registered_tools() {
         use crate::agent::Agent;
-        use crate::extension::core::{init_global_core, ExtensionCore};
+        use crate::extension::core::init_global_core;
         use crate::extension::{HookInput, HookPoint};
         use crate::types::agent::AgentConfig;
         use crate::types::provider::{ProviderConfig, ProviderType};
-        use std::sync::Arc;
+        
 
         let state = create_test_state().await;
         let global_core = state.tool_runtime.extension_core().clone();

@@ -853,7 +853,7 @@ impl SessionManager {
     /// peer and channel, enabling cross-channel context sharing.
     pub async fn route(
         &mut self,
-        peer: &Peer,
+        _peer: &Peer,
         channel_type: ChannelType,
         channel_id: &str,
         agent: Option<&str>,
@@ -870,7 +870,7 @@ impl SessionManager {
     pub async fn route_to_agent(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        _peer: &Peer,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {

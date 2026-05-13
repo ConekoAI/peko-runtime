@@ -251,7 +251,7 @@ impl AgenticLoop {
         use futures::StreamExt;
 
         // Get session_id once at start
-        let session_id = {
+        let _session_id = {
             let s = session.read().await;
             s.id.clone()
         };

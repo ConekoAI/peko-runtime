@@ -20,7 +20,6 @@ use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 /// Handle agent list command
 pub async fn handle_agent_list(paths: &GlobalPaths, long: bool, json: bool) -> anyhow::Result<()> {

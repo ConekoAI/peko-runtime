@@ -7,9 +7,8 @@
 //! `Arc<RwLock<HashMap<K, V>>>` patterns.
 
 use crate::common::registry::SharedRegistry;
-use crate::extension::types::{HookId, ToolMetadata};
+use crate::extension::types::HookId;
 use anyhow::Result;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, instrument, warn};
 

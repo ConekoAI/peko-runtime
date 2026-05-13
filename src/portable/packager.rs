@@ -2,7 +2,7 @@
 //!
 //! Exports agents to `.agent` files (tar.gz archives with manifest)
 
-use crate::extensions::mcp::protocol::config::{McpConfig, TransportType};
+use crate::extensions::mcp::protocol::config::TransportType;
 use crate::identity::Identity;
 use crate::portable::manifest::{AgentLayers, AgentManifest};
 use crate::portable::types::{compute_digest, LayerType};

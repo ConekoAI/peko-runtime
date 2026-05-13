@@ -20,11 +20,11 @@ use crate::daemon::background_runtime::{BackgroundRuntimeManager, RuntimeState};
 use crate::extensions::mcp::protocol::{
     client::{ClientError, McpClient},
     config::{McpConfig, McpServerConfig, TransportType},
-    transport::{SseTransport, StdioTransport},
+    transport::SseTransport,
     types::Tool,
 };
 use crate::extensions::mcp::runtime::adapter::{
-    McpClientRegistry, McpRuntimeAdapter, McpServerInfo,
+    McpClientRegistry, McpRuntimeAdapter,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;

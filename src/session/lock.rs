@@ -7,7 +7,6 @@
 //! - Cross-platform support (Unix-style advisory locks)
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};

@@ -26,10 +26,10 @@
 
 use crate::extension::adapters::parsing;
 use crate::extension::adapters::{ExtensionTypeAdapter, ManifestFormat};
-use crate::extension::core::ExtensionServices;
 use crate::extension::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
+use crate::extension::core::ExtensionServices;
 use crate::extension::types::{ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;

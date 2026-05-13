@@ -12,7 +12,6 @@
 //! ```
 
 use crate::extension::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
-use crate::extension::services::ReservedParamsConfig;
 use crate::extension::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
 use crate::extension::HookResult;
 use crate::tools::Tool;

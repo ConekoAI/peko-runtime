@@ -5,7 +5,6 @@ use crate::common::paths::PathResolver;
 use crate::extension::core::{global_core, ExtensionCore};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
-use crate::session::context::SessionContext;
 use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::{ChannelType, Peer};
 use crate::tools::builtin::messaging::agent_spawn::DynamicSessionKeyProvider;
@@ -1037,12 +1036,12 @@ impl Agent {
     ///
     /// This is the recommended method for agent execution with native tool calling support.
     /// The `on_event` callback receives all streaming events (text deltas, tool calls, etc.).
-
+    ///
     /// Execute with native tool calling and return a channel receiver for events.
     ///
     /// This is a convenience wrapper around `execute_native()` that provides
     /// a channel-based interface for code that expects async event streaming.
-
+    ///
     /// Check if the configured provider supports native tool calling
     #[must_use]
     pub fn supports_native_tools(&self) -> bool {

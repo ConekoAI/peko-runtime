@@ -42,7 +42,7 @@ pub fn is_process_running(pid: u32) -> bool {
 ///
 /// On Windows, uses `taskkill`. On Unix, uses `kill` with SIGTERM
 /// (or SIGKILL if `force` is true).
-pub async fn kill_by_pid(pid: u32, force: bool) -> Result<()> {
+pub async fn kill_by_pid(pid: u32, _force: bool) -> Result<()> {
     #[cfg(windows)]
     {
         let output = tokio::process::Command::new("taskkill")

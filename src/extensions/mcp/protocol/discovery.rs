@@ -79,10 +79,7 @@ pub async fn is_server_installed(name: &str) -> bool {
 /// Get default MCP config content
 #[must_use]
 pub fn default_mcp_config() -> &'static str {
-    r#"# MCP Servers Configuration
-# Add your MCP servers below.
-# See https://modelcontextprotocol.io for server examples.
-"#
+    "# MCP Servers Configuration\n# Add your MCP servers below.\n# See https://modelcontextprotocol.io for server examples.\n"
 }
 
 /// Create default MCP config if it doesn't exist

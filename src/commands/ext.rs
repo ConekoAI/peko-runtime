@@ -1008,7 +1008,7 @@ async fn handle_config(
 
     let config_service = ExtensionConfigService::new(&paths.data_dir);
     let scope = match (&team_id, &agent_id) {
-        (Some(t), Some(a)) => {
+        (Some(_t), Some(a)) => {
             let parts: Vec<&str> = a.split('/').collect();
             ConfigScope::Agent(parts[0].to_string(), parts[1].to_string())
         }

@@ -4,8 +4,6 @@
 //! implementations must use. Extension-specific adapters live in
 //! `crate::extensions::<type>::adapter`, not here.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Re-export from core for convenience
 pub use crate::extension::core::HookBinding;

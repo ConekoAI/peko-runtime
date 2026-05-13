@@ -6,8 +6,7 @@
 
 use super::starter::{ExtensionRuntimeStarter, StarterContext};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Registry of extension runtime starters.
 ///

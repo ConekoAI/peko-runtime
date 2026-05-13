@@ -32,7 +32,6 @@ use crate::extension::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
     ToolMetadata, ToolSource,
 };
-use crate::extension::services::ReservedParamsConfig;
 use crate::extension::types::{ExtensionId, ExtensionManifest, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -854,7 +853,7 @@ impl HookHandler for McpServerInitHandler {
         // already exists".  The server will be started on demand by
         // `ext start` or `McpToolProxy::call_with_auto_start()`.
         let manager = self.manager.read().await;
-        let is_running = match manager.get_server_state(&self.server_name).await {
+        let _is_running = match manager.get_server_state(&self.server_name).await {
             Ok(state) if state.running => true,
             _ => false,
         };

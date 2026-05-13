@@ -704,10 +704,10 @@ mod tests {
 
     #[test]
     fn test_select_messages_respects_tool_boundaries() {
-        use crate::types::message::ContentBlock;
+        
 
         let compactor = Compactor::new();
-        let mut messages = vec![
+        let messages = vec![
             LlmMessage::user("User 1"),
             LlmMessage::assistant("Assistant 1"),
             LlmMessage::user("User 2"),
@@ -715,7 +715,7 @@ mod tests {
             LlmMessage::tool_result("tc1", "read_file", "file content"),
         ];
 
-        let (to_compact, to_keep, _is_split) = compactor.select_messages(&messages);
+        let (_to_compact, to_keep, _is_split) = compactor.select_messages(&messages);
 
         // If tool result is in keep, assistant must also be in keep
         if to_keep.iter().any(|m| m.role == MessageRole::Tool) {

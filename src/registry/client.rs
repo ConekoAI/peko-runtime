@@ -687,7 +687,7 @@ mod tests {
     fn test_registry_url_scheme_handling() {
         let temp_dir = tempfile::tempdir().unwrap();
         let registry = AgentRegistry::new(temp_dir.path());
-        let client = RegistryClient::new(RegistryConfig::default(), registry);
+        let _client = RegistryClient::new(RegistryConfig::default(), registry);
 
         // URL without scheme should get https:// prepended
         let source = RegistrySource {

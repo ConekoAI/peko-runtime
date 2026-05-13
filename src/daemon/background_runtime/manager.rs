@@ -366,13 +366,12 @@ impl BackgroundRuntimeManager {
                                         break;
                                     }
                                 }
-                            } else {
-                                let mut runtimes_guard = runtimes.write().await;
-                                if let Some(rt) = runtimes_guard.get_mut(&id_owned) {
-                                    rt.state = RuntimeState::Stopped;
-                                }
-                                break;
                             }
+                            let mut runtimes_guard = runtimes.write().await;
+                            if let Some(rt) = runtimes_guard.get_mut(&id_owned) {
+                                rt.state = RuntimeState::Stopped;
+                            }
+                            break;
                         }
                         super::adapter::CrashAction::Stop => {
                             let mut runtimes_guard = runtimes.write().await;

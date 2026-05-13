@@ -1,10 +1,8 @@
 //! Tool trait
 
-use crate::extension::types::{ToolContext, ToolError, ToolResult};
+use crate::extension::types::{ToolContext, ToolError};
 use crate::observability::performance::GLOBAL_METRICS;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// Tool trait for agent capabilities
 #[async_trait]

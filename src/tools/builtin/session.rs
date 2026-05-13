@@ -16,7 +16,6 @@
 //! ```
 
 use crate::common::registry::SimpleRegistry;
-use crate::session::events::SessionEvent;
 use crate::session::jsonl::SessionStorage;
 use crate::session::message_conversion::event_to_llm_message;
 use crate::types::message::{ContentBlock, LlmMessage};

@@ -227,7 +227,7 @@ impl GatewayRouter {
         &self,
         gateway_id: &str,
         channel_id: &str,
-        message: &str,
+        _message: &str,
         session_id: &str,
     ) -> Result<()> {
         debug!(

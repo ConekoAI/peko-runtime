@@ -40,7 +40,6 @@ impl OpenAiCompatibleAdapter {
     }
 
     /// Create pre-configured adapters for common providers
-
     pub fn groq(model: impl Into<String>) -> Self {
         Self::new("groq", "https://api.groq.com/openai/v1", model)
     }

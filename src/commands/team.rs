@@ -14,7 +14,7 @@ use crate::common::types::team::{
 use crate::portable::registry::AgentRegistry;
 use crate::portable::team_layer_builder::decompose_team_archive;
 use crate::portable::team_layer_reconstructor::reconstruct_team;
-use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
+use crate::portable::types::{ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
@@ -798,7 +798,7 @@ async fn import_agent_from_files(
     team_name: &str,
     team_dir: &std::path::Path,
 ) -> anyhow::Result<crate::portable::team_unpackager::AgentImportSummary> {
-    use crate::portable::manifest::AgentManifest;
+    
     use crate::portable::unpackager::{ImportOptions, Unpackager};
 
     let unpackager = Unpackager::new("dummy.agent")

@@ -41,7 +41,7 @@
 //! ```
 
 use crate::extension::async_exec::executor::{
-    AsyncExecutor, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, WaitResult,
+    AsyncExecutor, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult,
 };
 use crate::extension::core::{ExtensionCore, HookPointBuilder};
 use crate::extension::types::{AsyncReceipt, HookInput, HookOutput, HookResult};

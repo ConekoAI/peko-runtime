@@ -2,7 +2,6 @@
 
 use crate::extension::types::ToolResult;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// Unique identifier for an async task
 pub type AsyncTaskId = String;

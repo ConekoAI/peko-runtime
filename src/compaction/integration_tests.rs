@@ -9,7 +9,7 @@
 //! - Cache validation and invalidation
 
 use crate::compaction::{
-    registry::{should_auto_compact, ModelContextRegistry},
+    registry::ModelContextRegistry,
     summary_format::{
         extract_file_ops_from_messages, format_summary_with_file_ops, CompactionDetails,
     },
@@ -203,7 +203,7 @@ fn test_file_op_extraction_from_tool_calls() {
 
 #[test]
 fn test_compactor_state_tracking() {
-    let mut compactor = Compactor::new();
+    let compactor = Compactor::new();
     assert_eq!(compactor.state().compaction_count, 0);
     assert_eq!(compactor.state().total_tokens_saved, 0);
     assert!(compactor.state().last_compaction_at.is_none());

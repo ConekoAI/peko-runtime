@@ -27,8 +27,7 @@ pub mod starter;
 pub mod starter_registry;
 pub mod supervisor;
 
-pub use adapter::{BackgroundRuntimeAdapter, CrashAction};
-pub use manager::{BackgroundRuntimeManager, RuntimeSummary};
-pub use starter::{ExtensionRuntimeStarter, StarterContext};
+pub use manager::BackgroundRuntimeManager;
+pub use starter::StarterContext;
 pub use starter_registry::ExtensionRuntimeStarterRegistry;
-pub use supervisor::{ManagedRuntime, RuntimeKind, RuntimeState};
+pub use supervisor::RuntimeState;

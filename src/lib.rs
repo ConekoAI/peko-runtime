@@ -66,12 +66,10 @@ pub mod runtime;
 pub mod engine;
 
 /// Message queue with lane-aware processing
-
 /// Session storage (JSONL)
 pub mod session;
 
 /// Orchestration layer (event router, file watcher, webhooks)
-
 /// Team runtime (multi-agent teams, event bus, shared services)
 pub mod team;
 
@@ -104,7 +102,6 @@ pub mod extensions;
 pub mod types;
 
 /// Configuration management
-
 /// Agent identity and key management
 pub mod identity;
 
@@ -115,9 +112,8 @@ pub mod identity;
 /// Cron job scheduling
 pub(crate) mod cron;
 
-/// Hook registry and management (Milestone 8 — deprecated, see Issue 001)
+// / Hook registry and management (Milestone 8 — deprecated, see Issue 001)
 // pub mod hooks; // Removed per Issue 001 — use extensions::core instead
-
 /// Daemon mode for background execution
 pub(crate) mod daemon;
 
@@ -138,7 +134,6 @@ pub mod tools;
 // ============================================================================
 // CLI & Commands
 // ============================================================================
-
 /// CLI command handlers
 pub mod commands;
 

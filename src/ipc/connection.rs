@@ -17,7 +17,6 @@
 //! - Unexpected resource consumption from background processes
 //! - System stability issues from implicit service startup
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;

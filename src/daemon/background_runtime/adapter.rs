@@ -6,7 +6,6 @@
 
 use super::supervisor::ManagedRuntime;
 use async_trait::async_trait;
-use std::sync::Arc;
 
 /// Action to take when a runtime crashes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

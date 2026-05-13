@@ -9,7 +9,7 @@ use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConf
 use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Starter for gateway extensions.
 ///

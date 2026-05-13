@@ -1,6 +1,6 @@
 //! Session and messaging types
 
-use crate::types::message::{ContentBlock, LlmMessage};
+use crate::types::message::ContentBlock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 

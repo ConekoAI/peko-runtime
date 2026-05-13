@@ -301,7 +301,7 @@ impl CompactionOrchestrator {
         messages: &mut Vec<LlmMessage>,
         session: &Arc<RwLock<Session>>,
         extension_core: &Arc<ExtensionCore>,
-        run_id: &str,
+        _run_id: &str,
     ) {
         let session_id = {
             let s = session.read().await;

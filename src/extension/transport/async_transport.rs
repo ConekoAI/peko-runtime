@@ -5,7 +5,7 @@
 //! daemon (local execution) or inside the CLI (HTTP submission to daemon).
 
 use crate::extension::async_exec::executor::{
-    AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
+    AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
 };
 use anyhow::Result;
 use serde_json::Value;

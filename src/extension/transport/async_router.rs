@@ -16,7 +16,7 @@
 //! ```
 
 use crate::extension::async_exec::executor::{
-    AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget,
+    AsyncResultDeliveryMode, AsyncToolConfig, DeliveryTarget,
 };
 use crate::extension::core::context::HookContext;
 use crate::extension::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};

@@ -157,7 +157,7 @@ impl SystemPromptService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn test_resolve_workspace_fallback() {

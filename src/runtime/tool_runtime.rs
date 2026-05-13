@@ -12,7 +12,7 @@ use crate::tools::{
     CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, TaskTool, Tool,
     WriteFileTool,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;

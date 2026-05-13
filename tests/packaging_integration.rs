@@ -547,7 +547,7 @@ async fn test_export_then_import_roundtrip() {
 
     // Export using Packager
     let package_path = base_dir.join("roundtrip-agent.agent");
-    let manifest = build_agent_package_from_dir(&agent_dir, &package_path)
+    let _manifest = build_agent_package_from_dir(&agent_dir, &package_path)
         .await
         .unwrap();
 
