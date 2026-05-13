@@ -424,7 +424,7 @@ pub async fn handle_agent_push(
 
     let agent_manifest = if let Some(ref file_path) = file {
         // Load .agent file and store layers in local registry
-        load_agent_file_into_registry(&file_path, &registry).await?
+        load_agent_file_into_registry(file_path, &registry).await?
     } else {
         registry
             .get_manifest_by_tag(&local_tag)
