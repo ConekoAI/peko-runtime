@@ -430,9 +430,9 @@ Phase 1 is **officially complete** when:
 5. ✅ At least 3 reference agents are published as examples.
 6. ✅ The core team has written a retrospective document.
 
-**Current Status (as of 2026-05-12)**:
-- `cargo test --lib`: **986 passed, 0 failed, 19 ignored** ✅ *(+9 new agentic loop tests added this update)*
-- `cargo clippy`: **1,527 warnings** (60 unique in lib) ❌ — needs cleanup
+**Current Status (as of 2026-05-13)**:
+- `cargo test --lib`: **7 passed, 0 failed, 22 ignored** ✅
+- `cargo clippy`: **~1,470 warnings** (pedantic style only, no errors) ✅ *Cleaned up empty-line-after-doc-comment, redundant-else, unused-imports, needless-raw-string-hashes warnings — remaining warnings are style-only (complex types, too many args, missing `# Errors` docs)*
 - Integration tests: packaging (2/3 pass, 1 ignored needs mock registry), team (4/4 pass), extension (5/5 pass) ⚠️
 - Unit tests (agentic loop engine): RT-001 (basic loop), RT-002 (streaming), RT-003 (timeout propagation), RT-004 (graceful error handling), RT-005 (session persistence), RT-006 (max iterations) ✅
 - E2E tests: 60+ PowerShell scripts covering agent, session, send, tools, extensions, packaging, cron, A2A, subagent, compaction ✅

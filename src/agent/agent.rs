@@ -872,10 +872,7 @@ impl Agent {
     /// Uses a temporary directory for identity and session storage so tests
     /// do not conflict with each other or the user's real data.
     #[cfg(test)]
-    pub async fn new_for_test(
-        config: AgentConfig,
-        temp_dir: &std::path::Path,
-    ) -> Result<Self> {
+    pub async fn new_for_test(config: AgentConfig, temp_dir: &std::path::Path) -> Result<Self> {
         use crate::identity::storage::KeyStorage;
 
         let path_resolver = PathResolver::with_dirs(
@@ -904,11 +901,8 @@ impl Agent {
 
         let provider = Self::init_provider(&config).await?;
 
-        let subagent_executor_base = SubagentExecutor::new(
-            Arc::clone(&session_manager),
-            config.name.clone(),
-            5,
-        );
+        let subagent_executor_base =
+            SubagentExecutor::new(Arc::clone(&session_manager), config.name.clone(), 5);
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
                 subagent_executor_base

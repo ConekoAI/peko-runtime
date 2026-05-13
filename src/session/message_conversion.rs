@@ -17,8 +17,8 @@
 
 use crate::session::events::{SessionEvent, SessionMessage};
 use crate::session::NormalizedEntry;
-use crate::types::ContentBlock;
 use crate::types::message::{LlmMessage, MessageRole};
+use crate::types::ContentBlock;
 
 /// Convert a `SessionEvent` to an `LlmMessage`
 ///
