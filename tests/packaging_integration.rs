@@ -13,11 +13,11 @@
 //!   cargo test --test packaging_integration -- --ignored
 
 use pekobot::identity::{did::DIDScope, Identity};
-use pekobot::portable::{
-    export_team, import_team_with_base_dir, inspect_team, AgentManifest,
-    AgentRegistry, ExportOptions, ImportOptions, Packager, TeamExportOptions, TeamImportOptions,
-};
 use pekobot::portable::manifest::AgentLayers;
+use pekobot::portable::{
+    export_team, import_team_with_base_dir, inspect_team, AgentManifest, AgentRegistry,
+    ExportOptions, ImportOptions, Packager, TeamExportOptions, TeamImportOptions,
+};
 use pekobot::registry::{RegistryClient, RegistryConfig, RegistryManifest, RegistrySource};
 use pekobot::types::agent::AgentConfig;
 use std::collections::BTreeMap;
@@ -330,9 +330,13 @@ async fn test_full_packaging_pipeline() {
     // 2. PUSH to mock registry
     // ═════════════════════════════════════════════════════════════════
     let host = "127.0.0.1:18765";
-    let reg_manifest =
-        build_registry_manifest(&manifest, manifest_digest.as_str(), host, "integration-agent:v1.0")
-            .unwrap();
+    let reg_manifest = build_registry_manifest(
+        &manifest,
+        manifest_digest.as_str(),
+        host,
+        "integration-agent:v1.0",
+    )
+    .unwrap();
 
     // Store the RegistryManifest JSON where push() expects it
     store_registry_manifest_local(&build_registry, &reg_manifest)
@@ -392,8 +396,7 @@ async fn test_full_packaging_pipeline() {
     let import_base = base_dir.join("imported_agents");
     tokio::fs::create_dir_all(&import_base).await.unwrap();
 
-    let unpackager =
-        pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
+    let unpackager = pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
 
     let import_options = ImportOptions {
         new_name: Some("imported-agent".to_string()),
@@ -562,8 +565,7 @@ async fn test_export_then_import_roundtrip() {
     let import_base = base_dir.join("imported");
     tokio::fs::create_dir_all(&import_base).await.unwrap();
 
-    let unpackager =
-        pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
+    let unpackager = pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
 
     let import_result = unpackager
         .import(ImportOptions {

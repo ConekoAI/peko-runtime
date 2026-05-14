@@ -7,7 +7,6 @@
 use crate::commands::agent::AgentConfigCommands;
 use crate::commands::GlobalPaths;
 use crate::common::config_path;
-use std::io::Read;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::ConfigAuthority;
 use crate::common::types::agent::{
@@ -20,6 +19,7 @@ use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 
 /// Handle agent list command
 pub async fn handle_agent_list(paths: &GlobalPaths, long: bool, json: bool) -> anyhow::Result<()> {
@@ -449,7 +449,11 @@ pub async fn handle_agent_push(
     // Ensure RegistryClient can find the manifest
     store_registry_manifest_for_client(&registry, &registry_manifest).await?;
 
-    let push_tag = if file.is_some() { "<file>".to_string() } else { local_tag.clone() };
+    let push_tag = if file.is_some() {
+        "<file>".to_string()
+    } else {
+        local_tag.clone()
+    };
     let push_tag_ref: &str = &push_tag;
 
     if json {
@@ -586,7 +590,8 @@ async fn load_agent_file_into_registry(
                     // Build tarball
                     let mut buf = Vec::new();
                     {
-                        let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+                        let enc =
+                            flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
                         let mut tar = tar::Builder::new(enc);
                         for (path, content) in layer_files {
                             let mut header = tar::Header::new_gnu();

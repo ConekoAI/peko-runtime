@@ -67,7 +67,13 @@ pub fn resolve_command(executable: &Path, auto_interpreter: bool) -> ResolvedCom
 /// that the entire process tree is terminated when the job handle is closed.
 pub async fn spawn_process(
     config: &ProcessSpawnConfig,
-) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, u32, Option<JobObject>)> {
+) -> Result<(
+    Child,
+    ChildStdin,
+    BufReader<ChildStdout>,
+    u32,
+    Option<JobObject>,
+)> {
     let executable = Path::new(&config.command);
     let cmd_info = resolve_command(executable, config.auto_interpreter);
 

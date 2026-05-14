@@ -157,7 +157,6 @@ impl SystemPromptService {
 
 #[cfg(test)]
 mod tests {
-    
 
     #[test]
     fn test_resolve_workspace_fallback() {

@@ -236,7 +236,6 @@ Send a message to another agent and receive its response. This is the primary me
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_a2a_send_args_parsing() {

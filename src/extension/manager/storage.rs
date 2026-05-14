@@ -29,10 +29,7 @@ fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
         }
     }
     Err(last_err.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "remove_dir_all retry exhausted",
-        )
+        std::io::Error::new(std::io::ErrorKind::Other, "remove_dir_all retry exhausted")
     }))
 }
 

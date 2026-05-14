@@ -459,7 +459,6 @@ impl Tool for CronTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_cron_tool_name() {

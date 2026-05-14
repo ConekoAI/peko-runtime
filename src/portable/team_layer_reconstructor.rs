@@ -179,8 +179,8 @@ fn extract_team_toml(layer_bytes: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portable::team_layer_builder::{build_tarball, decompose_team_archive};
     use crate::portable::registry::AgentRegistry;
+    use crate::portable::team_layer_builder::{build_tarball, decompose_team_archive};
     use std::collections::HashMap;
 
     fn make_test_team_files() -> HashMap<String, Vec<u8>> {
@@ -235,7 +235,10 @@ include_mcp = false
 
         // Store layers in registry (as if pulled)
         registry
-            .store_layer(&decomposed.team_config_layer.digest, &decomposed.team_config_layer.bytes)
+            .store_layer(
+                &decomposed.team_config_layer.digest,
+                &decomposed.team_config_layer.bytes,
+            )
             .await
             .unwrap();
 
@@ -273,7 +276,10 @@ include_mcp = false
         let decomposed = decompose_team_archive(&files).unwrap();
 
         registry
-            .store_layer(&decomposed.team_config_layer.digest, &decomposed.team_config_layer.bytes)
+            .store_layer(
+                &decomposed.team_config_layer.digest,
+                &decomposed.team_config_layer.bytes,
+            )
             .await
             .unwrap();
 
@@ -416,7 +422,10 @@ include_mcp = false
 
         // Store the TeamConfig layer
         registry
-            .store_layer(&decomposed.team_config_layer.digest, &decomposed.team_config_layer.bytes)
+            .store_layer(
+                &decomposed.team_config_layer.digest,
+                &decomposed.team_config_layer.bytes,
+            )
             .await
             .unwrap();
 
@@ -433,7 +442,8 @@ include_mcp = false
     #[tokio::test]
     async fn test_team_config_missing_manifest_toml() {
         // Build a tarball that does NOT contain manifest.toml
-        let mut files: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+        let mut files: std::collections::BTreeMap<String, Vec<u8>> =
+            std::collections::BTreeMap::new();
         files.insert("other_file.txt".to_string(), b"some content".to_vec());
         let bad_layer = build_tarball(&files).unwrap();
 

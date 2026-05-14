@@ -69,7 +69,8 @@ pub fn decompose_team_archive(
     }
 
     // Build TeamConfig layer
-    let team_config_layer = build_team_config_layer(&team_manifest, &agent_index, team_toml.as_ref())?;
+    let team_config_layer =
+        build_team_config_layer(&team_manifest, &agent_index, team_toml.as_ref())?;
 
     Ok(DecomposedTeamLayers {
         team_config_layer,
@@ -84,8 +85,7 @@ fn extract_team_manifest(files: &HashMap<String, Vec<u8>>) -> anyhow::Result<Tea
         .get("team/manifest.toml")
         .ok_or_else(|| anyhow::anyhow!("Missing team/manifest.toml in package"))?;
     let manifest_str = std::str::from_utf8(manifest_bytes)?;
-    TeamManifest::from_toml(manifest_str)
-        .context("Failed to parse team manifest.toml")
+    TeamManifest::from_toml(manifest_str).context("Failed to parse team manifest.toml")
 }
 
 /// Group files from the .team archive by agent name.
@@ -191,8 +191,8 @@ fn build_team_config_layer(
     };
 
     // Serialize the agent index as TOML
-    let index_toml = toml::to_string_pretty(&index)
-        .context("Failed to serialize team agent index to TOML")?;
+    let index_toml =
+        toml::to_string_pretty(&index).context("Failed to serialize team agent index to TOML")?;
 
     // Build tarball with manifest.toml (agent index) and optionally team.toml
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -674,7 +674,10 @@ include_mcp = false
             }
         }
 
-        assert!(found_manifest, "manifest.toml should be in TeamConfig layer");
+        assert!(
+            found_manifest,
+            "manifest.toml should be in TeamConfig layer"
+        );
         assert!(found_team_toml, "team.toml should be in TeamConfig layer");
         assert_eq!(team_toml_extracted, team_toml_content);
     }
@@ -697,6 +700,9 @@ include_mcp = false
             }
         }
 
-        assert!(!found_team_toml, "team.toml should NOT be in TeamConfig layer when absent from archive");
+        assert!(
+            !found_team_toml,
+            "team.toml should NOT be in TeamConfig layer when absent from archive"
+        );
     }
 }

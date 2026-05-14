@@ -867,17 +867,17 @@ impl HookHandler for McpServerInitHandler {
             match adapter
                 .register_server_tools(&core, &self.server_name)
                 .await
-                {
-                    Ok(count) => {
-                        info!(server_name = %self.server_name, count = count, "Registered MCP tools with unified registry");
-                    }
-                    Err(e) => {
-                        warn!(server_name = %self.server_name, error = %e, "Failed to register MCP tools");
-                    }
+            {
+                Ok(count) => {
+                    info!(server_name = %self.server_name, count = count, "Registered MCP tools with unified registry");
                 }
-            } else {
-                warn!("No global ExtensionCore available for MCP tool registration");
+                Err(e) => {
+                    warn!(server_name = %self.server_name, error = %e, "Failed to register MCP tools");
+                }
             }
+        } else {
+            warn!("No global ExtensionCore available for MCP tool registration");
+        }
 
         HookResult::Continue(crate::extension::types::HookOutput::Unit)
     }

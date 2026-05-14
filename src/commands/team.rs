@@ -254,10 +254,9 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             Ok(())
         }
 
-        TeamCommands::Push {
-            name,
-            registry_ref,
-        } => handle_team_push(service, &name, &registry_ref, json).await,
+        TeamCommands::Push { name, registry_ref } => {
+            handle_team_push(service, &name, &registry_ref, json).await
+        }
 
         TeamCommands::Pull {
             registry_ref,
@@ -511,7 +510,13 @@ async fn handle_team_push(
     let temp_path = temp_dir.join(format!("{name}.team"));
 
     let export_result = service
-        .export_team(name, Some(temp_path.to_string_lossy().to_string()), false, false, false)
+        .export_team(
+            name,
+            Some(temp_path.to_string_lossy().to_string()),
+            false,
+            false,
+            false,
+        )
         .await?;
 
     // ── 2. Extract .team archive in-memory ──────────────────────────────
@@ -527,7 +532,10 @@ async fn handle_team_push(
 
     // TeamConfig layer
     registry
-        .store_layer(&decomposed.team_config_layer.digest, &decomposed.team_config_layer.bytes)
+        .store_layer(
+            &decomposed.team_config_layer.digest,
+            &decomposed.team_config_layer.bytes,
+        )
         .await?;
 
     // Per-agent layers (deduplication happens naturally via digest)
@@ -626,7 +634,9 @@ async fn handle_team_push(
 }
 
 /// Extract a `.team` tar.gz archive into a map of file paths to bytes.
-fn extract_team_archive_bytes(data: &[u8]) -> anyhow::Result<std::collections::HashMap<String, Vec<u8>>> {
+fn extract_team_archive_bytes(
+    data: &[u8],
+) -> anyhow::Result<std::collections::HashMap<String, Vec<u8>>> {
     use std::collections::HashMap;
     use std::io::Read;
 
@@ -705,10 +715,7 @@ async fn handle_team_pull(
 
     // Verify this is a team manifest
     if manifest.kind != "team" {
-        anyhow::bail!(
-            "Expected manifest kind 'team', got '{}'",
-            manifest.kind
-        );
+        anyhow::bail!("Expected manifest kind 'team', got '{}'", manifest.kind);
     }
 
     // ── 2. Find TeamConfig layer ────────────────────────────────────────
@@ -750,14 +757,9 @@ async fn handle_team_pull(
     let mut imported_agents = Vec::new();
 
     for (agent_name, files) in &reconstructed.agent_files {
-        let result = import_agent_from_files(
-            agent_name,
-            files,
-            &team_name,
-            &team_dir,
-        )
-        .await
-        .with_context(|| format!("Failed to import agent: {agent_name}"))?;
+        let result = import_agent_from_files(agent_name, files, &team_name, &team_dir)
+            .await
+            .with_context(|| format!("Failed to import agent: {agent_name}"))?;
 
         imported_agents.push(result);
     }
@@ -798,7 +800,6 @@ async fn import_agent_from_files(
     team_name: &str,
     team_dir: &std::path::Path,
 ) -> anyhow::Result<crate::portable::team_unpackager::AgentImportSummary> {
-    
     use crate::portable::unpackager::{ImportOptions, Unpackager};
 
     let unpackager = Unpackager::new("dummy.agent")
@@ -824,9 +825,7 @@ async fn import_agent_from_files(
         team: Some(team_name.to_string()),
     };
 
-    let result = unpackager
-        .import_from_files(files, agent_opts)
-        .await?;
+    let result = unpackager.import_from_files(files, agent_opts).await?;
 
     Ok(crate::portable::team_unpackager::AgentImportSummary {
         name: result.name,

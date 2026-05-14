@@ -111,6 +111,125 @@ pub fn format_value(value: &serde_json::Value) -> Result<String> {
     }
 }
 
+// ============================================================================
+// Generic TOML value operations (for global config CLI)
+// ============================================================================
+
+/// Get a value from a `toml::Value` by dot-separated path.
+///
+/// Returns a cloned `toml::Value` so callers can format it as needed.
+pub fn get_toml_value(value: &toml::Value, path: &str) -> Result<toml::Value> {
+    if path.is_empty() {
+        anyhow::bail!("Config path cannot be empty");
+    }
+
+    let mut current = value;
+
+    for segment in path.split('.') {
+        current = match current {
+            toml::Value::Table(map) => map.get(segment).ok_or_else(|| {
+                anyhow::anyhow!("Config key '{segment}' not found in path '{path}'")
+            })?,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Cannot traverse into non-table at '{segment}' in path '{path}'"
+                ))
+            }
+        };
+    }
+
+    Ok(current.clone())
+}
+
+/// Set a value on a `toml::Value` by dot-separated path.
+///
+/// The value string is parsed as JSON when possible (arrays, objects, numbers,
+/// booleans, quoted strings). Otherwise it falls back to a plain string.
+/// The modified TOML value is returned.
+pub fn set_toml_value(mut value: toml::Value, path: &str, value_str: &str) -> Result<toml::Value> {
+    if path.is_empty() {
+        anyhow::bail!("Config path cannot be empty");
+    }
+
+    let new_value = json_to_toml(parse_value(value_str)?)?;
+    let segments: Vec<&str> = path.split('.').collect();
+
+    // Use a recursive helper to avoid borrow checker issues with &mut
+    fn set_at_path(
+        value: &mut toml::Value,
+        segments: &[&str],
+        new_value: toml::Value,
+    ) -> Result<()> {
+        if segments.is_empty() {
+            return Ok(());
+        }
+        let segment = segments[0];
+        if segments.len() == 1 {
+            if let toml::Value::Table(map) = value {
+                map.insert(segment.to_string(), new_value);
+                Ok(())
+            } else {
+                anyhow::bail!("Cannot set value on non-table at '{segment}'")
+            }
+        } else if let toml::Value::Table(map) = value {
+            let next = map
+                .entry(segment.to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if !matches!(next, toml::Value::Table(_)) {
+                *next = toml::Value::Table(toml::map::Map::new());
+            }
+            set_at_path(next, &segments[1..], new_value)
+        } else {
+            anyhow::bail!("Cannot traverse into non-table at '{segment}'")
+        }
+    }
+
+    set_at_path(&mut value, &segments, new_value)?;
+    Ok(value)
+}
+
+/// Convert a `serde_json::Value` into a `toml::Value`.
+fn json_to_toml(json: serde_json::Value) -> Result<toml::Value> {
+    match json {
+        serde_json::Value::Null => anyhow::bail!("Null values are not supported in TOML"),
+        serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(toml::Value::Integer(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(toml::Value::Float(f))
+            } else {
+                anyhow::bail!("Unsupported number format: {n}")
+            }
+        }
+        serde_json::Value::String(s) => Ok(toml::Value::String(s)),
+        serde_json::Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                out.push(json_to_toml(v)?);
+            }
+            Ok(toml::Value::Array(out))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map = toml::map::Map::with_capacity(obj.len());
+            for (k, v) in obj {
+                map.insert(k, json_to_toml(v)?);
+            }
+            Ok(toml::Value::Table(map))
+        }
+    }
+}
+
+/// Format a `toml::Value` for human-readable CLI output.
+pub fn format_toml_value(value: &toml::Value) -> Result<String> {
+    match value {
+        toml::Value::String(s) => Ok(s.clone()),
+        toml::Value::Array(arr) => Ok(toml::to_string(arr)?.trim().to_string()),
+        toml::Value::Table(obj) => Ok(toml::to_string_pretty(obj)?.trim().to_string()),
+        other => Ok(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +369,154 @@ mod tests {
     #[test]
     fn test_format_bool() {
         assert_eq!(format_value(&serde_json::json!(true)).unwrap(), "true");
+    }
+
+    // ------------------------------------------------------------------
+    // get_toml_value tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_get_toml_simple_string() {
+        let config = toml::Value::Table(toml::toml! {
+            name = "test"
+        });
+        let value = get_toml_value(&config, "name").unwrap();
+        assert_eq!(value, toml::Value::String("test".to_string()));
+    }
+
+    #[test]
+    fn test_get_toml_nested() {
+        let config = toml::Value::Table(toml::toml! {
+            [daemon]
+            bind_address = "127.0.0.1:11435"
+        });
+        let value = get_toml_value(&config, "daemon.bind_address").unwrap();
+        assert_eq!(value, toml::Value::String("127.0.0.1:11435".to_string()));
+    }
+
+    #[test]
+    fn test_get_toml_missing_key() {
+        let config = toml::Value::Table(toml::toml! {
+            name = "test"
+        });
+        let err = get_toml_value(&config, "does.not.exist").unwrap_err();
+        assert!(err.to_string().contains("does"));
+    }
+
+    #[test]
+    fn test_get_toml_empty_path() {
+        let config = toml::Value::Table(toml::toml! {
+            name = "test"
+        });
+        let err = get_toml_value(&config, "").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    // ------------------------------------------------------------------
+    // set_toml_value tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_set_toml_string_value() {
+        let config = toml::Value::Table(toml::toml! {
+            name = "old"
+        });
+        let updated = set_toml_value(config, "name", "new").unwrap();
+        assert_eq!(
+            updated.get("name").unwrap(),
+            &toml::Value::String("new".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_toml_nested_value() {
+        let config = toml::Value::Table(toml::toml! {
+            [daemon]
+            bind_address = "127.0.0.1:11435"
+        });
+        let updated = set_toml_value(config, "daemon.bind_address", "0.0.0.0:8080").unwrap();
+        assert_eq!(
+            updated.get("daemon").unwrap().get("bind_address").unwrap(),
+            &toml::Value::String("0.0.0.0:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_toml_creates_missing_table() {
+        let config = toml::Value::Table(toml::toml! {
+            name = "test"
+        });
+        let updated = set_toml_value(config, "defaults.provider", "kimi").unwrap();
+        assert_eq!(
+            updated.get("defaults").unwrap().get("provider").unwrap(),
+            &toml::Value::String("kimi".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_toml_bool_value() {
+        let config = toml::Value::Table(toml::toml! {
+            debug = false
+        });
+        let updated = set_toml_value(config, "debug", "true").unwrap();
+        assert_eq!(updated.get("debug").unwrap(), &toml::Value::Boolean(true));
+    }
+
+    #[test]
+    fn test_set_toml_number_value() {
+        let config = toml::Value::Table(toml::toml! {
+            port = 8080
+        });
+        let updated = set_toml_value(config, "port", "9090").unwrap();
+        assert_eq!(updated.get("port").unwrap(), &toml::Value::Integer(9090));
+    }
+
+    #[test]
+    fn test_set_toml_array_value() {
+        let config = toml::Value::Table(toml::toml! {
+            items = ["a"]
+        });
+        let updated = set_toml_value(config, "items", r#"["a", "b"]"#).unwrap();
+        assert_eq!(
+            updated.get("items").unwrap(),
+            &toml::Value::Array(vec![
+                toml::Value::String("a".to_string()),
+                toml::Value::String("b".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_set_toml_empty_path_fails() {
+        let config = toml::Value::Table(toml::toml! {
+            name = "test"
+        });
+        let err = set_toml_value(config, "", "value").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    // ------------------------------------------------------------------
+    // format_toml_value tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_format_toml_string() {
+        assert_eq!(
+            format_toml_value(&toml::Value::String("hello".to_string())).unwrap(),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn test_format_toml_number() {
+        assert_eq!(format_toml_value(&toml::Value::Integer(42)).unwrap(), "42");
+    }
+
+    #[test]
+    fn test_format_toml_bool() {
+        assert_eq!(
+            format_toml_value(&toml::Value::Boolean(true)).unwrap(),
+            "true"
+        );
     }
 }

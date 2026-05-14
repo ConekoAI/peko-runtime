@@ -704,8 +704,6 @@ mod tests {
 
     #[test]
     fn test_select_messages_respects_tool_boundaries() {
-        
-
         let compactor = Compactor::new();
         let messages = vec![
             LlmMessage::user("User 1"),

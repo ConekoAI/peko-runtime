@@ -23,9 +23,7 @@ use crate::extensions::mcp::protocol::{
     transport::SseTransport,
     types::Tool,
 };
-use crate::extensions::mcp::runtime::adapter::{
-    McpClientRegistry, McpRuntimeAdapter,
-};
+use crate::extensions::mcp::runtime::adapter::{McpClientRegistry, McpRuntimeAdapter};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -465,7 +463,8 @@ impl McpManager {
                 match runtime_state {
                     RuntimeState::Healthy | RuntimeState::Running | RuntimeState::Starting => {
                         handle.state.running = true;
-                        handle.state.healthy = matches!(runtime_state, RuntimeState::Healthy | RuntimeState::Running);
+                        handle.state.healthy =
+                            matches!(runtime_state, RuntimeState::Healthy | RuntimeState::Running);
                     }
                     RuntimeState::Unhealthy | RuntimeState::Crashed => {
                         if handle.state.running {

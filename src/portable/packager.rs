@@ -504,8 +504,6 @@ impl Packager {
 
         portable
     }
-
-
 }
 
 /// Convenience function to export an agent

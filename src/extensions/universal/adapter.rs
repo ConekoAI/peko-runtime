@@ -450,8 +450,7 @@ pub async fn load_and_register_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
+
     use tempfile::TempDir;
 
     fn create_test_tool(dir: &Path, name: &str, description: &str) -> PathBuf {

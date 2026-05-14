@@ -837,7 +837,11 @@ mod tests {
             .with_agent_name(agent_name);
         let peer = Peer::User("default".to_string());
         let handle = manager
-            .create_session(agent_name, &peer, crate::session::manager::SessionCreateOptions::new())
+            .create_session(
+                agent_name,
+                &peer,
+                crate::session::manager::SessionCreateOptions::new(),
+            )
             .await
             .unwrap();
         handle.base().clone()
@@ -888,8 +892,24 @@ mod tests {
 
         // Verify events were emitted
         let emitted = events.lock().unwrap();
-        let has_start = emitted.iter().any(|e| matches!(e, AgenticEvent::Lifecycle { phase: LifecyclePhase::Start, .. }));
-        let has_end = emitted.iter().any(|e| matches!(e, AgenticEvent::Lifecycle { phase: LifecyclePhase::End, .. }));
+        let has_start = emitted.iter().any(|e| {
+            matches!(
+                e,
+                AgenticEvent::Lifecycle {
+                    phase: LifecyclePhase::Start,
+                    ..
+                }
+            )
+        });
+        let has_end = emitted.iter().any(|e| {
+            matches!(
+                e,
+                AgenticEvent::Lifecycle {
+                    phase: LifecyclePhase::End,
+                    ..
+                }
+            )
+        });
         assert!(has_start, "Should emit Start event");
         assert!(has_end, "Should emit End event");
     }
@@ -933,8 +953,13 @@ mod tests {
 
         // In live mode we should see delta events
         let emitted = events.lock().unwrap();
-        let has_deltas = emitted.iter().any(|e| matches!(e, AgenticEvent::AssistantDelta { .. }));
-        assert!(has_deltas, "Live streaming should emit AssistantDelta events");
+        let has_deltas = emitted
+            .iter()
+            .any(|e| matches!(e, AgenticEvent::AssistantDelta { .. }));
+        assert!(
+            has_deltas,
+            "Live streaming should emit AssistantDelta events"
+        );
     }
 
     // ===================================================================
@@ -949,7 +974,11 @@ mod tests {
 
         let mut config = test_agent_config("rt003-agent");
         config.provider.timeout_seconds = 42;
-        let agent = Arc::new(Agent::new_for_test(config.clone(), temp_dir.path()).await.unwrap());
+        let agent = Arc::new(
+            Agent::new_for_test(config.clone(), temp_dir.path())
+                .await
+                .unwrap(),
+        );
         let extension_core = global_core().unwrap();
         let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
 
@@ -1005,7 +1034,15 @@ mod tests {
 
         // Should emit an Error lifecycle event
         let emitted = events.lock().unwrap();
-        let has_error = emitted.iter().any(|e| matches!(e, AgenticEvent::Lifecycle { phase: LifecyclePhase::Error, .. }));
+        let has_error = emitted.iter().any(|e| {
+            matches!(
+                e,
+                AgenticEvent::Lifecycle {
+                    phase: LifecyclePhase::Error,
+                    ..
+                }
+            )
+        });
         assert!(has_error, "Should emit Error lifecycle event");
     }
 
@@ -1050,7 +1087,9 @@ mod tests {
         assert!(has_user, "Session should contain user message");
 
         // Verify assistant message is present
-        let has_assistant = history.iter().any(|m| matches!(m.role, MessageRole::Assistant));
+        let has_assistant = history
+            .iter()
+            .any(|m| matches!(m.role, MessageRole::Assistant));
         assert!(has_assistant, "Session should contain assistant message");
     }
 
@@ -1116,7 +1155,10 @@ mod tests {
         let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core).await;
 
         // The struct should default to 10
-        assert_eq!(loop_.max_iterations, 10, "Default max_iterations should be 10");
+        assert_eq!(
+            loop_.max_iterations, 10,
+            "Default max_iterations should be 10"
+        );
     }
 
     // ===================================================================
@@ -1143,7 +1185,11 @@ mod tests {
             .run_with_resume("Use echo tool", |_| {}, session, None)
             .await;
 
-        assert!(result.is_ok(), "Tool loop should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Tool loop should succeed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
         assert!(result.success);
         assert_eq!(result.final_answer, "Tool result processed.");

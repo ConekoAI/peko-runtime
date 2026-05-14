@@ -199,7 +199,11 @@ async fn create_manager_with_adapters(
 }
 
 /// Handle extension subcommands
-pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths, json: bool) -> anyhow::Result<()> {
+pub async fn handle_ext_command(
+    command: ExtCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
     // Get the global ExtensionCore — initialized by main.rs before command dispatch.
     // We extract it once and pass it down to eliminate direct global_core() calls
     // in subcommand handlers.
@@ -296,9 +300,10 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths, json:
                 ExtCommands::Push { id, registry_ref } => {
                     handle_ext_push(&manager, &id, &registry_ref, json).await
                 }
-                ExtCommands::Pull { registry_ref, json: pull_json } => {
-                    handle_ext_pull(&mut manager, &registry_ref, pull_json).await
-                }
+                ExtCommands::Pull {
+                    registry_ref,
+                    json: pull_json,
+                } => handle_ext_pull(&mut manager, &registry_ref, pull_json).await,
                 ExtCommands::Validate { .. } | ExtCommands::Debug { .. } => unreachable!(),
             }
         }
@@ -516,12 +521,7 @@ async fn handle_list(
             let access = format_access_for_agent_configs(tool_name, &agent_configs);
             println!(
                 "{:<24} {:<14} {:<18} {:<10} {:<12} {}",
-                ext.manifest.id,
-                ext.extension_type,
-                ext.manifest.name,
-                source,
-                rt_status,
-                access
+                ext.manifest.id, ext.extension_type, ext.manifest.name, source, rt_status, access
             );
         } else {
             println!(
@@ -1108,9 +1108,10 @@ async fn handle_ext_push(
     registry.store_layer(&layer_digest, &data).await?;
 
     // Build RegistryManifest with kind="extension", single layer
-    let mut manifest = RegistryManifest::new(ext.manifest.name.clone(), ext.manifest.version.clone())
-        .with_kind("extension")
-        .with_ref(registry_ref);
+    let mut manifest =
+        RegistryManifest::new(ext.manifest.name.clone(), ext.manifest.version.clone())
+            .with_kind("extension")
+            .with_ref(registry_ref);
     manifest.add_layer(Layer::new(
         layer_digest.clone(),
         LayerType::Config,

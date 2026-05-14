@@ -4,9 +4,8 @@
 //! Responses are queued ahead of time and returned in FIFO order.
 
 use super::{
-    adapters::ApiAdapter,
-    AuthConfig, ChatOptions, ChatResponse, ContentBlock, LlmMessage, StopReason, StreamEvent,
-    ToolDefinition,
+    adapters::ApiAdapter, AuthConfig, ChatOptions, ChatResponse, ContentBlock, LlmMessage,
+    StopReason, StreamEvent, ToolDefinition,
 };
 use anyhow::Result;
 use serde_json::Value;
@@ -111,7 +110,12 @@ impl MockAdapter {
     }
 
     /// Queue a tool call response
-    pub fn queue_tool_call(&self, id: impl Into<String>, name: impl Into<String>, arguments: Value) {
+    pub fn queue_tool_call(
+        &self,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: Value,
+    ) {
         let id = id.into();
         let name = name.into();
         let response = ChatResponse {
@@ -193,7 +197,12 @@ impl MockAdapter {
     }
 
     /// Record a request
-    fn record_request(&self, messages: &[LlmMessage], tools: Option<&[ToolDefinition]>, stream: bool) {
+    fn record_request(
+        &self,
+        messages: &[LlmMessage],
+        tools: Option<&[ToolDefinition]>,
+        stream: bool,
+    ) {
         if let Ok(mut r) = self.recorded_requests.lock() {
             r.push(RecordedRequest {
                 messages: messages.to_vec(),
@@ -268,12 +277,10 @@ impl MockAdapter {
             Some(MockResponse::Stream(events)) => events,
             Some(MockResponse::Success(response)) => {
                 // Convert ChatResponse to stream events
-                let mut evs = vec![
-                    StreamEvent::Start {
-                        provider: "mock".to_string(),
-                        model: self.model.clone(),
-                    },
-                ];
+                let mut evs = vec![StreamEvent::Start {
+                    provider: "mock".to_string(),
+                    model: self.model.clone(),
+                }];
                 let text: String = response
                     .content
                     .iter()
@@ -319,9 +326,7 @@ impl MockAdapter {
             }
         };
 
-        Ok(Box::pin(futures::stream::iter(
-            events.into_iter().map(Ok),
-        )))
+        Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
     }
 }
 
@@ -396,7 +401,9 @@ mod tests {
             .chat_with_tools(&[], None, &ChatOptions::default())
             .unwrap();
         assert_eq!(response.content.len(), 1);
-        assert!(matches!(&response.content[0], ContentBlock::Text { text } if text == "Hello, world!"));
+        assert!(
+            matches!(&response.content[0], ContentBlock::Text { text } if text == "Hello, world!")
+        );
     }
 
     #[test]
@@ -408,7 +415,9 @@ mod tests {
             .chat_with_tools(&[], None, &ChatOptions::default())
             .unwrap();
         assert_eq!(response.tool_calls.len(), 1);
-        assert!(matches!(&response.tool_calls[0], ContentBlock::ToolCall { name, .. } if name == "test_tool"));
+        assert!(
+            matches!(&response.tool_calls[0], ContentBlock::ToolCall { name, .. } if name == "test_tool")
+        );
     }
 
     #[test]
@@ -418,7 +427,10 @@ mod tests {
 
         let result = adapter.chat_with_tools(&[], None, &ChatOptions::default());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Something went wrong"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Something went wrong"));
     }
 
     #[tokio::test]

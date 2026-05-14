@@ -40,7 +40,6 @@
 
 #![allow(dead_code)]
 
-
 pub mod crypto;
 pub mod manifest;
 pub mod packager;

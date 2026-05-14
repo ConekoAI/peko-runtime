@@ -40,9 +40,7 @@ impl JobObject {
     /// Returns an error if the Windows `CreateJobObjectW` or `SetInformationJobObject` calls fail.
     #[cfg(windows)]
     pub fn new() -> anyhow::Result<Self> {
-        use windows_sys::Win32::Foundation::{
-            CloseHandle, GetLastError, INVALID_HANDLE_VALUE,
-        };
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::System::JobObjects::{
             CreateJobObjectW, JobObjectBasicLimitInformation, SetInformationJobObject,
             JOBOBJECT_BASIC_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,

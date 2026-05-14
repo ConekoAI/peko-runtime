@@ -323,10 +323,16 @@ impl TeamService {
 
         // Export the team — pass config_dir so team.toml is included
         let config_dir = self.resolver.config_dir().to_path_buf();
-        let output_path =
-            portable::export_team_with_config_dir(name, None, &base_dir, &config_dir, agent_exports, export_opts)
-                .await
-                .with_context(|| format!("Failed to export team '{name}'"))?;
+        let output_path = portable::export_team_with_config_dir(
+            name,
+            None,
+            &base_dir,
+            &config_dir,
+            agent_exports,
+            export_opts,
+        )
+        .await
+        .with_context(|| format!("Failed to export team '{name}'"))?;
 
         Ok(TeamExportResult {
             name: name.to_string(),

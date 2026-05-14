@@ -442,8 +442,8 @@ pub async fn export_team_with_config_dir(
     agents: Vec<(String, AgentConfig, Identity)>,
     options: TeamExportOptions,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let mut packager = TeamPackager::new(team_name, team_description, base_dir)
-        .with_config_dir(config_dir);
+    let mut packager =
+        TeamPackager::new(team_name, team_description, base_dir).with_config_dir(config_dir);
 
     for (name, config, identity) in agents {
         packager.add_agent(name, config, identity);
