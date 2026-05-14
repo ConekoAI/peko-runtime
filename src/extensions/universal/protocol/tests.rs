@@ -8,6 +8,7 @@ use crate::tools::core::traits::Tool;
 use serde_json::json;
 use tempfile::TempDir;
 
+#[allow(dead_code)]
 /// Create a mock Python tool for testing
 async fn create_mock_python_tool(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let script_path = dir.join(format!("{name}.py"));

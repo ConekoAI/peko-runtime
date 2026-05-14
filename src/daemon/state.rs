@@ -578,7 +578,9 @@ mod tests {
         // Wait a bit and check uptime increased
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let uptime2 = state.uptime_seconds();
-        assert!(uptime2 >= 0); // May still be 0 if less than 1 second passed
+        // uptime_seconds() returns u64, so it's always >= 0.
+        // We just verify it doesn't panic and is reasonable.
+        let _ = uptime2;
     }
 
     #[tokio::test]

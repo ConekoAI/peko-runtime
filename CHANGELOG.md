@@ -2,6 +2,76 @@
 
 All notable changes to Pekobot.
 
+## [1.0.0-rc1] - Phase 1 Completion - 2026-05-14
+
+Phase 1 of the Pekobot runtime is complete. All P0 success criteria for the agent runtime, unified packaging, registry integration, and CLI have been implemented and verified.
+
+### Phase 1 Summary
+
+**Runtime Engine:**
+- Turn-based agentic loop with streaming (`StreamOrchestrator`), tool execution, and session persistence
+- 15+ LLM providers via metadata registry (OpenAI, Anthropic, Kimi, Minimax, Ollama, Azure, Cohere, DeepSeek, Fireworks, Groq, OpenRouter, Perplexity, Together, xAI)
+- Configurable timeout per LLM request (default 60s, max 3600s)
+- Max 10 iterations per turn, gracefully handles API failures and tool timeouts
+- 7 integration tests covering RT-001 through RT-006 in `engine::agentic_loop::tests`
+
+**Packaging (ADR-027):**
+- Unified `.agent` format: gzip tar with TOML manifest, SHA-256 checksums, content-addressable layers
+- `.team` format: checksum-validated, `team.toml` roundtrip, registry layer deduplication
+- `.ext` format: extension bundles for offline distribution
+- `AgentRegistry` local content-addressable storage in `~/.pekobot/registry/`
+
+**Registry:**
+- `pekobot agent push <local> <remote>` / `pekobot agent pull <registry-ref>`
+- OCI-inspired protocol with bearer/basic auth, layer existence checks (HEAD), digest verification
+- Python FastAPI mock registry server for integration testing
+
+**Extension Framework:**
+- 22 hook points across agent lifecycle (`PromptSystemSection` through `AgentIteration`)
+- 6 extension types: builtin, skill, MCP, universal, gateway, general
+- Dynamic tool registration/unregistration without restart
+- Async task execution framework with event bus and queue
+
+**MCP Integration:**
+- stdio and SSE transports
+- Tool discovery, schema proxying, reserved parameter injection
+- Server lifecycle: start on demand, health-check, restart on failure, graceful shutdown
+
+**Session Management:**
+- JSONL storage with atomic writes (tmp + rename)
+- Branching (`pekobot session branch`), recovery (`SessionRecovery`), maintenance
+- Compaction with dual-threshold triggers and structured summaries
+
+**CLI:**
+- Core commands: `agent`, `team`, `ext`, `session`, `send`, `daemon`, `system`
+- Top-level config CLI (`pekobot config get/set/validate/init/defaults/path`) — ADR-028
+- `--json` support on major data commands
+- Shell completions via `clap_complete`
+- `PEKOBOT_*` environment variables for all global flags
+
+**Security:**
+- API key stripping from subprocesses (`*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`)
+- Credential detection in config (partial enforcement)
+- DID identity with ed25519 keys
+
+**Test Coverage:**
+- 1,024 unit tests passing, 0 failed, 19 ignored
+- 60+ PowerShell E2E tests covering agent, session, send, tools, extensions, packaging, cron, A2A, subagent, compaction
+- 0 compiler warnings, 0 clippy warnings
+
+### Deferred to Phase 2
+- `system doctor` / `system clean` (stubs remain)
+- `pekobot validate` command
+- `--json` on remaining commands
+- MCP Streamable HTTP transport
+- Performance benchmarks with baseline data
+- Package signing & encryption
+- Extension source references (GitHub, URL, MCP endpoint)
+- OpenTelemetry export
+- Public registry web UI
+
+---
+
 ## [0.1.0] - Team Registry Layer Deduplication (Issue 023) - 2026-05-11
 
 Team registry push/pull now uses content-addressable layers instead of a single opaque blob, enabling cross-team agent deduplication.

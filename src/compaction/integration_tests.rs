@@ -242,10 +242,12 @@ fn test_compaction_entry_with_details() {
 // Helpers
 // ============================================================================
 
+#[allow(dead_code)]
 fn make_msg(role: MessageRole, text: &str) -> LlmMessage {
     LlmMessage::text(role, text)
 }
 
+#[allow(dead_code)]
 fn make_tool_result(tool_call_id: &str, text: &str) -> LlmMessage {
     LlmMessage::tool_result(tool_call_id, "test_tool", text)
 }
