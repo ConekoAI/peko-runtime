@@ -121,43 +121,42 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
             }
         }
         anyhow::bail!("Stream closed unexpectedly");
-    } else {
-        // Streaming mode: print chunks as they arrive
-        let mut has_started_line = false;
-        while let Some(packet) = stream.next().await {
-            match packet {
-                ResponsePacket::Text { chunk, .. } => {
-                    if !has_started_line {
-                        print!("\n{}: ", args.agent);
-                        std::io::stdout().flush()?;
-                        has_started_line = true;
-                    }
-                    print!("{}", chunk);
-                    std::io::stdout().flush()?;
-                }
-                ResponsePacket::Done { success, error, .. } => {
-                    if has_started_line {
-                        println!();
-                    }
-                    if success {
-                        return Ok(());
-                    }
-                    anyhow::bail!(
-                        "Agent execution failed{}",
-                        error.map(|e| format!(": {e}")).unwrap_or_default()
-                    );
-                }
-                ResponsePacket::Error { message, .. } => {
-                    anyhow::bail!("Agent execution failed: {message}");
-                }
-                ResponsePacket::Heartbeat { .. } => {
-                    // Ignore heartbeats — they just keep the connection alive
-                }
-                _ => {}
-            }
-        }
-        anyhow::bail!("Stream closed unexpectedly");
     }
+    // Streaming mode: print chunks as they arrive
+    let mut has_started_line = false;
+    while let Some(packet) = stream.next().await {
+        match packet {
+            ResponsePacket::Text { chunk, .. } => {
+                if !has_started_line {
+                    print!("\n{}: ", args.agent);
+                    std::io::stdout().flush()?;
+                    has_started_line = true;
+                }
+                print!("{}", chunk);
+                std::io::stdout().flush()?;
+            }
+            ResponsePacket::Done { success, error, .. } => {
+                if has_started_line {
+                    println!();
+                }
+                if success {
+                    return Ok(());
+                }
+                anyhow::bail!(
+                    "Agent execution failed{}",
+                    error.map(|e| format!(": {e}")).unwrap_or_default()
+                );
+            }
+            ResponsePacket::Error { message, .. } => {
+                anyhow::bail!("Agent execution failed: {message}");
+            }
+            ResponsePacket::Heartbeat { .. } => {
+                // Ignore heartbeats — they just keep the connection alive
+            }
+            _ => {}
+        }
+    }
+    anyhow::bail!("Stream closed unexpectedly");
 }
 
 /// Resolve message from various sources (argument, file, or stdin)

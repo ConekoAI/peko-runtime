@@ -149,6 +149,7 @@ impl SessionHandle {
     }
 
     /// Get the overlay reference (for internal/test access)
+    #[cfg(test)]
     pub(crate) fn overlay(&self) -> Option<&OverlayRef> {
         self.overlay.as_ref()
     }

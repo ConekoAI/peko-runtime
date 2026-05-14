@@ -4,6 +4,7 @@
 //! It composes `HookRegistry` and `ToolRegistry` to provide a unified interface.
 
 use crate::extension::core::config::ExtensionServices;
+#[cfg(test)]
 use crate::extension::core::context::HookContext;
 use crate::extension::core::handler::HookHandler;
 use crate::extension::core::hook_points::HookPoint;

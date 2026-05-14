@@ -205,9 +205,9 @@ impl GlobTool {
             let is_dir = metadata.is_dir();
 
             // Check if this entry matches the pattern
-            let matches = Self::glob_match(&name_str, pattern);
+            let is_match = Self::glob_match(&name_str, pattern);
 
-            if matches {
+            if is_match {
                 *matched += 1;
                 if entries.len() < limit {
                     let relative_path = entry_path

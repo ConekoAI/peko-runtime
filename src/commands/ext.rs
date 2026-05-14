@@ -444,7 +444,7 @@ async fn handle_list(
             }));
         }
         for ext in &filtered_installed {
-            let runtime_status = runtime_states
+            let rt_status = runtime_states
                 .get(ext.manifest.id.0.as_str())
                 .cloned()
                 .unwrap_or_else(|| "n/a".to_string());
@@ -454,7 +454,7 @@ async fn handle_list(
                 "name": ext.manifest.name,
                 "source": "installed",
                 "enabled": true,
-                "runtime": runtime_status,
+                "runtime": rt_status,
                 "version": ext.manifest.version,
                 "description": ext.manifest.description,
             }));
@@ -508,7 +508,7 @@ async fn handle_list(
     for ext in &filtered_installed {
         let source = "installed";
         let tool_name = ext.manifest.name.as_str();
-        let runtime_status = runtime_states
+        let rt_status = runtime_states
             .get(ext.manifest.id.0.as_str())
             .cloned()
             .unwrap_or_else(|| "n/a".to_string());
@@ -520,13 +520,13 @@ async fn handle_list(
                 ext.extension_type,
                 ext.manifest.name,
                 source,
-                runtime_status,
+                rt_status,
                 access
             );
         } else {
             println!(
                 "{:<24} {:<14} {:<18} {:<10} {:<12}",
-                ext.manifest.id, ext.extension_type, ext.manifest.name, source, runtime_status
+                ext.manifest.id, ext.extension_type, ext.manifest.name, source, rt_status
             );
         }
     }
@@ -563,7 +563,7 @@ async fn handle_list(
 async fn fetch_runtime_states(extensions: &[&LoadedExtension]) -> HashMap<String, String> {
     let mut states = HashMap::new();
     let runtime_types: std::collections::HashSet<&str> =
-        ["gateway", "mcp"].iter().cloned().collect();
+        ["gateway", "mcp"].iter().copied().collect();
 
     let client = match crate::ipc::DaemonClient::connect().await {
         Ok(c) => c,

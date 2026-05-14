@@ -24,7 +24,9 @@ use tokio::net::UdpSocket;
 use tokio::net::UnixDatagram;
 use tracing::debug;
 
-use super::{default_pid_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
+use super::{DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
+#[cfg(test)]
+use super::default_pid_path;
 
 /// Platform-specific socket handle
 ///

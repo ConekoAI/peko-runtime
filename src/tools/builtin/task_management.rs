@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+#[cfg(test)]
 use std::sync::Arc;
 
 use crate::extension::async_exec::executor::{

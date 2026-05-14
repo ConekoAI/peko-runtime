@@ -516,49 +516,6 @@ fn extract_hooks_from_yaml(yaml: &serde_yaml::Value) -> Result<Vec<HookDeclarati
         .map_or_else(|| Ok(Vec::new()), Ok)
 }
 
-/// Extract hook declarations from JSON
-fn extract_hooks_from_json(json: &serde_json::Value) -> Result<Vec<HookDeclaration>> {
-    json.get("hooks")
-        .and_then(|h| serde_json::from_value(h.clone()).ok())
-        .map_or_else(|| Ok(Vec::new()), Ok)
-}
-
-/// Build manifest from JSON (general extension specific)
-fn build_manifest_from_json(json: &serde_json::Value, path: &Path) -> Result<ExtensionManifest> {
-    let id = json
-        .get("id")
-        .and_then(|v| v.as_str())
-        .with_context(|| "Missing required field: id")?;
-    let name = json
-        .get("name")
-        .and_then(|v| v.as_str())
-        .with_context(|| "Missing required field: name")?;
-    let version = json
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("1.0.0");
-    let description = json
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let mut manifest = ExtensionManifest::new(
-        id,
-        GENERAL_EXTENSION_TYPE,
-        name,
-        description,
-        version,
-        path.to_path_buf(),
-    );
-
-    // Store hooks in manifest
-    if let Some(hooks) = json.get("hooks") {
-        manifest.set("hooks", hooks.clone());
-    }
-
-    Ok(manifest)
-}
-
 /// A discovered general extension before registration
 #[derive(Debug, Clone)]
 pub struct DiscoveredGeneralExtension {

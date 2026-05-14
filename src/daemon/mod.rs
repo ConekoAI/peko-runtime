@@ -73,6 +73,7 @@ pub struct Daemon {
     config: DaemonConfig,
     status: Arc<Mutex<DaemonStatus>>,
     event_rx: Option<mpsc::Receiver<SystemEvent>>,
+    #[allow(dead_code)]
     event_tx: Option<mpsc::Sender<SystemEvent>>,
     cron_engine: CronEngine,
 }
@@ -114,6 +115,7 @@ impl Daemon {
 
     /// Create a new daemon with an internal event channel.
     /// Returns the daemon and the sender half so external code can publish events.
+    #[allow(dead_code)]
     pub fn new_with_events(config: DaemonConfig) -> Result<(Self, mpsc::Sender<SystemEvent>)> {
         let status = Arc::new(Mutex::new(DaemonStatus {
             running: false,
@@ -143,6 +145,7 @@ impl Daemon {
     }
 
     /// Publish a system event to the internal event channel.
+    #[allow(dead_code)]
     pub async fn publish_event(&self, event: SystemEvent) {
         if let Some(ref tx) = self.event_tx {
             let _ = tx.send(event).await;

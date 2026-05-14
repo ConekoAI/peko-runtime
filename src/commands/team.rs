@@ -257,14 +257,14 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
         TeamCommands::Push {
             name,
             registry_ref,
-        } => handle_team_push(&service, &name, &registry_ref, json).await,
+        } => handle_team_push(service, &name, &registry_ref, json).await,
 
         TeamCommands::Pull {
             registry_ref,
             name,
             force,
             json: pull_json,
-        } => handle_team_pull(&service, &registry_ref, name, force, pull_json).await,
+        } => handle_team_pull(service, &registry_ref, name, force, pull_json).await,
     }
 }
 
@@ -538,7 +538,7 @@ async fn handle_team_push(
         decomposed.team_config_layer.size,
     ));
 
-    for (_agent_name, layers) in &decomposed.agent_layers {
+    for layers in decomposed.agent_layers.values() {
         for (layer_type, layer_bytes) in layers {
             registry
                 .store_layer(&layer_bytes.digest, &layer_bytes.bytes)

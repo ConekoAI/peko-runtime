@@ -13,6 +13,7 @@ use anyhow::Result;
 #[derive(Debug, Clone)]
 pub struct CliCompactionResult {
     /// Messages after compaction (summary + kept messages)
+    #[allow(dead_code)]
     pub messages: Vec<LlmMessage>,
     /// Compaction entry for persistence
     pub entry: CompactionEntry,

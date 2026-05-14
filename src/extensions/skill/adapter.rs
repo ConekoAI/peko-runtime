@@ -26,6 +26,7 @@
 
 use crate::extension::adapters::parsing;
 use crate::extension::adapters::{ExtensionTypeAdapter, ManifestFormat};
+#[cfg(test)]
 use crate::extension::core::ExtensionServices;
 use crate::extension::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
@@ -286,6 +287,7 @@ impl HookHandler for SkillPromptHandler {
 // parse_frontmatter now uses parsing::parse_yaml_frontmatter from shared utilities
 
 /// Replace home directory with ~ to save tokens
+#[cfg(test)]
 fn compact_skill_path(path: &Path) -> String {
     let path_str = path.to_string_lossy();
     if let Some(home) = dirs::home_dir() {

@@ -20,6 +20,7 @@ use crate::extension::types::{
     AsyncReceipt, AsyncTaskStatus, ExtensionId, HookId, HookOutput, HookResult, ToolMetadata,
 };
 use async_trait::async_trait;
+#[cfg(test)]
 use std::sync::Arc;
 use tracing::debug;
 use uuid::Uuid;

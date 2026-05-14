@@ -238,20 +238,20 @@ impl GrepTool {
                 // Add context lines
                 if context_before > 0 {
                     let start = line_num.saturating_sub(context_before);
-                    let context: Vec<String> = lines[start..line_num]
+                    let before_ctx: Vec<String> = lines[start..line_num]
                         .iter()
                         .map(std::string::ToString::to_string)
                         .collect();
-                    match_obj["context_before"] = context.into();
+                    match_obj["context_before"] = before_ctx.into();
                 }
 
                 if context_after > 0 {
                     let end = (line_num + context_after + 1).min(lines.len());
-                    let context: Vec<String> = lines[line_num + 1..end]
+                    let after_ctx: Vec<String> = lines[line_num + 1..end]
                         .iter()
                         .map(std::string::ToString::to_string)
                         .collect();
-                    match_obj["context_after"] = context.into();
+                    match_obj["context_after"] = after_ctx.into();
                 }
 
                 matches.push(match_obj);

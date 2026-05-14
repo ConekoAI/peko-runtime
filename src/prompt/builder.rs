@@ -74,15 +74,6 @@ impl SystemPromptBuilder {
         self
     }
 
-    /// Set tool definitions from unified registry (ADR-019 Phase 3)
-    ///
-    /// This allows building prompts with `ToolDefinition` instead of Arc<dyn Tool>,
-    /// enabling dynamic tool updates without session restart.
-    pub fn with_tool_definitions(mut self, definitions: Vec<ToolDefinition>) -> Self {
-        self.tool_definitions = definitions;
-        self
-    }
-
     pub fn with_workspace(mut self, workspace: impl AsRef<std::path::Path>) -> Self {
         self.workspace = workspace.as_ref().to_path_buf();
         self.bootstrap_config.workspace_dir = self.workspace.clone();
