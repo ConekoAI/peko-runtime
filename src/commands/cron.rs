@@ -19,16 +19,16 @@ use uuid::Uuid;
 ///
 /// Examples:
 ///   # List all cron jobs
-///   pekobot cron list
+///   peko cron list
 ///
 ///   # Add a daily job (9 AM)
-///   pekobot cron add --name "daily-report" --schedule "0 9 * * *" --message "Generate daily summary"
+///   peko cron add --name "daily-report" --schedule "0 9 * * *" --message "Generate daily summary"
 ///
 ///   # Add a one-time job
-///   pekobot cron at --name "reminder" --at "2026-03-20T14:00:00Z" --message "Meeting in 1 hour"
+///   peko cron at --name "reminder" --at "2026-03-20T14:00:00Z" --message "Meeting in 1 hour"
 ///
 ///   # Remove a job
-///   pekobot cron remove daily-report
+///   peko cron remove daily-report
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum CronCommands {
@@ -178,7 +178,7 @@ pub enum CronCommands {
 async fn connect_daemon() -> Result<DaemonClient> {
     DaemonClient::connect()
         .await
-        .context("Daemon is not running. Start it with: pekobot daemon start")
+        .context("Daemon is not running. Start it with: peko daemon start")
 }
 
 /// Handle cron commands

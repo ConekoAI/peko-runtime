@@ -20,18 +20,18 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot (assumes Rust toolchain is installed)
-Write-Host "Building pekobot..." -ForegroundColor Cyan
-pushd "D:\Workplace\pekobot\pekobot\";$env:RUSTFLAGS="-A warnings"; cargo build; popd
+# Build peko (assumes Rust toolchain is installed)
+Write-Host "Building peko..." -ForegroundColor Cyan
+pushd "D:\Workplace\\peko\peko\";$env:RUSTFLAGS="-A warnings"; cargo build; popd
 
-# Reset pekobot config data (Windows)
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data (Windows)
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-# Reset pekobot data (Windows)
-$DataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+# Reset peko data (Windows)
+$DataDir = "$env:USERPROFILE/AppData/Roaming/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
@@ -39,12 +39,12 @@ if (Test-Path $DataDir) {
 
 
 # Set minimax api key
-pekobot auth set minimax $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set minimax $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create an agent with minimax provider
 $agentName = "testagent"
-$result = pekobot agent create $agentName --provider $Provider 2>&1
+$result = peko agent create $agentName --provider $Provider 2>&1
 Write-Host "Response: $result"
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
@@ -52,7 +52,7 @@ Write-Host "Created agent: $agentName" -ForegroundColor Green
 # send a message to the agent (creates first session)
 Write-Host "`nSending first message..." -ForegroundColor Cyan
 Measure-Command {
-    $result = pekobot send $agentName "Hi" 2>&1
+    $result = peko send $agentName "Hi" 2>&1
 }
 Write-Host "Response: $result"
 
@@ -61,7 +61,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ Test completed successfully!" -ForegroundColor Green

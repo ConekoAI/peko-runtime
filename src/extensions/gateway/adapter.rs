@@ -31,8 +31,8 @@
 //! config:
 //!   redis_url: "redis://localhost:6379"
 //!   channels:
-//!     - "pekobot:events"
-//!     - "pekobot:commands"
+//!     - "peko:events"
+//!     - "peko:commands"
 //! hooks:
 //!   - point: "agent.init"
 //!     handler: "init_redis"

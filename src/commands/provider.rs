@@ -46,7 +46,7 @@ async fn list_providers_cmd(detailed: bool) -> Result<()> {
         }
     }
 
-    println!("\nUse with: pekobot agent create <name> --provider <provider-id>");
+    println!("\nUse with: peko agent create <name> --provider <provider-id>");
     println!("\nMost providers are OpenAI-compatible and use the same API format.");
 
     Ok(())

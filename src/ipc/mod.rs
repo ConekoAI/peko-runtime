@@ -6,7 +6,7 @@
 //!
 //! ## Transport
 //!
-//! - **Unix**: Unix domain datagram socket at `~/.pekobot/run/daemon.sock`
+//! - **Unix**: Unix domain datagram socket at `~/.peko/run/daemon.sock`
 //! - **Windows**: UDP on `127.0.0.1:11435`
 //!
 //! ## Protocol
@@ -37,20 +37,20 @@ pub const DEFAULT_PORT: u16 = 11435;
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 
 /// Environment variable to override Unix socket path
-pub const DAEMON_SOCK_ENV: &str = "PEKOBOT_DAEMON_SOCK";
+pub const DAEMON_SOCK_ENV: &str = "PEKO_DAEMON_SOCK";
 
 /// Environment variable to override UDP address
-pub const DAEMON_ADDR_ENV: &str = "PEKOBOT_DAEMON_ADDR";
+pub const DAEMON_ADDR_ENV: &str = "PEKO_DAEMON_ADDR";
 
 /// Daemon mode environment variable
-pub const DAEMON_MODE_ENV: &str = "PEKOBOT_DAEMON";
+pub const DAEMON_MODE_ENV: &str = "PEKO_DAEMON";
 
 /// Get the default socket path for the current platform
 pub fn default_socket_path() -> std::path::PathBuf {
     dirs::home_dir()
-        .map(|d| d.join(".pekobot").join("run").join("daemon.sock"))
+        .map(|d| d.join(".peko").join("run").join("daemon.sock"))
         .unwrap_or_else(|| {
-            std::path::PathBuf::from(".pekobot")
+            std::path::PathBuf::from(".peko")
                 .join("run")
                 .join("daemon.sock")
         })
@@ -59,9 +59,9 @@ pub fn default_socket_path() -> std::path::PathBuf {
 /// Get the default PID file path
 pub fn default_pid_path() -> std::path::PathBuf {
     dirs::home_dir()
-        .map(|d| d.join(".pekobot").join("run").join("daemon.pid"))
+        .map(|d| d.join(".peko").join("run").join("daemon.pid"))
         .unwrap_or_else(|| {
-            std::path::PathBuf::from(".pekobot")
+            std::path::PathBuf::from(".peko")
                 .join("run")
                 .join("daemon.pid")
         })
@@ -70,8 +70,8 @@ pub fn default_pid_path() -> std::path::PathBuf {
 /// Ensure the run directory exists
 pub fn ensure_run_dir() -> std::io::Result<std::path::PathBuf> {
     let run_dir = dirs::home_dir()
-        .map(|d| d.join(".pekobot").join("run"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".pekobot").join("run"));
+        .map(|d| d.join(".peko").join("run"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".peko").join("run"));
     std::fs::create_dir_all(&run_dir)?;
     Ok(run_dir)
 }
@@ -81,10 +81,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_socket_path_contains_pekobot() {
+    fn test_default_socket_path_contains_peko() {
         let path = default_socket_path();
         let s = path.to_string_lossy();
-        assert!(s.contains(".pekobot"));
+        assert!(s.contains(".peko"));
         assert!(s.contains("daemon.sock"));
     }
 

@@ -92,7 +92,7 @@ pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Resul
 
             if providers.is_empty() {
                 println!("No credentials configured.");
-                println!("  Use 'pekobot auth set <provider> <key>' to add one.");
+                println!("  Use 'peko auth set <provider> <key>' to add one.");
                 return Ok(());
             }
 

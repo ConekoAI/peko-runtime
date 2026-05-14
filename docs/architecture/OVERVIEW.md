@@ -24,14 +24,14 @@ This document provides a high-level overview of Pekobot's architecture after the
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              USER INTERFACES                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  CLI (pekobot)    │   IPC        │   Web UI   │   WebSocket   │   TUI      │
+│  CLI (peko)    │   IPC        │   Web UI   │   WebSocket   │   TUI      │
 │                   │   (daemon)   │            │               │            │
 └───────────────────┴──────┬───────┴────────────┴───────────────┴────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────────────────────┐
 │                         EXTENSION MANAGER                                   │
 │                                                                             │
-│  Unified Commands: pekobot ext <command>                                    │
+│  Unified Commands: peko ext <command>                                    │
 │  • install  • list  • enable  • disable  • uninstall  • bundle             │
 │                                                                             │
 │  Responsibilities:                                                          │
@@ -156,10 +156,10 @@ Multiple interfaces all communicate through the same Extension Manager and Core:
 
 **Key Commands:**
 ```bash
-pekobot ext install <path>       # Install from any source
-pekobot ext list [--type <t>]    # List with filtering
-pekobot ext enable/disable <id>  # Toggle extensions
-pekobot ext bundle create ...    # Package for distribution
+peko ext install <path>       # Install from any source
+peko ext list [--type <t>]    # List with filtering
+peko ext enable/disable <id>  # Toggle extensions
+peko ext bundle create ...    # Package for distribution
 ```
 
 ### 3. Extension Type Adapters
@@ -275,15 +275,15 @@ User Request
 
 Extensions are discovered from (in order):
 
-1. `./.pekobot/extensions/` - Project-local extensions
-2. `~/.config/pekobot/extensions/` - User config extensions
-3. `~/.local/share/pekobot/extensions/` - User data extensions
-4. `/usr/share/pekobot/extensions/` - System-wide extensions
+1. `./.peko/extensions/` - Project-local extensions
+2. `~/.config/peko/extensions/` - User config extensions
+3. `~/.local/share/peko/extensions/` - User data extensions
+4. `/usr/share/peko/extensions/` - System-wide extensions
 
 Legacy paths (migrated automatically):
-- `~/.pekobot/skills/` → migrated to extension format
-- `~/.pekobot/tools/` → migrated to extension format
-- `~/.pekobot/mcp.toml` → migrated to individual MCP extensions
+- `~/.peko/skills/` → migrated to extension format
+- `~/.peko/tools/` → migrated to extension format
+- `~/.peko/mcp.toml` → migrated to individual MCP extensions
 
 ---
 
@@ -291,8 +291,8 @@ Legacy paths (migrated automatically):
 
 | Component | Legacy System | Unified Extension | Status |
 |-----------|---------------|-------------------|--------|
-| Skills | `SKILL.md` in `~/.pekobot/skills/` | SkillAdapter | ✅ Complete |
-| Universal Tools | `manifest.json` in `~/.pekobot/tools/` | UniversalToolAdapter | ✅ Complete |
+| Skills | `SKILL.md` in `~/.peko/skills/` | SkillAdapter | ✅ Complete |
+| Universal Tools | `manifest.json` in `~/.peko/tools/` | UniversalToolAdapter | ✅ Complete |
 | MCP Servers | `mcp.toml` | McpAdapter | ✅ Complete |
 | Built-in Tools | Hardcoded in ToolFactory | BuiltinToolAdapter | ✅ Complete |
 | Channels | Channel trait implementations | ChannelAdapter | 🟡 Partial |

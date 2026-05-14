@@ -108,7 +108,7 @@ We can implement this entirely on the **Pekobot side** by extending our MCP inte
 
 #### Option A: Sidecar Manifest (Recommended)
 
-Add a `.pekobot.json` sidecar to declare reserved params:
+Add a `.peko.json` sidecar to declare reserved params:
 
 ```json
 {
@@ -152,7 +152,7 @@ peer_id = { source = "runtime", field = "peer_id" }
 
 #### Option C: Convention-Based (Zero Config)
 
-Auto-inject if MCP server declares params with `_pekobot_` prefix:
+Auto-inject if MCP server declares params with `_peko_` prefix:
 
 ```json
 // MCP server's tool definition
@@ -162,8 +162,8 @@ Auto-inject if MCP server declares params with `_pekobot_` prefix:
     "properties": {
       "key": { "type": "string" },
       "value": { "type": "string" },
-      "_pekobot_agent_id": { "type": "string" },  // Auto-injected
-      "_pekobot_session_id": { "type": "string" } // Auto-injected
+      "_peko_agent_id": { "type": "string" },  // Auto-injected
+      "_peko_session_id": { "type": "string" } // Auto-injected
     }
   }
 }
@@ -270,17 +270,17 @@ Add non-standard field to tool definition:
 {
   "name": "memory_store",
   "inputSchema": { ... },
-  "x-pekobot-reserved": ["agent_id", "session_id"]  // Extension
+  "x-peko-reserved": ["agent_id", "session_id"]  // Extension
 }
 ```
 
 **Option 3: Auto-Discovery**
-Server exposes `x-pekobot-context` capability:
+Server exposes `x-peko-context` capability:
 ```javascript
 server.setRequestHandler(InitializeRequestSchema, () => ({
   capabilities: {
     tools: {},
-    x_pekobot_context: {
+    x_peko_context: {
       accepts: ["agent_id", "session_id", "peer_id", "workspace"]
     }
   }
@@ -321,7 +321,7 @@ server.setRequestHandler(InitializeRequestSchema, () => ({
 
 2. **Phase 2**: Sidecar manifest for complex cases
    ```json
-   // my-server.pekobot.json
+   // my-server.peko.json
    {
      "reserved_parameters": { ... },
      "transforms": { ... }

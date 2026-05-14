@@ -30,8 +30,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog }
     if (Test-Path $errLog) { Remove-Item $errLog }
 
@@ -90,7 +90,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_ext_registry_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_ext_registry_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -171,11 +171,11 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     if (Test-Path $skillExtPath) {
-        & $pekoCmd ext push calculator-skill "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
+        & $pekoCmd ext push calculator-skill "127.0.0.1:$RegistryPort/peko/extensions/calculator-skill:latest" 2>&1 | Out-Null
         Write-Host "Pushed calculator-skill to registry" -ForegroundColor Green
     }
     if (Test-Path $mcpExtPath) {
-        & $pekoCmd ext push standard-echo "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
+        & $pekoCmd ext push standard-echo "127.0.0.1:$RegistryPort/peko/extensions/standard-echo:latest" 2>&1 | Out-Null
         Write-Host "Pushed standard-echo to registry" -ForegroundColor Green
     }
 
@@ -213,11 +213,11 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     if (Test-Path $skillExtPath) {
-        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
+        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/peko/extensions/calculator-skill:latest" 2>&1 | Out-Null
         Write-Host "Pulled and auto-installed calculator-skill" -ForegroundColor Green
     }
     if (Test-Path $mcpExtPath) {
-        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
+        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/peko/extensions/standard-echo:latest" 2>&1 | Out-Null
         Write-Host "Pulled and auto-installed standard-echo" -ForegroundColor Green
     }
 

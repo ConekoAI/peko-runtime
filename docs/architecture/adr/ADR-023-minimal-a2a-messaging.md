@@ -35,7 +35,7 @@ This is a large architectural project that duplicates concerns already solved by
 
 ## Decision
 
-We will implement A2A messaging as a **minimal built-in tool** (`a2a_send`) that delegates to the existing `StatelessAgentService` execution path — the same path used by `pekobot send` and the HTTP API.
+We will implement A2A messaging as a **minimal built-in tool** (`a2a_send`) that delegates to the existing `StatelessAgentService` execution path — the same path used by `peko send` and the HTTP API.
 
 **Principle**: Agents talk to other agents the same way users do — by sending a message into their session and letting the target agent execute.
 
@@ -61,7 +61,7 @@ The existing execution path (`StatelessAgentService::execute_message`) already h
 /// a2a_send — send a message to another agent and receive its response
 ///
 /// This tool delegates to StatelessAgentService, reusing the exact same
-/// execution path as `pekobot send` and the HTTP API.
+/// execution path as `peko send` and the HTTP API.
 pub struct A2aSendTool {
     agent_service: Arc<StatelessAgentService>,
 }

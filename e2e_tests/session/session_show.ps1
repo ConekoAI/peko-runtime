@@ -24,7 +24,7 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot (skip if daemon is running since it locks the binary)
+# Build peko (skip if daemon is running since it locks the binary)
 $daemonRunning = $false
 try {
     $status = peko daemon status 2>&1
@@ -32,7 +32,7 @@ try {
 } catch {}
 
 if (-not $daemonRunning) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd "$PSScriptRoot/../.."
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -45,20 +45,20 @@ if (-not $daemonRunning) {
     Write-Host "Daemon already running, skipping build..." -ForegroundColor Cyan
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set minimax $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set minimax $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create test agent
 $agentName = "testshowagent"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # ============================================================
@@ -69,7 +69,7 @@ Write-Host "TEST 1: Show active session when none exists" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Capture output using cmd to avoid PowerShell error handling
-$output = cmd /c "pekobot session show $agentName 2>&1"
+$output = cmd /c "peko session show $agentName 2>&1"
 if ($output -match "No active session") {
     Write-Host "✅ Got expected error: No active session" -ForegroundColor Green
 } else {
@@ -85,16 +85,16 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 # Send message to create a session
 Write-Host "Sending message to create session..." -ForegroundColor Cyan
-pekobot send $agentName "What is the capital of France?" --no-stream 2>&1 | Out-Null
+peko send $agentName "What is the capital of France?" --no-stream 2>&1 | Out-Null
 
 # Get session ID
-$jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+$jsonOutput = peko session list $agentName --json 2>&1 | ConvertFrom-Json
 $sessionId1 = $jsonOutput.sessions[0].session_id
 Write-Host "Created session: $sessionId1" -ForegroundColor Green
 
 # Show session explicitly
 Write-Host "`nShowing session explicitly (with --session-id)..." -ForegroundColor Cyan
-$output = pekobot session show $agentName --session-id $sessionId1 2>&1
+$output = peko session show $agentName --session-id $sessionId1 2>&1
 Write-Output $output
 
 # Verify output contains expected fields
@@ -114,7 +114,7 @@ Write-Host "TEST 3: Show active session (implicit)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Showing active session (no session_id argument)..." -ForegroundColor Cyan
-$output = pekobot session show $agentName 2>&1
+$output = peko session show $agentName 2>&1
 Write-Output $output
 
 # Verify it shows the active session
@@ -133,7 +133,7 @@ Write-Host "TEST 4: Show session with --history" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Showing active session with history..." -ForegroundColor Cyan
-$output = pekobot session show $agentName --history 2>&1
+$output = peko session show $agentName --history 2>&1
 Write-Output $output
 
 $outputStr = $output | Out-String
@@ -146,7 +146,7 @@ if ($outputStr -match "Message History" -or $outputStr -match "User" -or $output
 
 # Also test explicit --session-id with --history
 Write-Host "`nShowing specific session with history..." -ForegroundColor Cyan
-$output = pekobot session show $agentName --session-id $sessionId1 --history 2>&1
+$output = peko session show $agentName --session-id $sessionId1 --history 2>&1
 $outputStr = $output | Out-String
 if ($outputStr -match "Message History") {
     Write-Host "✅ Explicit session_id with --history works" -ForegroundColor Green
@@ -161,10 +161,10 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 # Create second session
 Write-Host "Creating second session..." -ForegroundColor Cyan
-pekobot send $agentName "What is the capital of Germany?" --new --no-stream 2>&1 | Out-Null
+peko send $agentName "What is the capital of Germany?" --new --no-stream 2>&1 | Out-Null
 
 # Get both session IDs
-$jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+$jsonOutput = peko session list $agentName --json 2>&1 | ConvertFrom-Json
 $sessionId1 = $jsonOutput.sessions[0].session_id
 $sessionId2 = $jsonOutput.sessions[1].session_id
 
@@ -173,10 +173,10 @@ Write-Host "Session 2: $sessionId2" -ForegroundColor Gray
 
 # Verify we can show each session explicitly
 Write-Host "`nShowing session 1 explicitly..." -ForegroundColor Cyan
-$output1 = pekobot session show $agentName --session-id $sessionId1 2>&1 | Out-String
+$output1 = peko session show $agentName --session-id $sessionId1 2>&1 | Out-String
 
 Write-Host "Showing session 2 explicitly..." -ForegroundColor Cyan
-$output2 = pekobot session show $agentName --session-id $sessionId2 2>&1 | Out-String
+$output2 = peko session show $agentName --session-id $sessionId2 2>&1 | Out-String
 
 # Verify outputs contain correct session IDs
 if ($output1 -match $sessionId1 -and $output2 -match $sessionId2) {
@@ -195,11 +195,11 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 # Switch to session 1
 Write-Host "Switching to session 1..." -ForegroundColor Cyan
-pekobot session switch $agentName $sessionId1 2>&1 | Out-Null
+peko session switch $agentName $sessionId1 2>&1 | Out-Null
 
 # Show active session (should be session 1)
 Write-Host "Showing active session (should be session 1)..." -ForegroundColor Cyan
-$output = pekobot session show $agentName 2>&1 | Out-String
+$output = peko session show $agentName 2>&1 | Out-String
 
 if ($output -match $sessionId1) {
     Write-Host "✅ Active session correctly shows session 1 after switch" -ForegroundColor Green
@@ -210,10 +210,10 @@ if ($output -match $sessionId1) {
 
 # Switch to session 2 and verify
 Write-Host "`nSwitching to session 2..." -ForegroundColor Cyan
-pekobot session switch $agentName $sessionId2 2>&1 | Out-Null
+peko session switch $agentName $sessionId2 2>&1 | Out-Null
 
 Write-Host "Showing active session (should be session 2)..." -ForegroundColor Cyan
-$output = pekobot session show $agentName 2>&1 | Out-String
+$output = peko session show $agentName 2>&1 | Out-String
 
 if ($output -match $sessionId2) {
     Write-Host "✅ Active session correctly shows session 2 after switch" -ForegroundColor Green
@@ -230,7 +230,7 @@ Write-Host "TEST 7: JSON output" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Testing JSON output for active session..." -ForegroundColor Cyan
-$jsonOutput = pekobot session show $agentName --json 2>&1 | ConvertFrom-Json
+$jsonOutput = peko session show $agentName --json 2>&1 | ConvertFrom-Json
 
 if ($jsonOutput.session.session_id -eq $sessionId2) {
     Write-Host "✅ JSON output contains correct active session" -ForegroundColor Green
@@ -240,7 +240,7 @@ if ($jsonOutput.session.session_id -eq $sessionId2) {
 }
 
 Write-Host "Testing JSON output for explicit session..." -ForegroundColor Cyan
-$jsonOutput = pekobot session show $agentName --session-id $sessionId1 --json 2>&1 | ConvertFrom-Json
+$jsonOutput = peko session show $agentName --session-id $sessionId1 --json 2>&1 | ConvertFrom-Json
 
 if ($jsonOutput.session.session_id -eq $sessionId1) {
     Write-Host "✅ JSON output contains correct explicit session" -ForegroundColor Green
@@ -256,7 +256,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n========================================" -ForegroundColor Green

@@ -70,7 +70,7 @@ impl TeamManagementService {
     /// Create a new team
     ///
     /// Creates the team directory structure and metadata file.
-    /// Used by both CLI (`pekobot team create`) and API (`POST /teams`).
+    /// Used by both CLI (`peko team create`) and API (`POST /teams`).
     pub async fn create_team(
         &self,
         name: &str,
@@ -82,7 +82,7 @@ impl TeamManagementService {
     /// List all teams
     ///
     /// Returns information about all teams from the filesystem.
-    /// Used by both CLI (`pekobot team list`) and API (`GET /teams`).
+    /// Used by both CLI (`peko team list`) and API (`GET /teams`).
     pub async fn list_teams(&self) -> Result<Vec<TeamInfo>> {
         self.config_service.list_teams().await
     }
@@ -90,7 +90,7 @@ impl TeamManagementService {
     /// Get team information
     ///
     /// Returns detailed information about a specific team.
-    /// Used by both CLI (`pekobot team show`) and API (`GET /teams/{id}`).
+    /// Used by both CLI (`peko team show`) and API (`GET /teams/{id}`).
     pub async fn get_team(&self, name: &str) -> Result<Option<TeamInfo>> {
         self.config_service.get_team(name).await
     }
@@ -108,7 +108,7 @@ impl TeamManagementService {
     /// Delete a team
     ///
     /// Removes the team directory and all its agents.
-    /// Used by both CLI (`pekobot team delete`) and API (`DELETE /teams/{id}`).
+    /// Used by both CLI (`peko team delete`) and API (`DELETE /teams/{id}`).
     pub async fn delete_team(&self, name: &str) -> Result<TeamDeletionResult> {
         // First, check if there's a running runtime for this team
         // TODO: In the future, we might want to track team name -> runtime ID mapping

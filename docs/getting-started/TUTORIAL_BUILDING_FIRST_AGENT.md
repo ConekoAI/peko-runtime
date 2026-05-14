@@ -34,7 +34,7 @@ The easiest way to create an agent is with the `agent create` command:
 export OPENAI_API_KEY="sk-..."
 
 # Create an agent
-pekobot agent create my-first-agent --provider minimax
+peko agent create my-first-agent --provider minimax
 ```
 
 This creates an agent configuration in Pekobot's config directory with the following structure:
@@ -74,7 +74,7 @@ You can also customize the agent's configuration:
 
 ```bash
 # View current config
-pekobot agent show my-first-agent
+peko agent show my-first-agent
 
 # The configuration includes provider, model, temperature, etc.
 ```
@@ -87,7 +87,7 @@ Now let's interact with the agent:
 
 ```bash
 # Send a simple message
-pekobot send my-first-agent "Hello, what can you do?"
+peko send my-first-agent "Hello, what can you do?"
 ```
 
 You'll see the agent's response streamed to your terminal.
@@ -95,23 +95,23 @@ You'll see the agent's response streamed to your terminal.
 Try a more complex task:
 
 ```bash
-pekobot send my-first-agent "Write a Python function to calculate fibonacci numbers"
+peko send my-first-agent "Write a Python function to calculate fibonacci numbers"
 ```
 
 ### Message Options
 
 ```bash
 # Start a new session
-pekobot send my-first-agent "Let's start fresh" --new
+peko send my-first-agent "Let's start fresh" --new
 
 # Read message from a file
-pekobot send my-first-agent --file prompt.txt
+peko send my-first-agent --file prompt.txt
 
 # Pipe from stdin
-echo "Explain Rust ownership" | pekobot send my-first-agent --stdin
+echo "Explain Rust ownership" | peko send my-first-agent --stdin
 
 # Disable streaming (wait for full response)
-pekobot send my-first-agent "Write a long essay" --no-stream
+peko send my-first-agent "Write a long essay" --no-stream
 ```
 
 ---
@@ -123,19 +123,19 @@ Sessions store your conversation history.
 ### List Sessions
 
 ```bash
-pekobot session list my-first-agent
+peko session list my-first-agent
 ```
 
 ### Show Session History
 
 ```bash
-pekobot session show my-first-agent <session-id>
+peko session show my-first-agent <session-id>
 ```
 
 ### Start a New Session
 
 ```bash
-pekobot send my-first-agent "New topic" --new
+peko send my-first-agent "New topic" --new
 ```
 
 ### Compact a Session
@@ -143,7 +143,7 @@ pekobot send my-first-agent "New topic" --new
 Compaction summarizes old messages to save context window space:
 
 ```bash
-pekobot session compact my-first-agent --session-id <session-id>
+peko session compact my-first-agent --session-id <session-id>
 ```
 
 ### Branch a Session
@@ -151,7 +151,7 @@ pekobot session compact my-first-agent --session-id <session-id>
 Create a copy of a session to explore different directions:
 
 ```bash
-pekobot session branch my-first-agent --session-id <session-id>
+peko session branch my-first-agent --session-id <session-id>
 ```
 
 ---
@@ -163,21 +163,21 @@ Teams help organize multiple agents.
 ### Create a Team
 
 ```bash
-pekobot team create my-team
+peko team create my-team
 ```
 
 ### Create Agents in a Team
 
 ```bash
-pekobot agent create my-team/coder --provider minimax
-pekobot agent create my-team/reviewer --provider minimax
+peko agent create my-team/coder --provider minimax
+peko agent create my-team/reviewer --provider minimax
 ```
 
 ### Send Messages to Team Agents
 
 ```bash
-pekobot send my-team/coder "Write a sorting algorithm"
-pekobot send my-team/reviewer "Review this code for bugs"
+peko send my-team/coder "Write a sorting algorithm"
+peko send my-team/reviewer "Review this code for bugs"
 ```
 
 ---
@@ -191,14 +191,14 @@ You can schedule recurring tasks for your agent.
 The daemon is required for automatic cron execution:
 
 ```bash
-pekobot daemon start --foreground
+peko daemon start --foreground
 ```
 
 ### Add a Cron Job
 
 ```bash
 # Daily summary at 9 AM
-pekobot cron add \
+peko cron add \
   --name "daily-summary" \
   --schedule "0 9 * * *" \
   --agent my-first-agent \
@@ -209,7 +209,7 @@ pekobot cron add \
 
 ```bash
 # Every 5 minutes
-pekobot cron every \
+peko cron every \
   --name "heartbeat" \
   --interval-ms 300000 \
   --agent my-first-agent \
@@ -220,7 +220,7 @@ pekobot cron every \
 
 ```bash
 # Run once at a specific time
-pekobot cron at \
+peko cron at \
   --name "reminder" \
   --at "2026-03-01T09:00:00Z" \
   --agent my-first-agent \
@@ -231,16 +231,16 @@ pekobot cron at \
 
 ```bash
 # List all jobs
-pekobot cron list
+peko cron list
 
 # Run a job immediately
-pekobot cron run --id <job-id>
+peko cron run --id <job-id>
 
 # View job history
-pekobot cron history --id <job-id>
+peko cron history --id <job-id>
 
 # Remove a job
-pekobot cron remove --id <job-id>
+peko cron remove --id <job-id>
 ```
 
 ---
@@ -255,13 +255,13 @@ Extensions add capabilities to your agents:
 
 ```bash
 # List installed extensions
-pekobot ext list
+peko ext list
 
 # Install a new extension
-pekobot ext install <path-or-url>
+peko ext install <path-or-url>
 
 # Enable a capability
-pekobot ext enable <capability>
+peko ext enable <capability>
 ```
 
 ### 2. Configure Authentication
@@ -270,36 +270,36 @@ Manage API keys centrally:
 
 ```bash
 # Set an API key (you will be prompted for the value)
-pekobot auth set openai
+peko auth set openai
 
 # List credentials
-pekobot auth list
+peko auth list
 
 # Test a credential
-pekobot auth test openai
+peko auth test openai
 ```
 
 ### 3. Export and Share Agents
 
 ```bash
 # Export an agent to a .agent package
-pekobot agent export --name my-first-agent
+peko agent export --name my-first-agent
 
 # Import an agent
-pekobot agent import --file ./my-first-agent.agent
+peko agent import --file ./my-first-agent.agent
 ```
 
 ### 4. Run System Diagnostics
 
 ```bash
 # Check system status
-pekobot system status
+peko system status
 
 # Run health checks
-pekobot system doctor
+peko system doctor
 
 # Clean up temporary files
-pekobot system clean
+peko system clean
 ```
 
 ### 5. Read More

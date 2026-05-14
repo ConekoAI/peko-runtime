@@ -30,7 +30,7 @@ async fn create_test_components() -> (
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_e2e_spawn_and_complete() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -85,7 +85,7 @@ async fn test_e2e_spawn_and_complete() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_spawn_depth_limit() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -176,7 +176,7 @@ async fn test_spawn_depth_limit() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_isolated_vs_shared_session() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -255,7 +255,7 @@ async fn test_isolated_vs_shared_session() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_result_format_in_registry() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -302,7 +302,7 @@ async fn test_result_format_in_registry() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_list_runs_functionality() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -381,7 +381,7 @@ async fn test_list_runs_functionality() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_cleanup_policy_tracking() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -455,7 +455,7 @@ async fn test_cleanup_policy_tracking() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_parent_child_relationship() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -504,7 +504,7 @@ async fn test_parent_child_relationship() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_runs_by_parent_filtering() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -598,7 +598,7 @@ async fn test_runs_by_parent_filtering() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_concurrent_runs_counting() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -664,7 +664,7 @@ async fn test_concurrent_runs_counting() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_executor_get_status() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -713,7 +713,7 @@ async fn test_executor_get_status() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_executor_get_run() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -755,7 +755,7 @@ async fn test_executor_get_run() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_executor_cancel() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -804,7 +804,7 @@ async fn test_executor_cancel() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.pekobot agent directory setup"]
+#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_max_concurrent_limit() {
     let (session_manager, registry) = create_test_components().await;
 

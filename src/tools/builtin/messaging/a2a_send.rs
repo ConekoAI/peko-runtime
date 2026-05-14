@@ -1,7 +1,7 @@
 //! A2A Send Tool — Minimal agent-to-agent messaging
 //!
 //! Implements ADR-023: delegates to StatelessAgentService, reusing the same
-//! execution path as `pekobot send` and the HTTP API.
+//! execution path as `peko send` and the HTTP API.
 //!
 //! ## Parameters
 //! ```json
@@ -70,7 +70,7 @@ pub struct A2aSendResult {
 /// A2A Send tool — send a message to another agent and receive its response
 ///
 /// This tool delegates to StatelessAgentService, reusing the exact same
-/// execution path as `pekobot send` and the HTTP API.
+/// execution path as `peko send` and the HTTP API.
 pub struct A2aSendTool {
     agent_service: Arc<StatelessAgentService>,
     /// Optional caller agent name for annotation

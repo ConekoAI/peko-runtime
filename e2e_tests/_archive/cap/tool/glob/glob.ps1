@@ -19,8 +19,8 @@ if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -30,37 +30,37 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent with coding template (enables granular tools)
 $agentName = "glob_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable granular tools via extension framework
-pekobot ext enable glob 2>&1 | Out-Null
-pekobot ext enable read_file 2>&1 | Out-Null
-pekobot ext enable write_file 2>&1 | Out-Null
-pekobot ext enable grep 2>&1 | Out-Null
-pekobot ext enable str_replace_file 2>&1 | Out-Null
+peko ext enable glob 2>&1 | Out-Null
+peko ext enable read_file 2>&1 | Out-Null
+peko ext enable write_file 2>&1 | Out-Null
+peko ext enable grep 2>&1 | Out-Null
+peko ext enable str_replace_file 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools via extension framework" -ForegroundColor Green
 
 # Get workspace directory
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
 
 # Create test file structure
 Write-Host "Creating test file structure..." -ForegroundColor Cyan
@@ -88,7 +88,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .py files..." -ForegroundColor Yellow
 Start-Sleep -Seconds 2
-$result = pekobot send $agentName "Use your glob tool with pattern='*.py'. Report the raw JSON output from the tool." --no-stream 2>&1
+$result = peko send $agentName "Use your glob tool with pattern='*.py'. Report the raw JSON output from the tool." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "script.py") {
@@ -105,7 +105,7 @@ Write-Host "TEST 2: Glob *.rs pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .rs files..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. Report exactly what the glob tool returns." --no-stream 2>&1
+$result = peko send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. Report exactly what the glob tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "\.rs" -and $result -match "file1") {
@@ -115,7 +115,7 @@ if ($result -match "\.rs" -and $result -match "file1") {
 }
 
 # Use read_file to reset context between glob calls
-$null = pekobot send $agentName "Use your read_file tool (NOT shell) to read the file 'file1.rs'. Report the content." --no-stream 2>&1
+$null = peko send $agentName "Use your read_file tool (NOT shell) to read the file 'file1.rs'. Report the content." --no-stream 2>&1
 
 # ============================================================
 # TEST 3: Glob **/*.rs (recursive) - needs fresh context
@@ -126,7 +126,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find all .rs files recursively..." -ForegroundColor Yellow
 Start-Sleep -Seconds 2
-$result = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. Report exactly what the glob tool returns." --no-stream 2>&1
+$result = peko send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. Report exactly what the glob tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "main.rs") {
@@ -149,7 +149,7 @@ Remove-Item "$workspaceDir/script.py" -Force -ErrorAction SilentlyContinue
 Remove-Item "$workspaceDir/src" -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "Removed test files" -ForegroundColor Green
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ Glob e2e tests completed!" -ForegroundColor Green

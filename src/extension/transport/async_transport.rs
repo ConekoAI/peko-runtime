@@ -318,8 +318,8 @@ pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTr
         Ok(conn) => crate::ipc::DaemonClient::with_connection(conn).await?,
         Err(e) => {
             anyhow::bail!(
-                "Pekobot daemon is not running. Async tool execution requires the daemon.\n\
-                 Start it with: pekobot daemon start\n\
+                "peko daemon is not running. Async tool execution requires the daemon.\n\
+                 Start it with: peko daemon start\n\
                  Or use sync mode (remove _async: true from the tool call).\n\
                  Details: {e}"
             )
@@ -333,8 +333,8 @@ pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTr
         Ok(std::sync::Arc::new(ipc))
     } else {
         anyhow::bail!(
-            "Pekobot daemon is not running. Async tool execution requires the daemon.\n\
-             Start it with: pekobot daemon start\n\
+            "peko daemon is not running. Async tool execution requires the daemon.\n\
+             Start it with: peko daemon start\n\
              Or use sync mode (remove _async: true from the tool call)."
         )
     }

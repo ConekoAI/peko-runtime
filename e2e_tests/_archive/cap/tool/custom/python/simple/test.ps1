@@ -31,8 +31,8 @@ if (-not $pythonCmd) {
 }
 Write-Host "Using Python: $pythonCmd" -ForegroundColor Green
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../../../"
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -42,22 +42,22 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
-# Reset pekobot data
-$dataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+# Reset peko data
+$dataDir = "$env:USERPROFILE/AppData/Roaming/peko"
 if (Test-Path $dataDir) {
     Remove-Item -Recurse -Force $dataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -71,11 +71,11 @@ $agentName = "calc_agent"
 $teamName = "default"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
-pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent" -ForegroundColor Green
 
 # # Update AGENT.md to document the tool
-# $agentDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName"
+# $agentDir = "$env:USERPROFILE/.peko/teams/default/agents/$agentName"
 # $agentMd = @"
 # # Calculator Agent
 
@@ -100,11 +100,11 @@ $toolDir = "$PSScriptRoot"
 Write-Host "Installing calculator_simple tool..." -ForegroundColor Yellow
 
 # Install the tool
-$installResult = pekobot cap universal install $toolDir --force 2>&1
+$installResult = peko cap universal install $toolDir --force 2>&1
 Write-Host $installResult
 
 # Verify installation
-$toolsList = pekobot cap universal list 2>&1
+$toolsList = peko cap universal list 2>&1
 if ($toolsList -match "calculator_simple") {
     Write-Host "✓ Tool installed successfully" -ForegroundColor Green
 } else {
@@ -119,11 +119,11 @@ Write-Host "STEP 3: Enable tool for agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Enabling calculator_simple for $teamName/$agentName..." -ForegroundColor Yellow
-pekobot cap enable "$teamName/$agentName" calculator_simple 2>&1 | Out-Null
+peko cap enable "$teamName/$agentName" calculator_simple 2>&1 | Out-Null
 Write-Host "Enabled tool for agent" -ForegroundColor Green
 
 # Verify
-$status = pekobot cap status "$teamName/$agentName" 2>&1
+$status = peko cap status "$teamName/$agentName" 2>&1
 Write-Host "`nAgent capability status:" -ForegroundColor Cyan
 Write-Host $status
 
@@ -136,18 +136,18 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending calculation request to agent..." -ForegroundColor Yellow
 Measure-Command {
-    $response = pekobot send $agentName "Calculate 25 multiplied by 4 using calculator_simple" --no-stream 2>&1
+    $response = peko send $agentName "Calculate 25 multiplied by 4 using calculator_simple" --no-stream 2>&1
 }
 Write-Host "Agent response: $response"
 
 # Check session
-$sessions = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+$sessions = peko session list $agentName --json 2>&1 | ConvertFrom-Json
 if ($sessions.sessions.Count -ge 1) {
     Write-Host "✓ Session created" -ForegroundColor Green
     $sessionId = $sessions.sessions[0].session_id
     
     # Check session for tool call
-    $sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/${sessionId}.jsonl"
+    $sessionFile = "$env:USERPROFILE/AppData/Roaming/peko/sessions/default/$agentName/${sessionId}.jsonl"
     if (Test-Path $sessionFile) {
         $content = Get-Content $sessionFile -Raw
         if ($content -match "calculator_simple") {
@@ -166,11 +166,11 @@ Write-Host "Cleanup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Uninstall tool
-pekobot cap universal uninstall calculator_simple --force 2>&1 | Out-Null
+peko cap universal uninstall calculator_simple --force 2>&1 | Out-Null
 Write-Host "Uninstalled tool" -ForegroundColor Green
 
 # Delete agent
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted agent" -ForegroundColor Green
 
 Write-Host "`n✅ Simple E2E test completed!" -ForegroundColor Green

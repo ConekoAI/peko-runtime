@@ -14,13 +14,13 @@
 //!
 //! ```bash,ignore
 //! # Install a gateway extension
-//! pekobot ext install ./discord-gateway
+//! peko ext install ./discord-gateway
 //!
 //! # Run single agent
-//! pekobot agent
+//! peko agent
 //!
 //! # See all options
-//! pekobot --help
+//! peko --help
 //! ```
 //!
 //! ## Extension System

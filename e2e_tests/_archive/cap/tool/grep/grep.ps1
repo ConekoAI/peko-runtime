@@ -19,8 +19,8 @@ if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -30,37 +30,37 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent with coding template (enables granular tools)
 $agentName = "grep_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable granular tools via extension framework
-pekobot ext enable read_file 2>&1 | Out-Null
-pekobot ext enable write_file 2>&1 | Out-Null
-pekobot ext enable glob 2>&1 | Out-Null
-pekobot ext enable grep 2>&1 | Out-Null
-pekobot ext enable str_replace_file 2>&1 | Out-Null
+peko ext enable read_file 2>&1 | Out-Null
+peko ext enable write_file 2>&1 | Out-Null
+peko ext enable glob 2>&1 | Out-Null
+peko ext enable grep 2>&1 | Out-Null
+peko ext enable str_replace_file 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools via extension framework" -ForegroundColor Green
 
 # Get workspace directory
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
 
 # Create test file structure
 Write-Host "Creating test files..." -ForegroundColor Cyan
@@ -97,7 +97,7 @@ Write-Host "TEST 1: Search with regex pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for 'calculate'..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your grep tool with pattern='calculate' to search for the word 'calculate' in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
+$result = peko send $agentName "Use your grep tool with pattern='calculate' to search for the word 'calculate' in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "calculate") {
@@ -114,7 +114,7 @@ Write-Host "TEST 2: Search for 'fn' pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for 'fn'..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your grep tool (NOT shell) with pattern='fn ' and glob='*.rs' to search for Rust function definitions in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
+$result = peko send $agentName "Use your grep tool (NOT shell) with pattern='fn ' and glob='*.rs' to search for Rust function definitions in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "main" -or $result -match "helper") {
@@ -131,7 +131,7 @@ Write-Host "TEST 3: Search for TODO|FIXME pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for TODO..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your grep tool (NOT shell) with pattern='TODO|FIXME' and case_insensitive=true to search in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
+$result = peko send $agentName "Use your grep tool (NOT shell) with pattern='TODO|FIXME' and case_insensitive=true to search in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "TODO" -or $result -match "FIXME") {
@@ -153,7 +153,7 @@ Remove-Item "$workspaceDir/script.py" -Force -ErrorAction SilentlyContinue
 Remove-Item "$workspaceDir/notes.txt" -Force -ErrorAction SilentlyContinue
 Write-Host "Removed test files" -ForegroundColor Green
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ Grep e2e tests completed!" -ForegroundColor Green

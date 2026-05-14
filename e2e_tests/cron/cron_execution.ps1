@@ -25,8 +25,8 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -36,13 +36,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
@@ -63,7 +63,7 @@ peko ext enable write_file --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled shell and write_file tools" -ForegroundColor Green
 
 # Workspace for verification
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
 $markerFile = "$workspaceDir/cron_execution_marker.txt"
 
 # Ensure cleanup runs even if tests fail

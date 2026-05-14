@@ -393,12 +393,12 @@ mod tests {
 
     #[test]
     fn test_task_creation() {
-        let task = Task::new("test-task", "did:pekobot:local:requester")
+        let task = Task::new("test-task", "did:peko:local:requester")
             .with_description("Test task description")
             .with_priority(TaskPriority::High);
 
         assert_eq!(task.task_type, "test-task");
-        assert_eq!(task.requested_by, "did:pekobot:local:requester");
+        assert_eq!(task.requested_by, "did:peko:local:requester");
         assert_eq!(task.description, Some("Test task description".to_string()));
         assert_eq!(task.priority, TaskPriority::High);
         assert_eq!(task.state, TaskState::Pending);
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_task_state_transitions() {
-        let mut task = Task::new("test", "did:pekobot:local:test");
+        let mut task = Task::new("test", "did:peko:local:test");
 
         assert!(task.state.is_active());
         assert!(!task.state.is_terminal());
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_task_progress() {
-        let mut task = Task::new("test", "did:pekobot:local:test");
+        let mut task = Task::new("test", "did:peko:local:test");
         task.set_progress(0.5);
         assert_eq!(task.progress, 0.5);
 
@@ -452,12 +452,12 @@ mod tests {
 
     #[test]
     fn test_task_overdue() {
-        let task = Task::new("test", "did:pekobot:local:test")
+        let task = Task::new("test", "did:peko:local:test")
             .with_deadline(Utc::now() - chrono::Duration::hours(1));
 
         assert!(task.is_overdue());
 
-        let mut completed_task = Task::new("test2", "did:pekobot:local:test");
+        let mut completed_task = Task::new("test2", "did:peko:local:test");
         completed_task.mark_completed(TaskResult {
             result_type: "success".to_string(),
             data: serde_json::json!({}),

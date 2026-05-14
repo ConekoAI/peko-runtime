@@ -33,7 +33,7 @@ if ($env:MINIMAX_API_KEY) {
 }
 
 # Create test directory
-$testDir = "$env:TEMP/pekobot_packaging_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_packaging_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -56,7 +56,7 @@ $agentName = "my-agent"
 Write-Host "Created agent: $sourceTeam/$agentName" -ForegroundColor Green
 
 # Add a skill
-$skillsDir = "$env:APPDATA/pekobot/skills"
+$skillsDir = "$env:APPDATA/peko/skills"
 New-Item -ItemType Directory -Path "$skillsDir/test-skill" -Force | Out-Null
 @"
 # Test Skill
@@ -70,7 +70,7 @@ Use this skill to verify packaging works.
 Write-Host "Added skill: test-skill" -ForegroundColor Green
 
 # Add workspace content
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/$sourceTeam/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/$sourceTeam/$agentName"
 New-Item -ItemType Directory -Path $workspaceDir -Force | Out-Null
 @"
 # Test Workspace

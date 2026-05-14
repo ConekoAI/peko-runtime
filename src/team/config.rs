@@ -272,7 +272,7 @@ impl TeamConfig {
     /// Get the default shared files path for this team
     #[must_use]
     pub fn default_shared_files_path(&self) -> String {
-        format!(".pekobot/teams/{}/shared/files", self.identity.name)
+        format!(".peko/teams/{}/shared/files", self.identity.name)
     }
 
     /// Get the shared files path (custom or default)

@@ -13,7 +13,7 @@ use super::connection::{ConnectionHandle, ConnectionManager};
 use super::packet::{RequestPacket, ResponsePacket};
 use super::stream::{PacketStream, StreamRouter};
 
-/// Client for communicating with the pekobot daemon
+/// Client for communicating with the peko daemon
 ///
 /// Thin wrapper around a `ConnectionHandle`. Sends requests, returns
 /// response streams. No connection management, no retry logic.
@@ -35,7 +35,7 @@ impl DaemonClient {
     /// Connect to the daemon.
     ///
     /// The CLI does NOT auto-start the daemon. Start it manually with:
-    ///   pekobot daemon start
+    ///   peko daemon start
     ///
     /// # Errors
     /// Returns error if daemon is not reachable

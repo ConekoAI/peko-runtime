@@ -171,7 +171,7 @@ impl McpManager {
     ///
     /// Uses the daemon-wide `BackgroundRuntimeManager` and `McpClientRegistry`
     /// so that MCP servers started by this manager are visible to
-    /// `pekobot ext status` and can be controlled via `pekobot ext start/stop`.
+    /// `peko ext status` and can be controlled via `peko ext start/stop`.
     ///
     /// # Arguments
     /// * `config` — Initial MCP server configurations

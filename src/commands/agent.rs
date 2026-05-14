@@ -11,14 +11,14 @@ mod handlers;
 ///
 /// Examples:
 ///   # Send a message to an agent (non-interactive only)
-///   pekobot agent start my-agent --message "Hello"
+///   peko agent start my-agent --message "Hello"
 ///
 ///   # List all agents
-///   pekobot agent list
+///   peko agent list
 ///
 ///   # Create agent in a specific team
-///   pekobot agent create myteam/my-agent --provider kimi
-///   pekobot agent create my-agent --team myteam --provider kimi
+///   peko agent create myteam/my-agent --provider kimi
+///   peko agent create my-agent --team myteam --provider kimi
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AgentCommands {

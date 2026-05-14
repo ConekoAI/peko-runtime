@@ -123,10 +123,10 @@ But system prompt also includes:
 
 ```bash
 # User asked about shell tool params
-pekobot send test "what are the params for shell tool?"
+peko send test "what are the params for shell tool?"
 # Response showed NATIVE params: async, timeout_ms
 
-pekobot send test "are there extra params"
+peko send test "are there extra params"
 # Response showed SYSTEM params: _async, _timeout, etc.
 ```
 

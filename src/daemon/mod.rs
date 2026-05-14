@@ -1,4 +1,4 @@
-//! Pekobot Daemon - Long-running process for cron job execution
+//! peko daemon - Long-running process for cron job execution
 //!
 //! The daemon provides:
 //! - Cron job polling and execution (via `cron_engine`)
@@ -45,8 +45,8 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         let config_dir =
-            dirs::home_dir().map_or_else(|| PathBuf::from(".pekobot"), |d| d.join(".pekobot"));
-        let data_dir = dirs::data_dir().map_or_else(|| config_dir.clone(), |d| d.join("pekobot"));
+            dirs::home_dir().map_or_else(|| PathBuf::from(".peko"), |d| d.join(".peko"));
+        let data_dir = dirs::data_dir().map_or_else(|| config_dir.clone(), |d| d.join("peko"));
 
         Self {
             cron_db_path: data_dir.join("cron.json"),
@@ -68,7 +68,7 @@ pub struct DaemonStatus {
     pub last_check: Option<chrono::DateTime<Utc>>,
 }
 
-/// The Pekobot daemon
+/// The peko daemon
 pub struct Daemon {
     config: DaemonConfig,
     status: Arc<Mutex<DaemonStatus>>,
@@ -159,7 +159,7 @@ impl Daemon {
 
     /// Run the daemon (blocks until shutdown)
     pub async fn run(mut self) -> Result<()> {
-        info!("🚀 Pekobot daemon starting...");
+        info!("🚀 peko daemon starting...");
         info!("   Config dir: {}", self.config.config_dir.display());
         info!("   Data dir: {}", self.config.data_dir.display());
         info!("   Cron DB: {}", self.config.cron_db_path.display());

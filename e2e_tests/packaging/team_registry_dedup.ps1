@@ -34,8 +34,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog -Force }
     if (Test-Path $errLog) { Remove-Item $errLog -Force }
 
@@ -94,7 +94,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_team_dedup_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_team_dedup_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -116,7 +116,7 @@ try {
     Write-Host "Created Team A with agent '$agentX'" -ForegroundColor Green
 
     # Add workspace content to make the agent more realistic
-    $wsA = "$env:APPDATA/pekobot/workspaces/$teamA/$agentX"
+    $wsA = "$env:APPDATA/peko/workspaces/$teamA/$agentX"
     New-Item -ItemType Directory -Path $wsA -Force | Out-Null
     "# Agent X Notes`nShared workspace content." | Out-File -FilePath "$wsA/NOTES.md" -Encoding UTF8
     Write-Host "Added workspace content to Agent X in Team A" -ForegroundColor Green
@@ -128,7 +128,7 @@ try {
     Write-Host "STEP 2: Push Team A to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRefA = "127.0.0.1:$RegistryPort/pekobot/teams/team-alpha:latest"
+    $registryRefA = "127.0.0.1:$RegistryPort/peko/teams/team-alpha:latest"
     $pushA = & $pekoCmd team push $teamA $registryRefA --json 2>&1 | ConvertFrom-Json
     if ($pushA.success -ne $true) {
         Write-Error "Team A push failed: $($pushA | ConvertTo-Json)"
@@ -173,7 +173,7 @@ try {
     Write-Host "Created Team B with imported agent '$agentX'" -ForegroundColor Green
 
     # Add the SAME workspace content (identical → same layer digest)
-    $wsB = "$env:APPDATA/pekobot/workspaces/$teamB/$agentX"
+    $wsB = "$env:APPDATA/peko/workspaces/$teamB/$agentX"
     New-Item -ItemType Directory -Path $wsB -Force | Out-Null
     "# Agent X Notes`nShared workspace content." | Out-File -FilePath "$wsB/NOTES.md" -Encoding UTF8
     Write-Host "Added identical workspace content to Agent X in Team B" -ForegroundColor Green
@@ -185,7 +185,7 @@ try {
     Write-Host "STEP 4: Push Team B to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRefB = "127.0.0.1:$RegistryPort/pekobot/teams/team-beta:latest"
+    $registryRefB = "127.0.0.1:$RegistryPort/peko/teams/team-beta:latest"
     $pushB = & $pekoCmd team push $teamB $registryRefB --json 2>&1 | ConvertFrom-Json
     if ($pushB.success -ne $true) {
         Write-Error "Team B push failed: $($pushB | ConvertTo-Json)"
@@ -239,7 +239,7 @@ try {
     Write-Host "STEP 6: Pull Team B (fresh local registry)" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) {
         Remove-Item -Recurse -Force $localRegistryDir
         Write-Host "Cleared local registry store" -ForegroundColor Yellow
@@ -281,7 +281,7 @@ try {
     Write-Host "Agent '$agentX' verified in imported team" -ForegroundColor Green
 
     # Verify workspace files
-    $importedWs = "$env:APPDATA/pekobot/workspaces/$importedTeamName/$agentX/NOTES.md"
+    $importedWs = "$env:APPDATA/peko/workspaces/$importedTeamName/$agentX/NOTES.md"
     if (-not (Test-Path $importedWs)) {
         Write-Error "Missing workspace file: $importedWs"
     }
@@ -317,7 +317,7 @@ try {
     Write-Host "Both imported teams have functioning Agent X" -ForegroundColor Green
 
     # Verify workspace in Team A import
-    $importedWsA = "$env:APPDATA/pekobot/workspaces/$importedTeamAName/$agentX/NOTES.md"
+    $importedWsA = "$env:APPDATA/peko/workspaces/$importedTeamAName/$agentX/NOTES.md"
     if (-not (Test-Path $importedWsA)) {
         Write-Error "Missing workspace file in Team A import: $importedWsA"
     }

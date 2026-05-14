@@ -22,13 +22,13 @@ Get up and running with Pekobot in under 5 minutes.
 ```bash
 # Clone the repository
 git clone https://github.com/coneko/pekobot
-cd pekobot
+cd peko
 
 # Build in release mode (optimized)
 cargo build --release
 
 # Verify installation
-./target/release/pekobot --version
+./target/release/peko --version
 ```
 
 ### 2. Set Your API Key
@@ -50,7 +50,7 @@ export KIMI_API_KEY="your-kimi-key"
 
 ```bash
 # Create a new agent
-./target/release/pekobot agent create my-agent --provider minimax
+./target/release/peko agent create my-agent --provider minimax
 ```
 
 This creates:
@@ -87,7 +87,7 @@ Friendly, concise, and encouraging.
 
 ```bash
 # Send a message to your agent
-./target/release/pekobot send my-agent "Hello, what can you do?"
+./target/release/peko send my-agent "Hello, what can you do?"
 ```
 
 You'll see the agent's response streamed to your terminal.
@@ -96,7 +96,7 @@ You'll see the agent's response streamed to your terminal.
 
 ```bash
 # Start a fresh conversation
-./target/release/pekobot send my-agent "Let's start fresh" --new
+./target/release/peko send my-agent "Let's start fresh" --new
 ```
 
 ---
@@ -115,30 +115,30 @@ You'll see the agent's response streamed to your terminal.
 
 ```bash
 # Agent lifecycle
-pekobot agent list                  # List all agents
-pekobot agent create my-agent --provider minimax  # Create a new agent
-pekobot agent show my-agent         # Show agent details
-pekobot agent remove my-agent       # Remove an agent
+peko agent list                  # List all agents
+peko agent create my-agent --provider minimax  # Create a new agent
+peko agent show my-agent         # Show agent details
+peko agent remove my-agent       # Remove an agent
 
 # Send messages
-pekobot send my-agent "Hello!"      # Send a message
-pekobot send my-agent "Hello!" --new # Start a new session
-pekobot send my-agent --file prompt.txt  # Read from file
+peko send my-agent "Hello!"      # Send a message
+peko send my-agent "Hello!" --new # Start a new session
+peko send my-agent --file prompt.txt  # Read from file
 
 # Session management
-pekobot session list my-agent       # List sessions
-pekobot session show my-agent <id>  # View session history
+peko session list my-agent       # List sessions
+peko session show my-agent <id>  # View session history
 
 # Daemon management
-pekobot daemon start --foreground   # Start daemon
-pekobot daemon status               # Check status
-pekobot daemon stop                 # Stop daemon
+peko daemon start --foreground   # Start daemon
+peko daemon status               # Check status
+peko daemon stop                 # Stop daemon
 
 # Get help
-pekobot --help                      # Global help
-pekobot agent --help                # Agent commands
-pekobot send --help                 # Send command help
-pekobot daemon --help               # Daemon commands
+peko --help                      # Global help
+peko agent --help                # Agent commands
+peko send --help                 # Send command help
+peko daemon --help               # Daemon commands
 ```
 
 ---
@@ -148,10 +148,10 @@ pekobot daemon --help               # Daemon commands
 ### "Agent not found"
 ```bash
 # Check that the agent exists
-pekobot agent list
+peko agent list
 
 # Create the agent if needed
-pekobot agent create my-agent --provider minimax
+peko agent create my-agent --provider minimax
 ```
 
 ### "API key not found"
@@ -176,7 +176,7 @@ sudo apt-get install libssl-dev pkg-config
 
 ✅ **Time to first agent:** Under 5 minutes  
 ✅ **No configuration required:** Sensible defaults  
-✅ **Git-friendly:** `pekobot agent create` creates proper `.gitignore`  
+✅ **Git-friendly:** `peko agent create` creates proper `.gitignore`  
 ✅ **Actionable errors:** All errors include suggested fixes
 
 ---

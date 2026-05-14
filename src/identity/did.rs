@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 /// DID method for Pekobot
-pub const DID_METHOD: &str = "pekobot";
+pub const DID_METHOD: &str = "peko";
 
 /// DID Identity document
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
-    /// Full DID (did:pekobot:scope:tenant:keyhash)
+    /// Full DID (did:peko:scope:tenant:keyhash)
     pub did: String,
     /// DID document containing public keys and services
     pub document: DIDDocument,
@@ -161,7 +161,7 @@ impl Identity {
             _ => anyhow::bail!("Invalid DID scope"),
         };
 
-        // Format: did:pekobot:scope:keyhash OR did:pekobot:scope:tenant:keyhash
+        // Format: did:peko:scope:keyhash OR did:peko:scope:tenant:keyhash
         let (tenant, key_hash) = if parts.len() == 4 {
             (None, parts[3].to_string())
         } else if parts.len() == 5 {
@@ -235,7 +235,7 @@ mod tests {
     fn test_generate_identity() {
         let identity = Identity::generate(DIDScope::Local, Some("acme")).unwrap();
 
-        assert!(identity.did.starts_with("did:pekobot:local:acme:"));
+        assert!(identity.did.starts_with("did:peko:local:acme:"));
         assert_eq!(identity.document.id, identity.did);
         assert!(!identity.document.verification_method.is_empty());
         assert!(identity.keypair.is_some());
@@ -243,10 +243,10 @@ mod tests {
 
     #[test]
     fn test_parse_did() {
-        let did = "did:pekobot:local:acme:abc123";
+        let did = "did:peko:local:acme:abc123";
         let parsed = Identity::parse_did(did).unwrap();
 
-        assert_eq!(parsed.method, "pekobot");
+        assert_eq!(parsed.method, "peko");
         assert_eq!(parsed.scope, DIDScope::Local);
         assert_eq!(parsed.tenant, Some("acme".to_string()));
         assert_eq!(parsed.key_hash, "abc123");
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_parse_public_did() {
-        let did = "did:pekobot:public:xyz789";
+        let did = "did:peko:public:xyz789";
         let parsed = Identity::parse_did(did).unwrap();
 
         assert_eq!(parsed.scope, DIDScope::Public);

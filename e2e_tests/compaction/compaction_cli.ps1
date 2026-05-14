@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 # ADR-022: Session Compaction — CLI E2E Test
 #
-# Tests the manual compaction workflow via `pekobot session compact`:
+# Tests the manual compaction workflow via `peko session compact`:
 # - Dry-run shows estimated tokens and what would be compacted
 # - Actual compaction truncates old messages and records a CompactionEntry
 # - Session JSONL contains the compaction event with summary and metadata
@@ -26,7 +26,7 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot (skip if daemon is running since binary is locked)
+# Build peko (skip if daemon is running since binary is locked)
 $daemonRunning = $false
 try {
     $daemonStatus = peko daemon status 2>&1
@@ -34,7 +34,7 @@ try {
 } catch { }
 
 if (-not $daemonRunning) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd "$PSScriptRoot/../.."
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -47,13 +47,13 @@ if (-not $daemonRunning) {
     Write-Host "Daemon is running — skipping build (binary locked)" -ForegroundColor Yellow
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
@@ -75,8 +75,8 @@ peko ext enable shell --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled write_file, read_file, shell tools" -ForegroundColor Green
 
 # Get workspace and session paths
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
-$sessionsDir = "$env:APPDATA/pekobot/sessions/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
+$sessionsDir = "$env:APPDATA/peko/sessions/default/$agentName"
 
 # Ensure cleanup runs even if tests fail
 try {
@@ -122,7 +122,7 @@ try {
     }
 
     # Get the active session ID
-    $sessionId = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json | Select-Object -ExpandProperty sessions | Select-Object -First 1 -ExpandProperty session_id
+    $sessionId = peko session list $agentName --json 2>&1 | ConvertFrom-Json | Select-Object -ExpandProperty sessions | Select-Object -First 1 -ExpandProperty session_id
     Write-Host "Active session ID: $sessionId" -ForegroundColor Cyan
 
     # Find the session JSONL file
@@ -141,7 +141,7 @@ try {
     Write-Host "TEST 1: Dry-run compaction" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $dryRunOutput = pekobot session compact $agentName --dry-run --json 2>&1
+    $dryRunOutput = peko session compact $agentName --dry-run --json 2>&1
     Write-Host "Dry-run output: $dryRunOutput" -ForegroundColor Gray
 
     $dryRunJson = $dryRunOutput | ConvertFrom-Json
@@ -172,7 +172,7 @@ try {
     Write-Host "TEST 2: Actual compaction" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $compactOutput = pekobot session compact $agentName --json 2>&1
+    $compactOutput = peko session compact $agentName --json 2>&1
     Write-Host "Compact output: $compactOutput" -ForegroundColor Gray
 
     $compactJson = $compactOutput | ConvertFrom-Json
@@ -284,7 +284,7 @@ try {
     peko send $agentName "Write a file named turn8.txt with content TURN8_CONTENT" --no-stream 2>&1 | Out-Null
     Start-Sleep -Milliseconds 500
 
-    $customCompactOutput = pekobot session compact $agentName --instruction "Focus on file operations" --json 2>&1
+    $customCompactOutput = peko session compact $agentName --instruction "Focus on file operations" --json 2>&1
     Write-Host "Custom compact output: $customCompactOutput" -ForegroundColor Gray
 
     # Extract only the JSON line (filter out any log lines)

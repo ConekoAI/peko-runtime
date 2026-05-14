@@ -571,7 +571,7 @@ mod tests {
             protocol_version: MCP_PROTOCOL_VERSION.to_string(),
             capabilities: ClientCapabilities::default(),
             client_info: Implementation {
-                name: "pekobot".to_string(),
+                name: "peko".to_string(),
                 version: "0.5.0".to_string(),
             },
         };

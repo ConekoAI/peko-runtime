@@ -7,14 +7,14 @@
 //! This command sends an IPC request and streams the response.
 //!
 //! Examples:
-//!   pekobot send myagent "What is the weather?"
-//!   pekobot send myteam/myagent "Hello"
-//!   pekobot send myagent --team myteam "Hello"
-//!   pekobot send myagent "Hello" --session `sess_xxx`
-//!   pekobot send myagent --new "Start fresh"
-//!   pekobot send myagent "Hello" --no-stream        # Wait for full response before output
-//!   echo "Hello" | pekobot send myagent --stdin
-//!   pekobot send myagent --file prompt.txt
+//!   peko send myagent "What is the weather?"
+//!   peko send myteam/myagent "Hello"
+//!   peko send myagent --team myteam "Hello"
+//!   peko send myagent "Hello" --session `sess_xxx`
+//!   peko send myagent --new "Start fresh"
+//!   peko send myagent "Hello" --no-stream        # Wait for full response before output
+//!   echo "Hello" | peko send myagent --stdin
+//!   peko send myagent --file prompt.txt
 
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
@@ -76,7 +76,7 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
         agent_name, team
     );
 
-    // Connect to daemon (fails if not running — start it with: pekobot daemon start)
+    // Connect to daemon (fails if not running — start it with: peko daemon start)
     let client = DaemonClient::connect().await?;
 
     // Send execute request to daemon
@@ -179,9 +179,9 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
         anyhow::bail!(
             "Message is required. Provide it as an argument, use --file, or --stdin.\n\
              Examples:\n  \
-             pekobot send myagent \"Hello\"\n  \
-             pekobot send myagent --file prompt.txt\n  \
-             echo \"Hello\" | pekobot send myagent --stdin"
+             peko send myagent \"Hello\"\n  \
+             peko send myagent --file prompt.txt\n  \
+             echo \"Hello\" | peko send myagent --stdin"
         )
     }
 }

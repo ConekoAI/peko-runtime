@@ -112,7 +112,7 @@ impl Default for ConfigIo {
 /// API Key Resolver - Single implementation for resolving API keys
 ///
 /// Resolves API keys using this priority:
-/// 1. credentials.json (set via `pekobot auth set <provider>`)
+/// 1. credentials.json (set via `peko auth set <provider>`)
 /// 2. Environment variable
 ///
 /// This is the single canonical implementation, replacing duplicate

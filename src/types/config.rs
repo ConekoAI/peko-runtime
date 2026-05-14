@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Global Pekobot configuration
+/// Global peko configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PekobotConfig {
     /// Application name
@@ -25,7 +25,7 @@ pub struct PekobotConfig {
 impl Default for PekobotConfig {
     fn default() -> Self {
         Self {
-            app_name: "pekobot".to_string(),
+            app_name: "peko".to_string(),
             storage: StorageConfig::default(),
             network: NetworkConfig::default(),
             logging: LogConfig::default(),
@@ -52,11 +52,11 @@ impl Default for StorageConfig {
     fn default() -> Self {
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("pekobot");
+            .join("peko");
 
         Self {
             storage_type: "sqlite".to_string(),
-            database_path: data_dir.join("pekobot.db"),
+            database_path: data_dir.join("peko.db"),
             keys_path: data_dir.join("keys"),
             memory_path: data_dir.join("memory.db"),
         }
@@ -143,7 +143,7 @@ impl PekobotConfig {
     pub fn with_data_dir(data_dir: PathBuf) -> Self {
         Self {
             storage: StorageConfig {
-                database_path: data_dir.join("pekobot.db"),
+                database_path: data_dir.join("peko.db"),
                 keys_path: data_dir.join("keys"),
                 memory_path: data_dir.join("memory.db"),
                 ..StorageConfig::default()
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = PekobotConfig::default();
-        assert_eq!(config.app_name, "pekobot");
+        assert_eq!(config.app_name, "peko");
         assert_eq!(config.network.port, 8080);
         assert_eq!(config.logging.level, "info");
     }
@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pekobot_config_with_compaction() {
+    fn test_PEKO_config_with_compaction() {
         let config = PekobotConfig::default();
         assert!(config.compaction.enabled);
         assert_eq!(config.compaction.auto_threshold_percent, 85);

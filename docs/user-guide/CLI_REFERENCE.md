@@ -5,7 +5,7 @@ Complete reference for the Pekobot command-line interface.
 ## Global Options
 
 ```
-pekobot [OPTIONS] <COMMAND>
+peko [OPTIONS] <COMMAND>
 ```
 
 | Option | Description |
@@ -30,7 +30,7 @@ pekobot [OPTIONS] <COMMAND>
 Manage agent configurations.
 
 ```bash
-pekobot agent <COMMAND>
+peko agent <COMMAND>
 ```
 
 #### Subcommands
@@ -52,22 +52,22 @@ pekobot agent <COMMAND>
 
 ```bash
 # List all agents
-pekobot agent list
+peko agent list
 
 # Create an agent in the default team
-pekobot agent create my-agent --provider minimax
+peko agent create my-agent --provider minimax
 
 # Create an agent in a specific team
-pekobot agent create myteam/my-agent --provider kimi
+peko agent create myteam/my-agent --provider kimi
 
 # Show agent details
-pekobot agent show my-agent
+peko agent show my-agent
 
 # Export an agent
-pekobot agent export --name my-agent
+peko agent export --name my-agent
 
 # Remove an agent
-pekobot agent remove my-agent
+peko agent remove my-agent
 ```
 
 ---
@@ -77,7 +77,7 @@ pekobot agent remove my-agent
 Manage teams of agents.
 
 ```bash
-pekobot team <COMMAND>
+peko team <COMMAND>
 ```
 
 #### Subcommands
@@ -96,13 +96,13 @@ pekobot team <COMMAND>
 
 ```bash
 # Create a team
-pekobot team create myteam
+peko team create myteam
 
 # List teams
-pekobot team list
+peko team list
 
 # Show team details
-pekobot team show myteam
+peko team show myteam
 ```
 
 ---
@@ -112,7 +112,7 @@ pekobot team show myteam
 Send a message to an agent. This is the primary way to interact with agents.
 
 ```bash
-pekobot send <AGENT> [MESSAGE]
+peko send <AGENT> [MESSAGE]
 ```
 
 #### Arguments
@@ -137,22 +137,22 @@ pekobot send <AGENT> [MESSAGE]
 
 ```bash
 # Send a simple message
-pekobot send my-agent "Hello!"
+peko send my-agent "Hello!"
 
 # Send to an agent in a team
-pekobot send myteam/my-agent "Hello!"
+peko send myteam/my-agent "Hello!"
 
 # Start a new session
-pekobot send my-agent "Hello!" --new
+peko send my-agent "Hello!" --new
 
 # Read message from file
-pekobot send my-agent --file prompt.txt
+peko send my-agent --file prompt.txt
 
 # Pipe from stdin
-echo "Hello!" | pekobot send my-agent --stdin
+echo "Hello!" | peko send my-agent --stdin
 
 # Disable streaming
-pekobot send my-agent "Hello!" --no-stream
+peko send my-agent "Hello!" --no-stream
 ```
 
 ---
@@ -162,7 +162,7 @@ pekobot send my-agent "Hello!" --no-stream
 Manage API keys and credentials.
 
 ```bash
-pekobot auth <COMMAND>
+peko auth <COMMAND>
 ```
 
 #### Subcommands
@@ -178,13 +178,13 @@ pekobot auth <COMMAND>
 
 ```bash
 # Set an API key
-pekobot auth set openai
+peko auth set openai
 
 # List credentials
-pekobot auth list
+peko auth list
 
 # Test a credential
-pekobot auth test openai
+peko auth test openai
 ```
 
 ---
@@ -194,7 +194,7 @@ pekobot auth test openai
 Manage extensions (skills, MCP, tools, channels, hooks).
 
 ```bash
-pekobot ext <COMMAND>
+peko ext <COMMAND>
 ```
 
 #### Subcommands
@@ -220,16 +220,16 @@ pekobot ext <COMMAND>
 
 ```bash
 # List installed extensions
-pekobot ext list
+peko ext list
 
 # Install an extension
-pekobot ext install <path-or-url>
+peko ext install <path-or-url>
 
 # Enable a capability
-pekobot ext enable <capability>
+peko ext enable <capability>
 
 # Show extension info
-pekobot ext info <extension>
+peko ext info <extension>
 ```
 
 ---
@@ -239,7 +239,7 @@ pekobot ext info <extension>
 Manage agent sessions (offline operations).
 
 ```bash
-pekobot session <COMMAND>
+peko session <COMMAND>
 ```
 
 #### Subcommands
@@ -257,19 +257,19 @@ pekobot session <COMMAND>
 
 ```bash
 # List sessions for an agent
-pekobot session list my-agent
+peko session list my-agent
 
 # Show session history (active session by default)
-pekobot session show my-agent --history
+peko session show my-agent --history
 
 # Show specific session
-pekobot session show my-agent --session-id sess_xxx --history
+peko session show my-agent --session-id sess_xxx --history
 
 # Compact a session (active session by default)
-pekobot session compact my-agent
+peko session compact my-agent
 
 # Compact specific session
-pekobot session compact my-agent --session-id sess_xxx
+peko session compact my-agent --session-id sess_xxx
 ```
 
 ---
@@ -279,7 +279,7 @@ pekobot session compact my-agent --session-id sess_xxx
 Manage Pekobot configuration.
 
 ```bash
-pekobot config <COMMAND>
+peko config <COMMAND>
 ```
 
 #### Subcommands
@@ -297,16 +297,16 @@ pekobot config <COMMAND>
 
 ```bash
 # Show config paths
-pekobot config path
+peko config path
 
 # Show defaults
-pekobot config defaults
+peko config defaults
 
 # Get a value
-pekobot config get <key>
+peko config get <key>
 
 # Set a value
-pekobot config set <key> <value>
+peko config set <key> <value>
 ```
 
 ---
@@ -316,7 +316,7 @@ pekobot config set <key> <value>
 System diagnostics and maintenance.
 
 ```bash
-pekobot system <COMMAND>
+peko system <COMMAND>
 ```
 
 #### Subcommands
@@ -332,13 +332,13 @@ pekobot system <COMMAND>
 
 ```bash
 # Check system status
-pekobot system status
+peko system status
 
 # Run diagnostics
-pekobot system doctor
+peko system doctor
 
 # Clean up
-pekobot system clean
+peko system clean
 ```
 
 ---
@@ -348,7 +348,7 @@ pekobot system clean
 Manage the Pekobot daemon (for cron job execution).
 
 ```bash
-pekobot daemon <COMMAND>
+peko daemon <COMMAND>
 ```
 
 #### Subcommands
@@ -365,16 +365,16 @@ pekobot daemon <COMMAND>
 
 ```bash
 # Start daemon in foreground
-pekobot daemon start --foreground
+peko daemon start --foreground
 
 # Check daemon status
-pekobot daemon status
+peko daemon status
 
 # Stop daemon
-pekobot daemon stop
+peko daemon stop
 
 # Restart daemon
-pekobot daemon restart
+peko daemon restart
 ```
 
 ---
@@ -384,7 +384,7 @@ pekobot daemon restart
 Manage scheduled jobs.
 
 ```bash
-pekobot cron <COMMAND>
+peko cron <COMMAND>
 ```
 
 #### Subcommands
@@ -405,19 +405,19 @@ pekobot cron <COMMAND>
 
 ```bash
 # List cron jobs
-pekobot cron list
+peko cron list
 
 # Add a recurring job
-pekobot cron add --name "daily" --schedule "0 9 * * *" --message "Hello"
+peko cron add --name "daily" --schedule "0 9 * * *" --message "Hello"
 
 # Add a one-shot job
-pekobot cron at --name "reminder" --at "2026-03-01T09:00:00Z" --message "Meeting"
+peko cron at --name "reminder" --at "2026-03-01T09:00:00Z" --message "Meeting"
 
 # Add an interval job
-pekobot cron every --name "heartbeat" --interval-ms 300000 --message "Check"
+peko cron every --name "heartbeat" --interval-ms 300000 --message "Check"
 
 # Run a job now
-pekobot cron run --id <job-id>
+peko cron run --id <job-id>
 ```
 
 ---
@@ -427,7 +427,7 @@ pekobot cron run --id <job-id>
 Manage event routing, webhooks, and file watching.
 
 ```bash
-pekobot orchestration <COMMAND>
+peko orchestration <COMMAND>
 ```
 
 #### Subcommands
@@ -456,7 +456,7 @@ pekobot orchestration <COMMAND>
 List available LLM providers.
 
 ```bash
-pekobot provider <COMMAND>
+peko provider <COMMAND>
 ```
 
 #### Subcommands
@@ -472,7 +472,7 @@ pekobot provider <COMMAND>
 Update Pekobot to the latest version.
 
 ```bash
-pekobot update [--check]
+peko update [--check]
 ```
 
 | Option | Description |
@@ -486,7 +486,7 @@ pekobot update [--check]
 Generate shell completions.
 
 ```bash
-pekobot completions <SHELL>
+peko completions <SHELL>
 ```
 
 Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
@@ -501,10 +501,10 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 | `ANTHROPIC_API_KEY` | Agent | Anthropic API key |
 | `KIMI_API_KEY` | Agent | Kimi API key |
 | `RUST_LOG` | All | Logging level (debug, info, warn, error) |
-| `PEKOBOT_CONFIG_DIR` | All | Configuration directory override |
-| `PEKOBOT_DATA_DIR` | All | Data directory override |
-| `PEKOBOT_CACHE_DIR` | All | Cache directory override |
-| `PEKOBOT_DEBUG` | All | Show debug information |
+| `PEKO_CONFIG_DIR` | All | Configuration directory override |
+| `PEKO_DATA_DIR` | All | Data directory override |
+| `PEKO_CACHE_DIR` | All | Cache directory override |
+| `PEKO_DEBUG` | All | Show debug information |
 
 ---
 
@@ -525,50 +525,50 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 
 ```bash
 # Agent management
-pekobot agent list
-pekobot agent create my-agent --provider minimax
-pekobot agent show my-agent
-pekobot agent remove my-agent
+peko agent list
+peko agent create my-agent --provider minimax
+peko agent show my-agent
+peko agent remove my-agent
 
 # Team management
-pekobot team create myteam
-pekobot team list
+peko team create myteam
+peko team list
 
 # Send messages
-pekobot send my-agent "Hello!"
-pekobot send myteam/my-agent "Hello!" --new
-pekobot send my-agent --file prompt.txt
+peko send my-agent "Hello!"
+peko send myteam/my-agent "Hello!" --new
+peko send my-agent --file prompt.txt
 
 # Authentication
-pekobot auth set openai
-pekobot auth list
-pekobot auth test openai
+peko auth set openai
+peko auth list
+peko auth test openai
 
 # Extensions
-pekobot ext list
-pekobot ext install <path>
+peko ext list
+peko ext install <path>
 
 # Sessions
-pekobot session list my-agent
-pekobot session show my-agent --history
-pekobot session compact my-agent
+peko session list my-agent
+peko session show my-agent --history
+peko session compact my-agent
 
 # Daemon
-pekobot daemon start --foreground
-pekobot daemon status
-pekobot daemon stop
+peko daemon start --foreground
+peko daemon status
+peko daemon stop
 
 # Cron
-pekobot cron list
-pekobot cron add --name daily --schedule "0 9 * * *" --message "Hello"
+peko cron list
+peko cron add --name daily --schedule "0 9 * * *" --message "Hello"
 
 # System
-pekobot system status
-pekobot system doctor
+peko system status
+peko system doctor
 
 # Configuration
-pekobot config path
-pekobot config defaults
+peko config path
+peko config defaults
 ```
 
 ---

@@ -30,8 +30,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog }
     if (Test-Path $errLog) { Remove-Item $errLog }
 
@@ -89,7 +89,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_team_sessions_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_team_sessions_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -173,7 +173,7 @@ try {
     Write-Host "STEP 5: Push snapshot to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRef = "127.0.0.1:$RegistryPort/pekobot/teams/memory-team:latest"
+    $registryRef = "127.0.0.1:$RegistryPort/peko/teams/memory-team:latest"
     $pushResult = & $pekoCmd team push $teamName $registryRef --json 2>&1 | ConvertFrom-Json
     if ($pushResult.success -ne $true) {
         Write-Error "Team push failed: $($pushResult | ConvertTo-Json)"
@@ -189,7 +189,7 @@ try {
     Write-Host "STEP 6: Simulate fresh machine" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) {
         Remove-Item -Recurse -Force $localRegistryDir
         Write-Host "Cleared local registry store" -ForegroundColor Yellow
@@ -241,7 +241,7 @@ try {
         $sessionId = $sessionsAfter1.sessions[0].id
         $sessionShow = & $pekoCmd session show "$importedTeam/$agent1" --session-id $sessionId --json | ConvertFrom-Json
         # Look for the secret code in session messages
-        $sessionJsonlDir = "$env:APPDATA/pekobot/sessions/$importedTeam/$agent1"
+        $sessionJsonlDir = "$env:APPDATA/peko/sessions/$importedTeam/$agent1"
         if (Test-Path $sessionJsonlDir) {
             $jsonlFiles = Get-ChildItem "$sessionJsonlDir/*.jsonl" -ErrorAction SilentlyContinue
             $foundCode = $false

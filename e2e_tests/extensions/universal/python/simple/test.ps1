@@ -31,8 +31,8 @@ if (-not $pythonCmd) {
 }
 Write-Host "Using Python: $pythonCmd" -ForegroundColor Green
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../../../"
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -42,22 +42,22 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
-# Reset pekobot data
-$dataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+# Reset peko data
+$dataDir = "$env:USERPROFILE/AppData/Roaming/peko"
 if (Test-Path $dataDir) {
     Remove-Item -Recurse -Force $dataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -70,11 +70,11 @@ Write-Host "========================================" -ForegroundColor Cyan
 $agentName = "calc_agent"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
-pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent" -ForegroundColor Green
 
 # # Update AGENT.md to document the tool
-# $agentDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName"
+# $agentDir = "$env:USERPROFILE/.peko/teams/default/agents/$agentName"
 # $agentMd = @"
 # # Calculator Agent
 
@@ -99,11 +99,11 @@ $toolDir = "$PSScriptRoot"
 Write-Host "Installing calculator_simple as universal-tool extension..." -ForegroundColor Yellow
 
 # Install the tool as a universal-tool extension
-$installResult = pekobot ext install $toolDir --type universal-tool 2>&1
+$installResult = peko ext install $toolDir --type universal-tool 2>&1
 Write-Host $installResult
 
 # Verify installation
-$extList = pekobot ext list --type universal-tool 2>&1
+$extList = peko ext list --type universal-tool 2>&1
 if ($extList -match "calculator_simple") {
     Write-Host "✓ Tool extension installed successfully" -ForegroundColor Green
 } else {
@@ -118,11 +118,11 @@ Write-Host "STEP 3: Enable tool extension" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Enabling calculator_simple extension..." -ForegroundColor Yellow
-pekobot ext enable calculator_simple --target default/$agentName 2>&1 | Out-Null
+peko ext enable calculator_simple --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled tool extension" -ForegroundColor Green
 
 # Verify
-$extInfo = pekobot ext info calculator_simple 2>&1
+$extInfo = peko ext info calculator_simple 2>&1
 Write-Host "`nExtension status:" -ForegroundColor Cyan
 Write-Host $extInfo
 
@@ -135,7 +135,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending calculation request to agent..." -ForegroundColor Yellow
 Measure-Command {
-    $response = pekobot send $agentName "We are testing your access and functionality of the calculator_simple tool. Please calculate 25 multiplied by 4 using the calculator_simple tool. respond TOOL_SUCCESS if the tool works, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
+    $response = peko send $agentName "We are testing your access and functionality of the calculator_simple tool. Please calculate 25 multiplied by 4 using the calculator_simple tool. respond TOOL_SUCCESS if the tool works, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
 }
 Write-Host "Agent response: $response"
 
@@ -157,11 +157,11 @@ Write-Host "Cleanup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Uninstall tool extension
-pekobot ext uninstall calculator_simple 2>&1 | Out-Null
+peko ext uninstall calculator_simple 2>&1 | Out-Null
 Write-Host "Uninstalled tool extension" -ForegroundColor Green
 
 # Delete agent
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted agent" -ForegroundColor Green
 
 Write-Host "`n✅ Simple E2E test completed!" -ForegroundColor Green

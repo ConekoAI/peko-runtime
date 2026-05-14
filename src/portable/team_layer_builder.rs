@@ -252,7 +252,7 @@ agent_count = 2
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"
@@ -270,7 +270,7 @@ include_mcp = false
         );
         files.insert(
             "agents/researcher/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:researcher"}"#.to_vec(),
+            br#"{"id":"did:peko:researcher"}"#.to_vec(),
         );
 
         // Agent 2: coder (shares no files with researcher)
@@ -280,7 +280,7 @@ include_mcp = false
         );
         files.insert(
             "agents/coder/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:coder"}"#.to_vec(),
+            br#"{"id":"did:peko:coder"}"#.to_vec(),
         );
         files.insert(
             "agents/coder/skills/rust/SKILL.md".to_string(),
@@ -398,7 +398,7 @@ agent_count = 0
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"
@@ -433,7 +433,7 @@ agent_count = 1
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"
@@ -450,7 +450,7 @@ include_mcp = false
         );
         files.insert(
             "agents/minimal/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:minimal"}"#.to_vec(),
+            br#"{"id":"did:peko:minimal"}"#.to_vec(),
         );
 
         let result = decompose_team_archive(&files).unwrap();
@@ -488,7 +488,7 @@ agent_count = 1
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"
@@ -505,7 +505,7 @@ include_mcp = true
         );
         files.insert(
             "agents/full/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:full"}"#.to_vec(),
+            br#"{"id":"did:peko:full"}"#.to_vec(),
         );
         files.insert(
             "agents/full/skills/rust/SKILL.md".to_string(),
@@ -559,7 +559,7 @@ agent_count = 2
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"
@@ -577,7 +577,7 @@ include_mcp = false
         );
         files.insert(
             "agents/agent_a/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:shared"}"#.to_vec(),
+            br#"{"id":"did:peko:shared"}"#.to_vec(),
         );
         files.insert(
             "agents/agent_b/config/agent.toml".to_string(),
@@ -585,7 +585,7 @@ include_mcp = false
         );
         files.insert(
             "agents/agent_b/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:shared"}"#.to_vec(),
+            br#"{"id":"did:peko:shared"}"#.to_vec(),
         );
 
         let result = decompose_team_archive(&files).unwrap();
@@ -628,7 +628,7 @@ agent_count = 1
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"
@@ -649,7 +649,7 @@ include_mcp = false
         );
         files.insert(
             "agents/single/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:single"}"#.to_vec(),
+            br#"{"id":"did:peko:single"}"#.to_vec(),
         );
 
         let result = decompose_team_archive(&files).unwrap();

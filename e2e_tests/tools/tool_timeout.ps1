@@ -21,16 +21,16 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent
 $agentName = "timeout_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable shell tool via extension framework
-pekobot ext enable shell --target default/$agentName 2>&1 | Out-Null
+peko ext enable shell --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled shell tool via extension framework" -ForegroundColor Green
 
 # ============================================================
@@ -43,7 +43,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Sending request to execute slow command with _timeout: 3..." -ForegroundColor Yellow
 $prompt = "We are testing the timeout functionality. Use the shell tool to run the a command that sleeps for 10 seconds. When calling the tool, include `_timeout: 3` as a top-level parameter alongside `command`. If the tool call fails or times out due to exceeding 3 seconds, reply exactly TOOL_TIMEOUT. If the tool succeeds without timing out, reply exactly TOOL_SUCCESS. If you cannot execute the tool, reply exactly TOOL_FAILED with an explanation."
 
-$response = pekobot send $agentName $prompt --no-stream 2>&1
+$response = peko send $agentName $prompt --no-stream 2>&1
 Write-Host "Response: $response"
 
 $toolTimeout = $response -match "TOOL_TIMEOUT"
@@ -67,7 +67,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 if ($toolTimeout) {

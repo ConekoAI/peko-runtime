@@ -25,8 +25,8 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -36,13 +36,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
@@ -62,7 +62,7 @@ Write-Host "Created parent agent: $parentAgent" -ForegroundColor Green
 Write-Host "Built-in tools already enabled by default" -ForegroundColor Green
 
 # Get workspace directory
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$parentAgent"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$parentAgent"
 
 # Ensure cleanup runs even if tests fail
 try {

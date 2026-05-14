@@ -103,7 +103,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let temp = std::env::temp_dir().join(format!(
-            "pekobot_test_{}_{}",
+            "PEKO_test_{}_{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::SeqCst)
         ));
@@ -115,7 +115,7 @@ mod tests {
         let cache_dir = temp.join("cache");
 
         let cli = Cli::parse_from([
-            "pekobot",
+            "peko",
             "--config-dir",
             &config_dir.to_string_lossy(),
             "--data-dir",

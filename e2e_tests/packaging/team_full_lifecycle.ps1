@@ -34,8 +34,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog }
     if (Test-Path $errLog) { Remove-Item $errLog }
 
@@ -93,7 +93,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_team_full_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_team_full_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -158,7 +158,7 @@ try {
     }
 
     # Add workspace content
-    $ws3 = "$env:APPDATA/pekobot/workspaces/$teamName/$agent3"
+    $ws3 = "$env:APPDATA/peko/workspaces/$teamName/$agent3"
     New-Item -ItemType Directory -Path $ws3 -Force | Out-Null
     "# Memory Notes`nSecret workspace notes." | Out-File -FilePath "$ws3/NOTES.md" -Encoding UTF8
     Write-Host "Added workspace content" -ForegroundColor Green
@@ -266,15 +266,15 @@ try {
     Write-Host "STEP 6: Push to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    & $pekoCmd team push $teamName "127.0.0.1:$RegistryPort/pekobot/teams/full-lifecycle:latest" 2>&1 | Out-Null
+    & $pekoCmd team push $teamName "127.0.0.1:$RegistryPort/peko/teams/full-lifecycle:latest" 2>&1 | Out-Null
     Write-Host "Pushed team snapshot" -ForegroundColor Green
 
     if (Test-Path $skillExtPath) {
-        & $pekoCmd ext push calculator-skill "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
+        & $pekoCmd ext push calculator-skill "127.0.0.1:$RegistryPort/peko/extensions/calculator-skill:latest" 2>&1 | Out-Null
         Write-Host "Pushed calculator-skill .ext" -ForegroundColor Green
     }
     if (Test-Path $mcpExtPath) {
-        & $pekoCmd ext push standard-echo "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
+        & $pekoCmd ext push standard-echo "127.0.0.1:$RegistryPort/peko/extensions/standard-echo:latest" 2>&1 | Out-Null
         Write-Host "Pushed standard-echo .ext" -ForegroundColor Green
     }
 
@@ -299,7 +299,7 @@ try {
         Write-Host "Uninstalled standard-echo" -ForegroundColor Yellow
     }
 
-    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) {
         Remove-Item -Recurse -Force $localRegistryDir
         Write-Host "Cleared local registry store" -ForegroundColor Yellow
@@ -312,15 +312,15 @@ try {
     Write-Host "STEP 8: Pull from registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/full-lifecycle:latest" --name $importedTeamName 2>&1 | Out-Null
+    & $pekoCmd team pull "127.0.0.1:$RegistryPort/peko/teams/full-lifecycle:latest" --name $importedTeamName 2>&1 | Out-Null
     Write-Host "Pulled and imported team snapshot" -ForegroundColor Green
 
     if ($skillInstalled) {
-        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/calculator-skill:latest" 2>&1 | Out-Null
+        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/peko/extensions/calculator-skill:latest" 2>&1 | Out-Null
         Write-Host "Pulled calculator-skill" -ForegroundColor Green
     }
     if ($mcpInstalled) {
-        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/pekobot/extensions/standard-echo:latest" 2>&1 | Out-Null
+        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/peko/extensions/standard-echo:latest" 2>&1 | Out-Null
         Write-Host "Pulled standard-echo" -ForegroundColor Green
     }
 
@@ -363,8 +363,8 @@ try {
     Write-Host "STEP 11: Verify extension enablement" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $config1 = "$env:USERPROFILE/.pekobot/teams/$importedTeamName/agents/$agent1/config.toml"
-    $config2 = "$env:USERPROFILE/.pekobot/teams/$importedTeamName/agents/$agent2/config.toml"
+    $config1 = "$env:USERPROFILE/.peko/teams/$importedTeamName/agents/$agent1/config.toml"
+    $config2 = "$env:USERPROFILE/.peko/teams/$importedTeamName/agents/$agent2/config.toml"
 
     # NOTE: Skills (ext_type = "skill") are injected via prompts, NOT added to the
     # agent config whitelist. Only universal-tool and mcp extensions are whitelisted.
@@ -389,7 +389,7 @@ try {
     Write-Host "STEP 12: Verify workspace" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $wsFile = "$env:APPDATA/pekobot/workspaces/$importedTeamName/$agent3/NOTES.md"
+    $wsFile = "$env:APPDATA/peko/workspaces/$importedTeamName/$agent3/NOTES.md"
     if (Test-Path $wsFile) {
         $wsContent = Get-Content $wsFile -Raw
         if ($wsContent -match "Secret workspace notes") {

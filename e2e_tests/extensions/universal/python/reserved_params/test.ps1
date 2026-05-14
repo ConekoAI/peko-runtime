@@ -38,8 +38,8 @@ if (-not $pythonCmd) {
 }
 Write-Host "Using Python: $pythonCmd" -ForegroundColor Green
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../../../../"
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -49,22 +49,22 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
-# Reset pekobot data
-$dataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+# Reset peko data
+$dataDir = "$env:USERPROFILE/AppData/Roaming/peko"
 if (Test-Path $dataDir) {
     Remove-Item -Recurse -Force $dataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -77,7 +77,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 $agentName = "async_calc_agent"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
-pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent" -ForegroundColor Green
 
 # ============================================================
@@ -90,11 +90,11 @@ Write-Host "========================================" -ForegroundColor Cyan
 $toolDir = "$PSScriptRoot"
 Write-Host "Installing slow_calculator as universal-tool extension..." -ForegroundColor Yellow
 
-$installResult = pekobot ext install $toolDir --type universal-tool 2>&1
+$installResult = peko ext install $toolDir --type universal-tool 2>&1
 Write-Host $installResult
 
 # Verify installation
-$extList = pekobot ext list --type universal-tool 2>&1
+$extList = peko ext list --type universal-tool 2>&1
 if ($extList -match "slow_calculator") {
     Write-Host "Tool extension installed successfully" -ForegroundColor Green
 } else {
@@ -109,11 +109,11 @@ Write-Host "STEP 3: Enable tool extension" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Enabling slow_calculator extension..." -ForegroundColor Yellow
-pekobot ext enable slow_calculator --target default/$agentName 2>&1 | Out-Null
+peko ext enable slow_calculator --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled tool extension" -ForegroundColor Green
 
 # Verify
-$extInfo = pekobot ext info slow_calculator 2>&1
+$extInfo = peko ext info slow_calculator 2>&1
 Write-Host "`nExtension status:" -ForegroundColor Cyan
 Write-Host $extInfo
 
@@ -134,7 +134,7 @@ Use the slow_calculator tool to calculate 10 plus 20 with delay_seconds=3. Do NO
 
     Write-Host "Sending sync request (should block ~3s)..." -ForegroundColor Yellow
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $response = pekobot send $agentName $syncPrompt --no-stream 2>&1
+    $response = peko send $agentName $syncPrompt --no-stream 2>&1
     $stopwatch.Stop()
     Write-Host "Response: $response"
     Write-Host "Elapsed time: $($stopwatch.Elapsed.ToString('hh\:mm\:ss'))" -ForegroundColor Yellow
@@ -172,7 +172,7 @@ Use the slow_calculator tool to calculate 7 multiplied by 8 with delay_seconds=5
 
     Write-Host "Sending async request (should return immediately)..." -ForegroundColor Yellow
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $response = pekobot send $agentName $asyncPrompt --no-stream 2>&1
+    $response = peko send $agentName $asyncPrompt --no-stream 2>&1
     $stopwatch.Stop()
     Write-Host "Response: $response"
     Write-Host "Elapsed time: $($stopwatch.Elapsed.ToString('hh\:mm\:ss'))" -ForegroundColor Yellow
@@ -216,7 +216,7 @@ You previously ran slow_calculator with _async: true to calculate 7 multiplied b
 "@
 
     Write-Host "Sending polling request..." -ForegroundColor Yellow
-    $response = pekobot send $agentName $pollPrompt --no-stream 2>&1
+    $response = peko send $agentName $pollPrompt --no-stream 2>&1
     Write-Host "Response: $response"
 
     $pollResult56 = $response -match "POLL_RESULT_56"
@@ -246,7 +246,7 @@ Use the slow_calculator tool to calculate 100 divided by 4 with delay_seconds=3.
 "@
 
     Write-Host "Sending async request with custom timeout..." -ForegroundColor Yellow
-    $response = pekobot send $agentName $timeoutPrompt --no-stream 2>&1
+    $response = peko send $agentName $timeoutPrompt --no-stream 2>&1
     Write-Host "Response: $response"
 
     $timeoutSet600 = $response -match "TIMEOUT_SET_600"
@@ -278,11 +278,11 @@ Use the slow_calculator tool to calculate 100 divided by 4 with delay_seconds=3.
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Uninstall tool extension
-    pekobot ext uninstall slow_calculator 2>&1 | Out-Null
+    peko ext uninstall slow_calculator 2>&1 | Out-Null
     Write-Host "Uninstalled tool extension" -ForegroundColor Green
 
     # Delete agent
-    pekobot agent delete $agentName --force 2>&1 | Out-Null
+    peko agent delete $agentName --force 2>&1 | Out-Null
     Write-Host "Deleted agent" -ForegroundColor Green
 }
 

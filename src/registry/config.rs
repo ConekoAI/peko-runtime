@@ -158,7 +158,7 @@ impl ResolvedAuth {
 
 /// Load registry configuration from workspace
 ///
-/// Reads `.pekobot/config.toml` and extracts the `[registry]` section.
+/// Reads `.peko/config.toml` and extracts the `[registry]` section.
 pub fn load_from_workspace(workspace_path: impl AsRef<std::path::Path>) -> RegistryConfig {
     let config_path = workspace_path.as_ref().join("config.toml");
 

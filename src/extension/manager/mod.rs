@@ -612,7 +612,7 @@ impl ExtensionManager {
     /// Scan a specific directory for extensions without loading them
     ///
     /// This is used for:
-    /// - Legacy tools directory (~/.pekobot/tools/)
+    /// - Legacy tools directory (~/.peko/tools/)
     /// - Workspace custom tools (./tools/)
     /// - CAP catalog discovery
     ///

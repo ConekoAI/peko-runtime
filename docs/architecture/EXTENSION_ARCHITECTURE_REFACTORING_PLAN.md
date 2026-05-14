@@ -36,7 +36,7 @@
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │  pekobot ext <command>                              │   │
+│  │  peko ext <command>                              │   │
 │  │  (install/enable/disable/uninstall/list/bundle)    │   │
 │  └──────────────────────┬──────────────────────────────┘   │
 │                         │                                   │
@@ -201,21 +201,21 @@ impl ToolFactory {
 ## Phase 5: CLI Consolidation ✅
 
 ### 5.1 Before
-- `pekobot ext` → Uses ExtensionManager ✅
-- `pekobot tools` → DEAD (was in tool_management) ❌ REMOVED
+- `peko ext` → Uses ExtensionManager ✅
+- `peko tools` → DEAD (was in tool_management) ❌ REMOVED
 - Built-in enable/disable → Used cap/TeamCapabilityManager ❌ BROKEN
 
 ### 5.2 After
-**Single command surface:** `pekobot ext`
+**Single command surface:** `peko ext`
 
 | Command | Behavior | Status |
 |---------|----------|--------|
-| `pekobot ext list` | Lists ALL extensions (skills, MCP, tools, gateways) | ✅ Works |
-| `pekobot ext list --type mcp` | Filter by type | ✅ Works |
-| `pekobot ext enable shell` | Enable built-in tool | ✅ Fixed |
-| `pekobot ext disable shell` | Disable built-in tool | ✅ Fixed |
-| `pekobot ext install ./my-mcp` | Install MCP server | ✅ Works |
-| `pekobot ext install ./my-skill` | Install skill | ✅ Works |
+| `peko ext list` | Lists ALL extensions (skills, MCP, tools, gateways) | ✅ Works |
+| `peko ext list --type mcp` | Filter by type | ✅ Works |
+| `peko ext enable shell` | Enable built-in tool | ✅ Fixed |
+| `peko ext disable shell` | Disable built-in tool | ✅ Fixed |
+| `peko ext install ./my-mcp` | Install MCP server | ✅ Works |
+| `peko ext install ./my-skill` | Install skill | ✅ Works |
 
 ### 5.3 Changes
 - Removed TeamCapabilityManager dependency
@@ -244,7 +244,7 @@ impl ToolFactory {
 - [x] Remove TeamCapabilityManager dependency
 - [x] Implement team-level enable/disable
 - [x] Fix built-in tool enable/disable commands
-- [x] Single command surface: `pekobot ext`
+- [x] Single command surface: `peko ext`
 
 ---
 
@@ -268,11 +268,11 @@ impl ToolFactory {
 
 - [x] `cargo build` passes
 - [x] `cargo test` passes (1,052 tests)
-- [x] `pekobot ext list` shows built-in tools
-- [x] `pekobot ext list` shows MCP servers
-- [x] `pekobot ext list` shows skills
-- [x] `pekobot ext disable shell` disables shell tool
-- [x] `pekobot ext enable shell` re-enables shell tool
+- [x] `peko ext list` shows built-in tools
+- [x] `peko ext list` shows MCP servers
+- [x] `peko ext list` shows skills
+- [x] `peko ext disable shell` disables shell tool
+- [x] `peko ext enable shell` re-enables shell tool
 - [x] Agent can still use tools
 - [x] MCP servers still work
 - [x] Universal tools still work
@@ -284,7 +284,7 @@ impl ToolFactory {
 1. **Extensions 2.0 is the ONLY discovery mechanism**
 2. **ExtensionCore is the ONLY registry**
 3. **ToolFactory only EXECUTES, doesn't DISCOVER**
-4. **Single CLI surface: `pekobot ext`**
+4. **Single CLI surface: `peko ext`**
 5. **Built-in tools are first-class extensions**
 
 This eliminates:
@@ -319,7 +319,7 @@ This eliminates:
 - **~3,470 lines removed** (simpler codebase)
 - **4 extension types** instead of 6
 - **Single discovery path** through ExtensionManager
-- **Single CLI surface** via `pekobot ext`
+- **Single CLI surface** via `peko ext`
 - **Cleaner module hierarchy** (removed redundant skills facade)
 
 ### Architecture Compliance

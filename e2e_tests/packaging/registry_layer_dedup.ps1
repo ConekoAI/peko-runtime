@@ -31,8 +31,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog }
     if (Test-Path $errLog) { Remove-Item $errLog }
 
@@ -74,7 +74,7 @@ function Get-RegistryBlobs {
 function Get-LayerDigestsFromAgentPackage {
     param([string]$PackagePath)
     # Extract manifest.toml from the .agent package (gzip tar) and parse layer digests
-    $tempDir = [System.IO.Path]::Combine($env:TEMP, "pekobot_inspect_$([System.Guid]::NewGuid().ToString().Substring(0,8))")
+    $tempDir = [System.IO.Path]::Combine($env:TEMP, "PEKO_inspect_$([System.Guid]::NewGuid().ToString().Substring(0,8))")
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     try {
         # tar extracts manifest.toml from the gzip archive
@@ -128,7 +128,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_dedup_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_dedup_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -146,7 +146,7 @@ try {
     Write-Host "Created agent A" -ForegroundColor Green
 
     # Add shared skill
-    $skillsDir = "$env:APPDATA/pekobot/skills/shared-skill"
+    $skillsDir = "$env:APPDATA/peko/skills/shared-skill"
     New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
     "# Shared Skill`nThis skill is shared between agents." | Out-File -FilePath "$skillsDir/SKILL.md" -Encoding UTF8
     Write-Host "Added shared skill to agent A" -ForegroundColor Green
@@ -233,7 +233,7 @@ try {
     Write-Host "STEP 6: Push agent A to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRefA = "127.0.0.1:$RegistryPort/pekobot/agents/agent-a:v1.0"
+    $registryRefA = "127.0.0.1:$RegistryPort/peko/agents/agent-a:v1.0"
     $pushA = & $pekoCmd agent push "agent-a:v1.0" $registryRefA --file $packageA --json 2>&1 | ConvertFrom-Json
     if ($pushA.success -ne $true) { Write-Error "Push agent A failed" }
 
@@ -249,7 +249,7 @@ try {
     Write-Host "STEP 7: Push agent B to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRefB = "127.0.0.1:$RegistryPort/pekobot/agents/agent-b:v1.0"
+    $registryRefB = "127.0.0.1:$RegistryPort/peko/agents/agent-b:v1.0"
     $pushB = & $pekoCmd agent push "agent-b:v1.0" $registryRefB --file $packageB --json 2>&1 | ConvertFrom-Json
     if ($pushB.success -ne $true) { Write-Error "Push agent B failed" }
 
@@ -293,7 +293,7 @@ try {
     Write-Host "STEP 9: Fresh machine pull both agents" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) {
         Remove-Item -Recurse -Force $localRegistryDir
         Write-Host "Cleared local registry store" -ForegroundColor Yellow
@@ -323,8 +323,8 @@ try {
     Write-Host "Imported agent B" -ForegroundColor Green
 
     # Verify shared skill exists in both
-    $skillA = "$env:APPDATA/pekobot/skills/shared-skill/SKILL.md"
-    $skillB = "$env:APPDATA/pekobot/skills/shared-skill/SKILL.md"
+    $skillA = "$env:APPDATA/peko/skills/shared-skill/SKILL.md"
+    $skillB = "$env:APPDATA/peko/skills/shared-skill/SKILL.md"
     if ((Test-Path $skillA) -and (Test-Path $skillB)) {
         Write-Host "Shared skill present in both imported agents" -ForegroundColor Green
     } else {

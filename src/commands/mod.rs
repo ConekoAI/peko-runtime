@@ -33,31 +33,31 @@ use std::path::PathBuf;
 
 /// Global CLI structure
 #[derive(Parser)]
-#[command(name = "pekobot")]
+#[command(name = "peko")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "Lightweight multi-agent runtime")]
 #[command(propagate_version = true)]
 #[command(after_help = "Examples:
-  pekobot daemon start                          # Start the daemon
-  pekobot team create myteam                    # Create a new team
-  pekobot agent create myteam/my-agent --provider kimi  # Create agent in team
-  pekobot agent export my-agent -o my-agent.agent   # Export agent to package
-  pekobot run my-agent:v1.0                         # Run agent instance
-  pekobot ps                                    # List instances
-  pekobot session list myteam/my-agent          # List sessions
-  pekobot send myteam/my-agent \"Hello\"         # Send message
+  peko daemon start                          # Start the daemon
+  peko team create myteam                    # Create a new team
+  peko agent create myteam/my-agent --provider kimi  # Create agent in team
+  peko agent export my-agent -o my-agent.agent   # Export agent to package
+  peko run my-agent:v1.0                         # Run agent instance
+  peko ps                                    # List instances
+  peko session list myteam/my-agent          # List sessions
+  peko send myteam/my-agent \"Hello\"         # Send message
 ")]
 pub struct Cli {
     /// Configuration directory override
-    #[arg(long, global = true, env = "PEKOBOT_CONFIG_DIR")]
+    #[arg(long, global = true, env = "PEKO_CONFIG_DIR")]
     pub config_dir: Option<PathBuf>,
 
     /// Data directory override
-    #[arg(long, global = true, env = "PEKOBOT_DATA_DIR")]
+    #[arg(long, global = true, env = "PEKO_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
     /// Cache directory override  
-    #[arg(long, global = true, env = "PEKOBOT_CACHE_DIR")]
+    #[arg(long, global = true, env = "PEKO_CACHE_DIR")]
     pub cache_dir: Option<PathBuf>,
 
     /// Output results as JSON
@@ -73,7 +73,7 @@ pub struct Cli {
     pub verbose: u8,
 
     /// Show debug information including stack traces
-    #[arg(long, global = true, env = "PEKOBOT_DEBUG")]
+    #[arg(long, global = true, env = "PEKO_DEBUG")]
     pub debug: bool,
 
     /// User identifier for session isolation
@@ -98,10 +98,10 @@ pub enum Commands {
     /// Send a message to an agent (unified command)
     ///
     /// This is the primary way to interact with agents. Examples:
-    ///   pekobot send myagent "Hello"
-    ///   pekobot send myagent --file prompt.txt
-    ///   echo "Hello" | pekobot send myagent --stdin
-    ///   pekobot send myagent "Hello" --session `sess_xxx`
+    ///   peko send myagent "Hello"
+    ///   peko send myagent --file prompt.txt
+    ///   echo "Hello" | peko send myagent --stdin
+    ///   peko send myagent "Hello" --session `sess_xxx`
     Send(send::SendArgs),
 
     /// Authentication and credential management
@@ -181,19 +181,19 @@ impl GlobalPaths {
         let config_dir = cli
             .config_dir
             .clone()
-            .or_else(|| dirs::home_dir().map(|d| d.join(".pekobot")))
-            .unwrap_or_else(|| PathBuf::from(".").join(".pekobot"));
+            .or_else(|| dirs::home_dir().map(|d| d.join(".peko")))
+            .unwrap_or_else(|| PathBuf::from(".").join(".peko"));
 
         let data_dir = cli
             .data_dir
             .clone()
-            .or_else(|| dirs::data_dir().map(|d| d.join("pekobot")))
+            .or_else(|| dirs::data_dir().map(|d| d.join("peko")))
             .unwrap_or_else(|| config_dir.clone());
 
         let cache_dir = cli
             .cache_dir
             .clone()
-            .or_else(|| dirs::cache_dir().map(|d| d.join("pekobot")))
+            .or_else(|| dirs::cache_dir().map(|d| d.join("peko")))
             .unwrap_or_else(|| data_dir.join("cache"));
 
         // Ensure directories exist

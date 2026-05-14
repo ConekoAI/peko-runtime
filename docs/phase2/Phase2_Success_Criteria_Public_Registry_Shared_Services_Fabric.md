@@ -33,7 +33,7 @@ Phase 2 depends on the following Phase 1 outputs being production-stable:
 | Registry Client | v1.0.0-rc1+ | Push/pull with bearer/basic auth, layer deduplication |
 | Extension Framework | v1.0.0-rc1+ | 22 hook points, 6 extension types, dynamic registration |
 
-> **Note**: Base image inheritance was removed per ADR-027. The canonical workflow is `pekobot agent create` → `pekobot agent export`.
+> **Note**: Base image inheritance was removed per ADR-027. The canonical workflow is `peko agent create` → `peko agent export`.
 
 ---
 
@@ -85,12 +85,12 @@ The Public Registry is the discovery and distribution layer for Agent Bundles. I
 - [ ] **REG-024**: Registry MUST provide an audit log of all push, pull, delete, and permission-change events per namespace, accessible to namespace owners
 
 #### 3.2.5 CLI Integration
-- [ ] **REG-025**: CLI `pekobot agent push` MUST integrate with the Public Registry as the default endpoint, requiring only `pekobot auth login` for authentication
-- [ ] **REG-026**: CLI `pekobot agent pull` MUST resolve bundle references from the Public Registry (e.g. `pekobot agent pull pekohub.org/user/researcher:v1.0`)
-- [ ] **REG-027**: CLI MUST implement `pekobot search <query>` command that queries the Registry search API and displays results with metadata in a terminal-friendly table
-- [ ] **REG-028**: CLI MUST implement `pekobot agent info <registry-ref>` command that displays bundle metadata without downloading
+- [ ] **REG-025**: CLI `peko agent push` MUST integrate with the Public Registry as the default endpoint, requiring only `peko auth login` for authentication
+- [ ] **REG-026**: CLI `peko agent pull` MUST resolve bundle references from the Public Registry (e.g. `peko agent pull pekohub.org/user/researcher:v1.0`)
+- [ ] **REG-027**: CLI MUST implement `peko search <query>` command that queries the Registry search API and displays results with metadata in a terminal-friendly table
+- [ ] **REG-028**: CLI MUST implement `peko agent info <registry-ref>` command that displays bundle metadata without downloading
 
-> **CLI Naming Note**: The CLI uses `pekobot` as the binary name (not `agent`). Commands are `pekobot agent push`, `pekobot agent pull`, `pekobot search`, etc. See `Phase2_Roadmap.md` §3.3 for the full CLI command reference.
+> **CLI Naming Note**: The CLI uses `peko` as the binary name (not `agent`). Commands are `peko agent push`, `peko agent pull`, `peko search`, etc. See `Phase2_Roadmap.md` §3.3 for the full CLI command reference.
 
 ### 3.3 P1 — Should Have
 
@@ -224,7 +224,7 @@ Phase 2 introduces the foundation for multi-agent orchestration — the **Team S
   - **Supervisor**: One coordinator agent delegates tasks to worker agents and aggregates results
   - **Pipeline**: Agents connected in a DAG, output of agent N is input to agent N+1
   - **Mesh**: All agents can broadcast messages to each other with topic-based routing
-- [ ] **TEAM-003**: Team Spec MUST be validated by the CLI (`pekobot team validate`) before execution
+- [ ] **TEAM-003**: Team Spec MUST be validated by the CLI (`peko team validate`) before execution
 - [ ] **TEAM-004**: Team Spec MUST reference agent bundles from the Public Registry or local filesystem, resolving dependencies automatically
 
 #### 5.2.2 Team Execution
@@ -236,8 +236,8 @@ Phase 2 introduces the foundation for multi-agent orchestration — the **Team S
   - Coordinator synthesizes results and produces final output
 - [ ] **TEAM-007**: Runtime Engine MUST provide shared context across team agents — all agents in a team share the same session state and can access shared memory topics
 - [ ] **TEAM-008**: Runtime Engine MUST expose a unified output stream for the team — progress from all agents is merged into a single SSE/WebSocket stream with agent tagging
-- [ ] **TEAM-009**: CLI MUST implement `pekobot team run team.toml` command for local team execution
-- [ ] **TEAM-010**: CLI MUST implement `pekobot team logs` command to display structured logs from the most recent team execution, with per-agent filtering
+- [ ] **TEAM-009**: CLI MUST implement `peko team run team.toml` command for local team execution
+- [ ] **TEAM-010**: CLI MUST implement `peko team logs` command to display structured logs from the most recent team execution, with per-agent filtering
 
 ### 5.3 P1 — Should Have
 

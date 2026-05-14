@@ -46,7 +46,7 @@ impl AgentBootstrap {
         let content = format!(
             r#"# SYSTEM.md — {name}
 
-You are {{{{agent_name}}}}, an AI assistant running in the Pekobot agent runtime.
+You are {{{{agent_name}}}}, an AI assistant running in the peko agent runtime.
 
 ## Your Role
 

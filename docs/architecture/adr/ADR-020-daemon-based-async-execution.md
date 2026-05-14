@@ -59,7 +59,7 @@ peko send "run long build"
 
 ## Decision
 
-Move the `UnifiedAsyncExecutor` and all async task lifecycle management into the **pekobot daemon**. The CLI will submit async tasks to the daemon via HTTP IPC and receive receipts immediately. The daemon owns task execution, task file updates, and cleanup.
+Move the `UnifiedAsyncExecutor` and all async task lifecycle management into the **peko daemon**. The CLI will submit async tasks to the daemon via HTTP IPC and receive receipts immediately. The daemon owns task execution, task file updates, and cleanup.
 
 To keep the architecture clean, we introduce:
 
@@ -305,7 +305,7 @@ Register a daemon-internal cron job (reusing the existing `CronScheduler`) that:
 
 1. **Daemon-first**: When daemon is running, all async tasks are submitted via HTTP
 2. **Graceful degradation**: If daemon is unreachable, return a clear error:  
-   `"Async tool execution requires the pekobot daemon. Start it with: pekobot daemon start"`
+   `"Async tool execution requires the peko daemon. Start it with: peko daemon start"`
 3. **No in-process fallback**: The old `tokio::spawn` path is removed from the CLI entirely. The daemon always uses `LocalAsyncTransport`.
 
 ## Out of Scope (Separate ADRs)
@@ -317,7 +317,7 @@ The question of whether *all* CLI commands should automatically start the daemon
 - UX and offline-usage implications are considered explicitly
 
 ### ADR-020b: Daemon-Mode Detection
-Instead of an `is_daemon_mode()` global function, the daemon sets an environment variable (`PEKOBOT_DAEMON_MODE=1`) during startup. Components that need to know their runtime context read this variable at initialization time. This is documented here but does not require a separate ADR unless it grows into a broader runtime-profile system.
+Instead of an `is_daemon_mode()` global function, the daemon sets an environment variable (`PEKO_DAEMON_MODE=1`) during startup. Components that need to know their runtime context read this variable at initialization time. This is documented here but does not require a separate ADR unless it grows into a broader runtime-profile system.
 
 ## Implementation Status
 

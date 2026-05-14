@@ -103,7 +103,7 @@ fn build_default_agent_config(name: &str, provider: &str, model: Option<String>)
     AgentConfig {
         version: "1.0".to_string(),
         name: name.to_string(),
-        description: Some(format!("Pekobot agent: {name}")),
+        description: Some(format!("peko agent: {name}")),
         team: None,
         tenant: None,
         provider: ProviderConfig {
@@ -375,7 +375,7 @@ impl AgentService {
         let target_team_dir = self.resolver.team_dir(target_team);
         if !target_team_dir.exists() {
             anyhow::bail!(
-                "Target team '{target_team}' does not exist. Create it first with: pekobot team create {target_team}"
+                "Target team '{target_team}' does not exist. Create it first with: peko team create {target_team}"
             );
         }
 
@@ -646,7 +646,7 @@ impl AgentService {
         workspace_dir: &Path,
     ) -> Result<()> {
         // Create .gitignore
-        let gitignore_content = r"# Pekobot agent - gitignore
+        let gitignore_content = r"# peko agent - gitignore
 sessions/
 workspace/
 memories/

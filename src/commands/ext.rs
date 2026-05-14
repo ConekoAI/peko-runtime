@@ -361,7 +361,7 @@ async fn handle_install(
     // Handle .ext package files
     let install_path = if path.extension().map_or(false, |e| e == "ext") {
         // Extract to a temp directory first to avoid copy_to_storage deleting the source
-        let temp_dir = std::env::temp_dir().join("pekobot_ext_install").join(
+        let temp_dir = std::env::temp_dir().join("PEKO_ext_install").join(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -898,7 +898,7 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
     println!();
     println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
     println!(
-        "Use 'pekobot ext enable {id} --target <team>/<agent>' to enable for a specific agent."
+        "Use 'peko ext enable {id} --target <team>/<agent>' to enable for a specific agent."
     );
 
     if !ext.hook_ids.is_empty() {
@@ -1092,7 +1092,7 @@ async fn handle_ext_push(
         .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
 
     // Export to a temp .ext file
-    let temp_dir = std::env::temp_dir().join("pekobot_ext_push");
+    let temp_dir = std::env::temp_dir().join("PEKO_ext_push");
     std::fs::create_dir_all(&temp_dir)?;
     let temp_path = temp_dir.join(format!("{}.ext", ext.manifest.id.0));
 
@@ -1247,7 +1247,7 @@ async fn handle_ext_pull(
     let data = agent_registry.get_layer(&layer.digest).await?;
 
     // Write to a temp .ext file
-    let temp_dir = std::env::temp_dir().join("pekobot_ext_pull");
+    let temp_dir = std::env::temp_dir().join("PEKO_ext_pull");
     std::fs::create_dir_all(&temp_dir)?;
     let temp_path = temp_dir.join(format!("{}.ext", manifest.name));
     tokio::fs::write(&temp_path, &data).await?;

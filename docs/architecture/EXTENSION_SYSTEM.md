@@ -234,12 +234,12 @@ hooks:
 
 1. Create directory:
 ```bash
-mkdir -p ~/.pekobot/extensions/my-skill
+mkdir -p ~/.peko/extensions/my-skill
 ```
 
 2. Create SKILL.md:
 ```bash
-cat > ~/.pekobot/extensions/my-skill/SKILL.md << 'EOF'
+cat > ~/.peko/extensions/my-skill/SKILL.md << 'EOF'
 ---
 name: my-skill
 description: My custom skill
@@ -254,19 +254,19 @@ EOF
 
 3. Enable:
 ```bash
-pekobot ext enable my-skill
+peko ext enable my-skill
 ```
 
 ### Quick Start: General Extension
 
 1. Create directory:
 ```bash
-mkdir -p ~/.pekobot/extensions/my-extension
+mkdir -p ~/.peko/extensions/my-extension
 ```
 
 2. Create extension.yaml:
 ```bash
-cat > ~/.pekobot/extensions/my-extension/extension.yaml << 'EOF'
+cat > ~/.peko/extensions/my-extension/extension.yaml << 'EOF'
 ---
 id: my-extension
 name: My Extension
@@ -294,57 +294,57 @@ EOF
 
 ```bash
 # From local directory
-pekobot ext install ./my-extension
+peko ext install ./my-extension
 
 # From registry
-pekobot ext install pekohub.com/extensions/my-extension
+peko ext install pekohub.com/extensions/my-extension
 
 # From URL
-pekobot ext install https://example.com/my-extension.tar.gz
+peko ext install https://example.com/my-extension.tar.gz
 ```
 
 ### Management
 
 ```bash
 # List all extensions
-pekobot ext list
+peko ext list
 
 # List with filtering
-pekobot ext list --enabled-only
-pekobot ext list --type skill
+peko ext list --enabled-only
+peko ext list --type skill
 
 # Enable/disable
-pekobot ext enable my-extension
-pekobot ext disable my-extension
+peko ext enable my-extension
+peko ext disable my-extension
 
 # Get info
-pekobot ext info my-extension
+peko ext info my-extension
 
 # Uninstall
-pekobot ext uninstall my-extension
+peko ext uninstall my-extension
 ```
 
 ### Validation and Debugging
 
 ```bash
 # Validate manifest
-pekobot ext validate ./my-extension
+peko ext validate ./my-extension
 
 # Show resolved hooks
-pekobot ext debug my-extension
+peko ext debug my-extension
 ```
 
 ### Bundling
 
 ```bash
 # Create bundle with multiple extensions
-pekobot ext bundle create production-bundle \
+peko ext bundle create production-bundle \
     --with skill1 \
     --with mcp-server1 \
     --with tool1
 
 # Install bundle
-pekobot ext bundle install ./production-bundle.tar.gz
+peko ext bundle install ./production-bundle.tar.gz
 ```
 
 ---
@@ -376,22 +376,22 @@ pekobot ext bundle install ./production-bundle.tar.gz
 
 ### From Legacy Skills
 
-Old: `~/.pekobot/skills/my-skill/SKILL.md`  
-New: `~/.pekobot/extensions/my-skill/SKILL.md` (same format!)
+Old: `~/.peko/skills/my-skill/SKILL.md`  
+New: `~/.peko/extensions/my-skill/SKILL.md` (same format!)
 
 Migration is automatic on first run.
 
 ### From Legacy Tools
 
-Old: `~/.pekobot/tools/my-tool/manifest.json`  
-New: `~/.pekobot/extensions/my-tool/manifest.json` (same format!)
+Old: `~/.peko/tools/my-tool/manifest.json`  
+New: `~/.peko/extensions/my-tool/manifest.json` (same format!)
 
 Migration is automatic on first run.
 
 ### From mcp.toml
 
-Old: `~/.pekobot/mcp.toml` with multiple servers  
-New: Individual extensions in `~/.pekobot/extensions/<name>/config.json`
+Old: `~/.peko/mcp.toml` with multiple servers  
+New: Individual extensions in `~/.peko/extensions/<name>/config.json`
 
 Migration is automatic on first run.
 
@@ -403,24 +403,24 @@ Migration is automatic on first run.
 
 1. Check manifest syntax:
    ```bash
-   pekobot ext validate ./my-extension
+   peko ext validate ./my-extension
    ```
 
 2. Check extension is enabled:
    ```bash
-   pekobot ext list
+   peko ext list
    ```
 
 3. Check logs for errors:
    ```bash
-   pekobot system logs --level error
+   peko system logs --level error
    ```
 
 ### Hook Not Firing
 
 1. Verify hook point name:
    ```bash
-   pekobot ext debug my-extension
+   peko ext debug my-extension
    ```
 
 2. Check priority ordering:
@@ -429,7 +429,7 @@ Migration is automatic on first run.
 
 3. Enable debug logging:
    ```bash
-   RUST_LOG=debug pekobot agent start my-agent
+   RUST_LOG=debug peko agent start my-agent
    ```
 
 ---

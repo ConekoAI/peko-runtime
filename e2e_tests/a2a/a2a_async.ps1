@@ -29,7 +29,7 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot (skip if daemon is running since it locks the binary)
+# Build peko (skip if daemon is running since it locks the binary)
 $daemonRunning = $false
 try {
     $status = peko daemon status 2>&1
@@ -37,7 +37,7 @@ try {
 } catch {}
 
 if (-not $daemonRunning) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd "$PSScriptRoot/../.."
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -50,10 +50,10 @@ if (-not $daemonRunning) {
     Write-Host "Daemon already running, skipping build..." -ForegroundColor Cyan
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-$DataDir = "$env:APPDATA/pekobot"
-if (Test-Path $pekobotDir) { Remove-Item -Recurse -Force $pekobotDir }
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+$DataDir = "$env:APPDATA/peko"
+if (Test-Path $pekoDir) { Remove-Item -Recurse -Force $pekoDir }
 if (Test-Path $DataDir) { Remove-Item -Recurse -Force $DataDir }
 
 # Set API key
@@ -74,7 +74,7 @@ Write-Host "Enabled read_file for worker, a2a_send for delegator" -ForegroundCol
 
 # Create a test file in the worker's per-agent workspace
 # (AgentService sets config.workspace to per-agent dir when creating agents)
-$workerWorkspace = "$env:APPDATA/pekobot/workspaces/default/$worker"
+$workerWorkspace = "$env:APPDATA/peko/workspaces/default/$worker"
 New-Item -ItemType Directory -Path $workerWorkspace -Force | Out-Null
 "A2A_ASYNC_SECRET_99" | Set-Content -Path "$workerWorkspace/test_async.txt" -NoNewline
 Write-Host "Created test file in worker workspace: $workerWorkspace" -ForegroundColor Green
@@ -127,7 +127,7 @@ The tool should return a JSON receipt immediately containing a task_file path an
     Write-Host "TEST 2: Task file written for polling" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $asyncTasksDir = "$env:APPDATA/pekobot/async_tasks"
+    $asyncTasksDir = "$env:APPDATA/peko/async_tasks"
     $taskFiles = @()
     if (Test-Path $asyncTasksDir) {
         $taskFiles = Get-ChildItem -Path $asyncTasksDir -Filter "*.json" -ErrorAction SilentlyContinue

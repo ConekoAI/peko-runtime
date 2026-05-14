@@ -1,6 +1,6 @@
 //! Team Unpackager for importing portable team packages
 //!
-//! Extracts and imports .team files into the local Pekobot runtime
+//! Extracts and imports .team files into the local peko runtime
 
 use crate::portable::team_packager::TeamManifest;
 use crate::portable::{ImportOptions as AgentImportOptions, Unpackager};
@@ -78,7 +78,7 @@ impl TeamUnpackager {
             package_path: package_path.as_ref().to_path_buf(),
             base_dir: dirs::config_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("pekobot"),
+                .join("peko"),
         }
     }
 

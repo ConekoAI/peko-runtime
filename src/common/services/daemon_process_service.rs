@@ -213,8 +213,8 @@ impl DaemonProcessService {
             .arg("--foreground")
             .arg("--interval")
             .arg(interval_secs.to_string())
-            .env("PEKOBOT_CONFIG_DIR", &config_dir)
-            .env("PEKOBOT_DATA_DIR", &data_dir)
+            .env("PEKO_CONFIG_DIR", &config_dir)
+            .env("PEKO_DATA_DIR", &data_dir)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(false);
@@ -346,7 +346,7 @@ impl DaemonProcessService {
             kill_all_by_name().await?;
             anyhow::bail!(
                 "Daemon process is still running after stop attempt. \
-                 Try: taskkill /F /IM pekobot.exe"
+                 Try: taskkill /F /IM peko.exe"
             );
         }
 
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_write_and_read_pid() {
-        let temp_dir = std::env::temp_dir().join(format!("pekobot_test_{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!("PEKO_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn test_read_pid_stale_cleanup() {
         let temp_dir =
-            std::env::temp_dir().join(format!("pekobot_test_stale_{}", std::process::id()));
+            std::env::temp_dir().join(format!("PEKO_test_stale_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 

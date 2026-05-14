@@ -4,7 +4,7 @@ Welcome to the Pekobot User Guide! This guide will help you understand and use P
 
 ## Table of Contents
 
-1. [What is Pekobot?](#what-is-pekobot)
+1. [What is Pekobot?](#what-is-peko)
 2. [Installation](#installation)
 3. [Core Concepts](#core-concepts)
 4. [Running Your First Agent](#running-your-first-agent)
@@ -53,21 +53,21 @@ Pekobot 🐱 is a lightweight multi-agent runtime written in Rust. It allows you
 ```bash
 # Clone the repository
 git clone https://github.com/coneko/pekobot
-cd pekobot
+cd peko
 
 # Build in release mode
 cargo build --release
 
 # The binary is now available at:
-./target/release/pekobot
+./target/release/peko
 ```
 
 ### Verify Installation
 
 ```bash
-./target/release/pekobot --version
+./target/release/peko --version
 
-./target/release/pekobot --help
+./target/release/peko --help
 ```
 
 ---
@@ -88,10 +88,10 @@ An agent is the fundamental unit in Pekobot. It has:
 Every agent gets a unique identifier like:
 
 ```
-did:pekobot:local:default:abc123def456
+did:peko:local:default:abc123def456
 ```
 
-Format: `did:pekobot:{scope}:{tenant}:{identifier}`
+Format: `did:peko:{scope}:{tenant}:{identifier}`
 
 - **Scope**: `local`, `tenant`, or `global`
 - **Tenant**: Organization or namespace (team)
@@ -126,14 +126,14 @@ export KIMI_API_KEY="your-kimi-key"
 
 ```bash
 # Create a new agent
-./target/release/pekobot agent create my-agent --provider minimax
+./target/release/peko agent create my-agent --provider minimax
 ```
 
 ### 3. Send a Message
 
 ```bash
 # Send a message to the agent
-./target/release/pekobot send my-agent "Hello, what can you do?"
+./target/release/peko send my-agent "Hello, what can you do?"
 ```
 
 You'll see the agent's response streamed to your terminal.
@@ -142,7 +142,7 @@ You'll see the agent's response streamed to your terminal.
 
 ```bash
 # Start a fresh conversation
-./target/release/pekobot send my-agent "Let's start fresh" --new
+./target/release/peko send my-agent "Let's start fresh" --new
 ```
 
 ---
@@ -175,8 +175,8 @@ max_tokens = 2048
 | `ANTHROPIC_API_KEY` | Your Anthropic API key |
 | `KIMI_API_KEY` | Your Kimi API key |
 | `RUST_LOG` | Logging level (debug, info, warn, error) |
-| `PEKOBOT_CONFIG_DIR` | Configuration directory override |
-| `PEKOBOT_DATA_DIR` | Data directory override |
+| `PEKO_CONFIG_DIR` | Configuration directory override |
+| `PEKO_DATA_DIR` | Data directory override |
 
 ### Configuration Priority
 
@@ -192,25 +192,25 @@ max_tokens = 2048
 ### List Sessions
 
 ```bash
-pekobot session list my-agent
+peko session list my-agent
 ```
 
 ### Show Session History
 
 ```bash
-pekobot session show my-agent sess_xxx
+peko session show my-agent sess_xxx
 ```
 
 ### Branch a Session
 
 ```bash
-pekobot session branch my-agent sess_xxx
+peko session branch my-agent sess_xxx
 ```
 
 ### Switch Active Session
 
 ```bash
-pekobot session switch my-agent sess_xxx
+peko session switch my-agent sess_xxx
 ```
 
 ### Compact a Session
@@ -218,7 +218,7 @@ pekobot session switch my-agent sess_xxx
 Compaction summarizes old messages to reduce context window usage:
 
 ```bash
-pekobot session compact my-agent sess_xxx
+peko session compact my-agent sess_xxx
 ```
 
 ---
@@ -228,21 +228,21 @@ pekobot session compact my-agent sess_xxx
 ### Create a Team
 
 ```bash
-pekobot team create myteam
+peko team create myteam
 ```
 
 ### Create Agents in a Team
 
 ```bash
-pekobot agent create myteam/planner --provider minimax
-pekobot agent create myteam/executor --provider minimax
+peko agent create myteam/planner --provider minimax
+peko agent create myteam/executor --provider minimax
 ```
 
 ### Send Messages to Team Agents
 
 ```bash
-pekobot send myteam/planner "Plan a project"
-pekobot send myteam/executor "Execute step 1"
+peko send myteam/planner "Plan a project"
+peko send myteam/executor "Execute step 1"
 ```
 
 ---
@@ -254,20 +254,20 @@ Extensions provide additional capabilities to agents through the Unified Extensi
 ### List Extensions
 
 ```bash
-pekobot ext list
+peko ext list
 ```
 
 ### Install an Extension
 
 ```bash
-pekobot ext install <path-or-url>
+peko ext install <path-or-url>
 ```
 
 ### Enable/Disable Capabilities
 
 ```bash
-pekobot ext enable <capability>
-pekobot ext disable <capability>
+peko ext enable <capability>
+peko ext disable <capability>
 ```
 
 ### MCP Servers
@@ -276,8 +276,8 @@ MCP (Model Context Protocol) servers are managed as extensions:
 
 ```bash
 # MCP servers are installed and managed via the ext command
-pekobot ext install <mcp-extension>
-pekobot ext enable <mcp-extension>
+peko ext install <mcp-extension>
+peko ext enable <mcp-extension>
 ```
 
 ---
@@ -289,9 +289,9 @@ pekobot ext enable <mcp-extension>
 **Problem:** Agent fails to respond to messages.
 
 **Solution:**
-- Check the agent exists: `pekobot agent list`
+- Check the agent exists: `peko agent list`
 - Verify your API key is set: `echo $OPENAI_API_KEY`
-- Check the agent configuration: `pekobot agent show my-agent`
+- Check the agent configuration: `peko agent show my-agent`
 
 ### API Key Errors
 
@@ -307,20 +307,20 @@ pekobot ext enable <mcp-extension>
 **Problem:** Session not found or corrupted.
 
 **Solution:**
-- List available sessions: `pekobot session list my-agent`
-- Start a new session: `pekobot send my-agent "Hello" --new`
-- Compact old sessions: `pekobot session compact my-agent sess_xxx`
+- List available sessions: `peko session list my-agent`
+- Start a new session: `peko send my-agent "Hello" --new`
+- Compact old sessions: `peko session compact my-agent sess_xxx`
 
 ### Getting Help
 
 ```bash
 # Show help
-./target/release/pekobot --help
+./target/release/peko --help
 
 # Show command-specific help
-./target/release/pekobot agent --help
-./target/release/pekobot send --help
-./target/release/pekobot ext --help
+./target/release/peko agent --help
+./target/release/peko send --help
+./target/release/peko ext --help
 ```
 
 ---

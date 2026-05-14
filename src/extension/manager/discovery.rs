@@ -18,34 +18,34 @@ pub mod discovery_paths {
 
     #[must_use]
     pub fn user_config() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("pekobot/extensions"))
+        dirs::config_dir().map(|d| d.join("peko/extensions"))
     }
 
     #[must_use]
     pub fn user_data() -> Option<PathBuf> {
-        dirs::data_dir().map(|d| d.join("pekobot/extensions"))
+        dirs::data_dir().map(|d| d.join("peko/extensions"))
     }
 
     #[must_use]
     pub fn project_local() -> PathBuf {
-        PathBuf::from(".pekobot/extensions")
+        PathBuf::from(".peko/extensions")
     }
 
     #[must_use]
     pub fn system_wide() -> Option<PathBuf> {
         #[cfg(target_os = "linux")]
         {
-            Some(PathBuf::from("/usr/share/pekobot/extensions"))
+            Some(PathBuf::from("/usr/share/peko/extensions"))
         }
         #[cfg(target_os = "macos")]
         {
             Some(PathBuf::from(
-                "/Library/Application Support/pekobot/extensions",
+                "/Library/Application Support/peko/extensions",
             ))
         }
         #[cfg(target_os = "windows")]
         {
-            Some(PathBuf::from("C:\\ProgramData\\pekobot\\extensions"))
+            Some(PathBuf::from("C:\\ProgramData\\peko\\extensions"))
         }
     }
 
@@ -76,6 +76,6 @@ mod tests {
     fn test_discovery_paths() {
         let paths = discovery_paths::all();
         assert!(!paths.is_empty());
-        assert!(paths.contains(&PathBuf::from(".pekobot/extensions")));
+        assert!(paths.contains(&PathBuf::from(".peko/extensions")));
     }
 }

@@ -461,7 +461,7 @@ impl RegistryClient {
         let req = self.http.put(&url);
         let req = auth.apply(req);
         let req = req
-            .header("Content-Type", "application/vnd.pekobot.manifest.v1+json")
+            .header("Content-Type", "application/vnd.peko.manifest.v1+json")
             .body(json);
 
         let response = req.send().await?;

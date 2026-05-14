@@ -25,8 +25,8 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -36,15 +36,15 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -56,7 +56,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $agentName = "testagent"
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
-$result = pekobot agent create $agentName --provider $Provider 2>&1
+$result = peko agent create $agentName --provider $Provider 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Created agent") {
@@ -74,7 +74,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $providerAgent = "provideragent"
 Write-Host "Creating agent with explicit provider: $providerAgent" -ForegroundColor Yellow
-$result = pekobot agent create $providerAgent --provider $Provider 2>&1
+$result = peko agent create $providerAgent --provider $Provider 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Created agent" -and $result -match $Provider) {
@@ -91,7 +91,7 @@ Write-Host "TEST 3: Agent create with --force (overwrite)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Creating agent with --force to overwrite existing: $agentName" -ForegroundColor Yellow
-$result = pekobot agent create $agentName --provider $Provider --force 2>&1
+$result = peko agent create $agentName --provider $Provider --force 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Created agent") {
@@ -108,12 +108,12 @@ Write-Host "TEST 4: Agent create in specific team" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $teamName = "testteam"
-pekobot team create $teamName 2>&1 | Out-Null
+peko team create $teamName 2>&1 | Out-Null
 Write-Host "Created team: $teamName" -ForegroundColor Green
 
 $teamAgent = "teamagent"
 Write-Host "Creating agent in team: $teamName/$teamAgent" -ForegroundColor Yellow
-$result = pekobot agent create "$teamName/$teamAgent" --provider $Provider 2>&1
+$result = peko agent create "$teamName/$teamAgent" --provider $Provider 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Created agent") {
@@ -131,7 +131,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Attempting to create duplicate agent: $agentName" -ForegroundColor Yellow
 try {
-    $result = pekobot agent create $agentName --provider $Provider 2>&1
+    $result = peko agent create $agentName --provider $Provider 2>&1
     Write-Host "Output: $result"
     if ($result -match "already exists" -or $result -match "Error" -or $result -match "exists") {
         Write-Host "✓ Got expected error for duplicate agent" -ForegroundColor Green
@@ -150,7 +150,7 @@ Write-Host "TEST 6: Agent list (basic)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Listing agents..." -ForegroundColor Yellow
-$result = pekobot agent list 2>&1
+$result = peko agent list 2>&1
 Write-Host "Output:"
 Write-Host $result
 
@@ -168,7 +168,7 @@ Write-Host "TEST 7: Agent list with --long" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Listing agents with --long..." -ForegroundColor Yellow
-$result = pekobot agent list --long 2>&1
+$result = peko agent list --long 2>&1
 Write-Host "Output:"
 Write-Host $result
 
@@ -186,7 +186,7 @@ Write-Host "TEST 8: Agent list with --json" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Listing agents with --json..." -ForegroundColor Yellow
-$result = pekobot agent list --json 2>&1 | ConvertFrom-Json
+$result = peko agent list --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
@@ -204,7 +204,7 @@ Write-Host "TEST 9: Agent show (basic)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Showing agent details: $agentName" -ForegroundColor Yellow
-$result = pekobot agent show $agentName 2>&1
+$result = peko agent show $agentName 2>&1
 Write-Host "Output:"
 Write-Host $result
 
@@ -222,7 +222,7 @@ Write-Host "TEST 10: Agent show with --team" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Showing agent details with --team: $teamAgent in $teamName" -ForegroundColor Yellow
-$result = pekobot agent show $teamAgent --team $teamName 2>&1
+$result = peko agent show $teamAgent --team $teamName 2>&1
 Write-Host "Output:"
 Write-Host $result
 
@@ -240,7 +240,7 @@ Write-Host "TEST 11: Agent show with --json" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Showing agent details with --json: $agentName" -ForegroundColor Yellow
-$result = pekobot agent show $agentName --json 2>&1 | ConvertFrom-Json
+$result = peko agent show $agentName --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
@@ -259,7 +259,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Attempting to show non-existent agent..." -ForegroundColor Yellow
 try {
-    $result = pekobot agent show nonexistentagent123 2>&1
+    $result = peko agent show nonexistentagent123 2>&1
     Write-Host "Output: $result"
     if ($result -match "not found" -or $result -match "Error") {
         Write-Host "✓ Got expected error for non-existent agent" -ForegroundColor Green
@@ -279,7 +279,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $newAgentName = "movedagent"
 Write-Host "Moving agent: $agentName -> $newAgentName" -ForegroundColor Yellow
-$result = pekobot agent move $agentName $newAgentName 2>&1
+$result = peko agent move $agentName $newAgentName 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Renamed agent" -or $result -match "moved") {
@@ -289,7 +289,7 @@ if ($result -match "Renamed agent" -or $result -match "moved") {
 }
 
 # Verify old agent no longer exists
-$result = pekobot agent list 2>&1
+$result = peko agent list 2>&1
 if ($result -notmatch $agentName -and $result -match $newAgentName) {
     Write-Host "✓ Old agent name no longer exists, new name appears" -ForegroundColor Green
 } else {
@@ -304,11 +304,11 @@ Write-Host "TEST 14: Agent move with --json output" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $jsonAgent = "jsonagent"
-pekobot agent create $jsonAgent --provider $Provider 2>&1 | Out-Null
+peko agent create $jsonAgent --provider $Provider 2>&1 | Out-Null
 
 $jsonNewName = "jsonmoved"
 Write-Host "Moving agent with JSON output: $jsonAgent -> $jsonNewName" -ForegroundColor Yellow
-$result = pekobot agent move $jsonAgent $jsonNewName --json 2>&1 | ConvertFrom-Json
+$result = peko agent move $jsonAgent $jsonNewName --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
@@ -326,13 +326,13 @@ Write-Host "TEST 15: Agent move with --team (cross-team move)" -ForegroundColor 
 Write-Host "========================================" -ForegroundColor Cyan
 
 $crossTeamAgent = "crossteamagent"
-pekobot agent create $crossTeamAgent --provider $Provider 2>&1 | Out-Null
+peko agent create $crossTeamAgent --provider $Provider 2>&1 | Out-Null
 
 $newTeamName = "newteam"
-pekobot team create $newTeamName 2>&1 | Out-Null
+peko team create $newTeamName 2>&1 | Out-Null
 
 Write-Host "Moving agent to different team: $crossTeamAgent (default) -> $crossTeamAgent ($newTeamName)" -ForegroundColor Yellow
-$result = pekobot agent move $crossTeamAgent $crossTeamAgent --to-team $newTeamName --json 2>&1 | ConvertFrom-Json
+$result = peko agent move $crossTeamAgent $crossTeamAgent --to-team $newTeamName --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
@@ -351,7 +351,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Attempting to move to existing agent name..." -ForegroundColor Yellow
 try {
-    $result = pekobot agent move $newAgentName $providerAgent 2>&1
+    $result = peko agent move $newAgentName $providerAgent 2>&1
     Write-Host "Output: $result"
     if ($result -match "already exists" -or $result -match "exists" -or $result -match "Error") {
         Write-Host "✓ Got expected error for existing target" -ForegroundColor Green
@@ -371,7 +371,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Attempting to move non-existent agent..." -ForegroundColor Yellow
 try {
-    $result = pekobot agent move nonexistent123 newname 2>&1
+    $result = peko agent move nonexistent123 newname 2>&1
     Write-Host "Output: $result"
     if ($result -match "not found" -or $result -match "Error") {
         Write-Host "✓ Got expected error for non-existent agent" -ForegroundColor Green
@@ -390,7 +390,7 @@ Write-Host "TEST 18: Agent remove with --force" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Removing agent (with --force): $newAgentName" -ForegroundColor Yellow
-$result = pekobot agent remove $newAgentName --force 2>&1
+$result = peko agent remove $newAgentName --force 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Deleted" -or $result -match "Removed") {
@@ -400,7 +400,7 @@ if ($result -match "Deleted" -or $result -match "Removed") {
 }
 
 # Verify agent is gone
-$result = pekobot agent list 2>&1
+$result = peko agent list 2>&1
 if ($result -notmatch $newAgentName) {
     Write-Host "✓ Agent no longer appears in list" -ForegroundColor Green
 } else {
@@ -415,7 +415,7 @@ Write-Host "TEST 19: Agent remove with --json output" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Removing agent with JSON output: $jsonNewName" -ForegroundColor Yellow
-$result = pekobot agent remove $jsonNewName --force --json 2>&1 | ConvertFrom-Json
+$result = peko agent remove $jsonNewName --force --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
@@ -433,10 +433,10 @@ Write-Host "TEST 20: Agent remove with --purge" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $purgeAgent = "purgeagent"
-pekobot agent create $purgeAgent --provider $Provider 2>&1 | Out-Null
+peko agent create $purgeAgent --provider $Provider 2>&1 | Out-Null
 
 Write-Host "Removing agent with --purge: $purgeAgent" -ForegroundColor Yellow
-$result = pekobot agent remove $purgeAgent --force --purge 2>&1
+$result = peko agent remove $purgeAgent --force --purge 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Deleted" -or $result -match "Removed" -or $result -match "purge") {
@@ -454,7 +454,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Attempting to remove non-existent agent..." -ForegroundColor Yellow
 try {
-    $result = pekobot agent remove nonexistent123 --force 2>&1
+    $result = peko agent remove nonexistent123 --force 2>&1
     Write-Host "Output: $result"
     if ($result -match "not found" -or $result -match "Error") {
         Write-Host "✓ Got expected error for non-existent agent" -ForegroundColor Green
@@ -473,10 +473,10 @@ Write-Host "TEST 22: Agent delete alias (backward compatibility)" -ForegroundCol
 Write-Host "========================================" -ForegroundColor Cyan
 
 $aliasAgent = "aliastest"
-pekobot agent create $aliasAgent --provider $Provider 2>&1 | Out-Null
+peko agent create $aliasAgent --provider $Provider 2>&1 | Out-Null
 
 Write-Host "Removing agent using 'delete' alias: $aliasAgent" -ForegroundColor Yellow
-$result = pekobot agent delete $aliasAgent --force 2>&1
+$result = peko agent delete $aliasAgent --force 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Deleted" -or $result -match "Removed") {
@@ -493,16 +493,16 @@ Write-Host "TEST 23: Agent rename alias (backward compatibility)" -ForegroundCol
 Write-Host "========================================" -ForegroundColor Cyan
 
 $renameAgent = "renametest"
-pekobot agent create $renameAgent --provider $Provider 2>&1 | Out-Null
+peko agent create $renameAgent --provider $Provider 2>&1 | Out-Null
 
 Write-Host "Renaming agent using 'rename' alias: $renameAgent -> renamedalias" -ForegroundColor Yellow
-$result = pekobot agent rename $renameAgent renamedalias 2>&1
+$result = peko agent rename $renameAgent renamedalias 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Renamed" -or $result -match "moved") {
     Write-Host "✓ 'rename' alias works correctly" -ForegroundColor Green
     # Clean up
-    pekobot agent remove renamedalias --force 2>&1 | Out-Null
+    peko agent remove renamedalias --force 2>&1 | Out-Null
 } else {
     Write-Error "'rename' alias failed"
 }
@@ -515,15 +515,15 @@ Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Clean up remaining test agents and teams
-pekobot agent remove $providerAgent --force 2>&1 | Out-Null
-pekobot agent remove $teamAgent --team $teamName --force 2>&1 | Out-Null
-pekobot agent remove $crossTeamAgent --team $newTeamName --force 2>&1 | Out-Null
-pekobot team remove $teamName --force 2>&1 | Out-Null
-pekobot team remove $newTeamName --force 2>&1 | Out-Null
+peko agent remove $providerAgent --force 2>&1 | Out-Null
+peko agent remove $teamAgent --team $teamName --force 2>&1 | Out-Null
+peko agent remove $crossTeamAgent --team $newTeamName --force 2>&1 | Out-Null
+peko team remove $teamName --force 2>&1 | Out-Null
+peko team remove $newTeamName --force 2>&1 | Out-Null
 Write-Host "Cleaned up remaining test agents and teams" -ForegroundColor Green
 
 # Final state check
-$finalAgents = pekobot agent list 2>&1
+$finalAgents = peko agent list 2>&1
 Write-Host "Final agent list:"
 Write-Host $finalAgents
 

@@ -6,7 +6,7 @@
 **Author**: Kimi Code CLI  
 **Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-024 (Unified Extension Manifest)  
 **Replaces / Supersedes**: `gateways/` workspace at project root (legacy plugin approach)
-**Superseded In Part By**: ADR-026 (Separate Extension Runtime Lifecycle from Access Control) — redefines the CLI semantics for `pekobot ext enable` / `disable` vs `start` / `stop`
+**Superseded In Part By**: ADR-026 (Separate Extension Runtime Lifecycle from Access Control) — redefines the CLI semantics for `peko ext enable` / `disable` vs `start` / `stop`
 
 ---
 
@@ -14,7 +14,7 @@
 
 ### The Goal
 
-Users should be able to talk to Pekobot agents through **any channel**: Discord, WhatsApp, Slack, a local TUI, a web dashboard, or a raw HTTPS endpoint. The channel itself is pluggable — installed as an external extension, enabled per-agent, and managed through the unified `pekobot ext` CLI.
+Users should be able to talk to Pekobot agents through **any channel**: Discord, WhatsApp, Slack, a local TUI, a web dashboard, or a raw HTTPS endpoint. The channel itself is pluggable — installed as an external extension, enabled per-agent, and managed through the unified `peko ext` CLI.
 
 ### Why This Requires a New ADR
 
@@ -53,7 +53,7 @@ Instead of a separate `GatewayRuntimeManager`, we introduce a **single `Backgrou
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         PEKOBOT DAEMON                                      │
+│                         PEKO DAEMON                                      │
 │                                                                             │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐ │
 │  │  Cron Scheduler │  │  IPC Server     │  │  BackgroundRuntimeManager │ │
@@ -556,20 +556,20 @@ No changes to `ipc/server.rs`, `commands/ext.rs`, or the CLI protocol.
 
 ```bash
 # Install a gateway
-pekobot ext install ./discord-gateway
+peko ext install ./discord-gateway
 
 # Start the background runtime (daemon-scoped)
-pekobot ext start discord-gateway
+peko ext start discord-gateway
 
 # Grant agent access (agent-scoped)
-pekobot ext enable discord-gateway --target myteam/myagent
+peko ext enable discord-gateway --target myteam/myagent
 
 # Background runtimes appear in daemon status
-pekobot daemon status
+peko daemon status
 # → Background Runtimes: mcp:filesystem (healthy), gateway:discord (healthy)
 
 # Route specific channels to specific agents
-pekobot ext config discord-gateway --set routing.channel_map.#general=assistant
+peko ext config discord-gateway --set routing.channel_map.#general=assistant
 ```
 
 ---
@@ -599,7 +599,7 @@ pekobot ext config discord-gateway --set routing.channel_map.#general=assistant
 ### Phase 0: Remove Legacy `gateways/` Workspace (Immediate)
 
 1. Delete the broken `gateways/` directory at project root.
-2. The workspace references `../pekobot/src/gateway` which does not exist — it is already non-compiling.
+2. The workspace references `../peko/src/gateway` which does not exist — it is already non-compiling.
 3. Update documentation.
 
 ### Phase 1: Shared Process Primitives + BackgroundRuntimeManager Skeleton (Immediate)
@@ -686,7 +686,7 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 - **McpManager shrinks from 600+ to ~150 lines.** MCP-specific code only.
 - **Gateway gets supervision for free.** Automatic restart, health checks, crash reporting.
 - **Users can talk to agents through Discord, TUI, HTTP, etc.** — any channel is pluggable.
-- **Unified lifecycle.** All background runtimes installed via `pekobot ext`, started via `pekobot ext start`, and access-controlled via `pekobot ext enable` (per ADR-026).
+- **Unified lifecycle.** All background runtimes installed via `peko ext`, started via `peko ext start`, and access-controlled via `peko ext enable` (per ADR-026).
 - **No core bloat.** Only used platforms are loaded.
 - **Third-party extensible.** Community maintains channels without core PRs.
 - **Safe runtime.** No `unsafe` FFI or dynamic loading.
@@ -711,8 +711,8 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 | `BackgroundRuntimeManager` exists and is initialized in `Daemon::run()` | ✅ Done | Initialized in `AppState::build()`; accessible via `app_state.background_runtime_manager()` |
 | `McpManager` refactored to use `BackgroundRuntimeManager` + `McpRuntimeAdapter` | ✅ Done | `McpManager` now accepts shared `BackgroundRuntimeManager` and `McpClientRegistry` via `with_shared_resources()`. Standalone mode (`new()`) still works for tests. SSE servers still handled directly. |
 | All existing MCP E2E tests pass after refactoring | ✅ Done | 940 unit tests pass; all MCP-specific tests pass. |
-| `GatewayRuntimeAdapter` implemented and registered in CLI | ✅ Done | `GatewayRuntimeAdapter` + `GatewayFlavor` implemented in `src/daemon/background_runtime/gateway_adapter.rs`. CLI registration via `pekobot ext start <id>` wired through IPC (ADR-026 Phase 1). |
-| Out-of-process gateway can be started (spawns child process) and stopped | ✅ Done | `BackgroundRuntimeManager::start()` with `RuntimeSpawnConfig::Process` works. Gateway-specific spawn/stop via `pekobot ext start/stop` wired through daemon IPC (ADR-026 Phase 1). |
+| `GatewayRuntimeAdapter` implemented and registered in CLI | ✅ Done | `GatewayRuntimeAdapter` + `GatewayFlavor` implemented in `src/daemon/background_runtime/gateway_adapter.rs`. CLI registration via `peko ext start <id>` wired through IPC (ADR-026 Phase 1). |
+| Out-of-process gateway can be started (spawns child process) and stopped | ✅ Done | `BackgroundRuntimeManager::start()` with `RuntimeSpawnConfig::Process` works. Gateway-specific spawn/stop via `peko ext start/stop` wired through daemon IPC (ADR-026 Phase 1). |
 | `GatewayPacket`/`GatewayResponse` stdio-line protocol handled end-to-end | ✅ Done | Types + encode/decode in `src/daemon/background_runtime/protocol.rs`. Stdout read loop routes `Receive` messages to `GatewayRouter`. |
 | HTTP API gateway (out-of-process) accepts POST and routes to agent | ✅ Done | Reference Node.js gateway at `e2e_tests/extensions/gateway/http_basics/`. Simulates HTTP POST by emitting synthetic `Receive` message. |
 | Agent response is delivered back to the originating channel | ✅ Done | `GatewayRouter::route_incoming()` executes agent, then `GatewayRuntimeAdapter::handle_gateway_response()` calls `deliver_response()` which sends `GatewayPacket::Deliver` via the packet channel to the gateway process. |

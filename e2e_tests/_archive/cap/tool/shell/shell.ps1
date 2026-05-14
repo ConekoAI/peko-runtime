@@ -19,8 +19,8 @@ if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -30,33 +30,33 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent with coding template
 $agentName = "shell_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable shell tool via extension framework
-pekobot ext enable shell 2>&1 | Out-Null
+peko ext enable shell 2>&1 | Out-Null
 Write-Host "Enabled shell tool via extension framework" -ForegroundColor Green
 
 # Get workspace directory
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
 
 # ============================================================
 # TEST 1: Basic shell command
@@ -67,7 +67,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $cmd = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dir" } else { "ls" }
 Write-Host "Sending request to execute $cmd..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your shell tool to run '$cmd' in your workspace. Report the output." --no-stream 2>&1
+$result = peko send $agentName "Use your shell tool to run '$cmd' in your workspace. Report the output." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "Directory" -or $result -match "total" -or $result -match "file") {
@@ -88,7 +88,7 @@ New-Item -ItemType Directory -Path "$workspaceDir/testdir" -Force | Out-Null
 "test file" | Out-File -FilePath "$workspaceDir/testdir/test.txt" -Encoding UTF8
 
 Write-Host "Sending request to list files in subdirectory..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your shell tool to run '$cmd' in the 'testdir' subdirectory. Report what files you see." --no-stream 2>&1
+$result = peko send $agentName "Use your shell tool to run '$cmd' in the 'testdir' subdirectory. Report what files you see." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "test.txt") {
@@ -110,7 +110,7 @@ if (Test-Path "$workspaceDir/testdir") {
     Write-Host "Removed test directory" -ForegroundColor Green
 }
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ Shell tool e2e tests completed!" -ForegroundColor Green

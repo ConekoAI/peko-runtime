@@ -456,7 +456,7 @@ pub async fn run(
             );
             println!("\nConfigure external services to POST to:");
             println!("  http://your-host:{port}/webhook/ingress");
-            println!("\nAdd sources with: pekobot orchestration ingress-add");
+            println!("\nAdd sources with: peko orchestration ingress-add");
 
             Ok(())
         }

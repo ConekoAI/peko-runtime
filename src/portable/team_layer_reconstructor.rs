@@ -196,7 +196,7 @@ agent_count = 1
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"
@@ -213,7 +213,7 @@ include_mcp = false
         );
         files.insert(
             "agents/researcher/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:researcher"}"#.to_vec(),
+            br#"{"id":"did:peko:researcher"}"#.to_vec(),
         );
         files.insert(
             "agents/researcher/skills/rust/SKILL.md".to_string(),
@@ -338,7 +338,7 @@ agent_count = 1
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"
@@ -354,7 +354,7 @@ include_mcp = false
         );
         files.insert(
             "agents/minimal/identity/did.json".to_string(),
-            br#"{"id":"did:pekobot:minimal"}"#.to_vec(),
+            br#"{"id":"did:peko:minimal"}"#.to_vec(),
         );
 
         let decomposed = decompose_team_archive(&files).unwrap();
@@ -407,7 +407,7 @@ agent_count = 0
 
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [export]
 created_at = "2024-01-01T00:00:00Z"

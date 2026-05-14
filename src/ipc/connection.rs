@@ -11,7 +11,7 @@
 //! connection lifecycle.
 //!
 //! The CLI does NOT auto-start the daemon. Like Docker, the daemon must be
-//! started explicitly by the user (`pekobot daemon start`). This avoids:
+//! started explicitly by the user (`peko daemon start`). This avoids:
 //! - Privilege boundary issues (daemon may need elevated permissions)
 //! - Ambiguity about where to start the daemon (local vs remote)
 //! - Unexpected resource consumption from background processes
@@ -103,7 +103,7 @@ impl ConnectionHandle {
                 // Include a random suffix so concurrent clones don't collide.
                 let rnd: u32 = std::process::id().wrapping_add(rand::random());
                 let tmp_path = std::env::temp_dir().join(format!(
-                    "pekobot_cli_{}_{}.sock",
+                    "PEKO_cli_{}_{}.sock",
                     std::process::id(),
                     rnd
                 ));
@@ -133,7 +133,7 @@ impl ConnectionManager {
     /// Connect to the daemon, failing if it's not running.
     ///
     /// The CLI does NOT auto-start the daemon. Start it manually with:
-    ///   pekobot daemon start
+    ///   peko daemon start
     ///
     /// # Errors
     /// Returns error if daemon is not reachable
@@ -221,7 +221,7 @@ impl ConnectionManager {
         }
 
         let tmp_path =
-            std::env::temp_dir().join(format!("pekobot_cli_{}.sock", std::process::id()));
+            std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&tmp_path);
         let socket = UnixDatagram::bind(&tmp_path)
             .map_err(|e| anyhow::anyhow!("Failed to bind Unix socket: {e}"))?;

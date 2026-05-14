@@ -18,8 +18,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Config Get/Set E2E Test (ADR-028)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -30,10 +30,10 @@ if ($LASTEXITCODE -ne 0) {
 popd
 
 # Use isolated config directory
-$testDir = "$env:TEMP/pekobot_config_test_$(Get-Random)"
-$env:PEKOBOT_CONFIG_DIR = $testDir
-$env:PEKOBOT_DATA_DIR = "$testDir/data"
-$env:PEKOBOT_CACHE_DIR = "$testDir/cache"
+$testDir = "$env:TEMP/PEKO_config_test_$(Get-Random)"
+$env:PEKO_CONFIG_DIR = $testDir
+$env:PEKO_DATA_DIR = "$testDir/data"
+$env:PEKO_CACHE_DIR = "$testDir/cache"
 
 function Cleanup {
     if (Test-Path $testDir) {
@@ -49,7 +49,7 @@ try {
     Write-Host "TEST 1: config path" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = pekobot config path 2>&1
+    $result = peko config path 2>&1
     Write-Host "Output: $result"
     if ($result -match "Config dir" -and $result -match $testDir) {
         Write-Host "✓ config path shows correct directory" -ForegroundColor Green
@@ -64,7 +64,7 @@ try {
     Write-Host "TEST 2: config path --json" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = pekobot config path --json 2>&1
+    $result = peko config path --json 2>&1
     Write-Host "Output: $result"
     if ($result -match '"config_dir"' -and $result -match '"config_file"') {
         Write-Host "✓ config path --json returns valid JSON" -ForegroundColor Green
@@ -84,7 +84,7 @@ try {
         Remove-Item $configFile -Force
     }
 
-    $result = pekobot config set daemon.bind_address "0.0.0.0:8080" 2>&1
+    $result = peko config set daemon.bind_address "0.0.0.0:8080" 2>&1
     Write-Host "Output: $result"
     if ($result -match "Set 'daemon.bind_address'" -and (Test-Path $configFile)) {
         Write-Host "✓ config set created config.toml" -ForegroundColor Green
@@ -99,7 +99,7 @@ try {
     Write-Host "TEST 4: config get (read existing value)" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = pekobot config get daemon.bind_address 2>&1
+    $result = peko config get daemon.bind_address 2>&1
     Write-Host "Output: $result"
     if ($result -match "0.0.0.0:8080") {
         Write-Host "✓ config get returned correct value" -ForegroundColor Green
@@ -114,7 +114,7 @@ try {
     Write-Host "TEST 5: config get --json" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = pekobot config get daemon.bind_address --json 2>&1
+    $result = peko config get daemon.bind_address --json 2>&1
     Write-Host "Output: $result"
     if ($result -match '"key"' -and $result -match '"value"') {
         Write-Host "✓ config get --json returns valid JSON" -ForegroundColor Green
@@ -129,7 +129,7 @@ try {
     Write-Host "TEST 6: config set --json" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = pekobot config set defaults.provider "kimi" --json 2>&1
+    $result = peko config set defaults.provider "kimi" --json 2>&1
     Write-Host "Output: $result"
     if ($result -match '"success"' -and $result -match '"key"') {
         Write-Host "✓ config set --json returns valid JSON" -ForegroundColor Green
@@ -144,7 +144,7 @@ try {
     Write-Host "TEST 7: config get missing key (should error)" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = pekobot config get does.not.exist 2>&1
+    $result = peko config get does.not.exist 2>&1
     Write-Host "Output: $result"
     if ($LASTEXITCODE -ne 0 -or $result -match "not found" -or $result -match "Error") {
         Write-Host "✓ config get missing key returns error" -ForegroundColor Green
@@ -160,7 +160,7 @@ try {
     Write-Host "TEST 8: config validate (valid TOML)" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = pekobot config validate 2>&1
+    $result = peko config validate 2>&1
     Write-Host "Output: $result"
     if ($result -match "Valid TOML") {
         Write-Host "✓ config validate passes for valid TOML" -ForegroundColor Green
@@ -177,7 +177,7 @@ try {
 
     $badFile = "$testDir/bad.toml"
     "not valid toml [[[" | Out-File -FilePath $badFile -Encoding utf8
-    $result = pekobot config validate $badFile 2>&1
+    $result = peko config validate $badFile 2>&1
     Write-Host "Output: $result"
     if ($LASTEXITCODE -ne 0 -or $result -match "Invalid TOML" -or $result -match "Error") {
         Write-Host "✓ config validate fails for invalid TOML" -ForegroundColor Green
@@ -193,7 +193,7 @@ try {
     Write-Host "TEST 10: config defaults" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = pekobot config defaults 2>&1
+    $result = peko config defaults 2>&1
     Write-Host "Output: $result"
     if ($result -match "daemon" -and $result -match "defaults") {
         Write-Host "✓ config defaults shows default configuration" -ForegroundColor Green
@@ -212,7 +212,7 @@ try {
     if (Test-Path $initFile) {
         Remove-Item $initFile -Force
     }
-    $result = pekobot config init --output $initFile 2>&1
+    $result = peko config init --output $initFile 2>&1
     Write-Host "Output: $result"
     if ((Test-Path $initFile) -and $result -match "Created config") {
         Write-Host "✓ config init created file" -ForegroundColor Green
@@ -228,8 +228,8 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Boolean
-    pekobot config set daemon.debug true 2>&1 | Out-Null
-    $result = pekobot config get daemon.debug 2>&1
+    peko config set daemon.debug true 2>&1 | Out-Null
+    $result = peko config get daemon.debug 2>&1
     Write-Host "Boolean get: $result"
     if ($result -match "true") {
         Write-Host "✓ Boolean value set/get works" -ForegroundColor Green
@@ -238,8 +238,8 @@ try {
     }
 
     # Number
-    pekobot config set defaults.temperature 0.5 2>&1 | Out-Null
-    $result = pekobot config get defaults.temperature 2>&1
+    peko config set defaults.temperature 0.5 2>&1 | Out-Null
+    $result = peko config get defaults.temperature 2>&1
     Write-Host "Number get: $result"
     if ($result -match "0.5") {
         Write-Host "✓ Number value set/get works" -ForegroundColor Green
@@ -248,8 +248,8 @@ try {
     }
 
     # Array (JSON)
-    pekobot config set security.strip_env '["*_API_KEY", "*_TOKEN"]' 2>&1 | Out-Null
-    $result = pekobot config get security.strip_env 2>&1
+    peko config set security.strip_env '["*_API_KEY", "*_TOKEN"]' 2>&1 | Out-Null
+    $result = peko config get security.strip_env 2>&1
     Write-Host "Array get: $result"
     if ($result -match "API_KEY" -and $result -match "TOKEN") {
         Write-Host "✓ Array value set/get works" -ForegroundColor Green

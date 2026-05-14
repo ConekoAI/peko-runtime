@@ -37,11 +37,11 @@ if (-not $nodeCmd) {
 }
 Write-Host "Using Node.js: $(node --version)" -ForegroundColor Green
 
-# Build pekobot
+# Build peko
 $projectRoot = Resolve-Path "$PSScriptRoot/../../../../"
 $pekoBinary = Join-Path $projectRoot "target/debug/peko.exe"
 if (-not (Test-Path $pekoBinary)) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd $projectRoot
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -51,25 +51,25 @@ if (-not (Test-Path $pekoBinary)) {
     }
     popd
 } else {
-    Write-Host "Using existing pekobot binary" -ForegroundColor Green
+    Write-Host "Using existing peko binary" -ForegroundColor Green
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
-# Reset pekobot data
-$dataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+# Reset peko data
+$dataDir = "$env:USERPROFILE/AppData/Roaming/peko"
 if (Test-Path $dataDir) {
     Remove-Item -Recurse -Force $dataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -82,11 +82,11 @@ Write-Host "========================================" -ForegroundColor Cyan
 $gatewayDir = "$PSScriptRoot"
 Write-Host "Installing gateway extension from: $gatewayDir" -ForegroundColor Yellow
 
-$installResult = pekobot ext install $gatewayDir 2>&1
+$installResult = peko ext install $gatewayDir 2>&1
 Write-Host $installResult
 
 # Verify installation
-$extList = pekobot ext list --type gateway 2>&1
+$extList = peko ext list --type gateway 2>&1
 if ($extList -match "http-gateway-ref") {
     Write-Host "✓ Gateway extension 'http-gateway-ref' installed" -ForegroundColor Green
 } else {
@@ -104,7 +104,7 @@ $agentName = "gateway_test_agent"
 $teamName = "default"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
-pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "✓ Agent created" -ForegroundColor Green
 
 # ============================================================
@@ -114,21 +114,21 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 3: Start daemon" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "Starting pekobot daemon in background..." -ForegroundColor Yellow
+Write-Host "Starting peko daemon in background..." -ForegroundColor Yellow
 
 # Use Start-Process with output redirected to files so we can inspect later
-$daemonOut = "$env:TEMP\pekobot_daemon_out.log"
-$daemonErr = "$env:TEMP\pekobot_daemon_err.log"
+$daemonOut = "$env:TEMP\PEKO_daemon_out.log"
+$daemonErr = "$env:TEMP\PEKO_daemon_err.log"
 if (Test-Path $daemonOut) { Remove-Item $daemonOut }
 if (Test-Path $daemonErr) { Remove-Item $daemonErr }
 
-$daemonProc = Start-Process -FilePath "pekobot" -ArgumentList "daemon","start","--foreground" -PassThru -RedirectStandardOutput $daemonOut -RedirectStandardError $daemonErr -WindowStyle Hidden
+$daemonProc = Start-Process -FilePath "peko" -ArgumentList "daemon","start","--foreground" -PassThru -RedirectStandardOutput $daemonOut -RedirectStandardError $daemonErr -WindowStyle Hidden
 
 # Wait for daemon to be ready
 Start-Sleep -Seconds 4
 
 # Check daemon status
-$daemonStatus = pekobot daemon status 2>&1
+$daemonStatus = peko daemon status 2>&1
 Write-Host $daemonStatus
 if ($daemonStatus -match "running" -or $daemonStatus -match "Daemon is running") {
     Write-Host "✓ Daemon is running" -ForegroundColor Green
@@ -148,7 +148,7 @@ Write-Host "TEST 4: Start gateway background runtime" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Starting gateway background runtime..." -ForegroundColor Yellow
-$startResult = pekobot ext start http-gateway-ref 2>&1
+$startResult = peko ext start http-gateway-ref 2>&1
 Write-Host $startResult
 
 if ($startResult -match "started") {
@@ -167,7 +167,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 5: Check gateway runtime status" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$statusResult = pekobot ext status http-gateway-ref 2>&1
+$statusResult = peko ext status http-gateway-ref 2>&1
 Write-Host $statusResult
 
 if ($statusResult -match "running" -or $statusResult -match "healthy" -or $statusResult -match "starting") {
@@ -177,7 +177,7 @@ if ($statusResult -match "running" -or $statusResult -match "healthy" -or $statu
 }
 
 # Also check daemon status for background runtimes
-$daemonStatus2 = pekobot daemon status 2>&1
+$daemonStatus2 = peko daemon status 2>&1
 Write-Host "`nDaemon status:" -ForegroundColor Cyan
 Write-Host $daemonStatus2
 
@@ -202,7 +202,7 @@ Write-Host "Waiting for agent response..." -ForegroundColor Gray
 Start-Sleep -Seconds 5
 
 # Check gateway debug log
-$gatewayLog = "$env:APPDATA\pekobot\extensions\http-gateway-ref\gateway_debug.log"
+$gatewayLog = "$env:APPDATA\\peko\\extensions\http-gateway-ref\gateway_debug.log"
 Write-Host "Checking gateway debug log: $gatewayLog" -ForegroundColor Gray
 $deliverReceived = $false
 if (Test-Path $gatewayLog) {
@@ -218,7 +218,7 @@ if (Test-Path $gatewayLog) {
 }
 
 # Check sessions
-$sessions = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+$sessions = peko session list $agentName --json 2>&1 | ConvertFrom-Json
 if ($sessions.sessions.Count -ge 1) {
     Write-Host "✓ Session created by gateway message" -ForegroundColor Green
     $sessionId = $sessions.sessions[0].session_id
@@ -226,10 +226,10 @@ if ($sessions.sessions.Count -ge 1) {
 
     # Show session history
     Write-Host "`nSession history:" -ForegroundColor Cyan
-    pekobot session show $agentName --session-id $sessionId --history 2>&1 | Select-Object -First 20
+    peko session show $agentName --session-id $sessionId --history 2>&1 | Select-Object -First 20
 
     # Check session JSONL for gateway-related content
-    $sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl"
+    $sessionFile = "$env:USERPROFILE/AppData/Roaming/peko/sessions/default/$agentName/$sessionId.jsonl"
     if (Test-Path $sessionFile) {
         $content = Get-Content $sessionFile -Raw
         if ($content -match "Hello from HTTP gateway") {
@@ -254,7 +254,7 @@ Write-Host "TEST 7: Stop gateway background runtime" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Stopping gateway runtime..." -ForegroundColor Yellow
-$stopResult = pekobot ext stop http-gateway-ref 2>&1
+$stopResult = peko ext stop http-gateway-ref 2>&1
 Write-Host $stopResult
 
 if ($stopResult -match "stopped") {
@@ -265,7 +265,7 @@ if ($stopResult -match "stopped") {
 
 # Verify status shows stopped or not found
 Start-Sleep -Seconds 1
-$statusAfterStop = pekobot ext status http-gateway-ref 2>&1
+$statusAfterStop = peko ext status http-gateway-ref 2>&1
 Write-Host "Status after stop: $statusAfterStop"
 
 # ============================================================
@@ -276,7 +276,7 @@ Write-Host "TEST 8: Restart gateway background runtime" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Restarting gateway runtime..." -ForegroundColor Yellow
-$restartResult = pekobot ext restart http-gateway-ref 2>&1
+$restartResult = peko ext restart http-gateway-ref 2>&1
 Write-Host $restartResult
 
 if ($restartResult -match "restarted") {
@@ -295,18 +295,18 @@ Write-Host "Cleanup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Stop gateway if still running (best effort)
-pekobot ext stop http-gateway-ref 2>&1 | Out-Null
+peko ext stop http-gateway-ref 2>&1 | Out-Null
 
 # Uninstall gateway extension
-pekobot ext uninstall http-gateway-ref 2>&1 | Out-Null
+peko ext uninstall http-gateway-ref 2>&1 | Out-Null
 Write-Host "Uninstalled gateway extension" -ForegroundColor Green
 
 # Delete test agent
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 # Stop daemon
-pekobot daemon stop 2>&1 | Out-Null
+peko daemon stop 2>&1 | Out-Null
 Write-Host "Stopped daemon" -ForegroundColor Green
 
 # Ensure daemon process is terminated
@@ -316,9 +316,9 @@ if ($daemonProc -and -not $daemonProc.HasExited) {
 
 # Show daemon logs for debugging
 Write-Host "`nDaemon stdout log:" -ForegroundColor Gray
-Get-Content "$env:TEMP\pekobot_daemon_out.log" -ErrorAction SilentlyContinue | Select-Object -Last 20
+Get-Content "$env:TEMP\PEKO_daemon_out.log" -ErrorAction SilentlyContinue | Select-Object -Last 20
 Write-Host "`nDaemon stderr log:" -ForegroundColor Gray
-Get-Content "$env:TEMP\pekobot_daemon_err.log" -ErrorAction SilentlyContinue | Select-Object -Last 20
+Get-Content "$env:TEMP\PEKO_daemon_err.log" -ErrorAction SilentlyContinue | Select-Object -Last 20
 
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Test Complete" -ForegroundColor Cyan
@@ -336,4 +336,4 @@ Write-Host "  ✓ BackgroundRuntimeManager spawns gateway process" -ForegroundCo
 Write-Host "  ✓ GatewayPacket/GatewayResponse stdio protocol works" -ForegroundColor Cyan
 Write-Host "  ✓ GatewayRouter routes messages to agent" -ForegroundColor Cyan
 Write-Host "  ✓ Bidirectional delivery (Receive -> Agent -> Deliver)" -ForegroundColor Cyan
-Write-Host "  ✓ pekobot ext start/stop/status commands work" -ForegroundColor Cyan
+Write-Host "  ✓ peko ext start/stop/status commands work" -ForegroundColor Cyan

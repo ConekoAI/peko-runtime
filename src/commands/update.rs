@@ -33,7 +33,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 
     if check_only {
         println!("⚠️  Update available: v{current_version} → v{latest_version}");
-        println!("   Run 'pekobot update' to install");
+        println!("   Run 'peko update' to install");
         return Ok(());
     }
 
@@ -55,7 +55,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     println!("\n📥 Downloading update...");
     perform_update(&latest_version).await?;
 
-    println!("\n✅ Pekobot updated successfully to v{latest_version}");
+    println!("\n✅ peko updated successfully to v{latest_version}");
     println!("   Restart any running agents to use the new version");
 
     Ok(())
@@ -102,7 +102,7 @@ async fn query_latest_version() -> Result<String> {
 /// Perform the actual update
 async fn perform_update(version: &str) -> Result<()> {
     let platform = detect_platform()?;
-    let asset_name = format!("pekobot-{platform}.tar.gz");
+    let asset_name = format!("peko-{platform}.tar.gz");
 
     let download_url =
         format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{asset_name}");
@@ -111,10 +111,10 @@ async fn perform_update(version: &str) -> Result<()> {
     println!("   {download_url}");
 
     // Create temp directory
-    let tmp_dir = std::env::temp_dir().join("pekobot-update");
+    let tmp_dir = std::env::temp_dir().join("peko-update");
     std::fs::create_dir_all(&tmp_dir)?;
 
-    let download_path = tmp_dir.join("pekobot.tar.gz");
+    let download_path = tmp_dir.join("peko.tar.gz");
 
     // Download using curl
     let status = Command::new("curl")
@@ -171,27 +171,27 @@ async fn perform_update(version: &str) -> Result<()> {
     }
 
     // Find the binary
-    let new_binary = if tmp_dir.join("pekobot").exists() {
-        tmp_dir.join("pekobot")
-    } else if tmp_dir.join("target/release/pekobot").exists() {
-        tmp_dir.join("target/release/pekobot")
+    let new_binary = if tmp_dir.join("peko").exists() {
+        tmp_dir.join("peko")
+    } else if tmp_dir.join("target/release/peko").exists() {
+        tmp_dir.join("target/release/peko")
     } else {
         // Search for binary
         let output = Command::new("find")
-            .args([tmp_dir.to_str().unwrap(), "-name", "pekobot", "-type", "f"])
+            .args([tmp_dir.to_str().unwrap(), "-name", "peko", "-type", "f"])
             .output()?;
 
         let binary_path_str = String::from_utf8(output.stdout)?;
         let binary_path = binary_path_str
             .lines()
             .next()
-            .context("Could not find pekobot binary in archive")?;
+            .context("Could not find peko binary in archive")?;
 
         std::path::PathBuf::from(binary_path.to_string())
     };
 
     if !new_binary.exists() {
-        anyhow::bail!("Could not find pekobot binary in archive");
+        anyhow::bail!("Could not find peko binary in archive");
     }
 
     // Get current binary path

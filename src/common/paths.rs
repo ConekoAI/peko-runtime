@@ -6,9 +6,9 @@
 //!
 //! # Directory Structure
 //!
-//! ## Config Directory (`{config_dir}`, e.g., `~/.pekobot`)
+//! ## Config Directory (`{config_dir}`, e.g., `~/.peko`)
 //! ```text
-//! ~/.pekobot/                          # Config root
+//! ~/.peko/                          # Config root
 //! └── teams/
 //!     └── {team}/
 //!         └── agents/
@@ -18,7 +18,7 @@
 //!                 └── skills/          # Agent-specific skills
 //! ```
 //!
-//! ## Data Directory (`{data_dir}`, e.g., `~/.local/share/pekobot`)
+//! ## Data Directory (`{data_dir}`, e.g., `~/.local/share/peko`)
 //! ```text
 //! {data_dir}/
 //! ├── tools/                           # Downloaded/installed tools
@@ -42,24 +42,24 @@ pub const DEFAULT_TEAM: &str = "default";
 
 /// Get the default configuration directory
 ///
-/// Returns `~/.pekobot` or the current directory's `.pekobot` folder
+/// Returns `~/.peko` or the current directory's `.peko` folder
 /// as a fallback if home directory is not available.
 #[must_use]
 pub fn default_config_dir() -> PathBuf {
     dirs::home_dir().map_or_else(
-        || PathBuf::from(".").join(".pekobot"),
-        |d| d.join(".pekobot"),
+        || PathBuf::from(".").join(".peko"),
+        |d| d.join(".peko"),
     )
 }
 
 /// Get the default data directory
 ///
-/// Returns `~/.local/share/pekobot` on Linux,
-/// `~/Library/Application Support/pekobot` on macOS,
-/// or `%APPDATA%/pekobot` on Windows.
+/// Returns `~/.local/share/peko` on Linux,
+/// `~/Library/Application Support/peko` on macOS,
+/// or `%APPDATA%/peko` on Windows.
 /// Falls back to the config directory if `data_dir` is not available.
 pub fn default_data_dir() -> PathBuf {
-    dirs::data_dir().map_or_else(default_config_dir, |d| d.join("pekobot"))
+    dirs::data_dir().map_or_else(default_config_dir, |d| d.join("peko"))
 }
 
 /// Get the default cache directory
@@ -67,7 +67,7 @@ pub fn default_data_dir() -> PathBuf {
 /// Falls back to `{data_dir}/cache` if `cache_dir` is not available.
 #[must_use]
 pub fn default_cache_dir() -> PathBuf {
-    dirs::cache_dir().map_or_else(|| default_data_dir().join("cache"), |d| d.join("pekobot"))
+    dirs::cache_dir().map_or_else(|| default_data_dir().join("cache"), |d| d.join("peko"))
 }
 
 /// Path resolver for Pekobot's directory structure
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn test_path_resolver_default() {
         let resolver = PathResolver::new();
-        assert!(resolver.config_dir().to_string_lossy().contains(".pekobot"));
+        assert!(resolver.config_dir().to_string_lossy().contains(".peko"));
     }
 
     #[test]

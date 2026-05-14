@@ -107,7 +107,7 @@ pub async fn get_package_info(path: impl AsRef<Path>) -> anyhow::Result<PackageI
         did: manifest.agent.did,
         created_at: manifest.agent.created_at,
         export_format: manifest.agent.export_format,
-        pekobot_version: manifest.agent.pekobot_version,
+        peko_version: manifest.agent.peko_version,
         encrypted: manifest.identity.encrypted,
         layers: Vec::new(),
         valid: validation.is_valid(),
@@ -131,8 +131,8 @@ pub struct PackageInfo {
     pub created_at: String,
     /// Export format version
     pub export_format: String,
-    /// Pekobot version that created this
-    pub pekobot_version: String,
+    /// Peko version that created this
+    pub peko_version: String,
     /// Whether package is encrypted
     pub encrypted: bool,
     /// Layer digests (content-addressable) — layer name → digest
@@ -159,8 +159,8 @@ impl PackageInfo {
         output.push_str(&format!("\n🆔 DID: {}\n", self.did));
         output.push_str(&format!("📅 Created: {}\n", self.created_at));
         output.push_str(&format!(
-            "🔧 Format: {} (Pekobot {})\n",
-            self.export_format, self.pekobot_version
+            "🔧 Format: {} (Peko {})\n",
+            self.export_format, self.peko_version
         ));
 
         if self.encrypted {

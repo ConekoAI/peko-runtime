@@ -24,7 +24,7 @@ Problems with this split:
 1. **No unified mental model**: Users couldn't `build` an image and then `import` it — the formats were incompatible.
 2. **Competing sources of truth**: `AgentManifest` duplicated `capabilities`, `tools`, `mcp`, `tool_sources` from `agent.toml`.
 3. **Dead abstractions**: `src/image/` had zero production consumers — beautiful code with no users.
-4. **Confusing CLI**: `pekobot build`, `pekobot push`, `pekobot pull` were top-level commands, while `pekobot agent export`/`import` lived under `agent`.
+4. **Confusing CLI**: `peko build`, `peko push`, `peko pull` were top-level commands, while `peko agent export`/`import` lived under `agent`.
 5. **Team packages lacked integrity**: `.team` exports had no checksum validation.
 6. **No extension packaging**: Extensions could only be installed from local paths, not distributed as `.ext` bundles.
 
@@ -41,8 +41,8 @@ Merge `src/image/` into `src/portable/`, creating a **single `.agent` format** t
 1. **Unified `.agent` format**: One format for build, export, push, pull, and import.
 2. **Clean Manifest**: `AgentManifest` contains only packaging metadata (name, version, layers, checksums). Agent behavior lives in `agent.toml` inside the `config` layer.
 3. **Content-addressable layers**: `.agent` gains SHA-256 layer digests for deduplication and incremental push/pull.
-4. **Local registry store**: `AgentRegistry` provides content-addressable layer storage at `~/.pekobot/registry/`.
-5. **Unified CLI**: All packaging commands live under `pekobot agent` or `pekobot ext`. No top-level `build`/`push`/`pull`.
+4. **Local registry store**: `AgentRegistry` provides content-addressable layer storage at `~/.peko/registry/`.
+5. **Unified CLI**: All packaging commands live under `peko agent` or `peko ext`. No top-level `build`/`push`/`pull`.
 6. **Team checksums**: `.team` packages include SHA-256 checksums for all files; import validates them.
 7. **Extension bundles**: `.ext` packages enable offline extension distribution.
 8. **Capabilities removed**: `AgentCapability`, `TeamCapabilityConfig`, `CapabilitiesConfig` deleted. Extension framework is the single source of truth.
@@ -139,8 +139,8 @@ version = "1.0.0"
 description = "A research assistant agent"
 created_at = "2026-05-08T10:00:00Z"
 export_format = "2.0"
-pekobot_version = "0.1.0"
-did = "did:pekobot:local:abc123..."
+peko_version = "0.1.0"
+did = "did:peko:local:abc123..."
 
 [identity]
 key_algorithm = "ed25519"
@@ -175,7 +175,7 @@ archive_format = "tar"
 ### Local Registry Store
 
 ```
-~/.pekobot/registry/
+~/.peko/registry/
 ├── layers/
 │   └── sha256-abc123.../
 │       └── layer.tar.gz
@@ -219,26 +219,26 @@ docker-skill.ext (gzip-compressed tar)
 ## CLI Commands (Unified)
 
 ```
-pekobot agent build <path> -t <name:tag> [--json]
-pekobot agent export <name> -o <file.agent> [--no-sessions] [--no-workspace]
-pekobot agent import <file.agent> [--name <new-name>] [--force]
-pekobot agent inspect <file.agent>
-pekobot agent push <local-tag> <registry-ref>
-pekobot agent pull <registry-ref>
+peko agent build <path> -t <name:tag> [--json]
+peko agent export <name> -o <file.agent> [--no-sessions] [--no-workspace]
+peko agent import <file.agent> [--name <new-name>] [--force]
+peko agent inspect <file.agent>
+peko agent push <local-tag> <registry-ref>
+peko agent pull <registry-ref>
 
-pekobot team export <name> -o <file.team> [--no-sessions]
-pekobot team import <file.team> [--name <new-name>] [--force]
-pekobot team deploy <team.toml>
+peko team export <name> -o <file.team> [--no-sessions]
+peko team import <file.team> [--name <new-name>] [--force]
+peko team deploy <team.toml>
 
-pekobot ext install <path>
-pekobot ext export <id> -o <file.ext>
-pekobot ext list
+peko ext install <path>
+peko ext export <id> -o <file.ext>
+peko ext list
 ```
 
 **Removed commands**:
-- `pekobot build <path>` → `pekobot agent build`
-- `pekobot push <local> <remote>` → `pekobot agent push`
-- `pekobot pull <registry-ref>` → `pekobot agent pull`
+- `peko build <path>` → `peko agent build`
+- `peko push <local> <remote>` → `peko agent push`
+- `peko pull <registry-ref>` → `peko agent pull`
 
 ---
 
@@ -299,14 +299,14 @@ python e2e_tests/packaging/mock_registry/main.py --port 18765
 | Feature | Rationale |
 |---------|-----------|
 | Base image inheritance | No clear consumer yet |
-| `pekobot validate <path>` | Partially covered by `inspect` |
+| `peko validate <path>` | Partially covered by `inspect` |
 | Extension source references (GitHub, URL, MCP) | Complex, not critical for v1.0 |
 | Extension registry push/pull | No protocol defined |
 | Team definition registry push/pull | No protocol defined |
 | Signing and encryption | Security for shared packages |
 | Multi-arch manifest support | Platform-specific binaries |
 | Content deduplication across agents | Storage optimization |
-| `pekobot diff <agent-a> <agent-b>` | Debugging tool |
+| `peko diff <agent-a> <agent-b>` | Debugging tool |
 
 ---
 

@@ -13,7 +13,7 @@ Pekobot supports the Model Context Protocol (MCP) for external tool integration.
 Some tools were built into Pekobot core:
 
 ```
-pekobot (single binary)
+peko (single binary)
 ├── filesystem
 ├── shell
 ├── cron
@@ -25,7 +25,7 @@ pekobot (single binary)
 Core tools remain minimal; extended capabilities come via MCP extensions:
 
 ```
-pekobot (core binary)
+peko (core binary)
 ├── filesystem (built-in)
 ├── shell (built-in)
 ├── cron (built-in)
@@ -46,7 +46,7 @@ MCP servers are packaged as extensions:
 
 ```bash
 # Install an MCP server extension
-pekobot ext install ./mcp-filesystem-extension
+peko ext install ./mcp-filesystem-extension
 
 # Or create your own with an extension.yaml
 ```
@@ -55,16 +55,16 @@ pekobot ext install ./mcp-filesystem-extension
 
 ```bash
 # List installed extensions
-pekobot ext list
+peko ext list
 
 # Show MCP extension details
-pekobot ext info filesystem-mcp
+peko ext info filesystem-mcp
 ```
 
 ### 3. Enable the Extension
 
 ```bash
-pekobot ext enable filesystem-mcp
+peko ext enable filesystem-mcp
 ```
 
 ### 4. Use with Agent
@@ -72,7 +72,7 @@ pekobot ext enable filesystem-mcp
 MCP tools are automatically available once the extension is enabled:
 
 ```bash
-pekobot send myagent "Read the file README.md"
+peko send myagent "Read the file README.md"
 ```
 
 ## Configuration
@@ -120,22 +120,22 @@ MCP servers are managed through the extension system:
 
 ```bash
 # Install an MCP extension
-pekobot ext install ./my-mcp-extension
+peko ext install ./my-mcp-extension
 
 # Enable it
-pekobot ext enable my-mcp-extension
+peko ext enable my-mcp-extension
 
 # Check status
-pekobot ext info my-mcp-extension
+peko ext info my-mcp-extension
 
 # Debug
-pekobot ext debug my-mcp-extension
+peko ext debug my-mcp-extension
 
 # Disable
-pekobot ext disable my-mcp-extension
+peko ext disable my-mcp-extension
 
 # Uninstall
-pekobot ext uninstall my-mcp-extension
+peko ext uninstall my-mcp-extension
 ```
 
 ## Troubleshooting
@@ -146,8 +146,8 @@ pekobot ext uninstall my-mcp-extension
 
 **Solution**:
 ```bash
-pekobot ext list
-pekobot ext install ./my-mcp-extension
+peko ext list
+peko ext install ./my-mcp-extension
 ```
 
 ### "No MCP tools loaded"
@@ -156,8 +156,8 @@ pekobot ext install ./my-mcp-extension
 
 **Solution**:
 ```bash
-pekobot ext enable my-mcp-extension
-pekobot ext info my-mcp-extension
+peko ext enable my-mcp-extension
+peko ext info my-mcp-extension
 ```
 
 ### "Failed to initialize MCP client"
@@ -172,7 +172,7 @@ pekobot ext info my-mcp-extension
 2. Check extension logs via daemon foreground mode
 3. Validate extension manifest:
    ```bash
-   pekobot ext validate ./my-mcp-extension
+   peko ext validate ./my-mcp-extension
    ```
 
 ### Backward Compatibility
@@ -197,7 +197,7 @@ pekobot ext info my-mcp-extension
 
 ### Q: Can I add custom MCP servers?
 
-**A**: Yes! Package them as extensions with `extension.yaml` and install via `pekobot ext install`.
+**A**: Yes! Package them as extensions with `extension.yaml` and install via `peko ext install`.
 
 ### Q: Where are MCP binaries stored?
 
@@ -224,4 +224,4 @@ pekobot ext info my-mcp-extension
 - [MCP Specification](https://modelcontextprotocol.io/)
 - [MCP Overview](MCP.md)
 - [Extension System](../architecture/EXTENSION_SYSTEM.md)
-- `pekobot ext --help`
+- `peko ext --help`

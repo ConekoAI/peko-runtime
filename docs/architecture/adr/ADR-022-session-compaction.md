@@ -47,7 +47,7 @@ We will redesign session compaction around four pillars:
 1. **Extension-Hook Lifecycle** — Expose compaction as first-class extension hooks so users can plug in custom strategies.
 2. **Minimal Built-In Compaction** — The default compactor auto-triggers using a dual-threshold (ratio + reserved headroom) based on the actual provider/model context window.
 3. **Single-File Session Storage with Optional Derived Cache** — One append-only JSONL file is the source of truth; an optional `.context.cache` file provides fast resume and is explicitly discardable.
-4. **Manual CLI Trigger** — Users can force compaction early via `pekobot session compact` with optional custom instructions.
+4. **Manual CLI Trigger** — Users can force compaction early via `peko session compact` with optional custom instructions.
 
 ---
 
@@ -555,16 +555,16 @@ A new CLI command allows users to force compaction immediately with optional cus
 
 ```bash
 # Compact the current session for an agent
-pekobot session compact --agent <agent_name> [--team <team>]
+peko session compact --agent <agent_name> [--team <team>]
 
 # Compact a specific session by ID
-pekobot session compact --session <session_id>
+peko session compact --session <session_id>
 
 # Dry-run: show what would be compacted
-pekobot session compact --agent <agent_name> --dry-run
+peko session compact --agent <agent_name> --dry-run
 
 # Compact with custom instructions (focus the summary)
-pekobot session compact --agent <agent_name> --instruction "preserve all API design decisions"
+peko session compact --agent <agent_name> --instruction "preserve all API design decisions"
 ```
 
 ### Implementation Sketch
@@ -691,7 +691,7 @@ pub struct CompactionConfig {
 | 2 | Implement single-file + derived cache storage (`*.jsonl` + `*.context.cache`) | ✅ Complete |
 | 3 | Wire `SessionCompaction` and `SessionCompactionPost` hooks in agentic loop | ✅ Complete |
 | 4 | Update built-in compactor: dual-threshold trigger, hybrid estimation, structured summaries, turn boundaries | ✅ Complete |
-| 5 | Add `pekobot session compact` CLI command with `--instruction` | ✅ Complete |
+| 5 | Add `peko session compact` CLI command with `--instruction` | ✅ Complete |
 | 6 | Tests: unit tests for context building, turn boundaries, hook integration, CLI dry-run | ✅ Complete (923 tests pass) |
 | 7 | Documentation: update `DATA_MODEL.md` for single-file + cache format | ✅ Complete |
 
@@ -723,7 +723,7 @@ pub struct CompactionConfig {
 - `src/compaction/background.rs`: Background worker with quotas and cooldowns
 
 **Phase 5 — CLI compact command**
-- `src/commands/session.rs`: `pekobot session compact` with `--agent`, `--session-id`, `--team`, `--dry-run`, `--instruction`
+- `src/commands/session.rs`: `peko session compact` with `--agent`, `--session-id`, `--team`, `--dry-run`, `--instruction`
 - Metadata-only placeholder for CLI (no LLM required); full LLM-based compaction works in agentic loop
 
 **Phase 6 — Tests**
@@ -780,8 +780,8 @@ pub struct CompactionConfig {
 - [x] Built-in compactor triggers using dual-threshold (ratio OR reserved headroom) with actual model context limit.
 - [x] New sessions create `*.jsonl` source of truth and `*.context.cache` derived cache.
 - [x] Old single-file sessions auto-migrate on open (cache generated from `*.jsonl`).
-- [x] `pekobot session compact --agent <name>` works and rewrites cache.
-- [x] `pekobot session compact --instruction "..."` passes custom focus to summarizer.
+- [x] `peko session compact --agent <name>` works and rewrites cache.
+- [x] `peko session compact --instruction "..."` passes custom focus to summarizer.
 - [x] Turn boundaries are respected: never cuts at tool results.
 - [x] Split-turn scenario produces merged history + turn-prefix summary.
 - [x] Structured summary format includes Goal, Progress, Decisions, Next Steps, File Operations.

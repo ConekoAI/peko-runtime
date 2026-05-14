@@ -1,4 +1,4 @@
-# ADR-028: Top-Level Config CLI (`pekobot config get/set`)
+# ADR-028: Top-Level Config CLI (`peko config get/set`)
 
 **Status**: Accepted / Implemented  
 **Date**: 2026-05-14  
@@ -12,7 +12,7 @@
 
 ## Context
 
-The `pekobot config` command group has existed in the CLI since early development but has always been a stub. As of commit `29c7a6f`, the handlers in `src/commands/config.rs` print placeholder messages and return `Ok(())` without performing any actual work:
+The `peko config` command group has existed in the CLI since early development but has always been a stub. As of commit `29c7a6f`, the handlers in `src/commands/config.rs` print placeholder messages and return `Ok(())` without performing any actual work:
 
 ```rust
 ConfigCommands::Get { key, file } => {
@@ -25,11 +25,11 @@ ConfigCommands::Set { key, value, file } => {
 }
 ```
 
-This creates a **credibility gap**: the CLI advertises `pekobot config get <key>` and `pekobot config set <key> <value>` in `--help`, but using them produces no observable effect. This violates the Phase 1 success criterion **CLI-021** ("`pekobot agent config get <agent> <key>` and `set` — Actually read and write config values"), which was marked complete for *agent-scoped* config but remains open for *global* config.
+This creates a **credibility gap**: the CLI advertises `peko config get <key>` and `peko config set <key> <value>` in `--help`, but using them produces no observable effect. This violates the Phase 1 success criterion **CLI-021** ("`peko agent config get <agent> <key>` and `set` — Actually read and write config values"), which was marked complete for *agent-scoped* config but remains open for *global* config.
 
 Additionally, the success criteria document lists **CLI-014** and **CLI-015** as unimplemented:
-- **CLI-014**: CLI MUST read global configuration from `~/.pekobot/config.toml`
-- **CLI-015**: CLI MUST support per-project configuration via `.pekobot.toml` in project root
+- **CLI-014**: CLI MUST read global configuration from `~/.peko/config.toml`
+- **CLI-015**: CLI MUST support per-project configuration via `.peko.toml` in project root
 
 This ADR defines the minimal viable implementation for global config management, deferring per-project overrides to a future revision.
 
@@ -37,30 +37,30 @@ This ADR defines the minimal viable implementation for global config management,
 
 ## Problem Statement
 
-1. **Stub commands damage UX**: Users expect `pekobot config get provider.api_key_env` to return a value. Getting a emoji + no data is confusing.
-2. **No global config file**: Pekobot resolves paths (`~/.pekobot/`) but never creates or reads a `config.toml` at that location. Global defaults are hard-coded or env-var only.
-3. **Inconsistent with agent config**: `pekobot agent config get/set` works (via `config_path::get_config_value` / `set_config_value`). The top-level `config` command should use the same primitives.
+1. **Stub commands damage UX**: Users expect `peko config get provider.api_key_env` to return a value. Getting a emoji + no data is confusing.
+2. **No global config file**: Pekobot resolves paths (`~/.peko/`) but never creates or reads a `config.toml` at that location. Global defaults are hard-coded or env-var only.
+3. **Inconsistent with agent config**: `peko agent config get/set` works (via `config_path::get_config_value` / `set_config_value`). The top-level `config` command should use the same primitives.
 4. **Blocking Phase 1**: While classified as P1, the stub state is a polish issue that prevents calling the CLI "production-ready."
 
 ---
 
 ## Decision
 
-Implement `pekobot config get`, `set`, `defaults`, and `path` to read and write a TOML file at `~/.pekobot/config.toml`. Use the same dot-notation path resolution already proven in `src/common/config_path.rs`.
+Implement `peko config get`, `set`, `defaults`, and `path` to read and write a TOML file at `~/.peko/config.toml`. Use the same dot-notation path resolution already proven in `src/common/config_path.rs`.
 
 ### Scope
 
 | Command | Action | File |
 |---------|--------|------|
-| `pekobot config get <key>` | Read a value by dot-notation path | `~/.pekobot/config.toml` |
-| `pekobot config set <key> <value>` | Write a value by dot-notation path | `~/.pekobot/config.toml` |
-| `pekobot config defaults` | Print hard-coded default values | N/A (static) |
-| `pekobot config path` | Print resolved config file path | N/A (informational) |
-| `pekobot config validate [file]` | Validate TOML syntax and known keys | Argument or default |
-| `pekobot config init` | Generate a new `config.toml` with comments | `~/.pekobot/config.toml` |
+| `peko config get <key>` | Read a value by dot-notation path | `~/.peko/config.toml` |
+| `peko config set <key> <value>` | Write a value by dot-notation path | `~/.peko/config.toml` |
+| `peko config defaults` | Print hard-coded default values | N/A (static) |
+| `peko config path` | Print resolved config file path | N/A (informational) |
+| `peko config validate [file]` | Validate TOML syntax and known keys | Argument or default |
+| `peko config init` | Generate a new `config.toml` with comments | `~/.peko/config.toml` |
 
 **Out of scope for this ADR**:
-- Per-project `.pekobot.toml` (CLI-015) — deferred to Phase 2
+- Per-project `.peko.toml` (CLI-015) — deferred to Phase 2
 - Schema validation beyond TOML well-formedness — deferred
 - Config migration / versioning — deferred
 - Hierarchical merge (project → global → defaults) — deferred
@@ -68,8 +68,8 @@ Implement `pekobot config get`, `set`, `defaults`, and `path` to read and write 
 ### Config File Location
 
 ```
-~/.pekobot/config.toml          # Linux/macOS
-%APPDATA%\pekobot\config.toml   # Windows (via dirs::config_dir)
+~/.peko/config.toml          # Linux/macOS
+%APPDATA%\peko\config.toml   # Windows (via dirs::config_dir)
 ```
 
 The path is resolved via `GlobalPaths::config_dir` already used throughout the CLI.
@@ -88,8 +88,8 @@ temperature = 0.7
 max_tokens = 2048
 
 [paths]
-sessions = "~/.pekobot/sessions"
-registry = "~/.pekobot/registry"
+sessions = "~/.peko/sessions"
+registry = "~/.peko/registry"
 
 [security]
 strip_env_vars = ["*_API_KEY", "*_SECRET", "*_TOKEN", "*_PASSWORD"]
@@ -103,17 +103,17 @@ Reuse `src/common/config_path.rs`:
 - `config_path::get_config_value(toml_value, "daemon.bind_address")` → `"127.0.0.1:11435"`
 - `config_path::set_config_value(toml_value, "defaults.provider", "kimi")` → updates nested table
 
-This module is already used by `pekobot agent config get/set` and has unit tests.
+This module is already used by `peko agent config get/set` and has unit tests.
 
 ### Value Types
 
 | Input | TOML Type | Example |
 |-------|-----------|---------|
-| Plain string | String | `pekobot config set defaults.provider kimi` |
-| `true` / `false` | Boolean | `pekobot config set daemon.debug true` |
-| Numeric | Integer or Float | `pekobot config set defaults.temperature 0.5` |
-| JSON array | Array | `pekobot config set security.strip_env '["*_API_KEY", "*_TOKEN"]'` |
-| JSON object | Table | `pekobot config set defaults.provider '{"type":"openai","model":"gpt-4o"}'` |
+| Plain string | String | `peko config set defaults.provider kimi` |
+| `true` / `false` | Boolean | `peko config set daemon.debug true` |
+| Numeric | Integer or Float | `peko config set defaults.temperature 0.5` |
+| JSON array | Array | `peko config set security.strip_env '["*_API_KEY", "*_TOKEN"]'` |
+| JSON object | Table | `peko config set defaults.provider '{"type":"openai","model":"gpt-4o"}'` |
 
 The `set` command will attempt JSON parsing first; if that fails, treat the input as a plain string.
 
@@ -122,10 +122,10 @@ The `set` command will attempt JSON parsing first; if that fails, treat the inpu
 All commands respect the global `--json` flag:
 
 ```bash
-$ pekobot config get defaults.provider --json
+$ peko config get defaults.provider --json
 {"key": "defaults.provider", "value": "minimax"}
 
-$ pekobot config set defaults.provider kimi --json
+$ peko config set defaults.provider kimi --json
 {"success": true, "key": "defaults.provider", "value": "kimi"}
 ```
 
@@ -135,16 +135,16 @@ $ pekobot config set defaults.provider kimi --json
 
 ### Positive
 
-- **CLI consistency**: `pekobot config get/set` now behaves like `pekobot agent config get/set`
+- **CLI consistency**: `peko config get/set` now behaves like `peko agent config get/set`
 - **User empowerment**: Users can inspect and modify global defaults without editing TOML manually
 - **No new dependencies**: Reuses existing `toml`, `serde_json`, and `config_path` infrastructure
-- **Foundation for future work**: Per-project `.pekobot.toml` (CLI-015) can build on this
+- **Foundation for future work**: Per-project `.peko.toml` (CLI-015) can build on this
 
 ### Negative
 
 - **No schema enforcement**: Invalid keys are accepted silently; only TOML syntax is validated
 - **No migration path**: If we rename a config key, old `config.toml` files will have stale data
-- **Tilde expansion**: `~/.pekobot/sessions` in TOML is not auto-expanded; users must use absolute paths or env vars
+- **Tilde expansion**: `~/.peko/sessions` in TOML is not auto-expanded; users must use absolute paths or env vars
 
 ### Neutral
 

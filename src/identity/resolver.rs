@@ -244,6 +244,6 @@ mod tests {
         let resolver = DidResolver::local(storage);
 
         assert!(resolver.verify(&identity.did).await);
-        assert!(!resolver.verify("did:pekobot:public:nonexistent").await);
+        assert!(!resolver.verify("did:peko:public:nonexistent").await);
     }
 }

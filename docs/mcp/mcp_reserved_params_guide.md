@@ -213,17 +213,17 @@ const agentId = args.agent_id || 'anonymous';
 
 ```bash
 # Test with the memory example via agent conversation
-pekobot send myagent "Store 'test' = 'hello' in memory"
+peko send myagent "Store 'test' = 'hello' in memory"
 
 # Verify isolation by checking stored values
-pekobot send myagent "Retrieve the value for key 'test' from memory"
+peko send myagent "Retrieve the value for key 'test' from memory"
 ```
 
 ### Verify Schema Filtering
 
 ```bash
 # List tools and verify reserved params are NOT in schema
-pekobot ext info memory-server
+peko ext info memory-server
 ```
 
 ## Troubleshooting
@@ -232,7 +232,7 @@ pekobot ext info memory-server
 
 1. Check configuration is loaded:
    ```bash
-   pekobot ext info my-server
+   peko ext info my-server
    ```
 
 2. Verify server has reserved_parameters:

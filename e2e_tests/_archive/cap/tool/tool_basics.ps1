@@ -22,8 +22,8 @@ if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -33,20 +33,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -57,10 +57,10 @@ Write-Host "TEST 1: List available extensions" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "All installed extensions:" -ForegroundColor Yellow
-pekobot ext list 2>&1
+peko ext list 2>&1
 
 Write-Host "`nBuilt-in tool extensions:" -ForegroundColor Yellow
-$extList = pekobot ext list 2>&1
+$extList = peko ext list 2>&1
 Write-Host $extList
 
 # Check for common built-in tools
@@ -82,19 +82,19 @@ Write-Host "TEST 2: Create agent and enable tools" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $agentName = "tool_basics_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable tools via extension framework
 Write-Host "`nEnabling tools via extension framework..." -ForegroundColor Yellow
-pekobot ext enable read_file 2>&1 | Out-Null
-pekobot ext enable write_file 2>&1 | Out-Null
-pekobot ext enable glob 2>&1 | Out-Null
+peko ext enable read_file 2>&1 | Out-Null
+peko ext enable write_file 2>&1 | Out-Null
+peko ext enable glob 2>&1 | Out-Null
 Write-Host "✓ Enabled read_file, write_file, glob" -ForegroundColor Green
 
 # Show extension info
 Write-Host "`nExtension info for read_file:" -ForegroundColor Cyan
-pekobot ext info read_file 2>&1
+peko ext info read_file 2>&1
 
 # ============================================================
 # TEST 3: Agent uses enabled tools
@@ -103,7 +103,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 3: Agent uses enabled tools" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
 
 # Create a test file
 "Test content for tool basics" | Out-File -FilePath "$workspaceDir/test.txt" -Encoding UTF8
@@ -111,7 +111,7 @@ Write-Host "Created test file" -ForegroundColor Green
 
 # Ask agent to read the file
 Write-Host "`nSending request to read test file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your read_file tool to read the file 'test.txt' in your workspace. What does it contain?" --no-stream 2>&1
+$result = peko send $agentName "Use your read_file tool to read the file 'test.txt' in your workspace. What does it contain?" --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "Test content" -or $result -match "tool basics") {
@@ -128,15 +128,15 @@ Write-Host "TEST 4: Disable and re-enable a tool" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Disabling glob tool..." -ForegroundColor Yellow
-pekobot ext disable glob 2>&1 | Out-Null
-$infoResult = pekobot ext info glob 2>&1
+peko ext disable glob 2>&1 | Out-Null
+$infoResult = peko ext info glob 2>&1
 if ($infoResult -match "disabled") {
     Write-Host "✓ glob tool is now disabled" -ForegroundColor Green
 }
 
 Write-Host "`nRe-enabling glob tool..." -ForegroundColor Yellow
-pekobot ext enable glob 2>&1 | Out-Null
-$infoResult = pekobot ext info glob 2>&1
+peko ext enable glob 2>&1 | Out-Null
+$infoResult = peko ext info glob 2>&1
 if ($infoResult -match "enabled") {
     Write-Host "✓ glob tool is now enabled" -ForegroundColor Green
 }
@@ -154,14 +154,14 @@ if (Test-Path "$workspaceDir/test.txt") {
     Write-Host "Removed test file" -ForegroundColor Green
 }
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ Tool Basics E2E tests completed!" -ForegroundColor Green
 Write-Host "" -ForegroundColor Cyan
 Write-Host "Summary:" -ForegroundColor Cyan
 Write-Host "  - Listed extensions including built-in tools" -ForegroundColor Cyan
-Write-Host "  - Enabled tools via 'pekobot ext enable'" -ForegroundColor Cyan
+Write-Host "  - Enabled tools via 'peko ext enable'" -ForegroundColor Cyan
 Write-Host "  - Agent successfully used enabled tools" -ForegroundColor Cyan
 Write-Host "  - Disabled and re-enabled tools" -ForegroundColor Cyan
 Write-Host "" -ForegroundColor Cyan

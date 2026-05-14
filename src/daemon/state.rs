@@ -34,7 +34,7 @@ pub struct AppState {
     /// Time when the daemon started
     pub started_at: SystemTime,
 
-    /// Path to the workspace directory (.pekobot/)
+    /// Path to the workspace directory (.peko/)
     pub workspace_path: PathBuf,
 
     /// Configuration directory path
@@ -168,11 +168,11 @@ impl AppState {
         let workspace_path: PathBuf = workspace_path.into();
         let data_dir = workspace_path.clone();
         let config_dir = dirs::home_dir().map_or_else(
-            || PathBuf::from(".").join(".pekobot"),
-            |d| d.join(".pekobot"),
+            || PathBuf::from(".").join(".peko"),
+            |d| d.join(".peko"),
         );
         let cache_dir =
-            dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("pekobot"));
+            dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("peko"));
         let team_manager = Arc::new(TeamManager::new());
 
         Self::build(
@@ -198,7 +198,7 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         let workspace_path: PathBuf = workspace_path.into();
         let cache_dir =
-            dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("pekobot"));
+            dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("peko"));
         let config_dir = data_dir.join("config");
         let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
 
@@ -542,8 +542,8 @@ impl AppState {
 impl Default for DaemonConfigSnapshot {
     fn default() -> Self {
         Self {
-            data_dir: PathBuf::from(".pekobot"),
-            config_dir: PathBuf::from(".pekobot"),
+            data_dir: PathBuf::from(".peko"),
+            config_dir: PathBuf::from(".peko"),
             log_level: "info".to_string(),
         }
     }

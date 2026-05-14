@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_validation_success() {
-        let mut manifest = AgentManifest::new("test", "1.0.0", "did:pekobot:test");
+        let mut manifest = AgentManifest::new("test", "1.0.0", "did:peko:test");
         let files = create_test_files();
 
         // Add files to manifest with correct checksums
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_missing_required_file() {
-        let manifest = AgentManifest::new("test", "1.0.0", "did:pekobot:test");
+        let manifest = AgentManifest::new("test", "1.0.0", "did:peko:test");
         let mut files = create_test_files();
         files.remove("identity/did.json");
 
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_checksum_mismatch() {
-        let mut manifest = AgentManifest::new("test", "1.0.0", "did:pekobot:test");
+        let mut manifest = AgentManifest::new("test", "1.0.0", "did:peko:test");
         let mut files = create_test_files();
 
         manifest.add_file("config/agent.toml", b"original");
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_unknown_file_warning() {
-        let mut manifest = AgentManifest::new("test", "1.0.0", "did:pekobot:test");
+        let mut manifest = AgentManifest::new("test", "1.0.0", "did:peko:test");
         let mut files = create_test_files();
         files.insert("extra/file.txt".to_string(), b"extra".to_vec());
 
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_unsupported_version() {
-        let mut manifest = AgentManifest::new("test", "1.0.0", "did:pekobot:test");
+        let mut manifest = AgentManifest::new("test", "1.0.0", "did:peko:test");
         manifest.agent.export_format = "2.0".to_string();
         let files = create_test_files();
 

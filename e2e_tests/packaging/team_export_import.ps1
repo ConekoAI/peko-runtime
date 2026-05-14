@@ -33,7 +33,7 @@ if ($env:MINIMAX_API_KEY) {
 }
 
 # Create test directory
-$testDir = "$env:TEMP/pekobot_team_packaging_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_team_packaging_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -66,13 +66,13 @@ Write-Host "Created team: $testTeam" -ForegroundColor Green
 Write-Host "Created 3 agents in team: $agent1, $agent2, $agent3" -ForegroundColor Green
 
 # Add workspace content for some agents
-$workspaceDir1 = "$env:APPDATA/pekobot/workspaces/$testTeam/$agent1"
+$workspaceDir1 = "$env:APPDATA/peko/workspaces/$testTeam/$agent1"
 if (-not (Test-Path $workspaceDir1)) {
     New-Item -ItemType Directory -Path $workspaceDir1 -Force | Out-Null
 }
 "# Agent 1 System`n`nCustom system prompt for agent 1." | Out-File -FilePath "$workspaceDir1/SYSTEM.md" -Encoding UTF8
 
-$workspaceDir2 = "$env:APPDATA/pekobot/workspaces/$testTeam/$agent2"
+$workspaceDir2 = "$env:APPDATA/peko/workspaces/$testTeam/$agent2"
 if (-not (Test-Path $workspaceDir2)) {
     New-Item -ItemType Directory -Path $workspaceDir2 -Force | Out-Null
 }

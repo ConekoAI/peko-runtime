@@ -32,8 +32,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog }
     if (Test-Path $errLog) { Remove-Item $errLog }
 
@@ -88,7 +88,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_hierarchy_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_hierarchy_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -137,17 +137,17 @@ try {
 
     # Add workspace content per agent
     foreach ($agent in $agentsFrontend) {
-        $ws = "$env:APPDATA/pekobot/workspaces/$subTeam1/$agent"
+        $ws = "$env:APPDATA/peko/workspaces/$subTeam1/$agent"
         New-Item -ItemType Directory -Path $ws -Force | Out-Null
         "# Role`nFrontend developer specializing in React." | Out-File -FilePath "$ws/ROLE.md" -Encoding UTF8
     }
     foreach ($agent in $agentsBackend) {
-        $ws = "$env:APPDATA/pekobot/workspaces/$subTeam2/$agent"
+        $ws = "$env:APPDATA/peko/workspaces/$subTeam2/$agent"
         New-Item -ItemType Directory -Path $ws -Force | Out-Null
         "# Role`nBackend developer specializing in Rust APIs." | Out-File -FilePath "$ws/ROLE.md" -Encoding UTF8
     }
     foreach ($agent in $agentsOps) {
-        $ws = "$env:APPDATA/pekobot/workspaces/$subTeam3/$agent"
+        $ws = "$env:APPDATA/peko/workspaces/$subTeam3/$agent"
         New-Item -ItemType Directory -Path $ws -Force | Out-Null
         "# Role`nSite reliability engineer." | Out-File -FilePath "$ws/ROLE.md" -Encoding UTF8
     }
@@ -180,9 +180,9 @@ try {
     Write-Host "STEP 4: Push subteam snapshots to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    & $pekoCmd team push $subTeam1 "127.0.0.1:$RegistryPort/pekobot/teams/frontend:latest" 2>&1 | Out-Null
-    & $pekoCmd team push $subTeam2 "127.0.0.1:$RegistryPort/pekobot/teams/backend:latest" 2>&1 | Out-Null
-    & $pekoCmd team push $subTeam3 "127.0.0.1:$RegistryPort/pekobot/teams/ops:latest" 2>&1 | Out-Null
+    & $pekoCmd team push $subTeam1 "127.0.0.1:$RegistryPort/peko/teams/frontend:latest" 2>&1 | Out-Null
+    & $pekoCmd team push $subTeam2 "127.0.0.1:$RegistryPort/peko/teams/backend:latest" 2>&1 | Out-Null
+    & $pekoCmd team push $subTeam3 "127.0.0.1:$RegistryPort/peko/teams/ops:latest" 2>&1 | Out-Null
     Write-Host "Pushed all subteams to registry" -ForegroundColor Green
 
     # ============================================================
@@ -203,9 +203,9 @@ try {
     Write-Host "Removed original subteams" -ForegroundColor Yellow
 
     # team pull auto-imports, so we use --name to set the imported team name
-    & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/frontend:latest" --name $imported1 2>&1 | Out-Null
-    & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/backend:latest" --name $imported2 2>&1 | Out-Null
-    & $pekoCmd team pull "127.0.0.1:$RegistryPort/pekobot/teams/ops:latest" --name $imported3 2>&1 | Out-Null
+    & $pekoCmd team pull "127.0.0.1:$RegistryPort/peko/teams/frontend:latest" --name $imported1 2>&1 | Out-Null
+    & $pekoCmd team pull "127.0.0.1:$RegistryPort/peko/teams/backend:latest" --name $imported2 2>&1 | Out-Null
+    & $pekoCmd team pull "127.0.0.1:$RegistryPort/peko/teams/ops:latest" --name $imported3 2>&1 | Out-Null
     Write-Host "Pulled and imported all subteams from registry" -ForegroundColor Green
 
     # ============================================================
@@ -238,7 +238,7 @@ try {
         $team = $check[0]
         $agent = $check[1]
         $expectedContent = $check[2]
-        $roleFile = "$env:APPDATA/pekobot/workspaces/$team/$agent/ROLE.md"
+        $roleFile = "$env:APPDATA/peko/workspaces/$team/$agent/ROLE.md"
         if (-not (Test-Path $roleFile)) { Write-Error "Missing workspace file: $roleFile" }
         $content = Get-Content $roleFile -Raw
         if ($content -notmatch $expectedContent) { Write-Error "Workspace content mismatch for $team/$agent" }

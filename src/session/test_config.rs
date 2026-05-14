@@ -8,7 +8,7 @@
 /// Environment variable: `SESSION_TEST_PRUNE_DAYS`
 /// Default: 30 days
 pub fn prune_duration() -> std::time::Duration {
-    let days = if std::env::var("PEKOBOT_TEST_MODE").is_ok() {
+    let days = if std::env::var("PEKO_TEST_MODE").is_ok() {
         std::env::var("SESSION_TEST_PRUNE_DAYS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -24,7 +24,7 @@ pub fn prune_duration() -> std::time::Duration {
 /// Environment variable: `SESSION_TEST_MAX_SESSIONS`
 /// Default: 500
 pub fn max_sessions() -> usize {
-    if std::env::var("PEKOBOT_TEST_MODE").is_ok() {
+    if std::env::var("PEKO_TEST_MODE").is_ok() {
         std::env::var("SESSION_TEST_MAX_SESSIONS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -39,7 +39,7 @@ pub fn max_sessions() -> usize {
 /// Environment variable: `SESSION_TEST_ROTATE_BYTES`
 /// Default: 10MB
 pub fn rotate_bytes() -> usize {
-    if std::env::var("PEKOBOT_TEST_MODE").is_ok() {
+    if std::env::var("PEKO_TEST_MODE").is_ok() {
         std::env::var("SESSION_TEST_ROTATE_BYTES")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -54,7 +54,7 @@ pub fn rotate_bytes() -> usize {
 /// Environment variable: `SESSION_TEST_LOCK_TIMEOUT_MS`
 /// Default: 10000ms
 pub fn lock_timeout_ms() -> u64 {
-    if std::env::var("PEKOBOT_TEST_MODE").is_ok() {
+    if std::env::var("PEKO_TEST_MODE").is_ok() {
         std::env::var("SESSION_TEST_LOCK_TIMEOUT_MS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -69,7 +69,7 @@ pub fn lock_timeout_ms() -> u64 {
 /// Environment variable: `SESSION_TEST_CACHE_TTL_MS`
 /// Default: 45000ms (45s)
 pub fn cache_ttl_ms() -> u64 {
-    if std::env::var("PEKOBOT_TEST_MODE").is_ok() {
+    if std::env::var("PEKO_TEST_MODE").is_ok() {
         std::env::var("SESSION_TEST_CACHE_TTL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -84,7 +84,7 @@ pub fn cache_ttl_ms() -> u64 {
 /// Environment variable: `SESSION_TEST_STALE_LOCK_MS`
 /// Default: 30000ms (30s)
 pub fn stale_lock_ms() -> u64 {
-    if std::env::var("PEKOBOT_TEST_MODE").is_ok() {
+    if std::env::var("PEKO_TEST_MODE").is_ok() {
         std::env::var("SESSION_TEST_STALE_LOCK_MS")
             .ok()
             .and_then(|s| s.parse().ok())

@@ -1,9 +1,9 @@
 //! Secure key storage for identities
 //!
 //! Stores identities in the platform-appropriate data directory:
-//! - Linux: ~/.local/share/pekobot/identities/
-//! - macOS: ~/Library/Application Support/pekobot/identities/
-//! - Windows: %APPDATA%\pekobot\identities\
+//! - Linux: ~/.local/share/peko/identities/
+//! - macOS: ~/Library/Application Support/peko/identities/
+//! - Windows: %APPDATA%\peko\identities\
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,7 @@ impl KeyStorage {
     /// Get the default storage path for the platform
     fn default_storage_path() -> Result<PathBuf> {
         let data_dir = dirs::data_dir().context("Could not determine data directory")?;
-        Ok(data_dir.join("pekobot").join("identities"))
+        Ok(data_dir.join("peko").join("identities"))
     }
 
     /// Generate and store a new identity
@@ -270,7 +270,7 @@ mod tests {
             .unwrap();
 
         assert!(storage.exists(&identity.did));
-        assert!(identity.did.starts_with("did:pekobot:local:test:"));
+        assert!(identity.did.starts_with("did:peko:local:test:"));
     }
 
     #[test]

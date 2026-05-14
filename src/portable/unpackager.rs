@@ -1,6 +1,6 @@
 //! Unpackager for importing portable agent packages
 //!
-//! Extracts and imports .agent files into the local Pekobot runtime
+//! Extracts and imports .agent files into the local peko runtime
 #![allow(dead_code)]
 
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
@@ -91,7 +91,7 @@ impl Unpackager {
             package_path: package_path.as_ref().to_path_buf(),
             base_dir: dirs::config_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("pekobot"),
+                .join("peko"),
             team: "default".to_string(),
         }
     }
@@ -219,7 +219,7 @@ impl Unpackager {
         let workspace_path = if options.import_workspace {
             Some(dirs::data_dir().map_or_else(
                 || self.base_dir.join("workspaces").join(team).join(&name),
-                |d| d.join("pekobot").join("workspaces").join(team).join(&name),
+                |d| d.join("peko").join("workspaces").join(team).join(&name),
             ))
         } else {
             None
@@ -228,7 +228,7 @@ impl Unpackager {
         let sessions_path = if options.import_sessions {
             Some(dirs::data_dir().map_or_else(
                 || self.base_dir.join("sessions").join(team).join(&name),
-                |d| d.join("pekobot").join("sessions").join(team).join(&name),
+                |d| d.join("peko").join("sessions").join(team).join(&name),
             ))
         } else {
             None
@@ -364,7 +364,7 @@ impl Unpackager {
     /// Import skills
     async fn import_skills(&self, files: &HashMap<String, Vec<u8>>) -> anyhow::Result<()> {
         let skills_dir = dirs::data_dir()
-            .map(|d| d.join("pekobot").join("skills"))
+            .map(|d| d.join("peko").join("skills"))
             .unwrap_or_else(|| self.base_dir.join("skills"));
         tokio::fs::create_dir_all(&skills_dir).await?;
 
@@ -393,7 +393,7 @@ impl Unpackager {
     ) -> anyhow::Result<()> {
         let workspace_dir = dirs::data_dir()
             .map(|d| {
-                d.join("pekobot")
+                d.join("peko")
                     .join("workspaces")
                     .join(&self.team)
                     .join(agent_name)
@@ -431,7 +431,7 @@ impl Unpackager {
     ) -> anyhow::Result<()> {
         let sessions_dir = dirs::data_dir()
             .map(|d| {
-                d.join("pekobot")
+                d.join("peko")
                     .join("sessions")
                     .join(&self.team)
                     .join(agent_name)
@@ -470,7 +470,7 @@ impl Unpackager {
     ) -> anyhow::Result<()> {
         let sessions_dir = dirs::data_dir()
             .map(|d| {
-                d.join("pekobot")
+                d.join("peko")
                     .join("sessions")
                     .join(team)
                     .join(agent_name)

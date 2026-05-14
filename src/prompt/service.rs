@@ -137,14 +137,14 @@ impl SystemPromptService {
                 let team = agent.config.team.as_deref().unwrap_or("default");
                 dirs::data_dir()
                     .map(|d| {
-                        d.join("pekobot")
+                        d.join("peko")
                             .join("workspaces")
                             .join(team)
                             .join(agent.name())
                     })
                     .or_else(|| {
                         dirs::home_dir().map(|h| {
-                            h.join(".pekobot")
+                            h.join(".peko")
                                 .join("workspaces")
                                 .join(team)
                                 .join(agent.name())

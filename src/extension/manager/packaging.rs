@@ -26,8 +26,8 @@ pub struct ExtensionPackageManifest {
 pub struct PackageFormat {
     /// Format version
     pub version: String,
-    /// Pekobot version that created this package
-    pub pekobot_version: String,
+    /// Peko version that created this package
+    pub peko_version: String,
 }
 
 /// Extension info within the package manifest
@@ -131,7 +131,7 @@ impl ExtensionPackager {
         let manifest = ExtensionPackageManifest {
             format: PackageFormat {
                 version: "1.0".to_string(),
-                pekobot_version: env!("CARGO_PKG_VERSION").to_string(),
+                peko_version: env!("CARGO_PKG_VERSION").to_string(),
             },
             extension: ExtensionInfo {
                 id: ext.manifest.id.to_string(),
@@ -479,7 +479,7 @@ mod tests {
             let bad_manifest = r#"
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [extension]
 id = "test-skill"
@@ -528,7 +528,7 @@ archive_format = "tar"
         let manifest = ExtensionPackageManifest {
             format: PackageFormat {
                 version: "1.0".to_string(),
-                pekobot_version: "0.1.0".to_string(),
+                peko_version: "0.1.0".to_string(),
             },
             extension: ExtensionInfo {
                 id: "test".to_string(),

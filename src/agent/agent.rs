@@ -142,7 +142,7 @@ impl Agent {
         ext_config.enabled = self.config.extension_whitelist();
         self.extension_core.set_tool_config(ext_config).await;
 
-        // Load Universal Tools from extensions directory (where `pekobot ext install` puts them)
+        // Load Universal Tools from extensions directory (where `peko ext install` puts them)
         let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
         tracing::info!(
             "Checking for Universal Tools in extensions directory: {}",
@@ -1073,7 +1073,7 @@ mod tests {
 
         let agent = agent.unwrap();
         assert_eq!(agent.name(), "test-agent");
-        assert!(agent.did().starts_with("did:pekobot:"));
+        assert!(agent.did().starts_with("did:peko:"));
     }
 
     #[tokio::test]

@@ -536,7 +536,7 @@ This is the body content.
     #[test]
     fn test_compact_skill_path() {
         let home = dirs::home_dir().expect("Should have home dir");
-        let path = home.join(".pekobot/skills/docker/SKILL.md");
+        let path = home.join(".peko/skills/docker/SKILL.md");
 
         let compacted = compact_skill_path(&path);
         assert!(compacted.starts_with('~'));
@@ -546,7 +546,7 @@ This is the body content.
     async fn test_skill_handler() {
         // Use actual home directory for cross-platform compatibility
         let home = dirs::home_dir().expect("Should have home dir");
-        let skill_path = home.join(".pekobot/skills/docker/SKILL.md");
+        let skill_path = home.join(".peko/skills/docker/SKILL.md");
 
         let handler = SkillPromptHandler {
             skill_name: "docker".to_string(),
@@ -570,7 +570,7 @@ This is the body content.
                 assert!(text.contains("docker: Docker operations"));
                 // Path should be compacted to use ~ for home directory
                 assert!(
-                    text.contains('~') || text.contains(".pekobot"),
+                    text.contains('~') || text.contains(".peko"),
                     "Expected compacted path, got: {text}"
                 );
             }

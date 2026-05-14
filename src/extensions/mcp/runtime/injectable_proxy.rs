@@ -2,7 +2,7 @@
 //!
 //! Wraps `McpToolProxy` with reserved parameter injection support.
 //! This allows MCP tools to receive runtime context (`agent_id`, `session_id`, etc.)
-//! that is hidden from the LLM but injected by the Pekobot runtime.
+//! that is hidden from the LLM but injected by the peko runtime.
 //!
 //! # Example Configuration
 //!

@@ -29,8 +29,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog }
     if (Test-Path $errLog) { Remove-Item $errLog }
 
@@ -88,7 +88,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_agent_memory_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_agent_memory_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -107,11 +107,11 @@ try {
     Write-Host "Created agent: $agentName" -ForegroundColor Green
 
     # Add workspace and skill
-    $skillsDir = "$env:APPDATA/pekobot/skills"
+    $skillsDir = "$env:APPDATA/peko/skills"
     New-Item -ItemType Directory -Path "$skillsDir/memory-skill" -Force | Out-Null
     "# Memory Skill`nA skill for testing memory persistence." | Out-File -FilePath "$skillsDir/memory-skill/SKILL.md" -Encoding UTF8
 
-    $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+    $workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
     New-Item -ItemType Directory -Path $workspaceDir -Force | Out-Null
     "# Workspace`nMemory agent workspace." | Out-File -FilePath "$workspaceDir/README.md" -Encoding UTF8
     Write-Host "Added skill and workspace" -ForegroundColor Green
@@ -167,7 +167,7 @@ try {
     Write-Host "STEP 4: Push snapshot to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    & $pekoCmd agent push "dummy-tag" "127.0.0.1:$RegistryPort/pekobot/agents/memory-agent:latest" --file $snapshotPath 2>&1 | Out-Null
+    & $pekoCmd agent push "dummy-tag" "127.0.0.1:$RegistryPort/peko/agents/memory-agent:latest" --file $snapshotPath 2>&1 | Out-Null
     Write-Host "Pushed snapshot to registry" -ForegroundColor Green
 
     # ============================================================
@@ -180,7 +180,7 @@ try {
     & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null
     Write-Host "Removed local agent" -ForegroundColor Yellow
 
-    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) {
         Remove-Item -Recurse -Force $localRegistryDir
         Write-Host "Cleared local registry store" -ForegroundColor Yellow
@@ -194,7 +194,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $pulledPath = "$testDir/memory-agent-pulled.agent"
-    & $pekoCmd agent pull "127.0.0.1:$RegistryPort/pekobot/agents/memory-agent:latest" --output $pulledPath 2>&1 | Out-Null
+    & $pekoCmd agent pull "127.0.0.1:$RegistryPort/peko/agents/memory-agent:latest" --output $pulledPath 2>&1 | Out-Null
     if (-not (Test-Path $pulledPath)) { Write-Error "Pull with --output failed: $pulledPath not found" }
     Write-Host "Pulled snapshot from registry to $pulledPath" -ForegroundColor Green
 
@@ -235,7 +235,7 @@ try {
 
     # Verify session content
     if ($env:MINIMAX_API_KEY -and $sessionCountAfter -gt 0) {
-        $sessionJsonlDir = "$env:APPDATA/pekobot/sessions/default/$importedName"
+        $sessionJsonlDir = "$env:APPDATA/peko/sessions/default/$importedName"
         if (Test-Path $sessionJsonlDir) {
             $jsonlFiles = Get-ChildItem "$sessionJsonlDir/*.jsonl" -ErrorAction SilentlyContinue
             $foundCode = $false
@@ -283,14 +283,14 @@ try {
     Write-Host "STEP 10: Verify skills and workspace" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $skillsDir = "$env:APPDATA/pekobot/skills"
+    $skillsDir = "$env:APPDATA/peko/skills"
     if (Test-Path "$skillsDir/memory-skill/SKILL.md") {
         Write-Host "Skills preserved" -ForegroundColor Green
     } else {
         Write-Error "Skills not preserved"
     }
 
-    $wsDir = "$env:APPDATA/pekobot/workspaces/default/$importedName"
+    $wsDir = "$env:APPDATA/peko/workspaces/default/$importedName"
     if (Test-Path "$wsDir/README.md") {
         $wsContent = Get-Content "$wsDir/README.md" -Raw
         if ($wsContent -match "Memory agent workspace") {
@@ -310,7 +310,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     try {
-        & $pekoCmd agent pull "127.0.0.1:$RegistryPort/pekobot/agents/nonexistent:latest" 2>&1 | Out-Null
+        & $pekoCmd agent pull "127.0.0.1:$RegistryPort/peko/agents/nonexistent:latest" 2>&1 | Out-Null
         Write-Error "Pull with non-existent image did not fail"
     } catch {
         Write-Host "Pull correctly rejects non-existent image" -ForegroundColor Green

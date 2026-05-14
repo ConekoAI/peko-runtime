@@ -85,7 +85,7 @@ pub struct McpServerConfig {
 
     /// Whether to bundle this MCP server binary in portable packages
     /// When true, the binary at `command` path will be bundled during export
-    /// and extracted to `.pekobot/tools/mcp/{name}/` on import
+    /// and extracted to `.peko/tools/mcp/{name}/` on import
     #[serde(default)]
     pub bundle: bool,
 
@@ -458,23 +458,23 @@ impl McpConfig {
 
     /// Get the default MCP config path (TOML format)
     ///
-    /// Returns `~/.pekobot/mcp.toml` (or platform equivalent)
+    /// Returns `~/.peko/mcp.toml` (or platform equivalent)
     #[must_use]
     pub fn default_config_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".pekobot")
+            .join(".peko")
             .join("mcp.toml")
     }
 
     /// Get the default MCP config path (JSON format)
     ///
-    /// Returns `~/.pekobot/mcp.json` (or platform equivalent)
+    /// Returns `~/.peko/mcp.json` (or platform equivalent)
     #[must_use]
     pub fn default_json_config_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".pekobot")
+            .join(".peko")
             .join("mcp.json")
     }
 

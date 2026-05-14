@@ -36,7 +36,7 @@ We recommend building Phase 2 in four milestones, each delivering user-visible v
 - SHA-256 verification on upload
 - Garbage collection of unreferenced blobs
 
-**User outcome:** `pekobot agent push` and `pekobot agent pull` work against the public registry.
+**User outcome:** `peko agent push` and `peko agent pull` work against the public registry.
 
 **Success criteria:** REG-001 through REG-006
 
@@ -77,10 +77,10 @@ We recommend building Phase 2 in four milestones, each delivering user-visible v
 - `team.toml` declarative format with bundle references from registry
 - Supervisor coordination pattern (coordinator + workers)
 - Shared context and unified output stream across team agents
-- `pekobot team run team.toml` CLI command
+- `peko team run team.toml` CLI command
 - Integration demo: 3-agent research team using shared browser + vector DB
 
-**User outcome:** A user writes a `team.toml`, runs `pekobot team run`, and watches a coordinator delegate tasks to workers with shared services.
+**User outcome:** A user writes a `team.toml`, runs `peko team run`, and watches a coordinator delegate tasks to workers with shared services.
 
 **Success criteria:** TEAM-001 through TEAM-010
 
@@ -122,17 +122,17 @@ We recommend building Phase 2 in four milestones, each delivering user-visible v
 
 ```bash
 # Authentication
-pekobot auth login                    # OAuth browser flow
-pekobot auth logout                   # Clear credentials
-pekobot auth status                   # Show logged-in user
+peko auth login                    # OAuth browser flow
+peko auth logout                   # Clear credentials
+peko auth status                   # Show logged-in user
 
 # Discovery
-pekobot search "github assistant"     # Search registry
-pekobot agent info user/agent:1.0     # Show bundle metadata
+peko search "github assistant"     # Search registry
+peko agent info user/agent:1.0     # Show bundle metadata
 
 # Publishing (aliases for push/pull)
-pekobot agent publish my-agent        # Push to public registry
-pekobot agent install user/agent:1.0  # Pull + import in one step
+peko agent publish my-agent        # Push to public registry
+peko agent install user/agent:1.0  # Pull + import in one step
 ```
 
 ---
@@ -179,7 +179,7 @@ vector = { collections = ["documents", "embeddings"], model = "text-embedding-3"
 memory = { scope = "team" }
 ```
 
-Or globally in `~/.pekobot/fabric.yaml`:
+Or globally in `~/.peko/fabric.yaml`:
 
 ```yaml
 services:
@@ -189,7 +189,7 @@ services:
     max_tabs_per_context: 5
   vector:
     type: vector_db
-    endpoint: postgres://localhost:5432/pekobot_vectors
+    endpoint: postgres://localhost:5432/peko_vectors
     default_model: text-embedding-3
 ```
 
@@ -239,9 +239,9 @@ memory = { scope = "team" }
 ### 5.3 CLI Commands
 
 ```bash
-pekobot team validate team.toml       # Validate team spec
-pekobot team run team.toml            # Execute team locally
-pekobot team logs                     # Show structured logs from last run
+peko team validate team.toml       # Validate team spec
+peko team run team.toml            # Execute team locally
+peko team logs                     # Show structured logs from last run
 ```
 
 ### 5.4 Supervisor Pattern Flow
@@ -302,7 +302,7 @@ All agents share:
 | Fabric documentation | Architecture + config + MCP integration | Docs |
 | Tutorial series | 3+ tutorials (multi-agent team, publishing, shared services) | Docs |
 | Team runtime docs | `team.toml` reference + coordination patterns | Docs |
-| CLI getting-started wizard | Interactive `pekobot init` for registry + team | CLI |
+| CLI getting-started wizard | Interactive `peko init` for registry + team | CLI |
 
 ---
 

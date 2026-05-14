@@ -538,7 +538,7 @@ impl SessionStorage {
     /// The cache is a derived file that can be rebuilt from the JSONL at any time.
     /// Format:
     /// ```text
-    /// # pekobot-context-cache v1
+    /// # peko-context-cache v1
     /// # checksum: <blake3 of jsonl content>
     /// # entries: <number of jsonl entries>
     /// <json array of ChatMessage>
@@ -554,7 +554,7 @@ impl SessionStorage {
         let _lock = FileLock::acquire(&cache_path, SESSION_LOCK_TIMEOUT_MS).await?;
 
         let header = format!(
-            "# pekobot-context-cache v1\n# checksum: {}\n# entries: {}\n",
+            "# peko-context-cache v1\n# checksum: {}\n# entries: {}\n",
             jsonl_checksum, entry_count
         );
         let messages_json = serde_json::to_string(messages)?;
@@ -602,7 +602,7 @@ impl SessionStorage {
         let entries_line = lines.next();
 
         // Validate version
-        if version_line != Some("# pekobot-context-cache v1") {
+        if version_line != Some("# peko-context-cache v1") {
             warn!("Context cache version mismatch for {}", session_id);
             return Ok(None);
         }

@@ -71,8 +71,8 @@ async fn init_extension_core(command: &Commands) {
                 // Daemon does not auto-start; user must start it manually.
                 AsyncExecutionRouter::with_transport(std::sync::Arc::new(
                     pekobot::extension::services::async_transport::UnavailableAsyncTransport::new(
-                        "Pekobot daemon is not running. Async tool execution requires the daemon.\n\
-                         Start it with: pekobot daemon start\n\
+                        "peko daemon is not running. Async tool execution requires the daemon.\n\
+                         Start it with: peko daemon start\n\
                          Or use sync mode (remove _async: true from the tool call).",
                     ),
                 ))

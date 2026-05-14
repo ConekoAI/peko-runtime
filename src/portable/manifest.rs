@@ -64,7 +64,7 @@ pub struct AgentMetadata {
     /// Agent DID
     pub did: String,
     /// Original runtime version that created this package
-    pub pekobot_version: String,
+    pub peko_version: String,
 }
 
 /// Identity configuration section
@@ -122,7 +122,7 @@ impl AgentManifest {
                 created_at: now,
                 export_format: "1.1".to_string(), // Updated for MCP/tool_registry support
                 did: did.into(),
-                pekobot_version: crate::VERSION.to_string(),
+                peko_version: crate::VERSION.to_string(),
             },
             identity: IdentityConfig {
                 key_algorithm: "ed25519".to_string(),
@@ -193,22 +193,22 @@ mod tests {
 
     #[test]
     fn test_manifest_creation() {
-        let manifest = AgentManifest::new("test-agent", "1.0.0", "did:pekobot:test");
+        let manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
         assert_eq!(manifest.agent.name, "test-agent");
         assert_eq!(manifest.agent.version, "1.0.0");
-        assert_eq!(manifest.agent.did, "did:pekobot:test");
+        assert_eq!(manifest.agent.did, "did:peko:test");
         assert!(!manifest.identity.encrypted);
         assert!(manifest.layers.is_none());
     }
 
     #[test]
     fn test_manifest_serialization() {
-        let mut manifest = AgentManifest::new("test-agent", "1.0.0", "did:pekobot:test");
+        let mut manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
         manifest.add_file("test.txt", b"hello world");
 
         let toml = manifest.to_toml().unwrap();
         assert!(toml.contains("name = \"test-agent\""));
-        assert!(toml.contains("did = \"did:pekobot:test\""));
+        assert!(toml.contains("did = \"did:peko:test\""));
 
         let parsed = AgentManifest::from_toml(&toml).unwrap();
         assert_eq!(parsed.agent.name, "test-agent");

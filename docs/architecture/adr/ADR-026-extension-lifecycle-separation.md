@@ -5,7 +5,7 @@
 **Last Updated**: 2026-05-04  
 **Author**: Kimi Code CLI  
 **Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-025 (Gateway Extension Architecture)  
-**Replaces / Supersedes**: The overloaded semantics of `pekobot ext enable` / `pekobot ext disable` as defined in ADR-017 and ADR-025
+**Replaces / Supersedes**: The overloaded semantics of `peko ext enable` / `peko ext disable` as defined in ADR-017 and ADR-025
 
 ---
 
@@ -13,7 +13,7 @@
 
 ### The Problem
 
-The `pekobot ext enable` and `pekobot ext disable` commands are currently overloaded. They conflate three distinct concerns into a single verb:
+The `peko ext enable` and `peko ext disable` commands are currently overloaded. They conflate three distinct concerns into a single verb:
 
 1. **Daemon runtime lifecycle** — start or stop a background process/task (e.g., MCP server, gateway bot).
 2. **Extension registry state** — mark an extension as "active" in the `ExtensionManager`.
@@ -25,8 +25,8 @@ This overloading was manageable when most extensions were stateless (skills, uni
 
 ADR-025 introduces `BackgroundRuntimeManager` to supervise long-running processes such as gateways and MCP servers. Under the current CLI design:
 
-- `pekobot ext enable discord-gateway` would start a **daemon-wide** WebSocket bot — a global side-effect disguised as a generic enable operation.
-- `pekobot ext disable mcp-filesystem` would stop an MCP server process, potentially breaking all agents that depend on it, even though the user's intent might have been only to revoke access for one team.
+- `peko ext enable discord-gateway` would start a **daemon-wide** WebSocket bot — a global side-effect disguised as a generic enable operation.
+- `peko ext disable mcp-filesystem` would stop an MCP server process, potentially breaking all agents that depend on it, even though the user's intent might have been only to revoke access for one team.
 - There is no way to **start a gateway globally** while **restricting which agents can receive messages from it**.
 - There is no way to **keep an MCP server running** while **disallowing a specific agent from calling its tools**.
 
@@ -60,22 +60,22 @@ These two systems currently have no clean CLI boundary.
 New CLI commands for **daemon-scoped background runtime management**:
 
 ```bash
-pekobot ext start  <extension-id>    # Spawn the background runtime
-pekobot ext stop   <extension-id>    # Graceful shutdown
-pekobot ext restart <extension-id>   # Restart with backoff policy
-pekobot ext status <extension-id>    # Show RuntimeState (Running, Healthy, Crashed, etc.)
+peko ext start  <extension-id>    # Spawn the background runtime
+peko ext stop   <extension-id>    # Graceful shutdown
+peko ext restart <extension-id>   # Restart with backoff policy
+peko ext status <extension-id>    # Show RuntimeState (Running, Healthy, Crashed, etc.)
 ```
 
 These commands operate directly on `BackgroundRuntimeManager`. They only apply to extensions that declare a background runtime in their manifest (`extension_type: "mcp"`, `"gateway"`, or any future runtime-bearing type).
 
 Attempting to `start` a stateless extension (e.g., a skill) returns an error:
 ```
-Error: 'my-skill' does not declare a background runtime. Use 'pekobot ext enable' instead.
+Error: 'my-skill' does not declare a background runtime. Use 'peko ext enable' instead.
 ```
 
 ### 2. Redefine `enable` / `disable` as Pure Access Control
 
-`pekobot ext enable` and `pekobot ext disable` are redefined to control **only** access permissions and hook state:
+`peko ext enable` and `peko ext disable` are redefined to control **only** access permissions and hook state:
 
 | Scope | What `enable` does | What `disable` does |
 |---|---|---|
@@ -102,38 +102,38 @@ An extension can be in any combination of these states:
 
 ```bash
 # ─── RUNTIME LIFECYCLE ───
-pekobot ext start discord-gateway
-pekobot ext stop discord-gateway
-pekobot ext restart mcp-filesystem
-pekobot ext status mcp-filesystem
+peko ext start discord-gateway
+peko ext stop discord-gateway
+peko ext restart mcp-filesystem
+peko ext status mcp-filesystem
 ```
 
 #### Modified Commands
 
 ```bash
 # ─── ACCESS CONTROL ───
-pekobot ext enable my-skill --target myteam/myagent
-pekobot ext disable shell --target myteam
-pekobot ext enable discord-gateway --target myteam  # Which agents can receive from this gateway
+peko ext enable my-skill --target myteam/myagent
+peko ext disable shell --target myteam
+peko ext enable discord-gateway --target myteam  # Which agents can receive from this gateway
 ```
 
 #### Modified List Output
 
 ```bash
-pekobot ext list
+peko ext list
 # → Shows all installed extensions with two status columns:
 #   RUNTIME (running/stopped/n/a) and ACCESS (enabled/disabled per scope)
 
-pekobot ext list --running
+peko ext list --running
 # → Only background runtimes that are currently up
 
-pekobot ext list --enabled --target myteam/myagent
+peko ext list --enabled --target myteam/myagent
 # → Only extensions this agent is permitted to use
 ```
 
 #### Daemon Status Integration
 
-`pekobot daemon status` already shows background runtimes (ADR-025). This remains the primary operational view for runtime health:
+`peko daemon status` already shows background runtimes (ADR-025). This remains the primary operational view for runtime health:
 
 ```
 Background Runtimes:
@@ -166,7 +166,7 @@ The separation is now complete. `enable`/`disable` are pure access control for *
 
 ## Tradeoffs Accepted
 
-**Breaking Change (with mitigation).** The semantics of `pekobot ext enable` for MCP and gateway extensions will change. Mitigated by a deprecation phase with clear warnings.
+**Breaking Change (with mitigation).** The semantics of `peko ext enable` for MCP and gateway extensions will change. Mitigated by a deprecation phase with clear warnings.
 
 **Two Commands for Full MCP Setup.** Instead of one `enable` command, users now need `start` + `enable --target` to make an MCP server fully operational for an agent. This is more explicit and avoids hidden side-effects, but slightly more verbose. The convenience alias in Phase 1 preserves the one-command workflow temporarily.
 
@@ -180,7 +180,7 @@ The separation is now complete. `enable`/`disable` are pure access control for *
 
 1. Implemented `ExtCommands::Start`, `Stop`, `Restart`, `Status` in `src/commands/ext.rs`.
 2. Wired commands to `BackgroundRuntimeManager::start()` / `stop()` / `restart()` / `get_state()` via daemon IPC.
-3. Updated `pekobot ext list` to show both runtime and access status.
+3. Updated `peko ext list` to show both runtime and access status.
 
 ### Phase 2: Pure Access Control Semantics ✅ Complete
 
@@ -222,16 +222,16 @@ The separation is now complete. `enable`/`disable` are pure access control for *
 
 | Criterion | Status | Notes |
 |---|---|---|
-| `pekobot ext start <id>` spawns background runtime via `BackgroundRuntimeManager` | ✅ Done | New command; delegates to daemon IPC |
-| `pekobot ext stop <id>` gracefully stops background runtime | ✅ Done | New command; delegates to daemon IPC |
-| `pekobot ext restart <id>` restarts with backoff | ✅ Done | New command; delegates to daemon IPC |
-| `pekobot ext status <id>` shows `RuntimeState` | ✅ Done | New command; delegates to daemon IPC |
-| `pekobot ext start <id>` works for **MCP extensions** | ✅ Done | `McpRuntimeStarter` registered in `ExtensionRuntimeStarterRegistry`; parses unified manifest and legacy config |
-| `pekobot ext start <id>` works for **Gateway extensions** | ✅ Done | `GatewayRuntimeStarter` registered in `ExtensionRuntimeStarterRegistry` |
+| `peko ext start <id>` spawns background runtime via `BackgroundRuntimeManager` | ✅ Done | New command; delegates to daemon IPC |
+| `peko ext stop <id>` gracefully stops background runtime | ✅ Done | New command; delegates to daemon IPC |
+| `peko ext restart <id>` restarts with backoff | ✅ Done | New command; delegates to daemon IPC |
+| `peko ext status <id>` shows `RuntimeState` | ✅ Done | New command; delegates to daemon IPC |
+| `peko ext start <id>` works for **MCP extensions** | ✅ Done | `McpRuntimeStarter` registered in `ExtensionRuntimeStarterRegistry`; parses unified manifest and legacy config |
+| `peko ext start <id>` works for **Gateway extensions** | ✅ Done | `GatewayRuntimeStarter` registered in `ExtensionRuntimeStarterRegistry` |
 | IPC server has **no hardcoded type checks** for extension runtime dispatch | ✅ Done | `handle_ext_start`/`stop`/`restart` delegate to `ExtensionRuntimeStarterRegistry` |
-| `pekobot ext enable` no longer starts processes for any extension type | ✅ Done | `manager.enable()` only toggles hooks |
-| `pekobot ext disable` no longer stops processes for any extension type | ✅ Done | `manager.disable()` only toggles hooks |
-| `pekobot ext list` shows both runtime and access status | ✅ Done | Enhanced output with RUNTIME column |
+| `peko ext enable` no longer starts processes for any extension type | ✅ Done | `manager.enable()` only toggles hooks |
+| `peko ext disable` no longer stops processes for any extension type | ✅ Done | `manager.disable()` only toggles hooks |
+| `peko ext list` shows both runtime and access status | ✅ Done | Enhanced output with RUNTIME column |
 | Deprecation warnings removed | ✅ Done | Phase 2 — warnings removed, clean semantics |
 | All E2E tests updated to use `start`/`stop` for runtime extensions | ✅ Done | MCP E2E tests use `ext start`/`ext stop` |
 | Documentation updated across ADR-025, EXTENSION_SYSTEM.md, README.md | ⏸️ Pending | Phase 3 |

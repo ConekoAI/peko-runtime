@@ -56,7 +56,7 @@ pub async fn handle_agent_list(paths: &GlobalPaths, long: bool, json: bool) -> a
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if agents.is_empty() {
         println!("No agents configured.");
-        println!("Create one with: pekobot agent create <name>");
+        println!("Create one with: peko agent create <name>");
     } else {
         println!("🐱 Configured Agents ({}):", agents.len());
 
@@ -307,7 +307,7 @@ pub async fn handle_agent_inspect(file: String, json: bool) -> anyhow::Result<()
             "did": info.did,
             "created_at": info.created_at,
             "export_format": info.export_format,
-            "pekobot_version": info.pekobot_version,
+            "peko_version": info.peko_version,
             "encrypted": info.encrypted,
             "layers": info.layers,
             "valid": info.valid,
@@ -793,7 +793,7 @@ fn registry_to_agent_manifest(registry_manifest: &RegistryManifest) -> AgentMani
     let mut agent_manifest = AgentManifest::new(
         &registry_manifest.name,
         &registry_manifest.version,
-        "did:pekobot:pulled",
+        "did:peko:pulled",
     );
 
     let mut layers = AgentLayers::default();

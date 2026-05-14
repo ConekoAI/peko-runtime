@@ -33,8 +33,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog }
     if (Test-Path $errLog) { Remove-Item $errLog }
 
@@ -92,7 +92,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_cross_platform_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_cross_platform_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -124,7 +124,7 @@ try {
     Write-Host "STEP 2: Add skills" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $skillsDir = "$env:APPDATA/pekobot/skills"
+    $skillsDir = "$env:APPDATA/peko/skills"
     New-Item -ItemType Directory -Path "$skillsDir/skill-a" -Force | Out-Null
     "# Skill A`nSkill A content for testing." | Out-File -FilePath "$skillsDir/skill-a/SKILL.md" -Encoding UTF8
     New-Item -ItemType Directory -Path "$skillsDir/skill-b" -Force | Out-Null
@@ -138,7 +138,7 @@ try {
     Write-Host "STEP 3: Add workspace files" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $workspaceDir = "$env:APPDATA/pekobot/workspaces/$teamName/$agentName"
+    $workspaceDir = "$env:APPDATA/peko/workspaces/$teamName/$agentName"
     New-Item -ItemType Directory -Path $workspaceDir -Force | Out-Null
     "# README`nCross-platform test workspace." | Out-File -FilePath "$workspaceDir/README.md" -Encoding UTF8
     "# Guide`nUsage guide for the agent." | Out-File -FilePath "$workspaceDir/GUIDE.md" -Encoding UTF8
@@ -179,7 +179,7 @@ try {
     Write-Host "STEP 6: Push to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRef = "127.0.0.1:$RegistryPort/pekobot/agents/cross-agent:v1.0"
+    $registryRef = "127.0.0.1:$RegistryPort/peko/agents/cross-agent:v1.0"
     $pushResult = & $pekoCmd agent push "cross-agent:v1.0" $registryRef --file $packagePath --json 2>&1 | ConvertFrom-Json
     if ($pushResult.success -ne $true) { Write-Error "Push failed" }
     Write-Host "Push succeeded" -ForegroundColor Green
@@ -191,7 +191,7 @@ try {
     Write-Host "STEP 7: Fresh machine pull" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) {
         Remove-Item -Recurse -Force $localRegistryDir
         Write-Host "Cleared local registry store" -ForegroundColor Yellow
@@ -223,7 +223,7 @@ try {
     Write-Host "STEP 9: Verify config preserved" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $importedConfigPath = "$env:USERPROFILE/.pekobot/teams/$teamName/agents/$importedName/config.toml"
+    $importedConfigPath = "$env:USERPROFILE/.peko/teams/$teamName/agents/$importedName/config.toml"
     if (-not (Test-Path $importedConfigPath)) { Write-Error "Imported config not found" }
     $importedConfig = Get-Content $importedConfigPath -Raw
 
@@ -253,7 +253,7 @@ try {
     Write-Host "STEP 10: Verify workspace files" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $wsDir = "$env:APPDATA/pekobot/workspaces/$teamName/$importedName"
+    $wsDir = "$env:APPDATA/peko/workspaces/$teamName/$importedName"
     $expectedFiles = @("README.md", "GUIDE.md", "data.toml")
     foreach ($file in $expectedFiles) {
         $path = "$wsDir/$file"
@@ -280,7 +280,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Skills are stored in the global skills directory, not per-agent
-    $skillsDir = "$env:APPDATA/pekobot/skills"
+    $skillsDir = "$env:APPDATA/peko/skills"
     if (Test-Path "$skillsDir/skill-a/SKILL.md") {
         Write-Host "Skill A preserved" -ForegroundColor Green
     } else {

@@ -5,7 +5,7 @@
 # 1. Skill installation via CLI
 # 2. Skill listing and info
 # 3. Enabling skill for agent
-# 4. Agent using skill via pekobot send
+# 4. Agent using skill via peko send
 # 5. Verification in session history
 # 6. Cleanup
 
@@ -33,11 +33,11 @@ if (-not $pythonCmd) {
 }
 Write-Host "Using Python: $pythonCmd" -ForegroundColor Green
 
-# Build pekobot (skip if binary exists to avoid locking issues with daemon)
+# Build peko (skip if binary exists to avoid locking issues with daemon)
 $projectRoot = Resolve-Path "$PSScriptRoot/../../../../"
 $pekoBinary = Join-Path $projectRoot "target/debug/peko.exe"
 if (-not (Test-Path $pekoBinary)) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd $projectRoot
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -47,25 +47,25 @@ if (-not (Test-Path $pekoBinary)) {
     }
     popd
 } else {
-    Write-Host "Using existing pekobot binary" -ForegroundColor Green
+    Write-Host "Using existing peko binary" -ForegroundColor Green
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
-# Reset pekobot data
-$dataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+# Reset peko data
+$dataDir = "$env:USERPROFILE/AppData/Roaming/peko"
 if (Test-Path $dataDir) {
     Remove-Item -Recurse -Force $dataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -78,11 +78,11 @@ Write-Host "========================================" -ForegroundColor Cyan
 $skillDir = "$PSScriptRoot/calculator-skill"
 Write-Host "Installing skill extension from: $skillDir" -ForegroundColor Yellow
 
-$installResult = pekobot ext install $skillDir --type skill 2>&1
+$installResult = peko ext install $skillDir --type skill 2>&1
 Write-Host $installResult
 
 # Verify installation
-$extList = pekobot ext list --type skill 2>&1
+$extList = peko ext list --type skill 2>&1
 if ($extList -match "calculator-skill") {
     Write-Host "✓ Skill extension 'calculator-skill' installed successfully" -ForegroundColor Green
 } else {
@@ -97,10 +97,10 @@ Write-Host "TEST 2: List and show extension info" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Extensions list (skill type):" -ForegroundColor Cyan
-pekobot ext list --type skill 2>&1
+peko ext list --type skill 2>&1
 
 Write-Host "`nExtension info:" -ForegroundColor Cyan
-$infoResult = pekobot ext info calculator-skill 2>&1
+$infoResult = peko ext info calculator-skill 2>&1
 Write-Host $infoResult
 
 if ($infoResult -match "calculator-skill" -and $infoResult -match "skill") {
@@ -120,15 +120,15 @@ $agentName = "calc_agent"
 $teamName = "default"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
-pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "✓ Agent created" -ForegroundColor Green
 
 Write-Host "`nEnabling calculator-skill extension..." -ForegroundColor Yellow
-pekobot ext enable calculator-skill 2>&1 | Out-Null
+peko ext enable calculator-skill 2>&1 | Out-Null
 Write-Host "✓ Skill extension enabled" -ForegroundColor Green
 
 # Verify extension is enabled
-$infoResult = pekobot ext info calculator-skill 2>&1
+$infoResult = peko ext info calculator-skill 2>&1
 Write-Host "`nExtension status:" -ForegroundColor Cyan
 Write-Host $infoResult
 
@@ -148,7 +148,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Sending calculation request to agent..." -ForegroundColor Yellow
 Write-Host "(Agent should use calculator-skill to answer)" -ForegroundColor Gray
 
-$response = pekobot send $agentName "Calculate 25 times 4 using your calculator skill. Show me the operation, expression, and result." --no-stream 2>&1
+$response = peko send $agentName "Calculate 25 times 4 using your calculator skill. Show me the operation, expression, and result." --no-stream 2>&1
 Write-Host "Agent response: $response"
 
 # Check if response mentions calculation elements
@@ -159,7 +159,7 @@ if ($response -match "25" -and ($response -match "100" -or $response -match "Res
 }
 
 # Check session was created
-$sessions = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+$sessions = peko session list $agentName --json 2>&1 | ConvertFrom-Json
 if ($sessions.sessions.Count -ge 1) {
     Write-Host "✓ Session created" -ForegroundColor Green
     $sessionId = $sessions.sessions[0].session_id
@@ -177,10 +177,10 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $sessionId = $sessions.sessions[0].session_id
 Write-Host "Session history:" -ForegroundColor Cyan
-pekobot session show $agentName --session-id $sessionId --history 2>&1
+peko session show $agentName --session-id $sessionId --history 2>&1
 
 # Check session JSONL for skill reference
-$sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl"
+$sessionFile = "$env:USERPROFILE/AppData/Roaming/peko/sessions/default/$agentName/$sessionId.jsonl"
 if (Test-Path $sessionFile) {
     Write-Host "`nSession JSONL (checking for skill reference):" -ForegroundColor Cyan
     $content = Get-Content $sessionFile -Raw
@@ -214,7 +214,7 @@ Write-Host "TEST 6: Verify skill extension content" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Checking extension info for skill content..." -ForegroundColor Yellow
-$infoResult = pekobot ext info calculator-skill 2>&1
+$infoResult = peko ext info calculator-skill 2>&1
 if ($infoResult -match "calculator-skill" -and $infoResult -match "description") {
     Write-Host "✓ Skill extension info shows correct content" -ForegroundColor Green
 } else {
@@ -228,7 +228,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 7: Skill appears in unified ext list" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$extList = pekobot ext list --type skill 2>&1
+$extList = peko ext list --type skill 2>&1
 Write-Host $extList
 
 if ($extList -match "calculator-skill") {
@@ -245,11 +245,11 @@ Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Delete test agent
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 # Uninstall skill extension
-pekobot ext uninstall calculator-skill 2>&1 | Out-Null
+peko ext uninstall calculator-skill 2>&1 | Out-Null
 Write-Host "Uninstalled calculator-skill extension" -ForegroundColor Green
 
 Write-Host "`n✅ Skill Extension E2E test completed!" -ForegroundColor Green
@@ -257,8 +257,8 @@ Write-Host "" -ForegroundColor Cyan
 Write-Host "Summary:" -ForegroundColor Cyan
 Write-Host "  - Skill extension installed from local directory via CLI" -ForegroundColor Cyan
 Write-Host "  - Extension listed and info displayed correctly" -ForegroundColor Cyan
-Write-Host "  - Extension enabled via 'pekobot ext enable'" -ForegroundColor Cyan
-Write-Host "  - Agent successfully used skill via pekobot send" -ForegroundColor Cyan
+Write-Host "  - Extension enabled via 'peko ext enable'" -ForegroundColor Cyan
+Write-Host "  - Agent successfully used skill via peko send" -ForegroundColor Cyan
 Write-Host "  - Skill appeared in unified extension list" -ForegroundColor Cyan
 Write-Host "" -ForegroundColor Cyan
 Write-Host "Architecture verified:" -ForegroundColor Cyan

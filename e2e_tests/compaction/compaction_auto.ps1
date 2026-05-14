@@ -27,7 +27,7 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot (skip if daemon is running since binary is locked)
+# Build peko (skip if daemon is running since binary is locked)
 $daemonRunning = $false
 try {
     $daemonStatus = peko daemon status 2>&1
@@ -35,7 +35,7 @@ try {
 } catch { }
 
 if (-not $daemonRunning) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd "$PSScriptRoot/../.."
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -48,13 +48,13 @@ if (-not $daemonRunning) {
     Write-Host "Daemon is running — skipping build (binary locked)" -ForegroundColor Yellow
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
@@ -81,8 +81,8 @@ cooldown_seconds = 0
 $Provider = { "$modelName" = 4000 }
 "@
 
-New-Item -ItemType Directory -Force -Path $pekobotDir | Out-Null
-$globalConfig | Out-File -FilePath "$pekobotDir/config.toml" -Encoding utf8
+New-Item -ItemType Directory -Force -Path $pekoDir | Out-Null
+$globalConfig | Out-File -FilePath "$pekoDir/config.toml" -Encoding utf8
 Write-Host "Wrote global config with low compaction threshold (5% of 4K tokens)" -ForegroundColor Green
 
 # Set API key
@@ -100,8 +100,8 @@ peko ext enable read_file --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled write_file, read_file tools" -ForegroundColor Green
 
 # Get paths
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
-$sessionsDir = "$env:APPDATA/pekobot/sessions/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
+$sessionsDir = "$env:APPDATA/peko/sessions/default/$agentName"
 
 # Ensure cleanup runs even if tests fail
 try {
@@ -135,7 +135,7 @@ try {
     }
 
     # Get session ID and inspect JSONL
-    $sessionId = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json | Select-Object -ExpandProperty sessions | Select-Object -First 1 -ExpandProperty session_id
+    $sessionId = peko session list $agentName --json 2>&1 | ConvertFrom-Json | Select-Object -ExpandProperty sessions | Select-Object -First 1 -ExpandProperty session_id
     Write-Host "`nActive session ID: $sessionId" -ForegroundColor Cyan
 
     $jsonlFile = Get-ChildItem -Path $sessionsDir -Filter "*.jsonl" | Select-Object -First 1
@@ -309,8 +309,8 @@ try {
     Write-Host "Deleted test agent: $agentName" -ForegroundColor Green
 
     # Remove global config
-    if (Test-Path "$pekobotDir/config.toml") {
-        Remove-Item "$pekobotDir/config.toml" -Force
+    if (Test-Path "$pekoDir/config.toml") {
+        Remove-Item "$pekoDir/config.toml" -Force
         Write-Host "Removed test global config" -ForegroundColor Green
     }
 }

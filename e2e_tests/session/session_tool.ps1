@@ -26,7 +26,7 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot (skip if daemon is running since it locks the binary)
+# Build peko (skip if daemon is running since it locks the binary)
 $daemonRunning = $false
 try {
     $status = peko daemon status 2>&1
@@ -34,7 +34,7 @@ try {
 } catch {}
 
 if (-not $daemonRunning) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd "$PSScriptRoot/../.."
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -47,13 +47,13 @@ if (-not $daemonRunning) {
     Write-Host "Daemon already running, skipping build..." -ForegroundColor Cyan
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
@@ -72,7 +72,7 @@ Write-Host "Created test agent: $agentName" -ForegroundColor Green
 Write-Host "Built-in tools already enabled by default" -ForegroundColor Green
 
 # Get workspace directory
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
 
 # Ensure cleanup runs even if tests fail
 try {

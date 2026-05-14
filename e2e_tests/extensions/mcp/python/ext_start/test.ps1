@@ -4,8 +4,8 @@
 # Tests:
 # 1. MCP server installation via ext install with unified manifest
 # 2. Daemon start
-# 3. MCP background runtime start via 'pekobot ext start'
-# 4. Runtime status verification via 'pekobot ext status' and 'pekobot daemon status'
+# 3. MCP background runtime start via 'peko ext start'
+# 4. Runtime status verification via 'peko ext status' and 'peko daemon status'
 # 5. Tool execution via agent (reserved parameter injection)
 # 6. Runtime stop and restart
 #
@@ -35,11 +35,11 @@ if (-not $pythonCmd) {
 }
 Write-Host "Using Python: $pythonCmd" -ForegroundColor Green
 
-# Build pekobot
+# Build peko
 $projectRoot = Resolve-Path "$PSScriptRoot/../../../../"
-$pekoBinary = Join-Path $projectRoot "target/debug/pekobot.exe"
+$pekoBinary = Join-Path $projectRoot "target/debug/peko.exe"
 if (-not (Test-Path $pekoBinary)) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd $projectRoot
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -49,25 +49,25 @@ if (-not (Test-Path $pekoBinary)) {
     }
     popd
 } else {
-    Write-Host "Using existing pekobot binary" -ForegroundColor Green
+    Write-Host "Using existing peko binary" -ForegroundColor Green
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
-# Reset pekobot data
-$dataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+# Reset peko data
+$dataDir = "$env:USERPROFILE/AppData/Roaming/peko"
 if (Test-Path $dataDir) {
     Remove-Item -Recurse -Force $dataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -80,11 +80,11 @@ Write-Host "========================================" -ForegroundColor Cyan
 $sourceDir = $PSScriptRoot
 Write-Host "Installing MCP server 'identity' from $sourceDir..." -ForegroundColor Yellow
 
-$installResult = pekobot ext install $sourceDir --type mcp 2>&1
+$installResult = peko ext install $sourceDir --type mcp 2>&1
 Write-Host $installResult
 
 # Verify installation
-$extList = pekobot ext list --type mcp 2>&1
+$extList = peko ext list --type mcp 2>&1
 if ($extList -match "identity") {
     Write-Host "✓ MCP server extension installed successfully" -ForegroundColor Green
 } else {
@@ -101,7 +101,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 $agentName = "mcp_ext_start_agent"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
-pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent" -ForegroundColor Green
 
 # ============================================================
@@ -113,7 +113,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Enabling MCP extension 'identity' for agent..." -ForegroundColor Yellow
 # In Phase 1, 'ext enable' still works but warns. We redirect stderr to avoid $ErrorActionPreference issues.
-$enableResult = pekobot ext enable identity --target default/$agentName 2>&1
+$enableResult = peko ext enable identity --target default/$agentName 2>&1
 Write-Host $enableResult
 Write-Host "Enabled MCP extension for agent" -ForegroundColor Green
 
@@ -124,20 +124,20 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "STEP 4: Start daemon" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "Starting pekobot daemon in background..." -ForegroundColor Yellow
+Write-Host "Starting peko daemon in background..." -ForegroundColor Yellow
 
-$daemonOut = "$env:TEMP\pekobot_mcp_daemon_out.log"
-$daemonErr = "$env:TEMP\pekobot_mcp_daemon_err.log"
+$daemonOut = "$env:TEMP\PEKO_mcp_daemon_out.log"
+$daemonErr = "$env:TEMP\PEKO_mcp_daemon_err.log"
 if (Test-Path $daemonOut) { Remove-Item $daemonOut }
 if (Test-Path $daemonErr) { Remove-Item $daemonErr }
 
-$daemonProc = Start-Process -FilePath "pekobot" -ArgumentList "daemon","start","--foreground" -PassThru -RedirectStandardOutput $daemonOut -RedirectStandardError $daemonErr -WindowStyle Hidden
+$daemonProc = Start-Process -FilePath "peko" -ArgumentList "daemon","start","--foreground" -PassThru -RedirectStandardOutput $daemonOut -RedirectStandardError $daemonErr -WindowStyle Hidden
 
 # Wait for daemon to be ready
 Start-Sleep -Seconds 4
 
 # Check daemon status
-$daemonStatus = pekobot daemon status 2>&1
+$daemonStatus = peko daemon status 2>&1
 Write-Host $daemonStatus
 if ($daemonStatus -match "running" -or $daemonStatus -match "Daemon is running") {
     Write-Host "✓ Daemon is running" -ForegroundColor Green
@@ -156,8 +156,8 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "STEP 5: Start MCP background runtime" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "Starting MCP background runtime via 'pekobot ext start identity'..." -ForegroundColor Yellow
-$startResult = pekobot ext start identity 2>&1
+Write-Host "Starting MCP background runtime via 'peko ext start identity'..." -ForegroundColor Yellow
+$startResult = peko ext start identity 2>&1
 Write-Host $startResult
 
 if ($startResult -match "started" -or $startResult -match "running" -or $startResult -match "identity") {
@@ -176,7 +176,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "STEP 6: Check MCP runtime status" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$statusResult = pekobot ext status identity 2>&1
+$statusResult = peko ext status identity 2>&1
 Write-Host $statusResult
 
 if ($statusResult -match "running" -or $statusResult -match "healthy" -or $statusResult -match "starting") {
@@ -186,7 +186,7 @@ if ($statusResult -match "running" -or $statusResult -match "healthy" -or $statu
 }
 
 # Also check daemon status (shows daemon is running — background runtime details are in ext status)
-$daemonStatus2 = pekobot daemon status 2>&1
+$daemonStatus2 = peko daemon status 2>&1
 Write-Host "`nDaemon status:" -ForegroundColor Cyan
 Write-Host $daemonStatus2
 
@@ -207,7 +207,7 @@ Write-Host "Sending message to agent requesting identity echo..." -ForegroundCol
 Write-Host "(This will demonstrate reserved parameter injection)" -ForegroundColor Gray
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-$response = pekobot send $agentName "We are testing your access and functionality of the MCP echo_identity tool. Please use the echo_identity tool with message 'Hello MCP'. Report back TOOL_SUCCESS if the tool works and shows injected identity, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
+$response = peko send $agentName "We are testing your access and functionality of the MCP echo_identity tool. Please use the echo_identity tool with message 'Hello MCP'. Report back TOOL_SUCCESS if the tool works and shows injected identity, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
 $sw.Stop()
 Write-Host "Response time: $($sw.Elapsed.TotalSeconds)s"
 Write-Host "Agent response: $response"
@@ -231,7 +231,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Testing memory storage and retrieval..." -ForegroundColor Yellow
 
-$memoryResponse = pekobot send $agentName "Please use the store_memory tool to save 'test_key=test_value'. Then use retrieve_memory with key 'test_key' to verify. Report MEMORY_OK if both work, otherwise MEMORY_FAILED" --no-stream 2>&1
+$memoryResponse = peko send $agentName "Please use the store_memory tool to save 'test_key=test_value'. Then use retrieve_memory with key 'test_key' to verify. Report MEMORY_OK if both work, otherwise MEMORY_FAILED" --no-stream 2>&1
 Write-Host "Memory response: $memoryResponse"
 
 $memoryOk = $memoryResponse -match "MEMORY_OK"
@@ -252,7 +252,7 @@ Write-Host "STEP 9: Restart MCP runtime" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Restarting MCP runtime..." -ForegroundColor Yellow
-$restartResult = pekobot ext restart identity 2>&1
+$restartResult = peko ext restart identity 2>&1
 Write-Host $restartResult
 
 if ($restartResult -match "restarted" -or $restartResult -match "started") {
@@ -264,7 +264,7 @@ if ($restartResult -match "restarted" -or $restartResult -match "started") {
 Start-Sleep -Seconds 3
 
 # Verify after restart
-$statusAfterRestart = pekobot ext status identity 2>&1
+$statusAfterRestart = peko ext status identity 2>&1
 Write-Host "Status after restart: $statusAfterRestart"
 
 # ============================================================
@@ -275,7 +275,7 @@ Write-Host "STEP 10: Stop MCP runtime" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Stopping MCP runtime..." -ForegroundColor Yellow
-$stopResult = pekobot ext stop identity 2>&1
+$stopResult = peko ext stop identity 2>&1
 Write-Host $stopResult
 
 if ($stopResult -match "stopped" -or $stopResult -match "not running") {
@@ -298,11 +298,11 @@ if ($daemonProc -and -not $daemonProc.HasExited) {
 }
 
 # Uninstall extension
-pekobot ext uninstall identity 2>&1 | Out-Null
+peko ext uninstall identity 2>&1 | Out-Null
 Write-Host "Uninstalled MCP extension" -ForegroundColor Green
 
 # Delete agent
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted agent" -ForegroundColor Green
 
 # Show any daemon errors for debugging

@@ -62,15 +62,15 @@ impl StatelessAgentManager {
 
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("pekobot");
+            .join("peko");
 
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             dirs::home_dir().map_or_else(
-                || PathBuf::from(".").join(".pekobot"),
-                |d| d.join(".pekobot"),
+                || PathBuf::from(".").join(".peko"),
+                |d| d.join(".peko"),
             ),
             data_dir.clone(),
-            dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("pekobot")),
+            dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("peko")),
         );
 
         let manager = Self::build(data_dir, events_tx, path_resolver).await?;

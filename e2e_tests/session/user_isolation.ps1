@@ -28,7 +28,7 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot (skip if daemon is running since it locks the binary)
+# Build peko (skip if daemon is running since it locks the binary)
 $daemonRunning = $false
 try {
     $status = peko daemon status 2>&1
@@ -36,7 +36,7 @@ try {
 } catch {}
 
 if (-not $daemonRunning) {
-    Write-Host "`nBuilding pekobot..." -ForegroundColor Cyan
+    Write-Host "`nBuilding peko..." -ForegroundColor Cyan
     pushd "$PSScriptRoot/../.."
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -49,20 +49,20 @@ if (-not $daemonRunning) {
     Write-Host "Daemon already running, skipping build..." -ForegroundColor Cyan
 }
 
-# Reset pekobot config data (Windows)
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data (Windows)
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
 # Set minimax api key
-pekobot auth set minimax $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set minimax $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create an agent with minimax provider
 $agentName = "testagent"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # ============================================================================
@@ -73,10 +73,10 @@ Write-Host "Test 1: Default user creates a session" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`nSending message as default user..." -ForegroundColor Cyan
-pekobot send $agentName "what is the capital of USA" --no-stream 2>&1 | Select-Object -First 5
+peko send $agentName "what is the capital of USA" --no-stream 2>&1 | Select-Object -First 5
 
 Write-Host "`nSession list for default user:" -ForegroundColor Cyan
-$defaultUserSessions = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+$defaultUserSessions = peko session list $agentName --json 2>&1 | ConvertFrom-Json
 $defaultUserSessions.sessions | Select-Object session_id, message_count | Format-Table -AutoSize
 $defaultActiveSession = $defaultUserSessions.active_session
 Write-Host "Default user active session: $defaultActiveSession" -ForegroundColor Green
@@ -94,10 +94,10 @@ Write-Host "Test 2: User 'alice' gets her own active session" -ForegroundColor C
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`nSending message as alice..." -ForegroundColor Cyan
-pekobot send $agentName "what is the capital of France" --user alice --no-stream 2>&1 | Select-Object -First 5
+peko send $agentName "what is the capital of France" --user alice --no-stream 2>&1 | Select-Object -First 5
 
 Write-Host "`nSession list for alice:" -ForegroundColor Cyan
-$aliceSessions = pekobot session list $agentName --user alice --json 2>&1 | ConvertFrom-Json
+$aliceSessions = peko session list $agentName --user alice --json 2>&1 | ConvertFrom-Json
 $aliceSessions.sessions | Select-Object session_id, message_count | Format-Table -AutoSize
 $aliceActiveSession = $aliceSessions.active_session
 Write-Host "Alice's active session: $aliceActiveSession" -ForegroundColor Green
@@ -120,10 +120,10 @@ Write-Host "Test 3: User 'bob' gets his own active session" -ForegroundColor Cya
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`nSending message as bob..." -ForegroundColor Cyan
-pekobot send $agentName "what is the capital of Germany" --user bob --no-stream 2>&1 | Select-Object -First 5
+peko send $agentName "what is the capital of Germany" --user bob --no-stream 2>&1 | Select-Object -First 5
 
 Write-Host "`nSession list for bob:" -ForegroundColor Cyan
-$bobSessions = pekobot session list $agentName --user bob --json 2>&1 | ConvertFrom-Json
+$bobSessions = peko session list $agentName --user bob --json 2>&1 | ConvertFrom-Json
 $bobSessions.sessions | Select-Object session_id, message_count | Format-Table -AutoSize
 $bobActiveSession = $bobSessions.active_session
 Write-Host "Bob's active session: $bobActiveSession" -ForegroundColor Green
@@ -170,10 +170,10 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 # Create another session for alice by using --new
 Write-Host "`nCreating new session for alice (using --new flag)..." -ForegroundColor Cyan
-pekobot send $agentName "what is the capital of Japan" --user alice --new --no-stream 2>&1 | Select-Object -First 5
+peko send $agentName "what is the capital of Japan" --user alice --new --no-stream 2>&1 | Select-Object -First 5
 
 Write-Host "`nAlice's sessions (should show 4 total, with new one active):" -ForegroundColor Cyan
-$aliceSessionsAfter = pekobot session list $agentName --user alice --json 2>&1 | ConvertFrom-Json
+$aliceSessionsAfter = peko session list $agentName --user alice --json 2>&1 | ConvertFrom-Json
 $aliceActiveSession2 = $aliceSessionsAfter.active_session
 
 Write-Host "Alice's sessions:" -ForegroundColor Cyan
@@ -195,10 +195,10 @@ $aliceSessionList = $aliceSessionsAfter.sessions
 # Switch alice's active session to her first session
 $aliceFirstSession = $aliceActiveSession  # The original one
 Write-Host "`nSwitching alice's active session to: $aliceFirstSession" -ForegroundColor Cyan
-pekobot session switch $agentName $aliceFirstSession --user alice 2>&1 | Out-Null
+peko session switch $agentName $aliceFirstSession --user alice 2>&1 | Out-Null
 
 Write-Host "`nAlice's active session after switch:" -ForegroundColor Cyan
-$aliceAfterSwitch = pekobot session list $agentName --user alice --json 2>&1 | ConvertFrom-Json
+$aliceAfterSwitch = peko session list $agentName --user alice --json 2>&1 | ConvertFrom-Json
 $aliceNewActive = $aliceAfterSwitch.active_session
 Write-Host "Alice's active session: $aliceNewActive" -ForegroundColor Green
 
@@ -213,7 +213,7 @@ if (-not $aliceNewActive) {
 
 # Verify default user's active session is unchanged
 Write-Host "`nDefault user's active session (should be unchanged):" -ForegroundColor Cyan
-$defaultAfterAliceSwitch = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+$defaultAfterAliceSwitch = peko session list $agentName --json 2>&1 | ConvertFrom-Json
 $defaultStillActive = $defaultAfterAliceSwitch.active_session
 Write-Host "Default user active session: $defaultStillActive" -ForegroundColor Green
 
@@ -231,19 +231,19 @@ Write-Host "Test 6: Follow-up messages resume correct sessions" -ForegroundColor
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`nSending follow-up as default user (should add to default's session)..." -ForegroundColor Cyan
-pekobot send $agentName "what about the largest city" --no-stream 2>&1 | Select-Object -First 5
+peko send $agentName "what about the largest city" --no-stream 2>&1 | Select-Object -First 5
 
 Write-Host "`nSending follow-up as alice (should add to alice's switched session)..." -ForegroundColor Cyan
-pekobot send $agentName "what about the population" --user alice --no-stream 2>&1 | Select-Object -First 5
+peko send $agentName "what about the population" --user alice --no-stream 2>&1 | Select-Object -First 5
 
 Write-Host "`nSending follow-up as bob (should add to bob's session)..." -ForegroundColor Cyan
-pekobot send $agentName "what about the currency" --user bob --no-stream 2>&1 | Select-Object -First 5
+peko send $agentName "what about the currency" --user bob --no-stream 2>&1 | Select-Object -First 5
 
 # Verify message counts increased
 Write-Host "`nVerifying message counts..." -ForegroundColor Cyan
-$finalDefault = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
-$finalAlice = pekobot session list $agentName --user alice --json 2>&1 | ConvertFrom-Json
-$finalBob = pekobot session list $agentName --user bob --json 2>&1 | ConvertFrom-Json
+$finalDefault = peko session list $agentName --json 2>&1 | ConvertFrom-Json
+$finalAlice = peko session list $agentName --user alice --json 2>&1 | ConvertFrom-Json
+$finalBob = peko session list $agentName --user bob --json 2>&1 | ConvertFrom-Json
 
 $defaultSessionInfo = $finalDefault.sessions | Where-Object { $_.session_id -eq $defaultActiveSession }
 $aliceSessionInfo = if ($finalAlice.active_session) { $finalAlice.sessions | Where-Object { $_.session_id -eq $finalAlice.active_session } } else { $finalAlice.sessions | Select-Object -First 1 }
@@ -267,9 +267,9 @@ Write-Host "Test 7: Short flag -U works" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`nSending message with -U flag (charlie)..." -ForegroundColor Cyan
-pekobot send $agentName "what is the capital of Italy" -U charlie --no-stream 2>&1 | Select-Object -First 5
+peko send $agentName "what is the capital of Italy" -U charlie --no-stream 2>&1 | Select-Object -First 5
 
-$charlieSessions = pekobot session list $agentName -U charlie --json 2>&1 | ConvertFrom-Json
+$charlieSessions = peko session list $agentName -U charlie --json 2>&1 | ConvertFrom-Json
 $charlieActive = $charlieSessions.active_session
 Write-Host "Charlie's active session: $charlieActive" -ForegroundColor Green
 
@@ -289,7 +289,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n========================================" -ForegroundColor Green

@@ -101,7 +101,7 @@ impl McpClient {
             request_counter: AtomicU64::new(1),
             client_capabilities: ClientCapabilities::default(),
             client_info: Implementation {
-                name: "pekobot".to_string(),
+                name: "peko".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
             receive_task: None,

@@ -30,8 +30,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog -Force }
     if (Test-Path $errLog) { Remove-Item $errLog -Force }
 
@@ -99,7 +99,7 @@ Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
 # Create test directory
-$testDir = "$env:TEMP/pekobot_registry_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_registry_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -118,7 +118,7 @@ try {
     Write-Host "Created agent: $agentName" -ForegroundColor Green
 
     # Add skill
-    $skillsDir = "$env:APPDATA/pekobot/skills"
+    $skillsDir = "$env:APPDATA/peko/skills"
     New-Item -ItemType Directory -Path "$skillsDir/test-skill" -Force | Out-Null
     @"
 # Test Skill
@@ -126,7 +126,7 @@ A skill for testing packaging.
 "@ | Out-File -FilePath "$skillsDir/test-skill/SKILL.md" -Encoding UTF8
 
     # Add workspace
-    $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+    $workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
     New-Item -ItemType Directory -Path $workspaceDir -Force | Out-Null
     @"
 # Test Workspace
@@ -161,7 +161,7 @@ This is a test workspace file.
     Write-Host "TEST 2: Push to mock registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRef = "127.0.0.1:$RegistryPort/pekobot/agents/registry-test-agent:v1.0"
+    $registryRef = "127.0.0.1:$RegistryPort/peko/agents/registry-test-agent:v1.0"
     $pushResult = & $pekoCmd agent push "dummy-tag" $registryRef --file $builtAgentPath --json 2>&1 | ConvertFrom-Json
 
     if ($pushResult.success -ne $true) {
@@ -189,7 +189,7 @@ This is a test workspace file.
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Clear local registry store to force a real download
-    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) {
         Remove-Item -Recurse -Force $localRegistryDir
         Write-Host "Cleared local registry store" -ForegroundColor Yellow
@@ -220,7 +220,7 @@ This is a test workspace file.
     Write-Host "TEST 4: Verify local layer storage" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $layersDir = "$env:USERPROFILE/.pekobot/registry/layers"
+    $layersDir = "$env:USERPROFILE/.peko/registry/layers"
     if (-not (Test-Path $layersDir)) {
         Write-Error "Local layers directory not found after pull"
     }
@@ -313,7 +313,7 @@ This is a test workspace file.
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Pull non-existent image
-    $badRef = "127.0.0.1:$RegistryPort/pekobot/agents/nonexistent:latest"
+    $badRef = "127.0.0.1:$RegistryPort/peko/agents/nonexistent:latest"
     try {
         $pullError = & $pekoCmd agent pull $badRef 2>&1
         if ($LASTEXITCODE -ne 0 -and $pullError -match "not found|404|manifest_fetch_failed") {

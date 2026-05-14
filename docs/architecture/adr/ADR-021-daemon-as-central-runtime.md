@@ -39,7 +39,7 @@ The previous draft of ADR-021 tried to fix this by making the HTTP API even bigg
 
 ### Daemon Mode
 
-The daemon is just `peko` running with a `--daemon` flag (or `PEKOBOT_DAEMON=1` env var). It:
+The daemon is just `peko` running with a `--daemon` flag (or `PEKO_DAEMON=1` env var). It:
 
 1. Initializes all services (`AppState`, `StatelessAgentService`, `ToolRuntime`, etc.) — **same as today**.
 2. Binds a UDP socket on `127.0.0.1:11435` (or a Unix domain socket on Linux/macOS).
@@ -48,12 +48,12 @@ The daemon is just `peko` running with a `--daemon` flag (or `PEKOBOT_DAEMON=1` 
 
 ```
 ┌─────────────────────────────────────────────┐
-│  pekobot --daemon                           │
+│  peko --daemon                           │
 │  ───────────────                            │
 │                                             │
 │  ┌─────────────┐   ┌─────────────────────┐ │
 │  │ UDP Socket  │◄──│ CLI commands        │ │
-│  │  :11435     │   │ (pekobot send ...)  │ │
+│  │  :11435     │   │ (peko send ...)  │ │
 │  └──────┬──────┘   └─────────────────────┘ │
 │         │                                   │
 │         ▼                                   │
@@ -194,7 +194,7 @@ pub enum ResponsePacket {
 
 **Reliability**: UDP is unreliable, but for localhost IPC packet loss is effectively zero. For streaming, each packet is independent (text chunks are idempotent — losing one just means a garbled sentence, which is acceptable for CLI output). The sequence numbers provide ordering; heartbeats provide liveness detection.
 
-**Unix Domain Sockets (preferred on Unix)**: On Linux/macOS, bind to a Unix domain socket at `~/.pekobot/run/daemon.sock` instead of UDP. This gives us:
+**Unix Domain Sockets (preferred on Unix)**: On Linux/macOS, bind to a Unix domain socket at `~/.peko/run/daemon.sock` instead of UDP. This gives us:
 - Reliable, ordered delivery (no packet loss)
 - File-system based discovery (no port conflicts)
 - OS-level access control via file permissions
@@ -207,9 +207,9 @@ On Windows, fall back to UDP on localhost.
 
 The CLI must find the daemon before sending packets. Resolution order:
 
-1. **`PEKOBOT_DAEMON_SOCK`** env var (Unix domain socket path)
-2. **`PEKOBOT_DAEMON_ADDR`** env var (UDP host:port)
-3. **Default Unix socket**: `~/.pekobot/run/daemon.sock` (Unix only)
+1. **`PEKO_DAEMON_SOCK`** env var (Unix domain socket path)
+2. **`PEKO_DAEMON_ADDR`** env var (UDP host:port)
+3. **Default Unix socket**: `~/.peko/run/daemon.sock` (Unix only)
 4. **Default UDP**: `127.0.0.1:11435`
 
 **Auto-start**: If the daemon is not reachable, the CLI attempts to start it automatically:
@@ -235,9 +235,9 @@ pub async fn ensure_daemon_running() -> Result<ConnectionHandle> {
 }
 ```
 
-- `pekobot daemon start` is still available for explicit control.
+- `peko daemon start` is still available for explicit control.
 - Auto-start is silent (no output unless it fails).
-- The daemon writes its PID to `~/.pekobot/run/daemon.pid` for management commands (`daemon stop`, `daemon status`).
+- The daemon writes its PID to `~/.peko/run/daemon.pid` for management commands (`daemon stop`, `daemon status`).
 
 ### SRP: DaemonClient vs ConnectionManager
 
@@ -329,9 +329,9 @@ impl ConnectionManager {
 - Create `src/ipc/` module.
 - Implement packet types + serialization.
 - Daemon binds socket, responds to `Ping` with `Pong`.
-- `pekobot send` uses IPC to daemon; daemon runs `StatelessAgentService` and streams `Text` + `Done` back.
+- `peko send` uses IPC to daemon; daemon runs `StatelessAgentService` and streams `Text` + `Done` back.
 - HTTP API is still running during this milestone (for other commands).
-- Verify: `pekobot send` works via IPC; `pekobot daemon status` works via IPC.
+- Verify: `peko send` works via IPC; `peko daemon status` works via IPC.
 
 ### Milestone 1: Async Tasks via IPC
 
@@ -358,8 +358,8 @@ impl ConnectionManager {
 - **Simpler mental model**: One daemon process, one socket, direct function calls. No HTTP semantics.
 - **Faster**: No TCP handshake, no HTTP parsing, no JSON serialization overhead. UDP is ~10x faster for small messages.
 - **No port binding issues**: Unix sockets use filesystem paths; no "port already in use" errors.
-- **Same binary**: `pekobot --daemon` vs `pekobot send`. No separate daemon binary.
-- **Docker-like UX**: `pekobot daemon start` starts the daemon; all other commands talk to it.
+- **Same binary**: `peko --daemon` vs `peko send`. No separate daemon binary.
+- **Docker-like UX**: `peko daemon start` starts the daemon; all other commands talk to it.
 - **Auto-start**: CLI commands "just work" — daemon starts automatically when needed.
 
 ### Negative

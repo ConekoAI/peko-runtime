@@ -284,7 +284,7 @@ impl TeamPackager {
             },
             format: TeamFormat {
                 version: "1.0".to_string(),
-                pekobot_version: env!("CARGO_PKG_VERSION").to_string(),
+                peko_version: env!("CARGO_PKG_VERSION").to_string(),
             },
             export: ExportMetadata {
                 created_at: chrono::Utc::now().to_rfc3339(),
@@ -388,7 +388,7 @@ pub struct TeamFormat {
     /// Format version
     pub version: String,
     /// Pekobot version
-    pub pekobot_version: String,
+    pub peko_version: String,
 }
 
 /// Export metadata

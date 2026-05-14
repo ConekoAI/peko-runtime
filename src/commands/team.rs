@@ -1,7 +1,7 @@
 //! Team Management Commands
 //!
 //! Provides CLI commands for managing teams - logical groupings of agents.
-//! Teams are stored as directories under ~/.pekobot/teams/{team}/agents/
+//! Teams are stored as directories under ~/.peko/teams/{team}/agents/
 //!
 //! NOTE: All business logic is delegated to `TeamService` in `common::services`.
 //! This module only handles CLI argument parsing and output formatting.
@@ -24,20 +24,20 @@ use clap::Subcommand;
 /// Team management subcommands
 ///
 /// Teams are logical groupings for agents. Each team has its own directory
-/// structure under ~/.pekobot/teams/{team}/
+/// structure under ~/.peko/teams/{team}/
 ///
 /// Examples:
 ///   # Create a new team
-///   pekobot team create dev-team
+///   peko team create dev-team
 ///
 ///   # List all teams
-///   pekobot team list
+///   peko team list
 ///
 ///   # Show team details
-///   pekobot team show dev-team
+///   peko team show dev-team
 ///
 ///   # Delete a team (and all its agents)
-///   pekobot team delete dev-team --force
+///   peko team delete dev-team --force
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum TeamCommands {
@@ -290,7 +290,7 @@ fn render_team_created(result: &TeamCreationResult, json: bool) {
         println!();
         println!("   You can now create agents in this team:");
         println!(
-            "     pekobot agent create {}/<agent-name>",
+            "     peko agent create {}/<agent-name>",
             result.metadata.name
         );
     }
@@ -312,7 +312,7 @@ fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
         println!("{}", serde_json::json!({"teams": teams_json}));
     } else if teams.is_empty() {
         println!("No teams found.");
-        println!("Create one with: pekobot team create <name>");
+        println!("Create one with: peko team create <name>");
     } else {
         println!("📁 Teams ({} found):", teams.len());
         println!();
@@ -395,7 +395,7 @@ fn render_team_show(
         if agents.is_empty() {
             println!("   No agents in this team.");
             println!(
-                "   Create one with: pekobot agent create {}/<agent-name>",
+                "   Create one with: peko agent create {}/<agent-name>",
                 team.name
             );
         } else {
@@ -505,7 +505,7 @@ async fn handle_team_push(
     json: bool,
 ) -> Result<()> {
     // ── 1. Export team to a temp .team file ─────────────────────────────
-    let temp_dir = std::env::temp_dir().join("pekobot_team_push");
+    let temp_dir = std::env::temp_dir().join("PEKO_team_push");
     std::fs::create_dir_all(&temp_dir)?;
     let temp_path = temp_dir.join(format!("{name}.team"));
 
@@ -845,7 +845,7 @@ fn build_minimal_manifest(
         let did_doc: crate::identity::DIDDocument = serde_json::from_slice(did_bytes)?;
         did_doc.id
     } else {
-        format!("did:pekobot:local:{name}")
+        format!("did:peko:local:{name}")
     };
 
     let mut manifest = AgentManifest::new(name, "1.0.0", &did);

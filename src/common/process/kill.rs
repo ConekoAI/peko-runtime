@@ -67,12 +67,12 @@ pub async fn kill_by_pid(pid: u32, _force: bool) -> Result<()> {
 
 /// Kill all processes matching a given name pattern (fallback kill)
 ///
-/// On Windows, kills both `pekobot.exe` and `peko.exe`.
+/// On Windows, kills both `peko.exe` and `peko.exe`.
 /// On Unix, uses `pkill -9 -f` with the pattern.
 pub async fn kill_all_by_name() -> Result<()> {
     #[cfg(windows)]
     {
-        for im_arg in ["pekobot.exe", "peko.exe"] {
+        for im_arg in ["peko.exe", "peko.exe"] {
             let _ = tokio::process::Command::new("taskkill")
                 .args(["/F", "/IM", im_arg])
                 .output()
@@ -82,7 +82,7 @@ pub async fn kill_all_by_name() -> Result<()> {
     #[cfg(unix)]
     {
         let _ = tokio::process::Command::new("pkill")
-            .args(["-9", "-f", "pekobot daemon"])
+            .args(["-9", "-f", "peko daemon"])
             .output()
             .await;
     }

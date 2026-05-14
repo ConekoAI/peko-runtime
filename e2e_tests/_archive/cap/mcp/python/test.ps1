@@ -4,13 +4,13 @@
 # Tests:
 # 1. MCP server discovery and loading via CLI
 # 2. Reserved parameter injection (agent_id, session_id) into MCP tool calls
-# 3. Tool execution via pekobot send
+# 3. Tool execution via peko send
 # 4. Verification that reserved params are injected but hidden from LLM
 #
 # This test uses the improved CLI workflow:
-#   pekobot mcp add       - Add MCP server with reserved parameters
-#   pekobot cap enable    - Enable MCP tools for agent
-#   pekobot cap status    - Check MCP tool status
+#   peko mcp add       - Add MCP server with reserved parameters
+#   peko cap enable    - Enable MCP tools for agent
+#   peko cap status    - Check MCP tool status
 
 param(
     [string]$Provider = "minimax"
@@ -40,8 +40,8 @@ Write-Host "Using Python: $pythonCmd" -ForegroundColor Green
 $pythonVersion = & $pythonCmd --version 2>&1
 Write-Host "Python version: $pythonVersion" -ForegroundColor Gray
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../../../"
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -51,22 +51,22 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
-# Reset pekobot data
-$dataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+# Reset peko data
+$dataDir = "$env:USERPROFILE/AppData/Roaming/peko"
 if (Test-Path $dataDir) {
     Remove-Item -Recurse -Force $dataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
@@ -95,10 +95,10 @@ $mcpConfig = @{
 $mcpConfigPath = "$env:TEMP\mcp-identity-config.json"
 $mcpConfig | Out-File -FilePath $mcpConfigPath -Encoding UTF8
 
-pekobot ext install $mcpConfigPath --type mcp
+peko ext install $mcpConfigPath --type mcp
 
 # Verify extension was installed
-$extList = pekobot ext list 2>&1
+$extList = peko ext list 2>&1
 if ($extList -match "identity") {
     Write-Host "✓ MCP server 'identity' installed successfully" -ForegroundColor Green
 } else {
@@ -107,7 +107,7 @@ if ($extList -match "identity") {
 
 # Show extension details
 Write-Host "`nExtension details:" -ForegroundColor Cyan
-pekobot ext info identity 2>&1
+peko ext info identity 2>&1
 
 # ============================================================
 # TEST 2: Create agent
@@ -120,7 +120,7 @@ $agentName = "mcp_identity_agent"
 $teamName = "default"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
-pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "✓ Agent created" -ForegroundColor Green
 
 # ============================================================
@@ -132,15 +132,15 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 # Enable the MCP extension for tool access
 Write-Host "Enabling MCP extension 'identity'..." -ForegroundColor Yellow
-pekobot ext enable identity 2>&1 | Out-Null
+peko ext enable identity 2>&1 | Out-Null
 
 # Verify extension is enabled
-$extInfo = pekobot ext info identity 2>&1
+$extInfo = peko ext info identity 2>&1
 Write-Host "`nExtension status:" -ForegroundColor Cyan
 Write-Host $extInfo
 
 # Verify MCP tools are available via ext list
-$extList = pekobot ext list --type mcp 2>&1
+$extList = peko ext list --type mcp 2>&1
 if ($extList -match "identity") {
     Write-Host "✓ MCP extension available in ext list" -ForegroundColor Green
 }
@@ -154,7 +154,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Testing MCP extension 'identity'..." -ForegroundColor Yellow
 # Extension is enabled, verify it's working by checking status
-$extStatus = pekobot ext info identity 2>&1
+$extStatus = peko ext info identity 2>&1
 Write-Host $extStatus
 
 if ($extStatus -match "enabled") {
@@ -173,7 +173,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Sending message to agent requesting identity echo..." -ForegroundColor Yellow
 Write-Host "(This will demonstrate reserved parameter injection)" -ForegroundColor Gray
 
-$response = pekobot send $agentName "Use the echo_identity tool with message 'Hello MCP'. Report back what agent_id and session_id were injected." --no-stream 2>&1
+$response = peko send $agentName "Use the echo_identity tool with message 'Hello MCP'. Report back what agent_id and session_id were injected." --no-stream 2>&1
 Write-Host "Agent response: $response"
 
 # Check if response mentions injected identity
@@ -184,7 +184,7 @@ if ($response -match "agent_id" -or $response -match "session_id" -or $response 
 }
 
 # Check session was created
-$sessions = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+$sessions = peko session list $agentName --json 2>&1 | ConvertFrom-Json
 if ($sessions.sessions.Count -ge 1) {
     Write-Host "✓ Session created" -ForegroundColor Green
     $sessionId = $sessions.sessions[0].session_id
@@ -202,10 +202,10 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $sessionId = $sessions.sessions[0].session_id
 Write-Host "Session history:" -ForegroundColor Cyan
-pekobot session show $agentName --session-id $sessionId --history 2>&1
+peko session show $agentName --session-id $sessionId --history 2>&1
 
 # Check session JSONL for tool call
-$sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl"
+$sessionFile = "$env:USERPROFILE/AppData/Roaming/peko/sessions/default/$agentName/$sessionId.jsonl"
 if (Test-Path $sessionFile) {
     Write-Host "`nSession JSONL (last 10 lines):" -ForegroundColor Cyan
     Get-Content $sessionFile | Select-Object -Last 10 | ForEach-Object { Write-Host $_ -ForegroundColor Gray }
@@ -234,11 +234,11 @@ Write-Host "TEST 7: Test MCP memory isolation" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Storing a value in memory..." -ForegroundColor Yellow
-$response2 = pekobot send $agentName "Store the value 'E2E Test Value' with key 'test_key' using the store_memory tool." --no-stream 2>&1
+$response2 = peko send $agentName "Store the value 'E2E Test Value' with key 'test_key' using the store_memory tool." --no-stream 2>&1
 Write-Host "Agent response: $response2"
 
 Write-Host "`nRetrieving the value from memory..." -ForegroundColor Yellow
-$response3 = pekobot send $agentName "Retrieve the value stored with key 'test_key' using the retrieve_memory tool. What was returned?" --no-stream 2>&1
+$response3 = peko send $agentName "Retrieve the value stored with key 'test_key' using the retrieve_memory tool. What was returned?" --no-stream 2>&1
 Write-Host "Agent response: $response3"
 
 # Check if the value was retrieved
@@ -273,11 +273,11 @@ Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Delete test agent
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 # Uninstall MCP extension
-pekobot ext uninstall identity --force 2>&1 | Out-Null
+peko ext uninstall identity --force 2>&1 | Out-Null
 Write-Host "Uninstalled MCP extension 'identity'" -ForegroundColor Green
 
 # Clean up temp config file
@@ -289,9 +289,9 @@ Write-Host "`n✅ MCP Reserved Parameter Injection E2E test completed!" -Foregro
 Write-Host "" -ForegroundColor Cyan
 Write-Host "Summary:" -ForegroundColor Cyan
 Write-Host "  - MCP server added via CLI with reserved_parameters" -ForegroundColor Cyan
-Write-Host "  - MCP tools enabled for agent via 'pekobot cap enable'" -ForegroundColor Cyan
+Write-Host "  - MCP tools enabled for agent via 'peko cap enable'" -ForegroundColor Cyan
 Write-Host "  - MCP tools (echo_identity, store_memory, retrieve_memory) discovered" -ForegroundColor Cyan
-Write-Host "  - Agent successfully called MCP tools via pekobot send" -ForegroundColor Cyan
+Write-Host "  - Agent successfully called MCP tools via peko send" -ForegroundColor Cyan
 Write-Host "  - Reserved parameters (agent_id, session_id) injected correctly" -ForegroundColor Cyan
 Write-Host "" -ForegroundColor Cyan
 Write-Host "Architecture verified:" -ForegroundColor Cyan

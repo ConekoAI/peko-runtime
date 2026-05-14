@@ -19,8 +19,8 @@ if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -30,37 +30,37 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:APPDATA/pekobot"
+$DataDir = "$env:APPDATA/peko"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent with coding template (enables granular tools)
 $agentName = "writefile_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable granular tools via extension framework
-pekobot ext enable read_file 2>&1 | Out-Null
-pekobot ext enable write_file 2>&1 | Out-Null
-pekobot ext enable glob 2>&1 | Out-Null
-pekobot ext enable grep 2>&1 | Out-Null
-pekobot ext enable str_replace_file 2>&1 | Out-Null
+peko ext enable read_file 2>&1 | Out-Null
+peko ext enable write_file 2>&1 | Out-Null
+peko ext enable glob 2>&1 | Out-Null
+peko ext enable grep 2>&1 | Out-Null
+peko ext enable str_replace_file 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools via extension framework" -ForegroundColor Green
 
 # Get workspace directory
-$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
+$workspaceDir = "$env:APPDATA/peko/workspaces/default/$agentName"
 
 # ============================================================
 # TEST 1: Create a new file with WriteFile
@@ -70,7 +70,7 @@ Write-Host "TEST 1: Create a new file" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to create a file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your write_file tool (NOT shell) to create a file called 'hello.txt' in your workspace with the content 'Hello from write_file tool!'. Use mode='create'." --no-stream 2>&1
+$result = peko send $agentName "Use your write_file tool (NOT shell) to create a file called 'hello.txt' in your workspace with the content 'Hello from write_file tool!'. Use mode='create'." --no-stream 2>&1
 Write-Host "Response: $result"
 
 $testFile = "$workspaceDir/hello.txt"
@@ -93,7 +93,7 @@ Write-Host "TEST 2: Overwrite existing file" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to overwrite the file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your write_file tool (NOT shell) to overwrite 'hello.txt' with the content 'Updated content!' using mode='overwrite'." --no-stream 2>&1
+$result = peko send $agentName "Use your write_file tool (NOT shell) to overwrite 'hello.txt' with the content 'Updated content!' using mode='overwrite'." --no-stream 2>&1
 Write-Host "Response: $result"
 
 Start-Sleep -Milliseconds 500
@@ -116,7 +116,7 @@ Write-Host "TEST 3: Create file in nested directory" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to create nested file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your write_file tool (NOT shell) to create 'subdir/nested.txt' with content 'nested file content' in your workspace. Create any needed directories with mode='create'." --no-stream 2>&1
+$result = peko send $agentName "Use your write_file tool (NOT shell) to create 'subdir/nested.txt' with content 'nested file content' in your workspace. Create any needed directories with mode='create'." --no-stream 2>&1
 Write-Host "Response: $result"
 
 $nestedFile = "$workspaceDir/subdir/nested.txt"
@@ -148,7 +148,7 @@ if (Test-Path "$workspaceDir/subdir") {
 }
 Write-Host "Removed test files" -ForegroundColor Green
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ WriteFile e2e tests completed!" -ForegroundColor Green

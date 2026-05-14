@@ -55,7 +55,7 @@ The loop rebuilds tool definitions and system prompt **from the ExtensionCore re
 **To enable true mid-session tool changes, we need:**
 1. A way to register new tools after startup (currently only at `create_tools_async()`)
 2. A way to unregister tools mid-session (`unregister_tool()` exists but isn't used)
-3. A trigger mechanism when config changes (`pekobot ext enable/disable` → update registry)
+3. A trigger mechanism when config changes (`peko ext enable/disable` → update registry)
 
 ## Implementation Status
 
@@ -169,7 +169,7 @@ impl ExtensionCore {
 
 2. **Trigger mechanism**:
 ```rust
-// When user runs: pekobot ext enable <tool>
+// When user runs: peko ext enable <tool>
 // Currently: Only updates config file
 // Needed: Also register with ExtensionCore if session active
 ```
@@ -192,7 +192,7 @@ impl ExtensionCore {
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  User runs: pekobot ext enable shell                             │
+│  User runs: peko ext enable shell                             │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -255,8 +255,8 @@ Make ExtensionCore registry mutable mid-session:
 
 **Tasks**:
 - [ ] Allow `register_tool` to be called after startup (idempotent, allow updates)
-- [ ] Connect `pekobot ext enable` to `register_tool` for active sessions
-- [ ] Connect `pekobot ext disable` to `unregister_tool` for active sessions
+- [ ] Connect `peko ext enable` to `register_tool` for active sessions
+- [ ] Connect `peko ext disable` to `unregister_tool` for active sessions
 - [ ] Handle edge cases (tool in use, pending calls, etc.)
 
 **Effort**: ~8 hours

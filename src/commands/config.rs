@@ -1,6 +1,6 @@
 //! Configuration Management Commands
 //!
-//! Implements global configuration read/write for `~/.pekobot/config.toml`.
+//! Implements global configuration read/write for `~/.peko/config.toml`.
 //! Uses dot-notation path resolution from `common::config_path`.
 //!
 //! ADR-028: Top-Level Config CLI
@@ -16,14 +16,14 @@ use std::path::PathBuf;
 pub enum ConfigCommands {
     /// Validate a configuration file
     Validate {
-        /// Config file path (default: ~/.pekobot/config.toml)
+        /// Config file path (default: ~/.peko/config.toml)
         file: Option<String>,
     },
 
     /// Initialize a new configuration
     Init {
         /// Output file
-        #[arg(short, long, default_value = "pekobot.toml")]
+        #[arg(short, long, default_value = "peko.toml")]
         output: String,
         /// Template to use (minimal, full, agent)
         #[arg(short, long, default_value = "minimal")]
@@ -231,8 +231,8 @@ fn full_config_template() -> toml::Value {
         max_tokens = 2048
 
         [paths]
-        sessions = "~/.pekobot/sessions"
-        registry = "~/.pekobot/registry"
+        sessions = "~/.peko/sessions"
+        registry = "~/.peko/registry"
 
         [security]
         strip_env_vars = ["*_API_KEY", "*_SECRET", "*_TOKEN", "*_PASSWORD"]

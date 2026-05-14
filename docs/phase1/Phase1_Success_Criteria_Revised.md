@@ -11,7 +11,7 @@
 
 Phase 1 is about **hardening and completing** what already exists in Pekobot v0.1.0. The codebase already has a working agent runtime, 15+ LLM providers, MCP integration, session management, team runtime, extension framework, and portable packaging. Phase 1 closes the gaps between "works" and "production-ready."
 
-> **ADR-027 Decision (2026-05-12)**: The `pekobot agent build` command and the legacy `AgentBuilder` were **removed** in commit `82662e1`. The unified packaging workflow is now: `pekobot agent create` → `pekobot agent export`. The `src/image/` module was merged into `src/portable/`. See ADR-027 §Consequences for rationale.
+> **ADR-027 Decision (2026-05-12)**: The `peko agent build` command and the legacy `AgentBuilder` were **removed** in commit `82662e1`. The unified packaging workflow is now: `peko agent create` → `peko agent export`. The `src/image/` module was merged into `src/portable/`. See ADR-027 §Consequences for rationale.
 
 | Deliverable | Current State | Phase 1 Goal |
 |-------------|---------------|--------------|
@@ -19,7 +19,7 @@ Phase 1 is about **hardening and completing** what already exists in Pekobot v0.
 | **Team Packaging** | `.team` tar.gz with basic manifest | ✅ Checksum-validated, `team.toml` roundtrip, consistent with agent format |
 | **Extension Packaging** | In-memory bundles only | ✅ `.ext` packages for offline distribution; source references deferred to Phase 2 |
 | **Image Build System** | Builder exists, no CLI | ✅ **Removed per ADR-027** — `create` + `export` replaces `build`; base image inheritance deferred to Phase 2 |
-| **Registry** | Client exists, no CLI, no test server | ✅ `pekobot agent push`/`pull` with Python mock server for testing |
+| **Registry** | Client exists, no CLI, no test server | ✅ `peko agent push`/`pull` with Python mock server for testing |
 | **Runtime Engine** | Agentic loop, streaming, 15+ providers | Implemented; needs integration test verification (see §6) |
 | **CLI** | 13+ commands, some stubs | Core commands implemented; stubs remain for `system doctor`, `system clean`, top-level `config` |
 
@@ -76,15 +76,15 @@ The `e2e_tests/` directory contains PowerShell-based end-to-end tests covering:
 | Gap | Impact | Priority |
 |-----|--------|----------|
 | ~~`agent build` CLI command~~ | ❌ **Removed per ADR-027** — replaced by `agent create` + `agent export` | N/A |
-| ~~No `run` CLI command~~ | ❌ Deferred to Phase 2 — no clear consumer for `pekobot agent run` | P2 |
-| ~~No `pull`/`push` CLI commands~~ | ✅ `pekobot agent push`/`pull` implemented with registry client | P0 |
+| ~~No `run` CLI command~~ | ❌ Deferred to Phase 2 — no clear consumer for `peko agent run` | P2 |
+| ~~No `pull`/`push` CLI commands~~ | ✅ `peko agent push`/`pull` implemented with registry client | P0 |
 | ~~No mock registry server for testing~~ | ✅ Python FastAPI mock server at `e2e_tests/packaging/mock_registry/main.py` | P0 |
 | Base image inheritance declared but not resolved at build time | ❌ Deferred to Phase 2 — `base` field stays ignored | P2 |
 | ~~Team packages have no checksums or validation~~ | ✅ SHA-256 checksums computed on export, validated on import | P0 |
-| ~~No extension `.ext` package format~~ | ✅ `pekobot ext export <id> -o <file.ext>` creates valid `.ext` | P0 |
+| ~~No extension `.ext` package format~~ | ✅ `peko ext export <id> -o <file.ext>` creates valid `.ext` | P0 |
 | No extension source reference format (GitHub, URL, MCP) | ❌ Deferred to Phase 2 — bundle mode only for Phase 1 | P1 |
-| ~~No `pekobot ext export` command~~ | ✅ Implemented and tested | P0 |
-| No `pekobot validate` command | ❌ Deferred to Phase 2 — partially covered by `inspect` | P2 |
+| ~~No `peko ext export` command~~ | ✅ Implemented and tested | P0 |
+| No `peko validate` command | ❌ Deferred to Phase 2 — partially covered by `inspect` | P2 |
 | MCP Streamable HTTP transport missing | Cannot connect to HTTP MCP servers | P1 |
 | No OpenTelemetry export | Observability is in-process only | P1 |
 | No structured JSON output for many commands | `--json` flag partially wired | P1 |
@@ -116,21 +116,21 @@ Unify the two existing packaging systems (`.agent` tar.gz in `src/portable/` and
   - `sessions/` — Session history (optional)
   - `mcp/` — Bundled MCP binaries (optional)
 - [x] **PKG-004**: Package MUST include SHA-256 checksums for every file in `manifest.toml.packaging.checksums`.
-- [x] **PKG-005**: Package MUST be verifiable via `pekobot agent inspect <file>` without full extraction.
-- [ ] **PKG-006**: `pekobot validate <path>` MUST validate a directory or `.agent` file against the spec without building or importing. *(Deferred to Phase 2)*
+- [x] **PKG-005**: Package MUST be verifiable via `peko agent inspect <file>` without full extraction.
+- [ ] **PKG-006**: `peko validate <path>` MUST validate a directory or `.agent` file against the spec without building or importing. *(Deferred to Phase 2)*
 
 #### 3.2.2 Image Build System
-- [x] **PKG-007**: ~~`pekobot agent build <path> -t <name:tag>`~~ **REMOVED per ADR-027** — The `AgentBuilder` and `build` CLI command were deleted in commit `82662e1`. The canonical workflow is now `pekobot agent create <name>` → `pekobot agent export <name> -o <file.agent>`. The `Packager` in `src/portable/packager.rs` produces content-addressable manifests with SHA-256 digested layers on export.
+- [x] **PKG-007**: ~~`peko agent build <path> -t <name:tag>`~~ **REMOVED per ADR-027** — The `AgentBuilder` and `build` CLI command were deleted in commit `82662e1`. The canonical workflow is now `peko agent create <name>` → `peko agent export <name> -o <file.agent>`. The `Packager` in `src/portable/packager.rs` produces content-addressable manifests with SHA-256 digested layers on export.
 - [x] **PKG-008**: Build MUST produce a content-addressable manifest with SHA-256 digested layers. *(Note: `AgentManifest` is TOML, not JSON `ImageManifest` — former `src/image/` merged into `src/portable/`.)*
 - [x] **PKG-009**: Build MUST create layers for: `config/` (agent.toml), `identity/`, `skills/`, `workspace/`, `sessions/`, `mcp/`.
 - [ ] **PKG-010**: Build MUST support base image inheritance via `base = "ref"` in `agent.toml`, resolving and merging parent layers. *(Deferred to Phase 2)*
 - [x] **PKG-011**: Build MUST reject invalid source directories (missing `config/agent.toml`, invalid schema).
-- [ ] **PKG-012**: `pekobot agent run <image-ref>` MUST exist as a CLI command to run an agent image. *(Deferred to Phase 2)*
+- [ ] **PKG-012**: `peko agent run <image-ref>` MUST exist as a CLI command to run an agent image. *(Deferred to Phase 2)*
 
 #### 3.2.3 Registry Integration
-- [x] **PKG-013**: `pekobot agent pull <registry-ref>` MUST exist as a CLI command. *(Note: moved under `pekobot agent`, not top-level.)*
-- [x] **PKG-014**: `pekobot agent push <local-tag> <registry-ref>` MUST exist as a CLI command. *(Note: moved under `pekobot agent`, not top-level.)*
-- [x] **PKG-015**: Pull MUST resolve tags, download layers, verify digests, and cache in `~/.pekobot/registry/`.
+- [x] **PKG-013**: `peko agent pull <registry-ref>` MUST exist as a CLI command. *(Note: moved under `peko agent`, not top-level.)*
+- [x] **PKG-014**: `peko agent push <local-tag> <registry-ref>` MUST exist as a CLI command. *(Note: moved under `peko agent`, not top-level.)*
+- [x] **PKG-015**: Pull MUST resolve tags, download layers, verify digests, and cache in `~/.peko/registry/`.
 - [x] **PKG-016**: Push MUST authenticate via bearer or basic auth, upload layers, and tag the manifest.
 - [x] **PKG-017**: Registry references MUST follow the format `host/path/to/image:tag`.
 - [x] **PKG-018**: A mock registry server MUST exist for testing registry client operations. *(Python FastAPI server at `e2e_tests/packaging/mock_registry/main.py`)*
@@ -156,12 +156,12 @@ Unify the two existing packaging systems (`.agent` tar.gz in `src/portable/` and
 Enable export and import of complete teams (multiple agents with their configurations, workspaces, and sessions) as a single `.team` package. Team packages MUST be consistent with agent packages in format and validation.
 
 ### 4.2 P0 — Must Have
-- [x] **TEAM-001**: `pekobot team export <name>` MUST produce a `.team` package containing all agents in the team.
-- [x] **TEAM-002**: `pekobot team import <file>` MUST import all agents from a `.team` package.
+- [x] **TEAM-001**: `peko team export <name>` MUST produce a `.team` package containing all agents in the team.
+- [x] **TEAM-002**: `peko team import <file>` MUST import all agents from a `.team` package.
 - [x] **TEAM-003**: Team packages MUST include a `team/manifest.toml` with team metadata and a complete file list.
 - [x] **TEAM-004**: Team packages MUST include SHA-256 checksums for all files in `team/manifest.toml.packaging.checksums`.
 - [x] **TEAM-005**: Team package import MUST verify checksums and reject corrupted packages.
-- [ ] **TEAM-006**: `pekobot validate <path>` MUST validate `.team` files in addition to `.agent` files. *(Deferred to Phase 2)*
+- [ ] **TEAM-006**: `peko validate <path>` MUST validate `.team` files in addition to `.agent` files. *(Deferred to Phase 2)*
 
 ### 4.3 P1 — Should Have
 - [ ] **TEAM-007**: Team export SHOULD support `--include-sessions`, `--exclude-workspace`, `--exclude-mcp` flags.
@@ -184,21 +184,21 @@ Enable distribution and installation of extensions through two modes: **bundled*
 #### 5.2.1 Extension Source References
 - [ ] **EXT-001**: Extension installation MUST support source references in addition to local paths. *(Deferred to Phase 2)*
 - [ ] **EXT-002**: Source reference types MUST include at minimum: `github:owner/repo[@ref]`, `https://...` (direct URL), `mcp+https://...` (MCP endpoint), and local `.ext` files. *(Deferred to Phase 2)*
-- [x] **EXT-003**: `pekobot ext install <source>` MUST resolve source references, download if needed, and install the extension. *(Local path and `.ext` file support implemented; remote sources deferred)*
+- [x] **EXT-003**: `peko ext install <source>` MUST resolve source references, download if needed, and install the extension. *(Local path and `.ext` file support implemented; remote sources deferred)*
 - [ ] **EXT-004**: Source resolution MUST support GitHub repositories with tag/branch/commit refs. *(Deferred to Phase 2)*
 - [ ] **EXT-005**: MCP source references MUST create appropriate server config entries without downloading files. *(Deferred to Phase 2)*
 
 #### 5.2.2 Extension Bundles (`.ext`)
-- [x] **EXT-006**: `pekobot ext export <id> -o <file.ext>` MUST create a `.ext` package from an installed extension.
+- [x] **EXT-006**: `peko ext export <id> -o <file.ext>` MUST create a `.ext` package from an installed extension.
 - [x] **EXT-007**: `.ext` packages MUST be gzip-compressed tar archives with `manifest.toml` and `extension/` directory.
 - [x] **EXT-008**: `.ext` packages MUST include SHA-256 checksums for all files.
-- [x] **EXT-009**: `pekobot ext install <file.ext>` MUST install from a bundled package.
+- [x] **EXT-009**: `peko ext install <file.ext>` MUST install from a bundled package.
 - [x] **EXT-010**: Extension bundle format MUST be documented in `DATA_MODEL.md`. *(Documented in §8)*
 
 ### 5.3 P1 — Should Have
 - [ ] **EXT-011**: Extension source references SHOULD support version constraints (semver ranges).
 - [ ] **EXT-012**: Extension installation from source SHOULD cache downloaded files to avoid redundant downloads.
-- [ ] **EXT-013**: `pekobot ext list --outdated` SHOULD show extensions with available updates.
+- [ ] **EXT-013**: `peko ext list --outdated` SHOULD show extensions with available updates.
 
 ### 5.4 P2 — Nice to Have (Deferred to Phase 2)
 - [ ] **EXT-014**: An extension registry protocol COULD be defined for `registry:` source references.
@@ -237,7 +237,7 @@ Harden the existing agentic loop, provider system, and MCP integration to be sta
 #### 6.2.4 Session & State Management
 - [x] **RT-015**: Engine MUST support session-scoped state storage (JSONL, isolated per session). *(Implemented in `src/session/unified.rs` with `SessionStorage`)*
 - [x] **RT-016**: Engine MUST support agent-scoped state storage (persistent across sessions). *(Implemented via `src/session/directory.rs` and workspace files)*
-- [x] **RT-017**: Engine MUST support session branching (`pekobot session branch`). *(Implemented in `src/commands/session.rs` and `src/session/manager.rs`)*
+- [x] **RT-017**: Engine MUST support session branching (`peko session branch`). *(Implemented in `src/commands/session.rs` and `src/session/manager.rs`)*
 - [x] **RT-018**: Engine MUST support session recovery after crashes (`SessionRecovery`). *(Implemented in `src/session/recovery.rs`)*
 - [x] **RT-019**: Engine MUST run session maintenance (prune, cap, rotate) periodically. *(Implemented in `src/session/maintenance.rs` and invoked by daemon)*
 
@@ -270,40 +270,40 @@ Complete the CLI surface: close the gap between advertised commands (in `--help`
 ### 7.2 P0 — Must Have
 
 #### 7.2.1 Core Commands
-- [x] **CLI-001**: `pekobot agent create <name>` — Create a registered agent with `config.toml`, `AGENT.md`, and workspace structure.
-- [x] **CLI-003**: ~~`pekobot build <path> -t <name:tag>`~~ **REMOVED per ADR-027** — Replaced by `pekobot agent create <name>` → `pekobot agent export <name> -o <file.agent>`.
-- [ ] **CLI-004**: `pekobot run <image-ref>` — Run an agent image (local path, registry ref, or digest). *(Deferred to Phase 2)*
-- [x] **CLI-005**: ~~`pekobot pull <registry-ref>`~~ **Moved to `pekobot agent pull <registry-ref>`** — Pull an image from a registry. ✅ Implemented.
-- [x] **CLI-006**: ~~`pekobot push <registry-ref>`~~ **Moved to `pekobot agent push <local-tag> <registry-ref>`** — Push an image to a registry. ✅ Implemented.
-- [x] **CLI-007**: `pekobot send <agent> "message"` — Send a message to an agent. ✅ Implemented and stable.
-- [x] **CLI-008**: `pekobot agent export <name> -o <file>` — Export an agent to a `.agent` package. ✅ Implemented.
-- [x] **CLI-009**: `pekobot agent import <file>` — Import an agent from a `.agent` package. ✅ Implemented.
-- [x] **CLI-010**: `pekobot agent inspect <file>` — Inspect a `.agent` package without importing. ✅ Implemented.
-- [ ] **CLI-011**: `pekobot validate <path>` — Validate a directory, `.agent`, `.team`, or `.ext` file against the spec. *(Deferred to Phase 2)*
-- [x] **CLI-012**: `pekobot ext export <id> -o <file>` — Export an extension to a `.ext` package. ✅ Implemented.
-- [x] **CLI-013**: `pekobot ext install <source>` — Install an extension from path or `.ext` file. *(GitHub, URL, MCP endpoint support deferred to Phase 2)*
+- [x] **CLI-001**: `peko agent create <name>` — Create a registered agent with `config.toml`, `AGENT.md`, and workspace structure.
+- [x] **CLI-003**: ~~`peko build <path> -t <name:tag>`~~ **REMOVED per ADR-027** — Replaced by `peko agent create <name>` → `peko agent export <name> -o <file.agent>`.
+- [ ] **CLI-004**: `peko run <image-ref>` — Run an agent image (local path, registry ref, or digest). *(Deferred to Phase 2)*
+- [x] **CLI-005**: ~~`peko pull <registry-ref>`~~ **Moved to `peko agent pull <registry-ref>`** — Pull an image from a registry. ✅ Implemented.
+- [x] **CLI-006**: ~~`peko push <registry-ref>`~~ **Moved to `peko agent push <local-tag> <registry-ref>`** — Push an image to a registry. ✅ Implemented.
+- [x] **CLI-007**: `peko send <agent> "message"` — Send a message to an agent. ✅ Implemented and stable.
+- [x] **CLI-008**: `peko agent export <name> -o <file>` — Export an agent to a `.agent` package. ✅ Implemented.
+- [x] **CLI-009**: `peko agent import <file>` — Import an agent from a `.agent` package. ✅ Implemented.
+- [x] **CLI-010**: `peko agent inspect <file>` — Inspect a `.agent` package without importing. ✅ Implemented.
+- [ ] **CLI-011**: `peko validate <path>` — Validate a directory, `.agent`, `.team`, or `.ext` file against the spec. *(Deferred to Phase 2)*
+- [x] **CLI-012**: `peko ext export <id> -o <file>` — Export an extension to a `.ext` package. ✅ Implemented.
+- [x] **CLI-013**: `peko ext install <source>` — Install an extension from path or `.ext` file. *(GitHub, URL, MCP endpoint support deferred to Phase 2)*
 
 #### 7.2.2 Configuration & Context
-- [ ] **CLI-014**: CLI MUST read global configuration from `~/.pekobot/config.toml`. *(Partial — paths resolved, but no full config file parsing)*
-- [ ] **CLI-015**: CLI MUST support per-project configuration via `.pekobot.toml` in project root, overriding global settings. *(Not implemented)*
+- [ ] **CLI-014**: CLI MUST read global configuration from `~/.peko/config.toml`. *(Partial — paths resolved, but no full config file parsing)*
+- [ ] **CLI-015**: CLI MUST support per-project configuration via `.peko.toml` in project root, overriding global settings. *(Not implemented)*
 - [x] **CLI-016**: CLI MUST mask all API keys in logs, error messages, and process listings. *(Implemented in `src/tools/builtin/shell.rs` via env stripping; credential detection in `src/types/config.rs`)*
 
 #### 7.2.3 Output & Logging
 - [x] **CLI-017**: CLI MUST support structured output (`--json`) for all commands that produce data. *(Partial — `--json` global flag exists; `agent list`, `agent show`, `agent config get/set`, `agent push`, `agent pull`, `ext list` support it; other commands need wiring)*
 - [x] **CLI-018**: CLI MUST support human-readable output (default) with colored terminal output. *(Default output is human-readable; colored output partially implemented)*
 - [x] **CLI-019**: CLI MUST support `--verbose` and `--debug` flags with at least three log levels (INFO, DEBUG, TRACE). *(Implemented in `src/commands/mod.rs` via `tracing_subscriber` with `-v`/`-vv`/`-vvv`)*
-- [x] **CLI-020**: CLI MUST generate shell completions via `pekobot completions <shell>`. *(Implemented in `src/main.rs` using `clap_complete`)*
+- [x] **CLI-020**: CLI MUST generate shell completions via `peko completions <shell>`. *(Implemented in `src/main.rs` using `clap_complete`)*
 
 ### 7.3 P1 — Should Have
-- [x] **CLI-021**: `pekobot agent config get <agent> <key>` and `set` — Actually read and write config values. ✅ **Implemented** in `src/commands/agent/handlers.rs` with `config_path::get_config_value` and `config_path::set_config_value`.
-- [ ] **CLI-022**: `pekobot system doctor` — Actually run health checks and report issues. *(Stub — prints placeholder only)*
-- [ ] **CLI-023**: `pekobot system clean` — Actually clean caches, logs, and temporary files. *(Stub — prints placeholder only)*
+- [x] **CLI-021**: `peko agent config get <agent> <key>` and `set` — Actually read and write config values. ✅ **Implemented** in `src/commands/agent/handlers.rs` with `config_path::get_config_value` and `config_path::set_config_value`.
+- [ ] **CLI-022**: `peko system doctor` — Actually run health checks and report issues. *(Stub — prints placeholder only)*
+- [ ] **CLI-023**: `peko system clean` — Actually clean caches, logs, and temporary files. *(Stub — prints placeholder only)*
 - [ ] **CLI-024**: CLI SHOULD support `--env-file` for loading environment variables.
-- [x] **CLI-025**: CLI SHOULD support `PEKOBOT_*` environment variables for all global flags (`--config-dir`, `--data-dir`, etc.). ✅ **Implemented** in `src/commands/mod.rs` via `clap`'s `env` attribute.
+- [x] **CLI-025**: CLI SHOULD support `PEKO_*` environment variables for all global flags (`--config-dir`, `--data-dir`, etc.). ✅ **Implemented** in `src/commands/mod.rs` via `clap`'s `env` attribute.
 
 ### 7.4 P2 — Nice to Have
-- [ ] **CLI-026**: `pekobot diff <image-a> <image-b>` — Show structural differences between two images.
-- [ ] **CLI-027**: `pekobot agent test <name>` — Run declarative test cases for agent behavior.
+- [ ] **CLI-026**: `peko diff <image-a> <image-b>` — Show structural differences between two images.
+- [ ] **CLI-027**: `peko agent test <name>` — Run declarative test cases for agent behavior.
 
 ---
 
@@ -458,7 +458,7 @@ Phase 1 is **complete as of 2026-05-14**. All P0 success criteria for the runtim
 | 22 hook-point extension framework with 6 extension types | ✅ |
 | Session JSONL with atomic writes, branching, recovery, compaction | ✅ |
 | CLI core commands: agent, team, ext, session, send, config, daemon | ✅ |
-| Top-level config CLI (`pekobot config get/set/validate/init`) | ✅ |
+| Top-level config CLI (`peko config get/set/validate/init`) | ✅ |
 | E2E test suite (60+ PowerShell scripts) | ✅ |
 | 1,024 unit tests passing, 0 warnings | ✅ |
 
@@ -469,7 +469,7 @@ The following items were scoped out of Phase 1 and are **not blockers** for the 
 | Item | Reason | Target |
 |------|--------|--------|
 | `system doctor` / `system clean` | Stubs acceptable; no runtime impact | Phase 2 or on-demand |
-| `pekobot validate` command | Partially covered by `inspect` | Phase 2 |
+| `peko validate` command | Partially covered by `inspect` | Phase 2 |
 | `--json` on all remaining commands | Partial coverage sufficient | Phase 2 |
 | MCP Streamable HTTP transport | stdio + SSE sufficient for now | Phase 2 |
 | Performance benchmarks (PERF-001→005) | Framework ready; no baseline data required for v1.0 | Phase 2 |
@@ -490,44 +490,44 @@ See `docs/phase2/` for the Phase 2 roadmap: **Public Registry Beta + Shared Serv
 ## Appendix A: Command Reference (Target v1.0)
 
 ```
-pekobot agent create <name>        # Create a registered agent
-pekobot agent list                 # List agents
-pekobot agent show <name>          # Show agent details
-pekobot agent remove <name>        # Remove agent
-pekobot agent move <old> <new>     # Rename agent
-pekobot agent export <name>        # Export to .agent
-pekobot agent import <file>        # Import from .agent
-pekobot agent inspect <file>       # Inspect .agent
-pekobot agent config get <k>       # Get config value
-pekobot agent config set <k> <v>   # Set config value
+peko agent create <name>        # Create a registered agent
+peko agent list                 # List agents
+peko agent show <name>          # Show agent details
+peko agent remove <name>        # Remove agent
+peko agent move <old> <new>     # Rename agent
+peko agent export <name>        # Export to .agent
+peko agent import <file>        # Import from .agent
+peko agent inspect <file>       # Inspect .agent
+peko agent config get <k>       # Get config value
+peko agent config set <k> <v>   # Set config value
 
-~~pekobot agent build <path> -t <ref>~~  # REMOVED per ADR-027
-pekobot agent push <local> <remote>  # Push .agent to registry
-pekobot agent pull <registry-ref>    # Pull .agent from registry
+~~peko agent build <path> -t <ref>~~  # REMOVED per ADR-027
+peko agent push <local> <remote>  # Push .agent to registry
+peko agent pull <registry-ref>    # Pull .agent from registry
 
-pekobot send <agent> "msg"         # Send message
-pekobot session list <agent>       # List sessions
-pekobot session show <id>          # Show session
+peko send <agent> "msg"         # Send message
+peko session list <agent>       # List sessions
+peko session show <id>          # Show session
 
-pekobot team create <name>         # Create team
-pekobot team list                  # List teams
-pekobot team show <name>           # Show team details
-pekobot team export <name>         # Export to .team
-pekobot team import <file>         # Import from .team
+peko team create <name>         # Create team
+peko team list                  # List teams
+peko team show <name>           # Show team details
+peko team export <name>         # Export to .team
+peko team import <file>         # Import from .team
 
-pekobot ext install <source>       # Install extension (path, .ext)
-pekobot ext export <id>            # Export to .ext
-pekobot ext list                   # List extensions
+peko ext install <source>       # Install extension (path, .ext)
+peko ext export <id>            # Export to .ext
+peko ext list                   # List extensions
 
-~~pekobot validate <path>~~            # Deferred to Phase 2
+~~peko validate <path>~~            # Deferred to Phase 2
 
-pekobot daemon start               # Start daemon
-pekobot daemon stop                # Stop daemon
+peko daemon start               # Start daemon
+peko daemon stop                # Stop daemon
 
-pekobot system doctor              # Health check (stub)
-pekobot system clean               # Clean up (stub)
+peko system doctor              # Health check (stub)
+peko system clean               # Clean up (stub)
 
-pekobot completions <shell>        # Shell completions
+peko completions <shell>        # Shell completions
 ```
 
 ## Appendix B: Glossary

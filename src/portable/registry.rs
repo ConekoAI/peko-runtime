@@ -5,7 +5,7 @@
 //!
 //! Storage layout:
 //! ```text
-//! ~/.pekobot/registry/
+//! ~/.peko/registry/
 //! ├── layers/
 //! │   └── sha256-abc123.../
 //! │       └── layer.tar.gz
@@ -42,12 +42,12 @@ impl AgentRegistry {
         &self.root_path
     }
 
-    /// Default registry path (~/.pekobot/registry)
+    /// Default registry path (~/.peko/registry)
     #[must_use]
     pub fn default_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".pekobot")
+            .join(".peko")
             .join("registry")
     }
 
@@ -409,7 +409,7 @@ mod tests {
         let registry = AgentRegistry::new(temp_dir.path());
         registry.init().await.unwrap();
 
-        let manifest = AgentManifest::new("test-agent", "1.0.0", "did:pekobot:test");
+        let manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
 
         // Store with tag
         let digest = registry

@@ -83,7 +83,7 @@ impl Team {
     pub fn default_workspace_path(name: &str) -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("pekobot")
+            .join("peko")
             .join("teams")
             .join(name)
     }
@@ -499,7 +499,7 @@ role = "worker"
             id: "team_123".to_string(),
             name: "test-team".to_string(),
             status: TeamStatus::Running,
-            workspace_path: PathBuf::from("/tmp/pekobot/teams/test-team"),
+            workspace_path: PathBuf::from("/tmp/peko/teams/test-team"),
             config,
             agent_instances: HashMap::new(),
             error: None,
@@ -508,7 +508,7 @@ role = "worker"
 
         assert_eq!(
             team.shared_files_path(),
-            PathBuf::from("/tmp/pekobot/teams/test-team/.pekobot/teams/test-team/shared/files")
+            PathBuf::from("/tmp/peko/teams/test-team/.peko/teams/test-team/shared/files")
         );
     }
 }

@@ -277,7 +277,7 @@ pub fn render_branch_success(
     }
     println!();
     println!("   The branched session contains a copy of the parent's history.");
-    println!("   Switch to it with: pekobot session switch {team}/{agent} {new_session_id}");
+    println!("   Switch to it with: peko session switch {team}/{agent} {new_session_id}");
 }
 
 /// Render delete confirmation prompt
@@ -305,7 +305,7 @@ pub fn render_delete_success(session_id: &str, deleted: bool) {
 pub fn render_switch_success(team: &str, agent: &str, session_id: &str) {
     println!("✅ Switched active session for '{team}/{agent}' to '{session_id}'");
     println!();
-    println!("   Future 'pekobot send' commands will use this session.");
+    println!("   Future 'peko send' commands will use this session.");
 }
 
 /// Render compact dry-run

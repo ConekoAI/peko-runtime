@@ -44,7 +44,7 @@ pub struct DiscoveredServer {
 pub fn mcp_config_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".pekobot")
+        .join(".peko")
         .join("mcp.toml")
 }
 
@@ -53,7 +53,7 @@ pub fn mcp_config_path() -> PathBuf {
 pub fn mcp_install_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".pekobot")
+        .join(".peko")
         .join("mcp-servers")
 }
 
@@ -132,7 +132,7 @@ pub async fn discover_servers() -> anyhow::Result<Vec<DiscoveredServer>> {
             tools_count: 0, // Would need to connect to get actual count
             error: if status == McpServerStatus::NotInstalled {
                 Some(format!(
-                    "Server '{name}' not found. Install with: pekobot mcp install {name}"
+                    "Server '{name}' not found. Install with: peko mcp install {name}"
                 ))
             } else {
                 None
@@ -207,13 +207,13 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_config_path() {
         let path = mcp_config_path();
-        assert!(path.ends_with(".pekobot/mcp.toml"));
+        assert!(path.ends_with(".peko/mcp.toml"));
     }
 
     #[tokio::test]
     async fn test_mcp_install_dir() {
         let dir = mcp_install_dir();
-        assert!(dir.ends_with(".pekobot/mcp-servers"));
+        assert!(dir.ends_with(".peko/mcp-servers"));
     }
 
     #[tokio::test]
@@ -227,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_default_config() {
         let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join(".pekobot").join("mcp.toml");
+        let config_path = temp_dir.path().join(".peko").join("mcp.toml");
 
         // Ensure parent directory exists
         tokio::fs::create_dir_all(config_path.parent().unwrap())
@@ -250,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn test_should_use_mcp_tools_no_config() {
         let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join(".pekobot").join("mcp.toml");
+        let config_path = temp_dir.path().join(".peko").join("mcp.toml");
 
         // Ensure the file doesn't exist
         assert!(!config_path.exists());

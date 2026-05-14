@@ -29,8 +29,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 function Start-MockRegistry {
     param([int]$Port)
-    $outLog = "$env:TEMP\pekobot_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\pekobot_mock_registry_err_$Port.log"
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
     if (Test-Path $outLog) { Remove-Item $outLog -Force }
     if (Test-Path $errLog) { Remove-Item $errLog -Force }
 
@@ -93,7 +93,7 @@ $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
 
-$testDir = "$env:TEMP/pekobot_team_snapshot_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+$testDir = "$env:TEMP/PEKO_team_snapshot_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 Write-Host "Test directory: $testDir" -ForegroundColor Gray
 
@@ -121,9 +121,9 @@ try {
     Write-Host "Created 3 agents: $agent1, $agent2, $agent3" -ForegroundColor Green
 
     # Add workspace content (simulating "memory/skills gained over time")
-    $ws1 = "$env:APPDATA/pekobot/workspaces/$teamName/$agent1"
-    $ws2 = "$env:APPDATA/pekobot/workspaces/$teamName/$agent2"
-    $ws3 = "$env:APPDATA/pekobot/workspaces/$teamName/$agent3"
+    $ws1 = "$env:APPDATA/peko/workspaces/$teamName/$agent1"
+    $ws2 = "$env:APPDATA/peko/workspaces/$teamName/$agent2"
+    $ws3 = "$env:APPDATA/peko/workspaces/$teamName/$agent3"
     New-Item -ItemType Directory -Path $ws1 -Force | Out-Null
     New-Item -ItemType Directory -Path $ws2 -Force | Out-Null
     New-Item -ItemType Directory -Path $ws3 -Force | Out-Null
@@ -181,7 +181,7 @@ try {
     Write-Host "STEP 3: Push snapshot to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRef = "127.0.0.1:$RegistryPort/pekobot/teams/prod-team:latest"
+    $registryRef = "127.0.0.1:$RegistryPort/peko/teams/prod-team:latest"
     $pushResult = & $pekoCmd team push $teamName $registryRef --json 2>&1 | ConvertFrom-Json
     if ($pushResult.success -ne $true) {
         Write-Error "Team push failed: $($pushResult | ConvertTo-Json)"
@@ -198,7 +198,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Clear local registry store to force a real download
-    $localRegistryDir = "$env:USERPROFILE/.pekobot/registry"
+    $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) {
         Remove-Item -Recurse -Force $localRegistryDir
         Write-Host "Cleared local registry store" -ForegroundColor Yellow
@@ -241,9 +241,9 @@ try {
     Write-Host "All agents verified in imported team" -ForegroundColor Green
 
     # Verify workspace files
-    $importedWs1 = "$env:APPDATA/pekobot/workspaces/$importedTeamName/$agent1/NOTES.md"
-    $importedWs2 = "$env:APPDATA/pekobot/workspaces/$importedTeamName/$agent2/GUIDE.md"
-    $importedWs3 = "$env:APPDATA/pekobot/workspaces/$importedTeamName/$agent3/CHECKLIST.md"
+    $importedWs1 = "$env:APPDATA/peko/workspaces/$importedTeamName/$agent1/NOTES.md"
+    $importedWs2 = "$env:APPDATA/peko/workspaces/$importedTeamName/$agent2/GUIDE.md"
+    $importedWs3 = "$env:APPDATA/peko/workspaces/$importedTeamName/$agent3/CHECKLIST.md"
 
     if (-not (Test-Path $importedWs1)) { Write-Error "Missing workspace file: $importedWs1" }
     if (-not (Test-Path $importedWs2)) { Write-Error "Missing workspace file: $importedWs2" }

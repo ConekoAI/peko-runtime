@@ -22,8 +22,8 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
+# Build peko
+Write-Host "Building peko..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/../.."
 $env:RUSTFLAGS = "-A warnings"
 cargo build --quiet
@@ -33,21 +33,21 @@ if ($LASTEXITCODE -ne 0) {
 }
 popd
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+if (Test-Path $pekoDir) {
+    Remove-Item -Recurse -Force $pekoDir
+    Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create test agent
 $agentName = "configtestagent"
 Write-Host "`nCreating test agent: $agentName" -ForegroundColor Yellow
-$result = pekobot agent create $agentName --provider $Provider 2>&1
+$result = peko agent create $agentName --provider $Provider 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Created agent") {
@@ -58,9 +58,9 @@ if ($result -match "Created agent") {
 
 # Create team agent for cross-team tests
 $teamName = "configteam"
-pekobot team create $teamName 2>&1 | Out-Null
+peko team create $teamName 2>&1 | Out-Null
 $teamAgent = "teamconfigagent"
-$result = pekobot agent create "$teamName/$teamAgent" --provider $Provider 2>&1
+$result = peko agent create "$teamName/$teamAgent" --provider $Provider 2>&1
 Write-Host "Created team agent: $teamAgent in team $teamName" -ForegroundColor Green
 
 # ============================================================
@@ -71,7 +71,7 @@ Write-Host "TEST 1: Config get - provider.provider_type" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Getting config: provider.provider_type for $agentName" -ForegroundColor Yellow
-$result = pekobot agent config get $agentName provider.provider_type 2>&1
+$result = peko agent config get $agentName provider.provider_type 2>&1
 Write-Host "Output: $result"
 
 if ($result -match $Provider) {
@@ -88,7 +88,7 @@ Write-Host "TEST 2: Config get - provider.default_model" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Getting config: provider.default_model for $agentName" -ForegroundColor Yellow
-$result = pekobot agent config get $agentName provider.default_model 2>&1
+$result = peko agent config get $agentName provider.default_model 2>&1
 Write-Host "Output: $result"
 
 if ($result) {
@@ -105,7 +105,7 @@ Write-Host "TEST 3: Config get - name" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Getting config: name for $agentName" -ForegroundColor Yellow
-$result = pekobot agent config get $agentName name 2>&1
+$result = peko agent config get $agentName name 2>&1
 Write-Host "Output: $result"
 
 if ($result -match $agentName) {
@@ -122,7 +122,7 @@ Write-Host "TEST 4: Config get with --json" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Getting config with --json: name for $agentName" -ForegroundColor Yellow
-$result = pekobot agent config get $agentName name --json 2>&1 | ConvertFrom-Json
+$result = peko agent config get $agentName name --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
@@ -141,7 +141,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Getting non-existent key for $agentName..." -ForegroundColor Yellow
 try {
-    $result = pekobot agent config get $agentName nonexistent.key 2>&1
+    $result = peko agent config get $agentName nonexistent.key 2>&1
     Write-Host "Output: $result"
     if ($result -match "not found" -or $result -match "Error" -or $result -match "does not exist") {
         Write-Host "✓ Got expected error for non-existent key" -ForegroundColor Green
@@ -161,7 +161,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Getting config for non-existent agent..." -ForegroundColor Yellow
 try {
-    $result = pekobot agent config get nonexistentagent123 name 2>&1
+    $result = peko agent config get nonexistentagent123 name 2>&1
     Write-Host "Output: $result"
     if ($result -match "not found" -or $result -match "Error" -or $result -match "does not exist") {
         Write-Host "✓ Got expected error for non-existent agent" -ForegroundColor Green
@@ -180,7 +180,7 @@ Write-Host "TEST 7: Config get with --team flag" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Getting config with --team: name for $teamAgent in $teamName" -ForegroundColor Yellow
-$result = pekobot agent config get $teamAgent name --team $teamName 2>&1
+$result = peko agent config get $teamAgent name --team $teamName 2>&1
 Write-Host "Output: $result"
 
 if ($result -match $teamAgent) {
@@ -197,7 +197,7 @@ Write-Host "TEST 8: Config set - provider.timeout_seconds" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Setting config: provider.timeout_seconds = 120 for $agentName" -ForegroundColor Yellow
-$result = pekobot agent config set $agentName provider.timeout_seconds 120 2>&1
+$result = peko agent config set $agentName provider.timeout_seconds 120 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Updated" -or $result -match "Set") {
@@ -208,7 +208,7 @@ if ($result -match "Updated" -or $result -match "Set") {
 
 # Verify the change
 Write-Host "Verifying the change..." -ForegroundColor Yellow
-$verify = pekobot agent config get $agentName provider.timeout_seconds 2>&1
+$verify = peko agent config get $agentName provider.timeout_seconds 2>&1
 Write-Host "Value: $verify"
 if ($verify -match "120") {
     Write-Host "✓ Config set value verified" -ForegroundColor Green
@@ -225,7 +225,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $newModel = "test-model-123"
 Write-Host "Setting config: provider.default_model = $newModel for $agentName" -ForegroundColor Yellow
-$result = pekobot agent config set $agentName provider.default_model $newModel 2>&1
+$result = peko agent config set $agentName provider.default_model $newModel 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Updated" -or $result -match "Set") {
@@ -235,7 +235,7 @@ if ($result -match "Updated" -or $result -match "Set") {
 }
 
 # Verify
-$verify = pekobot agent config get $agentName provider.default_model 2>&1
+$verify = peko agent config get $agentName provider.default_model 2>&1
 if ($verify -match $newModel) {
     Write-Host "✓ Config set model verified" -ForegroundColor Green
 } else {
@@ -250,7 +250,7 @@ Write-Host "TEST 10: Config set with --json output" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Setting config with --json: provider.timeout_seconds = 300 for $agentName" -ForegroundColor Yellow
-$result = pekobot agent config set $agentName provider.timeout_seconds 300 --json 2>&1 | ConvertFrom-Json
+$result = peko agent config set $agentName provider.timeout_seconds 300 --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
@@ -269,7 +269,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $newDescription = "Test agent description"
 Write-Host "Setting config: description = $newDescription for $agentName" -ForegroundColor Yellow
-$result = pekobot agent config set $agentName description $newDescription 2>&1
+$result = peko agent config set $agentName description $newDescription 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Updated" -or $result -match "Set") {
@@ -279,7 +279,7 @@ if ($result -match "Updated" -or $result -match "Set") {
 }
 
 # Verify
-$verify = pekobot agent config get $agentName description 2>&1
+$verify = peko agent config get $agentName description 2>&1
 if ($verify -match $newDescription) {
     Write-Host "✓ Config set description verified" -ForegroundColor Green
 } else {
@@ -295,7 +295,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $teamTimeout = 200
 Write-Host "Setting config with --team: provider.timeout_seconds = $teamTimeout for $teamAgent in $teamName" -ForegroundColor Yellow
-$result = pekobot agent config set $teamAgent provider.timeout_seconds $teamTimeout --team $teamName 2>&1
+$result = peko agent config set $teamAgent provider.timeout_seconds $teamTimeout --team $teamName 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Updated" -or $result -match "Set") {
@@ -305,7 +305,7 @@ if ($result -match "Updated" -or $result -match "Set") {
 }
 
 # Verify
-$verify = pekobot agent config get $teamAgent provider.timeout_seconds --team $teamName 2>&1
+$verify = peko agent config get $teamAgent provider.timeout_seconds --team $teamName 2>&1
 if ($verify -match $teamTimeout) {
     Write-Host "✓ Config set with --team verified" -ForegroundColor Green
 } else {
@@ -321,7 +321,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Setting invalid key for $agentName..." -ForegroundColor Yellow
 try {
-    $result = pekobot agent config set $agentName invalid.nested.key value 2>&1
+    $result = peko agent config set $agentName invalid.nested.key value 2>&1
     Write-Host "Output: $result"
     if ($result -match "not found" -or $result -match "Error" -or $result -match "cannot set") {
         Write-Host "✓ Got expected error for invalid key" -ForegroundColor Green
@@ -341,7 +341,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Setting config for non-existent agent..." -ForegroundColor Yellow
 try {
-    $result = pekobot agent config set nonexistentagent123 description "test" 2>&1
+    $result = peko agent config set nonexistentagent123 description "test" 2>&1
     Write-Host "Output: $result"
     if ($result -match "not found" -or $result -match "Error" -or $result -match "does not exist") {
         Write-Host "✓ Got expected error for non-existent agent" -ForegroundColor Green
@@ -360,9 +360,9 @@ Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Clean up test agents and teams
-pekobot agent remove $agentName --force 2>&1 | Out-Null
-pekobot agent remove $teamAgent --team $teamName --force 2>&1 | Out-Null
-pekobot team remove $teamName --force 2>&1 | Out-Null
+peko agent remove $agentName --force 2>&1 | Out-Null
+peko agent remove $teamAgent --team $teamName --force 2>&1 | Out-Null
+peko team remove $teamName --force 2>&1 | Out-Null
 Write-Host "Cleaned up test agents and teams" -ForegroundColor Green
 
 Write-Host "`n✅ All agent config tests completed successfully!" -ForegroundColor Green

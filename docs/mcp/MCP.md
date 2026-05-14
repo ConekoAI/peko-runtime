@@ -19,75 +19,75 @@ MCP servers are managed as extensions. For example, to use an MCP filesystem ser
 
 ```bash
 # Install the MCP server as an extension
-pekobot ext install <mcp-extension-path-or-url>
+peko ext install <mcp-extension-path-or-url>
 ```
 
 ### 2. Start the MCP Server
 
 ```bash
 # Start the MCP server runtime
-pekobot ext start <mcp-extension-name>
+peko ext start <mcp-extension-name>
 ```
 
 ### 3. Verify It's Working
 
 ```bash
 # Check extension status
-pekobot ext status <mcp-extension-name>
+peko ext status <mcp-extension-name>
 
 # List installed extensions
-pekobot ext list
+peko ext list
 ```
 
 ## Managing MCP via Extensions
 
-Pekobot manages MCP servers through the Unified Extension Architecture (`pekobot ext`):
+Pekobot manages MCP servers through the Unified Extension Architecture (`peko ext`):
 
 ### Install an MCP Extension
 
 ```bash
-pekobot ext install <path-or-url>
+peko ext install <path-or-url>
 ```
 
 ### List Extensions
 
 ```bash
-pekobot ext list
+peko ext list
 ```
 
 ### Enable/Disable Capabilities
 
 ```bash
-pekobot ext enable <capability>
-pekobot ext disable <capability>
+peko ext enable <capability>
+peko ext disable <capability>
 ```
 
 ### Start/Stop MCP Runtimes
 
 ```bash
 # Start a background runtime for the extension
-pekobot ext start <mcp-extension-name>
+peko ext start <mcp-extension-name>
 
 # Stop the runtime
-pekobot ext stop <mcp-extension-name>
+peko ext stop <mcp-extension-name>
 
 # Restart the runtime
-pekobot ext restart <mcp-extension-name>
+peko ext restart <mcp-extension-name>
 
 # Check runtime status
-pekobot ext status <mcp-extension-name>
+peko ext status <mcp-extension-name>
 ```
 
 ### Show Extension Info
 
 ```bash
-pekobot ext info <mcp-extension-name>
+peko ext info <mcp-extension-name>
 ```
 
 ### Debug an Extension
 
 ```bash
-pekobot ext debug <mcp-extension-name>
+peko ext debug <mcp-extension-name>
 ```
 
 ## Configuration
@@ -96,7 +96,7 @@ Extension settings can be configured at global, team, or agent level:
 
 ```bash
 # Configure extension settings
-pekobot ext config <mcp-extension-name>
+peko ext config <mcp-extension-name>
 ```
 
 ## Using MCP Tools with Agents
@@ -106,7 +106,7 @@ MCP tools are automatically available to agents when the MCP extension is enable
 ### Example Agent Configuration
 
 ```toml
-# ~/.pekobot/agents/coding-agent/config.toml
+# ~/.peko/agents/coding-agent/config.toml
 [agent]
 name = "coding-agent"
 ```
@@ -114,7 +114,7 @@ name = "coding-agent"
 Enable the MCP extension for the agent:
 
 ```bash
-pekobot ext enable <mcp-capability>
+peko ext enable <mcp-capability>
 ```
 
 ## Available MCP Servers
@@ -135,17 +135,17 @@ See the [MCP Servers Repository](https://github.com/modelcontextprotocol/servers
 
 1. Check that the extension is installed:
    ```bash
-   pekobot ext list
+   peko ext list
    ```
 
 2. Check extension status:
    ```bash
-   pekobot ext status <mcp-extension-name>
+   peko ext status <mcp-extension-name>
    ```
 
 3. Debug the extension:
    ```bash
-   pekobot ext debug <mcp-extension-name>
+   peko ext debug <mcp-extension-name>
    ```
 
 ### Connection Issues
@@ -164,17 +164,17 @@ For stdio servers:
 
 1. Verify the extension runtime is running:
    ```bash
-   pekobot ext status <mcp-extension-name>
+   peko ext status <mcp-extension-name>
    ```
 
 2. Check extension info:
    ```bash
-   pekobot ext info <mcp-extension-name>
+   peko ext info <mcp-extension-name>
    ```
 
 3. Review logs with verbose mode:
    ```bash
-   pekobot -vv ext debug <mcp-extension-name>
+   peko -vv ext debug <mcp-extension-name>
    ```
 
 ## Architecture

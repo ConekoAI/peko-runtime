@@ -180,8 +180,8 @@ gateway_type: "pubsub"
 config:
   redis_url: "redis://localhost:6379"
   channels:
-    - "pekobot:events"
-    - "pekobot:commands"
+    - "peko:events"
+    - "peko:commands"
 hooks:
   - point: "agent.init"
     handler: "init_redis"
@@ -272,7 +272,7 @@ def inspect_extension(path: Path) -> ExtensionInfo:
 **Migration Cost.** Existing extensions using `manifest.json`, `config.toml`, or untyped `manifest.yaml` must add `extension_type: "..."` and rename/restructure. Mitigated by:
 - Legacy fallback with deprecation warnings (Tier 3)
 - Untyped `manifest.yaml` falls back to `general` adapter (the natural default)
-- Migration command: `pekobot ext migrate <path>`
+- Migration command: `peko ext migrate <path>`
 
 **Breaking Change for Universal Tools.** `manifest.json` is currently the standard for universal tools. Changing to `manifest.yaml` with YAML frontmatter is a breaking change. Mitigated by:
 - `manifest.json` remains as a deprecated fallback for one major version
@@ -280,7 +280,7 @@ def inspect_extension(path: Path) -> ExtensionInfo:
 
 **More Verbose for Simple Tools.** A universal tool that previously needed only a `manifest.json` now needs YAML frontmatter with `extension_type`. Mitigated by:
 - The additional fields (`id`, `name`, `version`, `description`) were already best practice
-- Template generators (`pekobot ext init --type universal-tool`) can scaffold the file
+- Template generators (`peko ext init --type universal-tool`) can scaffold the file
 
 ---
 
@@ -366,7 +366,7 @@ def inspect_extension(path: Path) -> ExtensionInfo:
 |------|------------|
 | Breaking change for existing extensions | Tier 3 legacy fallback with deprecation warnings; migration guide |
 | `manifest.json` universal tools need migration | Automated converter; `manifest.json` supported as deprecated fallback |
-| More verbose for simple tools | Template generators (`pekobot ext init`) scaffold the file |
+| More verbose for simple tools | Template generators (`peko ext init`) scaffold the file |
 | Adapter registration order still matters for legacy fallback | Legacy fallback is temporary; unified manifest is order-independent; `general` is the natural default for untyped manifests |
 
 ---
@@ -378,8 +378,8 @@ def inspect_extension(path: Path) -> ExtensionInfo:
 - [x] `server.json` is detected as MCP Tier 1 without requiring `extension_type`.
 - [x] Legacy formats (`manifest.json`, `config.toml`) work with deprecation warnings.
 - [x] Untyped `manifest.yaml` falls back to `general` adapter with deprecation warning.
-- [x] `pekobot ext install` correctly routes all extension types via the three-tier hierarchy.
-- [x] `pekobot ext list` shows correct types for unified-manifest and `server.json` extensions.
+- [x] `peko ext install` correctly routes all extension types via the three-tier hierarchy.
+- [x] `peko ext list` shows correct types for unified-manifest and `server.json` extensions.
 - [ ] Documentation and examples updated to use unified manifest. *(Pending: examples/ directory update)*
 - [ ] Migration guide published. *(Pending: `docs/migration/UNIFIED_MANIFEST_MIGRATION.md`)*
 - [x] `id` field uniqueness is validated per-extension (no global uniqueness requirement enforced at this layer).

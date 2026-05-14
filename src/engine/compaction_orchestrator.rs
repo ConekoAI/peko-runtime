@@ -353,7 +353,7 @@ impl CompactionOrchestrator {
 /// Load compaction config from the global config file, or use defaults.
 fn load_compaction_config() -> CompactionConfig {
     let config_path = dirs::home_dir()
-        .map(|h| h.join(".pekobot").join("config.toml"))
+        .map(|h| h.join(".peko").join("config.toml"))
         .filter(|p| p.exists());
 
     if let Some(path) = config_path {

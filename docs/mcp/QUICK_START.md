@@ -13,20 +13,20 @@ MCP servers are installed as extensions via the unified extension system:
 
 ```bash
 # Install an MCP server extension
-pekobot ext install ./mcp-filesystem-server
+peko ext install ./mcp-filesystem-server
 
 # Or from a remote source
-pekobot ext install ./mcp-web-server
+peko ext install ./mcp-web-server
 ```
 
 ## 2. Verify Installation
 
 ```bash
 # List installed extensions
-pekobot ext list
+peko ext list
 
 # Show MCP extension details
-pekobot ext info filesystem-mcp
+peko ext info filesystem-mcp
 ```
 
 You should see the extension listed with type `mcp`.
@@ -35,7 +35,7 @@ You should see the extension listed with type `mcp`.
 
 ```bash
 # Enable the MCP extension
-pekobot ext enable filesystem-mcp
+peko ext enable filesystem-mcp
 ```
 
 ## 4. Use with Agent
@@ -43,7 +43,7 @@ pekobot ext enable filesystem-mcp
 MCP tools are automatically available to agents once the extension is enabled:
 
 ```bash
-pekobot send myagent "Read the file README.md"
+peko send myagent "Read the file README.md"
 ```
 
 ## Common Tasks
@@ -51,35 +51,35 @@ pekobot send myagent "Read the file README.md"
 ### List Available Extensions
 
 ```bash
-pekobot ext list --type mcp
+peko ext list --type mcp
 ```
 
 ### Test Extension Health
 
 ```bash
 # Check extension status
-pekobot ext info filesystem-mcp
+peko ext info filesystem-mcp
 
 # Debug extension
-pekobot ext debug filesystem-mcp
+peko ext debug filesystem-mcp
 ```
 
 ### View Extension Configuration
 
 ```bash
 # Show config
-pekobot ext config filesystem-mcp --show
+peko ext config filesystem-mcp --show
 
 # Set config value
-pekobot ext config filesystem-mcp --set timeout=30
+peko ext config filesystem-mcp --set timeout=30
 ```
 
 ### Reinstall an Extension
 
 ```bash
 # Uninstall and reinstall
-pekobot ext uninstall filesystem-mcp
-pekobot ext install ./mcp-filesystem-server
+peko ext uninstall filesystem-mcp
+peko ext install ./mcp-filesystem-server
 ```
 
 ## Troubleshooting
@@ -88,30 +88,30 @@ pekobot ext install ./mcp-filesystem-server
 
 ```bash
 # Check if extension is installed
-pekobot ext list
+peko ext list
 
 # Reinstall if missing
-pekobot ext install ./mcp-filesystem-server
+peko ext install ./mcp-filesystem-server
 ```
 
 ### Connection Failed
 
 ```bash
 # Check extension status
-pekobot ext info filesystem-mcp
+peko ext info filesystem-mcp
 
 # Check daemon logs
-pekobot daemon start --foreground
+peko daemon start --foreground
 ```
 
 ### Tools Not Appearing
 
 ```bash
 # Ensure extension is enabled
-pekobot ext enable filesystem-mcp
+peko ext enable filesystem-mcp
 
 # Validate extension manifest
-pekobot ext validate ./mcp-filesystem-server
+peko ext validate ./mcp-filesystem-server
 ```
 
 ## Next Steps

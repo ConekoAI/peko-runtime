@@ -10,7 +10,7 @@
 //! use pekobot::portable::registry::AgentRegistry;
 //!
 //! let config = RegistryConfig::default();
-//! let registry = AgentRegistry::new(".pekobot/registry");
+//! let registry = AgentRegistry::new(".peko/registry");
 //! let client = RegistryClient::new(config, registry);
 //!
 //! // Pull an image
@@ -66,13 +66,13 @@ pub const REGISTRY_API_VERSION: &str = "v2";
 /// Media types for registry operations
 pub mod media_types {
     /// Manifest media type
-    pub const MANIFEST: &str = "application/vnd.pekobot.manifest.v1+json";
+    pub const MANIFEST: &str = "application/vnd.peko.manifest.v1+json";
 
     /// Layer media type (gzip tar)
-    pub const LAYER: &str = "application/vnd.pekobot.layer.v1.tar+gzip";
+    pub const LAYER: &str = "application/vnd.peko.layer.v1.tar+gzip";
 
     /// Config media type
-    pub const CONFIG: &str = "application/vnd.pekobot.config.v1+json";
+    pub const CONFIG: &str = "application/vnd.peko.config.v1+json";
 }
 
 /// Check if a registry reference is valid
@@ -116,15 +116,15 @@ mod tests {
     fn test_media_types() {
         assert_eq!(
             media_types::MANIFEST,
-            "application/vnd.pekobot.manifest.v1+json"
+            "application/vnd.peko.manifest.v1+json"
         );
         assert_eq!(
             media_types::LAYER,
-            "application/vnd.pekobot.layer.v1.tar+gzip"
+            "application/vnd.peko.layer.v1.tar+gzip"
         );
         assert_eq!(
             media_types::CONFIG,
-            "application/vnd.pekobot.config.v1+json"
+            "application/vnd.peko.config.v1+json"
         );
     }
 

@@ -24,7 +24,7 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot (skip if daemon is running since it locks the binary)
+# Build peko (skip if daemon is running since it locks the binary)
 $daemonRunning = $false
 try {
     $status = peko daemon status 2>&1
@@ -32,7 +32,7 @@ try {
 } catch {}
 
 if (-not $daemonRunning) {
-    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    Write-Host "Building peko..." -ForegroundColor Cyan
     pushd "$PSScriptRoot/../.."
     $env:RUSTFLAGS = "-A warnings"
     cargo build --quiet
@@ -45,10 +45,10 @@ if (-not $daemonRunning) {
     Write-Host "Daemon already running, skipping build..." -ForegroundColor Cyan
 }
 
-# Reset pekobot config data
-$pekobotDir = "$env:USERPROFILE/.pekobot"
-$DataDir = "$env:APPDATA/pekobot"
-if (Test-Path $pekobotDir) { Remove-Item -Recurse -Force $pekobotDir }
+# Reset peko config data
+$pekoDir = "$env:USERPROFILE/.peko"
+$DataDir = "$env:APPDATA/peko"
+if (Test-Path $pekoDir) { Remove-Item -Recurse -Force $pekoDir }
 if (Test-Path $DataDir) { Remove-Item -Recurse -Force $DataDir }
 
 # Set API key
