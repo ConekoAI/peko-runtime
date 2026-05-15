@@ -168,7 +168,7 @@ async fn test_extension_install_checksum_mismatch_fails() {
         let bad_manifest = r#"
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [extension]
 id = "docker-skill"
