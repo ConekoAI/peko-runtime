@@ -19,7 +19,6 @@ use crate::extension::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
 use crate::runtime::ToolRuntime;
-use crate::team::TeamManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -54,9 +53,6 @@ pub struct AppState {
 
     /// Daemon configuration
     pub config: DaemonConfigSnapshot,
-
-    /// Team manager for team runtime
-    pub team_manager: Arc<TeamManager>,
 
     /// Registry configuration for push/pull operations
     registry_config: Arc<RwLock<RegistryConfig>>,
@@ -115,7 +111,6 @@ impl std::fmt::Debug for AppState {
             .field("port", &self.port)
             .field("host", &self.host)
             .field("config", &self.config)
-            .field("team_manager", &"<TeamManager>")
             .field("config_service", &"<ConfigAuthorityImpl>")
             .field("agent_service", &"<StatelessAgentService>")
             .field("agent_mgmt_service", &"<AgentService>")
@@ -173,8 +168,6 @@ impl AppState {
         );
         let cache_dir =
             dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("peko"));
-        let team_manager = Arc::new(TeamManager::new());
-
         Self::build(
             workspace_path,
             host.into(),
@@ -183,7 +176,6 @@ impl AppState {
             config_dir,
             data_dir,
             cache_dir,
-            team_manager,
         )
         .await
     }
@@ -200,8 +192,6 @@ impl AppState {
         let cache_dir =
             dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("peko"));
         let config_dir = data_dir.join("config");
-        let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
-
         Self::build(
             workspace_path,
             host.into(),
@@ -210,7 +200,6 @@ impl AppState {
             config_dir,
             data_dir,
             cache_dir,
-            team_manager,
         )
         .await
     }
@@ -223,7 +212,6 @@ impl AppState {
         config_dir: PathBuf,
         data_dir: PathBuf,
         cache_dir: PathBuf,
-        team_manager: Arc<TeamManager>,
     ) -> anyhow::Result<Self> {
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             config_dir.clone(),
@@ -247,7 +235,6 @@ impl AppState {
         // Create unified services
         let team_service = Arc::new(TeamManagementService::new(
             TeamService::new(path_resolver_clone.clone()),
-            team_manager.clone(),
             path_resolver_clone.clone(),
         ));
 
@@ -330,7 +317,6 @@ impl AppState {
             port,
             host,
             config,
-            team_manager,
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability: Arc::new(Observability::new("api")),
             config_service,

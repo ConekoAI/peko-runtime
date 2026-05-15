@@ -12,7 +12,6 @@ pub use agent::{
     AgentRenameResult, AgentSummary, AgentUpdateRequest,
 };
 pub use team::{
-    TeamAgentDefinition, TeamConfigSource, TeamCreationResult, TeamDeletionResult,
-    TeamDeployRequest, TeamDeployResult, TeamExportResult, TeamExtConfig, TeamImportResult,
-    TeamInfo, TeamMetadata, TeamRuntimeInfo, TeamRuntimeStatus, TeamScaleRequest, TeamScaleResult,
+    TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamExtConfig, TeamImportResult,
+    TeamInfo, TeamMetadata, TeamMoveResult,
 };

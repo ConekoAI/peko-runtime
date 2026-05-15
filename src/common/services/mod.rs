@@ -36,7 +36,6 @@ pub type ServiceRegistry = ServiceContainer;
 // For backward compatibility, config_registry::ConfigSource is re-exported via agent::mod.rs
 
 use crate::common::paths::PathResolver;
-use std::sync::Arc;
 
 /// Container for all common services
 ///
@@ -47,40 +46,19 @@ pub struct ServiceContainer {
     agent: AgentService,
     agent_config: ConfigAuthorityImpl,
     team: TeamService,
-    team_management: Option<TeamManagementService>,
+    team_management: TeamManagementService,
 }
 
 impl ServiceContainer {
     /// Create a new service container with the given path resolver
-    ///
-    /// This is the CLI entry point - it doesn't include runtime services.
     #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
+        let team_service = TeamService::new(resolver.clone());
         Self {
             agent: AgentService::new(resolver.clone()),
             agent_config: ConfigAuthorityImpl::new(resolver.clone()),
-            team: TeamService::new(resolver),
-            team_management: None,
-        }
-    }
-
-    /// Create a new service container with runtime services
-    ///
-    /// This is the API entry point - it includes runtime services like `TeamManager`.
-    #[must_use]
-    pub fn with_runtime(
-        resolver: PathResolver,
-        runtime_manager: Arc<crate::team::TeamManager>,
-    ) -> Self {
-        let config_service = TeamService::new(resolver.clone());
-        let team_management =
-            TeamManagementService::new(config_service.clone(), runtime_manager, resolver.clone());
-
-        Self {
-            agent: AgentService::new(resolver.clone()),
-            agent_config: ConfigAuthorityImpl::new(resolver.clone()),
-            team: config_service,
-            team_management: Some(team_management),
+            team: team_service.clone(),
+            team_management: TeamManagementService::new(team_service, resolver),
         }
     }
 
@@ -100,9 +78,7 @@ impl ServiceContainer {
     }
 
     /// Get the team management service (unified operations)
-    ///
-    /// Returns None if the container was created without runtime support.
-    pub fn team_management(&self) -> Option<&TeamManagementService> {
-        self.team_management.as_ref()
+    pub fn team_management(&self) -> &TeamManagementService {
+        &self.team_management
     }
 }
