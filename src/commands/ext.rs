@@ -1133,6 +1133,7 @@ async fn handle_ext_push(
         url: reg_ref.host.clone(),
         priority: 1,
         auth: None,
+        token: None,
     });
 
     let client = RegistryClient::new(config, registry);
@@ -1201,6 +1202,7 @@ async fn handle_ext_pull(
         url: reg_ref.host.clone(),
         priority: 1,
         auth: None,
+        token: None,
     });
 
     let client = RegistryClient::new(config, agent_registry.clone());

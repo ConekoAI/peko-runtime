@@ -36,6 +36,26 @@ pub enum AuthCommands {
         /// Provider name (test all if omitted)
         provider: Option<String>,
     },
+
+    /// Log in to the PekoHub registry
+    Login {
+        /// Registry host (default: pekohub.com)
+        #[arg(long, default_value = "pekohub.com")]
+        registry: String,
+        /// Log in with an API key instead of OAuth
+        #[arg(long)]
+        api_key: Option<String>,
+    },
+
+    /// Log out from the PekoHub registry
+    Logout {
+        /// Registry host to log out from
+        #[arg(long, default_value = "pekohub.com")]
+        registry: String,
+    },
+
+    /// Show authentication status
+    Status,
 }
 
 /// Mask API key for display
@@ -91,29 +111,32 @@ pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Resul
             let providers = service.list_providers()?;
 
             if providers.is_empty() {
-                println!("No credentials configured.");
+                println!("No LLM provider credentials configured.");
                 println!("  Use 'peko auth set <provider> <key>' to add one.");
-                return Ok(());
-            }
+            } else {
+                println!("Configured credentials:");
+                println!();
 
-            println!("Configured credentials:");
-            println!();
+                for provider in providers {
+                    if let Some(cred) = service.get(&provider)? {
+                        let key_display = if show {
+                            cred.api_key
+                        } else {
+                            mask_key(&cred.api_key)
+                        };
+                        println!("  {provider}: {key_display}");
+                    }
+                }
 
-            for provider in providers {
-                if let Some(cred) = service.get(&provider)? {
-                    let key_display = if show {
-                        cred.api_key
-                    } else {
-                        mask_key(&cred.api_key)
-                    };
-                    println!("  {provider}: {key_display}");
+                println!();
+                if !show {
+                    println!("  Use --show to display full keys");
                 }
             }
 
+            // Show registry status
             println!();
-            if !show {
-                println!("  Use --show to display full keys");
-            }
+            print_registry_status(&service, show)?;
 
             Ok(())
         }
@@ -159,7 +182,79 @@ pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Resul
 
             Ok(())
         }
+
+        AuthCommands::Login { registry, api_key } => {
+            if let Some(key) = api_key {
+                // Store the API key directly as a Bearer token
+                service.set_registry_token(key, registry.clone(), None)?;
+                println!("✓ Logged in to {registry}");
+                println!("  Token stored in {}", service.credentials_path().display());
+            } else {
+                println!("To log in to PekoHub, visit:");
+                println!("  https://{registry}/api/v1/auth/github/authorize");
+                println!("Or generate an API key at:");
+                println!("  https://{registry}/profile");
+                println!();
+                println!("Then run: peko auth login --api-key <your-key>");
+            }
+            Ok(())
+        }
+
+        AuthCommands::Logout { registry } => {
+            match service.clear_registry_token()? {
+                true => println!("✓ Logged out from {registry}"),
+                false => println!("✗ Not logged in to {registry}"),
+            }
+            Ok(())
+        }
+
+        AuthCommands::Status => {
+            let providers = service.list_providers()?;
+
+            // LLM providers
+            if providers.is_empty() {
+                println!("No LLM provider credentials configured.");
+            } else {
+                println!("LLM provider credentials:");
+                for provider in &providers {
+                    if let Some(cred) = service.get(provider)? {
+                        let masked = mask_key(&cred.api_key);
+                        println!("  ✓ {provider}: {masked}");
+                    }
+                }
+            }
+
+            println!();
+            print_registry_status(&service, false)?;
+
+            Ok(())
+        }
     }
+}
+
+/// Print registry login status
+fn print_registry_status(service: &CredentialsService, show: bool) -> Result<()> {
+    match service.get_registry_token()? {
+        Some(cred) => {
+            let token_display = if show {
+                cred.token.clone()
+            } else {
+                mask_key(&cred.token)
+            };
+            println!("Registry login status:");
+            println!("  ✓ Logged in to {}", cred.registry_host);
+            if let Some(ns) = &cred.user_namespace {
+                println!("  Namespace: {ns}");
+            }
+            println!("  Token: {token_display}");
+        }
+        None => {
+            println!("Registry login status:");
+            println!("  ✗ Not logged in to registry");
+            println!("    Run 'peko auth login --api-key <key>' to log in");
+        }
+    }
+    Ok(())
 }
 
 /// Get API key for a provider (used by agent creation)

@@ -25,6 +25,7 @@ fn test_registry_config(host: &str) -> RegistryConfig {
         url: host.to_string(),
         priority: 1,
         auth: None,
+        token: None,
     });
     config
 }

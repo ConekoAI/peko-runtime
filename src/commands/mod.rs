@@ -20,6 +20,7 @@ pub mod daemon;
 pub mod ext;
 pub mod orchestration;
 pub mod provider;
+pub mod search;
 pub mod send;
 pub mod session;
 pub mod system;
@@ -139,6 +140,10 @@ pub enum Commands {
     /// LLM Provider management
     #[command(subcommand)]
     Provider(provider::ProviderCommands),
+
+    /// Search the PekoHub registry for agents, teams, and extensions
+    #[command(subcommand)]
+    Search(search::SearchCommands),
 
     /// Update Pekobot to the latest version
     Update {

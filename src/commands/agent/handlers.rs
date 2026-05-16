@@ -9,6 +9,7 @@ use crate::commands::GlobalPaths;
 use crate::common::config_path;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::ConfigAuthority;
+use crate::common::services::CredentialsService;
 use crate::common::types::agent::{
     AgentCreateRequest, AgentDeleteOptions, AgentExportOptions, AgentImportOptions,
 };
@@ -413,7 +414,7 @@ async fn handle_agent_config_set(
 
 /// Handle agent push command
 pub async fn handle_agent_push(
-    _paths: &GlobalPaths,
+    paths: &GlobalPaths,
     local_tag: String,
     registry_ref: String,
     file: Option<String>,
@@ -434,10 +435,23 @@ pub async fn handle_agent_push(
 
     let reg_ref = RegistryRef::parse(&registry_ref)?;
     let mut config = RegistryConfig::default();
+
+    // Check for registry token and wire auth into the source
+    let creds = CredentialsService::new(paths.clone());
+    let token = creds.get_registry_token()?.map(|t| t.token);
+
+    if token.is_none() {
+        anyhow::bail!(
+            "No registry authentication found.\n\
+             Run: peko auth login --registry <host> --api-key <key>"
+        );
+    }
+
     config.add_source(RegistrySource {
         url: reg_ref.host.clone(),
         priority: 1,
         auth: None,
+        token,
     });
 
     let registry_manifest =
@@ -614,7 +628,7 @@ async fn load_agent_file_into_registry(
 
 /// Handle agent pull command
 pub async fn handle_agent_pull(
-    _paths: &GlobalPaths,
+    paths: &GlobalPaths,
     registry_ref: String,
     output: Option<String>,
     json: bool,
@@ -624,10 +638,23 @@ pub async fn handle_agent_pull(
 
     let reg_ref = RegistryRef::parse(&registry_ref)?;
     let mut config = RegistryConfig::default();
+
+    // Check for registry token and wire auth into the source
+    let creds = CredentialsService::new(paths.clone());
+    let token = creds.get_registry_token()?.map(|t| t.token);
+
+    if token.is_none() {
+        anyhow::bail!(
+            "No registry authentication found.\n\
+             Run: peko auth login --registry <host> --api-key <key>"
+        );
+    }
+
     config.add_source(RegistrySource {
         url: reg_ref.host.clone(),
         priority: 1,
         auth: None,
+        token,
     });
 
     let client = RegistryClient::new(config, agent_registry.clone());

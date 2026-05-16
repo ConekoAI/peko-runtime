@@ -15,11 +15,22 @@ pub struct Credential {
     pub created_at: String,
 }
 
+/// Registry credential entry
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct RegistryCredential {
+    pub token: String,
+    pub registry_host: String,
+    pub user_namespace: Option<String>,
+    pub created_at: String,
+}
+
 /// In-memory representation of the credentials file
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct CredentialsStore {
     pub version: u32,
     pub credentials: HashMap<String, Credential>, // key: provider name
+    #[serde(default)]
+    pub registry: Option<RegistryCredential>,
 }
 
 impl CredentialsStore {
@@ -59,6 +70,34 @@ impl CredentialsStore {
         providers.sort();
         providers
     }
+
+    /// Set (or overwrite) registry credentials
+    pub fn set_registry(
+        &mut self,
+        token: String,
+        host: String,
+        namespace: Option<String>,
+    ) {
+        self.registry = Some(RegistryCredential {
+            token,
+            registry_host: host,
+            user_namespace: namespace,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        });
+    }
+
+    /// Get registry credentials
+    #[must_use]
+    pub fn get_registry(&self) -> Option<&RegistryCredential> {
+        self.registry.as_ref()
+    }
+
+    /// Clear registry credentials
+    ///
+    /// Returns `true` if credentials were cleared.
+    pub fn clear_registry(&mut self) -> bool {
+        self.registry.take().is_some()
+    }
 }
 
 /// Load credentials from the standard credentials file
@@ -69,6 +108,7 @@ pub fn load_credentials(paths: &GlobalPaths) -> Result<CredentialsStore> {
         return Ok(CredentialsStore {
             version: 1,
             credentials: HashMap::new(),
+            registry: None,
         });
     }
 
@@ -109,6 +149,7 @@ mod tests {
         let store = CredentialsStore::default();
         assert_eq!(store.version, 0);
         assert!(store.credentials.is_empty());
+        assert!(store.registry.is_none());
     }
 
     #[test]
@@ -171,13 +212,40 @@ mod tests {
     }
 
     #[test]
+    fn test_credentials_store_registry() {
+        let mut store = CredentialsStore::default();
+        assert!(store.get_registry().is_none());
+
+        store.set_registry(
+            "ph_test123".to_string(),
+            "pekohub.com".to_string(),
+            Some("acme".to_string()),
+        );
+
+        let reg = store.get_registry().unwrap();
+        assert_eq!(reg.token, "ph_test123");
+        assert_eq!(reg.registry_host, "pekohub.com");
+        assert_eq!(reg.user_namespace, Some("acme".to_string()));
+
+        assert!(store.clear_registry());
+        assert!(store.get_registry().is_none());
+        assert!(!store.clear_registry());
+    }
+
+    #[test]
     fn test_credentials_store_serialization_roundtrip() {
         let mut store = CredentialsStore {
             version: 1,
             credentials: HashMap::new(),
+            registry: None,
         };
         store.set("openai", "sk-test".to_string());
         store.set("anthropic", "sk-ant-test".to_string());
+        store.set_registry(
+            "ph_test".to_string(),
+            "pekohub.com".to_string(),
+            Some("acme".to_string()),
+        );
 
         let json = serde_json::to_string_pretty(&store).unwrap();
         let deserialized: CredentialsStore = serde_json::from_str(&json).unwrap();
@@ -185,5 +253,20 @@ mod tests {
         assert_eq!(deserialized.version, 1);
         assert_eq!(deserialized.providers(), vec!["anthropic", "openai"]);
         assert_eq!(deserialized.get("openai").unwrap().api_key, "sk-test");
+
+        let reg = deserialized.get_registry().unwrap();
+        assert_eq!(reg.token, "ph_test");
+        assert_eq!(reg.registry_host, "pekohub.com");
+        assert_eq!(reg.user_namespace, Some("acme".to_string()));
+    }
+
+    #[test]
+    fn test_credentials_store_backward_compat() {
+        // Old credentials.json without registry field should deserialize
+        let json = r#"{"version":1,"credentials":{"openai":{"provider":"openai","api_key":"sk-test","created_at":"2024-01-01T00:00:00Z"}}}"#;
+        let store: CredentialsStore = serde_json::from_str(json).unwrap();
+        assert_eq!(store.version, 1);
+        assert_eq!(store.providers(), vec!["openai"]);
+        assert!(store.registry.is_none());
     }
 }

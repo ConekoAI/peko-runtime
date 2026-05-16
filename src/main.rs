@@ -1,8 +1,8 @@
 use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, send, session,
-    system, team, update, Cli, Commands, GlobalPaths,
+    agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, search, send,
+    session, system, team, update, Cli, Commands, GlobalPaths,
 };
 use pekobot::types::config::PekobotConfig;
 
@@ -109,6 +109,7 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
             orchestration::run(cmd, &config, &config_path).await
         }
         Commands::Provider(cmd) => provider::execute(cmd).await,
+        Commands::Search(cmd) => search::handle_search(cmd, paths, json).await,
         Commands::Update { check, force } => update::handle_update(check, force).await,
         Commands::Completions { shell } => {
             let mut cmd = <Cli as clap::CommandFactory>::command();

@@ -249,6 +249,10 @@ impl RegistryClient {
 
     /// Resolve authentication for a registry source
     fn resolve_auth(source: &RegistrySource) -> anyhow::Result<ResolvedAuth> {
+        // Prefer resolved token over env-based auth
+        if let Some(token) = &source.token {
+            return Ok(ResolvedAuth::Bearer(token.clone()));
+        }
         match &source.auth {
             Some(auth) => auth.resolve(),
             None => Ok(ResolvedAuth::None),
@@ -562,6 +566,7 @@ fn sanitize_tag(tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::config::AuthConfig;
 
     #[test]
     fn test_registry_ref_parse() {
@@ -694,6 +699,7 @@ mod tests {
             url: "pekohub.com".to_string(),
             priority: 1,
             auth: None,
+            token: None,
         };
         assert_eq!(RegistryClient::registry_url(&source), "https://pekohub.com");
 
@@ -702,6 +708,7 @@ mod tests {
             url: "http://localhost:5000".to_string(),
             priority: 1,
             auth: None,
+            token: None,
         };
         assert_eq!(
             RegistryClient::registry_url(&source),
@@ -713,10 +720,43 @@ mod tests {
             url: "https://registry.example.com".to_string(),
             priority: 1,
             auth: None,
+            token: None,
         };
         assert_eq!(
             RegistryClient::registry_url(&source),
             "https://registry.example.com"
         );
+    }
+
+    #[test]
+    fn test_resolve_auth_with_token() {
+        let source = RegistrySource {
+            url: "pekohub.com".to_string(),
+            priority: 1,
+            auth: None,
+            token: Some("ph_secret".to_string()),
+        };
+
+        let resolved = RegistryClient::resolve_auth(&source).unwrap();
+        match resolved {
+            ResolvedAuth::Bearer(token) => assert_eq!(token, "ph_secret"),
+            other => panic!("Expected Bearer auth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_auth_prefers_token_over_env() {
+        let source = RegistrySource {
+            url: "pekohub.com".to_string(),
+            priority: 1,
+            auth: Some(AuthConfig::token("SOME_ENV")),
+            token: Some("ph_secret".to_string()),
+        };
+
+        let resolved = RegistryClient::resolve_auth(&source).unwrap();
+        match resolved {
+            ResolvedAuth::Bearer(token) => assert_eq!(token, "ph_secret"),
+            other => panic!("Expected Bearer auth from token, got {other:?}"),
+        }
     }
 }

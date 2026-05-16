@@ -579,6 +579,7 @@ async fn handle_team_push(
         url: reg_ref.host.clone(),
         priority: 1,
         auth: None,
+        token: None,
     });
 
     let client = RegistryClient::new(config, registry);
@@ -675,6 +676,7 @@ async fn handle_team_pull(
         url: reg_ref.host.clone(),
         priority: 1,
         auth: None,
+        token: None,
     });
 
     let client = RegistryClient::new(config, agent_registry.clone());

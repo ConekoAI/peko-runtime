@@ -24,6 +24,7 @@ impl Default for RegistryConfig {
                 url: default_registry(),
                 priority: 1,
                 auth: None,
+                token: None,
             }],
         }
     }
@@ -75,6 +76,9 @@ pub struct RegistrySource {
     /// Authentication configuration
     #[serde(flatten)]
     pub auth: Option<AuthConfig>,
+    /// Resolved token (not from env var, used when token is stored in credentials)
+    #[serde(skip)]
+    pub token: Option<String>,
 }
 
 /// Authentication configuration for registries
@@ -209,6 +213,7 @@ mod tests {
             url: "custom.registry.com".to_string(),
             priority: 1,
             auth: None,
+            token: None,
         });
 
         let source = config.resolve_source("custom.registry.com");
@@ -289,6 +294,7 @@ port = 11435
             url: "private.registry.com".to_string(),
             priority: 1,
             auth: Some(AuthConfig::token("MY_TOKEN")),
+            token: None,
         };
 
         assert_eq!(source.url, "private.registry.com");
@@ -302,6 +308,7 @@ port = 11435
             url: "public.registry.com".to_string(),
             priority: 2,
             auth: None,
+            token: None,
         };
 
         assert_eq!(source.url, "public.registry.com");
@@ -363,12 +370,14 @@ port = 11435
             url: "low.priority.com".to_string(),
             priority: 2,
             auth: None,
+            token: None,
         });
 
         config.add_source(RegistrySource {
             url: "high.priority.com".to_string(),
             priority: 1,
             auth: None,
+            token: None,
         });
 
         // Should be sorted by priority
@@ -441,5 +450,17 @@ anthropic_api_key_env = "ANTHROPIC_API_KEY"
         let config = parse_runtime_toml(toml);
         assert_eq!(config.default, "custom.registry.com");
         assert_eq!(config.sources.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_source_with_resolved_token() {
+        let source = RegistrySource {
+            url: "pekohub.com".to_string(),
+            priority: 1,
+            auth: None,
+            token: Some("ph_secret".to_string()),
+        };
+
+        assert_eq!(source.token, Some("ph_secret".to_string()));
     }
 }

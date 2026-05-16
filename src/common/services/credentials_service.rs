@@ -5,7 +5,7 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::credentials_store::{
-    load_credentials, save_credentials, Credential, CredentialsStore,
+    load_credentials, save_credentials, Credential, CredentialsStore, RegistryCredential,
 };
 use anyhow::Result;
 
@@ -83,6 +83,36 @@ impl CredentialsService {
             "anthropic" => cred.api_key.starts_with("sk-ant-"),
             _ => cred.api_key.len() > 10,
         }))
+    }
+
+    /// Set registry token
+    pub fn set_registry_token(
+        &self,
+        token: String,
+        host: String,
+        namespace: Option<String>,
+    ) -> Result<()> {
+        let mut store = self.load()?;
+        store.set_registry(token, host, namespace);
+        self.save(&store)
+    }
+
+    /// Get registry token
+    pub fn get_registry_token(&self) -> Result<Option<RegistryCredential>> {
+        let store = self.load()?;
+        Ok(store.get_registry().cloned())
+    }
+
+    /// Clear registry token
+    ///
+    /// Returns `true` if a token was cleared.
+    pub fn clear_registry_token(&self) -> Result<bool> {
+        let mut store = self.load()?;
+        let cleared = store.clear_registry();
+        if cleared {
+            self.save(&store)?;
+        }
+        Ok(cleared)
     }
 
     /// Return the path to the credentials file
@@ -225,5 +255,33 @@ mod tests {
         let store = service.load().unwrap();
         assert_eq!(store.providers(), vec!["openai"]);
         assert_eq!(store.get("openai").unwrap().api_key, "sk-test");
+    }
+
+    #[test]
+    fn test_credentials_service_registry_token() {
+        let paths = temp_paths();
+        let service = CredentialsService::new(paths);
+
+        // Initially no token
+        assert!(service.get_registry_token().unwrap().is_none());
+
+        // Set token
+        service
+            .set_registry_token(
+                "ph_abc123".to_string(),
+                "pekohub.com".to_string(),
+                Some("acme".to_string()),
+            )
+            .unwrap();
+
+        let token = service.get_registry_token().unwrap().unwrap();
+        assert_eq!(token.token, "ph_abc123");
+        assert_eq!(token.registry_host, "pekohub.com");
+        assert_eq!(token.user_namespace, Some("acme".to_string()));
+
+        // Clear token
+        assert!(service.clear_registry_token().unwrap());
+        assert!(service.get_registry_token().unwrap().is_none());
+        assert!(!service.clear_registry_token().unwrap());
     }
 }
