@@ -184,6 +184,59 @@ cargo test --all-features
 
 ---
 
+## Registry Commands
+
+The CLI supports registry push/pull with a configurable default registry.
+
+### Setting a default registry
+
+```bash
+# Set pekohub.org as the default
+peko registry set-default pekohub.org
+
+# Use a local registry for development
+peko registry set-default localhost:3000
+
+# Check current default
+peko registry get-default
+```
+
+### Push and pull with bare references
+
+When a default registry is configured, you can use bare references:
+
+```bash
+# Push (resolves to pekohub.org/peko/agents/my-agent:v1.0)
+peko agent push my-agent:v1.0
+
+# Pull (resolves to pekohub.org/peko/agents/my-agent:v1.0)
+peko agent pull my-agent:v1.0
+
+# Override for a single command
+peko agent push my-agent:v1.0 --registry localhost:3000
+```
+
+### Authentication
+
+```bash
+# Log in to the default registry
+peko login --api-key ph_xxxxxxxx
+
+# Log in to a specific registry
+peko login --registry localhost:3000 --api-key ph_xxxxxxxx
+
+# Log out
+peko logout
+```
+
+Full references (`host/path:tag`) continue to work as before:
+
+```bash
+peko agent push my-agent:v1.0 custom.registry.com/peko/agents/my-agent:v1.0
+```
+
+---
+
 ## Related Documentation
 
 - `README.md` — Human-facing quick start and feature overview

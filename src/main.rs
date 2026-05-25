@@ -1,8 +1,8 @@
 use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, search, send,
-    session, system, team, update, Cli, Commands, GlobalPaths,
+    agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, registry,
+    search, send, session, system, team, update, Cli, Commands, GlobalPaths,
 };
 use pekobot::types::config::PekobotConfig;
 
@@ -26,7 +26,8 @@ async fn main() {
     init_extension_core(&cli.command).await;
 
     // Run the command and handle results/exit codes
-    let result = run_command(cli.command, &paths, cli.json).await;
+    let cli_registry = cli.registry.as_deref();
+    let result = run_command(cli.command, &paths, cli.json, cli_registry).await;
 
     match result {
         Ok(()) => std::process::exit(0),
@@ -86,13 +87,13 @@ async fn init_extension_core(command: &Commands) {
     tracing::debug!("Initialized global ExtensionCore with async transport");
 }
 
-async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyhow::Result<()> {
+async fn run_command(command: Commands, paths: &GlobalPaths, json: bool, cli_registry: Option<&str>) -> anyhow::Result<()> {
     match command {
-        Commands::Agent(cmd) => agent::handle_agent(cmd, paths, json).await,
-        Commands::Team(cmd) => team::handle_team(cmd, paths, json).await,
+        Commands::Agent(cmd) => agent::handle_agent(cmd, paths, json, cli_registry).await,
+        Commands::Team(cmd) => team::handle_team(cmd, paths, json, cli_registry).await,
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),
-        Commands::Ext(cmd) => ext::handle_ext_command(cmd, paths, json).await,
+        Commands::Ext(cmd) => ext::handle_ext_command(cmd, paths, json, cli_registry).await,
         Commands::Session(cmd) => session::handle_session(cmd, paths, json).await,
         Commands::Config(cmd) => config::handle_config(cmd, paths, json).await,
         Commands::System(cmd) => system::handle_system(cmd, paths, json).await,
@@ -110,6 +111,15 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         }
         Commands::Provider(cmd) => provider::execute(cmd).await,
         Commands::Search(cmd) => search::handle_search(cmd, paths, json).await,
+        Commands::Registry(cmd) => registry::handle_registry(cmd, paths, json),
+        Commands::Login { registry, api_key } => {
+            let host = registry.unwrap_or_else(|| paths.registry_config().default);
+            auth::handle_login(paths, &host, api_key)
+        }
+        Commands::Logout { registry } => {
+            let host = registry.unwrap_or_else(|| paths.registry_config().default);
+            auth::handle_logout(paths, &host)
+        }
         Commands::Update { check, force } => update::handle_update(check, force).await,
         Commands::Completions { shell } => {
             let mut cmd = <Cli as clap::CommandFactory>::command();

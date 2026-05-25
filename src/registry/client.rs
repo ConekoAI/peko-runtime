@@ -55,7 +55,7 @@ pub enum ProgressEvent {
 /// Parsed registry reference
 #[derive(Debug, Clone)]
 pub struct RegistryRef {
-    /// Host (e.g., "pekohub.com")
+    /// Host (e.g., "pekohub.org")
     pub host: String,
     /// Path (e.g., "agents/researcher")
     pub path: String,
@@ -63,11 +63,91 @@ pub struct RegistryRef {
     pub tag: String,
 }
 
+/// Resource type for bare reference resolution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceType {
+    Agent,
+    Team,
+    Extension,
+}
+
+impl ResourceType {
+    /// Get the path segment for this resource type
+    #[must_use]
+    pub fn path_segment(&self) -> &'static str {
+        match self {
+            Self::Agent => "agents",
+            Self::Team => "teams",
+            Self::Extension => "extensions",
+        }
+    }
+}
+
 impl RegistryRef {
     /// Parse a registry reference string
     /// Format: "host/path/to/image:tag" or "host/path/to/image" (defaults to "latest")
     /// Also supports "host:port/path/to/image:tag"
     pub fn parse(r#ref: &str) -> anyhow::Result<Self> {
+        Self::parse_with_default(r#ref, None, None)
+    }
+
+    /// Parse a registry reference, resolving bare refs against a default registry
+    ///
+    /// A "bare ref" has no '/' before the ':' (e.g., "my-agent:v1.0").
+    /// It is resolved as: `{default_registry}/peko/{resource_type}/{name}:{tag}`
+    ///
+    /// A "full ref" has at least one '/' (e.g., "pekohub.org/peko/agents/my-agent:v1.0")
+    /// and is used as-is.
+    pub fn parse_with_default(
+        r#ref: &str,
+        default_registry: Option<&str>,
+        resource_type: Option<ResourceType>,
+    ) -> anyhow::Result<Self> {
+        // Check if this is a bare ref: has a ':' BEFORE the first '/'
+        // Examples:
+        //   "my-agent:v1.0"       → bare (colon before any slash... well, no slash)
+        //   "my-agent"            → bare (no slash, no colon)
+        //   "host/path:tag"       → full (slash before colon)
+        //   "host/path"           → full (has slash, no colon)
+        let is_bare = match (r#ref.find('/'), r#ref.find(':')) {
+            (None, _) => true,           // No slash at all — bare
+            (Some(_), None) => false,    // Has slash but no colon — full ref with default tag
+            (Some(slash), Some(colon)) => colon < slash, // Colon before slash — bare
+        };
+
+        let full_ref = if is_bare {
+            let registry = default_registry.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Bare registry reference '{}' requires a default registry. \
+                     Set one with: peko registry set-default <host> \
+                     or use: peko <command> --registry <host>",
+                    r#ref
+                )
+            })?;
+            let rt = resource_type.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Bare registry reference '{}' requires a resource type context",
+                    r#ref
+                )
+            })?;
+
+            // Parse name:tag from the bare ref
+            let (name, tag) = match r#ref.find(':') {
+                Some(idx) => (&r#ref[..idx], &r#ref[idx + 1..]),
+                None => (r#ref, "latest"),
+            };
+
+            format!("{}/peko/{}/{name}:{tag}", registry, rt.path_segment())
+        } else {
+            r#ref.to_string()
+        };
+
+        // Now parse the full ref using the original logic
+        Self::parse_full(&full_ref)
+    }
+
+    /// Parse a full registry reference string (always has host/path)
+    fn parse_full(r#ref: &str) -> anyhow::Result<Self> {
         // Find the tag (last ':'). Be careful not to split on ':' that's part of a port.
         // Strategy: find the last ':' that appears after the first '/'.
         let mut tag_split_idx = None;
@@ -570,16 +650,16 @@ mod tests {
 
     #[test]
     fn test_registry_ref_parse() {
-        let r#ref = RegistryRef::parse("pekohub.com/agents/researcher:v2.5").unwrap();
-        assert_eq!(r#ref.host, "pekohub.com");
+        let r#ref = RegistryRef::parse("pekohub.org/agents/researcher:v2.5").unwrap();
+        assert_eq!(r#ref.host, "pekohub.org");
         assert_eq!(r#ref.path, "agents/researcher");
         assert_eq!(r#ref.tag, "v2.5");
-        assert_eq!(r#ref.full_ref(), "pekohub.com/agents/researcher:v2.5");
+        assert_eq!(r#ref.full_ref(), "pekohub.org/agents/researcher:v2.5");
     }
 
     #[test]
     fn test_registry_ref_parse_default_tag() {
-        let r#ref = RegistryRef::parse("pekohub.com/agents/researcher").unwrap();
+        let r#ref = RegistryRef::parse("pekohub.org/agents/researcher").unwrap();
         assert_eq!(r#ref.tag, "latest");
     }
 
@@ -649,10 +729,10 @@ mod tests {
         assert!(RegistryRef::parse("").is_err());
 
         // Just a host without path should fail
-        assert!(RegistryRef::parse("pekohub.com").is_err());
+        assert!(RegistryRef::parse("pekohub.org").is_err());
 
         // But host/path should work
-        assert!(RegistryRef::parse("pekohub.com/agent").is_ok());
+        assert!(RegistryRef::parse("pekohub.org/agents/agent").is_ok());
     }
 
     #[test]

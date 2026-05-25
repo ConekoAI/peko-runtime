@@ -130,7 +130,9 @@ try {
     # Store in local registry for push
     $localRegistryDir = "$env:USERPROFILE/.peko/registry"
     if (Test-Path $localRegistryDir) { Remove-Item -Recurse -Force $localRegistryDir }
-    & $pekoCmd agent push "dummy-tag" "127.0.0.1:$RegistryPort/peko/agents/lifecycle-agent:v1.0" --file $v1Package --json 2>&1 | Out-Null
+
+    # Set default registry for this test session
+    & $pekoCmd registry set-default "127.0.0.1:$RegistryPort" 2>&1 | Out-Null
 
     # ============================================================
     # STEP 2: Push v1 to registry
@@ -139,7 +141,8 @@ try {
     Write-Host "STEP 2: Push v1 to mock registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRef = "127.0.0.1:$RegistryPort/peko/agents/lifecycle-agent:v1.0"
+    # Use bare reference with default registry
+    $registryRef = "lifecycle-agent:v1.0"
     $pushResult = & $pekoCmd agent push "dummy-tag" $registryRef --file $v1Package --json 2>&1 | ConvertFrom-Json
     if ($pushResult.success -ne $true) { Write-Error "Push v1 failed" }
     $v1RegistryDigest = $pushResult.manifest.digest
@@ -234,7 +237,7 @@ try {
     Write-Host "STEP 6: Push v2 with incremental upload" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRefV2 = "127.0.0.1:$RegistryPort/peko/agents/lifecycle-agent:v2.0"
+    $registryRefV2 = "lifecycle-agent:v2.0"
     $pushResult2 = & $pekoCmd agent push "dummy-tag" $registryRefV2 --file $v2Package --json 2>&1 | ConvertFrom-Json
     if ($pushResult2.success -ne $true) { Write-Error "Push v2 failed" }
     $v2RegistryDigest = $pushResult2.manifest.digest
@@ -275,7 +278,7 @@ try {
     Write-Host "STEP 8: Error cases" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $badRef = "127.0.0.1:$RegistryPort/peko/agents/nonexistent:latest"
+    $badRef = "nonexistent:latest"
     try {
         $pullError = & $pekoCmd agent pull $badRef 2>&1
         if ($LASTEXITCODE -ne 0 -and $pullError -match "not found|404|manifest_fetch_failed") {

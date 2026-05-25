@@ -123,7 +123,7 @@ pub enum AgentCommands {
     Push {
         /// Local tag (name:tag) — ignored when --file is used
         local_tag: String,
-        /// Registry reference (host/path:tag)
+        /// Registry reference (host/path:tag or bare name:tag)
         registry_ref: String,
         /// Push a .agent file directly instead of a local tag
         #[arg(short, long)]
@@ -132,7 +132,7 @@ pub enum AgentCommands {
 
     /// Pull a .agent from a registry
     Pull {
-        /// Registry reference (host/path:tag)
+        /// Registry reference (host/path:tag or bare name:tag)
         registry_ref: String,
         /// Output file path (optional, saves as .agent package)
         #[arg(short, long)]
@@ -181,6 +181,7 @@ pub async fn handle_agent(
     cmd: AgentCommands,
     paths: &GlobalPaths,
     json: bool,
+    cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
     match cmd {
         AgentCommands::List { long } => handlers::handle_agent_list(paths, long, json).await,
@@ -219,12 +220,12 @@ pub async fn handle_agent(
             local_tag,
             registry_ref,
             file,
-        } => handlers::handle_agent_push(paths, local_tag, registry_ref, file, json).await,
+        } => handlers::handle_agent_push(paths, local_tag, registry_ref, file, json, cli_registry).await,
         AgentCommands::Pull {
             registry_ref,
             output,
             json,
-        } => handlers::handle_agent_pull(paths, registry_ref, output, json).await,
+        } => handlers::handle_agent_pull(paths, registry_ref, output, json, cli_registry).await,
         AgentCommands::Config(cmd) => handlers::handle_agent_config(cmd, paths, json).await,
     }
 }

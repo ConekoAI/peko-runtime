@@ -20,6 +20,7 @@ pub mod daemon;
 pub mod ext;
 pub mod orchestration;
 pub mod provider;
+pub mod registry;
 pub mod search;
 pub mod send;
 pub mod session;
@@ -80,6 +81,10 @@ pub struct Cli {
     /// User identifier for session isolation
     #[arg(short = 'U', long, global = true)]
     pub user: Option<String>,
+
+    /// Default registry URL for push/pull commands
+    #[arg(long, global = true, env = "PEKO_REGISTRY")]
+    pub registry: Option<String>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -144,6 +149,27 @@ pub enum Commands {
     /// Search the PekoHub registry for agents, teams, and extensions
     #[command(subcommand)]
     Search(search::SearchCommands),
+
+    /// Registry management (set-default, get-default, list)
+    #[command(subcommand)]
+    Registry(registry::RegistryCommands),
+
+    /// Log in to the PekoHub registry
+    Login {
+        /// Registry host (default: from config or pekohub.org)
+        #[arg(long)]
+        registry: Option<String>,
+        /// API key for authentication
+        #[arg(long)]
+        api_key: Option<String>,
+    },
+
+    /// Log out from the PekoHub registry
+    Logout {
+        /// Registry host to log out from (default: from config or pekohub.org)
+        #[arg(long)]
+        registry: Option<String>,
+    },
 
     /// Update Pekobot to the latest version
     Update {
@@ -312,6 +338,15 @@ impl GlobalPaths {
     #[must_use]
     pub fn user(&self) -> &str {
         &self.user
+    }
+
+    /// Load registry configuration from the config directory
+    ///
+    /// Reads `[registry]` section from `~/.peko/config.toml`,
+    /// falling back to defaults if the file or section doesn't exist.
+    #[must_use]
+    pub fn registry_config(&self) -> crate::registry::config::RegistryConfig {
+        crate::registry::config::load_from_config_dir(&self.config_dir)
     }
 }
 

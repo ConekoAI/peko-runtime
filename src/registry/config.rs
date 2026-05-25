@@ -62,7 +62,7 @@ impl RegistryConfig {
 }
 
 fn default_registry() -> String {
-    "pekohub.com".to_string()
+    "pekohub.org".to_string()
 }
 
 /// A registry source configuration
@@ -176,6 +176,22 @@ pub fn load_from_workspace(workspace_path: impl AsRef<std::path::Path>) -> Regis
     }
 }
 
+/// Load registry configuration from the user's config directory
+///
+/// Reads `~/.peko/config.toml` and extracts the `[registry]` section.
+pub fn load_from_config_dir(config_dir: impl AsRef<std::path::Path>) -> RegistryConfig {
+    let config_path = config_dir.as_ref().join("config.toml");
+
+    if !config_path.exists() {
+        return RegistryConfig::default();
+    }
+
+    match std::fs::read_to_string(&config_path) {
+        Ok(content) => parse_runtime_toml(&content),
+        Err(_) => RegistryConfig::default(),
+    }
+}
+
 /// Parse registry configuration from runtime.toml content
 fn parse_runtime_toml(content: &str) -> RegistryConfig {
     // Parse the full TOML to extract just the registry section
@@ -202,7 +218,7 @@ mod tests {
     #[test]
     fn test_registry_config_default() {
         let config = RegistryConfig::default();
-        assert_eq!(config.default, "pekohub.com");
+        assert_eq!(config.default, "pekohub.org");
         assert_eq!(config.sources.len(), 1);
     }
 
@@ -272,20 +288,20 @@ auth = { type = "token", env = "REGISTRY_TOKEN" }
 port = 11435
 ";
         let config = parse_runtime_toml(toml);
-        assert_eq!(config.default, "pekohub.com"); // Default value
+        assert_eq!(config.default, "pekohub.org"); // Default value
     }
 
     #[test]
     fn test_parse_runtime_toml_invalid() {
         let toml = "not valid toml {{{";
         let config = parse_runtime_toml(toml);
-        assert_eq!(config.default, "pekohub.com"); // Falls back to default
+        assert_eq!(config.default, "pekohub.org"); // Falls back to default
     }
 
     #[test]
     fn test_load_from_workspace_nonexistent() {
         let config = load_from_workspace("/nonexistent/path/that/does/not/exist");
-        assert_eq!(config.default, "pekohub.com"); // Falls back to default
+        assert_eq!(config.default, "pekohub.org"); // Falls back to default
     }
 
     #[test]
@@ -361,7 +377,7 @@ port = 11435
     fn test_config_add_and_resolve_source() {
         // Create empty config without default sources
         let mut config = RegistryConfig {
-            default: "pekohub.com".to_string(),
+            default: "pekohub.org".to_string(),
             sources: Vec::new(),
         };
 
@@ -455,12 +471,18 @@ anthropic_api_key_env = "ANTHROPIC_API_KEY"
     #[test]
     fn test_registry_source_with_resolved_token() {
         let source = RegistrySource {
-            url: "pekohub.com".to_string(),
+            url: "pekohub.org".to_string(),
             priority: 1,
             auth: None,
             token: Some("ph_secret".to_string()),
         };
 
         assert_eq!(source.token, Some("ph_secret".to_string()));
+    }
+
+    #[test]
+    fn test_load_from_config_dir_nonexistent() {
+        let config = load_from_config_dir("/nonexistent/path/that/does/not/exist");
+        assert_eq!(config.default, "pekohub.org"); // Falls back to default
     }
 }

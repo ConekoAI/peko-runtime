@@ -15,7 +15,8 @@ use crate::portable::registry::AgentRegistry;
 use crate::portable::team_layer_builder::decompose_team_archive;
 use crate::portable::team_layer_reconstructor::reconstruct_team;
 use crate::portable::types::{ImageDigest, Layer, LayerType};
-use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
+use crate::common::services::CredentialsService;
+use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
 use anyhow::{Context, Result};
@@ -141,8 +142,55 @@ pub enum TeamCommands {
     },
 }
 
+/// Resolve registry configuration for push/pull operations
+fn resolve_registry_config(
+    paths: &GlobalPaths,
+    cli_registry: Option<&str>,
+    host: &str,
+) -> anyhow::Result<RegistryConfig> {
+    let mut config = paths.registry_config();
+
+    // Apply CLI --registry override
+    if let Some(url) = cli_registry {
+        config.default = url.to_string();
+        if config.get_source(url).is_none() {
+            config.add_source(RegistrySource {
+                url: url.to_string(),
+                priority: 0,
+                auth: None,
+                token: None,
+            });
+        }
+    }
+
+    // Check for registry token and wire auth into the source
+    let creds = CredentialsService::new(paths.clone());
+    let token = creds.get_registry_token()?.map(|t| t.token);
+
+    if token.is_none() {
+        anyhow::bail!(
+            "No registry authentication found.\n\
+             Run: peko login --api-key <key>"
+        );
+    }
+
+    config.add_source(RegistrySource {
+        url: host.to_string(),
+        priority: 1,
+        auth: None,
+        token,
+    });
+
+    Ok(config)
+}
+
 /// Handle team commands
-pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> Result<()> {
+pub async fn handle_team(
+    cmd: TeamCommands,
+    paths: &GlobalPaths,
+    json: bool,
+    cli_registry: Option<&str>,
+) -> Result<()> {
     let service = paths.services().team();
 
     match cmd {
@@ -255,7 +303,7 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
         }
 
         TeamCommands::Push { name, registry_ref } => {
-            handle_team_push(service, &name, &registry_ref, json).await
+            handle_team_push(paths, name, registry_ref, json, cli_registry).await
         }
 
         TeamCommands::Pull {
@@ -263,7 +311,7 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             name,
             force,
             json: pull_json,
-        } => handle_team_pull(service, &registry_ref, name, force, pull_json).await,
+        } => handle_team_pull(paths, registry_ref, name, force, pull_json, cli_registry).await,
     }
 }
 
@@ -499,11 +547,13 @@ fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
 }
 
 async fn handle_team_push(
-    service: &crate::common::services::team_service::TeamService,
-    name: &str,
-    registry_ref: &str,
+    paths: &GlobalPaths,
+    name: String,
+    registry_ref: String,
     json: bool,
+    cli_registry: Option<&str>,
 ) -> Result<()> {
+    let service = paths.services().team();
     // ── 1. Export team to a temp .team file ─────────────────────────────
     let temp_dir = std::env::temp_dir().join("PEKO_team_push");
     std::fs::create_dir_all(&temp_dir)?;
@@ -511,7 +561,7 @@ async fn handle_team_push(
 
     let export_result = service
         .export_team(
-            name,
+            &name,
             Some(temp_path.to_string_lossy().to_string()),
             false,
             false,
@@ -558,7 +608,7 @@ async fn handle_team_push(
     // ── 5. Build RegistryManifest with kind="team" ──────────────────────
     let mut manifest = RegistryManifest::new(name.to_string(), "1.0.0".to_string())
         .with_kind("team")
-        .with_ref(registry_ref);
+        .with_ref(&registry_ref);
 
     for (digest, layer_type, size) in all_layers {
         manifest.add_layer(Layer::new(digest, layer_type, size));
@@ -573,19 +623,19 @@ async fn handle_team_push(
     store_registry_manifest_for_client(&registry, &manifest).await?;
 
     // ── 6. Push via RegistryClient ──────────────────────────────────────
-    let reg_ref = RegistryRef::parse(registry_ref)?;
-    let mut config = RegistryConfig::default();
-    config.add_source(RegistrySource {
-        url: reg_ref.host.clone(),
-        priority: 1,
-        auth: None,
-        token: None,
-    });
+    let reg_ref = RegistryRef::parse_with_default(
+        &registry_ref,
+        cli_registry.or(Some(&paths.registry_config().default)),
+        Some(ResourceType::Team),
+    )?;
+    let config = resolve_registry_config(paths, cli_registry, &reg_ref.host)?;
 
     let client = RegistryClient::new(config, registry);
 
+    let resolved_ref = reg_ref.full_ref();
+
     if json {
-        let result = client.push(&manifest_digest, registry_ref, |_| {}).await?;
+        let result = client.push(&manifest_digest, &resolved_ref, |_| {}).await?;
         let output = serde_json::json!({
             "success": true,
             "team_name": name,
@@ -603,7 +653,7 @@ async fn handle_team_push(
     } else {
         println!("Pushing team '{name}' to {registry_ref}...");
         let _result = client
-            .push(&manifest_digest, registry_ref, |event| match event {
+            .push(&manifest_digest, &registry_ref, |event| match event {
                 ProgressEvent::Resolving { .. } => {}
                 ProgressEvent::Pushing {
                     layer,
@@ -660,33 +710,34 @@ fn extract_team_archive_bytes(
 }
 
 async fn handle_team_pull(
-    _service: &crate::common::services::team_service::TeamService,
-    registry_ref: &str,
+    paths: &GlobalPaths,
+    registry_ref: String,
     new_name: Option<String>,
     force: bool,
     json: bool,
+    cli_registry: Option<&str>,
 ) -> Result<()> {
     // ── 1. Pull manifest and layers from registry ───────────────────────
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
 
-    let reg_ref = RegistryRef::parse(registry_ref)?;
-    let mut config = RegistryConfig::default();
-    config.add_source(RegistrySource {
-        url: reg_ref.host.clone(),
-        priority: 1,
-        auth: None,
-        token: None,
-    });
+    let reg_ref = RegistryRef::parse_with_default(
+        &registry_ref,
+        cli_registry.or(Some(&paths.registry_config().default)),
+        Some(ResourceType::Team),
+    )?;
+    let config = resolve_registry_config(paths, cli_registry, &reg_ref.host)?;
 
     let client = RegistryClient::new(config, agent_registry.clone());
 
+    let resolved_ref = reg_ref.full_ref();
+
     let manifest = if json {
-        client.pull(registry_ref, |_| {}).await?
+        client.pull(&resolved_ref, |_| {}).await?
     } else {
-        println!("Pulling team snapshot {registry_ref}...");
+        println!("Pulling team snapshot {resolved_ref}...");
         client
-            .pull(registry_ref, |event| match event {
+            .pull(&resolved_ref, |event| match event {
                 ProgressEvent::Resolving { .. } => {
                     println!("  Resolving...");
                 }

@@ -15,8 +15,9 @@ use crate::extension::types::ExtensionId;
 use crate::ipc::client_service::DaemonClientService;
 use crate::portable::registry::AgentRegistry;
 use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
-use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
+use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
+use crate::common::services::CredentialsService;
 use crate::registry::manifest::RegistryManifest;
 use clap::Subcommand;
 use std::collections::HashMap;
@@ -198,11 +199,54 @@ async fn create_manager_with_adapters(
     manager
 }
 
+/// Resolve registry configuration for push/pull operations
+fn resolve_registry_config(
+    paths: &GlobalPaths,
+    cli_registry: Option<&str>,
+    host: &str,
+) -> anyhow::Result<RegistryConfig> {
+    let mut config = paths.registry_config();
+
+    // Apply CLI --registry override
+    if let Some(url) = cli_registry {
+        config.default = url.to_string();
+        if config.get_source(url).is_none() {
+            config.add_source(RegistrySource {
+                url: url.to_string(),
+                priority: 0,
+                auth: None,
+                token: None,
+            });
+        }
+    }
+
+    // Check for registry token and wire auth into the source
+    let creds = CredentialsService::new(paths.clone());
+    let token = creds.get_registry_token()?.map(|t| t.token);
+
+    if token.is_none() {
+        anyhow::bail!(
+            "No registry authentication found.\n\
+             Run: peko login --api-key <key>"
+        );
+    }
+
+    config.add_source(RegistrySource {
+        url: host.to_string(),
+        priority: 1,
+        auth: None,
+        token,
+    });
+
+    Ok(config)
+}
+
 /// Handle extension subcommands
 pub async fn handle_ext_command(
     command: ExtCommands,
     paths: &GlobalPaths,
     json: bool,
+    cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
     // Get the global ExtensionCore — initialized by main.rs before command dispatch.
     // We extract it once and pass it down to eliminate direct global_core() calls
@@ -298,12 +342,12 @@ pub async fn handle_ext_command(
                     Ok(())
                 }
                 ExtCommands::Push { id, registry_ref } => {
-                    handle_ext_push(&manager, &id, &registry_ref, json).await
+                    handle_ext_push(&manager, &id, &registry_ref, json, cli_registry, paths).await
                 }
                 ExtCommands::Pull {
                     registry_ref,
                     json: pull_json,
-                } => handle_ext_pull(&mut manager, &registry_ref, pull_json).await,
+                } => handle_ext_pull(&mut manager, &registry_ref, pull_json, cli_registry, paths).await,
                 ExtCommands::Validate { .. } | ExtCommands::Debug { .. } => unreachable!(),
             }
         }
@@ -1083,6 +1127,8 @@ async fn handle_ext_push(
     id: &str,
     registry_ref: &str,
     json: bool,
+    cli_registry: Option<&str>,
+    paths: &GlobalPaths,
 ) -> anyhow::Result<()> {
     let ext_id = ExtensionId::new(id);
 
@@ -1127,23 +1173,23 @@ async fn handle_ext_push(
     store_registry_manifest_for_client(&registry, &manifest).await?;
 
     // Parse registry ref and configure client
-    let reg_ref = RegistryRef::parse(registry_ref)?;
-    let mut config = RegistryConfig::default();
-    config.add_source(RegistrySource {
-        url: reg_ref.host.clone(),
-        priority: 1,
-        auth: None,
-        token: None,
-    });
+    let reg_ref = RegistryRef::parse_with_default(
+        registry_ref,
+        cli_registry.or(Some(&paths.registry_config().default)),
+        Some(ResourceType::Extension),
+    )?;
+    let config = resolve_registry_config(paths, cli_registry, &reg_ref.host)?;
 
     let client = RegistryClient::new(config, registry);
 
+    let resolved_ref = reg_ref.full_ref();
+
     if json {
-        let result = client.push(&manifest_digest, registry_ref, |_| {}).await?;
+        let result = client.push(&manifest_digest, &resolved_ref, |_| {}).await?;
         let output = serde_json::json!({
             "success": true,
             "extension_id": id,
-            "registry_ref": registry_ref,
+            "registry_ref": resolved_ref,
             "manifest": {
                 "name": result.name,
                 "version": result.version,
@@ -1155,9 +1201,9 @@ async fn handle_ext_push(
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Pushing extension '{id}' to {registry_ref}...");
+        println!("Pushing extension '{id}' to {resolved_ref}...");
         let _result = client
-            .push(&manifest_digest, registry_ref, |event| match event {
+            .push(&manifest_digest, &resolved_ref, |event| match event {
                 ProgressEvent::Resolving { .. } => {}
                 ProgressEvent::Pushing {
                     layer,
@@ -1192,27 +1238,29 @@ async fn handle_ext_pull(
     manager: &mut ExtensionManager,
     registry_ref: &str,
     json: bool,
+    cli_registry: Option<&str>,
+    paths: &GlobalPaths,
 ) -> anyhow::Result<()> {
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
 
-    let reg_ref = RegistryRef::parse(registry_ref)?;
-    let mut config = RegistryConfig::default();
-    config.add_source(RegistrySource {
-        url: reg_ref.host.clone(),
-        priority: 1,
-        auth: None,
-        token: None,
-    });
+    let reg_ref = RegistryRef::parse_with_default(
+        registry_ref,
+        cli_registry.or(Some(&paths.registry_config().default)),
+        Some(ResourceType::Extension),
+    )?;
+    let config = resolve_registry_config(paths, cli_registry, &reg_ref.host)?;
 
     let client = RegistryClient::new(config, agent_registry.clone());
 
+    let resolved_ref = reg_ref.full_ref();
+
     let manifest = if json {
-        client.pull(registry_ref, |_| {}).await?
+        client.pull(&resolved_ref, |_| {}).await?
     } else {
-        println!("Pulling extension {registry_ref}...");
+        println!("Pulling extension {resolved_ref}...");
         client
-            .pull(registry_ref, |event| match event {
+            .pull(&resolved_ref, |event| match event {
                 ProgressEvent::Resolving { .. } => {
                     println!("  Resolving...");
                 }

@@ -16,7 +16,7 @@ use crate::common::types::agent::{
 use crate::portable::manifest::{AgentLayers, AgentManifest};
 use crate::portable::registry::AgentRegistry;
 use crate::portable::types::{ImageDigest, Layer, LayerType};
-use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef};
+use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
 use std::collections::{HashMap, HashSet};
@@ -412,6 +412,51 @@ async fn handle_agent_config_set(
     Ok(())
 }
 
+/// Resolve registry configuration for push/pull operations
+///
+/// Loads config from `~/.peko/config.toml`, applies CLI `--registry` override,
+/// and wires in the authentication token for the target host.
+fn resolve_registry_config(
+    paths: &GlobalPaths,
+    cli_registry: Option<&str>,
+    host: &str,
+) -> anyhow::Result<RegistryConfig> {
+    let mut config = paths.registry_config();
+
+    // Apply CLI --registry override
+    if let Some(url) = cli_registry {
+        config.default = url.to_string();
+        if config.get_source(url).is_none() {
+            config.add_source(RegistrySource {
+                url: url.to_string(),
+                priority: 0,
+                auth: None,
+                token: None,
+            });
+        }
+    }
+
+    // Check for registry token and wire auth into the source
+    let creds = CredentialsService::new(paths.clone());
+    let token = creds.get_registry_token()?.map(|t| t.token);
+
+    if token.is_none() {
+        anyhow::bail!(
+            "No registry authentication found.\n\
+             Run: peko login --api-key <key>"
+        );
+    }
+
+    config.add_source(RegistrySource {
+        url: host.to_string(),
+        priority: 1,
+        auth: None,
+        token,
+    });
+
+    Ok(config)
+}
+
 /// Handle agent push command
 pub async fn handle_agent_push(
     paths: &GlobalPaths,
@@ -419,6 +464,7 @@ pub async fn handle_agent_push(
     registry_ref: String,
     file: Option<String>,
     json: bool,
+    cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
     let registry = AgentRegistry::new(AgentRegistry::default_path());
     registry.init().await?;
@@ -433,26 +479,12 @@ pub async fn handle_agent_push(
             .map_err(|e| anyhow::anyhow!("Failed to load local tag '{local_tag}': {e}"))?
     };
 
-    let reg_ref = RegistryRef::parse(&registry_ref)?;
-    let mut config = RegistryConfig::default();
-
-    // Check for registry token and wire auth into the source
-    let creds = CredentialsService::new(paths.clone());
-    let token = creds.get_registry_token()?.map(|t| t.token);
-
-    if token.is_none() {
-        anyhow::bail!(
-            "No registry authentication found.\n\
-             Run: peko auth login --registry <host> --api-key <key>"
-        );
-    }
-
-    config.add_source(RegistrySource {
-        url: reg_ref.host.clone(),
-        priority: 1,
-        auth: None,
-        token,
-    });
+    let reg_ref = RegistryRef::parse_with_default(
+        &registry_ref,
+        cli_registry.or(Some(&paths.registry_config().default)),
+        Some(ResourceType::Agent),
+    )?;
+    let config = resolve_registry_config(paths, cli_registry, &reg_ref.host)?;
 
     let registry_manifest =
         agent_to_registry_manifest(&agent_manifest, &registry, &registry_ref).await?;
@@ -470,12 +502,14 @@ pub async fn handle_agent_push(
     };
     let push_tag_ref: &str = &push_tag;
 
+    let resolved_ref = reg_ref.full_ref();
+
     if json {
-        let manifest = client.push(&digest, &registry_ref, |_| {}).await?;
+        let manifest = client.push(&digest, &resolved_ref, |_| {}).await?;
         let output = serde_json::json!({
             "success": true,
             "local_tag": push_tag,
-            "registry_ref": registry_ref,
+            "registry_ref": resolved_ref,
             "manifest": {
                 "name": manifest.name,
                 "version": manifest.version,
@@ -494,9 +528,9 @@ pub async fn handle_agent_push(
         let mut seen_layers = HashSet::new();
 
         let _manifest = client
-            .push(&digest, &registry_ref, |event| match event {
+            .push(&digest, &resolved_ref, |event| match event {
                 ProgressEvent::Resolving { .. } => {
-                    println!("Pushing {push_tag_ref} to {registry_ref}...");
+                    println!("Pushing {push_tag_ref} to {resolved_ref}...");
                 }
                 ProgressEvent::Pushing {
                     layer,
@@ -632,35 +666,24 @@ pub async fn handle_agent_pull(
     registry_ref: String,
     output: Option<String>,
     json: bool,
+    cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
 
-    let reg_ref = RegistryRef::parse(&registry_ref)?;
-    let mut config = RegistryConfig::default();
-
-    // Check for registry token and wire auth into the source
-    let creds = CredentialsService::new(paths.clone());
-    let token = creds.get_registry_token()?.map(|t| t.token);
-
-    if token.is_none() {
-        anyhow::bail!(
-            "No registry authentication found.\n\
-             Run: peko auth login --registry <host> --api-key <key>"
-        );
-    }
-
-    config.add_source(RegistrySource {
-        url: reg_ref.host.clone(),
-        priority: 1,
-        auth: None,
-        token,
-    });
+    let reg_ref = RegistryRef::parse_with_default(
+        &registry_ref,
+        cli_registry.or(Some(&paths.registry_config().default)),
+        Some(ResourceType::Agent),
+    )?;
+    let config = resolve_registry_config(paths, cli_registry, &reg_ref.host)?;
 
     let client = RegistryClient::new(config, agent_registry.clone());
 
+    let resolved_ref = reg_ref.full_ref();
+
     let manifest = if json {
-        let manifest = client.pull(&registry_ref, |_| {}).await?;
+        let manifest = client.pull(&resolved_ref, |_| {}).await?;
 
         // Store in AgentRegistry format as well
         let agent_manifest = registry_to_agent_manifest(&manifest);
@@ -671,7 +694,7 @@ pub async fn handle_agent_pull(
 
         let output_json = serde_json::json!({
             "success": true,
-            "registry_ref": registry_ref,
+            "registry_ref": resolved_ref,
             "manifest": {
                 "name": manifest.name,
                 "version": manifest.version,
