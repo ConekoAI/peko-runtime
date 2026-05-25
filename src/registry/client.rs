@@ -7,6 +7,7 @@ use crate::portable::registry::AgentRegistry;
 use crate::portable::types::{ImageDigest, Layer};
 use crate::registry::config::{RegistryConfig, RegistrySource, ResolvedAuth};
 use crate::registry::manifest::RegistryManifest;
+use crate::registry::media_types;
 use reqwest::Client;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -105,14 +106,24 @@ impl RegistryRef {
     ) -> anyhow::Result<Self> {
         // Check if this is a bare ref: has a ':' BEFORE the first '/'
         // Examples:
-        //   "my-agent:v1.0"       → bare (colon before any slash... well, no slash)
+        //   "my-agent:v1.0"       → bare (no slash)
         //   "my-agent"            → bare (no slash, no colon)
         //   "host/path:tag"       → full (slash before colon)
         //   "host/path"           → full (has slash, no colon)
+        //   "host:port/path:tag"  → full (colon is part of host:port, not a bare ref)
         let is_bare = match (r#ref.find('/'), r#ref.find(':')) {
             (None, _) => true,           // No slash at all — bare
             (Some(_), None) => false,    // Has slash but no colon — full ref with default tag
-            (Some(slash), Some(colon)) => colon < slash, // Colon before slash — bare
+            (Some(slash), Some(colon)) => {
+                if colon < slash {
+                    // Colon before slash — could be bare ("name:tag") or host:port ("host:port/path")
+                    // Distinguish by checking if the segment before the first '/' looks like host:port
+                    let before_slash = &r#ref[..slash];
+                    !looks_like_host_port(before_slash)
+                } else {
+                    false // slash before colon — full ref
+                }
+            }
         };
 
         let full_ref = if is_bare {
@@ -193,6 +204,25 @@ impl RegistryRef {
     pub fn repository(&self) -> String {
         format!("{}/{}", self.host, self.path)
     }
+}
+
+/// Check if a string looks like `host:port` (e.g., "localhost:8080", "127.0.0.1:9000", "example.com:443")
+fn looks_like_host_port(s: &str) -> bool {
+    let Some((host, port_str)) = s.rsplit_once(':') else {
+        return false;
+    };
+    // Port must be all digits
+    if port_str.is_empty() || !port_str.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    // Host must not be empty and should look like a hostname or IP
+    if host.is_empty() {
+        return false;
+    }
+    // Accept localhost, IPs (contain dots or digits), or domain names (contain dots)
+    host == "localhost"
+        || host.contains('.')
+        || host.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 impl RegistryClient {
@@ -545,7 +575,7 @@ impl RegistryClient {
         let req = self.http.put(&url);
         let req = auth.apply(req);
         let req = req
-            .header("Content-Type", "application/vnd.peko.manifest.v1+json")
+            .header("Content-Type", media_types::MANIFEST_DEFAULT)
             .body(json);
 
         let response = req.send().await?;
@@ -558,6 +588,12 @@ impl RegistryClient {
         }
 
         Ok(())
+    }
+
+    /// Return the list of accepted manifest media types for Content-Type negotiation.
+    #[must_use]
+    pub fn accept_manifest_media_types() -> &'static [&'static str] {
+        media_types::MANIFEST_ALL
     }
 
     /// Check which layers already exist on the registry using HEAD requests.
@@ -838,5 +874,63 @@ mod tests {
             ResolvedAuth::Bearer(token) => assert_eq!(token, "ph_secret"),
             other => panic!("Expected Bearer auth from token, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_registry_ref_parse_with_port() {
+        // host:port/path:tag should be parsed as a full ref, not bare
+        let r#ref = RegistryRef::parse("127.0.0.1:8080/ns/agent:v1.0").unwrap();
+        assert_eq!(r#ref.host, "127.0.0.1:8080");
+        assert_eq!(r#ref.path, "ns/agent");
+        assert_eq!(r#ref.tag, "v1.0");
+
+        // localhost:port/path:tag
+        let r#ref = RegistryRef::parse("localhost:3000/agents/test:latest").unwrap();
+        assert_eq!(r#ref.host, "localhost:3000");
+        assert_eq!(r#ref.path, "agents/test");
+        assert_eq!(r#ref.tag, "latest");
+
+        // domain:port/path:tag
+        let r#ref = RegistryRef::parse("registry.example.com:443/org/team/agent:v2.0").unwrap();
+        assert_eq!(r#ref.host, "registry.example.com:443");
+        assert_eq!(r#ref.path, "org/team/agent");
+        assert_eq!(r#ref.tag, "v2.0");
+    }
+
+    #[test]
+    fn test_registry_ref_bare_ref_still_works() {
+        // Bare refs should still be resolved correctly
+        let r#ref = RegistryRef::parse_with_default(
+            "my-agent:v1.0",
+            Some("pekohub.org"),
+            Some(ResourceType::Agent),
+        )
+        .unwrap();
+        assert_eq!(r#ref.host, "pekohub.org");
+        assert_eq!(r#ref.path, "peko/agents/my-agent");
+        assert_eq!(r#ref.tag, "v1.0");
+
+        // Bare ref without tag
+        let r#ref = RegistryRef::parse_with_default(
+            "my-agent",
+            Some("pekohub.org"),
+            Some(ResourceType::Agent),
+        )
+        .unwrap();
+        assert_eq!(r#ref.tag, "latest");
+    }
+
+    #[test]
+    fn test_looks_like_host_port() {
+        assert!(looks_like_host_port("localhost:8080"));
+        assert!(looks_like_host_port("127.0.0.1:3000"));
+        assert!(looks_like_host_port("registry.example.com:443"));
+        assert!(looks_like_host_port("192.168.1.1:5000"));
+
+        assert!(!looks_like_host_port("my-agent:v1.0"));
+        assert!(!looks_like_host_port("agent-name"));
+        assert!(!looks_like_host_port("host:"));
+        assert!(!looks_like_host_port(":8080"));
+        assert!(!looks_like_host_port("host:abc"));
     }
 }

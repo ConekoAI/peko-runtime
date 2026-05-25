@@ -65,14 +65,20 @@ pub const REGISTRY_API_VERSION: &str = "v2";
 
 /// Media types for registry operations
 pub mod media_types {
-    /// Manifest media type
-    pub const MANIFEST: &str = "application/vnd.peko.manifest.v1+json";
-
+    /// Peko manifest media type (legacy)
+    pub const MANIFEST_PEKO: &str = "application/vnd.peko.manifest.v1+json";
+    /// OCI manifest media type (preferred for pekohub compatibility)
+    pub const MANIFEST_OCI: &str = "application/vnd.oci.image.manifest.v1+json";
     /// Layer media type (gzip tar)
     pub const LAYER: &str = "application/vnd.peko.layer.v1.tar+gzip";
-
     /// Config media type
     pub const CONFIG: &str = "application/vnd.peko.config.v1+json";
+
+    /// Default manifest media type to use for push operations
+    pub const MANIFEST_DEFAULT: &str = MANIFEST_OCI;
+
+    /// All accepted manifest media types (for validation)
+    pub const MANIFEST_ALL: &[&str] = &[MANIFEST_PEKO, MANIFEST_OCI];
 }
 
 /// Check if a registry reference is valid
@@ -115,8 +121,12 @@ mod tests {
     #[test]
     fn test_media_types() {
         assert_eq!(
-            media_types::MANIFEST,
+            media_types::MANIFEST_PEKO,
             "application/vnd.peko.manifest.v1+json"
+        );
+        assert_eq!(
+            media_types::MANIFEST_OCI,
+            "application/vnd.oci.image.manifest.v1+json"
         );
         assert_eq!(
             media_types::LAYER,
@@ -126,6 +136,11 @@ mod tests {
             media_types::CONFIG,
             "application/vnd.peko.config.v1+json"
         );
+        assert_eq!(media_types::MANIFEST_DEFAULT, media_types::MANIFEST_OCI);
+        assert_eq!(media_types::MANIFEST_ALL, &[
+            "application/vnd.peko.manifest.v1+json",
+            "application/vnd.oci.image.manifest.v1+json"
+        ]);
     }
 
     #[test]
