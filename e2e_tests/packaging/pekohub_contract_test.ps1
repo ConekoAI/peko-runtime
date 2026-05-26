@@ -173,27 +173,15 @@ This workspace verifies pekohub push/pull roundtrip.
     $pushOutput = & $pekoCmd agent push "dummy-tag" $registryRef --file $builtAgentPath --json 2>&1
     $pushExitCode = $LASTEXITCODE
 
-    # NOTE: PekoHub requires OCI manifest format, but RegistryClient uses Peko-specific format.
-    # This is a known architectural gap. Push to mock registry should work; push to pekohub
-    # will fail with HTTP 400 until OCI conversion is added to RegistryClient.
-    # See: docs/integration/INTEGRATION_TEST_PLAN.md — API Compatibility Matrix
-    if ($backendMode -eq "pekohub") {
-        if ($pushExitCode -ne 0 -and ($pushOutput -match "400 Bad Request|MANIFEST_INVALID|manifest")) {
-            Write-Host "Push to PekoHub failed as expected (OCI format mismatch — known issue)" -ForegroundColor Yellow
-            Write-Host "  This is expected until RegistryClient adds OCI manifest conversion." -ForegroundColor Yellow
-            Write-Host "  Layers uploaded successfully; manifest push fails due to format mismatch." -ForegroundColor Yellow
-            $pekohubPushFailed = $true
-        } else {
-            Write-Error "Unexpected push result: $pushOutput"
-        }
-    } else {
-        $pushResult = $pushOutput | ConvertFrom-Json
-        if ($pushResult.success -ne $true) {
-            Write-Error "Push failed: $($pushResult | ConvertTo-Json -Depth 5)"
-        }
-        Write-Host "Push succeeded" -ForegroundColor Green
-        Write-Host "  Digest: $($pushResult.manifest.digest)" -ForegroundColor Gray
+    # Push should succeed against both mock and PekoHub (OCI format is now native)
+    $pushResult = $pushOutput | ConvertFrom-Json
+    if ($pushResult.success -ne $true) {
+        Write-Error "Push failed: $($pushResult | ConvertTo-Json -Depth 5)"
+    }
+    Write-Host "Push succeeded" -ForegroundColor Green
+    Write-Host "  Digest: $($pushResult.manifest.digest)" -ForegroundColor Gray
 
+    if ($backendMode -eq "mock") {
         $registryState = Get-TestRegistryBlobs -Registry $registry
         if ($registryState.blobs.Count -eq 0) {
             Write-Error "Registry has no blobs after push"
@@ -208,17 +196,6 @@ This workspace verifies pekohub push/pull roundtrip.
     # ============================================================
     # TEST 3-8: Pull, import, dedup, error cases
     # ============================================================
-    # These tests require a successful push. Skip them when testing
-    # against PekoHub until OCI conversion is implemented.
-    # ============================================================
-    if ($pekohubPushFailed) {
-        Write-Host "`n========================================" -ForegroundColor Cyan
-        Write-Host "TESTS 3-8: Skipped (push failed due to OCI format mismatch)" -ForegroundColor Cyan
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host "These tests are skipped when pushing to PekoHub because" -ForegroundColor Yellow
-        Write-Host "RegistryClient uses Peko-specific manifest format, not OCI." -ForegroundColor Yellow
-        Write-Host "Run with -UseMock to test the full push/pull/import cycle." -ForegroundColor Yellow
-    } else {
         # TEST 3: Pull from registry
         Write-Host "`n========================================" -ForegroundColor Cyan
         Write-Host "TEST 3: Pull from registry" -ForegroundColor Cyan
@@ -296,9 +273,22 @@ This workspace verifies pekohub push/pull roundtrip.
         Write-Host "TEST 7: Push with existing layers skipped" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Cyan
 
-        $pushResult2 = & $pekoCmd agent push "dummy-tag" $registryRef --file $builtAgentPath --json 2>&1 | ConvertFrom-Json
-        if ($pushResult2.success -ne $true) {
-            Write-Error "Second push failed"
+        try {
+            $pushOutput2 = & $pekoCmd agent push "dummy-tag" $registryRef --file $builtAgentPath --json 2>&1
+            $pushExitCode2 = $LASTEXITCODE
+        } catch {
+            $pushOutput2 = $_
+            $pushExitCode2 = 1
+        }
+        if ($pushExitCode2 -eq 0) {
+            $pushResult2 = $pushOutput2 | ConvertFrom-Json
+            if ($pushResult2.success -ne $true) {
+                Write-Error "Second push failed"
+            }
+        } elseif ($pushOutput2 -match "409 Conflict|already exists") {
+            Write-Host "Second push returned 409 Conflict (manifest already exists — acceptable)" -ForegroundColor Green
+        } else {
+            Write-Error "Second push failed unexpectedly: $pushOutput2"
         }
         if ($registry.Type -eq "mock") {
             $registryState2 = Get-TestRegistryBlobs -Registry $registry
@@ -336,8 +326,6 @@ This workspace verifies pekohub push/pull roundtrip.
         } catch {
             Write-Host "Push correctly rejects missing local tag" -ForegroundColor Green
         }
-    }
-
 } finally {
     # ============================================================
     # Cleanup
@@ -353,9 +341,9 @@ This workspace verifies pekohub push/pull roundtrip.
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
-    & $pekoCmd agent remove "pekohub-pulled-agent" --team default --force 2>&1 | Out-Null
-    & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null
-    Write-Host "Removed test agents" -ForegroundColor Green
+    try { & $pekoCmd agent remove "pekohub-pulled-agent" --team default --force 2>&1 | Out-Null } catch { }
+    try { & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null } catch { }
+    Write-Host "Removed test agents (if they existed)" -ForegroundColor Green
 }
 
 if ($failed) {

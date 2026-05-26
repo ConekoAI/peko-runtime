@@ -98,10 +98,11 @@ impl<'de> Deserialize<'de> for ImageDigest {
 }
 
 /// Layer types for .agent packages
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerType {
     /// Config layer (contains agent.toml)
+    #[default]
     Config,
     /// Identity layer (DID document, keys)
     Identity,
@@ -133,17 +134,37 @@ impl LayerType {
             LayerType::TeamConfig => "team",
         }
     }
+
+    /// OCI media type for this layer type.
+    #[must_use]
+    pub fn media_type(&self) -> &'static str {
+        match self {
+            LayerType::Config => "application/vnd.peko.layer.config.v1+json",
+            LayerType::Identity => "application/vnd.peko.layer.identity.v1+json",
+            LayerType::Skills => "application/vnd.peko.layer.skills.v1.tar+gzip",
+            LayerType::Workspace => "application/vnd.peko.layer.workspace.v1.tar+gzip",
+            LayerType::Sessions => "application/vnd.peko.layer.sessions.v1.tar+gzip",
+            LayerType::Mcp => "application/vnd.peko.layer.mcp.v1.tar+gzip",
+            LayerType::TeamConfig => "application/vnd.peko.layer.team.v1.tar+gzip",
+        }
+    }
 }
 
 /// A content-addressable layer with digest, type, and size
+///
+/// Wire format follows OCI descriptor spec: `digest`, `mediaType`, `size`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layer {
     /// SHA-256 digest of the layer content
     pub digest: String,
-    /// Layer type
-    #[serde(rename = "type")]
+    /// Layer type (internal use only; not serialized to wire format)
+    #[serde(skip)]
     pub layer_type: LayerType,
-    /// Size in bytes
+    /// OCI media type for this layer (wire format)
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
+    /// Size in bytes (serialized as `size` for OCI compatibility)
+    #[serde(rename = "size")]
     pub size_bytes: u64,
     /// File paths included in this layer
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +177,7 @@ impl Layer {
         Self {
             digest: digest.into(),
             layer_type,
+            media_type: layer_type.media_type().to_string(),
             size_bytes,
             paths: None,
         }

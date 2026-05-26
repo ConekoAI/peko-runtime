@@ -324,6 +324,28 @@ impl RegistryClient {
             .check_existing_layers(&reg_ref, source, &auth, &manifest.layers)
             .await?;
 
+        // Push config blob (required by OCI spec)
+        if !manifest.config.digest.is_empty() {
+            let config_layer = Layer::new(
+                manifest.config.digest.clone(),
+                crate::portable::types::LayerType::Config,
+                manifest.config.size,
+            );
+            if !self.registry.has_layer(&manifest.config.digest) {
+                // Config blob not in local registry — skip (it may be synthetic)
+            } else if !existing_layers.contains(&manifest.config.digest) {
+                self.push_layer(&reg_ref, source, &auth, &config_layer, &mut progress)
+                    .await
+                    .map_err(|e| {
+                        progress(ProgressEvent::Error {
+                            code: "config_push_failed".to_string(),
+                            message: format!("Failed to push config {}: {}", manifest.config.digest, e),
+                        });
+                        e
+                    })?;
+            }
+        }
+
         // Push missing layers
         for layer in &manifest.layers {
             if existing_layers.contains(&layer.digest) {
@@ -404,7 +426,10 @@ impl RegistryClient {
         }
 
         let json = response.text().await?;
-        let manifest = RegistryManifest::from_json(&json)?;
+        let mut manifest = RegistryManifest::from_json(&json)?;
+
+        // Compute digest from the raw JSON (OCI spec)
+        manifest.digest = ImageDigest::from_bytes(json.as_bytes()).as_str().to_string();
 
         Ok(manifest)
     }

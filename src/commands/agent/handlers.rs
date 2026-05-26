@@ -830,6 +830,20 @@ async fn agent_to_registry_manifest(
         }
     }
 
+    // Create a config blob (required by OCI spec) from agent metadata
+    let config_json = serde_json::to_string(&serde_json::json!({
+        "name": agent_manifest.agent.name,
+        "version": agent_manifest.agent.version,
+        "kind": "agent",
+    }))?;
+    let config_digest = ImageDigest::from_bytes(config_json.as_bytes());
+    registry.store_layer(config_digest.as_str(), config_json.as_bytes()).await?;
+    manifest.config = crate::registry::manifest::ConfigDescriptor {
+        media_type: "application/vnd.oci.image.config.v1+json".to_string(),
+        digest: config_digest.as_str().to_string(),
+        size: config_json.len() as u64,
+    };
+
     // Compute digest from JSON representation
     let json = manifest.to_json()?;
     let digest = ImageDigest::from_bytes(json.as_bytes());
