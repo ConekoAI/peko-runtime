@@ -521,19 +521,22 @@ impl RegistryClient {
         }
 
         // Get upload URL from Location header
-        let upload_url = response
+        let location = response
             .headers()
             .get("location")
             .and_then(|v| v.to_str().ok())
-            .map(std::string::String::from)
-            .unwrap_or_else(|| {
-                // Fallback to standard URL
-                format!(
-                    "{base_url}/v2/{}/blobs/uploads/{}",
-                    reg_ref.path,
-                    uuid::Uuid::new_v4()
-                )
-            });
+            .map(std::string::String::from);
+
+        // Resolve relative URLs against the base URL
+        let upload_url = match location {
+            Some(url) if url.starts_with("http") => url,
+            Some(path) => format!("{base_url}{path}"),
+            None => format!(
+                "{base_url}/v2/{}/blobs/uploads/{}",
+                reg_ref.path,
+                uuid::Uuid::new_v4()
+            ),
+        };
 
         // Upload layer data with digest query parameter (OCI spec compliance)
         let upload_url_with_digest = format!("{}?digest={}", upload_url, layer.digest);
