@@ -33,26 +33,47 @@ The two systems communicate via **HTTP** over the OCI Distribution Spec v1.1 and
 
 ---
 
-## 2. Test Strategy: Three Tiers
+## 2. Test Strategy: Four Layers
 
-We use a **three-tier pyramid** to balance coverage, speed, and realism:
+We use a **layered approach** that balances coverage, speed, and realism. The existing `e2e_tests/` directory already contains PowerShell-driven CLI tests — these are the "user journey" layer. Our new Rust integration tests add faster, more granular contract verification.
 
 ```
-        ┌─────────────┐
-        │   Tier 3    │  Full E2E: real pekohub + real peko-runtime
-        │  (Slowest)  │  Docker Compose stack, CI nightly
-        │   ~10 min   │
-        ├─────────────┤
-        │   Tier 2    │  Contract Tests: pekohub running, runtime as client
-        │  (Medium)   │  Rust integration tests against real backend
-        │   ~2 min    │
-        ├─────────────┤
-        ├─────────────┤
-        │   Tier 1    │  Mocked Tests: mock registry ↔ real runtime logic
-        │  (Fastest)  │  Rust tests with Python mock server (existing)
-        │   ~30 sec   │
-        └─────────────┘
+        ┌─────────────────────────────────────────┐
+        │  Layer 4: Full E2E (Docker Compose)     │  Real pekohub + real peko-runtime
+        │  ~10 min  │  CI nightly                 │  S1-S5 scenarios from plan
+        ├─────────────────────────────────────────┤
+        │  Layer 3: PowerShell E2E Tests          │  CLI-driven user journeys
+        │  ~5 min   │  e2e_tests/packaging/*.ps1  │  Export → push → pull → import
+        ├─────────────────────────────────────────┤
+        │  Layer 2: Live Contract Tests           │  Rust tests against real pekohub
+        │  ~2 min   │  tests/pekohub_integration.rs│  Push/pull/catalog/search
+        ├─────────────────────────────────────────┤
+        │  Layer 1: Mocked Contract Tests         │  Rust tests with mock registry
+        │  ~30 sec  │  tests/registry_integration.rs│  Protocol + auth + media types
+        └─────────────────────────────────────────┘
 ```
+
+### How the Existing E2E Tests Fit In
+
+The `e2e_tests/` directory (PowerShell scripts) sits at **Layer 3**. These tests exercise the complete CLI workflow:
+
+| Directory | Tests | Layer | Needs LLM? |
+|-----------|-------|-------|------------|
+| `e2e_tests/packaging/` | Registry push/pull, dedup, export/import, team lifecycle | Layer 3 | Some (optional) |
+| `e2e_tests/agent/` | Agent create/show/remove basics | Layer 3 | No |
+| `e2e_tests/team/` | Team create/list/show | Layer 3 | No |
+| `e2e_tests/send/` | Message sending, streaming, profiles | Layer 3 | Yes |
+| `e2e_tests/extensions/` | Skill/MCP/universal tool lifecycle | Layer 3 | No |
+| `e2e_tests/session/` | Session list/branch/switch/remove | Layer 3 | No |
+| `e2e_tests/cron/` | Cron add/list/remove/run | Layer 3 | No |
+| `e2e_tests/config/` | Config get/set/validate | Layer 3 | No |
+
+**Key insight:** The PowerShell E2E tests already cover the "happy path" user journeys (Layer 3). What was missing was:
+1. **Layer 1** — Fast, granular protocol contract tests (now complete)
+2. **Layer 2** — Tests against the real pekohub backend (next phase)
+3. **Layer 4** — Full Docker Compose stack with real infrastructure (future)
+
+The PowerShell packaging tests (`registry_push_pull.ps1`, `registry_layer_dedup.ps1`, etc.) will benefit from the enhanced mock registry (auth, media types, catalog) and the fixed `host:port` parsing.
 
 ### Tier 1: Mocked Contract Tests ✅ COMPLETE
 
@@ -133,7 +154,40 @@ cargo test --test pekohub_integration
 
 ---
 
-### Tier 3: Full End-to-End Tests (New)
+### Layer 3: PowerShell E2E Tests (Existing — Enhanced)
+
+**Status:** Exists in `e2e_tests/` — tests the full CLI workflow end-to-end.
+
+**What they cover:**
+- Real agent creation, export, push, pull, import via `peko` CLI
+- Layer deduplication across multiple agents
+- Team lifecycle with registry operations
+- Extension bundling and registry operations
+- Cross-platform agent sharing
+
+**What we should enhance:**
+1. **Update packaging tests to use new mock registry features:**
+   - Test auth-protected pushes (`--auth-token`)
+   - Verify OCI media type is sent on push
+   - Test catalog/tag listing after push
+   - Test namespace validation (push to invalid repo name should fail)
+
+2. **Add a new PowerShell test:** `pekohub_contract_test.ps1`
+   - Runs against a local pekohub backend (not mock registry)
+   - Verifies runtime ↔ pekohub compatibility
+   - Can be run in CI after pekohub backend starts
+
+**Run:**
+```powershell
+cd e2e_tests/packaging
+./registry_push_pull.ps1          # Uses mock registry
+./registry_layer_dedup.ps1        # Uses mock registry
+./packaging_all.ps1               # Runs all packaging tests
+```
+
+---
+
+### Layer 4: Full End-to-End Tests (New)
 
 **Goal:** Verify the complete user journey with real infrastructure.
 
@@ -159,10 +213,10 @@ cargo test --test pekohub_integration
 
 | Scenario | Steps |
 |----------|-------|
-| **S1: Publish & Discover** | 1. Create agent → 2. Export `.agent` → 3. `pekobot agent push` to pekohub → 4. `pekobot agent search` finds it → 5. Another user `pekobot agent pull` → 6. Import and verify |
+| **S1: Publish & Discover** | 1. Create agent → 2. Export `.agent` → 3. `peko agent push` to pekohub → 4. `peko agent search` finds it → 5. Another user `peko agent pull` → 6. Import and verify |
 | **S2: Team Collaboration** | 1. Create team with 2 agents → 2. Export `.team` → 3. Push to pekohub → 4. Pull on another machine → 5. Import → 6. Verify both agents work |
 | **S3: Versioned Extension** | 1. Build extension → 2. Push v1.0 → 3. Push v1.1 → 4. List versions → 5. Pull specific version → 6. Install and verify tools work |
-| **S4: Auth Flow** | 1. Generate API key via pekohub web → 2. `pekobot login --api-key` → 3. Push (should succeed) → 4. Push to wrong namespace (should fail 403) → 5. Pull without auth (should succeed) |
+| **S4: Auth Flow** | 1. Generate API key via pekohub web → 2. `peko login --api-key` → 3. Push (should succeed) → 4. Push to wrong namespace (should fail 403) → 5. Pull without auth (should succeed) |
 | **S5: Cross-Platform Share** | 1. Build agent on Windows → 2. Push → 3. Pull on Linux (Docker) → 4. Verify config/memory preserved |
 
 **Run:**
@@ -270,13 +324,15 @@ jobs:
 
 ## 5. Implementation Roadmap
 
-### Phase 1: Tier 1 Improvements (Week 1) ✅ COMPLETE
+### Phase 1: Layer 1 — Mocked Contract Tests (Week 1) ✅ COMPLETE
 - [x] Enhance Python mock registry to validate Peko manifest media types
 - [x] Add auth header validation to mock registry
 - [x] Add namespace resolution tests to `registry_integration.rs`
 - [x] Un-ignore and stabilize existing mock tests in CI
+- [x] Fix `RegistryRef::parse` for `host:port/path:tag`
+- [x] Align runtime manifest media type to OCI (`MANIFEST_DEFAULT`)
 
-### Phase 2: Tier 2 Contract Tests (Week 2-3)
+### Phase 2: Layer 2 — Live pekohub Contract Tests (Week 2-3)
 - [ ] Create `pekohub/backend/tests/fixtures/integration.ts` shared harness
 - [ ] Add `ALLOW_DEV_AUTH_BYPASS` support to pekohub backend config
 - [ ] Create `peko-runtime/tests/pekohub_integration.rs` with test harness that:
@@ -284,15 +340,22 @@ jobs:
   - Waits for health check
   - Runs push/pull/search/catalog tests
   - Kills backend on cleanup
-- [ ] Add CI job for Tier 2
+- [ ] Add CI job for Layer 2
 
-### Phase 3: Tier 3 E2E Tests (Week 4-5)
+### Phase 3: Layer 3 — PowerShell E2E Test Enhancements (Week 3-4)
+- [ ] Update `registry_push_pull.ps1` to test auth-protected pushes
+- [ ] Update `registry_layer_dedup.ps1` to verify OCI media type on push
+- [ ] Add catalog/tag listing verification to packaging tests
+- [ ] Add `pekohub_contract_test.ps1` for runtime ↔ pekohub direct testing
+- [ ] Ensure all packaging tests pass with enhanced mock registry
+
+### Phase 4: Layer 4 — Full Docker Compose E2E (Week 5-6)
 - [ ] Create `integration-tests/docker-compose.yml` with full stack
 - [ ] Create `integration-tests/run_e2e_tests.ps1` / `.sh`
 - [ ] Implement S1-S5 scenarios
 - [ ] Add nightly CI job
 
-### Phase 4: Polish (Week 6)
+### Phase 5: Polish (Week 7)
 - [ ] Add test reporting (JUnit XML)
 - [ ] Add coverage reporting for integration paths
 - [ ] Document debugging guide for flaky tests
