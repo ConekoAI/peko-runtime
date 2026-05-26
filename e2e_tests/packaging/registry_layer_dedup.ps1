@@ -9,6 +9,7 @@
 #   5. Verify the registry only stores unique layers once (content-addressable
 #      deduplication).
 #   6. Pull both agents on a fresh machine and verify integrity.
+#   7. Verify OCI media type is used in pushed manifests.
 #
 # Deterministic verification:
 #   - Structural checks: blob counts, layer digest comparison.
@@ -21,55 +22,55 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ---------------------------------------------------------------------------
+# Load shared helpers
+# ---------------------------------------------------------------------------
+$helpersPath = Join-Path $PSScriptRoot "RegistryTestHelpers.ps1"
+if (-not (Test-Path $helpersPath)) {
+    Write-Error "RegistryTestHelpers.ps1 not found at: $helpersPath"
+}
+. $helpersPath
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Registry Layer Deduplication E2E Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Prerequisites
 # ---------------------------------------------------------------------------
 
-function Start-MockRegistry {
-    param([int]$Port)
-    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
-    if (Test-Path $outLog) { Remove-Item $outLog }
-    if (Test-Path $errLog) { Remove-Item $errLog }
+# Use built binary if available, otherwise fall back to 'peko' on PATH
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "../../..")
+$builtBinary = Join-Path $repoRoot "peko-runtime/target/debug/peko.exe"
+if (Test-Path $builtBinary) {
+    $pekoCmd = $builtBinary
+} else {
+    $pekoCmd = "peko"
+}
+Write-Host "Using command: $pekoCmd" -ForegroundColor Gray
 
-    $proc = Start-Process -FilePath "python" `
-        -ArgumentList "$PSScriptRoot/mock_registry/main.py","--port","$Port","--host","127.0.0.1" `
-        -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-
-    $ready = $false
-    for ($i = 0; $i -lt 30; $i++) {
-        try {
-            Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v2/" -Method GET -TimeoutSec 2 | Out-Null
-            $ready = $true
-            break
-        } catch {
-            Start-Sleep -Milliseconds 200
-        }
-    }
-    if (-not $ready) { Write-Error "Mock registry failed to start on port $Port" }
-    return $proc
+if ($env:MINIMAX_API_KEY) {
+    & $pekoCmd auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+    Write-Host "Set API key for $Provider" -ForegroundColor Green
 }
 
-function Stop-MockRegistry {
-    param($Proc)
-    if ($Proc -and -not $Proc.HasExited) {
-        Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
-    }
-}
+# ---------------------------------------------------------------------------
+# Start mock registry
+# ---------------------------------------------------------------------------
+$registry = Start-TestRegistry -MockPort $RegistryPort
+Reset-TestRegistry -Registry $registry
+Write-Host "Mock registry ready at $($registry.Url)" -ForegroundColor Green
 
-function Reset-RegistryStorage {
-    param([int]$Port)
-    Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/reset" -Method DELETE | Out-Null
-}
+# Login to mock registry (mock accepts any token)
+$registryHost = $registry.Url -replace '^https?://', ''
+& $pekoCmd login --api-key "mock_test_token" --registry $registryHost 2>&1 | Out-Null
+Write-Host "Logged in to mock registry" -ForegroundColor Green
 
-function Get-RegistryBlobs {
-    param([int]$Port)
-    return Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/blobs" -Method GET
-}
+$testDir = "$env:TEMP/PEKO_dedup_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
+New-Item -ItemType Directory -Path $testDir -Force | Out-Null
+Write-Host "Test directory: $testDir" -ForegroundColor Gray
+
+$failed = $false
 
 function Get-LayerDigestsFromAgentPackage {
     param([string]$PackagePath)
@@ -107,32 +108,6 @@ for key in ['config', 'identity', 'skills', 'workspace', 'sessions', 'mcp']:
         if (Test-Path $tempDir) { Remove-Item -Recurse -Force $tempDir }
     }
 }
-
-# ---------------------------------------------------------------------------
-# Prerequisites
-# ---------------------------------------------------------------------------
-
-$pekoCmd = "peko"
-Write-Host "Using command: $pekoCmd" -ForegroundColor Gray
-
-if ($env:MINIMAX_API_KEY) {
-    & $pekoCmd auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
-    Write-Host "Set API key for $Provider" -ForegroundColor Green
-}
-
-# ---------------------------------------------------------------------------
-# Start mock registry
-# ---------------------------------------------------------------------------
-Write-Host "`nStarting mock registry on port $RegistryPort..." -ForegroundColor Cyan
-$registryProc = Start-MockRegistry -Port $RegistryPort
-Reset-RegistryStorage -Port $RegistryPort
-Write-Host "Mock registry ready" -ForegroundColor Green
-
-$testDir = "$env:TEMP/PEKO_dedup_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
-New-Item -ItemType Directory -Path $testDir -Force | Out-Null
-Write-Host "Test directory: $testDir" -ForegroundColor Gray
-
-$failed = $false
 
 try {
     # ============================================================
@@ -233,11 +208,11 @@ try {
     Write-Host "STEP 6: Push agent A to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRefA = "127.0.0.1:$RegistryPort/peko/agents/agent-a:v1.0"
+    $registryRefA = Build-RegistryRef -Registry $registry -Name "agent-a" -Tag "v1.0"
     $pushA = & $pekoCmd agent push "agent-a:v1.0" $registryRefA --file $packageA --json 2>&1 | ConvertFrom-Json
     if ($pushA.success -ne $true) { Write-Error "Push agent A failed" }
 
-    $stateAfterA = Get-RegistryBlobs -Port $RegistryPort
+    $stateAfterA = Get-TestRegistryBlobs -Registry $registry
     $blobsAfterA = $stateAfterA.blobs.Count
     Write-Host "Push agent A succeeded" -ForegroundColor Green
     Write-Host "  Registry blobs: $blobsAfterA" -ForegroundColor Gray
@@ -249,27 +224,65 @@ try {
     Write-Host "STEP 7: Push agent B to registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRefB = "127.0.0.1:$RegistryPort/peko/agents/agent-b:v1.0"
+    $registryRefB = Build-RegistryRef -Registry $registry -Name "agent-b" -Tag "v1.0"
     $pushB = & $pekoCmd agent push "agent-b:v1.0" $registryRefB --file $packageB --json 2>&1 | ConvertFrom-Json
     if ($pushB.success -ne $true) { Write-Error "Push agent B failed" }
 
-    $stateAfterB = Get-RegistryBlobs -Port $RegistryPort
+    $stateAfterB = Get-TestRegistryBlobs -Registry $registry
     $blobsAfterB = $stateAfterB.blobs.Count
     Write-Host "Push agent B succeeded" -ForegroundColor Green
     Write-Host "  Registry blobs: $blobsAfterB" -ForegroundColor Gray
 
     # ============================================================
-    # STEP 8: Verify deduplication
+    # STEP 8: Verify OCI media type in pushed manifests
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 8: Verify deduplication" -ForegroundColor Cyan
+    Write-Host "STEP 8: Verify OCI media type in manifests" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $manifestA = Invoke-RestMethod -Uri "$($registry.Url)/v2/ns/agent-a/manifests/v1.0" -Method GET
+    $manifestB = Invoke-RestMethod -Uri "$($registry.Url)/v2/ns/agent-b/manifests/v1.0" -Method GET
+
+    foreach ($manifest in @($manifestA, $manifestB)) {
+        if ($manifest.mediaType -ne "application/vnd.oci.image.manifest.v1+json") {
+            Write-Error "Manifest media type is not OCI: $($manifest.mediaType)"
+        }
+        if ($manifest.schemaVersion -ne 2) {
+            Write-Error "Manifest schema version is not 2: $($manifest.schemaVersion)"
+        }
+        # Verify layers use OCI descriptor format (mediaType, size, digest)
+        foreach ($layer in $manifest.layers) {
+            if (-not $layer.mediaType -or -not $layer.size -or -not $layer.digest) {
+                Write-Error "Layer missing required OCI descriptor fields"
+            }
+        }
+        # Verify config descriptor
+        if (-not $manifest.config -or -not $manifest.config.digest) {
+            Write-Error "Manifest missing required config descriptor"
+        }
+        $validConfigTypes = @(
+            "application/vnd.peko.config.v1+json",
+            "application/vnd.oci.image.config.v1+json"
+        )
+        if (-not ($validConfigTypes -contains $manifest.config.mediaType)) {
+            Write-Error "Config media type not recognized: $($manifest.config.mediaType)"
+        }
+    }
+    Write-Host "OCI manifest format verified for both agents" -ForegroundColor Green
+
+    # ============================================================
+    # STEP 9: Verify deduplication
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "STEP 9: Verify deduplication" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $totalLayersA = $layersA.Count
     $totalLayersB = $layersB.Count
-    $expectedMaxBlobs = $totalLayersA + $totalLayersB
+    # Each agent also stores a manifest blob, so max possible = layers + manifests
+    $expectedMaxBlobs = $totalLayersA + $totalLayersB + 2  # +2 for manifest blobs
 
-    # The registry should have fewer blobs than the sum of all layers
+    # The registry should have fewer blobs than the sum of all layers + manifests
     if ($blobsAfterB -lt $expectedMaxBlobs) {
         Write-Host "Deduplication confirmed: $blobsAfterB blobs < $expectedMaxBlobs max possible" -ForegroundColor Green
     } else {
@@ -287,10 +300,40 @@ try {
     }
 
     # ============================================================
-    # STEP 9: Fresh machine pull both agents
+    # STEP 10: Verify catalog lists both agents
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 9: Fresh machine pull both agents" -ForegroundColor Cyan
+    Write-Host "STEP 10: Verify catalog and tags" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $catalog = Get-TestRegistryCatalog -Registry $registry
+    if ($catalog.repositories.Count -lt 2) {
+        Write-Error "Catalog should contain at least 2 repositories, found $($catalog.repositories.Count)"
+    }
+    if (-not ($catalog.repositories -contains "ns/agent-a")) {
+        Write-Error "Catalog missing agent-a"
+    }
+    if (-not ($catalog.repositories -contains "ns/agent-b")) {
+        Write-Error "Catalog missing agent-b"
+    }
+
+    $tagsA = Get-TestRegistryTags -Registry $registry -Name "ns/agent-a"
+    $tagsB = Get-TestRegistryTags -Registry $registry -Name "ns/agent-b"
+    if (-not ($tagsA.tags -contains "v1.0")) {
+        Write-Error "Tags for agent-a missing v1.0"
+    }
+    if (-not ($tagsB.tags -contains "v1.0")) {
+        Write-Error "Tags for agent-b missing v1.0"
+    }
+
+    Write-Host "Catalog and tags verified" -ForegroundColor Green
+    Write-Host "  Repositories: $($catalog.repositories -join ', ')" -ForegroundColor Gray
+
+    # ============================================================
+    # STEP 11: Fresh machine pull both agents
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "STEP 11: Fresh machine pull both agents" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $localRegistryDir = "$env:USERPROFILE/.peko/registry"
@@ -308,10 +351,10 @@ try {
     Write-Host "Pulled agent B" -ForegroundColor Green
 
     # ============================================================
-    # STEP 10: Import both and verify structural integrity
+    # STEP 12: Import both and verify structural integrity
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "STEP 10: Import and verify" -ForegroundColor Cyan
+    Write-Host "STEP 12: Import and verify" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $importA = & $pekoCmd agent import --file $packageA --name "agent-a-imported" --team default 2>&1 | Out-String
@@ -339,7 +382,7 @@ try {
     Write-Host "Cleanup" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    Stop-MockRegistry -Proc $registryProc
+    Stop-TestRegistry -Registry $registry
     Write-Host "Stopped mock registry" -ForegroundColor Green
 
     if (Test-Path $testDir) {
@@ -347,11 +390,11 @@ try {
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
-    & $pekoCmd agent remove "agent-a" --team default --force 2>&1 | Out-Null
-    & $pekoCmd agent remove "agent-b" --team default --force 2>&1 | Out-Null
-    & $pekoCmd agent remove "agent-a-imported" --team default --force 2>&1 | Out-Null
-    & $pekoCmd agent remove "agent-b-imported" --team default --force 2>&1 | Out-Null
-    Write-Host "Removed test agents" -ForegroundColor Green
+    try { & $pekoCmd agent remove "agent-a" --team default --force 2>&1 | Out-Null } catch { }
+    try { & $pekoCmd agent remove "agent-b" --team default --force 2>&1 | Out-Null } catch { }
+    try { & $pekoCmd agent remove "agent-a-imported" --team default --force 2>&1 | Out-Null } catch { }
+    try { & $pekoCmd agent remove "agent-b-imported" --team default --force 2>&1 | Out-Null } catch { }
+    Write-Host "Removed test agents (if they existed)" -ForegroundColor Green
 }
 
 if ($failed) {

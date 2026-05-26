@@ -234,6 +234,79 @@ function Get-TestRegistryUrl {
 }
 
 # ---------------------------------------------------------------------------
+# Catalog and tags helpers (mock registry only)
+# ---------------------------------------------------------------------------
+
+function Get-TestRegistryCatalog {
+    param($Registry)
+    if ($Registry.Type -ne "mock") {
+        throw "Catalog endpoint only available on mock registry"
+    }
+    return Invoke-RestMethod -Uri "$($Registry.Url)/v2/_catalog" -Method GET
+}
+
+function Get-TestRegistryTags {
+    param($Registry, [string]$Name)
+    if ($Registry.Type -ne "mock") {
+        throw "Tags endpoint only available on mock registry"
+    }
+    return Invoke-RestMethod -Uri "$($Registry.Url)/v2/$Name/tags/list" -Method GET
+}
+
+# ---------------------------------------------------------------------------
+# Auth-protected mock registry helpers
+# ---------------------------------------------------------------------------
+
+function Start-AuthMockRegistry {
+    param([int]$Port, [string]$AuthToken = "test-secret-token")
+    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
+    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
+    if (Test-Path $outLog) { Remove-Item $outLog -Force }
+    if (Test-Path $errLog) { Remove-Item $errLog -Force }
+
+    $proc = Start-Process -FilePath "python" `
+        -ArgumentList "$PSScriptRoot/mock_registry/main.py","--port","$Port","--host","127.0.0.1","--auth-token","$AuthToken" `
+        -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+
+    $ready = $false
+    for ($i = 0; $i -lt 30; $i++) {
+        try {
+            Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v2/" -Method GET -TimeoutSec 2 | Out-Null
+            $ready = $true
+            break
+        } catch {
+            Start-Sleep -Milliseconds 200
+        }
+    }
+    if (-not $ready) {
+        Write-Error "Mock registry failed to start on port $Port"
+    }
+
+    return @{
+        Type = "mock"
+        Process = $proc
+        Url = "http://127.0.0.1:$Port"
+        Port = $Port
+        AuthToken = $AuthToken
+    }
+}
+
+function Test-AuthProtectedPush {
+    param($Registry, [string]$Ref, [string]$FilePath)
+    # Push without auth should fail
+    try {
+        $resp = Invoke-RestMethod -Uri "$($Registry.Url)/v2/$Ref/manifests/latest" -Method PUT -InFile $FilePath -ContentType "application/vnd.oci.image.manifest.v1+json" -ErrorAction Stop
+        return @{ Protected = $false; Reason = "Push without auth succeeded unexpectedly" }
+    } catch {
+        $status = $_.Exception.Response.StatusCode.value__
+        if ($status -eq 401 -or $status -eq 403) {
+            return @{ Protected = $true; Status = $status }
+        }
+        return @{ Protected = $false; Reason = "Unexpected status: $status" }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Registry reference builder
 # ---------------------------------------------------------------------------
 

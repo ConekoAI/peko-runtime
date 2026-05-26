@@ -1,0 +1,211 @@
+name: Integration Tests
+
+# Tests the integration between peko-runtime (Rust CLI) and pekohub (Node.js registry)
+# across all four test layers defined in docs/integration/INTEGRATION_TEST_PLAN.md
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/registry/**'
+      - 'src/portable/**'
+      - 'src/commands/**'
+      - 'tests/**'
+      - 'e2e_tests/**'
+      - '.github/workflows/integration.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'src/registry/**'
+      - 'src/portable/**'
+      - 'src/commands/**'
+      - 'tests/**'
+      - 'e2e_tests/**'
+      - '.github/workflows/integration.yml'
+  schedule:
+    - cron: '0 2 * * *'  # Nightly at 2 AM UTC
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Layer 1: Mocked Contract Tests (~30 sec)
+  # Fast, granular protocol contract tests with Python mock registry
+  # ---------------------------------------------------------------------------
+  tier1-mocked:
+    name: Layer 1 — Mocked Contract Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Python dependencies
+        run: pip install fastapi uvicorn
+
+      - name: Run mocked contract tests
+        run: cargo test --test registry_integration -- --ignored
+
+  # ---------------------------------------------------------------------------
+  # Layer 2: Live pekohub Contract Tests (~2 min)
+  # Tests against real pekohub backend with PGlite + mock storage/search
+  # ---------------------------------------------------------------------------
+  tier2-contract:
+    name: Layer 2 — Live PekoHub Contract Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout peko-runtime
+        uses: actions/checkout@v4
+        with:
+          path: peko-runtime
+
+      - name: Checkout pekohub
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/pekohub
+          path: pekohub
+        # If pekohub is in the same repo (monorepo), use:
+        # path: pekohub
+        # and remove repository line
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            peko-runtime/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('peko-runtime/**/Cargo.lock') }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: pekohub/pnpm-lock.yaml
+
+      - name: Install pekohub dependencies
+        working-directory: pekohub
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared package
+        working-directory: pekohub
+        run: pnpm --filter @pekohub/shared build
+
+      - name: Run pekohub contract tests
+        working-directory: peko-runtime
+        run: cargo test --test pekohub_integration -- --ignored
+        env:
+          PEKOHUB_BACKEND_PATH: ${{ github.workspace }}/pekohub/backend
+
+  # ---------------------------------------------------------------------------
+  # Layer 3: PowerShell E2E Tests (~5 min)
+  # CLI-driven user journeys: export → push → pull → import
+  # ---------------------------------------------------------------------------
+  tier3-e2e:
+    name: Layer 3 — PowerShell E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build debug binary
+        run: cargo build
+
+      - name: Install Python dependencies
+        run: pip install fastapi uvicorn
+
+      - name: Run registry push/pull E2E test
+        shell: pwsh
+        run: |
+          cd e2e_tests/packaging
+          ./registry_push_pull.ps1
+
+      - name: Run registry layer dedup E2E test
+        shell: pwsh
+        run: |
+          cd e2e_tests/packaging
+          ./registry_layer_dedup.ps1
+
+      - name: Run pekohub contract E2E test
+        shell: pwsh
+        run: |
+          cd e2e_tests/packaging
+          ./pekohub_contract_test.ps1 -UseMock
+
+  # ---------------------------------------------------------------------------
+  # Layer 4: Full E2E with Docker Compose (~10 min)
+  # Complete user journey with real infrastructure
+  # Only runs on schedule or when [e2e] is in commit message
+  # ---------------------------------------------------------------------------
+  tier4-full-e2e:
+    name: Layer 4 — Full Docker Compose E2E
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[e2e]')
+    steps:
+      - name: Checkout peko-runtime
+        uses: actions/checkout@v4
+        with:
+          path: peko-runtime
+
+      - name: Checkout pekohub
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/pekohub
+          path: pekohub
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build peko-runtime
+        working-directory: peko-runtime
+        run: cargo build --release
+
+      - name: Setup Docker Compose
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start infrastructure
+        working-directory: pekohub
+        run: |
+          # TODO: Create docker-compose.yml for full stack
+          # docker-compose up -d postgres minio meilisearch
+          echo "Layer 4 not yet implemented — see INTEGRATION_TEST_PLAN.md Phase 4"
+
+      - name: Wait for services
+        run: sleep 15
+
+      - name: Run full E2E scenarios
+        working-directory: peko-runtime
+        run: |
+          # TODO: Implement S1-S5 scenarios
+          echo "Layer 4 scenarios not yet implemented"

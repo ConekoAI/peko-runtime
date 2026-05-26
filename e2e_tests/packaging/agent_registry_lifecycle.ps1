@@ -79,7 +79,13 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     Write-Warning "MINIMAX_API_KEY not set — LLM verification tests will be skipped"
 }
 
-$pekoCmd = "peko"
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "../../..")
+$builtBinary = Join-Path $repoRoot "peko-runtime/target/debug/peko.exe"
+if (Test-Path $builtBinary) {
+    $pekoCmd = $builtBinary
+} else {
+    $pekoCmd = "peko"
+}
 Write-Host "Using command: $pekoCmd" -ForegroundColor Gray
 
 if ($env:MINIMAX_API_KEY) {
@@ -94,6 +100,9 @@ Write-Host "`nStarting mock registry on port $RegistryPort..." -ForegroundColor 
 $registryProc = Start-MockRegistry -Port $RegistryPort
 Reset-RegistryStorage -Port $RegistryPort
 Write-Host "Mock registry ready" -ForegroundColor Green
+
+$registryHost = "127.0.0.1:$RegistryPort"
+& $pekoCmd login --api-key "mock_test_token" --registry $registryHost 2>&1 | Out-Null
 
 $testDir = "$env:TEMP/PEKO_agent_lifecycle_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
 New-Item -ItemType Directory -Path $testDir -Force | Out-Null
@@ -317,8 +326,8 @@ try {
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
-    & $pekoCmd agent remove $importedName --team default --force 2>&1 | Out-Null
-    & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null
+    try { & $pekoCmd agent remove $importedName --team default --force 2>&1 | Out-Null } catch {}
+    try { & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null } catch {}
     Write-Host "Removed imported agent" -ForegroundColor Green
 }
 

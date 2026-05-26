@@ -7,6 +7,9 @@
 # - Push to mock registry (peko agent push)
 # - Pull from mock registry (peko agent pull)
 # - Verify digest integrity and layer deduplication
+# - Test auth-protected pushes
+# - Verify OCI media type is sent on push
+# - Test catalog/tag listing after push
 # - Deterministic verification via structural checks (no LLM calls)
 #
 # Prerequisites:
@@ -15,63 +18,24 @@
 
 param(
     [string]$Provider = "minimax",
-    [int]$RegistryPort = 18765
+    [int]$RegistryPort = 18765,
+    [int]$AuthRegistryPort = 18766
 )
 
 $ErrorActionPreference = "Stop"
 
+# ---------------------------------------------------------------------------
+# Load shared helpers
+# ---------------------------------------------------------------------------
+$helpersPath = Join-Path $PSScriptRoot "RegistryTestHelpers.ps1"
+if (-not (Test-Path $helpersPath)) {
+    Write-Error "RegistryTestHelpers.ps1 not found at: $helpersPath"
+}
+. $helpersPath
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Registry Push/Pull E2E Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-function Start-MockRegistry {
-    param([int]$Port)
-    $outLog = "$env:TEMP\PEKO_mock_registry_out_$Port.log"
-    $errLog = "$env:TEMP\PEKO_mock_registry_err_$Port.log"
-    if (Test-Path $outLog) { Remove-Item $outLog -Force }
-    if (Test-Path $errLog) { Remove-Item $errLog -Force }
-
-    $proc = Start-Process -FilePath "python" `
-        -ArgumentList "$PSScriptRoot/mock_registry/main.py","--port","$Port","--host","127.0.0.1" `
-        -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-
-    # Wait for registry to be ready
-    $ready = $false
-    for ($i = 0; $i -lt 30; $i++) {
-        try {
-            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v2/" -Method GET -TimeoutSec 2
-            $ready = $true
-            break
-        } catch {
-            Start-Sleep -Milliseconds 200
-        }
-    }
-    if (-not $ready) {
-        Write-Error "Mock registry failed to start on port $Port"
-    }
-    return $proc
-}
-
-function Stop-MockRegistry {
-    param($Proc)
-    if ($Proc -and -not $Proc.HasExited) {
-        Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Reset-RegistryStorage {
-    param([int]$Port)
-    Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/reset" -Method DELETE | Out-Null
-}
-
-function Get-RegistryBlobs {
-    param([int]$Port)
-    return Invoke-RestMethod -Uri "http://127.0.0.1:$Port/_debug/blobs" -Method GET
-}
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -81,7 +45,14 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     Write-Warning "MINIMAX_API_KEY not set — agent creation tests will be skipped"
 }
 
-$pekoCmd = "peko"
+# Use built binary if available, otherwise fall back to 'peko' on PATH
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "../../..")
+$builtBinary = Join-Path $repoRoot "peko-runtime/target/debug/peko.exe"
+if (Test-Path $builtBinary) {
+    $pekoCmd = $builtBinary
+} else {
+    $pekoCmd = "peko"
+}
 Write-Host "Using command: $pekoCmd" -ForegroundColor Gray
 
 # Set API key if available
@@ -91,12 +62,16 @@ if ($env:MINIMAX_API_KEY) {
 }
 
 # ---------------------------------------------------------------------------
-# Start mock registry
+# Start mock registries
 # ---------------------------------------------------------------------------
-Write-Host "`nStarting mock registry on port $RegistryPort..." -ForegroundColor Cyan
-$registryProc = Start-MockRegistry -Port $RegistryPort
-Reset-RegistryStorage -Port $RegistryPort
-Write-Host "Mock registry ready" -ForegroundColor Green
+$registry = Start-TestRegistry -MockPort $RegistryPort
+Reset-TestRegistry -Registry $registry
+Write-Host "Mock registry ready at $($registry.Url)" -ForegroundColor Green
+
+# Login to mock registry (mock accepts any token)
+$registryHost = $registry.Url -replace '^https?://', ''
+& $pekoCmd login --api-key "mock_test_token" --registry $registryHost 2>&1 | Out-Null
+Write-Host "Logged in to mock registry" -ForegroundColor Green
 
 # Create test directory
 $testDir = "$env:TEMP/PEKO_registry_test_$([System.Guid]::NewGuid().ToString().Substring(0,8))"
@@ -114,7 +89,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $agentName = "registry-test-agent"
-    & $pekoCmd agent create $agentName --provider $Provider 2>&1 | Out-Null
+    & $pekoCmd agent create $agentName --provider $Provider --force 2>&1 | Out-Null
     Write-Host "Created agent: $agentName" -ForegroundColor Green
 
     # Add skill
@@ -161,7 +136,7 @@ This is a test workspace file.
     Write-Host "TEST 2: Push to mock registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $registryRef = "127.0.0.1:$RegistryPort/peko/agents/registry-test-agent:v1.0"
+    $registryRef = Build-RegistryRef -Registry $registry -Name $agentName -Tag "v1.0"
     $pushResult = & $pekoCmd agent push "dummy-tag" $registryRef --file $builtAgentPath --json 2>&1 | ConvertFrom-Json
 
     if ($pushResult.success -ne $true) {
@@ -169,7 +144,7 @@ This is a test workspace file.
     }
 
     # Verify registry has blobs
-    $registryState = Get-RegistryBlobs -Port $RegistryPort
+    $registryState = Get-TestRegistryBlobs -Registry $registry
     if ($registryState.blobs.Count -eq 0) {
         Write-Error "Registry has no blobs after push"
     }
@@ -182,10 +157,81 @@ This is a test workspace file.
     Write-Host "  Registry manifests: $($registryState.manifests.Count)" -ForegroundColor Gray
 
     # ============================================================
-    # TEST 3: Pull from mock registry into fresh local store
+    # TEST 3: Verify OCI media type in stored manifest
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 3: Pull from mock registry" -ForegroundColor Cyan
+    Write-Host "TEST 3: Verify OCI media type in manifest" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $manifestName = "ns/$agentName"
+    $storedManifest = Invoke-RestMethod -Uri "$($registry.Url)/v2/$manifestName/manifests/v1.0" -Method GET
+    if ($storedManifest.mediaType -ne "application/vnd.oci.image.manifest.v1+json") {
+        Write-Error "Manifest media type is not OCI: $($storedManifest.mediaType)"
+    }
+    if ($storedManifest.schemaVersion -ne 2) {
+        Write-Error "Manifest schema version is not 2: $($storedManifest.schemaVersion)"
+    }
+    # Verify layers use OCI descriptor format
+    foreach ($layer in $storedManifest.layers) {
+        if (-not $layer.mediaType) {
+            Write-Error "Layer missing mediaType field"
+        }
+        if (-not $layer.size) {
+            Write-Error "Layer missing size field"
+        }
+        if (-not $layer.digest) {
+            Write-Error "Layer missing digest field"
+        }
+    }
+    # Verify config descriptor exists
+    if (-not $storedManifest.config) {
+        Write-Error "Manifest missing required config descriptor"
+    }
+    $validConfigTypes = @(
+        "application/vnd.peko.config.v1+json",
+        "application/vnd.oci.image.config.v1+json"
+    )
+    if (-not ($validConfigTypes -contains $storedManifest.config.mediaType)) {
+        Write-Error "Config media type not recognized: $($storedManifest.config.mediaType)"
+    }
+    Write-Host "OCI manifest format verified" -ForegroundColor Green
+    Write-Host "  mediaType: $($storedManifest.mediaType)" -ForegroundColor Gray
+    Write-Host "  schemaVersion: $($storedManifest.schemaVersion)" -ForegroundColor Gray
+    Write-Host "  layers: $($storedManifest.layers.Count)" -ForegroundColor Gray
+    Write-Host "  config digest: $($storedManifest.config.digest)" -ForegroundColor Gray
+
+    # ============================================================
+    # TEST 4: Catalog and tag listing
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "TEST 4: Catalog and tag listing" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $catalog = Get-TestRegistryCatalog -Registry $registry
+    if ($catalog.repositories.Count -eq 0) {
+        Write-Error "Catalog is empty after push"
+    }
+    if (-not ($catalog.repositories -contains $manifestName)) {
+        Write-Error "Catalog does not contain pushed manifest: $manifestName"
+    }
+
+    $tags = Get-TestRegistryTags -Registry $registry -Name $manifestName
+    if ($tags.tags.Count -eq 0) {
+        Write-Error "No tags found for $manifestName"
+    }
+    if (-not ($tags.tags -contains "v1.0")) {
+        Write-Error "Tag v1.0 not found for $manifestName"
+    }
+
+    Write-Host "Catalog and tags verified" -ForegroundColor Green
+    Write-Host "  Repositories: $($catalog.repositories -join ', ')" -ForegroundColor Gray
+    Write-Host "  Tags for $manifestName`: $($tags.tags -join ', ')" -ForegroundColor Gray
+
+    # ============================================================
+    # TEST 5: Pull from mock registry into fresh local store
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "TEST 5: Pull from mock registry" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Clear local registry store to force a real download
@@ -214,10 +260,10 @@ This is a test workspace file.
     Write-Host "  Layers: $($pullResult.manifest.layers)" -ForegroundColor Gray
 
     # ============================================================
-    # TEST 4: Verify local layer storage after pull
+    # TEST 6: Verify local layer storage after pull
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 4: Verify local layer storage" -ForegroundColor Cyan
+    Write-Host "TEST 6: Verify local layer storage" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $layersDir = "$env:USERPROFILE/.peko/registry/layers"
@@ -246,10 +292,10 @@ This is a test workspace file.
     Write-Host "  Layer directories: $($layerDirs.Count)" -ForegroundColor Gray
 
     # ============================================================
-    # TEST 5: Re-pull uses cached layers (deterministic, no LLM)
+    # TEST 7: Re-pull uses cached layers (deterministic, no LLM)
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 5: Re-pull with cached layers" -ForegroundColor Cyan
+    Write-Host "TEST 7: Re-pull with cached layers" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $pullResult2 = & $pekoCmd agent pull $registryRef --json 2>&1 | ConvertFrom-Json
@@ -263,10 +309,10 @@ This is a test workspace file.
     Write-Host "Re-pull succeeded (layers cached)" -ForegroundColor Green
 
     # ============================================================
-    # TEST 6: Import pulled agent and verify structural integrity
+    # TEST 8: Import pulled agent and verify structural integrity
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 6: Import pulled agent" -ForegroundColor Cyan
+    Write-Host "TEST 8: Import pulled agent" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     $importedName = "pulled-agent"
@@ -285,10 +331,10 @@ This is a test workspace file.
     Write-Host "  Team: $($showResult.team)" -ForegroundColor Gray
 
     # ============================================================
-    # TEST 7: Push duplicate layers skipped (HEAD check)
+    # TEST 9: Push duplicate layers skipped (HEAD check)
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 7: Push with existing layers skipped" -ForegroundColor Cyan
+    Write-Host "TEST 9: Push with existing layers skipped" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Re-push same image; registry should report layers already exist
@@ -298,7 +344,7 @@ This is a test workspace file.
     }
 
     # Blob count should not increase (all layers skipped)
-    $registryState2 = Get-RegistryBlobs -Port $RegistryPort
+    $registryState2 = Get-TestRegistryBlobs -Registry $registry
     if ($registryState2.blobs.Count -ne $registryState.blobs.Count) {
         Write-Error "Blob count changed after re-push — layer skip not working"
     } else {
@@ -306,14 +352,45 @@ This is a test workspace file.
     }
 
     # ============================================================
-    # TEST 8: Error cases
+    # TEST 10: Auth-protected push
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 8: Error cases" -ForegroundColor Cyan
+    Write-Host "TEST 10: Auth-protected push" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $authRegistry = Start-AuthMockRegistry -Port $AuthRegistryPort -AuthToken "secret-test-token"
+    try {
+        # Push without auth token should fail
+        $authRef = Build-RegistryRef -Registry $authRegistry -Name "auth-test-agent" -Tag "v1.0"
+        $noAuthResult = Test-AuthProtectedPush -Registry $authRegistry -Ref "ns/auth-test-agent" -FilePath $builtAgentPath
+        if (-not $noAuthResult.Protected) {
+            Write-Error "Auth protection not working: $($noAuthResult.Reason)"
+        }
+        Write-Host "Push without auth correctly rejected (HTTP $($noAuthResult.Status))" -ForegroundColor Green
+
+        # Push with correct auth token should succeed via CLI
+        # First login with the token
+        $registryHost = $authRegistry.Url -replace '^https?://', ''
+        & $pekoCmd login --api-key "secret-test-token" --registry $registryHost 2>&1 | Out-Null
+
+        $authPushResult = & $pekoCmd agent push "dummy-tag" $authRef --file $builtAgentPath --json 2>&1 | ConvertFrom-Json
+        if ($authPushResult.success -ne $true) {
+            Write-Error "Auth-protected push failed: $($authPushResult | ConvertTo-Json)"
+        }
+        Write-Host "Push with auth token succeeded" -ForegroundColor Green
+    } finally {
+        Stop-TestRegistry -Registry $authRegistry
+    }
+
+    # ============================================================
+    # TEST 11: Error cases
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "TEST 11: Error cases" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     # Pull non-existent image
-    $badRef = "127.0.0.1:$RegistryPort/peko/agents/nonexistent:latest"
+    $badRef = Build-RegistryRef -Registry $registry -Name "nonexistent" -Tag "latest"
     try {
         $pullError = & $pekoCmd agent pull $badRef 2>&1
         if ($LASTEXITCODE -ne 0 -and $pullError -match "not found|404|manifest_fetch_failed") {
@@ -345,17 +422,16 @@ This is a test workspace file.
     Write-Host "Cleanup" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    Stop-MockRegistry -Proc $registryProc
-    Write-Host "Stopped mock registry" -ForegroundColor Green
+    Stop-TestRegistry -Registry $registry
 
     if (Test-Path $testDir) {
         Remove-Item -Recurse -Force $testDir
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
-    & $pekoCmd agent remove "pulled-agent" --team default --force 2>&1 | Out-Null
-    & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null
-    Write-Host "Removed imported agent" -ForegroundColor Green
+    try { & $pekoCmd agent remove "pulled-agent" --team default --force 2>&1 | Out-Null } catch { }
+    try { & $pekoCmd agent remove $agentName --team default --force 2>&1 | Out-Null } catch { }
+    Write-Host "Removed test agents (if they existed)" -ForegroundColor Green
 }
 
 if ($failed) {

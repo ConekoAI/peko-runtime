@@ -350,7 +350,12 @@ jobs:
   - Waits for `/health` before running tests
   - Kills backend on Drop
 - [x] 6 tests passing: health, manifest roundtrip, blob upload, catalog/tags, search API, bundle detail
-- [ ] Add CI job for Layer 2
+- [x] Add CI job for Layer 2
+  - Created `.github/workflows/integration.yml`
+  - Tier 1: Mocked contract tests (`cargo test --test registry_integration -- --ignored`)
+  - Tier 2: Live pekohub contract tests (`cargo test --test pekohub_integration -- --ignored`)
+  - Tier 3: PowerShell E2E tests (`registry_push_pull.ps1`, `registry_layer_dedup.ps1`, `pekohub_contract_test.ps1`)
+  - Tier 4: Full Docker Compose E2E (scheduled/nightly only)
 
 ### Phase 3: Layer 3 — PowerShell E2E Test Enhancements (Week 3-4) ✅ COMPLETE
 - [x] Create `RegistryTestHelpers.ps1` — unified mock/pekohub backend abstraction
@@ -362,10 +367,21 @@ jobs:
   - Peko-specific fields (`name`, `version`, `kind`, `ref`, `digest`) stored in `org.peko.*` annotations
   - `ConfigDescriptor` added for required OCI config field
   - Config blob created and uploaded before manifest push
-- [ ] Update `registry_push_pull.ps1` to test auth-protected pushes
-- [ ] Update `registry_layer_dedup.ps1` to verify OCI media type on push
-- [ ] Add catalog/tag listing verification to packaging tests
-- [ ] Ensure all packaging tests pass with enhanced mock registry
+- [x] Update `registry_push_pull.ps1` to test auth-protected pushes
+  - Migrated to `RegistryTestHelpers.ps1`
+  - Added TEST 3: Verify OCI media type (`schemaVersion: 2`, `mediaType: application/vnd.oci.image.manifest.v1+json`)
+  - Added TEST 4: Catalog and tag listing verification
+  - Added TEST 10: Auth-protected push (401 without token, success with token)
+  - 11/11 tests pass
+- [x] Update `registry_layer_dedup.ps1` to verify OCI media type on push
+  - Migrated to `RegistryTestHelpers.ps1`
+  - Added STEP 8: Verify OCI media type in both agents' manifests
+  - Added STEP 10: Verify catalog lists both agents
+  - 12/12 tests pass
+- [x] Update remaining packaging tests to use built binary + registry login
+  - Fixed binary path detection in 10 scripts (`agent_registry_lifecycle.ps1`, etc.)
+  - Added `peko login` step to all registry-using tests
+- [x] Ensure all packaging tests pass with enhanced mock registry
 
 ### Phase 4: Layer 4 — Full Docker Compose E2E (Week 5-6)
 - [ ] Create `integration-tests/docker-compose.yml` with full stack
