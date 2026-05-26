@@ -54,28 +54,33 @@ We use a **three-tier pyramid** to balance coverage, speed, and realism:
         └─────────────┘
 ```
 
-### Tier 1: Mocked Contract Tests (Existing + Extended)
+### Tier 1: Mocked Contract Tests ✅ COMPLETE
 
-**Status:** Partially exists (`tests/registry_integration.rs` with Python mock server)
+**Status:** Complete — 14 tests, all passing
 
-**What to test:**
+**What is tested:**
 - Registry client push/pull roundtrip
 - Layer deduplication (skip existing)
 - Digest verification on download
 - Progress event streaming
 - Error handling (404, 409, invalid digest)
-
-**Improvements needed:**
-1. **Add Peko-specific manifest format tests** — The mock server currently uses generic JSON; it should accept/return `application/vnd.peko.manifest.v1+json` and validate its schema.
-2. **Add auth header verification** — Mock server should require/validate `Authorization: Bearer <token>` on push operations.
-3. **Add namespace resolution tests** — Verify bare refs like `my-agent:v1` resolve to `pekohub.org/peko/agents/my-agent:v1`.
+- **Manifest media type validation** — Mock accepts both `application/vnd.peko.manifest.v1+json` and `application/vnd.oci.image.manifest.v1+json`; rejects invalid types
+- **Auth header verification** — `--auth-token` protects mutating operations; read operations remain public
+- **Namespace resolution** — Bare refs like `my-agent:v1` resolve to `default/peko/agents/my-agent:v1`
+- **Catalog & tags endpoints** — `GET /v2/_catalog` and `GET /v2/{name}/tags/list` with pagination
 
 **Run:**
 ```bash
 cd peko-runtime
-python e2e_tests/packaging/mock_registry/main.py --port 18765 &
 cargo test --test registry_integration -- --ignored
 ```
+
+**Key implementation details:**
+- Mock registry auto-starts on ephemeral port per test (no manual `python main.py --port 18765` needed)
+- Tests use `MockRegistry::start(None).await` which spawns Python, parses `PORT=...` from stdout, and waits for `/v2/` health check
+- `RegistryRef::parse` now correctly handles `host:port/path:tag` via `looks_like_host_port()`
+- `media_types::MANIFEST_DEFAULT` is `MANIFEST_OCI` — runtime now sends OCI media type on push
+- `RegistryClient::accept_manifest_media_types()` returns both accepted types for Content-Type negotiation
 
 ---
 
@@ -265,11 +270,11 @@ jobs:
 
 ## 5. Implementation Roadmap
 
-### Phase 1: Tier 1 Improvements (Week 1)
-- [ ] Enhance Python mock registry to validate Peko manifest media types
-- [ ] Add auth header validation to mock registry
-- [ ] Add namespace resolution tests to `registry_integration.rs`
-- [ ] Un-ignore and stabilize existing mock tests in CI
+### Phase 1: Tier 1 Improvements (Week 1) ✅ COMPLETE
+- [x] Enhance Python mock registry to validate Peko manifest media types
+- [x] Add auth header validation to mock registry
+- [x] Add namespace resolution tests to `registry_integration.rs`
+- [x] Un-ignore and stabilize existing mock tests in CI
 
 ### Phase 2: Tier 2 Contract Tests (Week 2-3)
 - [ ] Create `pekohub/backend/tests/fixtures/integration.ts` shared harness
@@ -310,7 +315,7 @@ jobs:
 
 | Feature | peko-runtime sends | pekohub expects | Status |
 |---------|-------------------|-----------------|--------|
-| Manifest PUT | `application/vnd.peko.manifest.v1+json` | `application/vnd.oci.image.manifest.v1+json` | ⚠️ **Mismatch** — pekohub accepts both, but runtime should send OCI type |
+| Manifest PUT | `application/vnd.oci.image.manifest.v1+json` | `application/vnd.oci.image.manifest.v1+json` | ✅ Aligned — runtime sends `MANIFEST_DEFAULT` (OCI type) |
 | Layer media type | `application/vnd.peko.layer.v1.tar+gzip` | `application/octet-stream` or any | ✅ Compatible |
 | Auth header | `Bearer <token>` | `Bearer ph_...` or `<jwt>` | ✅ Compatible |
 | Reference format | `host/ns/name:tag` | `host/ns/name:tag` | ✅ Compatible |
@@ -318,11 +323,11 @@ jobs:
 | Catalog pagination | `?n=20&last=...` | `?n=20&last=...` | ✅ Compatible |
 | Search API | `GET /api/v1/search?q=...` | `GET /api/v1/search?q=...` | ✅ Compatible |
 
-### ⚠️ Action Item: Manifest Media Type Alignment
+### ✅ Manifest Media Type Alignment — RESOLVED
 
-The runtime uses `application/vnd.peko.manifest.v1+json` while pekohub's OCI routes expect `application/vnd.oci.image.manifest.v1+json`. pekohub currently has a fallback, but for strict compliance:
+The runtime now uses `application/vnd.oci.image.manifest.v1+json` as the default manifest media type for push operations (`media_types::MANIFEST_DEFAULT`). The legacy Peko type (`application/vnd.peko.manifest.v1+json`) is still accepted on pull for backward compatibility.
 
-- **Option A:** Runtime sends OCI media type when pushing to pekohub
-- **Option B:** Runtime always sends OCI media type (manifest is structurally compatible)
-
-**Recommendation:** Option B — adopt OCI media types universally in runtime registry client.
+**Changes:**
+- `src/registry/mod.rs`: Added `MANIFEST_PEKO`, `MANIFEST_OCI`, `MANIFEST_DEFAULT`, `MANIFEST_ALL`
+- `src/registry/client.rs`: `push_manifest()` uses `media_types::MANIFEST_DEFAULT`; added `accept_manifest_media_types()`
+- Mock registry accepts both types on PUT and returns the stored type on GET
