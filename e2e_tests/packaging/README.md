@@ -27,6 +27,7 @@ This directory contains end-to-end tests for the unified packaging system define
 | `agent_snapshot_memory.ps1` | **NEW** Agent snapshot with sessions: build → run → export → push → pull → import → memory LLM verify | Yes | Optional |
 | `registry_layer_dedup.ps1` | **NEW** Cross-agent layer deduplication in registry (content-addressable storage) | Yes | No |
 | `team_full_lifecycle.ps1` | **NEW** Comprehensive team lifecycle: extensions + sessions + registry + fresh machine + tool execution + memory | Yes | Optional |
+| `pekohub_contract_test.ps1` | **NEW** CLI contract test against real PekoHub backend (or mock fallback) | Yes | No |
 
 ## Real-World Use Cases Covered
 
@@ -58,23 +59,36 @@ To eliminate flakiness, all tests that involve LLM calls use **deterministic key
 - Tests match against these keywords rather than parsing free-form text.
 - When no API key is available, LLM-dependent steps are skipped with a warning.
 
-## Mock Registry
+## Registry Backends
 
-Tests that need registry operations use the Python FastAPI mock server at:
-```
-e2e_tests/packaging/mock_registry/main.py
-```
+Tests that need registry operations can use either:
 
-Each test starts its own mock registry on a **unique port** to avoid conflicts.
+### 1. Python Mock Registry (default)
+FastAPI mock server at `e2e_tests/packaging/mock_registry/main.py`. Each test starts its own instance on a unique port.
 
-### Registry helpers (used across tests)
+### 2. PekoHub Test Backend (optional)
+Real PekoHub backend running with PGlite + mock storage/search. Auto-detected if `../../pekohub/backend` exists with Node.js dependencies installed.
+
+### Shared Registry Helpers
+
+`RegistryTestHelpers.ps1` provides a unified interface:
 
 ```powershell
-function Start-MockRegistry { param([int]$Port) ... }
-function Stop-MockRegistry { param($Proc) ... }
-function Reset-RegistryStorage { param([int]$Port) ... }
-function Get-RegistryBlobs { param([int]$Port) ... }
+. $PSScriptRoot/RegistryTestHelpers.ps1
+$registry = Start-TestRegistry -UsePekohub:$UsePekohub
+$registryUrl = Get-TestRegistryUrl -Registry $registry
+$registryRef = Build-RegistryRef -Registry $registry -Name "my-agent" -Tag "v1.0.0"
+Stop-TestRegistry -Registry $registry
 ```
+
+| Function | Description |
+|----------|-------------|
+| `Start-TestRegistry` | Starts mock or PekoHub backend based on `-UsePekohub` switch |
+| `Stop-TestRegistry` | Stops the running backend |
+| `Reset-TestRegistry` | Clears mock registry state (no-op for PekoHub) |
+| `Get-TestRegistryBlobs` | Returns debug blob info (mock only) |
+| `Build-RegistryRef` | Constructs `host/ns/name:tag` reference |
+| `Test-PekohubAvailable` | Checks if PekoHub backend can be started |
 
 ## Running Tests
 
@@ -83,6 +97,14 @@ function Get-RegistryBlobs { param([int]$Port) ... }
 cd e2e_tests/packaging
 ./agent_build_export_import.ps1
 ./team_full_lifecycle.ps1 -Provider minimax
+```
+
+### PekoHub contract test (auto-detects backend)
+```powershell
+cd e2e_tests/packaging
+./pekohub_contract_test.ps1              # Uses PekoHub if available, else mock
+./pekohub_contract_test.ps1 -UsePekohub  # Force PekoHub (fail if unavailable)
+./pekohub_contract_test.ps1 -UseMock     # Force mock registry
 ```
 
 ### All packaging tests

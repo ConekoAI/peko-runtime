@@ -352,11 +352,15 @@ jobs:
 - [x] 6 tests passing: health, manifest roundtrip, blob upload, catalog/tags, search API, bundle detail
 - [ ] Add CI job for Layer 2
 
-### Phase 3: Layer 3 — PowerShell E2E Test Enhancements (Week 3-4)
+### Phase 3: Layer 3 — PowerShell E2E Test Enhancements (Week 3-4) ✅ PARTIAL
+- [x] Create `RegistryTestHelpers.ps1` — unified mock/pekohub backend abstraction
+- [x] Create `pekohub_contract_test.ps1` — CLI contract test against real PekoHub
+  - Auto-detects PekoHub availability, falls back to mock
+  - Tests: export → push → pull → import → dedup → error cases
+  - Documents known OCI format mismatch (RegistryClient vs PekoHub)
 - [ ] Update `registry_push_pull.ps1` to test auth-protected pushes
 - [ ] Update `registry_layer_dedup.ps1` to verify OCI media type on push
 - [ ] Add catalog/tag listing verification to packaging tests
-- [ ] Add `pekohub_contract_test.ps1` for runtime ↔ pekohub direct testing
 - [ ] Ensure all packaging tests pass with enhanced mock registry
 
 ### Phase 4: Layer 4 — Full Docker Compose E2E (Week 5-6)
@@ -388,8 +392,8 @@ jobs:
 
 | Feature | peko-runtime sends | pekohub expects | Status |
 |---------|-------------------|-----------------|--------|
-| Manifest PUT (CLI) | `application/vnd.oci.image.manifest.v1+json` | `application/vnd.oci.image.manifest.v1+json` | ✅ Aligned — CLI converts to OCI before push |
-| Manifest PUT (RegistryClient direct) | Peko format (`schema_version`, `size_bytes`, `layer_type`) | OCI format (`schemaVersion`, `size`, `mediaType`) | ⚠️ Mismatch — RegistryClient is Peko-to-Peko only; use CLI for pekohub |
+| Manifest PUT (CLI) | `application/vnd.oci.image.manifest.v1+json` | `application/vnd.oci.image.manifest.v1+json` | ⚠️ **NOT aligned** — CLI's `RegistryClient` pushes Peko format, not OCI. Needs fix. |
+| Manifest PUT (RegistryClient direct) | Peko format (`schema_version`, `size_bytes`, `layer_type`) | OCI format (`schemaVersion`, `size`, `mediaType`) | ⚠️ Mismatch — `RegistryClient::push_manifest()` serializes `RegistryManifest` directly without OCI conversion |
 | Layer media type | `application/vnd.peko.layer.v1.tar+gzip` | `application/octet-stream` or any | ✅ Compatible |
 | Auth header | `Bearer <token>` | `Bearer ph_...` or `<jwt>` | ✅ Compatible |
 | Reference format | `host/ns/name:tag` | `host/ns/name:tag` | ✅ Compatible |
@@ -397,11 +401,23 @@ jobs:
 | Catalog pagination | `?n=20&last=...` | `?n=20&last=...` | ✅ Compatible |
 | Search API | `GET /api/v1/search?q=...` | `GET /api/v1/search?q=...` | ✅ Compatible |
 
-### ✅ Manifest Media Type Alignment — RESOLVED
+### ⚠️ Manifest Format Mismatch — KNOWN ISSUE
 
-The runtime now uses `application/vnd.oci.image.manifest.v1+json` as the default manifest media type for push operations (`media_types::MANIFEST_DEFAULT`). The legacy Peko type (`application/vnd.peko.manifest.v1+json`) is still accepted on pull for backward compatibility.
+`RegistryClient::push_manifest()` serializes `RegistryManifest` directly as JSON and sends it with `Content-Type: application/vnd.oci.image.manifest.v1+json`. However, `RegistryManifest` uses Peko-specific field names (`schema_version`, `size_bytes`, `layer_type`) while OCI expects (`schemaVersion`, `size`, `mediaType`). This causes HTTP 400 `MANIFEST_INVALID` when pushing to PekoHub.
 
-**Changes:**
-- `src/registry/mod.rs`: Added `MANIFEST_PEKO`, `MANIFEST_OCI`, `MANIFEST_DEFAULT`, `MANIFEST_ALL`
-- `src/registry/client.rs`: `push_manifest()` uses `media_types::MANIFEST_DEFAULT`; added `accept_manifest_media_types()`
-- Mock registry accepts both types on PUT and returns the stored type on GET
+**Impact:**
+- Mock registry: ✅ Works (accepts Peko format)
+- PekoHub: ❌ Fails (strict OCI validation via Zod schema)
+
+**Required fix:**
+Add OCI conversion in `RegistryClient`:
+1. `push_manifest()`: Convert `RegistryManifest` → OCI manifest before serializing
+2. `fetch_manifest()`: Parse OCI manifest → `RegistryManifest` on pull
+
+**Workaround:**
+Use mock registry for CLI E2E tests. PekoHub contract test (`pekohub_contract_test.ps1`) documents this as expected failure.
+
+**Related:**
+- `src/registry/mod.rs`: `MANIFEST_PEKO`, `MANIFEST_OCI`, `MANIFEST_DEFAULT`, `MANIFEST_ALL`
+- `src/registry/client.rs`: `push_manifest()` line 567, `fetch_manifest()` line 390
+- `src/registry/manifest.rs`: `RegistryManifest` struct (Peko format)
