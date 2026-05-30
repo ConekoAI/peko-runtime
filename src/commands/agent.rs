@@ -121,8 +121,8 @@ pub enum AgentCommands {
 
     /// Push a local .agent to a registry
     Push {
-        /// Local tag (name:tag) — ignored when --file is used
-        local_tag: String,
+        /// Local tag (name:tag) — required when --file is not used
+        local_tag: Option<String>,
         /// Registry reference (host/path:tag or bare name:tag)
         registry_ref: String,
         /// Push a .agent file directly instead of a local tag

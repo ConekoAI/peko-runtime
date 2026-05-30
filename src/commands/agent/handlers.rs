@@ -460,7 +460,7 @@ fn resolve_registry_config(
 /// Handle agent push command
 pub async fn handle_agent_push(
     paths: &GlobalPaths,
-    local_tag: String,
+    local_tag: Option<String>,
     registry_ref: String,
     file: Option<String>,
     json: bool,
@@ -473,10 +473,11 @@ pub async fn handle_agent_push(
         // Load .agent file and store layers in local registry
         load_agent_file_into_registry(file_path, &registry).await?
     } else {
+        let tag = local_tag.as_ref().ok_or_else(|| anyhow::anyhow!("local_tag is required when --file is not used"))?;
         registry
-            .get_manifest_by_tag(&local_tag)
+            .get_manifest_by_tag(tag)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to load local tag '{local_tag}': {e}"))?
+            .map_err(|e| anyhow::anyhow!("Failed to load local tag '{tag}': {e}"))?
     };
 
     let reg_ref = RegistryRef::parse_with_default(
@@ -498,7 +499,7 @@ pub async fn handle_agent_push(
     let push_tag = if file.is_some() {
         "<file>".to_string()
     } else {
-        local_tag.clone()
+        local_tag.clone().unwrap()
     };
     let push_tag_ref: &str = &push_tag;
 
