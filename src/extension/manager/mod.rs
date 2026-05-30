@@ -14,7 +14,7 @@ pub use crate::extension::manager::storage::ExtensionStorage;
 use crate::extension::manager::discovery::{discovery_paths, DiscoveredExtension};
 use crate::extension::types::{ExtensionId, ExtensionManifest, HookId};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -69,6 +69,51 @@ pub struct BundleMetadata {
     pub description: String,
     pub dependencies: Vec<String>,
     pub conflicts: Vec<String>,
+}
+
+/// Status of a single dependency after resolution
+#[derive(Debug, Clone)]
+pub enum DependencyStatus {
+    /// Already installed and version satisfies constraint
+    Satisfied { package: String, installed_version: String },
+    /// Not installed, needs pull
+    Missing { package: String, required: bool },
+    /// Installed but version doesn't satisfy constraint (informational only for v1)
+    VersionMismatch {
+        package: String,
+        have: String,
+        need: Option<String>,
+    },
+}
+
+/// Result of resolving dependencies for an extension
+#[derive(Debug, Clone, Default)]
+pub struct DependencyResolution {
+    /// Dependencies that are already satisfied
+    pub satisfied: Vec<DependencyStatus>,
+    /// Dependencies that need to be pulled
+    pub missing: Vec<DependencyStatus>,
+    /// Dependencies with version mismatches (informational)
+    pub version_mismatches: Vec<DependencyStatus>,
+    /// Circular dependency chains detected (if any)
+    pub circular: Vec<Vec<String>>,
+}
+
+impl DependencyResolution {
+    /// Check if there are any required missing dependencies
+    #[must_use]
+    pub fn has_required_missing(&self) -> bool {
+        self.missing.iter().any(|m| matches!(m, DependencyStatus::Missing { required: true, .. }))
+    }
+
+    /// Get only the optional missing dependencies
+    #[must_use]
+    pub fn optional_missing(&self) -> Vec<&DependencyStatus> {
+        self.missing
+            .iter()
+            .filter(|m| matches!(m, DependencyStatus::Missing { required: false, .. }))
+            .collect()
+    }
 }
 
 impl ExtensionManager {
@@ -528,14 +573,21 @@ impl ExtensionManager {
                 .context(format!("Extension '{id}' not found for bundling"))?;
             extensions.push(ext.manifest.clone());
 
-            // Collect dependencies from metadata if present
-            if let Some(deps) = ext.manifest.get("dependencies") {
-                if let Some(deps_array) = deps.as_array() {
-                    for dep in deps_array {
-                        if let Some(dep_str) = dep.as_str() {
-                            dependencies.push(dep_str.to_string());
+            // Collect dependencies from the typed field (preferred) or metadata (legacy)
+            if ext.manifest.dependencies.is_empty() {
+                // Fallback: legacy metadata format
+                if let Some(deps) = ext.manifest.get("dependencies") {
+                    if let Some(deps_array) = deps.as_array() {
+                        for dep in deps_array {
+                            if let Some(dep_str) = dep.as_str() {
+                                dependencies.push(dep_str.to_string());
+                            }
                         }
                     }
+                }
+            } else {
+                for dep in &ext.manifest.dependencies {
+                    dependencies.push(dep.package.clone());
                 }
             }
 
@@ -603,6 +655,81 @@ impl ExtensionManager {
         );
 
         Ok(installed_ids)
+    }
+
+    // ============================================================================
+    // Dependency Resolution
+    // ============================================================================
+
+    /// Resolve all dependencies for an extension, checking which are already installed
+    /// and which need to be pulled from the registry.
+    ///
+    /// `visited` is used to detect circular dependencies. Pass an empty set for the
+    /// initial call.
+    pub fn resolve_dependencies(
+        &self,
+        manifest: &ExtensionManifest,
+        visited: &mut HashSet<String>,
+    ) -> Result<DependencyResolution> {
+        let mut resolution = DependencyResolution::default();
+
+        // Detect circular dependencies (self-reference)
+        if visited.contains(&manifest.id.0) {
+            let mut cycle: Vec<String> = visited.iter().cloned().collect();
+            cycle.push(manifest.id.0.clone());
+            resolution.circular.push(cycle);
+            return Ok(resolution);
+        }
+        visited.insert(manifest.id.0.clone());
+
+        for dep in &manifest.dependencies {
+            // Check for self-reference (direct circular dependency)
+            if dep.package == manifest.id.0 {
+                let mut cycle = visited.iter().cloned().collect::<Vec<_>>();
+                cycle.push(manifest.id.0.clone());
+                cycle.push(dep.package.clone());
+                resolution.circular.push(cycle);
+                continue;
+            }
+
+            // Check if the dependency is already installed
+            // For now, we treat the package string as the extension ID
+            let dep_id = ExtensionId::new(&dep.package);
+            if let Some(installed) = self.extensions.get(&dep_id) {
+                // Installed — check version if specified
+                if let Some(ref required_version) = dep.version {
+                    let installed_version = &installed.manifest.version;
+                    // v1: version constraints are informational only
+                    // We report the mismatch but still mark as satisfied
+                    if installed_version != required_version {
+                        resolution.version_mismatches.push(DependencyStatus::VersionMismatch {
+                            package: dep.package.clone(),
+                            have: installed_version.clone(),
+                            need: Some(required_version.clone()),
+                        });
+                    }
+                }
+                resolution.satisfied.push(DependencyStatus::Satisfied {
+                    package: dep.package.clone(),
+                    installed_version: installed.manifest.version.clone(),
+                });
+            } else {
+                resolution.missing.push(DependencyStatus::Missing {
+                    package: dep.package.clone(),
+                    required: dep.required,
+                });
+            }
+        }
+
+        // Remove current extension from visited set when backtracking
+        visited.remove(&manifest.id.0);
+
+        Ok(resolution)
+    }
+
+    /// Convenience wrapper that starts with an empty visited set.
+    pub fn resolve_dependencies_root(&self, manifest: &ExtensionManifest) -> Result<DependencyResolution> {
+        self.resolve_dependencies(manifest, &mut HashSet::new())
     }
 
     // ============================================================================
@@ -760,6 +887,7 @@ impl Default for ExtensionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extension::types::ExtensionDependency;
     use tempfile::TempDir;
 
     #[test]
@@ -932,5 +1060,212 @@ mod tests {
 
         let manager = ExtensionManager::new();
         assert_eq!(manager.detect_extension_type_string(&ext_dir), None);
+    }
+
+    // ─── Dependency Resolution Tests ─────────────────────────────────────
+
+    #[test]
+    fn test_resolve_dependencies_no_deps() {
+        let manager = ExtensionManager::new();
+        let manifest = ExtensionManifest::new(
+            "test-ext",
+            "skill",
+            "Test",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp"),
+        );
+
+        let resolution = manager.resolve_dependencies_root(&manifest).unwrap();
+        assert!(resolution.satisfied.is_empty());
+        assert!(resolution.missing.is_empty());
+        assert!(resolution.version_mismatches.is_empty());
+        assert!(resolution.circular.is_empty());
+        assert!(!resolution.has_required_missing());
+    }
+
+    #[test]
+    fn test_resolve_dependencies_with_missing_required() {
+        let manager = ExtensionManager::new();
+        let mut manifest = ExtensionManifest::new(
+            "test-ext",
+            "skill",
+            "Test",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp"),
+        );
+        manifest.dependencies.push(ExtensionDependency {
+            package: "missing-dep".to_string(),
+            version: None,
+            required: true,
+        });
+
+        let resolution = manager.resolve_dependencies_root(&manifest).unwrap();
+        assert_eq!(resolution.missing.len(), 1);
+        assert!(resolution.has_required_missing());
+        assert!(matches!(
+            &resolution.missing[0],
+            DependencyStatus::Missing { package, required: true } if package == "missing-dep"
+        ));
+    }
+
+    #[test]
+    fn test_resolve_dependencies_with_missing_optional() {
+        let manager = ExtensionManager::new();
+        let mut manifest = ExtensionManifest::new(
+            "test-ext",
+            "skill",
+            "Test",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp"),
+        );
+        manifest.dependencies.push(ExtensionDependency {
+            package: "optional-dep".to_string(),
+            version: None,
+            required: false,
+        });
+
+        let resolution = manager.resolve_dependencies_root(&manifest).unwrap();
+        assert_eq!(resolution.missing.len(), 1);
+        assert!(!resolution.has_required_missing());
+        assert_eq!(resolution.optional_missing().len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_dependencies_satisfied() {
+        let mut manager = ExtensionManager::new();
+
+        // Insert a fake loaded extension
+        let dep_manifest = ExtensionManifest::new(
+            "already-installed",
+            "skill",
+            "Installed",
+            "Desc",
+            "2.0.0",
+            PathBuf::from("/tmp/installed"),
+        );
+        manager.extensions.insert(
+            ExtensionId::new("already-installed"),
+            LoadedExtension {
+                manifest: dep_manifest,
+                extension_type: "skill".to_string(),
+                hook_ids: vec![],
+                path: PathBuf::from("/tmp/installed"),
+            },
+        );
+
+        let mut manifest = ExtensionManifest::new(
+            "test-ext",
+            "skill",
+            "Test",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp"),
+        );
+        manifest.dependencies.push(ExtensionDependency {
+            package: "already-installed".to_string(),
+            version: None,
+            required: true,
+        });
+
+        let resolution = manager.resolve_dependencies_root(&manifest).unwrap();
+        assert!(resolution.missing.is_empty());
+        assert_eq!(resolution.satisfied.len(), 1);
+        assert!(matches!(
+            &resolution.satisfied[0],
+            DependencyStatus::Satisfied { package, installed_version } if package == "already-installed" && installed_version == "2.0.0"
+        ));
+    }
+
+    #[test]
+    fn test_resolve_dependencies_version_mismatch_informational() {
+        let mut manager = ExtensionManager::new();
+
+        // Insert a fake loaded extension with version 1.0.0
+        let dep_manifest = ExtensionManifest::new(
+            "versioned-dep",
+            "skill",
+            "Versioned",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp/versioned"),
+        );
+        manager.extensions.insert(
+            ExtensionId::new("versioned-dep"),
+            LoadedExtension {
+                manifest: dep_manifest,
+                extension_type: "skill".to_string(),
+                hook_ids: vec![],
+                path: PathBuf::from("/tmp/versioned"),
+            },
+        );
+
+        let mut manifest = ExtensionManifest::new(
+            "test-ext",
+            "skill",
+            "Test",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp"),
+        );
+        manifest.dependencies.push(ExtensionDependency {
+            package: "versioned-dep".to_string(),
+            version: Some(">=2.0.0".to_string()),
+            required: true,
+        });
+
+        let resolution = manager.resolve_dependencies_root(&manifest).unwrap();
+        // v1: version constraints are informational only, so it's still "satisfied"
+        assert_eq!(resolution.satisfied.len(), 1);
+        assert_eq!(resolution.version_mismatches.len(), 1);
+        assert!(matches!(
+            &resolution.version_mismatches[0],
+            DependencyStatus::VersionMismatch { package, have, need } if package == "versioned-dep" && have == "1.0.0" && need == &Some(">=2.0.0".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_resolve_dependencies_circular_detection() {
+        let manager = ExtensionManager::new();
+        let mut manifest_a = ExtensionManifest::new(
+            "ext-a",
+            "skill",
+            "Ext A",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp/a"),
+        );
+        manifest_a.dependencies.push(ExtensionDependency {
+            package: "ext-b".to_string(),
+            version: None,
+            required: true,
+        });
+
+        // Simulate circular by visiting ext-a, then ext-b which depends on ext-a
+        let mut visited = HashSet::new();
+        visited.insert("ext-a".to_string());
+        let _resolution = manager.resolve_dependencies(&manifest_a, &mut visited).unwrap();
+        // Since ext-b is not installed, it goes to missing — the circular check
+        // only fires if the SAME extension is visited twice in the chain.
+        // For a true cycle test, we'd need ext-b to also be in `visited`.
+        // Let's do a direct cycle test:
+        let mut manifest_self = ExtensionManifest::new(
+            "ext-self",
+            "skill",
+            "Self",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp/self"),
+        );
+        manifest_self.dependencies.push(ExtensionDependency {
+            package: "ext-self".to_string(),
+            version: None,
+            required: true,
+        });
+
+        let resolution = manager.resolve_dependencies_root(&manifest_self).unwrap();
+        assert!(!resolution.circular.is_empty());
     }
 }

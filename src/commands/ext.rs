@@ -6,12 +6,13 @@
 //! - `ipc::client_service::DaemonClientService` — daemon IPC
 //! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
+use anyhow::Context;
 use crate::commands::GlobalPaths;
 use crate::extension::core::ExtensionCore;
 use crate::extension::manager::packaging::ExtensionPackager;
 use crate::extension::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extension::services::{ConfigScope, ExtensionConfigService, Services};
-use crate::extension::types::ExtensionId;
+use crate::extension::types::{ExtensionId, ExtensionManifest};
 use crate::ipc::client_service::DaemonClientService;
 use crate::portable::registry::AgentRegistry;
 use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
@@ -161,6 +162,9 @@ pub enum ExtCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Skip pulling dependencies
+        #[arg(long)]
+        no_deps: bool,
     },
 }
 
@@ -276,7 +280,7 @@ pub async fn handle_ext_command(
 
             match command {
                 ExtCommands::Install { path, r#type } => {
-                    handle_install(&mut manager, path, r#type).await
+                    handle_install(&mut manager, path, r#type).await.map(|_| ())
                 }
                 ExtCommands::List {
                     enabled_only,
@@ -347,7 +351,8 @@ pub async fn handle_ext_command(
                 ExtCommands::Pull {
                     registry_ref,
                     json: pull_json,
-                } => handle_ext_pull(&mut manager, &registry_ref, pull_json, cli_registry, paths).await,
+                    no_deps,
+                } => handle_ext_pull(&mut manager, &registry_ref, pull_json, no_deps, cli_registry, paths).await,
                 ExtCommands::Validate { .. } | ExtCommands::Debug { .. } => unreachable!(),
             }
         }
@@ -396,7 +401,7 @@ async fn handle_install(
     manager: &mut ExtensionManager,
     path: PathBuf,
     ext_type: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ExtensionManifest> {
     println!("Installing extension from: {}", path.display());
     if let Some(ref t) = ext_type {
         println!("   Type: {t}");
@@ -428,7 +433,11 @@ async fn handle_install(
         Ok(id) => {
             println!("Extension installed successfully");
             println!("   ID: {id}");
-            Ok(())
+            // Return the manifest of the installed extension
+            manager
+                .get_extension(&id)
+                .map(|e| e.manifest.clone())
+                .context("Installed extension not found in manager")
         }
         Err(e) => {
             eprintln!("Failed to install extension: {e}");
@@ -1241,9 +1250,35 @@ async fn handle_ext_pull(
     manager: &mut ExtensionManager,
     registry_ref: &str,
     json: bool,
+    no_deps: bool,
     cli_registry: Option<&str>,
     paths: &GlobalPaths,
 ) -> anyhow::Result<()> {
+    handle_ext_pull_with_seen(manager, registry_ref, json, no_deps, cli_registry, paths, &mut std::collections::HashSet::new()).await
+}
+
+/// Internal implementation that tracks which packages have already been pulled
+/// in this dependency tree to prevent infinite recursion on circular dependencies.
+async fn handle_ext_pull_with_seen(
+    manager: &mut ExtensionManager,
+    registry_ref: &str,
+    json: bool,
+    no_deps: bool,
+    cli_registry: Option<&str>,
+    paths: &GlobalPaths,
+    already_pulled: &mut std::collections::HashSet<String>,
+) -> anyhow::Result<()> {
+    use crate::extension::manager::{DependencyResolution, DependencyStatus};
+
+    // Prevent infinite recursion: if we've already attempted to pull this ref
+    // in the current dependency tree, skip it.
+    if !already_pulled.insert(registry_ref.to_string()) {
+        if !json {
+            eprintln!("  Skipping {} (already pulled in this dependency tree)", registry_ref);
+        }
+        return Ok(());
+    }
+
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
 
@@ -1305,46 +1340,189 @@ async fn handle_ext_pull(
     let temp_path = temp_dir.join(format!("{}.ext", manifest.name));
     tokio::fs::write(&temp_path, &data).await?;
 
-    if json {
-        let install_output = handle_install(manager, temp_path.clone(), None).await;
-        match install_output {
-            Ok(()) => {
-                let output = serde_json::json!({
-                    "success": true,
-                    "registry_ref": registry_ref,
-                    "manifest": {
-                        "name": manifest.name,
-                        "version": manifest.version,
-                        "digest": manifest.digest,
-                        "kind": manifest.kind,
-                        "layers": manifest.layers.len(),
-                        "total_size": manifest.total_size_bytes(),
-                    }
-                });
-                println!("{}", serde_json::to_string_pretty(&output)?);
-            }
-            Err(e) => {
+    // Install the main extension first — on success we get the manifest back
+    let install_result = handle_install(manager, temp_path.clone(), None).await;
+
+    // Resolve dependencies using the manifest returned from install, or fail clearly
+    let dep_resolution: DependencyResolution = match &install_result {
+        Ok(ext_manifest) => manager.resolve_dependencies_root(ext_manifest)?,
+        Err(e) => {
+            // Install failed — clean up and report
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            if json {
                 let output = serde_json::json!({
                     "success": false,
                     "registry_ref": registry_ref,
                     "error": e.to_string(),
+                    "dependencies": [],
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
-                return Err(e);
+            }
+            return Err(anyhow::anyhow!("{e}"));
+        }
+    };
+
+    // Handle dependency resolution output and recursive pulling
+    let mut dep_pull_results: Vec<(String, anyhow::Result<()>)> = Vec::new();
+
+    if !no_deps && !dep_resolution.missing.is_empty() {
+        if json {
+            // JSON output for dependencies will be included in the final output
+        } else {
+            let required_count = dep_resolution
+                .missing
+                .iter()
+                .filter(|d| matches!(d, DependencyStatus::Missing { required: true, .. }))
+                .count();
+            let optional_count = dep_resolution
+                .missing
+                .iter()
+                .filter(|d| matches!(d, DependencyStatus::Missing { required: false, .. }))
+                .count();
+
+            println!();
+            if required_count > 0 && optional_count > 0 {
+                println!(
+                    "Dependencies ({} required, {} optional need installation):",
+                    required_count, optional_count
+                );
+            } else if required_count > 0 {
+                println!("Dependencies ({} required need installation):", required_count);
+            } else {
+                println!("Dependencies ({} optional need installation):", optional_count);
+            }
+
+            for dep in &dep_resolution.missing {
+                if let DependencyStatus::Missing { package, required } = dep {
+                    let label = if *required { "required" } else { "optional" };
+                    println!("  - {} ({})", package, label);
+                }
+            }
+            println!();
+            println!("Pulling dependencies...");
+
+            for dep in &dep_resolution.missing {
+                if let DependencyStatus::Missing { package, .. } = dep {
+                    let result = Box::pin(handle_ext_pull_with_seen(
+                        manager,
+                        package,
+                        false, // non-JSON for recursive deps
+                        false, // always pull deps of deps
+                        cli_registry,
+                        paths,
+                        already_pulled,
+                    ))
+                    .await;
+                    dep_pull_results.push((package.clone(), result));
+                }
             }
         }
-    } else {
-        println!("Installing extension from pulled package...");
-        handle_install(manager, temp_path.clone(), None).await?;
+    } else if no_deps && !dep_resolution.missing.is_empty() {
+        // Emit warning when --no-deps is used and dependencies are missing
+        if json {
+            // Warning included in JSON output below
+        } else {
+            let ext_name = install_result.as_ref().map(|m| m.name.as_str()).unwrap_or(&manifest.name);
+            let missing_count = dep_resolution.missing.len();
+            eprintln!();
+            eprintln!(
+                "WARNING: Extension '{}' declares {} dependenc{} that are not installed:",
+                ext_name,
+                missing_count,
+                if missing_count == 1 { "y" } else { "ies" }
+            );
+            for dep in &dep_resolution.missing {
+                if let DependencyStatus::Missing { package, required } = dep {
+                    let req_label = if *required { "required" } else { "optional" };
+                    eprintln!("  - {}: {}", req_label, package);
+                }
+            }
+            eprintln!(
+                "Run 'peko ext pull {}' to install them.",
+                registry_ref
+            );
+        }
+    }
+
+    // Report circular dependencies
+    if !dep_resolution.circular.is_empty() && !json {
+        eprintln!();
+        eprintln!("WARNING: Circular dependencies detected:");
+        for cycle in &dep_resolution.circular {
+            eprintln!("  {}", cycle.join(" -> "));
+        }
     }
 
     // Clean up temp file
     let _ = tokio::fs::remove_file(&temp_path).await;
 
+    // Build dependency JSON for output
+    let mut dep_json = Vec::new();
+    for dep in &dep_resolution.missing {
+        if let DependencyStatus::Missing { package, required } = dep {
+            let pulled = dep_pull_results.iter().find(|(p, _)| p == package);
+            dep_json.push(serde_json::json!({
+                "package": package,
+                "status": "missing",
+                "required": required,
+                "pulled": pulled.map(|(_, r)| r.is_ok()).unwrap_or(false),
+            }));
+        }
+    }
+    for dep in &dep_resolution.satisfied {
+        if let DependencyStatus::Satisfied { package, installed_version } = dep {
+            dep_json.push(serde_json::json!({
+                "package": package,
+                "status": "satisfied",
+                "version": installed_version,
+            }));
+        }
+    }
+    for dep in &dep_resolution.version_mismatches {
+        if let DependencyStatus::VersionMismatch { package, have, need } = dep {
+            dep_json.push(serde_json::json!({
+                "package": package,
+                "status": "version_mismatch",
+                "installed_version": have,
+                "required_version": need,
+            }));
+        }
+    }
+
+    if json {
+        let output = serde_json::json!({
+            "success": true,
+            "registry_ref": registry_ref,
+            "manifest": {
+                "name": manifest.name,
+                "version": manifest.version,
+                "digest": manifest.digest,
+                "kind": manifest.kind,
+                "layers": manifest.layers.len(),
+                "total_size": manifest.total_size_bytes(),
+            },
+            "dependencies": dep_json,
+            "no_deps": no_deps,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        // Report any failed dependency pulls
+        let failed_deps: Vec<_> = dep_pull_results
+            .iter()
+            .filter(|(_, r)| r.is_err())
+            .collect();
+        if !failed_deps.is_empty() {
+            eprintln!();
+            eprintln!("WARNING: Some dependencies failed to pull:");
+            for (pkg, err) in &failed_deps {
+                eprintln!("  - {}: {}", pkg, err.as_ref().unwrap_err());
+            }
+        }
+    }
+
     Ok(())
 }
 
-/// Store a `RegistryManifest` in the format expected by `RegistryClient`
 async fn store_registry_manifest_for_client(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,

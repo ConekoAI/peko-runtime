@@ -115,6 +115,8 @@ fn parse_yaml_frontmatter_markdown(
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
 
+    manifest.migrate_legacy_dependencies();
+
     Ok(manifest)
 }
 
@@ -134,6 +136,9 @@ fn parse_pure_yaml_manifest(
     if let Some(ext_type) = yaml.get("extension_type").and_then(|v| v.as_str()) {
         manifest.extension_type = ext_type.to_string();
     }
+
+    // Note: build_manifest_from_yaml already handles the dependencies field,
+    // so migrate_legacy_dependencies is not needed here.
 
     Ok(manifest)
 }
@@ -284,6 +289,7 @@ pub mod parsing {
         extension_type: &str,
         path: &Path,
     ) -> Result<crate::extension::types::ExtensionManifest> {
+        use crate::extension::types::ExtensionDependency;
         let (id, name, version, description) = extract_extension_fields(yaml)?;
         let mut manifest = crate::extension::types::ExtensionManifest::new(
             &id,
@@ -296,7 +302,23 @@ pub mod parsing {
         if let serde_yaml::Value::Mapping(map) = yaml {
             for (k, v) in map {
                 if let Some(key) = k.as_str() {
-                    if !["id", "name", "version", "description"].contains(&key) {
+                    if key == "dependencies" {
+                        // Try to parse as structured dependencies first
+                        if let Ok(deps) = serde_yaml::from_value::<Vec<ExtensionDependency>>(v.clone()) {
+                            manifest.dependencies = deps;
+                        } else if let Some(arr) = v.as_sequence() {
+                            // Fallback: array of strings (legacy format)
+                            for dep in arr {
+                                if let Some(pkg) = dep.as_str() {
+                                    manifest.dependencies.push(ExtensionDependency {
+                                        package: pkg.to_string(),
+                                        version: None,
+                                        required: true,
+                                    });
+                                }
+                            }
+                        }
+                    } else if !["id", "name", "version", "description"].contains(&key) {
                         manifest.set(key, yaml_to_json(v.clone()));
                     }
                 }
@@ -310,6 +332,7 @@ pub mod parsing {
         extension_type: &str,
         path: &Path,
     ) -> Result<crate::extension::types::ExtensionManifest> {
+        use crate::extension::types::ExtensionDependency;
         let (id, name, version, description) = extract_extension_fields_toml(toml)?;
         let mut manifest = crate::extension::types::ExtensionManifest::new(
             &id,
@@ -321,7 +344,25 @@ pub mod parsing {
         );
         if let toml::Value::Table(table) = toml {
             for (key, value) in table {
-                if !["id", "name", "version", "description"].contains(&key.as_str()) {
+                if key == "dependencies" {
+                    // Try to parse as structured dependencies first
+                    if let Ok(deps) = serde_json::from_value::<Vec<ExtensionDependency>>(
+                        serde_json::to_value(value)?,
+                    ) {
+                        manifest.dependencies = deps;
+                    } else if let Some(arr) = value.as_array() {
+                        // Fallback: array of strings (legacy format)
+                        for dep in arr {
+                            if let Some(pkg) = dep.as_str() {
+                                manifest.dependencies.push(ExtensionDependency {
+                                    package: pkg.to_string(),
+                                    version: None,
+                                    required: true,
+                                });
+                            }
+                        }
+                    }
+                } else if !["id", "name", "version", "description"].contains(&key.as_str()) {
                     if let Ok(json_val) = serde_json::to_value(value) {
                         manifest.set(key, json_val);
                     }
@@ -588,5 +629,89 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let manifest = temp.path().join("manifest.yaml");
         assert!(extract_extension_type_from_yaml(&manifest).is_err());
+    }
+
+    #[test]
+    fn test_build_manifest_from_yaml_with_structured_dependencies() {
+        let yaml = serde_yaml::from_str(
+            r#"
+id: test-ext
+name: Test Extension
+version: "1.0.0"
+description: A test extension
+dependencies:
+  - package: pekohub.com/ext/base-tools
+    version: ">=1.0.0"
+    required: true
+  - package: pekohub.com/ext/optional-utils
+    required: false
+"#,
+        )
+        .unwrap();
+
+        let manifest = parsing::build_manifest_from_yaml(
+            &yaml,
+            "skill",
+            Path::new("/tmp/test"),
+        )
+        .unwrap();
+
+        assert_eq!(manifest.dependencies.len(), 2);
+        assert_eq!(manifest.dependencies[0].package, "pekohub.com/ext/base-tools");
+        assert_eq!(manifest.dependencies[0].version, Some(">=1.0.0".to_string()));
+        assert!(manifest.dependencies[0].required);
+        assert_eq!(manifest.dependencies[1].package, "pekohub.com/ext/optional-utils");
+        assert!(!manifest.dependencies[1].required);
+    }
+
+    #[test]
+    fn test_build_manifest_from_yaml_with_legacy_string_dependencies() {
+        let yaml = serde_yaml::from_str(
+            r#"
+id: test-ext
+name: Test Extension
+version: "1.0.0"
+description: A test extension
+dependencies:
+  - pekohub.com/ext/legacy-a
+  - pekohub.com/ext/legacy-b
+"#,
+        )
+        .unwrap();
+
+        let manifest = parsing::build_manifest_from_yaml(
+            &yaml,
+            "skill",
+            Path::new("/tmp/test"),
+        )
+        .unwrap();
+
+        assert_eq!(manifest.dependencies.len(), 2);
+        assert_eq!(manifest.dependencies[0].package, "pekohub.com/ext/legacy-a");
+        assert_eq!(manifest.dependencies[0].version, None);
+        assert!(manifest.dependencies[0].required);
+        assert_eq!(manifest.dependencies[1].package, "pekohub.com/ext/legacy-b");
+    }
+
+    #[test]
+    fn test_build_manifest_from_yaml_no_dependencies() {
+        let yaml = serde_yaml::from_str(
+            r#"
+id: test-ext
+name: Test Extension
+version: "1.0.0"
+description: A test extension
+"#,
+        )
+        .unwrap();
+
+        let manifest = parsing::build_manifest_from_yaml(
+            &yaml,
+            "skill",
+            Path::new("/tmp/test"),
+        )
+        .unwrap();
+
+        assert!(manifest.dependencies.is_empty());
     }
 }
