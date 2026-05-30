@@ -1157,7 +1157,10 @@ async fn handle_ext_push(
     let mut manifest =
         RegistryManifest::new(ext.manifest.name.clone(), ext.manifest.version.clone())
             .with_kind("extension")
-            .with_ref(registry_ref);
+            .with_ref(registry_ref)
+            .with_bundle_type("extension")
+            .with_extension_type(&ext.extension_type)
+            .with_description(&ext.manifest.description);
     manifest.add_layer(Layer::new(
         layer_digest.clone(),
         LayerType::Config,

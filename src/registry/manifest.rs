@@ -41,10 +41,10 @@ pub struct RegistryManifest {
     pub config: ConfigDescriptor,
     /// Layers composing this package (OCI descriptors)
     pub layers: Vec<Layer>,
-    /// Peko-specific annotations (preserved in OCI annotations field)
+    /// OCI annotations (discovery metadata, not identity)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<serde_json::Map<String, serde_json::Value>>,
-    // --- Peko-specific fields (not serialized to wire) ---
+    // --- Internal fields (not serialized to wire) ---
     /// Package kind: "agent", "extension", or "team"
     #[serde(skip)]
     pub kind: String,
@@ -66,6 +66,43 @@ pub struct RegistryManifest {
     /// Source: "registry" or "local"
     #[serde(skip)]
     pub source: String,
+    // --- Discovery metadata (serialized to annotations) ---
+    /// Human-readable description
+    #[serde(skip)]
+    pub description: Option<String>,
+    /// Author(s)
+    #[serde(skip)]
+    pub author: Option<String>,
+    /// SPDX license expression
+    #[serde(skip)]
+    pub license: Option<String>,
+    /// Bundle type: "agent", "team", or "extension"
+    #[serde(skip)]
+    pub bundle_type: Option<String>,
+    /// Extension type: "skill", "mcp", "tool", "channel", etc.
+    #[serde(skip)]
+    pub extension_type: Option<String>,
+    /// Tags (JSON array string)
+    #[serde(skip)]
+    pub tags: Option<String>,
+    /// Categories (JSON array string)
+    #[serde(skip)]
+    pub categories: Option<String>,
+    /// Readme content or URL
+    #[serde(skip)]
+    pub readme: Option<String>,
+    /// Hooks (JSON array string)
+    #[serde(skip)]
+    pub hooks: Option<String>,
+    /// Compatibility (JSON object string)
+    #[serde(skip)]
+    pub compatibility: Option<String>,
+    /// Model providers (JSON array string)
+    #[serde(skip)]
+    pub model_providers: Option<String>,
+    /// Required MCP servers (JSON array string)
+    #[serde(skip)]
+    pub required_mcp_servers: Option<String>,
 }
 
 fn default_kind() -> String {
@@ -92,6 +129,18 @@ impl RegistryManifest {
             digest: String::new(),
             created_at: chrono::Utc::now().to_rfc3339(),
             source: "local".to_string(),
+            description: None,
+            author: None,
+            license: None,
+            bundle_type: None,
+            extension_type: None,
+            tags: None,
+            categories: None,
+            readme: None,
+            hooks: None,
+            compatibility: None,
+            model_providers: None,
+            required_mcp_servers: None,
         }
     }
 
@@ -116,6 +165,90 @@ impl RegistryManifest {
         self
     }
 
+    /// Set the description.
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Set the author.
+    #[must_use]
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = Some(author.into());
+        self
+    }
+
+    /// Set the license.
+    #[must_use]
+    pub fn with_license(mut self, license: impl Into<String>) -> Self {
+        self.license = Some(license.into());
+        self
+    }
+
+    /// Set the bundle type.
+    #[must_use]
+    pub fn with_bundle_type(mut self, bundle_type: impl Into<String>) -> Self {
+        self.bundle_type = Some(bundle_type.into());
+        self
+    }
+
+    /// Set the extension type.
+    #[must_use]
+    pub fn with_extension_type(mut self, extension_type: impl Into<String>) -> Self {
+        self.extension_type = Some(extension_type.into());
+        self
+    }
+
+    /// Set tags (JSON array string).
+    #[must_use]
+    pub fn with_tags(mut self, tags: impl Into<String>) -> Self {
+        self.tags = Some(tags.into());
+        self
+    }
+
+    /// Set categories (JSON array string).
+    #[must_use]
+    pub fn with_categories(mut self, categories: impl Into<String>) -> Self {
+        self.categories = Some(categories.into());
+        self
+    }
+
+    /// Set readme content or URL.
+    #[must_use]
+    pub fn with_readme(mut self, readme: impl Into<String>) -> Self {
+        self.readme = Some(readme.into());
+        self
+    }
+
+    /// Set hooks (JSON array string).
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: impl Into<String>) -> Self {
+        self.hooks = Some(hooks.into());
+        self
+    }
+
+    /// Set compatibility (JSON object string).
+    #[must_use]
+    pub fn with_compatibility(mut self, compatibility: impl Into<String>) -> Self {
+        self.compatibility = Some(compatibility.into());
+        self
+    }
+
+    /// Set model providers (JSON array string).
+    #[must_use]
+    pub fn with_model_providers(mut self, model_providers: impl Into<String>) -> Self {
+        self.model_providers = Some(model_providers.into());
+        self
+    }
+
+    /// Set required MCP servers (JSON array string).
+    #[must_use]
+    pub fn with_required_mcp_servers(mut self, required_mcp_servers: impl Into<String>) -> Self {
+        self.required_mcp_servers = Some(required_mcp_servers.into());
+        self
+    }
+
     /// Add a layer
     pub fn add_layer(&mut self, layer: Layer) {
         self.layers.push(layer);
@@ -127,30 +260,109 @@ impl RegistryManifest {
         self.layers.iter().map(|l| l.size_bytes).sum()
     }
 
-    /// Build annotations map from Peko-specific fields.
+    /// Build annotations map from discovery and identity fields.
+    ///
+    /// Emits flat OCI standard and Peko-specific annotations.
+    /// Identity fields (name, version, kind) are included for pull-side round-tripping.
     fn build_annotations(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
         let mut map = serde_json::Map::new();
+
+        // Identity fields (for pull-side round-tripping)
         if !self.name.is_empty() {
-            map.insert("org.peko.name".to_string(), serde_json::Value::String(self.name.clone()));
+            map.insert(
+                "org.peko.name".to_string(),
+                serde_json::Value::String(self.name.clone()),
+            );
         }
         if !self.version.is_empty() {
-            map.insert("org.peko.version".to_string(), serde_json::Value::String(self.version.clone()));
+            map.insert(
+                "org.peko.version".to_string(),
+                serde_json::Value::String(self.version.clone()),
+            );
         }
         if !self.kind.is_empty() {
-            map.insert("org.peko.kind".to_string(), serde_json::Value::String(self.kind.clone()));
+            map.insert(
+                "org.peko.kind".to_string(),
+                serde_json::Value::String(self.kind.clone()),
+            );
         }
-        if !self.r#ref.is_empty() {
-            map.insert("org.peko.ref".to_string(), serde_json::Value::String(self.r#ref.clone()));
+
+        // OCI standard annotations
+        if let Some(v) = &self.description {
+            map.insert(
+                "org.opencontainers.image.description".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
         }
-        if !self.digest.is_empty() {
-            map.insert("org.peko.digest".to_string(), serde_json::Value::String(self.digest.clone()));
+        if let Some(v) = &self.author {
+            map.insert(
+                "org.opencontainers.image.authors".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
         }
-        if !self.created_at.is_empty() {
-            map.insert("org.peko.createdAt".to_string(), serde_json::Value::String(self.created_at.clone()));
+        if let Some(v) = &self.license {
+            map.insert(
+                "org.opencontainers.image.licenses".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
         }
-        if !self.source.is_empty() {
-            map.insert("org.peko.source".to_string(), serde_json::Value::String(self.source.clone()));
+
+        // Peko-specific annotations
+        if let Some(v) = &self.bundle_type {
+            map.insert(
+                "dev.pekohub.bundleType".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
         }
+        if let Some(v) = &self.extension_type {
+            map.insert(
+                "dev.pekohub.extensionType".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+        if let Some(v) = &self.tags {
+            map.insert(
+                "dev.pekohub.tags".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+        if let Some(v) = &self.categories {
+            map.insert(
+                "dev.pekohub.categories".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+        if let Some(v) = &self.readme {
+            map.insert(
+                "dev.pekohub.readme".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+        if let Some(v) = &self.hooks {
+            map.insert(
+                "dev.pekohub.hooks".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+        if let Some(v) = &self.compatibility {
+            map.insert(
+                "dev.pekohub.compatibility".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+        if let Some(v) = &self.model_providers {
+            map.insert(
+                "dev.pekohub.modelProviders".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+        if let Some(v) = &self.required_mcp_servers {
+            map.insert(
+                "dev.pekohub.requiredMcpServers".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+
         if map.is_empty() {
             None
         } else {
@@ -158,9 +370,10 @@ impl RegistryManifest {
         }
     }
 
-    /// Extract Peko-specific fields from annotations map.
+    /// Extract fields from annotations map for pull-side reconstruction.
     fn apply_annotations(&mut self, annotations: &Option<serde_json::Map<String, serde_json::Value>>) {
         if let Some(map) = annotations {
+            // Identity fields
             if let Some(v) = map.get("org.peko.name").and_then(|v| v.as_str()) {
                 self.name = v.to_string();
             }
@@ -170,24 +383,71 @@ impl RegistryManifest {
             if let Some(v) = map.get("org.peko.kind").and_then(|v| v.as_str()) {
                 self.kind = v.to_string();
             }
-            if let Some(v) = map.get("org.peko.ref").and_then(|v| v.as_str()) {
-                self.r#ref = v.to_string();
+
+            // OCI standard annotations
+            if let Some(v) = map
+                .get("org.opencontainers.image.description")
+                .and_then(|v| v.as_str())
+            {
+                self.description = Some(v.to_string());
             }
-            if let Some(v) = map.get("org.peko.digest").and_then(|v| v.as_str()) {
-                self.digest = v.to_string();
+            if let Some(v) = map
+                .get("org.opencontainers.image.authors")
+                .and_then(|v| v.as_str())
+            {
+                self.author = Some(v.to_string());
             }
-            if let Some(v) = map.get("org.peko.createdAt").and_then(|v| v.as_str()) {
-                self.created_at = v.to_string();
+            if let Some(v) = map
+                .get("org.opencontainers.image.licenses")
+                .and_then(|v| v.as_str())
+            {
+                self.license = Some(v.to_string());
             }
-            if let Some(v) = map.get("org.peko.source").and_then(|v| v.as_str()) {
-                self.source = v.to_string();
+            if let Some(v) = map
+                .get("dev.pekohub.bundleType")
+                .and_then(|v| v.as_str())
+            {
+                self.bundle_type = Some(v.to_string());
+            }
+            if let Some(v) = map
+                .get("dev.pekohub.extensionType")
+                .and_then(|v| v.as_str())
+            {
+                self.extension_type = Some(v.to_string());
+            }
+            if let Some(v) = map.get("dev.pekohub.tags").and_then(|v| v.as_str()) {
+                self.tags = Some(v.to_string());
+            }
+            if let Some(v) = map.get("dev.pekohub.categories").and_then(|v| v.as_str()) {
+                self.categories = Some(v.to_string());
+            }
+            if let Some(v) = map.get("dev.pekohub.readme").and_then(|v| v.as_str()) {
+                self.readme = Some(v.to_string());
+            }
+            if let Some(v) = map.get("dev.pekohub.hooks").and_then(|v| v.as_str()) {
+                self.hooks = Some(v.to_string());
+            }
+            if let Some(v) = map.get("dev.pekohub.compatibility").and_then(|v| v.as_str()) {
+                self.compatibility = Some(v.to_string());
+            }
+            if let Some(v) = map
+                .get("dev.pekohub.modelProviders")
+                .and_then(|v| v.as_str())
+            {
+                self.model_providers = Some(v.to_string());
+            }
+            if let Some(v) = map
+                .get("dev.pekohub.requiredMcpServers")
+                .and_then(|v| v.as_str())
+            {
+                self.required_mcp_servers = Some(v.to_string());
             }
         }
     }
 
     /// Serialize to JSON (OCI format).
     ///
-    /// Peko-specific metadata is stored in OCI annotations.
+    /// Discovery metadata is stored in OCI annotations.
     ///
     /// # Errors
     ///
@@ -201,7 +461,7 @@ impl RegistryManifest {
 
     /// Deserialize from JSON (OCI format).
     ///
-    /// Peko-specific metadata is restored from OCI annotations.
+    /// Discovery metadata is restored from OCI annotations.
     ///
     /// # Errors
     ///
@@ -243,7 +503,7 @@ mod tests {
         // Layer as OCI descriptor
         assert!(json.contains("\"mediaType\": \"application/vnd.peko.layer.config.v1+json\""));
         assert!(json.contains("\"size\": 512"));
-        // Peko fields are NOT in wire output
+        // Internal fields are NOT in wire output
         assert!(!json.contains("\"name\":"));
         assert!(!json.contains("\"kind\":"));
     }
@@ -280,26 +540,42 @@ mod tests {
         let mut manifest = RegistryManifest::new("test-agent", "1.2.3")
             .with_kind("agent")
             .with_ref("pekohub.com/ns/test-agent:v1.2.3")
-            .with_digest("sha256:deadbeef");
+            .with_digest("sha256:deadbeef")
+            .with_description("A test agent")
+            .with_author("alice")
+            .with_bundle_type("agent")
+            .with_tags("[\"ai\", \"research\"]");
         manifest.add_layer(Layer::new("sha256:layer1", LayerType::Config, 100));
 
-        // Serialize — Peko metadata goes into annotations
+        // Serialize — discovery metadata goes into annotations
         let json = manifest.to_json().unwrap();
         assert!(json.contains("\"annotations\""));
-        assert!(json.contains("org.peko.name"));
-        assert!(json.contains("test-agent"));
-        assert!(json.contains("org.peko.version"));
-        assert!(json.contains("1.2.3"));
-        assert!(json.contains("org.peko.kind"));
+        assert!(json.contains("org.opencontainers.image.description"));
+        assert!(json.contains("A test agent"));
+        assert!(json.contains("org.opencontainers.image.authors"));
+        assert!(json.contains("alice"));
+        assert!(json.contains("dev.pekohub.bundleType"));
         assert!(json.contains("agent"));
+        assert!(json.contains("dev.pekohub.tags"));
+        // tags are stored as a JSON string; check roundtrip via restored value instead
+        assert_eq!(
+            RegistryManifest::from_json(&json).unwrap().tags,
+            Some("[\"ai\", \"research\"]".to_string())
+        );
+        // Identity and discovery fields are both emitted to annotations
+        assert!(json.contains("org.peko.name"));
+        assert!(json.contains("org.peko.version"));
+        assert!(json.contains("org.peko.kind"));
 
-        // Deserialize — Peko metadata restored from annotations
+        // Deserialize — all fields restored from annotations
         let restored = RegistryManifest::from_json(&json).unwrap();
         assert_eq!(restored.name, "test-agent");
         assert_eq!(restored.version, "1.2.3");
         assert_eq!(restored.kind, "agent");
-        assert_eq!(restored.r#ref, "pekohub.com/ns/test-agent:v1.2.3");
-        assert_eq!(restored.digest, "sha256:deadbeef");
+        assert_eq!(restored.description, Some("A test agent".to_string()));
+        assert_eq!(restored.author, Some("alice".to_string()));
+        assert_eq!(restored.bundle_type, Some("agent".to_string()));
+        assert_eq!(restored.tags, Some("[\"ai\", \"research\"]".to_string()));
         assert_eq!(restored.layers.len(), 1);
         assert_eq!(restored.layers[0].digest, "sha256:layer1");
     }
@@ -326,6 +602,39 @@ mod tests {
         let manifest = RegistryManifest::from_json(oci_json).unwrap();
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.name, ""); // No annotation, so empty
+        assert_eq!(manifest.description, None);
         assert_eq!(manifest.layers.len(), 1);
+    }
+
+    #[test]
+    fn test_flat_annotation_read() {
+        // Simulate receiving a manifest with flat OCI + Peko annotations
+        let oci_json = r#"{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "config": {
+    "mediaType": "application/vnd.peko.config.v1+json",
+    "digest": "sha256:config",
+    "size": 123
+  },
+  "layers": [],
+  "annotations": {
+    "org.opencontainers.image.description": "My extension",
+    "org.opencontainers.image.authors": "bob",
+    "org.opencontainers.image.licenses": "MIT",
+    "dev.pekohub.bundleType": "extension",
+    "dev.pekohub.extensionType": "skill",
+    "dev.pekohub.tags": "[\"nlp\", \"transformers\"]",
+    "dev.pekohub.hooks": "[{\"point\": \"tool.register\"}]"
+  }
+}"#;
+        let manifest = RegistryManifest::from_json(oci_json).unwrap();
+        assert_eq!(manifest.description, Some("My extension".to_string()));
+        assert_eq!(manifest.author, Some("bob".to_string()));
+        assert_eq!(manifest.license, Some("MIT".to_string()));
+        assert_eq!(manifest.bundle_type, Some("extension".to_string()));
+        assert_eq!(manifest.extension_type, Some("skill".to_string()));
+        assert_eq!(manifest.tags, Some("[\"nlp\", \"transformers\"]".to_string()));
+        assert_eq!(manifest.hooks, Some("[{\"point\": \"tool.register\"}]".to_string()));
     }
 }

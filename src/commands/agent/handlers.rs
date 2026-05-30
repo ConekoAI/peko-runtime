@@ -801,7 +801,13 @@ async fn agent_to_registry_manifest(
         agent_manifest.agent.name.clone(),
         agent_manifest.agent.version.clone(),
     )
-    .with_ref(reg_ref);
+    .with_ref(reg_ref)
+    .with_bundle_type("agent");
+
+    // Plumb discovery metadata from agent manifest
+    if let Some(desc) = &agent_manifest.agent.description {
+        manifest = manifest.with_description(desc.clone());
+    }
 
     if let Some(layers) = &agent_manifest.layers {
         if let Some(digest) = &layers.config {

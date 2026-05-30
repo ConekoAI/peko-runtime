@@ -608,7 +608,17 @@ async fn handle_team_push(
     // ── 5. Build RegistryManifest with kind="team" ──────────────────────
     let mut manifest = RegistryManifest::new(name.to_string(), "1.0.0".to_string())
         .with_kind("team")
-        .with_ref(&registry_ref);
+        .with_ref(&registry_ref)
+        .with_bundle_type("team");
+
+    // Plumb team description from team metadata if available
+    if let Ok(Some(team_info)) = service.get_team(&name).await {
+        if let Some(metadata) = &team_info.metadata {
+            if let Some(desc) = &metadata.description {
+                manifest = manifest.with_description(desc.clone());
+            }
+        }
+    }
 
     for (digest, layer_type, size) in all_layers {
         manifest.add_layer(Layer::new(digest, layer_type, size));
