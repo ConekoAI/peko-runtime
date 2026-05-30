@@ -264,6 +264,9 @@ include_mcp = false
         assert!(researcher.contains_key("config/agent.toml"));
         assert!(researcher.contains_key("identity/did.json"));
         assert!(researcher.contains_key("skills/rust/SKILL.md"));
+
+        // Extensions list should be empty (no extensions in test data)
+        assert!(reconstructed.team_info.extensions.is_empty());
     }
 
     #[tokio::test]
@@ -286,6 +289,85 @@ include_mcp = false
         let index = extract_team_config_index(&decomposed.team_config_layer.bytes).unwrap();
         assert_eq!(index.team.name, "test-team");
         assert_eq!(index.agents.len(), 1);
+        assert!(index.extensions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_team_config_index_with_extensions() {
+        use crate::portable::team_packager::{ExtensionRef, TeamManifest};
+        use crate::portable::team_layer_builder::build_team_config_layer;
+        use std::collections::HashMap;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::new(temp_dir.path());
+        registry.init().await.unwrap();
+
+        // Build a TeamConfig layer directly with extensions
+        let team_manifest = TeamManifest {
+            team: crate::portable::team_packager::TeamInfo {
+                name: "ext-team".to_string(),
+                description: None,
+                version: "1.0.0".to_string(),
+                agent_count: 0,
+            },
+            format: crate::portable::team_packager::TeamFormat {
+                version: "1.0".to_string(),
+                peko_version: "0.1.0".to_string(),
+            },
+            export: crate::portable::team_packager::ExportMetadata {
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                include_sessions: false,
+                include_workspace: false,
+                include_mcp: false,
+            },
+            packaging: None,
+        };
+
+        let extensions = vec![ExtensionRef {
+            id: "calc-ext".to_string(),
+            registry_ref: "pekohub.com/extensions/calculator:latest".to_string(),
+        }];
+
+        let layer = build_team_config_layer(
+            &team_manifest,
+            &HashMap::new(),
+            None,
+            &extensions,
+        )
+        .unwrap();
+
+        registry
+            .store_layer(&layer.digest, &layer.bytes)
+            .await
+            .unwrap();
+
+        let index = extract_team_config_index(&layer.bytes).unwrap();
+        assert_eq!(index.extensions.len(), 1);
+        assert_eq!(index.extensions[0].id, "calc-ext");
+        assert_eq!(index.extensions[0].registry_ref, "pekohub.com/extensions/calculator:latest");
+    }
+
+    #[tokio::test]
+    async fn test_team_config_index_backward_compat_no_extensions_field() {
+        // Old manifest.toml without [[extensions]] should deserialize with empty vec
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::new(temp_dir.path());
+        registry.init().await.unwrap();
+
+        let files = make_test_team_files();
+        let decomposed = decompose_team_archive(&files).unwrap();
+
+        registry
+            .store_layer(
+                &decomposed.team_config_layer.digest,
+                &decomposed.team_config_layer.bytes,
+            )
+            .await
+            .unwrap();
+
+        let index = extract_team_config_index(&decomposed.team_config_layer.bytes).unwrap();
+        assert_eq!(index.team.name, "test-team");
+        assert!(index.extensions.is_empty());
     }
 
     #[tokio::test]

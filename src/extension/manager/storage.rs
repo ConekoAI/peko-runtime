@@ -179,6 +179,22 @@ impl ExtensionStorage {
 
         remove_locked_dir(storage_dir, &extension_id.0)
     }
+
+    /// Write the source registry reference for an installed extension
+    pub fn write_source(&self, extension_id: &ExtensionId, registry_ref: &str) -> Result<()> {
+        let storage_dir = self.storage_dir.as_ref().context("Storage directory not configured")?;
+        let source_path = storage_dir.join(&extension_id.0).join(".source");
+        std::fs::write(&source_path, registry_ref)
+            .with_context(|| format!("Failed to write source file at {source_path:?}"))?;
+        Ok(())
+    }
+
+    /// Read the source registry reference for an installed extension
+    pub fn read_source(&self, extension_id: &ExtensionId) -> Option<String> {
+        let storage_dir = self.storage_dir.as_ref()?;
+        let source_path = storage_dir.join(&extension_id.0).join(".source");
+        std::fs::read_to_string(&source_path).ok()
+    }
 }
 
 impl Default for ExtensionStorage {

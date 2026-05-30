@@ -86,6 +86,13 @@ pub enum DependencyStatus {
     },
 }
 
+/// Result of resolving a tool name to an extension
+#[derive(Debug, Clone)]
+pub struct ToolResolution {
+    pub id: String,
+    pub registry_ref: Option<String>,
+}
+
 /// Result of resolving dependencies for an extension
 #[derive(Debug, Clone, Default)]
 pub struct DependencyResolution {
@@ -159,6 +166,12 @@ impl ExtensionManager {
     #[must_use]
     pub fn storage_dir(&self) -> Option<&Path> {
         self.storage.dir()
+    }
+
+    /// Get a reference to the storage backend
+    #[must_use]
+    pub fn storage(&self) -> &ExtensionStorage {
+        &self.storage
     }
 
     #[must_use]
@@ -397,6 +410,15 @@ impl ExtensionManager {
 
         self.extensions.insert(extension_id.clone(), loaded_ext);
 
+        // Try to populate source from .source file if not already set
+        if let Some(loaded) = self.extensions.get_mut(&extension_id) {
+            if loaded.manifest.source.is_none() {
+                if let Some(source) = self.storage.read_source(&extension_id) {
+                    loaded.manifest.source = Some(source);
+                }
+            }
+        }
+
         Ok(extension_id)
     }
 
@@ -559,6 +581,11 @@ impl ExtensionManager {
     #[must_use]
     pub fn get_extension(&self, id: &ExtensionId) -> Option<&LoadedExtension> {
         self.extensions.get(id)
+    }
+
+    /// Mutable access to a loaded extension
+    pub fn get_extension_mut(&mut self, id: &ExtensionId) -> Option<&mut LoadedExtension> {
+        self.extensions.get_mut(id)
     }
 
     pub fn create_bundle(&self, ids: Vec<ExtensionId>, name: &str) -> Result<ExtensionBundle> {
@@ -798,6 +825,27 @@ impl ExtensionManager {
         }
 
         Ok(discovered)
+    }
+
+    /// Given a tool/capability name from an agent's extensions.enabled whitelist,
+    /// resolve it to an installed extension's ID and source registry ref (if available).
+    /// Returns None for built-in tools or unknown names.
+    pub fn resolve_tool_name(&self, name: &str) -> Option<ToolResolution> {
+        // Check if it's a built-in tool
+        if crate::extensions::builtin::BuiltinToolAdapter::is_builtin(name) || name.starts_with("builtin:") {
+            return None;
+        }
+
+        // Check loaded extensions for a manifest.name match
+        for ext in self.extensions.values() {
+            if ext.manifest.name.eq_ignore_ascii_case(name) {
+                return Some(ToolResolution {
+                    id: ext.manifest.id.0.clone(),
+                    registry_ref: ext.manifest.source.clone(),
+                });
+            }
+        }
+        None
     }
 
     /// Load extensions from a directory without installing to storage
@@ -1267,5 +1315,109 @@ mod tests {
 
         let resolution = manager.resolve_dependencies_root(&manifest_self).unwrap();
         assert!(!resolution.circular.is_empty());
+    }
+
+    // ─── Tool Name Resolution Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_resolve_tool_name_builtin_returns_none() {
+        let manager = ExtensionManager::new();
+        assert!(manager.resolve_tool_name("shell").is_none());
+        assert!(manager.resolve_tool_name("read_file").is_none());
+    }
+
+    #[test]
+    fn test_resolve_tool_name_unknown_returns_none() {
+        let manager = ExtensionManager::new();
+        assert!(manager.resolve_tool_name("unknown-tool").is_none());
+    }
+
+    #[test]
+    fn test_resolve_tool_name_matches_extension() {
+        let mut manager = ExtensionManager::new();
+
+        let mut manifest = ExtensionManifest::new(
+            "calc-ext",
+            "universal-tool",
+            "Calculator",
+            "A calculator tool",
+            "1.0.0",
+            PathBuf::from("/tmp/calc"),
+        );
+        manifest.source = Some("pekohub.com/extensions/calculator:latest".to_string());
+
+        manager.extensions.insert(
+            ExtensionId::new("calc-ext"),
+            LoadedExtension {
+                manifest,
+                extension_type: "universal-tool".to_string(),
+                hook_ids: vec![],
+                path: PathBuf::from("/tmp/calc"),
+            },
+        );
+
+        let resolution = manager.resolve_tool_name("Calculator").unwrap();
+        assert_eq!(resolution.id, "calc-ext");
+        assert_eq!(
+            resolution.registry_ref,
+            Some("pekohub.com/extensions/calculator:latest".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_name_case_insensitive() {
+        let mut manager = ExtensionManager::new();
+
+        let manifest = ExtensionManifest::new(
+            "my-skill",
+            "skill",
+            "MySkill",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp/myskill"),
+        );
+
+        manager.extensions.insert(
+            ExtensionId::new("my-skill"),
+            LoadedExtension {
+                manifest,
+                extension_type: "skill".to_string(),
+                hook_ids: vec![],
+                path: PathBuf::from("/tmp/myskill"),
+            },
+        );
+
+        assert!(manager.resolve_tool_name("myskill").is_some());
+        assert!(manager.resolve_tool_name("MYSKILL").is_some());
+        assert!(manager.resolve_tool_name("MySkill").is_some());
+    }
+
+    #[test]
+    fn test_resolve_tool_name_no_source() {
+        let mut manager = ExtensionManager::new();
+
+        let manifest = ExtensionManifest::new(
+            "local-ext",
+            "general",
+            "LocalExt",
+            "Desc",
+            "1.0.0",
+            PathBuf::from("/tmp/local"),
+        );
+        // source is None
+
+        manager.extensions.insert(
+            ExtensionId::new("local-ext"),
+            LoadedExtension {
+                manifest,
+                extension_type: "general".to_string(),
+                hook_ids: vec![],
+                path: PathBuf::from("/tmp/local"),
+            },
+        );
+
+        let resolution = manager.resolve_tool_name("LocalExt").unwrap();
+        assert_eq!(resolution.id, "local-ext");
+        assert!(resolution.registry_ref.is_none());
     }
 }

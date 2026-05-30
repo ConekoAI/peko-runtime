@@ -7,7 +7,7 @@
 //! This enables cross-team deduplication: shared agents between teams reuse
 //! the same layer digests and are skipped during registry push.
 
-use crate::portable::team_packager::{AgentLayerRef, TeamAgentIndex, TeamInfo, TeamManifest};
+use crate::portable::team_packager::{AgentLayerRef, ExtensionRef, TeamAgentIndex, TeamInfo, TeamManifest};
 use crate::portable::types::{compute_digest, LayerType};
 use anyhow::Context;
 use std::collections::{BTreeMap, HashMap};
@@ -21,6 +21,8 @@ pub struct DecomposedTeamLayers {
     pub agent_layers: HashMap<String, HashMap<LayerType, LayerBytes>>,
     /// Agent index for the TeamConfig manifest
     pub agent_index: HashMap<String, AgentLayerRef>,
+    /// Extension references for auto-pull
+    pub extensions: Vec<ExtensionRef>,
 }
 
 /// A layer with its digest pre-computed and bytes ready for storage.
@@ -70,12 +72,13 @@ pub fn decompose_team_archive(
 
     // Build TeamConfig layer
     let team_config_layer =
-        build_team_config_layer(&team_manifest, &agent_index, team_toml.as_ref())?;
+        build_team_config_layer(&team_manifest, &agent_index, team_toml.as_ref(), &[])?;
 
     Ok(DecomposedTeamLayers {
         team_config_layer,
         agent_layers,
         agent_index,
+        extensions: Vec::new(),
     })
 }
 
@@ -173,10 +176,11 @@ fn agent_layers_to_ref(layers: &HashMap<LayerType, LayerBytes>) -> AgentLayerRef
 }
 
 /// Build the TeamConfig layer (gzipped tarball containing team metadata + agent index).
-fn build_team_config_layer(
+pub fn build_team_config_layer(
     team_manifest: &TeamManifest,
     agent_index: &HashMap<String, AgentLayerRef>,
     team_toml: Option<&Vec<u8>>,
+    extensions: &[ExtensionRef],
 ) -> anyhow::Result<LayerBytes> {
     let team_info = TeamInfo {
         name: team_manifest.team.name.clone(),
@@ -188,6 +192,7 @@ fn build_team_config_layer(
     let index = TeamAgentIndex {
         team: team_info,
         agents: agent_index.clone(),
+        extensions: extensions.to_vec(),
     };
 
     // Serialize the agent index as TOML

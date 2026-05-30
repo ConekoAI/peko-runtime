@@ -1246,7 +1246,11 @@ async fn handle_ext_push(
     Ok(())
 }
 
-async fn handle_ext_pull(
+/// Pull an extension from a registry and install it.
+///
+/// This is the public entry point used by both `peko ext pull` and
+/// `peko team pull` (for auto-pulling team extensions).
+pub async fn handle_ext_pull(
     manager: &mut ExtensionManager,
     registry_ref: &str,
     json: bool,
@@ -1342,6 +1346,18 @@ async fn handle_ext_pull_with_seen(
 
     // Install the main extension first — on success we get the manifest back
     let install_result = handle_install(manager, temp_path.clone(), None).await;
+
+    // Record the registry source for this extension
+    if let Ok(ref ext_manifest) = install_result {
+        let ext_id = ext_manifest.id.clone();
+        if manager.storage_dir().is_some() {
+            let _ = manager.storage().write_source(&ext_id, registry_ref);
+        }
+        // Also update the in-memory manifest if it's loaded
+        if let Some(loaded) = manager.get_extension_mut(&ext_id) {
+            loaded.manifest.source = Some(registry_ref.to_string());
+        }
+    }
 
     // Resolve dependencies using the manifest returned from install, or fail clearly
     let dep_resolution: DependencyResolution = match &install_result {

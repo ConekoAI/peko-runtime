@@ -329,6 +329,19 @@ pub struct AgentLayerRef {
     pub mcp: Option<String>,
 }
 
+/// Extension reference within a team registry manifest.
+///
+/// Maps an extension ID to the registry reference used for pull.
+/// Stored inside the `TeamConfig` layer to enable auto-pull of extensions
+/// when a team is pulled from the registry.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionRef {
+    /// Extension ID as declared in manifest.yaml
+    pub id: String,
+    /// Registry reference for pull (e.g., "pekohub.com/extensions/calculator-skill:latest")
+    pub registry_ref: String,
+}
+
 /// Team agent index — maps agent names to their layer references.
 ///
 /// Serialized into the `TeamConfig` layer's `manifest.toml` so that
@@ -340,6 +353,9 @@ pub struct TeamAgentIndex {
     pub team: TeamInfo,
     /// Agent name → layer reference mapping
     pub agents: HashMap<String, AgentLayerRef>,
+    /// Extension references for auto-pull
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<ExtensionRef>,
 }
 
 /// Team manifest structure

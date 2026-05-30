@@ -49,6 +49,10 @@ pub struct ExtensionManifest {
     /// Additional metadata (type-specific)
     #[serde(flatten)]
     pub metadata: HashMap<String, serde_json::Value>,
+
+    /// Registry reference this extension was originally pulled from (e.g., "pekohub.com/extensions/calc:latest")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl ExtensionManifest {
@@ -70,6 +74,7 @@ impl ExtensionManifest {
             path,
             dependencies: Vec::new(),
             metadata: HashMap::new(),
+            source: None,
         }
     }
 

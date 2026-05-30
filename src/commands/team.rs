@@ -11,9 +11,12 @@ use crate::common::time::format_timestamp;
 use crate::common::types::team::{
     TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMoveResult,
 };
+use crate::extension::manager::{ExtensionManager, ExtensionStorage};
+use crate::extension::core::global_core;
 use crate::portable::registry::AgentRegistry;
-use crate::portable::team_layer_builder::decompose_team_archive;
+use crate::portable::team_layer_builder::{build_team_config_layer, decompose_team_archive};
 use crate::portable::team_layer_reconstructor::reconstruct_team;
+use crate::portable::team_packager::ExtensionRef;
 use crate::portable::types::{ImageDigest, Layer, LayerType};
 use crate::common::services::CredentialsService;
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
@@ -21,6 +24,7 @@ use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use std::collections::HashSet;
 
 /// Team management subcommands
 ///
@@ -139,6 +143,9 @@ pub enum TeamCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Skip auto-pull of extensions
+        #[arg(long)]
+        no_extensions: bool,
     },
 }
 
@@ -311,7 +318,8 @@ pub async fn handle_team(
             name,
             force,
             json: pull_json,
-        } => handle_team_pull(paths, registry_ref, name, force, pull_json, cli_registry).await,
+            no_extensions,
+        } => handle_team_pull(paths, registry_ref, name, force, pull_json, cli_registry, no_extensions).await,
     }
 }
 
@@ -573,10 +581,30 @@ async fn handle_team_push(
     let archive_bytes = tokio::fs::read(&export_result.output_path).await?;
     let files = extract_team_archive_bytes(&archive_bytes)?;
 
-    // ── 3. Decompose into content-addressable layers ────────────────────
-    let decomposed = decompose_team_archive(&files)?;
+    // ── 3. Collect extension references from agent configs ───────────────
+    let extension_refs = collect_extension_refs_from_team_files(&files, paths).await?;
 
-    // ── 4. Store layers in AgentRegistry ────────────────────────────────
+    // ── 4. Decompose into content-addressable layers ────────────────────
+    let mut decomposed = decompose_team_archive(&files)?;
+    decomposed.extensions = extension_refs;
+
+    // Rebuild the TeamConfig layer with extension refs included
+    let team_manifest = {
+        let manifest_bytes = files.get("team/manifest.toml")
+            .ok_or_else(|| anyhow::anyhow!("Missing team/manifest.toml in package"))?;
+        let manifest_str = std::str::from_utf8(manifest_bytes)?;
+        crate::portable::team_packager::TeamManifest::from_toml(manifest_str)?
+    };
+    let team_toml = files.get("team/team.toml").cloned();
+    let rebuilt_team_config = build_team_config_layer(
+        &team_manifest,
+        &decomposed.agent_index,
+        team_toml.as_ref(),
+        &decomposed.extensions,
+    )?;
+    decomposed.team_config_layer = rebuilt_team_config;
+
+    // ── 5. Store layers in AgentRegistry ────────────────────────────────
     let registry = AgentRegistry::new(AgentRegistry::default_path());
     registry.init().await?;
 
@@ -605,7 +633,7 @@ async fn handle_team_push(
         }
     }
 
-    // ── 5. Build RegistryManifest with kind="team" ──────────────────────
+    // ── 6. Build RegistryManifest with kind="team" ──────────────────────
     let mut manifest = RegistryManifest::new(name.to_string(), "1.0.0".to_string())
         .with_kind("team")
         .with_ref(&registry_ref)
@@ -632,7 +660,7 @@ async fn handle_team_push(
     // Store manifest for RegistryClient
     store_registry_manifest_for_client(&registry, &manifest).await?;
 
-    // ── 6. Push via RegistryClient ──────────────────────────────────────
+    // ── 7. Push via RegistryClient ──────────────────────────────────────
     let reg_ref = RegistryRef::parse_with_default(
         &registry_ref,
         cli_registry.or(Some(&paths.registry_config().default)),
@@ -719,6 +747,101 @@ fn extract_team_archive_bytes(
     Ok(files)
 }
 
+/// Collect extension registry references from agent configs within a .team archive.
+///
+/// Reads each agent's `config/agent.toml`, extracts `extensions.enabled`, and
+/// resolves tool names to installed extensions with known registry refs.
+async fn collect_extension_refs_from_team_files(
+    files: &std::collections::HashMap<String, Vec<u8>>,
+    paths: &GlobalPaths,
+) -> anyhow::Result<Vec<ExtensionRef>> {
+    use crate::types::agent::AgentConfig;
+
+    let core = match global_core() {
+        Some(c) => c,
+        None => {
+            tracing::warn!("Global ExtensionCore not initialized; skipping extension collection");
+            return Ok(Vec::new());
+        }
+    };
+
+    let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
+    let mut manager = ExtensionManager::with_core(core);
+    manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
+    // Register adapters (minimal set needed for name resolution)
+    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+    use crate::extensions::gateway::GatewayAdapter;
+    use crate::extensions::general::GeneralExtensionAdapter;
+    use crate::extensions::mcp::McpAdapter;
+    use crate::extensions::skill::SkillAdapter;
+    use crate::extensions::universal::UniversalToolAdapter;
+    let _ = BuiltinToolAdapter::register_all(&manager.core_arc(), &BuiltinToolRegistrarConfig::default()).await;
+    manager.register_adapter(Box::new(SkillAdapter::new()));
+    manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+    manager.register_adapter(Box::new(GatewayAdapter::new(manager.core_arc())));
+    manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+
+    if let Err(e) = manager.load_all().await {
+        tracing::warn!("Failed to load extensions for push: {}", e);
+    }
+
+    let mut seen = HashSet::new();
+    let mut extension_refs = Vec::new();
+
+    for (path, content) in files {
+        // Look for agent config files: agents/{name}/config/agent.toml
+        let Some(rest) = path.strip_prefix("agents/") else { continue };
+        let Some((agent_name, file_path)) = rest.split_once('/') else { continue };
+        if file_path != "config/agent.toml" {
+            continue;
+        }
+
+        let config_str = match std::str::from_utf8(content) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let config: AgentConfig = match toml::from_str(config_str) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to parse agent config for '{}': {}", agent_name, e);
+                continue;
+            }
+        };
+
+        let ext_config = match config.extensions {
+            Some(e) => e,
+            None => continue,
+        };
+
+        for tool_name in &ext_config.enabled {
+            // Skip wildcard patterns — can't resolve them to a single extension
+            if tool_name.ends_with('*') {
+                continue;
+            }
+
+            match manager.resolve_tool_name(tool_name) {
+                Some(resolution) => {
+                    if let Some(registry_ref) = resolution.registry_ref {
+                        let key = format!("{}:{}", resolution.id, registry_ref);
+                        if seen.insert(key) {
+                            extension_refs.push(ExtensionRef {
+                                id: resolution.id,
+                                registry_ref,
+                            });
+                        }
+                    }
+                }
+                None => {
+                    // Built-in or unknown — silently skip
+                }
+            }
+        }
+    }
+
+    Ok(extension_refs)
+}
+
 async fn handle_team_pull(
     paths: &GlobalPaths,
     registry_ref: String,
@@ -726,6 +849,7 @@ async fn handle_team_pull(
     force: bool,
     json: bool,
     cli_registry: Option<&str>,
+    no_extensions: bool,
 ) -> Result<()> {
     // ── 1. Pull manifest and layers from registry ───────────────────────
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
@@ -829,7 +953,27 @@ async fn handle_team_pull(
 
     let agent_count = imported_agents.len();
 
-    // ── 6. Output results ───────────────────────────────────────────────
+    // ── 6. Auto-pull and enable extensions ──────────────────────────────
+    let mut extension_results = ExtensionPullResult::default();
+    if !no_extensions && !reconstructed.team_info.extensions.is_empty() {
+        extension_results = ensure_extensions_for_team(
+            paths,
+            &reconstructed.team_info.extensions,
+            &team_name,
+            cli_registry,
+        )
+        .await;
+        // Log warnings for any failures, but don't fail the whole pull
+        if !extension_results.failed.is_empty() && !json {
+            eprintln!();
+            eprintln!("Warning: {} extension(s) could not be pulled:", extension_results.failed.len());
+            for (ext_id, err) in &extension_results.failed {
+                eprintln!("  - {}: {}", ext_id, err);
+            }
+        }
+    }
+
+    // ── 7. Output results ───────────────────────────────────────────────
     if json {
         let output = serde_json::json!({
             "success": true,
@@ -837,6 +981,11 @@ async fn handle_team_pull(
             "name": team_name,
             "path": team_dir.display().to_string(),
             "agents_imported": agent_count,
+            "extensions": {
+                "pulled": extension_results.pulled,
+                "already_present": extension_results.already_present,
+                "failed": extension_results.failed.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            },
             "manifest": {
                 "name": manifest.name,
                 "version": manifest.version,
@@ -851,9 +1000,131 @@ async fn handle_team_pull(
         println!("📥 Imported team '{team_name}'");
         println!("   Agents: {agent_count}");
         println!("   Path: {}", team_dir.display());
+        if !extension_results.pulled.is_empty() {
+            println!("   Extensions pulled: {}", extension_results.pulled.len());
+            for ext in &extension_results.pulled {
+                println!("     ✓ {}", ext);
+            }
+        }
+        if !extension_results.already_present.is_empty() {
+            println!("   Extensions already present: {}", extension_results.already_present.len());
+            for ext in &extension_results.already_present {
+                println!("     ✓ {}", ext);
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Result of ensuring extensions for a pulled team.
+#[derive(Debug, Default)]
+struct ExtensionPullResult {
+    pulled: Vec<String>,
+    already_present: Vec<String>,
+    failed: Vec<(String, String)>,
+}
+
+/// Ensure all extensions referenced by a team are installed and enabled.
+///
+/// For each `ExtensionRef`:
+/// - If already installed, ensure it's enabled in the team's extensions.toml
+/// - If not installed, call `handle_ext_pull` (which handles dependencies)
+///
+/// Failures for individual extensions are collected and returned; the team
+/// pull itself is not aborted.
+async fn ensure_extensions_for_team(
+    paths: &GlobalPaths,
+    extensions: &[ExtensionRef],
+    team_name: &str,
+    cli_registry: Option<&str>,
+) -> ExtensionPullResult {
+    use crate::extension::types::ExtensionId;
+
+    let mut result = ExtensionPullResult::default();
+
+    let core = match global_core() {
+        Some(c) => c,
+        None => {
+            tracing::warn!("Global ExtensionCore not initialized; skipping extension ensure");
+            for ext in extensions {
+                result.failed.push((ext.id.clone(), "ExtensionCore not initialized".to_string()));
+            }
+            return result;
+        }
+    };
+
+    let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
+    let mut manager = ExtensionManager::with_core(core);
+    manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
+    // Register adapters
+    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+    use crate::extensions::gateway::GatewayAdapter;
+    use crate::extensions::general::GeneralExtensionAdapter;
+    use crate::extensions::mcp::McpAdapter;
+    use crate::extensions::skill::SkillAdapter;
+    use crate::extensions::universal::UniversalToolAdapter;
+    let _ = BuiltinToolAdapter::register_all(&manager.core_arc(), &BuiltinToolRegistrarConfig::default()).await;
+    manager.register_adapter(Box::new(SkillAdapter::new()));
+    manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+    manager.register_adapter(Box::new(GatewayAdapter::new(manager.core_arc())));
+    manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+
+    if let Err(e) = manager.load_all().await {
+        tracing::warn!("Failed to load extensions during team pull: {}", e);
+    }
+
+    for ext_ref in extensions {
+        let ext_id = ExtensionId::new(&ext_ref.id);
+
+        // Check if already installed
+        if manager.get_extension(&ext_id).is_some() {
+            result.already_present.push(ext_ref.id.clone());
+        } else {
+            // Need to pull
+            match crate::commands::ext::handle_ext_pull(
+                &mut manager,
+                &ext_ref.registry_ref,
+                false, // json
+                false, // no_deps — let dependency resolution work
+                cli_registry,
+                paths,
+            )
+            .await
+            {
+                Ok(()) => {
+                    result.pulled.push(ext_ref.id.clone());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to pull extension '{}': {}", ext_ref.id, e);
+                    result.failed.push((ext_ref.id.clone(), e.to_string()));
+                }
+            }
+        }
+    }
+
+    // Ensure all extensions are enabled in the team's extensions.toml
+    let team_dir = paths.data_dir.join("teams").join(team_name);
+    let ext_config_path = team_dir.join("extensions.toml");
+    let mut ext_config = crate::common::types::TeamExtConfig::load(&ext_config_path).unwrap_or_default();
+
+    for ext_ref in extensions {
+        // Enable by extension name (not ID) to match agent whitelist conventions
+        // Try to get the extension's display name from the manager
+        let ext_id = ExtensionId::new(&ext_ref.id);
+        let enable_name = manager
+            .get_extension(&ext_id)
+            .map(|e| e.manifest.name.clone())
+            .unwrap_or_else(|| ext_ref.id.clone());
+        ext_config.enable(&enable_name);
+    }
+
+    if let Err(e) = ext_config.save(&ext_config_path) {
+        tracing::warn!("Failed to save team extensions.toml: {}", e);
+    }
+
+    result
 }
 
 /// Import a single agent from in-memory reconstructed files.
