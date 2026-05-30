@@ -142,6 +142,7 @@ pub struct AgentExportResult {
 pub struct AgentImportOptions {
     pub name: Option<String>,
     pub team: Option<String>,
+    pub force: bool,
 }
 
 /// Agent import result

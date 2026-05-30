@@ -279,7 +279,7 @@ pub async fn handle_agent_import(
 ) -> anyhow::Result<()> {
     let service = paths.services().agent();
 
-    let opts = AgentImportOptions { name, team };
+    let opts = AgentImportOptions { name, team, force: false };
 
     let result = service.import_agent(file_path.as_ref(), opts).await?;
 
@@ -665,6 +665,8 @@ pub async fn handle_agent_pull(
     paths: &GlobalPaths,
     registry_ref: String,
     output: Option<String>,
+    team: Option<String>,
+    force: bool,
     json: bool,
     cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -776,12 +778,58 @@ pub async fn handle_agent_pull(
     };
 
     // If --output was specified, export the pulled package to a .agent file
+    // and skip local registration (preserves existing "download only" behavior)
     if let Some(output_path) = output {
         let tag = format!("{}:{}", manifest.name, reg_ref.tag);
         let exported = agent_registry.export_package(&tag, &output_path).await?;
         if !json {
             println!("📦 Saved package to {}", exported.display());
         }
+        return Ok(());
+    }
+
+    // Otherwise: register the pulled agent locally by exporting from registry
+    // to a temp .agent file and importing it
+    let tag = format!("{}:{}", manifest.name, reg_ref.tag);
+    let temp_path = std::env::temp_dir().join(format!(
+        "peko-pull-{}-{}.agent",
+        manifest.name,
+        std::process::id()
+    ));
+
+    // Export from registry to temp file
+    agent_registry.export_package(&tag, &temp_path).await?;
+
+    // Ensure temp file is cleaned up even if import fails
+    let cleanup = scopeguard::guard(temp_path.clone(), |p| {
+        let _ = std::fs::remove_file(&p);
+    });
+
+    // Import using AgentService (properly registers config/identity/workspace/etc.)
+    let service = paths.services().agent();
+    let import_opts = AgentImportOptions {
+        name: None, // Use manifest name from package
+        team,
+        force,
+    };
+    let result = service.import_agent(&temp_path, import_opts).await?;
+
+    // Temp file will be cleaned up by scopeguard when `cleanup` drops
+    drop(cleanup);
+
+    if json {
+        let output_json = serde_json::json!({
+            "success": true,
+            "registry_ref": resolved_ref,
+            "name": result.name,
+            "team": result.team,
+            "config_path": result.config_path,
+        });
+        println!("{}", serde_json::to_string_pretty(&output_json)?);
+    } else {
+        println!("📥 Imported '{}' into team '{}'", result.name, result.team);
+        println!("   Config: {}", result.config_path.display());
+        println!("   Use: peko send {}/{} <message>", result.team, result.name);
     }
 
     Ok(())

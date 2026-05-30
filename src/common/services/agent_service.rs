@@ -595,7 +595,7 @@ impl AgentService {
             import_sessions: true,
             import_workspace: true,
             skip_validation: false,
-            force: false,
+            force: opts.force,
             team: Some(team.to_string()),
         };
 

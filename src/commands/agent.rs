@@ -137,6 +137,12 @@ pub enum AgentCommands {
         /// Output file path (optional, saves as .agent package)
         #[arg(short, long)]
         output: Option<String>,
+        /// Team to import agent into (defaults to "default")
+        #[arg(short, long)]
+        team: Option<String>,
+        /// Force overwrite if agent already exists
+        #[arg(short, long)]
+        force: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -224,8 +230,10 @@ pub async fn handle_agent(
         AgentCommands::Pull {
             registry_ref,
             output,
+            team,
+            force,
             json,
-        } => handlers::handle_agent_pull(paths, registry_ref, output, json, cli_registry).await,
+        } => handlers::handle_agent_pull(paths, registry_ref, output, team, force, json, cli_registry).await,
         AgentCommands::Config(cmd) => handlers::handle_agent_config(cmd, paths, json).await,
     }
 }
