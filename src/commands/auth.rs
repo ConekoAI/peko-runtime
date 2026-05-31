@@ -39,8 +39,8 @@ pub enum AuthCommands {
 
     /// Log in to the PekoHub registry
     Login {
-        /// Registry host (default: pekohub.org)
-        #[arg(long, default_value = "pekohub.org")]
+        /// Registry host (default: pekohub.ai)
+        #[arg(long, default_value = "pekohub.ai")]
         registry: String,
         /// Log in with an API key instead of OAuth
         #[arg(long)]
@@ -50,7 +50,7 @@ pub enum AuthCommands {
     /// Log out from the PekoHub registry
     Logout {
         /// Registry host to log out from
-        #[arg(long, default_value = "pekohub.org")]
+        #[arg(long, default_value = "pekohub.ai")]
         registry: String,
     },
 

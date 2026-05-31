@@ -13,7 +13,7 @@ use clap::Subcommand;
 pub enum RegistryCommands {
     /// Set the default registry host
     SetDefault {
-        /// Registry host (e.g., pekohub.org or localhost:3000)
+        /// Registry host (e.g., pekohub.ai or localhost:3000)
         host: String,
     },
 

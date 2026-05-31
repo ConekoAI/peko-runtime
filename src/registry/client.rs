@@ -56,7 +56,7 @@ pub enum ProgressEvent {
 /// Parsed registry reference
 #[derive(Debug, Clone)]
 pub struct RegistryRef {
-    /// Host (e.g., "pekohub.org")
+    /// Host (e.g., "pekohub.ai")
     pub host: String,
     /// Path (e.g., "agents/researcher")
     pub path: String,
@@ -97,7 +97,7 @@ impl RegistryRef {
     /// A "bare ref" has no '/' before the ':' (e.g., "my-agent:v1.0").
     /// It is resolved as: `{default_registry}/peko/{resource_type}/{name}:{tag}`
     ///
-    /// A "full ref" has at least one '/' (e.g., "pekohub.org/peko/agents/my-agent:v1.0")
+    /// A "full ref" has at least one '/' (e.g., "pekohub.ai/peko/agents/my-agent:v1.0")
     /// and is used as-is.
     pub fn parse_with_default(
         r#ref: &str,
@@ -714,16 +714,16 @@ mod tests {
 
     #[test]
     fn test_registry_ref_parse() {
-        let r#ref = RegistryRef::parse("pekohub.org/agents/researcher:v2.5").unwrap();
-        assert_eq!(r#ref.host, "pekohub.org");
+        let r#ref = RegistryRef::parse("pekohub.ai/agents/researcher:v2.5").unwrap();
+        assert_eq!(r#ref.host, "pekohub.ai");
         assert_eq!(r#ref.path, "agents/researcher");
         assert_eq!(r#ref.tag, "v2.5");
-        assert_eq!(r#ref.full_ref(), "pekohub.org/agents/researcher:v2.5");
+        assert_eq!(r#ref.full_ref(), "pekohub.ai/agents/researcher:v2.5");
     }
 
     #[test]
     fn test_registry_ref_parse_default_tag() {
-        let r#ref = RegistryRef::parse("pekohub.org/agents/researcher").unwrap();
+        let r#ref = RegistryRef::parse("pekohub.ai/agents/researcher").unwrap();
         assert_eq!(r#ref.tag, "latest");
     }
 
@@ -793,10 +793,10 @@ mod tests {
         assert!(RegistryRef::parse("").is_err());
 
         // Just a host without path should fail
-        assert!(RegistryRef::parse("pekohub.org").is_err());
+        assert!(RegistryRef::parse("pekohub.ai").is_err());
 
         // But host/path should work
-        assert!(RegistryRef::parse("pekohub.org/agents/agent").is_ok());
+        assert!(RegistryRef::parse("pekohub.ai/agents/agent").is_ok());
     }
 
     #[test]
@@ -930,18 +930,18 @@ mod tests {
         // Bare refs should still be resolved correctly
         let r#ref = RegistryRef::parse_with_default(
             "my-agent:v1.0",
-            Some("pekohub.org"),
+            Some("pekohub.ai"),
             Some(ResourceType::Agent),
         )
         .unwrap();
-        assert_eq!(r#ref.host, "pekohub.org");
+        assert_eq!(r#ref.host, "pekohub.ai");
         assert_eq!(r#ref.path, "peko/agents/my-agent");
         assert_eq!(r#ref.tag, "v1.0");
 
         // Bare ref without tag
         let r#ref = RegistryRef::parse_with_default(
             "my-agent",
-            Some("pekohub.org"),
+            Some("pekohub.ai"),
             Some(ResourceType::Agent),
         )
         .unwrap();

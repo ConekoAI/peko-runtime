@@ -62,7 +62,7 @@ impl RegistryConfig {
 }
 
 fn default_registry() -> String {
-    "pekohub.org".to_string()
+    "pekohub.ai".to_string()
 }
 
 /// A registry source configuration
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn test_registry_config_default() {
         let config = RegistryConfig::default();
-        assert_eq!(config.default, "pekohub.org");
+        assert_eq!(config.default, "pekohub.ai");
         assert_eq!(config.sources.len(), 1);
     }
 
@@ -288,20 +288,20 @@ auth = { type = "token", env = "REGISTRY_TOKEN" }
 port = 11435
 ";
         let config = parse_runtime_toml(toml);
-        assert_eq!(config.default, "pekohub.org"); // Default value
+        assert_eq!(config.default, "pekohub.ai"); // Default value
     }
 
     #[test]
     fn test_parse_runtime_toml_invalid() {
         let toml = "not valid toml {{{";
         let config = parse_runtime_toml(toml);
-        assert_eq!(config.default, "pekohub.org"); // Falls back to default
+        assert_eq!(config.default, "pekohub.ai"); // Falls back to default
     }
 
     #[test]
     fn test_load_from_workspace_nonexistent() {
         let config = load_from_workspace("/nonexistent/path/that/does/not/exist");
-        assert_eq!(config.default, "pekohub.org"); // Falls back to default
+        assert_eq!(config.default, "pekohub.ai"); // Falls back to default
     }
 
     #[test]
@@ -377,7 +377,7 @@ port = 11435
     fn test_config_add_and_resolve_source() {
         // Create empty config without default sources
         let mut config = RegistryConfig {
-            default: "pekohub.org".to_string(),
+            default: "pekohub.ai".to_string(),
             sources: Vec::new(),
         };
 
@@ -483,6 +483,6 @@ anthropic_api_key_env = "ANTHROPIC_API_KEY"
     #[test]
     fn test_load_from_config_dir_nonexistent() {
         let config = load_from_config_dir("/nonexistent/path/that/does/not/exist");
-        assert_eq!(config.default, "pekohub.org"); // Falls back to default
+        assert_eq!(config.default, "pekohub.ai"); // Falls back to default
     }
 }

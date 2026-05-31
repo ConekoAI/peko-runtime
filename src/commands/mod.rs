@@ -156,7 +156,7 @@ pub enum Commands {
 
     /// Log in to the PekoHub registry
     Login {
-        /// Registry host (default: from config or pekohub.org)
+        /// Registry host (default: from config or pekohub.ai)
         #[arg(long)]
         registry: Option<String>,
         /// API key for authentication
@@ -166,7 +166,7 @@ pub enum Commands {
 
     /// Log out from the PekoHub registry
     Logout {
-        /// Registry host to log out from (default: from config or pekohub.org)
+        /// Registry host to log out from (default: from config or pekohub.ai)
         #[arg(long)]
         registry: Option<String>,
     },
