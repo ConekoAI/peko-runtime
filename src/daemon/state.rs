@@ -96,6 +96,12 @@ pub struct AppState {
     /// Extension runtime starter registry — dispatches ext start/stop by type (ADR-025/026)
     runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
 
+    /// Extension manager for installed extensions (ADR-030 Tier 1)
+    extension_manager: Arc<tokio::sync::RwLock<crate::extension::manager::ExtensionManager>>,
+
+    /// Extension services for built-in extension operations
+    extension_services: Arc<crate::extension::services::Services>,
+
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
 
@@ -124,6 +130,8 @@ impl std::fmt::Debug for AppState {
                 "runtime_starter_registry",
                 &"<ExtensionRuntimeStarterRegistry>",
             )
+            .field("extension_manager", &"<ExtensionManager>")
+            .field("extension_services", &"<ExtensionServices>")
             .finish()
     }
 }
@@ -305,6 +313,37 @@ impl AppState {
         runtime_starter_registry.register(Box::new(McpRuntimeStarter::new()));
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
+        // ADR-030: Initialize ExtensionManager for IPC extension operations
+        let ext_storage = crate::extension::manager::ExtensionStorage::with_dir(
+            data_dir.join("extensions"),
+        );
+        let mut ext_manager = crate::extension::manager::ExtensionManager::with_core(
+            Arc::clone(&global_core),
+        ).with_storage_dir(ext_storage.dir().unwrap().to_path_buf());
+
+        // Register adapters (same as CLI create_manager_with_adapters)
+        use crate::extensions::skill::SkillAdapter;
+        use crate::extensions::mcp::McpAdapter;
+        use crate::extensions::universal::UniversalToolAdapter;
+        use crate::extensions::gateway::GatewayAdapter;
+        use crate::extensions::general::GeneralExtensionAdapter;
+
+        ext_manager.register_adapter(Box::new(SkillAdapter::new()));
+        ext_manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+        ext_manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+        ext_manager.register_adapter(Box::new(GatewayAdapter::new(Arc::clone(&global_core))));
+        ext_manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+
+        // Load all extensions (log warnings but don't fail startup)
+        if let Err(e) = ext_manager.load_all().await {
+            tracing::warn!("Failed to load some extensions during daemon startup: {}", e);
+        }
+
+        let extension_manager = Arc::new(tokio::sync::RwLock::new(ext_manager));
+        let extension_services = Arc::new(crate::extension::services::Services::with_core(
+            Arc::clone(&global_core),
+        ));
+
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
@@ -331,6 +370,8 @@ impl AppState {
             gateway_router,
             mcp_client_registry,
             runtime_starter_registry,
+            extension_manager,
+            extension_services,
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
@@ -497,6 +538,18 @@ impl AppState {
     #[must_use]
     pub fn runtime_starter_registry(&self) -> &Arc<ExtensionRuntimeStarterRegistry> {
         &self.runtime_starter_registry
+    }
+
+    /// Get the extension manager
+    #[must_use]
+    pub fn extension_manager(&self) -> &Arc<tokio::sync::RwLock<crate::extension::manager::ExtensionManager>> {
+        &self.extension_manager
+    }
+
+    /// Get the extension services
+    #[must_use]
+    pub fn extension_services(&self) -> &Arc<crate::extension::services::Services> {
+        &self.extension_services
     }
 
     /// Build a `StarterContext` for use by runtime starters.

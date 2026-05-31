@@ -159,6 +159,34 @@ pub enum RequestPacket {
 
     #[serde(rename = "session_get")]
     SessionGet { request_id: u64, id: String },
+
+    // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
+    #[serde(rename = "extension_list")]
+    ExtensionList {
+        request_id: u64,
+        enabled_only: bool,
+        ext_type: Option<String>,
+    },
+
+    #[serde(rename = "extension_enable")]
+    ExtensionEnable {
+        request_id: u64,
+        id: String,
+        target: Option<String>,
+    },
+
+    #[serde(rename = "extension_disable")]
+    ExtensionDisable {
+        request_id: u64,
+        id: String,
+        target: Option<String>,
+    },
+
+    #[serde(rename = "system_clean")]
+    SystemClean {
+        request_id: u64,
+        scope: Option<String>,
+    },
 }
 
 impl RequestPacket {
@@ -189,7 +217,11 @@ impl RequestPacket {
             | Self::SessionList { request_id, .. }
             | Self::SessionGet { request_id, .. }
             | Self::SystemStatus { request_id }
-            | Self::SystemDoctor { request_id } => *request_id,
+            | Self::SystemDoctor { request_id }
+            | Self::ExtensionList { request_id, .. }
+            | Self::ExtensionEnable { request_id, .. }
+            | Self::ExtensionDisable { request_id, .. }
+            | Self::SystemClean { request_id, .. } => *request_id,
         }
     }
 
@@ -380,6 +412,51 @@ pub enum ResponsePacket {
         failed: u32,
         warnings: u32,
     },
+
+    /// Extension list response
+    #[serde(rename = "extension_list")]
+    ExtensionList {
+        request_id: u64,
+        extensions: Vec<ExtensionSummary>,
+        total: usize,
+    },
+
+    /// Extension enabled response
+    #[serde(rename = "extension_enabled")]
+    ExtensionEnabled {
+        request_id: u64,
+        id: String,
+        message: String,
+    },
+
+    /// Extension disabled response
+    #[serde(rename = "extension_disabled")]
+    ExtensionDisabled {
+        request_id: u64,
+        id: String,
+        message: String,
+    },
+
+    /// System clean response
+    #[serde(rename = "system_cleaned")]
+    SystemCleaned {
+        request_id: u64,
+        cleaned: Vec<String>,
+        bytes_freed: u64,
+    },
+}
+
+/// Summary of an extension for IPC responses
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionSummary {
+    pub id: String,
+    pub name: String,
+    pub ext_type: String,
+    pub version: String,
+    pub source: String,      // "built-in" or "installed"
+    pub enabled: bool,
+    pub runtime: String,     // "running", "stopped", or "n/a"
+    pub description: String,
 }
 
 /// A single doctor check result
@@ -421,7 +498,11 @@ impl ResponsePacket {
             | Self::SessionList { request_id, .. }
             | Self::SessionGet { request_id, .. }
             | Self::SystemStatus { request_id, .. }
-            | Self::SystemDoctor { request_id, .. } => *request_id,
+            | Self::SystemDoctor { request_id, .. }
+            | Self::ExtensionList { request_id, .. }
+            | Self::ExtensionEnabled { request_id, .. }
+            | Self::ExtensionDisabled { request_id, .. }
+            | Self::SystemCleaned { request_id, .. } => *request_id,
         }
     }
 
@@ -1407,5 +1488,266 @@ mod tests {
             warnings: 0,
         };
         assert_eq!(resp_doctor.request_id(), 11);
+    }
+
+    #[test]
+    fn test_extension_list_request_roundtrip() {
+        let req = RequestPacket::ExtensionList {
+            request_id: 1000,
+            enabled_only: true,
+            ext_type: Some("tool".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionList {
+                request_id,
+                enabled_only,
+                ext_type,
+            } => {
+                assert_eq!(request_id, 1000);
+                assert!(enabled_only);
+                assert_eq!(ext_type, Some("tool".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_enable_request_roundtrip() {
+        let req = RequestPacket::ExtensionEnable {
+            request_id: 1001,
+            id: "ext-1".to_string(),
+            target: Some("all".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionEnable {
+                request_id,
+                id,
+                target,
+            } => {
+                assert_eq!(request_id, 1001);
+                assert_eq!(id, "ext-1");
+                assert_eq!(target, Some("all".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_disable_request_roundtrip() {
+        let req = RequestPacket::ExtensionDisable {
+            request_id: 1002,
+            id: "ext-1".to_string(),
+            target: None,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionDisable {
+                request_id,
+                id,
+                target,
+            } => {
+                assert_eq!(request_id, 1002);
+                assert_eq!(id, "ext-1");
+                assert_eq!(target, None);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_system_clean_request_roundtrip() {
+        let req = RequestPacket::SystemClean {
+            request_id: 1003,
+            scope: Some("logs".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SystemClean {
+                request_id,
+                scope,
+            } => {
+                assert_eq!(request_id, 1003);
+                assert_eq!(scope, Some("logs".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_list_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionList {
+            request_id: 2000,
+            extensions: vec![
+                ExtensionSummary {
+                    id: "ext-1".to_string(),
+                    name: "Test Extension".to_string(),
+                    ext_type: "tool".to_string(),
+                    version: "1.0.0".to_string(),
+                    source: "installed".to_string(),
+                    enabled: true,
+                    runtime: "running".to_string(),
+                    description: "A test extension".to_string(),
+                },
+            ],
+            total: 1,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionList {
+                request_id,
+                extensions,
+                total,
+            } => {
+                assert_eq!(request_id, 2000);
+                assert_eq!(extensions.len(), 1);
+                assert_eq!(extensions[0].id, "ext-1");
+                assert_eq!(extensions[0].name, "Test Extension");
+                assert_eq!(extensions[0].ext_type, "tool");
+                assert_eq!(extensions[0].version, "1.0.0");
+                assert_eq!(extensions[0].source, "installed");
+                assert!(extensions[0].enabled);
+                assert_eq!(extensions[0].runtime, "running");
+                assert_eq!(extensions[0].description, "A test extension");
+                assert_eq!(total, 1);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_enabled_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionEnabled {
+            request_id: 2001,
+            id: "ext-1".to_string(),
+            message: "Extension enabled successfully".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionEnabled {
+                request_id,
+                id,
+                message,
+            } => {
+                assert_eq!(request_id, 2001);
+                assert_eq!(id, "ext-1");
+                assert_eq!(message, "Extension enabled successfully");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_disabled_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionDisabled {
+            request_id: 2002,
+            id: "ext-1".to_string(),
+            message: "Extension disabled successfully".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionDisabled {
+                request_id,
+                id,
+                message,
+            } => {
+                assert_eq!(request_id, 2002);
+                assert_eq!(id, "ext-1");
+                assert_eq!(message, "Extension disabled successfully");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_system_cleaned_response_roundtrip() {
+        let resp = ResponsePacket::SystemCleaned {
+            request_id: 2003,
+            cleaned: vec!["logs".to_string(), "temp".to_string()],
+            bytes_freed: 1024,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SystemCleaned {
+                request_id,
+                cleaned,
+                bytes_freed,
+            } => {
+                assert_eq!(request_id, 2003);
+                assert_eq!(cleaned, vec!["logs".to_string(), "temp".to_string()]);
+                assert_eq!(bytes_freed, 1024);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_request_ids() {
+        let req_list = RequestPacket::ExtensionList {
+            request_id: 1,
+            enabled_only: false,
+            ext_type: None,
+        };
+        assert_eq!(req_list.request_id(), 1);
+
+        let req_enable = RequestPacket::ExtensionEnable {
+            request_id: 2,
+            id: "e".to_string(),
+            target: None,
+        };
+        assert_eq!(req_enable.request_id(), 2);
+
+        let req_disable = RequestPacket::ExtensionDisable {
+            request_id: 3,
+            id: "e".to_string(),
+            target: None,
+        };
+        assert_eq!(req_disable.request_id(), 3);
+
+        let req_clean = RequestPacket::SystemClean {
+            request_id: 4,
+            scope: None,
+        };
+        assert_eq!(req_clean.request_id(), 4);
+    }
+
+    #[test]
+    fn test_extension_response_ids() {
+        let resp_list = ResponsePacket::ExtensionList {
+            request_id: 10,
+            extensions: vec![],
+            total: 0,
+        };
+        assert_eq!(resp_list.request_id(), 10);
+
+        let resp_enabled = ResponsePacket::ExtensionEnabled {
+            request_id: 11,
+            id: "e".to_string(),
+            message: "m".to_string(),
+        };
+        assert_eq!(resp_enabled.request_id(), 11);
+
+        let resp_disabled = ResponsePacket::ExtensionDisabled {
+            request_id: 12,
+            id: "e".to_string(),
+            message: "m".to_string(),
+        };
+        assert_eq!(resp_disabled.request_id(), 12);
+
+        let resp_cleaned = ResponsePacket::SystemCleaned {
+            request_id: 13,
+            cleaned: vec![],
+            bytes_freed: 0,
+        };
+        assert_eq!(resp_cleaned.request_id(), 13);
     }
 }

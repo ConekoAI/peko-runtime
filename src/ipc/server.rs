@@ -633,6 +633,169 @@ impl IpcServer {
                 let response = ResponsePacket::SystemDoctor { request_id, checks, passed, failed, warnings };
                 Self::send_packet(&socket, response, addr).await?;
             }
+
+            // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
+            RequestPacket::ExtensionList { request_id, enabled_only: _, ext_type } => {
+                let manager = state.extension_manager().read().await;
+                let ext_services = state.extension_services();
+
+                let installed = manager.list_extensions();
+                let builtins = ext_services.list_builtin_extensions().await;
+
+                let mut extensions = Vec::new();
+
+                // Add builtins
+                for b in &builtins {
+                    extensions.push(super::packet::ExtensionSummary {
+                        id: b.id.clone(),
+                        name: b.name.clone(),
+                        ext_type: b.ext_type.clone(),
+                        version: "n/a".to_string(),
+                        source: "built-in".to_string(),
+                        enabled: b.enabled,
+                        runtime: "n/a".to_string(),
+                        description: String::new(),
+                    });
+                }
+
+                // Add installed
+                for ext in installed {
+                    if let Some(ref t) = ext_type {
+                        if &ext.extension_type != t {
+                            continue;
+                        }
+                    }
+                    extensions.push(super::packet::ExtensionSummary {
+                        id: ext.manifest.id.0.clone(),
+                        name: ext.manifest.name.clone(),
+                        ext_type: ext.extension_type.clone(),
+                        version: ext.manifest.version.clone(),
+                        source: "installed".to_string(),
+                        enabled: true,
+                        runtime: "n/a".to_string(),
+                        description: ext.manifest.description.clone(),
+                    });
+                }
+
+                let total = extensions.len();
+                let response = ResponsePacket::ExtensionList { request_id, extensions, total };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+
+            RequestPacket::ExtensionEnable { request_id, id, target: _ } => {
+                let mut manager = state.extension_manager().write().await;
+                let ext_services = state.extension_services();
+
+                let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
+                    || id.starts_with("builtin:");
+
+                let result = if is_builtin {
+                    // Enable built-in hooks
+                    let capability = if id.starts_with("builtin:") {
+                        id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
+                    } else {
+                        id.clone()
+                    };
+                    ext_services.enable_builtin_hooks(&capability).await;
+                    Ok(format!("Built-in capability '{capability}' enabled"))
+                } else {
+                    // Enable installed extension
+                    let ext_id = crate::extension::types::ExtensionId::new(&id);
+                    match manager.enable(&ext_id).await {
+                        Ok(()) => Ok(format!("Extension '{id}' enabled")),
+                        Err(e) => Err(e),
+                    }
+                };
+
+                match result {
+                    Ok(msg) => {
+                        let response = ResponsePacket::ExtensionEnabled { request_id, id, message: msg };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ExtensionDisable { request_id, id, target: _ } => {
+                let mut manager = state.extension_manager().write().await;
+                let ext_services = state.extension_services();
+
+                let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
+                    || id.starts_with("builtin:");
+
+                let result = if is_builtin {
+                    // Disable built-in hooks
+                    let capability = if id.starts_with("builtin:") {
+                        id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
+                    } else {
+                        id.clone()
+                    };
+                    ext_services.disable_builtin_hooks(&capability).await;
+                    Ok(format!("Built-in capability '{capability}' disabled"))
+                } else {
+                    // Disable installed extension
+                    let ext_id = crate::extension::types::ExtensionId::new(&id);
+                    match manager.disable(&ext_id).await {
+                        Ok(()) => Ok(format!("Extension '{id}' disabled")),
+                        Err(e) => Err(e),
+                    }
+                };
+
+                match result {
+                    Ok(msg) => {
+                        let response = ResponsePacket::ExtensionDisabled { request_id, id, message: msg };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::SystemClean { request_id, scope } => {
+                let cache_dir = &state.cache_dir;
+                let mut cleaned = Vec::new();
+                let mut bytes_freed: u64 = 0;
+
+                let scope = scope.as_deref().unwrap_or("all");
+
+                if scope == "all" || scope == "cache" {
+                    if cache_dir.exists() {
+                        match std::fs::read_dir(cache_dir) {
+                            Ok(entries) => {
+                                for entry in entries.flatten() {
+                                    let path = entry.path();
+                                    if let Ok(meta) = entry.metadata() {
+                                        bytes_freed += meta.len();
+                                    }
+                                    if path.is_file() {
+                                        let _ = std::fs::remove_file(&path);
+                                        cleaned.push(path.to_string_lossy().to_string());
+                                    } else if path.is_dir() {
+                                        let _ = std::fs::remove_dir_all(&path);
+                                        cleaned.push(path.to_string_lossy().to_string());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: format!("Failed to clean cache: {e}"),
+                                };
+                                Self::send_packet(&socket, response, addr).await?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                let response = ResponsePacket::SystemCleaned { request_id, cleaned, bytes_freed };
+                Self::send_packet(&socket, response, addr).await?;
+            }
         }
 
         Ok(())
