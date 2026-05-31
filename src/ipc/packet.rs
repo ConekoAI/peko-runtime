@@ -97,6 +97,14 @@ pub enum RequestPacket {
         limit: usize,
     },
 
+    /// Get system status
+    #[serde(rename = "system_status")]
+    SystemStatus { request_id: u64 },
+
+    /// Run system doctor
+    #[serde(rename = "system_doctor")]
+    SystemDoctor { request_id: u64 },
+
     /// Start a background runtime (extension lifecycle — ADR-026)
     #[serde(rename = "ext_start")]
     ExtStart {
@@ -179,7 +187,9 @@ impl RequestPacket {
             | Self::TeamList { request_id }
             | Self::TeamGet { request_id, .. }
             | Self::SessionList { request_id, .. }
-            | Self::SessionGet { request_id, .. } => *request_id,
+            | Self::SessionGet { request_id, .. }
+            | Self::SystemStatus { request_id }
+            | Self::SystemDoctor { request_id } => *request_id,
         }
     }
 
@@ -348,6 +358,37 @@ pub enum ResponsePacket {
     /// Session detail response
     #[serde(rename = "session_get")]
     SessionGet { request_id: u64, session: Option<crate::common::services::session_service::SessionDetails> },
+
+    /// System status response
+    #[serde(rename = "system_status")]
+    SystemStatus {
+        request_id: u64,
+        version: String,
+        uptime_secs: u64,
+        degraded: bool,
+        instance_count: u64,
+        team_count: u64,
+        ready: bool,
+    },
+
+    /// System doctor response
+    #[serde(rename = "system_doctor")]
+    SystemDoctor {
+        request_id: u64,
+        checks: Vec<DoctorCheck>,
+        passed: u32,
+        failed: u32,
+        warnings: u32,
+    },
+}
+
+/// A single doctor check result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorCheck {
+    pub name: String,
+    pub status: String,
+    pub message: String,
+    pub suggestion: Option<String>,
 }
 
 impl ResponsePacket {
@@ -378,7 +419,9 @@ impl ResponsePacket {
             | Self::TeamList { request_id, .. }
             | Self::TeamGet { request_id, .. }
             | Self::SessionList { request_id, .. }
-            | Self::SessionGet { request_id, .. } => *request_id,
+            | Self::SessionGet { request_id, .. }
+            | Self::SystemStatus { request_id, .. }
+            | Self::SystemDoctor { request_id, .. } => *request_id,
         }
     }
 
@@ -1238,5 +1281,131 @@ mod tests {
 
         let resp_session_get = ResponsePacket::SessionGet { request_id: 17, session: None };
         assert_eq!(resp_session_get.request_id(), 17);
+    }
+
+    #[test]
+    fn test_system_status_request_roundtrip() {
+        let req = RequestPacket::SystemStatus { request_id: 900 };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SystemStatus { request_id } => {
+                assert_eq!(request_id, 900);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_system_doctor_request_roundtrip() {
+        let req = RequestPacket::SystemDoctor { request_id: 901 };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SystemDoctor { request_id } => {
+                assert_eq!(request_id, 901);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_system_status_response_roundtrip() {
+        let resp = ResponsePacket::SystemStatus {
+            request_id: 902,
+            version: "1.0.0".to_string(),
+            uptime_secs: 12345,
+            degraded: false,
+            instance_count: 3,
+            team_count: 2,
+            ready: true,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SystemStatus { request_id, version, uptime_secs, degraded, instance_count, team_count, ready } => {
+                assert_eq!(request_id, 902);
+                assert_eq!(version, "1.0.0");
+                assert_eq!(uptime_secs, 12345);
+                assert!(!degraded);
+                assert_eq!(instance_count, 3);
+                assert_eq!(team_count, 2);
+                assert!(ready);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_system_doctor_response_roundtrip() {
+        let resp = ResponsePacket::SystemDoctor {
+            request_id: 903,
+            checks: vec![
+                DoctorCheck {
+                    name: "daemon_ready".to_string(),
+                    status: "pass".to_string(),
+                    message: "Daemon is ready".to_string(),
+                    suggestion: None,
+                },
+                DoctorCheck {
+                    name: "not_degraded".to_string(),
+                    status: "warn".to_string(),
+                    message: "Daemon is in degraded mode".to_string(),
+                    suggestion: Some("Restart daemon".to_string()),
+                },
+            ],
+            passed: 1,
+            failed: 0,
+            warnings: 1,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SystemDoctor { request_id, checks, passed, failed, warnings } => {
+                assert_eq!(request_id, 903);
+                assert_eq!(checks.len(), 2);
+                assert_eq!(checks[0].name, "daemon_ready");
+                assert_eq!(checks[0].status, "pass");
+                assert_eq!(checks[1].name, "not_degraded");
+                assert_eq!(checks[1].status, "warn");
+                assert_eq!(checks[1].suggestion, Some("Restart daemon".to_string()));
+                assert_eq!(passed, 1);
+                assert_eq!(failed, 0);
+                assert_eq!(warnings, 1);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_system_request_ids() {
+        let req_status = RequestPacket::SystemStatus { request_id: 1 };
+        assert_eq!(req_status.request_id(), 1);
+
+        let req_doctor = RequestPacket::SystemDoctor { request_id: 2 };
+        assert_eq!(req_doctor.request_id(), 2);
+    }
+
+    #[test]
+    fn test_system_response_ids() {
+        let resp_status = ResponsePacket::SystemStatus {
+            request_id: 10,
+            version: "0.1.0".to_string(),
+            uptime_secs: 0,
+            degraded: false,
+            instance_count: 0,
+            team_count: 0,
+            ready: false,
+        };
+        assert_eq!(resp_status.request_id(), 10);
+
+        let resp_doctor = ResponsePacket::SystemDoctor {
+            request_id: 11,
+            checks: vec![],
+            passed: 0,
+            failed: 0,
+            warnings: 0,
+        };
+        assert_eq!(resp_doctor.request_id(), 11);
     }
 }

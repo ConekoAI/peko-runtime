@@ -585,6 +585,54 @@ impl IpcServer {
                 };
                 Self::send_packet(&socket, response, addr).await?;
             }
+
+            RequestPacket::SystemStatus { request_id } => {
+                let response = ResponsePacket::SystemStatus {
+                    request_id,
+                    version: crate::VERSION.to_string(),
+                    uptime_secs: state.uptime_seconds(),
+                    degraded: state.is_degraded().await,
+                    instance_count: state.instance_count().await,
+                    team_count: state.team_count().await,
+                    ready: state.is_ready().await,
+                };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+
+            RequestPacket::SystemDoctor { request_id } => {
+                let mut checks = Vec::new();
+
+                let ready = state.is_ready().await;
+                checks.push(super::packet::DoctorCheck {
+                    name: "daemon_ready".to_string(),
+                    status: if ready { "pass".to_string() } else { "fail".to_string() },
+                    message: if ready { "Daemon is ready to serve requests".to_string() } else { "Daemon is not ready".to_string() },
+                    suggestion: if !ready { Some("Check daemon logs for startup errors".to_string()) } else { None },
+                });
+
+                let degraded = state.is_degraded().await;
+                checks.push(super::packet::DoctorCheck {
+                    name: "not_degraded".to_string(),
+                    status: if !degraded { "pass".to_string() } else { "warn".to_string() },
+                    message: if !degraded { "Daemon is operating normally".to_string() } else { "Daemon is in degraded mode".to_string() },
+                    suggestion: if degraded { Some("Check resource usage and consider restarting".to_string()) } else { None },
+                });
+
+                let uptime = state.uptime_seconds();
+                checks.push(super::packet::DoctorCheck {
+                    name: "uptime".to_string(),
+                    status: "pass".to_string(),
+                    message: format!("Daemon uptime: {} seconds", uptime),
+                    suggestion: None,
+                });
+
+                let passed = checks.iter().filter(|c| c.status == "pass").count() as u32;
+                let failed = checks.iter().filter(|c| c.status == "fail").count() as u32;
+                let warnings = checks.iter().filter(|c| c.status == "warn").count() as u32;
+
+                let response = ResponsePacket::SystemDoctor { request_id, checks, passed, failed, warnings };
+                Self::send_packet(&socket, response, addr).await?;
+            }
         }
 
         Ok(())
