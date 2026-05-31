@@ -1,8 +1,8 @@
 # ADR-021: Daemon as Central Runtime — SIMPLIFIED
 
-**Status**: Proposed  
+**Status**: Accepted / In Progress  
 **Date**: 2026-04-19  
-**Last Updated**: 2026-04-19  
+**Last Updated**: 2026-05-31  
 **Author**: User + Kimi Code CLI  
 **Depends On**: ADR-020 (Daemon-Based Async Execution)  
 **Replaces**: Previous ADR-021 draft (too large, over-engineered)
@@ -123,68 +123,91 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
 **Packet format** (max ~65KB per datagram; large responses are sequenced and chunked):
 
 ```rust
-// Request from CLI → Daemon
+// Request from CLI/Desktop → Daemon
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum RequestPacket {
-    /// Execute an agent message
-    Execute {
-        request_id: u64,
-        agent: String,
-        team: String,
-        message: String,
-        session_id: Option<String>,
-        new_session: bool,
-        stream: bool,
-    },
-    /// Spawn an async task
-    AsyncSpawn {
-        request_id: u64,
-        tool_name: String,
-        params: serde_json::Value,
-        session_key: String,
-        workspace: PathBuf,
-    },
-    /// Check daemon status / health
+    // ── Core (original) ──
+    Execute { request_id: u64, agent: String, team: String, message: String, session_id: Option<String>, new_session: bool, stream: bool },
+    AsyncSpawn { request_id: u64, tool_name: String, params: serde_json::Value, session_key: String, workspace: PathBuf },
     Ping { request_id: u64 },
-    /// Cancel an async task
     AsyncCancel { request_id: u64, task_id: String },
+    Shutdown { request_id: u64 },
+
+    // ── Cron (Phase 1) ──
+    CronList { request_id: u64, include_disabled: bool },
+    CronAdd { request_id: u64, job: crate::cron::CronJob },
+    CronRemove { request_id: u64, job_id: String },
+    CronRun { request_id: u64, job_id: String },
+
+    // ── Extension lifecycle (Phase 1) ──
+    ExtStart { request_id: u64, id: String },
+    ExtStop { request_id: u64, id: String },
+    ExtRestart { request_id: u64, id: String },
+    ExtStatus { request_id: u64, id: String },
+
+    // ── Agent CRUD (Phase 2) ──
+    AgentList { request_id: u64, team_filter: Option<String> },
+    AgentGet { request_id: u64, name: String, team: Option<String> },
+    AgentCreate { request_id: u64, request: crate::common::types::agent::AgentCreateRequest },
+    AgentDelete { request_id: u64, name: String, team: Option<String>, force: bool },
+
+    // ── Team CRUD (Phase 2) ──
+    TeamList { request_id: u64 },
+    TeamGet { request_id: u64, name: String },
+
+    // ── Session CRUD (Phase 2) ──
+    SessionList { request_id: u64, agent: Option<String> },
+    SessionGet { request_id: u64, id: String },
+
+    // ── System (Phase 2) ──
+    SystemStatus { request_id: u64 },
+    SystemDoctor { request_id: u64 },
 }
 
-// Response from Daemon → CLI
+// Response from Daemon → CLI/Desktop
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum ResponsePacket {
-    /// Streaming text chunk (sequenced for ordering)
-    Text {
-        request_id: u64,
-        seq: u32,
-        chunk: String,
-    },
-    /// Async task receipt
-    AsyncReceipt {
-        request_id: u64,
-        receipt: AsyncTaskReceipt,
-    },
-    /// Final success/failure
-    Done {
-        request_id: u64,
-        success: bool,
-        error: Option<String>,
-    },
-    /// Error response
-    Error {
-        request_id: u64,
-        message: String,
-    },
-    /// Ping response
-    Pong {
-        request_id: u64,
-        uptime_secs: u64,
-        version: String,
-    },
-    /// Heartbeat — sent periodically during long streams so the CLI can detect a dead daemon
-    Heartbeat {
-        request_id: u64,
-    },
+    // ── Core (original) ──
+    Text { request_id: u64, seq: u32, chunk: String },
+    AsyncReceipt { request_id: u64, receipt: AsyncTaskReceipt },
+    Done { request_id: u64, success: bool, error: Option<String> },
+    Error { request_id: u64, message: String },
+    Pong { request_id: u64, uptime_secs: u64, version: String },
+    Heartbeat { request_id: u64 },
+    ShuttingDown { request_id: u64 },
+
+    // ── Cron (Phase 1) ──
+    CronList { request_id: u64, jobs: Vec<crate::cron::CronJob> },
+    CronAdded { request_id: u64, job_id: String },
+    CronRemoved { request_id: u64, job_id: String },
+    CronRunStarted { request_id: u64, job_id: String, run_id: String },
+    CronHistory { request_id: u64, runs: Vec<crate::cron::CronRun> },
+
+    // ── Extension lifecycle (Phase 1) ──
+    ExtStarted { request_id: u64, id: String },
+    ExtStopped { request_id: u64, id: String },
+    ExtRestarted { request_id: u64, id: String },
+    ExtStatus { request_id: u64, id: String, state: String },
+
+    // ── Agent CRUD (Phase 2) ──
+    AgentList { request_id: u64, agents: Vec<AgentSummary> },
+    AgentGet { request_id: u64, agent: Option<AgentInfo> },
+    AgentCreated { request_id: u64, result: AgentCreationResult },
+    AgentDeleted { request_id: u64, result: AgentDeleteResult },
+
+    // ── Team CRUD (Phase 2) ──
+    TeamList { request_id: u64, teams: Vec<TeamInfo> },
+    TeamGet { request_id: u64, team: Option<TeamInfo> },
+
+    // ── Session CRUD (Phase 2) ──
+    SessionList { request_id: u64, sessions: Vec<SessionInfo> },
+    SessionGet { request_id: u64, session: Option<SessionDetails> },
+
+    // ── System (Phase 2) ──
+    SystemStatus { request_id: u64, version: String, uptime_secs: u64, degraded: bool, instance_count: u64, team_count: u64, ready: bool },
+    SystemDoctor { request_id: u64, checks: Vec<DoctorCheck>, passed: u32, failed: u32, warnings: u32 },
 }
 ```
 
@@ -322,33 +345,49 @@ impl ConnectionManager {
 
 ## Migration Path
 
-### Milestone 0: Minimal Viable Daemon (MVD)
+### Milestone 0: Minimal Viable Daemon (MVD) ✅
 
-**Goal**: Daemon handles `Ping` + `Execute` (send command only). Everything else stays as-is.
+**Goal**: Daemon handles `Ping` + `Execute` (send command only). Everything else stays as-is. ✅
 
-- Create `src/ipc/` module.
-- Implement packet types + serialization.
-- Daemon binds socket, responds to `Ping` with `Pong`.
-- `peko send` uses IPC to daemon; daemon runs `StatelessAgentService` and streams `Text` + `Done` back.
-- HTTP API is still running during this milestone (for other commands).
-- Verify: `peko send` works via IPC; `peko daemon status` works via IPC.
+- ✅ Create `src/ipc/` module.
+- ✅ Implement packet types + serialization.
+- ✅ Daemon binds socket, responds to `Ping` with `Pong`.
+- ✅ `peko send` uses IPC to daemon; daemon runs `StatelessAgentService` and streams `Text` + `Done` back.
+- ✅ HTTP API deleted (Axum, reqwest, tower removed).
 
-### Milestone 1: Async Tasks via IPC
+### Milestone 1: Async Tasks + Cron + Extension Lifecycle via IPC ✅
 
-- Move `AsyncExecutionRouter` in CLI to use IPC `AsyncSpawn` instead of HTTP.
-- Daemon handles `AsyncSpawn` + `AsyncCancel`.
-- Delete HTTP async task routes (`/async/tasks`).
+- ✅ Move `AsyncExecutionRouter` in CLI to use IPC `AsyncSpawn` instead of HTTP.
+- ✅ Daemon handles `AsyncSpawn` + `AsyncCancel`.
+- ✅ Add `CronList`/`CronAdd`/`CronRemove`/`CronRun` packets.
+- ✅ Add `ExtStart`/`ExtStop`/`ExtRestart`/`ExtStatus` packets.
+- ✅ Delete HTTP async task routes (`/async/tasks`).
 
-### Milestone 2: All CLI Commands via IPC
+### Milestone 2: Agent / Team / Session / System / Cron CRUD via IPC ✅
 
-- Convert `agent`, `session`, `team`, `ext`, `cron` commands one at a time.
-- Each sends a UDP request; daemon handles it directly.
+- ✅ Add `AgentList`/`AgentGet`/`AgentCreate`/`AgentDelete` packets.
+- ✅ Add `TeamList`/`TeamGet` packets.
+- ✅ Add `SessionList`/`SessionGet` packets.
+- ✅ Add `SystemStatus`/`SystemDoctor` packets.
+- ✅ Desktop app migrates all simple CRUD commands to IPC.
 
-### Milestone 3: Delete HTTP API
+### Milestone 3: Remaining Operations (Future / Optional)
 
-- Remove Axum, reqwest, tower dependencies.
-- Delete `src/api/server.rs`, `src/api/routes/`, `src/api/middleware/`, `src/api/streaming.rs`.
-- Rename `src/api/` to `src/daemon/` (keeping `state.rs` and any remaining types).
+These operations are intentionally staying as CLI shell-out because they are file-I/O-heavy or complex:
+
+| Operation | Reason |
+|-----------|--------|
+| `agent export` / `agent import` | File I/O (reads/writes user-specified paths) |
+| `team export` / `team import` | File I/O (creates/extracts `.team` archives) |
+| `session branch` / `session compact` | Complex multi-step state mutations |
+| `extension list` | Requires `ExtensionManager` with filesystem scan |
+| `extension install` / `extension uninstall` | File I/O (copies/deletes from `~/.peko/extensions/`) |
+| `extension enable` / `extension disable` | Config persistence (`extensions.toml`) |
+| `cron add` | Complex schedule parsing (`ScheduleKind::Every { every_ms }`) |
+| `system clean` | File I/O (clears caches, temp files) |
+| `registry pull` | Network I/O (HTTP to registry) |
+
+To migrate these, the daemon would need to become the single writer for filesystem state (like Docker's `dockerd`). This is a significant architectural shift and is deferred to a future phase if needed.
 
 ## Consequences
 
