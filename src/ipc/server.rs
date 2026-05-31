@@ -461,6 +461,130 @@ impl IpcServer {
             } => {
                 Self::handle_ext_status(request_id, extension_id, state, socket, addr).await?;
             }
+
+            // ─── Agent CRUD ─────────────────────────────────────────────────
+            RequestPacket::AgentList { request_id, team_filter } => {
+                let service = state.agent_mgmt_service();
+                match service.list_agents(team_filter.as_deref()).await {
+                    Ok(agents) => {
+                        let response = ResponsePacket::AgentList { request_id, agents };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::AgentGet { request_id, name, team } => {
+                let service = state.agent_mgmt_service();
+                match service.get_agent(&name, team.as_deref()).await {
+                    Ok(agent) => {
+                        let response = ResponsePacket::AgentGet { request_id, agent };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::AgentCreate { request_id, request } => {
+                let service = state.agent_mgmt_service();
+                match service.create_agent(request).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::AgentCreated { request_id, result };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::AgentDelete { request_id, name, team, force } => {
+                let service = state.agent_mgmt_service();
+                let opts = crate::common::types::agent::AgentDeleteOptions {
+                    force,
+                    ..Default::default()
+                };
+                match service.delete_agent(&name, team.as_deref(), opts).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::AgentDeleted { request_id, result };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            // ─── Team CRUD ──────────────────────────────────────────────────
+            RequestPacket::TeamList { request_id } => {
+                let service = state.team_service();
+                match service.list_teams().await {
+                    Ok(teams) => {
+                        let response = ResponsePacket::TeamList { request_id, teams };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::TeamGet { request_id, name } => {
+                let service = state.team_service();
+                match service.get_team(&name).await {
+                    Ok(team) => {
+                        let response = ResponsePacket::TeamGet { request_id, team };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            // ─── Session CRUD ───────────────────────────────────────────────
+            RequestPacket::SessionList { request_id, agent } => {
+                let service = state.session_service();
+                match agent {
+                    Some(agent_name) => {
+                        match service.list_sessions(&agent_name, None).await {
+                            Ok(sessions) => {
+                                let response = ResponsePacket::SessionList { request_id, sessions };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                        }
+                    }
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: "Agent name is required for session listing".to_string(),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::SessionGet { request_id, id: _ } => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: "SessionGet requires both agent name and session ID. Use the HTTP API for detailed session lookups.".to_string(),
+                };
+                Self::send_packet(&socket, response, addr).await?;
+            }
         }
 
         Ok(())

@@ -4,10 +4,11 @@
 //! CLI commands and API routes for consistent agent data representation.
 
 use crate::types::agent::AgentConfig;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Agent summary for listing operations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSummary {
     pub name: String,
     pub team: String,
@@ -16,7 +17,7 @@ pub struct AgentSummary {
 }
 
 /// Agent information with optional session details
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub name: String,
     pub team: String,
@@ -27,7 +28,7 @@ pub struct AgentInfo {
 }
 
 /// Agent creation result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCreationResult {
     pub name: String,
     pub team: String,
@@ -36,7 +37,7 @@ pub struct AgentCreationResult {
 }
 
 /// Agent rename/move result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRenameResult {
     pub old_name: String,
     pub new_name: String,
@@ -46,7 +47,7 @@ pub struct AgentRenameResult {
 }
 
 /// Agent creation request
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCreateRequest {
     pub name: String,
     pub team: Option<String>,
@@ -99,14 +100,14 @@ impl AgentCreateRequest {
 }
 
 /// Agent deletion options
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentDeleteOptions {
     pub purge_identity: bool,
     pub force: bool,
 }
 
 /// Agent deletion result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDeleteResult {
     pub name: String,
     pub team: String,
@@ -115,21 +116,21 @@ pub struct AgentDeleteResult {
 }
 
 /// Agent update request
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentUpdateRequest {
     pub image: Option<String>,
     pub team_id: Option<String>,
 }
 
 /// Agent export options
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentExportOptions {
     pub output_path: Option<PathBuf>,
     pub include_sessions: bool,
 }
 
 /// Agent export result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentExportResult {
     pub name: String,
     pub team: String,
@@ -138,7 +139,7 @@ pub struct AgentExportResult {
 }
 
 /// Agent import options
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentImportOptions {
     pub name: Option<String>,
     pub team: Option<String>,
@@ -146,7 +147,7 @@ pub struct AgentImportOptions {
 }
 
 /// Agent import result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentImportResult {
     pub name: String,
     pub team: String,

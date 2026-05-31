@@ -15,7 +15,7 @@ pub struct TeamMetadata {
 }
 
 /// Team information for listing and display
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamInfo {
     pub name: String,
     pub metadata: Option<TeamMetadata>,
@@ -24,21 +24,21 @@ pub struct TeamInfo {
 }
 
 /// Team creation result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamCreationResult {
     pub metadata: TeamMetadata,
     pub path: PathBuf,
 }
 
 /// Team deletion result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamDeletionResult {
     pub name: String,
     pub agents_deleted: usize,
 }
 
 /// Team move/rename result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamMoveResult {
     pub old_name: String,
     pub new_name: String,
@@ -48,7 +48,7 @@ pub struct TeamMoveResult {
 }
 
 /// Team export result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamExportResult {
     pub name: String,
     pub output_path: PathBuf,
@@ -56,7 +56,7 @@ pub struct TeamExportResult {
 }
 
 /// Team import result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamImportResult {
     pub name: String,
     pub path: PathBuf,

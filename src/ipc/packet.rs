@@ -124,6 +124,33 @@ pub enum RequestPacket {
         request_id: u64,
         extension_id: String,
     },
+
+    // ─── Agent CRUD ─────────────────────────────────────────────────
+    #[serde(rename = "agent_list")]
+    AgentList { request_id: u64, team_filter: Option<String> },
+
+    #[serde(rename = "agent_get")]
+    AgentGet { request_id: u64, name: String, team: Option<String> },
+
+    #[serde(rename = "agent_create")]
+    AgentCreate { request_id: u64, request: crate::common::types::agent::AgentCreateRequest },
+
+    #[serde(rename = "agent_delete")]
+    AgentDelete { request_id: u64, name: String, team: Option<String>, force: bool },
+
+    // ─── Team CRUD ──────────────────────────────────────────────────
+    #[serde(rename = "team_list")]
+    TeamList { request_id: u64 },
+
+    #[serde(rename = "team_get")]
+    TeamGet { request_id: u64, name: String },
+
+    // ─── Session CRUD ───────────────────────────────────────────────
+    #[serde(rename = "session_list")]
+    SessionList { request_id: u64, agent: Option<String> },
+
+    #[serde(rename = "session_get")]
+    SessionGet { request_id: u64, id: String },
 }
 
 impl RequestPacket {
@@ -144,7 +171,15 @@ impl RequestPacket {
             | Self::ExtStart { request_id, .. }
             | Self::ExtStop { request_id, .. }
             | Self::ExtRestart { request_id, .. }
-            | Self::ExtStatus { request_id, .. } => *request_id,
+            | Self::ExtStatus { request_id, .. }
+            | Self::AgentList { request_id, .. }
+            | Self::AgentGet { request_id, .. }
+            | Self::AgentCreate { request_id, .. }
+            | Self::AgentDelete { request_id, .. }
+            | Self::TeamList { request_id }
+            | Self::TeamGet { request_id, .. }
+            | Self::SessionList { request_id, .. }
+            | Self::SessionGet { request_id, .. } => *request_id,
         }
     }
 
@@ -281,6 +316,38 @@ pub enum ResponsePacket {
         restart_count: u32,
         last_error: Option<String>,
     },
+
+    /// Agent list response
+    #[serde(rename = "agent_list")]
+    AgentList { request_id: u64, agents: Vec<crate::common::types::agent::AgentSummary> },
+
+    /// Agent detail response
+    #[serde(rename = "agent_get")]
+    AgentGet { request_id: u64, agent: Option<crate::common::types::agent::AgentInfo> },
+
+    /// Agent created response
+    #[serde(rename = "agent_created")]
+    AgentCreated { request_id: u64, result: crate::common::types::agent::AgentCreationResult },
+
+    /// Agent deleted response
+    #[serde(rename = "agent_deleted")]
+    AgentDeleted { request_id: u64, result: crate::common::types::agent::AgentDeleteResult },
+
+    /// Team list response
+    #[serde(rename = "team_list")]
+    TeamList { request_id: u64, teams: Vec<crate::common::types::team::TeamInfo> },
+
+    /// Team detail response
+    #[serde(rename = "team_get")]
+    TeamGet { request_id: u64, team: Option<crate::common::types::team::TeamInfo> },
+
+    /// Session list response
+    #[serde(rename = "session_list")]
+    SessionList { request_id: u64, sessions: Vec<crate::common::services::session_service::SessionInfo> },
+
+    /// Session detail response
+    #[serde(rename = "session_get")]
+    SessionGet { request_id: u64, session: Option<crate::common::services::session_service::SessionDetails> },
 }
 
 impl ResponsePacket {
@@ -303,7 +370,15 @@ impl ResponsePacket {
             | Self::ExtStarted { request_id, .. }
             | Self::ExtStopped { request_id, .. }
             | Self::ExtRestarted { request_id, .. }
-            | Self::ExtStatus { request_id, .. } => *request_id,
+            | Self::ExtStatus { request_id, .. }
+            | Self::AgentList { request_id, .. }
+            | Self::AgentGet { request_id, .. }
+            | Self::AgentCreated { request_id, .. }
+            | Self::AgentDeleted { request_id, .. }
+            | Self::TeamList { request_id, .. }
+            | Self::TeamGet { request_id, .. }
+            | Self::SessionList { request_id, .. }
+            | Self::SessionGet { request_id, .. } => *request_id,
         }
     }
 
@@ -732,5 +807,436 @@ mod tests {
             runs: vec![],
         };
         assert_eq!(resp_history.request_id(), 14);
+    }
+
+    #[test]
+    fn test_agent_list_request_roundtrip() {
+        let req = RequestPacket::AgentList {
+            request_id: 300,
+            team_filter: Some("default".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::AgentList { request_id, team_filter } => {
+                assert_eq!(request_id, 300);
+                assert_eq!(team_filter, Some("default".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_get_request_roundtrip() {
+        let req = RequestPacket::AgentGet {
+            request_id: 301,
+            name: "test-agent".to_string(),
+            team: Some("default".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::AgentGet { request_id, name, team } => {
+                assert_eq!(request_id, 301);
+                assert_eq!(name, "test-agent");
+                assert_eq!(team, Some("default".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_create_request_roundtrip() {
+        let request = crate::common::types::agent::AgentCreateRequest {
+            name: "new-agent".to_string(),
+            team: Some("default".to_string()),
+            provider: "ollama".to_string(),
+            model: Some("llama3.2".to_string()),
+            description: Some("A test agent".to_string()),
+            auto_create_team: true,
+            force: false,
+        };
+        let req = RequestPacket::AgentCreate {
+            request_id: 302,
+            request: request.clone(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::AgentCreate { request_id, request: decoded_request } => {
+                assert_eq!(request_id, 302);
+                assert_eq!(decoded_request.name, "new-agent");
+                assert_eq!(decoded_request.provider, "ollama");
+                assert_eq!(decoded_request.model, Some("llama3.2".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_delete_request_roundtrip() {
+        let req = RequestPacket::AgentDelete {
+            request_id: 303,
+            name: "old-agent".to_string(),
+            team: Some("default".to_string()),
+            force: true,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::AgentDelete { request_id, name, team, force } => {
+                assert_eq!(request_id, 303);
+                assert_eq!(name, "old-agent");
+                assert_eq!(team, Some("default".to_string()));
+                assert!(force);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_list_request_roundtrip() {
+        let req = RequestPacket::TeamList {
+            request_id: 400,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TeamList { request_id } => {
+                assert_eq!(request_id, 400);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_get_request_roundtrip() {
+        let req = RequestPacket::TeamGet {
+            request_id: 401,
+            name: "default".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TeamGet { request_id, name } => {
+                assert_eq!(request_id, 401);
+                assert_eq!(name, "default");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_list_request_roundtrip() {
+        let req = RequestPacket::SessionList {
+            request_id: 500,
+            agent: Some("test-agent".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SessionList { request_id, agent } => {
+                assert_eq!(request_id, 500);
+                assert_eq!(agent, Some("test-agent".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_get_request_roundtrip() {
+        let req = RequestPacket::SessionGet {
+            request_id: 501,
+            id: "sess-123".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SessionGet { request_id, id } => {
+                assert_eq!(request_id, 501);
+                assert_eq!(id, "sess-123");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_list_response_roundtrip() {
+        let resp = ResponsePacket::AgentList {
+            request_id: 600,
+            agents: vec![crate::common::types::agent::AgentSummary {
+                name: "test-agent".to_string(),
+                team: "default".to_string(),
+                config: crate::types::agent::AgentConfig {
+                    name: "test-agent".to_string(),
+                    ..Default::default()
+                },
+                config_path: std::path::PathBuf::from("/tmp/test-agent/config.toml"),
+            }],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::AgentList { request_id, agents } => {
+                assert_eq!(request_id, 600);
+                assert_eq!(agents.len(), 1);
+                assert_eq!(agents[0].name, "test-agent");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_get_response_roundtrip() {
+        let resp = ResponsePacket::AgentGet {
+            request_id: 601,
+            agent: Some(crate::common::types::agent::AgentInfo {
+                name: "test-agent".to_string(),
+                team: "default".to_string(),
+                config: crate::types::agent::AgentConfig {
+                    name: "test-agent".to_string(),
+                    ..Default::default()
+                },
+                config_path: std::path::PathBuf::from("/tmp/test-agent/config.toml"),
+                sessions_dir: std::path::PathBuf::from("/tmp/test-agent/sessions"),
+                session_count: 0,
+            }),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::AgentGet { request_id, agent } => {
+                assert_eq!(request_id, 601);
+                assert!(agent.is_some());
+                assert_eq!(agent.unwrap().name, "test-agent");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_created_response_roundtrip() {
+        let resp = ResponsePacket::AgentCreated {
+            request_id: 602,
+            result: crate::common::types::agent::AgentCreationResult {
+                name: "new-agent".to_string(),
+                team: "default".to_string(),
+                config_path: std::path::PathBuf::from("/tmp/new-agent/config.toml"),
+                provider: "ollama".to_string(),
+            },
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::AgentCreated { request_id, result } => {
+                assert_eq!(request_id, 602);
+                assert_eq!(result.name, "new-agent");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_deleted_response_roundtrip() {
+        let resp = ResponsePacket::AgentDeleted {
+            request_id: 603,
+            result: crate::common::types::agent::AgentDeleteResult {
+                name: "old-agent".to_string(),
+                team: "default".to_string(),
+                config_deleted: true,
+                sessions_deleted: true,
+            },
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::AgentDeleted { request_id, result } => {
+                assert_eq!(request_id, 603);
+                assert!(result.config_deleted);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_list_response_roundtrip() {
+        let resp = ResponsePacket::TeamList {
+            request_id: 700,
+            teams: vec![crate::common::types::team::TeamInfo {
+                name: "default".to_string(),
+                metadata: None,
+                agent_count: 0,
+                path: std::path::PathBuf::from("/tmp/teams/default"),
+            }],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::TeamList { request_id, teams } => {
+                assert_eq!(request_id, 700);
+                assert_eq!(teams.len(), 1);
+                assert_eq!(teams[0].name, "default");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_get_response_roundtrip() {
+        let resp = ResponsePacket::TeamGet {
+            request_id: 701,
+            team: Some(crate::common::types::team::TeamInfo {
+                name: "default".to_string(),
+                metadata: None,
+                agent_count: 0,
+                path: std::path::PathBuf::from("/tmp/teams/default"),
+            }),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::TeamGet { request_id, team } => {
+                assert_eq!(request_id, 701);
+                assert!(team.is_some());
+                assert_eq!(team.unwrap().name, "default");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_list_response_roundtrip() {
+        let resp = ResponsePacket::SessionList {
+            request_id: 800,
+            sessions: vec![crate::common::services::session_service::SessionInfo {
+                id: "sess-123".to_string(),
+                agent_name: "test-agent".to_string(),
+                created_at: 0,
+                updated_at: 0,
+                turn_count: 0,
+                message_count: 0,
+                context_window: 0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                parent_session_id: None,
+                title: None,
+            }],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SessionList { request_id, sessions } => {
+                assert_eq!(request_id, 800);
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].id, "sess-123");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_get_response_roundtrip() {
+        let resp = ResponsePacket::SessionGet {
+            request_id: 801,
+            session: Some(crate::common::services::session_service::SessionDetails {
+                info: crate::common::services::session_service::SessionInfo {
+                    id: "sess-123".to_string(),
+                    agent_name: "test-agent".to_string(),
+                    created_at: 0,
+                    updated_at: 0,
+                    turn_count: 0,
+                    message_count: 0,
+                    context_window: 0,
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    parent_session_id: None,
+                    title: None,
+                },
+                history_summary: crate::common::services::session_service::HistorySummary::default(),
+            }),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SessionGet { request_id, session } => {
+                assert_eq!(request_id, 801);
+                assert!(session.is_some());
+                assert_eq!(session.unwrap().info.id, "sess-123");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_crud_request_ids() {
+        let req_agent_list = RequestPacket::AgentList { request_id: 1, team_filter: None };
+        assert_eq!(req_agent_list.request_id(), 1);
+
+        let req_agent_get = RequestPacket::AgentGet { request_id: 2, name: "a".to_string(), team: None };
+        assert_eq!(req_agent_get.request_id(), 2);
+
+        let req_agent_create = RequestPacket::AgentCreate {
+            request_id: 3,
+            request: crate::common::types::agent::AgentCreateRequest::new("a", "ollama"),
+        };
+        assert_eq!(req_agent_create.request_id(), 3);
+
+        let req_agent_delete = RequestPacket::AgentDelete { request_id: 4, name: "a".to_string(), team: None, force: false };
+        assert_eq!(req_agent_delete.request_id(), 4);
+
+        let req_team_list = RequestPacket::TeamList { request_id: 5 };
+        assert_eq!(req_team_list.request_id(), 5);
+
+        let req_team_get = RequestPacket::TeamGet { request_id: 6, name: "t".to_string() };
+        assert_eq!(req_team_get.request_id(), 6);
+
+        let req_session_list = RequestPacket::SessionList { request_id: 7, agent: None };
+        assert_eq!(req_session_list.request_id(), 7);
+
+        let req_session_get = RequestPacket::SessionGet { request_id: 8, id: "s".to_string() };
+        assert_eq!(req_session_get.request_id(), 8);
+    }
+
+    #[test]
+    fn test_crud_response_ids() {
+        let resp_agent_list = ResponsePacket::AgentList { request_id: 10, agents: vec![] };
+        assert_eq!(resp_agent_list.request_id(), 10);
+
+        let resp_agent_get = ResponsePacket::AgentGet { request_id: 11, agent: None };
+        assert_eq!(resp_agent_get.request_id(), 11);
+
+        let resp_agent_created = ResponsePacket::AgentCreated {
+            request_id: 12,
+            result: crate::common::types::agent::AgentCreationResult {
+                name: "a".to_string(),
+                team: "t".to_string(),
+                config_path: std::path::PathBuf::from("/tmp"),
+                provider: "p".to_string(),
+            },
+        };
+        assert_eq!(resp_agent_created.request_id(), 12);
+
+        let resp_agent_deleted = ResponsePacket::AgentDeleted {
+            request_id: 13,
+            result: crate::common::types::agent::AgentDeleteResult {
+                name: "a".to_string(),
+                team: "t".to_string(),
+                config_deleted: true,
+                sessions_deleted: false,
+            },
+        };
+        assert_eq!(resp_agent_deleted.request_id(), 13);
+
+        let resp_team_list = ResponsePacket::TeamList { request_id: 14, teams: vec![] };
+        assert_eq!(resp_team_list.request_id(), 14);
+
+        let resp_team_get = ResponsePacket::TeamGet { request_id: 15, team: None };
+        assert_eq!(resp_team_get.request_id(), 15);
+
+        let resp_session_list = ResponsePacket::SessionList { request_id: 16, sessions: vec![] };
+        assert_eq!(resp_session_list.request_id(), 16);
+
+        let resp_session_get = ResponsePacket::SessionGet { request_id: 17, session: None };
+        assert_eq!(resp_session_get.request_id(), 17);
     }
 }

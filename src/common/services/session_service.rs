@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use tracing::{debug, info};
 
 /// Session information
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     pub id: String,
     pub agent_name: String,
@@ -126,14 +126,14 @@ pub struct BranchResult {
 }
 
 /// Session details with full metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionDetails {
     pub info: SessionInfo,
     pub history_summary: HistorySummary,
 }
 
 /// History summary for session overview
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct HistorySummary {
     pub user_messages: usize,
     pub assistant_messages: usize,
