@@ -183,6 +183,24 @@ impl DaemonClient {
         }
     }
 
+    /// Send a request and wait for a single response
+    ///
+    /// This is the generic method used by all CRUD operations.
+    /// The caller constructs the `RequestPacket` and receives the `ResponsePacket`.
+    ///
+    /// # Errors
+    /// Returns error if send fails, stream closes unexpectedly, or response is an Error packet
+    pub async fn request_response(&self, packet: RequestPacket) -> anyhow::Result<ResponsePacket> {
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(ResponsePacket::Error { message, .. }) => {
+                anyhow::bail!(message)
+            }
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Stream closed unexpectedly"),
+        }
+    }
+
     // ------------------------------------------------------------------
     // Cron management
     // ------------------------------------------------------------------

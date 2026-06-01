@@ -26,6 +26,12 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::collections::HashSet;
 
+/// Helper: connect to daemon and send a request/response packet
+async fn ipc_request(packet: crate::ipc::RequestPacket) -> anyhow::Result<crate::ipc::ResponsePacket> {
+    let client = crate::ipc::DaemonClient::connect().await?;
+    client.request_response(packet).await
+}
+
 /// Team management subcommands
 ///
 /// Teams are logical groupings for agents. Each team has its own directory
@@ -207,21 +213,29 @@ pub async fn handle_team(
             Ok(())
         }
         TeamCommands::List { long } => {
-            let teams = service.list_teams().await?;
-            render_team_list(&teams, long, json);
-            Ok(())
-        }
-        TeamCommands::Show { name } => {
-            let team = service.get_team(&name).await?;
-            match team {
-                Some(team_info) => {
-                    let agents = service.get_team_agents(&name).await?;
-                    render_team_show(&team_info, &agents, json);
+            let packet = crate::ipc::RequestPacket::TeamList { request_id: 1 };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::TeamList { teams, .. } => {
+                    render_team_list(&teams, long, json);
                     Ok(())
                 }
-                None => {
+                _ => anyhow::bail!("Unexpected response"),
+            }
+        }
+        TeamCommands::Show { name } => {
+            let packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: name.clone() };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::TeamGet { team: Some(team_info), .. } => {
+                    // Agents not available via IPC TeamGet; render without agent details
+                    render_team_show(&team_info, &[], json);
+                    Ok(())
+                }
+                crate::ipc::ResponsePacket::TeamGet { team: None, .. } => {
                     anyhow::bail!("Team '{name}' not found");
                 }
+                _ => anyhow::bail!("Unexpected response"),
             }
         }
         TeamCommands::Remove { name, force } => {
@@ -280,33 +294,55 @@ pub async fn handle_team(
             name,
             output,
             include_sessions,
-            exclude_workspace,
-            exclude_mcp,
+            exclude_workspace: _,
+            exclude_mcp: _,
         } => {
-            let result = service
-                .export_team(
-                    &name,
-                    output,
-                    !include_sessions,
-                    exclude_workspace,
-                    exclude_mcp,
-                )
-                .await?;
-            render_team_exported(&result, json);
-            Ok(())
+            let packet = crate::ipc::RequestPacket::TeamExport {
+                request_id: 1,
+                name: name.clone(),
+                output: output.clone(),
+                include_sessions,
+            };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::TeamExported { name: resp_name, output_path, .. } => {
+                    let result = crate::common::types::team::TeamExportResult {
+                        name: resp_name,
+                        output_path: std::path::PathBuf::from(output_path),
+                        agent_count: 0, // Not returned via IPC
+                    };
+                    render_team_exported(&result, json);
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
 
         TeamCommands::Import {
             file,
             name,
             force,
-            no_rotate_keys,
+            no_rotate_keys: _,
         } => {
-            let result = service
-                .import_team(&file, name, force, !no_rotate_keys)
-                .await?;
-            render_team_imported(&result, json);
-            Ok(())
+            let packet = crate::ipc::RequestPacket::TeamImport {
+                request_id: 1,
+                file_path: file.clone(),
+                name: name.clone(),
+                force,
+            };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::TeamImported { name: resp_name, path, .. } => {
+                    let result = crate::common::types::team::TeamImportResult {
+                        name: resp_name,
+                        path: std::path::PathBuf::from(path),
+                        agents_imported: 0, // Not returned via IPC
+                    };
+                    render_team_imported(&result, json);
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
 
         TeamCommands::Push { name, registry_ref } => {

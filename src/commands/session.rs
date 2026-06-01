@@ -17,6 +17,12 @@ use crate::session::types::Peer;
 use anyhow::Result;
 use clap::Subcommand;
 
+/// Helper: connect to daemon and send a request/response packet
+async fn ipc_request(packet: crate::ipc::RequestPacket) -> anyhow::Result<crate::ipc::ResponsePacket> {
+    let client = crate::ipc::DaemonClient::connect().await?;
+    client.request_response(packet).await
+}
+
 /// Session management subcommands
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
@@ -90,7 +96,31 @@ pub async fn handle_session(
     match cmd {
         SessionCommands::List { agent, team, .. } => {
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
-            list_sessions(&service, paths, team, agent_name, json).await
+            let packet = crate::ipc::RequestPacket::SessionList {
+                request_id: 1,
+                agent: Some(agent_name.to_string()),
+            };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::SessionList { sessions, .. } => {
+                    let mut manager = crate::session::SessionManager::for_cli(
+                        paths.resolver.clone(),
+                        agent_name,
+                        Some(team),
+                        paths.user(),
+                    );
+                    let peer = Peer::User(paths.user().to_string());
+                    let active_session_id = manager.get_active_session_id(&peer).await.ok().flatten();
+
+                    if json {
+                        render_session_list_json(&sessions, team, agent_name, active_session_id.as_deref())?;
+                    } else {
+                        render_session_list(&sessions, team, agent_name, active_session_id.as_deref());
+                    }
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
         SessionCommands::Show {
             agent,
@@ -120,7 +150,36 @@ pub async fn handle_session(
             if !json {
                 println!("🌿 Branching from active session: {resolved}");
             }
-            branch_session(&service, team, agent_name, &resolved, label, json).await
+            let packet = crate::ipc::RequestPacket::SessionBranch {
+                request_id: 1,
+                agent: agent_name.to_string(),
+                team: Some(team.to_string()),
+                session_id: resolved.clone(),
+                label: label.clone(),
+            };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::SessionBranched { new_session_id, parent_session_id, .. } => {
+                    if json {
+                        let result = crate::common::services::session_service::BranchResult {
+                            new_session_id,
+                            parent_session_id,
+                            label: label.clone(),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    } else {
+                        render_branch_success(
+                            team,
+                            agent_name,
+                            &resolved,
+                            &new_session_id,
+                            label.as_deref(),
+                        );
+                    }
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
         SessionCommands::Remove {
             agent,
@@ -153,16 +212,62 @@ pub async fn handle_session(
             if !json {
                 println!("📦 Using active session: {resolved}");
             }
-            compact_session(
-                &service,
-                team,
-                agent_name,
-                &resolved,
+            let packet = crate::ipc::RequestPacket::SessionCompact {
+                request_id: 1,
+                agent: agent_name.to_string(),
+                team: Some(team.to_string()),
+                session_id: resolved.clone(),
                 dry_run,
-                instruction,
-                json,
-            )
-            .await
+                instruction: instruction.clone(),
+            };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::SessionCompacted {
+                    messages_compacted,
+                    tokens_saved,
+                    tokens_before,
+                    tokens_after,
+                    ..
+                } => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "success": true,
+                                "session_id": resolved,
+                                "messages_compacted": messages_compacted,
+                                "tokens_before": tokens_before,
+                                "tokens_after": tokens_after,
+                                "tokens_saved": tokens_saved,
+                            })
+                        );
+                    } else if dry_run {
+                        let report = crate::compaction::cli::DryRunReport {
+                            estimated_tokens: tokens_saved,
+                            context_window: tokens_before,
+                            percent: if tokens_before > 0 {
+                                (tokens_saved as f64 / tokens_before as f64 * 100.0) as usize
+                            } else {
+                                0
+                            },
+                            message_count: messages_compacted,
+                            messages_to_compact: messages_compacted,
+                        };
+                        render_compact_dry_run(&resolved, &report);
+                    } else {
+                        render_compact_success(
+                            &resolved,
+                            messages_compacted,
+                            tokens_saved,
+                            tokens_before,
+                            tokens_after,
+                            instruction.is_some(),
+                        );
+                    }
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
     }
 }
@@ -170,32 +275,6 @@ pub async fn handle_session(
 // ================================================================================
 // Command Implementations (thin delegates)
 // ================================================================================
-
-async fn list_sessions(
-    service: &SessionService,
-    paths: &GlobalPaths,
-    team: &str,
-    agent: &str,
-    json: bool,
-) -> anyhow::Result<()> {
-    let sessions = service.list_sessions_synced(agent, Some(team)).await?;
-
-    let mut manager = crate::session::SessionManager::for_cli(
-        paths.resolver.clone(),
-        agent,
-        Some(team),
-        paths.user(),
-    );
-    let peer = Peer::User(paths.user().to_string());
-    let active_session_id = manager.get_active_session_id(&peer).await.ok().flatten();
-
-    if json {
-        render_session_list_json(&sessions, team, agent, active_session_id.as_deref())?;
-    } else {
-        render_session_list(&sessions, team, agent, active_session_id.as_deref());
-    }
-    Ok(())
-}
 
 async fn show_session(
     service: &SessionService,
@@ -255,32 +334,6 @@ async fn load_session_history(
         .into_iter()
         .filter_map(history_event_to_display)
         .collect())
-}
-
-async fn branch_session(
-    service: &SessionService,
-    team: &str,
-    agent: &str,
-    session_id: &str,
-    label: Option<String>,
-    json: bool,
-) -> anyhow::Result<()> {
-    let result = service
-        .branch_session(agent, Some(team), session_id, label.clone())
-        .await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        render_branch_success(
-            team,
-            agent,
-            session_id,
-            &result.new_session_id,
-            label.as_deref(),
-        );
-    }
-    Ok(())
 }
 
 async fn delete_session(
@@ -353,75 +406,6 @@ async fn switch_session(
         );
     } else {
         render_switch_success(team, agent, session_id);
-    }
-    Ok(())
-}
-
-async fn compact_session(
-    service: &SessionService,
-    team: &str,
-    agent: &str,
-    session_id: &str,
-    dry_run: bool,
-    instruction: Option<String>,
-    json: bool,
-) -> anyhow::Result<()> {
-    let sessions_dir = service.get_sessions_dir(agent, Some(team)).await?;
-    if !sessions_dir.exists() {
-        return Err(anyhow::anyhow!(
-            "Agent '{agent}' not found in team '{team}'"
-        ));
-    }
-
-    let mut session = service
-        .open_session(agent, Some(team), session_id, "default")
-        .await?;
-
-    let compactor = crate::compaction::cli::SessionCompactor::new();
-
-    if dry_run {
-        let report = compactor.dry_run(&session, instruction.clone()).await?;
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "dry_run": true,
-                    "session_id": session_id,
-                    "estimated_tokens": report.estimated_tokens,
-                    "context_window": report.context_window,
-                    "percent": report.percent,
-                    "message_count": report.message_count,
-                })
-            );
-        } else {
-            render_compact_dry_run(session_id, &report);
-        }
-        return Ok(());
-    }
-
-    let result = compactor.compact(&mut session, instruction.clone()).await?;
-
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "success": true,
-                "session_id": session_id,
-                "messages_compacted": result.entry.messages_compacted,
-                "tokens_before": result.entry.tokens_before,
-                "tokens_after": result.entry.tokens_after,
-                "tokens_saved": result.tokens_saved,
-            })
-        );
-    } else {
-        render_compact_success(
-            session_id,
-            result.entry.messages_compacted,
-            result.tokens_saved,
-            result.entry.tokens_before,
-            result.entry.tokens_after,
-            instruction.is_some(),
-        );
     }
     Ok(())
 }
