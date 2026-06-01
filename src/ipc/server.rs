@@ -595,6 +595,48 @@ impl IpcServer {
                 }
             }
 
+            RequestPacket::TeamCreate { request_id, name, description } => {
+                let service = state.team_service();
+                match service.create_team(&name, description.as_deref()).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::TeamCreated { request_id, result };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::TeamDelete { request_id, name, force: _ } => {
+                let service = state.team_service();
+                match service.delete_team(&name).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::TeamDeleted { request_id, result };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::TeamMove { request_id, old_name, new_name } => {
+                let service = state.team_service();
+                match service.move_team(&old_name, &new_name).await {
+                    Ok(_) => {
+                        let response = ResponsePacket::TeamMoved { request_id, old_name, new_name };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
             RequestPacket::TeamExport { request_id, name, output, include_sessions } => {
                 let service = state.team_service();
                 match service.export_team(&name, output, !include_sessions, false, false).await {
@@ -663,6 +705,66 @@ impl IpcServer {
                     message: "SessionGet requires both agent name and session ID. Use the HTTP API for detailed session lookups.".to_string(),
                 };
                 Self::send_packet(&socket, response, addr).await?;
+            }
+
+            RequestPacket::SessionShow { request_id, agent, team, session_id, history } => {
+                let service = state.session_service();
+                match service.get_session_details(&agent, team.as_deref(), &session_id).await {
+                    Ok(Some(details)) => {
+                        let history_events = if history {
+                            match service.get_history(&agent, team.as_deref(), &session_id, crate::common::services::HistoryQuery { limit: 100, ..Default::default() }).await {
+                                Ok(result) => Some(result.events),
+                                Err(_) => None,
+                            }
+                        } else {
+                            None
+                        };
+                        let response = ResponsePacket::SessionShown { request_id, session: details, history: history_events };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Ok(None) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Session '{session_id}' not found") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::SessionRemove { request_id, agent, team, session_id, force: _ } => {
+                let service = state.session_service();
+                match service.delete_session(&agent, team.as_deref(), &session_id).await {
+                    Ok(deleted) => {
+                        let response = ResponsePacket::SessionRemoved { request_id, session_id, deleted };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::SessionSwitch { request_id, agent, team, session_id, user } => {
+                let mut manager = crate::session::SessionManager::for_cli(
+                    crate::common::paths::PathResolver::with_dirs(state.config_dir.clone(), state.data_dir.clone(), state.cache_dir.clone()),
+                    &agent,
+                    team.as_deref(),
+                    &user,
+                );
+                let peer = crate::session::Peer::User(user);
+                match manager.switch_session(&peer, &session_id).await {
+                    Ok(_) => {
+                        let response = ResponsePacket::SessionSwitched { request_id, session_id, agent, team: team.unwrap_or_else(|| "default".to_string()) };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
             }
 
             RequestPacket::SystemStatus { request_id } => {
@@ -1047,6 +1149,99 @@ impl IpcServer {
                             request_id,
                             message: format!("Failed to uninstall extension: {e}"),
                         };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ExtensionValidate { request_id, path, verbose } => {
+                match crate::extension::adapters::ExtensionValidationService::validate(std::path::Path::new(&path), verbose).await {
+                    Ok(report) => {
+                        let response = ResponsePacket::ExtensionValidated {
+                            request_id,
+                            valid: report.errors.is_empty(),
+                            errors: report.errors,
+                            warnings: report.warnings,
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ExtensionDebug { request_id, id } => {
+                let manager = state.extension_manager().read().await;
+                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                match manager.get_extension(&ext_id) {
+                    Some(ext) => {
+                        let info = serde_json::json!({
+                            "id": ext.manifest.id.0,
+                            "name": ext.manifest.name,
+                            "type": ext.extension_type,
+                            "version": ext.manifest.version,
+                            "path": ext.path.to_string_lossy().to_string(),
+                            "hooks": ext.hook_ids.len(),
+                        });
+                        let response = ResponsePacket::ExtensionDebugInfo { request_id, id, info };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    None => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Extension '{id}' not found") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ExtensionInfo { request_id, id } => {
+                let manager = state.extension_manager().read().await;
+                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                match manager.get_extension(&ext_id) {
+                    Some(ext) => {
+                        let info = serde_json::json!({
+                            "id": ext.manifest.id.0,
+                            "name": ext.manifest.name,
+                            "type": ext.extension_type,
+                            "version": ext.manifest.version,
+                            "description": ext.manifest.description,
+                        });
+                        let response = ResponsePacket::ExtensionInfoResponse { request_id, id, info };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    None => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Extension '{id}' not found") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ExtensionExport { request_id, id, output } => {
+                let manager = state.extension_manager().read().await;
+                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                match crate::extension::manager::packaging::ExtensionPackager::export(&manager, &ext_id, &output) {
+                    Ok(_) => {
+                        let response = ResponsePacket::ExtensionExported { request_id, id, output };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ExtensionBundle { request_id, name, ids } => {
+                let manager = state.extension_manager().read().await;
+                let ext_ids: Vec<_> = ids.iter().map(|id| crate::extension::types::ExtensionId::new(id)).collect();
+                match manager.create_bundle(ext_ids, &name) {
+                    Ok(bundle) => {
+                        let response = ResponsePacket::ExtensionBundled { request_id, name, count: bundle.extensions.len() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }

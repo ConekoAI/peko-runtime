@@ -15,7 +15,7 @@
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
-use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo};
+use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo, TeamMoveResult};
 use anyhow::Result;
 
 /// Unified team management service
@@ -120,6 +120,11 @@ impl TeamManagementService {
         rotate_keys: bool,
     ) -> Result<TeamImportResult> {
         self.config_service.import_team(file, name, force, rotate_keys).await
+    }
+
+    /// Move/rename a team
+    pub async fn move_team(&self, old_name: &str, new_name: &str) -> Result<TeamMoveResult> {
+        self.config_service.move_team(old_name, new_name).await
     }
 
     /// Check if a team exists

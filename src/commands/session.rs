@@ -122,6 +122,9 @@ pub async fn handle_session(
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
+        // SessionShow and SessionSwitch remain as direct file I/O for now
+        // because they need more complex IPC packets (session history streaming,
+        // active session preference file updates).
         SessionCommands::Show {
             agent,
             session_id,
@@ -188,8 +191,44 @@ pub async fn handle_session(
             force,
         } => {
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
-            delete_session(&service, team, agent_name, &session_id, force, json).await
+
+            // Confirmation prompt (CLI-specific)
+            if !force {
+                render_delete_prompt(&session_id, None);
+                std::io::Write::flush(&mut std::io::stdout())?;
+
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            let packet = crate::ipc::RequestPacket::SessionRemove {
+                request_id: 1,
+                agent: agent_name.to_string(),
+                team: Some(team.to_string()),
+                session_id: session_id.clone(),
+                force,
+            };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::SessionRemoved { deleted, .. } => {
+                    if json {
+                        let deleted_items = if deleted { vec!["jsonl", "index"] } else { vec![] };
+                        println!("{{\"success\": true, \"deleted\": {:?}}}", deleted_items);
+                    } else {
+                        render_delete_success(&session_id, deleted);
+                    }
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
+        // SessionSwitch remains as direct file I/O — it updates the local
+        // active-session preference file, which is simpler to do locally.
         SessionCommands::Switch {
             agent,
             session_id,
@@ -334,48 +373,6 @@ async fn load_session_history(
         .into_iter()
         .filter_map(history_event_to_display)
         .collect())
-}
-
-async fn delete_session(
-    service: &SessionService,
-    team: &str,
-    agent: &str,
-    session_id: &str,
-    force: bool,
-    json: bool,
-) -> anyhow::Result<()> {
-    let metadata = service
-        .get_session_synced(agent, Some(team), session_id)
-        .await?;
-
-    if !force {
-        render_delete_prompt(session_id, metadata.as_ref());
-        std::io::Write::flush(&mut std::io::stdout())?;
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Cancelled.");
-            return Ok(());
-        }
-    }
-
-    let deleted = service
-        .delete_session(agent, Some(team), session_id)
-        .await?;
-
-    if json {
-        let deleted_items = if deleted {
-            vec!["jsonl", "index"]
-        } else {
-            vec![]
-        };
-        println!("{{\"success\": true, \"deleted\": {deleted_items:?}}}");
-    } else {
-        render_delete_success(session_id, deleted);
-    }
-    Ok(())
 }
 
 async fn switch_session(

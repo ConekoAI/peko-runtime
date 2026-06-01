@@ -9,7 +9,7 @@
 use crate::commands::GlobalPaths;
 use crate::common::time::format_timestamp;
 use crate::common::types::team::{
-    TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMoveResult,
+    TeamCreationResult, TeamDeletionResult, TeamInfo,
 };
 use crate::extension::manager::{ExtensionManager, ExtensionStorage};
 use crate::extension::core::global_core;
@@ -204,13 +204,17 @@ pub async fn handle_team(
     json: bool,
     cli_registry: Option<&str>,
 ) -> Result<()> {
-    let service = paths.services().team();
-
     match cmd {
         TeamCommands::Create { name, description } => {
-            let result = service.create_team(&name, description.as_deref()).await?;
-            render_team_created(&result, json);
-            Ok(())
+            let packet = crate::ipc::RequestPacket::TeamCreate { request_id: 1, name: name.clone(), description };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::TeamCreated { result, .. } => {
+                    render_team_created(&result, json);
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
         TeamCommands::List { long } => {
             let packet = crate::ipc::RequestPacket::TeamList { request_id: 1 };
@@ -239,12 +243,12 @@ pub async fn handle_team(
             }
         }
         TeamCommands::Remove { name, force } => {
-            // Get team info for confirmation
-            let team_info = match service.get_team(&name).await? {
-                Some(info) => info,
-                None => {
-                    anyhow::bail!("Team '{name}' not found");
-                }
+            // Get team info for confirmation via IPC
+            let info_packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: name.clone() };
+            let info_response = ipc_request(info_packet).await?;
+            let team_info = match info_response {
+                crate::ipc::ResponsePacket::TeamGet { team: Some(t), .. } => t,
+                _ => anyhow::bail!("Team '{name}' not found"),
             };
 
             // Confirm deletion
@@ -257,9 +261,15 @@ pub async fn handle_team(
                 return Ok(());
             }
 
-            let result = service.delete_team(&name).await?;
-            render_team_deleted(&result, json);
-            Ok(())
+            let packet = crate::ipc::RequestPacket::TeamDelete { request_id: 1, name: name.clone(), force };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::TeamDeleted { result, .. } => {
+                    render_team_deleted(&result, json);
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
 
         TeamCommands::Move {
@@ -267,12 +277,12 @@ pub async fn handle_team(
             new_name,
             force,
         } => {
-            // Get team info for confirmation
-            let team_info = match service.get_team(&old_name).await? {
-                Some(info) => info,
-                None => {
-                    anyhow::bail!("Team '{old_name}' not found");
-                }
+            // Get team info for confirmation via IPC
+            let info_packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: old_name.clone() };
+            let info_response = ipc_request(info_packet).await?;
+            let team_info = match info_response {
+                crate::ipc::ResponsePacket::TeamGet { team: Some(t), .. } => t,
+                _ => anyhow::bail!("Team '{old_name}' not found"),
             };
 
             // Confirm move
@@ -285,9 +295,15 @@ pub async fn handle_team(
                 return Ok(());
             }
 
-            let result = service.move_team(&old_name, &new_name).await?;
-            render_team_moved(&result, json);
-            Ok(())
+            let packet = crate::ipc::RequestPacket::TeamMove { request_id: 1, old_name: old_name.clone(), new_name: new_name.clone() };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::TeamMoved { .. } => {
+                    println!("Moved team '{}' -> '{}'", old_name, new_name);
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
 
         TeamCommands::Export {
@@ -514,24 +530,6 @@ fn render_team_deleted(result: &TeamDeletionResult, json: bool) {
         if result.agents_deleted > 0 {
             println!("   Removed {} agent(s)", result.agents_deleted);
         }
-    }
-}
-
-fn render_team_moved(result: &TeamMoveResult, json: bool) {
-    if json {
-        println!(
-            "{{\"success\": true, \"old_name\": \"{}\", \"new_name\": \"{}\", \"agents_moved\": {}}}",
-            result.old_name, result.new_name, result.agents_moved
-        );
-    } else {
-        println!(
-            "✅ Moved team '{}' to '{}'",
-            result.old_name, result.new_name
-        );
-        if result.agents_moved > 0 {
-            println!("   Moved {} agent(s)", result.agents_moved);
-        }
-        println!("   New path: {}", result.new_path.display());
     }
 }
 

@@ -52,7 +52,8 @@ impl From<SessionEntry> for SessionInfo {
 }
 
 /// History event types
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
 pub enum HistoryEvent {
     Session {
         timestamp: String,

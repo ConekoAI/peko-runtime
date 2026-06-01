@@ -392,63 +392,133 @@ pub async fn handle_ext_command(
             Ok(())
         }
 
-        // --- Direct file I/O commands (keep local) ---
+        // --- IPC commands ---
         ExtCommands::Validate { path, verbose } => {
-            let report =
-                crate::extension::adapters::ExtensionValidationService::validate(&path, verbose)
-                    .await?;
-            print_validation_report(&report, verbose)?;
-            Ok(())
+            let client = crate::ipc::DaemonClient::connect().await?;
+            let packet = crate::ipc::RequestPacket::ExtensionValidate {
+                request_id: 1,
+                path: path.to_string_lossy().to_string(),
+                verbose,
+            };
+            let response = client.request_response(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::ExtensionValidated { valid, errors, warnings, .. } => {
+                    let report = crate::extension::adapters::ValidationReport {
+                        detected_type: "unknown".to_string(),
+                        errors,
+                        warnings,
+                    };
+                    print_validation_report(&report, verbose)?;
+                    if !valid {
+                        anyhow::bail!("Extension validation failed");
+                    }
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
 
         ExtCommands::Debug { id } => {
-            let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
-            let mut manager = create_manager_with_adapters(core, Some(storage)).await;
-            manager.load_all().await?;
-            handle_debug(&manager, id).await
+            let client = crate::ipc::DaemonClient::connect().await?;
+            let packet = crate::ipc::RequestPacket::ExtensionDebug {
+                request_id: 1,
+                id: id.clone(),
+            };
+            let response = client.request_response(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::ExtensionDebugInfo { info, .. } => {
+                    println!("Debug Information for Extension: {}", info.get("id").and_then(|v| v.as_str()).unwrap_or(&id));
+                    println!("  Name: {}", info.get("name").and_then(|v| v.as_str()).unwrap_or("n/a"));
+                    println!("  Type: {}", info.get("type").and_then(|v| v.as_str()).unwrap_or("n/a"));
+                    println!("  Version: {}", info.get("version").and_then(|v| v.as_str()).unwrap_or("n/a"));
+                    println!("  Path: {}", info.get("path").and_then(|v| v.as_str()).unwrap_or("n/a"));
+                    println!("  Hooks: {}", info.get("hooks").and_then(|v| v.as_u64()).unwrap_or(0));
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
         }
 
-        _ => {
+        ExtCommands::Info { id } => {
+            let client = crate::ipc::DaemonClient::connect().await?;
+            let packet = crate::ipc::RequestPacket::ExtensionInfo {
+                request_id: 1,
+                id: id.clone(),
+            };
+            let response = client.request_response(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::ExtensionInfoResponse { info, .. } => {
+                    println!("Extension Details");
+                    println!("=================");
+                    println!("{}", serde_json::to_string_pretty(&info)?);
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
+        }
+
+        ExtCommands::Export { id, output } => {
+            let client = crate::ipc::DaemonClient::connect().await?;
+            let packet = crate::ipc::RequestPacket::ExtensionExport {
+                request_id: 1,
+                id: id.clone(),
+                output: output.clone(),
+            };
+            let response = client.request_response(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::ExtensionExported { output, .. } => {
+                    println!("Exported extension '{}' to {}", id, output);
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
+        }
+
+        ExtCommands::Bundle { name, ids } => {
+            let client = crate::ipc::DaemonClient::connect().await?;
+            let packet = crate::ipc::RequestPacket::ExtensionBundle {
+                request_id: 1,
+                name: name.clone(),
+                ids,
+            };
+            let response = client.request_response(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::ExtensionBundled { count, .. } => {
+                    println!("Created bundle '{}' with {} extension(s)", name, count);
+                    Ok(())
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
+        }
+
+        // --- Direct file I/O / registry HTTP commands (keep local) ---
+        // Config writes local TOML files; Push/Pull use registry HTTP directly.
+        ExtCommands::Config {
+            id,
+            show,
+            set,
+            unset,
+            global,
+            team,
+            agent,
+        } => handle_config(paths, id, show, set, unset, global, team, agent).await,
+
+        ExtCommands::Push { id, registry_ref } => {
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
             let mut manager = create_manager_with_adapters(core.clone(), Some(storage)).await;
             manager.load_all().await?;
+            handle_ext_push(&manager, &id, &registry_ref, json, cli_registry, paths).await
+        }
 
-            match command {
-                ExtCommands::Info { id } => handle_info(&manager, id),
-                ExtCommands::Export { id, output } => handle_export(&manager, id, output).await,
-                ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
-                ExtCommands::Config {
-                    id,
-                    show,
-                    set,
-                    unset,
-                    global,
-                    team,
-                    agent,
-                } => handle_config(paths, id, show, set, unset, global, team, agent).await,
-                ExtCommands::Push { id, registry_ref } => {
-                    handle_ext_push(&manager, &id, &registry_ref, json, cli_registry, paths).await
-                }
-                ExtCommands::Pull {
-                    registry_ref,
-                    json: pull_json,
-                    no_deps,
-                } => {
-                    handle_ext_pull(&mut manager, &registry_ref, pull_json, no_deps, cli_registry, paths).await
-                }
-                // IPC commands are handled above; these arms are unreachable
-                ExtCommands::List { .. }
-                | ExtCommands::Enable { .. }
-                | ExtCommands::Disable { .. }
-                | ExtCommands::Install { .. }
-                | ExtCommands::Uninstall { .. }
-                | ExtCommands::Start { .. }
-                | ExtCommands::Stop { .. }
-                | ExtCommands::Restart { .. }
-                | ExtCommands::Status { .. }
-                | ExtCommands::Validate { .. }
-                | ExtCommands::Debug { .. } => unreachable!(),
-            }
+        ExtCommands::Pull {
+            registry_ref,
+            json: pull_json,
+            no_deps,
+        } => {
+            let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
+            let mut manager = create_manager_with_adapters(core.clone(), Some(storage)).await;
+            manager.load_all().await?;
+            handle_ext_pull(&mut manager, &registry_ref, pull_json, no_deps, cli_registry, paths).await
         }
     }
 }
@@ -549,101 +619,8 @@ async fn handle_install(
 // --- Uninstall ---
 // (handled via IPC in handle_ext_command)
 
-// --- Info ---
-
-fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
-    let ext_id = ExtensionId::new(&id);
-    let ext = manager
-        .get_extension(&ext_id)
-        .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
-
-    println!("Extension Details");
-    println!();
-    println!("ID:          {}", ext.manifest.id);
-    println!("Name:        {}", ext.manifest.name);
-    println!("Type:        {}", ext.extension_type);
-    println!("Version:     {}", ext.manifest.version);
-    println!("Status:      installed");
-    println!("Description: {}", ext.manifest.description);
-    println!("Path:        {}", ext.path.display());
-    println!();
-    println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
-    println!(
-        "Use 'peko ext enable {id} --target <team>/<agent>' to enable for a specific agent."
-    );
-
-    if !ext.hook_ids.is_empty() {
-        println!();
-        println!("Registered hooks: {}", ext.hook_ids.len());
-    }
-
-    Ok(())
-}
-
-// --- Export ---
-
-async fn handle_export(
-    manager: &ExtensionManager,
-    id: String,
-    output: String,
-) -> anyhow::Result<()> {
-    let ext_id = ExtensionId::new(&id);
-
-    // Verify extension exists before exporting
-    if manager.get_extension(&ext_id).is_none() {
-        anyhow::bail!("Extension '{id}' not found");
-    }
-
-    println!("Exporting extension '{id}' to {output}...");
-
-    match ExtensionPackager::export(manager, &ext_id, &output) {
-        Ok(path) => {
-            println!("Extension exported successfully");
-            println!("  Package: {}", path.display());
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("Failed to export extension: {e}");
-            Err(e)
-        }
-    }
-}
-
-// --- Bundle ---
-
-fn handle_bundle(manager: &ExtensionManager, name: String, ids: Vec<String>) -> anyhow::Result<()> {
-    if ids.is_empty() {
-        anyhow::bail!("At least one extension ID is required to create a bundle");
-    }
-    let mut ext_ids = Vec::new();
-    for id in &ids {
-        let ext_id = ExtensionId::new(id);
-        if manager.get_extension(&ext_id).is_none() {
-            anyhow::bail!("Extension '{id}' not found");
-        }
-        ext_ids.push(ext_id);
-    }
-
-    println!(
-        "Creating bundle '{}' with {} extension(s)...",
-        name,
-        ids.len()
-    );
-    match manager.create_bundle(ext_ids, &name) {
-        Ok(bundle) => {
-            println!("Bundle '{}' created successfully", bundle.name);
-            println!("Extensions included:");
-            for manifest in &bundle.extensions {
-                println!("  - {} ({})", manifest.id, manifest.name);
-            }
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("Failed to create bundle: {e}");
-            Err(e)
-        }
-    }
-}
+// --- Validate / Debug / Info / Export / Bundle ---
+// (handled via IPC in handle_ext_command)
 
 // --- Config ---
 
@@ -1173,75 +1150,4 @@ async fn store_registry_manifest_for_client(
     Ok(digest)
 }
 
-// --- Debug ---
 
-async fn handle_debug(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
-    let ext_id = ExtensionId::new(&id);
-    let ext = manager
-        .get_extension(&ext_id)
-        .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
-
-    println!("Debug Information for Extension: {id}");
-    println!("{}", "=".repeat(60));
-    println!();
-    println!("Basic Information:");
-    println!("  ID:          {}", ext.manifest.id);
-    println!("  Name:        {}", ext.manifest.name);
-    println!("  Type:        {}", ext.extension_type);
-    println!("  Version:     {}", ext.manifest.version);
-    println!("  Status:      installed");
-    println!("  Description: {}", ext.manifest.description);
-    println!("  Path:        {}", ext.path.display());
-    println!();
-    println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
-    println!();
-
-    println!("Hook Registrations:");
-    if ext.hook_ids.is_empty() {
-        println!("  (no hooks registered)");
-    } else {
-        println!("  Total hooks: {}", ext.hook_ids.len());
-        let core = manager.core();
-        let all_hooks = core.get_all_hooks().await;
-        for hook_id in &ext.hook_ids {
-            if let Some(hook) = all_hooks.iter().find(|h| &h.id == hook_id) {
-                println!();
-                println!("  Hook ID:     {hook_id}");
-                println!("    Point:     {}", hook.point.name());
-                println!("    Category:  {}", hook.point.category());
-                println!("    Priority:  {}", hook.priority);
-                println!("    Enabled:   {}", hook.enabled);
-            } else {
-                println!();
-                println!("  Hook ID:     {hook_id}");
-                println!("    (details unavailable - hook may be pending)");
-            }
-        }
-    }
-    println!();
-
-    println!("Manifest Metadata:");
-    if ext.manifest.metadata.is_empty() {
-        println!("  (no additional metadata)");
-    } else {
-        for (key, value) in &ext.manifest.metadata {
-            let value_str = format!("{value}");
-            let display_value = if value_str.len() > 100 {
-                format!("{}... (truncated)", &value_str[..100])
-            } else {
-                value_str
-            };
-            println!("  {key}: {display_value}");
-        }
-    }
-    println!();
-
-    println!("Extension Core Statistics:");
-    let core = manager.core();
-    println!("  Total hooks registered: {}", core.hook_count().await);
-    println!("  Hooks for this extension: {}", ext.hook_ids.len());
-    println!();
-
-    println!("Debug complete.");
-    Ok(())
-}

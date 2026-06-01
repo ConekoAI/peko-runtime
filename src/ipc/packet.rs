@@ -153,12 +153,30 @@ pub enum RequestPacket {
     #[serde(rename = "team_get")]
     TeamGet { request_id: u64, name: String },
 
+    #[serde(rename = "team_create")]
+    TeamCreate { request_id: u64, name: String, description: Option<String> },
+
+    #[serde(rename = "team_delete")]
+    TeamDelete { request_id: u64, name: String, force: bool },
+
+    #[serde(rename = "team_move")]
+    TeamMove { request_id: u64, old_name: String, new_name: String },
+
     // ─── Session CRUD ───────────────────────────────────────────────
     #[serde(rename = "session_list")]
     SessionList { request_id: u64, agent: Option<String> },
 
     #[serde(rename = "session_get")]
     SessionGet { request_id: u64, id: String },
+
+    #[serde(rename = "session_show")]
+    SessionShow { request_id: u64, agent: String, team: Option<String>, session_id: String, history: bool },
+
+    #[serde(rename = "session_remove")]
+    SessionRemove { request_id: u64, agent: String, team: Option<String>, session_id: String, force: bool },
+
+    #[serde(rename = "session_switch")]
+    SessionSwitch { request_id: u64, agent: String, team: Option<String>, session_id: String, user: String },
 
     // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
     #[serde(rename = "extension_list")]
@@ -181,6 +199,21 @@ pub enum RequestPacket {
         id: String,
         target: Option<String>,
     },
+
+    #[serde(rename = "extension_validate")]
+    ExtensionValidate { request_id: u64, path: String, verbose: bool },
+
+    #[serde(rename = "extension_debug")]
+    ExtensionDebug { request_id: u64, id: String },
+
+    #[serde(rename = "extension_info")]
+    ExtensionInfo { request_id: u64, id: String },
+
+    #[serde(rename = "extension_export")]
+    ExtensionExport { request_id: u64, id: String, output: String },
+
+    #[serde(rename = "extension_bundle")]
+    ExtensionBundle { request_id: u64, name: String, ids: Vec<String> },
 
     #[serde(rename = "system_clean")]
     SystemClean {
@@ -306,13 +339,24 @@ impl RequestPacket {
             | Self::AgentDelete { request_id, .. }
             | Self::TeamList { request_id }
             | Self::TeamGet { request_id, .. }
+            | Self::TeamCreate { request_id, .. }
+            | Self::TeamDelete { request_id, .. }
+            | Self::TeamMove { request_id, .. }
             | Self::SessionList { request_id, .. }
             | Self::SessionGet { request_id, .. }
+            | Self::SessionShow { request_id, .. }
+            | Self::SessionRemove { request_id, .. }
+            | Self::SessionSwitch { request_id, .. }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnable { request_id, .. }
             | Self::ExtensionDisable { request_id, .. }
+            | Self::ExtensionValidate { request_id, .. }
+            | Self::ExtensionDebug { request_id, .. }
+            | Self::ExtensionInfo { request_id, .. }
+            | Self::ExtensionExport { request_id, .. }
+            | Self::ExtensionBundle { request_id, .. }
             | Self::SystemClean { request_id, .. }
             | Self::CronAddSimple { request_id, .. }
             | Self::SessionBranch { request_id, .. }
@@ -485,6 +529,18 @@ pub enum ResponsePacket {
     #[serde(rename = "team_get")]
     TeamGet { request_id: u64, team: Option<crate::common::types::team::TeamInfo> },
 
+    /// Team created response
+    #[serde(rename = "team_created")]
+    TeamCreated { request_id: u64, result: crate::common::types::team::TeamCreationResult },
+
+    /// Team deleted response
+    #[serde(rename = "team_deleted")]
+    TeamDeleted { request_id: u64, result: crate::common::types::team::TeamDeletionResult },
+
+    /// Team moved response
+    #[serde(rename = "team_moved")]
+    TeamMoved { request_id: u64, old_name: String, new_name: String },
+
     /// Session list response
     #[serde(rename = "session_list")]
     SessionList { request_id: u64, sessions: Vec<crate::common::services::session_service::SessionInfo> },
@@ -492,6 +548,18 @@ pub enum ResponsePacket {
     /// Session detail response
     #[serde(rename = "session_get")]
     SessionGet { request_id: u64, session: Option<crate::common::services::session_service::SessionDetails> },
+
+    /// Session shown response
+    #[serde(rename = "session_shown")]
+    SessionShown { request_id: u64, session: crate::common::services::session_service::SessionDetails, history: Option<Vec<crate::common::services::session_service::HistoryEvent>> },
+
+    /// Session removed response
+    #[serde(rename = "session_removed")]
+    SessionRemoved { request_id: u64, session_id: String, deleted: bool },
+
+    /// Session switched response
+    #[serde(rename = "session_switched")]
+    SessionSwitched { request_id: u64, session_id: String, agent: String, team: String },
 
     /// System status response
     #[serde(rename = "system_status")]
@@ -538,6 +606,26 @@ pub enum ResponsePacket {
         id: String,
         message: String,
     },
+
+    /// Extension validated response
+    #[serde(rename = "extension_validated")]
+    ExtensionValidated { request_id: u64, valid: bool, errors: Vec<String>, warnings: Vec<String> },
+
+    /// Extension debug info response
+    #[serde(rename = "extension_debug_info")]
+    ExtensionDebugInfo { request_id: u64, id: String, info: serde_json::Value },
+
+    /// Extension info response
+    #[serde(rename = "extension_info_response")]
+    ExtensionInfoResponse { request_id: u64, id: String, info: serde_json::Value },
+
+    /// Extension exported response
+    #[serde(rename = "extension_exported")]
+    ExtensionExported { request_id: u64, id: String, output: String },
+
+    /// Extension bundled response
+    #[serde(rename = "extension_bundled")]
+    ExtensionBundled { request_id: u64, name: String, count: usize },
 
     /// System clean response
     #[serde(rename = "system_cleaned")]
@@ -682,13 +770,24 @@ impl ResponsePacket {
             | Self::AgentDeleted { request_id, .. }
             | Self::TeamList { request_id, .. }
             | Self::TeamGet { request_id, .. }
+            | Self::TeamCreated { request_id, .. }
+            | Self::TeamDeleted { request_id, .. }
+            | Self::TeamMoved { request_id, .. }
             | Self::SessionList { request_id, .. }
             | Self::SessionGet { request_id, .. }
+            | Self::SessionShown { request_id, .. }
+            | Self::SessionRemoved { request_id, .. }
+            | Self::SessionSwitched { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnabled { request_id, .. }
             | Self::ExtensionDisabled { request_id, .. }
+            | Self::ExtensionValidated { request_id, .. }
+            | Self::ExtensionDebugInfo { request_id, .. }
+            | Self::ExtensionInfoResponse { request_id, .. }
+            | Self::ExtensionExported { request_id, .. }
+            | Self::ExtensionBundled { request_id, .. }
             | Self::SystemCleaned { request_id, .. }
             | Self::CronAddedSimple { request_id, .. }
             | Self::SessionBranched { request_id, .. }
@@ -2547,5 +2646,608 @@ mod tests {
             digest: "sha256:d".to_string(),
         };
         assert_eq!(resp.request_id(), 10);
+    }
+
+    // ─── Team operations tests ──────────────────────────────────────
+
+    #[test]
+    fn test_team_create_request_roundtrip() {
+        let req = RequestPacket::TeamCreate {
+            request_id: 1500,
+            name: "new-team".to_string(),
+            description: Some("A new team".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TeamCreate { request_id, name, description } => {
+                assert_eq!(request_id, 1500);
+                assert_eq!(name, "new-team");
+                assert_eq!(description, Some("A new team".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_delete_request_roundtrip() {
+        let req = RequestPacket::TeamDelete {
+            request_id: 1501,
+            name: "old-team".to_string(),
+            force: true,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TeamDelete { request_id, name, force } => {
+                assert_eq!(request_id, 1501);
+                assert_eq!(name, "old-team");
+                assert!(force);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_move_request_roundtrip() {
+        let req = RequestPacket::TeamMove {
+            request_id: 1502,
+            old_name: "old-team".to_string(),
+            new_name: "new-team".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TeamMove { request_id, old_name, new_name } => {
+                assert_eq!(request_id, 1502);
+                assert_eq!(old_name, "old-team");
+                assert_eq!(new_name, "new-team");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_created_response_roundtrip() {
+        let resp = ResponsePacket::TeamCreated {
+            request_id: 2500,
+            result: crate::common::types::team::TeamCreationResult {
+                metadata: crate::common::types::team::TeamMetadata {
+                    name: "new-team".to_string(),
+                    description: Some("A new team".to_string()),
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                path: std::path::PathBuf::from("/tmp/teams/new-team"),
+            },
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::TeamCreated { request_id, result } => {
+                assert_eq!(request_id, 2500);
+                assert_eq!(result.metadata.name, "new-team");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_deleted_response_roundtrip() {
+        let resp = ResponsePacket::TeamDeleted {
+            request_id: 2501,
+            result: crate::common::types::team::TeamDeletionResult {
+                name: "old-team".to_string(),
+                agents_deleted: 3,
+            },
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::TeamDeleted { request_id, result } => {
+                assert_eq!(request_id, 2501);
+                assert_eq!(result.name, "old-team");
+                assert_eq!(result.agents_deleted, 3);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_moved_response_roundtrip() {
+        let resp = ResponsePacket::TeamMoved {
+            request_id: 2502,
+            old_name: "old-team".to_string(),
+            new_name: "new-team".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::TeamMoved { request_id, old_name, new_name } => {
+                assert_eq!(request_id, 2502);
+                assert_eq!(old_name, "old-team");
+                assert_eq!(new_name, "new-team");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_request_ids() {
+        let req_create = RequestPacket::TeamCreate { request_id: 1, name: "t".to_string(), description: None };
+        assert_eq!(req_create.request_id(), 1);
+
+        let req_delete = RequestPacket::TeamDelete { request_id: 2, name: "t".to_string(), force: false };
+        assert_eq!(req_delete.request_id(), 2);
+
+        let req_move = RequestPacket::TeamMove { request_id: 3, old_name: "a".to_string(), new_name: "b".to_string() };
+        assert_eq!(req_move.request_id(), 3);
+    }
+
+    #[test]
+    fn test_team_response_ids() {
+        let resp_created = ResponsePacket::TeamCreated {
+            request_id: 10,
+            result: crate::common::types::team::TeamCreationResult {
+                metadata: crate::common::types::team::TeamMetadata {
+                    name: "t".to_string(),
+                    description: None,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                path: std::path::PathBuf::from("/tmp"),
+            },
+        };
+        assert_eq!(resp_created.request_id(), 10);
+
+        let resp_deleted = ResponsePacket::TeamDeleted {
+            request_id: 11,
+            result: crate::common::types::team::TeamDeletionResult {
+                name: "t".to_string(),
+                agents_deleted: 0,
+            },
+        };
+        assert_eq!(resp_deleted.request_id(), 11);
+
+        let resp_moved = ResponsePacket::TeamMoved {
+            request_id: 12,
+            old_name: "a".to_string(),
+            new_name: "b".to_string(),
+        };
+        assert_eq!(resp_moved.request_id(), 12);
+    }
+
+    // ─── Session operations tests ───────────────────────────────────
+
+    #[test]
+    fn test_session_show_request_roundtrip() {
+        let req = RequestPacket::SessionShow {
+            request_id: 1600,
+            agent: "test-agent".to_string(),
+            team: Some("default".to_string()),
+            session_id: "sess-123".to_string(),
+            history: true,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SessionShow { request_id, agent, team, session_id, history } => {
+                assert_eq!(request_id, 1600);
+                assert_eq!(agent, "test-agent");
+                assert_eq!(team, Some("default".to_string()));
+                assert_eq!(session_id, "sess-123");
+                assert!(history);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_remove_request_roundtrip() {
+        let req = RequestPacket::SessionRemove {
+            request_id: 1601,
+            agent: "test-agent".to_string(),
+            team: None,
+            session_id: "sess-123".to_string(),
+            force: false,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SessionRemove { request_id, agent, team, session_id, force } => {
+                assert_eq!(request_id, 1601);
+                assert_eq!(agent, "test-agent");
+                assert_eq!(team, None);
+                assert_eq!(session_id, "sess-123");
+                assert!(!force);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_switch_request_roundtrip() {
+        let req = RequestPacket::SessionSwitch {
+            request_id: 1602,
+            agent: "test-agent".to_string(),
+            team: Some("default".to_string()),
+            session_id: "sess-123".to_string(),
+            user: "alice".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SessionSwitch { request_id, agent, team, session_id, user } => {
+                assert_eq!(request_id, 1602);
+                assert_eq!(agent, "test-agent");
+                assert_eq!(team, Some("default".to_string()));
+                assert_eq!(session_id, "sess-123");
+                assert_eq!(user, "alice");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_shown_response_roundtrip() {
+        let resp = ResponsePacket::SessionShown {
+            request_id: 2600,
+            session: crate::common::services::session_service::SessionDetails {
+                info: crate::common::services::session_service::SessionInfo {
+                    id: "sess-123".to_string(),
+                    agent_name: "test-agent".to_string(),
+                    created_at: 0,
+                    updated_at: 0,
+                    turn_count: 0,
+                    message_count: 0,
+                    context_window: 0,
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    parent_session_id: None,
+                    title: None,
+                },
+                history_summary: crate::common::services::session_service::HistorySummary::default(),
+            },
+            history: Some(vec![
+                crate::common::services::session_service::HistoryEvent::Message {
+                    role: "user".to_string(),
+                    content: "Hello".to_string(),
+                    timestamp: "2024-01-01T00:00:00Z".to_string(),
+                },
+            ]),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SessionShown { request_id, session, history } => {
+                assert_eq!(request_id, 2600);
+                assert_eq!(session.info.id, "sess-123");
+                assert!(history.is_some());
+                assert_eq!(history.unwrap().len(), 1);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_removed_response_roundtrip() {
+        let resp = ResponsePacket::SessionRemoved {
+            request_id: 2601,
+            session_id: "sess-123".to_string(),
+            deleted: true,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SessionRemoved { request_id, session_id, deleted } => {
+                assert_eq!(request_id, 2601);
+                assert_eq!(session_id, "sess-123");
+                assert!(deleted);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_switched_response_roundtrip() {
+        let resp = ResponsePacket::SessionSwitched {
+            request_id: 2602,
+            session_id: "sess-123".to_string(),
+            agent: "test-agent".to_string(),
+            team: "default".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SessionSwitched { request_id, session_id, agent, team } => {
+                assert_eq!(request_id, 2602);
+                assert_eq!(session_id, "sess-123");
+                assert_eq!(agent, "test-agent");
+                assert_eq!(team, "default");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_request_ids() {
+        let req_show = RequestPacket::SessionShow {
+            request_id: 1, agent: "a".to_string(), team: None, session_id: "s".to_string(), history: false,
+        };
+        assert_eq!(req_show.request_id(), 1);
+
+        let req_remove = RequestPacket::SessionRemove {
+            request_id: 2, agent: "a".to_string(), team: None, session_id: "s".to_string(), force: false,
+        };
+        assert_eq!(req_remove.request_id(), 2);
+
+        let req_switch = RequestPacket::SessionSwitch {
+            request_id: 3, agent: "a".to_string(), team: None, session_id: "s".to_string(), user: "u".to_string(),
+        };
+        assert_eq!(req_switch.request_id(), 3);
+    }
+
+    #[test]
+    fn test_session_response_ids() {
+        let resp_shown = ResponsePacket::SessionShown {
+            request_id: 10,
+            session: crate::common::services::session_service::SessionDetails {
+                info: crate::common::services::session_service::SessionInfo {
+                    id: "s".to_string(),
+                    agent_name: "a".to_string(),
+                    created_at: 0,
+                    updated_at: 0,
+                    turn_count: 0,
+                    message_count: 0,
+                    context_window: 0,
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    parent_session_id: None,
+                    title: None,
+                },
+                history_summary: crate::common::services::session_service::HistorySummary::default(),
+            },
+            history: None,
+        };
+        assert_eq!(resp_shown.request_id(), 10);
+
+        let resp_removed = ResponsePacket::SessionRemoved {
+            request_id: 11,
+            session_id: "s".to_string(),
+            deleted: true,
+        };
+        assert_eq!(resp_removed.request_id(), 11);
+
+        let resp_switched = ResponsePacket::SessionSwitched {
+            request_id: 12,
+            session_id: "s".to_string(),
+            agent: "a".to_string(),
+            team: "t".to_string(),
+        };
+        assert_eq!(resp_switched.request_id(), 12);
+    }
+
+    // ─── Extension operations tests ─────────────────────────────────
+
+    #[test]
+    fn test_extension_validate_request_roundtrip() {
+        let req = RequestPacket::ExtensionValidate {
+            request_id: 1700,
+            path: "/path/to/ext".to_string(),
+            verbose: true,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionValidate { request_id, path, verbose } => {
+                assert_eq!(request_id, 1700);
+                assert_eq!(path, "/path/to/ext");
+                assert!(verbose);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_debug_request_roundtrip() {
+        let req = RequestPacket::ExtensionDebug {
+            request_id: 1701,
+            id: "ext-1".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionDebug { request_id, id } => {
+                assert_eq!(request_id, 1701);
+                assert_eq!(id, "ext-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_info_request_roundtrip() {
+        let req = RequestPacket::ExtensionInfo {
+            request_id: 1702,
+            id: "ext-1".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionInfo { request_id, id } => {
+                assert_eq!(request_id, 1702);
+                assert_eq!(id, "ext-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_export_request_roundtrip() {
+        let req = RequestPacket::ExtensionExport {
+            request_id: 1703,
+            id: "ext-1".to_string(),
+            output: "/tmp/export.ext".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionExport { request_id, id, output } => {
+                assert_eq!(request_id, 1703);
+                assert_eq!(id, "ext-1");
+                assert_eq!(output, "/tmp/export.ext");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_bundle_request_roundtrip() {
+        let req = RequestPacket::ExtensionBundle {
+            request_id: 1704,
+            name: "my-bundle".to_string(),
+            ids: vec!["ext-1".to_string(), "ext-2".to_string()],
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionBundle { request_id, name, ids } => {
+                assert_eq!(request_id, 1704);
+                assert_eq!(name, "my-bundle");
+                assert_eq!(ids, vec!["ext-1".to_string(), "ext-2".to_string()]);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_validated_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionValidated {
+            request_id: 2700,
+            valid: true,
+            errors: vec![],
+            warnings: vec!["warning-1".to_string()],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionValidated { request_id, valid, errors, warnings } => {
+                assert_eq!(request_id, 2700);
+                assert!(valid);
+                assert!(errors.is_empty());
+                assert_eq!(warnings, vec!["warning-1".to_string()]);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_debug_info_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionDebugInfo {
+            request_id: 2701,
+            id: "ext-1".to_string(),
+            info: serde_json::json!({"hooks": 5}),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionDebugInfo { request_id, id, info } => {
+                assert_eq!(request_id, 2701);
+                assert_eq!(id, "ext-1");
+                assert_eq!(info["hooks"], 5);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_info_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionInfoResponse {
+            request_id: 2702,
+            id: "ext-1".to_string(),
+            info: serde_json::json!({"name": "Test Extension"}),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionInfoResponse { request_id, id, info } => {
+                assert_eq!(request_id, 2702);
+                assert_eq!(id, "ext-1");
+                assert_eq!(info["name"], "Test Extension");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_exported_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionExported {
+            request_id: 2703,
+            id: "ext-1".to_string(),
+            output: "/tmp/export.ext".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionExported { request_id, id, output } => {
+                assert_eq!(request_id, 2703);
+                assert_eq!(id, "ext-1");
+                assert_eq!(output, "/tmp/export.ext");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_bundled_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionBundled {
+            request_id: 2704,
+            name: "my-bundle".to_string(),
+            count: 3,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionBundled { request_id, name, count } => {
+                assert_eq!(request_id, 2704);
+                assert_eq!(name, "my-bundle");
+                assert_eq!(count, 3);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_ops_request_ids() {
+        let req_validate = RequestPacket::ExtensionValidate { request_id: 1, path: "/tmp".to_string(), verbose: false };
+        assert_eq!(req_validate.request_id(), 1);
+
+        let req_debug = RequestPacket::ExtensionDebug { request_id: 2, id: "e".to_string() };
+        assert_eq!(req_debug.request_id(), 2);
+
+        let req_info = RequestPacket::ExtensionInfo { request_id: 3, id: "e".to_string() };
+        assert_eq!(req_info.request_id(), 3);
+
+        let req_export = RequestPacket::ExtensionExport { request_id: 4, id: "e".to_string(), output: "/tmp".to_string() };
+        assert_eq!(req_export.request_id(), 4);
+
+        let req_bundle = RequestPacket::ExtensionBundle { request_id: 5, name: "b".to_string(), ids: vec![] };
+        assert_eq!(req_bundle.request_id(), 5);
+    }
+
+    #[test]
+    fn test_extension_ops_response_ids() {
+        let resp_validated = ResponsePacket::ExtensionValidated { request_id: 10, valid: true, errors: vec![], warnings: vec![] };
+        assert_eq!(resp_validated.request_id(), 10);
+
+        let resp_debug = ResponsePacket::ExtensionDebugInfo { request_id: 11, id: "e".to_string(), info: serde_json::Value::Null };
+        assert_eq!(resp_debug.request_id(), 11);
+
+        let resp_info = ResponsePacket::ExtensionInfoResponse { request_id: 12, id: "e".to_string(), info: serde_json::Value::Null };
+        assert_eq!(resp_info.request_id(), 12);
+
+        let resp_exported = ResponsePacket::ExtensionExported { request_id: 13, id: "e".to_string(), output: "/tmp".to_string() };
+        assert_eq!(resp_exported.request_id(), 13);
+
+        let resp_bundled = ResponsePacket::ExtensionBundled { request_id: 14, name: "b".to_string(), count: 0 };
+        assert_eq!(resp_bundled.request_id(), 14);
     }
 }
