@@ -146,6 +146,9 @@ pub enum RequestPacket {
     #[serde(rename = "agent_delete")]
     AgentDelete { request_id: u64, name: String, team: Option<String>, force: bool },
 
+    #[serde(rename = "agent_move")]
+    AgentMove { request_id: u64, old_name: String, new_name: String, team: Option<String>, to_team: Option<String> },
+
     // ─── Team CRUD ──────────────────────────────────────────────────
     #[serde(rename = "team_list")]
     TeamList { request_id: u64 },
@@ -365,6 +368,7 @@ impl RequestPacket {
             | Self::ExtensionUninstall { request_id, .. }
             | Self::AgentExport { request_id, .. }
             | Self::AgentImport { request_id, .. }
+            | Self::AgentMove { request_id, .. }
             | Self::TeamExport { request_id, .. }
             | Self::TeamImport { request_id, .. }
             | Self::RegistryPull { request_id, .. } => *request_id,
@@ -520,6 +524,10 @@ pub enum ResponsePacket {
     /// Agent deleted response
     #[serde(rename = "agent_deleted")]
     AgentDeleted { request_id: u64, result: crate::common::types::agent::AgentDeleteResult },
+
+    /// Agent moved/renamed response
+    #[serde(rename = "agent_moved")]
+    AgentMoved { request_id: u64, result: crate::common::types::agent::AgentRenameResult },
 
     /// Team list response
     #[serde(rename = "team_list")]
@@ -796,6 +804,7 @@ impl ResponsePacket {
             | Self::ExtensionUninstalled { request_id, .. }
             | Self::AgentExported { request_id, .. }
             | Self::AgentImported { request_id, .. }
+            | Self::AgentMoved { request_id, .. }
             | Self::TeamExported { request_id, .. }
             | Self::TeamImported { request_id, .. }
             | Self::RegistryPulled { request_id, .. } => *request_id,
@@ -1315,6 +1324,29 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_move_request_roundtrip() {
+        let req = RequestPacket::AgentMove {
+            request_id: 304,
+            old_name: "old-agent".to_string(),
+            new_name: "new-agent".to_string(),
+            team: Some("default".to_string()),
+            to_team: Some("new-team".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::AgentMove { request_id, old_name, new_name, team, to_team } => {
+                assert_eq!(request_id, 304);
+                assert_eq!(old_name, "old-agent");
+                assert_eq!(new_name, "new-agent");
+                assert_eq!(team, Some("default".to_string()));
+                assert_eq!(to_team, Some("new-team".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
     fn test_team_list_request_roundtrip() {
         let req = RequestPacket::TeamList {
             request_id: 400,
@@ -1479,6 +1511,30 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_moved_response_roundtrip() {
+        let resp = ResponsePacket::AgentMoved {
+            request_id: 604,
+            result: crate::common::types::agent::AgentRenameResult {
+                old_name: "old-agent".to_string(),
+                new_name: "new-agent".to_string(),
+                from_team: "default".to_string(),
+                to_team: "new-team".to_string(),
+                new_config_path: std::path::PathBuf::from("/tmp/new-team/new-agent/config.toml"),
+            },
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::AgentMoved { request_id, result } => {
+                assert_eq!(request_id, 604);
+                assert_eq!(result.old_name, "old-agent");
+                assert_eq!(result.new_name, "new-agent");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
     fn test_team_list_response_roundtrip() {
         let resp = ResponsePacket::TeamList {
             request_id: 700,
@@ -1604,6 +1660,9 @@ mod tests {
         let req_agent_delete = RequestPacket::AgentDelete { request_id: 4, name: "a".to_string(), team: None, force: false };
         assert_eq!(req_agent_delete.request_id(), 4);
 
+        let req_agent_move = RequestPacket::AgentMove { request_id: 4, old_name: "a".to_string(), new_name: "b".to_string(), team: None, to_team: None };
+        assert_eq!(req_agent_move.request_id(), 4);
+
         let req_team_list = RequestPacket::TeamList { request_id: 5 };
         assert_eq!(req_team_list.request_id(), 5);
 
@@ -1646,6 +1705,18 @@ mod tests {
             },
         };
         assert_eq!(resp_agent_deleted.request_id(), 13);
+
+        let resp_agent_moved = ResponsePacket::AgentMoved {
+            request_id: 13,
+            result: crate::common::types::agent::AgentRenameResult {
+                old_name: "a".to_string(),
+                new_name: "b".to_string(),
+                from_team: "t".to_string(),
+                to_team: "t".to_string(),
+                new_config_path: std::path::PathBuf::from("/tmp"),
+            },
+        };
+        assert_eq!(resp_agent_moved.request_id(), 13);
 
         let resp_team_list = ResponsePacket::TeamList { request_id: 14, teams: vec![] };
         assert_eq!(resp_team_list.request_id(), 14);

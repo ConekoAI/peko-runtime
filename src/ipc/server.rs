@@ -523,6 +523,20 @@ impl IpcServer {
                 }
             }
 
+            RequestPacket::AgentMove { request_id, old_name, new_name, team, to_team } => {
+                let service = state.agent_mgmt_service();
+                match service.rename_agent(&old_name, &new_name, team.as_deref(), to_team.as_deref()).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::AgentMoved { request_id, result };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
             RequestPacket::AgentExport { request_id, name, team, output, include_sessions } => {
                 let service = state.agent_mgmt_service();
                 let opts = crate::common::types::agent::AgentExportOptions {

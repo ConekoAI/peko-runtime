@@ -43,6 +43,19 @@ if (Test-Path $pekoDir) {
     Write-Host "Reset .peko directory" -ForegroundColor Yellow
 }
 
+# Start daemon (required for IPC-based commands)
+$daemonRunning = $false
+try {
+    $status = peko daemon status 2>&1
+    if ($status -match "Running") { $daemonRunning = $true }
+} catch {}
+
+if (-not $daemonRunning) {
+    Write-Host "Starting peko daemon..." -ForegroundColor Cyan
+    peko daemon start 2>&1 | Out-Null
+    Start-Sleep -Seconds 3
+}
+
 # Set API key
 peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green

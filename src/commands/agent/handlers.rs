@@ -216,40 +216,48 @@ pub async fn handle_agent_remove(
 
 /// Handle agent move command
 pub async fn handle_agent_move(
-    paths: &GlobalPaths,
+    _paths: &GlobalPaths,
     old_name: String,
     new_name: String,
     team: Option<String>,
     to_team: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let service = paths.services().agent();
+    let client = crate::ipc::DaemonClient::connect().await?;
+    let packet = crate::ipc::RequestPacket::AgentMove {
+        request_id: 1,
+        old_name,
+        new_name,
+        team,
+        to_team,
+    };
+    let response = client.request_response(packet).await?;
 
-    let result = service
-        .rename_agent(&old_name, &new_name, team.as_deref(), to_team.as_deref())
-        .await?;
-
-    if json {
-        println!(
-            "{{\"success\": true, \"old_name\": \"{}\", \"new_name\": \"{}\", \"team\": \"{}\"}}",
-            result.old_name, result.new_name, result.to_team
-        );
-    } else {
-        if result.from_team == result.to_team {
-            println!(
-                "✅ Renamed agent '{}' to '{}' in team '{}'",
-                result.old_name, result.new_name, result.from_team
-            );
-        } else {
-            println!(
-                "✅ Moved agent '{}' from team '{}' to '{}' as '{}'",
-                result.old_name, result.from_team, result.to_team, result.new_name
-            );
+    match response {
+        crate::ipc::ResponsePacket::AgentMoved { result, .. } => {
+            if json {
+                println!(
+                    "{{\"success\": true, \"old_name\": \"{}\", \"new_name\": \"{}\", \"team\": \"{}\"}}",
+                    result.old_name, result.new_name, result.to_team
+                );
+            } else {
+                if result.from_team == result.to_team {
+                    println!(
+                        "✅ Renamed agent '{}' to '{}' in team '{}'",
+                        result.old_name, result.new_name, result.from_team
+                    );
+                } else {
+                    println!(
+                        "✅ Moved agent '{}' from team '{}' to '{}' as '{}'",
+                        result.old_name, result.from_team, result.to_team, result.new_name
+                    );
+                }
+                println!("   Config: {}", result.new_config_path.display());
+            }
+            Ok(())
         }
-        println!("   Config: {}", result.new_config_path.display());
+        _ => anyhow::bail!("Unexpected response"),
     }
-
-    Ok(())
 }
 
 /// Handle agent export command
