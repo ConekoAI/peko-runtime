@@ -796,6 +796,53 @@ impl IpcServer {
                 let response = ResponsePacket::SystemCleaned { request_id, cleaned, bytes_freed };
                 Self::send_packet(&socket, response, addr).await?;
             }
+
+            RequestPacket::ExtensionInstall { request_id, path } => {
+                let mut manager = state.extension_manager().write().await;
+                let install_path = std::path::PathBuf::from(path);
+
+                match manager.install(&install_path).await {
+                    Ok(ext_id) => {
+                        let id = ext_id.0;
+                        let response = ResponsePacket::ExtensionInstalled {
+                            request_id,
+                            id: id.clone(),
+                            message: format!("Extension '{id}' installed successfully"),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Failed to install extension: {e}"),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ExtensionUninstall { request_id, id } => {
+                let mut manager = state.extension_manager().write().await;
+                let ext_id = crate::extension::types::ExtensionId::new(&id);
+
+                match manager.uninstall(&ext_id).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::ExtensionUninstalled {
+                            request_id,
+                            id: id.clone(),
+                            message: format!("Extension '{id}' uninstalled"),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Failed to uninstall extension: {e}"),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
         }
 
         Ok(())

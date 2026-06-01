@@ -187,6 +187,20 @@ pub enum RequestPacket {
         request_id: u64,
         scope: Option<String>,
     },
+
+    /// Install an extension from a path
+    #[serde(rename = "extension_install")]
+    ExtensionInstall {
+        request_id: u64,
+        path: String,
+    },
+
+    /// Uninstall an extension by ID
+    #[serde(rename = "extension_uninstall")]
+    ExtensionUninstall {
+        request_id: u64,
+        id: String,
+    },
 }
 
 impl RequestPacket {
@@ -221,7 +235,9 @@ impl RequestPacket {
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnable { request_id, .. }
             | Self::ExtensionDisable { request_id, .. }
-            | Self::SystemClean { request_id, .. } => *request_id,
+            | Self::SystemClean { request_id, .. }
+            | Self::ExtensionInstall { request_id, .. }
+            | Self::ExtensionUninstall { request_id, .. } => *request_id,
         }
     }
 
@@ -444,6 +460,22 @@ pub enum ResponsePacket {
         cleaned: Vec<String>,
         bytes_freed: u64,
     },
+
+    /// Extension installed response
+    #[serde(rename = "extension_installed")]
+    ExtensionInstalled {
+        request_id: u64,
+        id: String,
+        message: String,
+    },
+
+    /// Extension uninstalled response
+    #[serde(rename = "extension_uninstalled")]
+    ExtensionUninstalled {
+        request_id: u64,
+        id: String,
+        message: String,
+    },
 }
 
 /// Summary of an extension for IPC responses
@@ -502,7 +534,9 @@ impl ResponsePacket {
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnabled { request_id, .. }
             | Self::ExtensionDisabled { request_id, .. }
-            | Self::SystemCleaned { request_id, .. } => *request_id,
+            | Self::SystemCleaned { request_id, .. }
+            | Self::ExtensionInstalled { request_id, .. }
+            | Self::ExtensionUninstalled { request_id, .. } => *request_id,
         }
     }
 
@@ -1749,5 +1783,109 @@ mod tests {
             bytes_freed: 0,
         };
         assert_eq!(resp_cleaned.request_id(), 13);
+    }
+
+    #[test]
+    fn test_extension_install_request_roundtrip() {
+        let req = RequestPacket::ExtensionInstall {
+            request_id: 1100,
+            path: "/path/to/extension".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionInstall { request_id, path } => {
+                assert_eq!(request_id, 1100);
+                assert_eq!(path, "/path/to/extension");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_uninstall_request_roundtrip() {
+        let req = RequestPacket::ExtensionUninstall {
+            request_id: 1101,
+            id: "ext-1".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::ExtensionUninstall { request_id, id } => {
+                assert_eq!(request_id, 1101);
+                assert_eq!(id, "ext-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_installed_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionInstalled {
+            request_id: 2100,
+            id: "ext-1".to_string(),
+            message: "Extension 'ext-1' installed successfully".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionInstalled { request_id, id, message } => {
+                assert_eq!(request_id, 2100);
+                assert_eq!(id, "ext-1");
+                assert_eq!(message, "Extension 'ext-1' installed successfully");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_uninstalled_response_roundtrip() {
+        let resp = ResponsePacket::ExtensionUninstalled {
+            request_id: 2101,
+            id: "ext-1".to_string(),
+            message: "Extension 'ext-1' uninstalled".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::ExtensionUninstalled { request_id, id, message } => {
+                assert_eq!(request_id, 2101);
+                assert_eq!(id, "ext-1");
+                assert_eq!(message, "Extension 'ext-1' uninstalled");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_extension_install_uninstall_request_ids() {
+        let req_install = RequestPacket::ExtensionInstall {
+            request_id: 1,
+            path: "/path/to/ext".to_string(),
+        };
+        assert_eq!(req_install.request_id(), 1);
+
+        let req_uninstall = RequestPacket::ExtensionUninstall {
+            request_id: 2,
+            id: "ext-1".to_string(),
+        };
+        assert_eq!(req_uninstall.request_id(), 2);
+    }
+
+    #[test]
+    fn test_extension_install_uninstall_response_ids() {
+        let resp_installed = ResponsePacket::ExtensionInstalled {
+            request_id: 10,
+            id: "ext-1".to_string(),
+            message: "m".to_string(),
+        };
+        assert_eq!(resp_installed.request_id(), 10);
+
+        let resp_uninstalled = ResponsePacket::ExtensionUninstalled {
+            request_id: 11,
+            id: "ext-1".to_string(),
+            message: "m".to_string(),
+        };
+        assert_eq!(resp_uninstalled.request_id(), 11);
     }
 }
