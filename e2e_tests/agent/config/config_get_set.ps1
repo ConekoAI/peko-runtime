@@ -22,44 +22,6 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build peko
-Write-Host "Building peko..." -ForegroundColor Cyan
-pushd "$PSScriptRoot/../.."
-$env:RUSTFLAGS = "-A warnings"
-cargo build --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Build failed"
-    exit 1
-}
-popd
-
-# Reset peko config data
-$pekoDir = "$env:USERPROFILE/.peko"
-if (Test-Path $pekoDir) {
-    Remove-Item -Recurse -Force $pekoDir
-    Write-Host "Reset .peko directory" -ForegroundColor Yellow
-}
-
-# Start daemon (required for IPC-based commands)
-$daemonRunning = $false
-try {
-    $status = peko daemon status 2>&1
-    if ($status -match "✅ Running") { $daemonRunning = $true }
-} catch {}
-
-if (-not $daemonRunning) {
-    Write-Host "Starting peko daemon..." -ForegroundColor Cyan
-    $proc = Start-Process -FilePath "peko" -ArgumentList "daemon","start" -WindowStyle Hidden -PassThru
-    Write-Host "Daemon process started, PID: $($proc.Id), waiting..." -ForegroundColor Gray
-    Start-Sleep -Seconds 5
-    $status = peko daemon status 2>&1
-    Write-Host "Daemon status: $status" -ForegroundColor Gray
-}
-
-# Set API key
-peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
-Write-Host "Set API key for $Provider" -ForegroundColor Green
-
 # Create test agent
 $agentName = "configtestagent"
 Write-Host "`nCreating test agent: $agentName" -ForegroundColor Yellow

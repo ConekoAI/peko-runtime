@@ -170,10 +170,7 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         let workspace_path: PathBuf = workspace_path.into();
         let data_dir = workspace_path.clone();
-        let config_dir = dirs::home_dir().map_or_else(
-            || PathBuf::from(".").join(".peko"),
-            |d| d.join(".peko"),
-        );
+        let config_dir = config.config_dir.clone();
         let cache_dir =
             dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("peko"));
         Self::build(
@@ -199,7 +196,7 @@ impl AppState {
         let workspace_path: PathBuf = workspace_path.into();
         let cache_dir =
             dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("peko"));
-        let config_dir = data_dir.join("config");
+        let config_dir = config.config_dir.clone();
         Self::build(
             workspace_path,
             host.into(),
