@@ -224,7 +224,27 @@ fn json_to_toml(json: serde_json::Value) -> Result<toml::Value> {
 pub fn format_toml_value(value: &toml::Value) -> Result<String> {
     match value {
         toml::Value::String(s) => Ok(s.clone()),
-        toml::Value::Array(arr) => Ok(toml::to_string(arr)?.trim().to_string()),
+        toml::Value::Array(arr) => {
+            // Serialize array elements as JSON for consistent output
+            // (toml::to_string doesn't support arrays as root documents)
+            let json_arr: Vec<serde_json::Value> = arr
+                .iter()
+                .map(|v| match v {
+                    toml::Value::String(s) => serde_json::Value::String(s.clone()),
+                    toml::Value::Integer(i) => serde_json::Value::Number((*i).into()),
+                    toml::Value::Float(f) => serde_json::json!(f),
+                    toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
+                    toml::Value::Array(a) => {
+                        serde_json::from_str(&format_toml_value(&toml::Value::Array(a.clone())).unwrap_or_default())
+                            .unwrap_or_default()
+                    }
+                    toml::Value::Table(t) => serde_json::from_str(&toml::to_string_pretty(t).unwrap_or_default())
+                        .unwrap_or_default(),
+                    toml::Value::Datetime(d) => serde_json::Value::String(d.to_string()),
+                })
+                .collect();
+            Ok(serde_json::to_string(&json_arr)?)
+        }
         toml::Value::Table(obj) => Ok(toml::to_string_pretty(obj)?.trim().to_string()),
         other => Ok(other.to_string()),
     }
