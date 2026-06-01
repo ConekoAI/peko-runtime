@@ -47,7 +47,7 @@ if (Test-Path $pekoDir) {
 $daemonRunning = $false
 try {
     $status = peko daemon status 2>&1
-    if ($status -match "Running") { $daemonRunning = $true }
+    if ($status -match "✅ Running") { $daemonRunning = $true }
 } catch {}
 
 if (-not $daemonRunning) {

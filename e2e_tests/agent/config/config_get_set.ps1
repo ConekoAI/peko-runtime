@@ -44,13 +44,16 @@ if (Test-Path $pekoDir) {
 $daemonRunning = $false
 try {
     $status = peko daemon status 2>&1
-    if ($status -match "Running") { $daemonRunning = $true }
+    if ($status -match "✅ Running") { $daemonRunning = $true }
 } catch {}
 
 if (-not $daemonRunning) {
     Write-Host "Starting peko daemon..." -ForegroundColor Cyan
-    peko daemon start 2>&1 | Out-Null
-    Start-Sleep -Seconds 3
+    $proc = Start-Process -FilePath "peko" -ArgumentList "daemon","start" -WindowStyle Hidden -PassThru
+    Write-Host "Daemon process started, PID: $($proc.Id), waiting..." -ForegroundColor Gray
+    Start-Sleep -Seconds 5
+    $status = peko daemon status 2>&1
+    Write-Host "Daemon status: $status" -ForegroundColor Gray
 }
 
 # Set API key
