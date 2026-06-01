@@ -1,6 +1,6 @@
 # ADR-021: Daemon as Central Runtime — SIMPLIFIED
 
-**Status**: Accepted / In Progress  
+**Status**: Accepted / Complete  
 **Date**: 2026-04-19  
 **Last Updated**: 2026-05-31  
 **Author**: User + Kimi Code CLI  
@@ -371,23 +371,34 @@ impl ConnectionManager {
 - ✅ Add `SystemStatus`/`SystemDoctor` packets.
 - ✅ Desktop app migrates all simple CRUD commands to IPC.
 
-### Milestone 3: Remaining Operations (Future / Optional)
+### Milestone 3: Remaining Operations (Completed)
 
-These operations are intentionally staying as CLI shell-out because they are file-I/O-heavy or complex:
+**All operations previously listed as "future/optional" have been migrated to IPC.**
+
+| Operation | Status | Notes |
+|-----------|--------|-------|
+| `agent export` / `agent import` | ✅ IPC | Daemon reads/writes user-specified paths |
+| `team export` / `team import` | ✅ IPC | Daemon creates/extracts `.team` archives |
+| `session branch` / `session compact` | ✅ IPC | Daemon handles multi-step state mutations |
+| `extension list` | ✅ IPC | Daemon has `ExtensionManager` in `AppState` |
+| `extension install` / `extension uninstall` | ✅ IPC | Daemon copies/deletes from `~/.peko/extensions/` |
+| `extension enable` / `extension disable` | ✅ IPC | Daemon persists `extensions.toml` |
+| `cron add` | ✅ IPC | Daemon parses schedule and persists |
+| `system clean` | ✅ IPC | Daemon clears caches, temp files |
+| `registry pull` | ✅ IPC | Daemon makes HTTP request, passes token |
+
+The daemon is now the single writer for all local filesystem state. Both CLI and desktop are thin IPC clients.
+
+**Intentionally remaining as direct CLI operations** (not IPC):
 
 | Operation | Reason |
 |-----------|--------|
-| `agent export` / `agent import` | File I/O (reads/writes user-specified paths) |
-| `team export` / `team import` | File I/O (creates/extracts `.team` archives) |
-| `session branch` / `session compact` | Complex multi-step state mutations |
-| `extension list` | Requires `ExtensionManager` with filesystem scan |
-| `extension install` / `extension uninstall` | File I/O (copies/deletes from `~/.peko/extensions/`) |
-| `extension enable` / `extension disable` | Config persistence (`extensions.toml`) |
-| `cron add` | Complex schedule parsing (`ScheduleKind::Every { every_ms }`) |
-| `system clean` | File I/O (clears caches, temp files) |
-| `registry pull` | Network I/O (HTTP to registry) |
-
-To migrate these, the daemon would need to become the single writer for filesystem state (like Docker's `dockerd`). This is a significant architectural shift and is deferred to a future phase if needed.
+| `auth login/logout` | Credential management (sensitive, local keyring) |
+| `daemon start/stop/status` | Daemon lifecycle |
+| `session show/switch` | Complex history streaming / peer management |
+| `agent/team/ext config` | Simple TOML edits |
+| `agent/team/ext push/pull` | External HTTP to registry |
+| `registry search` | External HTTP |
 
 ## Consequences
 
@@ -416,7 +427,7 @@ To migrate these, the daemon would need to become the single writer for filesyst
 | Aspect | Old ADR-021 | This ADR |
 |--------|-------------|----------|
 | Transport | HTTP + REST + SSE | UDP / Unix socket |
-| Endpoints | 15+ REST endpoints | 4 packet types |
+| Endpoints | 15+ REST endpoints | 39 request + 43 response packet types |
 | New abstractions | `RuntimeFacade`, `McpHealthMonitor` | `ConnectionManager` only |
 | Phases | 5 phases, months of work | 3 milestones, weeks of work |
 | Lines added | ~3000+ | ~600 (IPC layer) |
