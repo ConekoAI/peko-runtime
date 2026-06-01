@@ -188,6 +188,36 @@ pub enum RequestPacket {
         scope: Option<String>,
     },
 
+    /// Add a cron job (simplified — daemon constructs the CronJob)
+    #[serde(rename = "cron_add_simple")]
+    CronAddSimple {
+        request_id: u64,
+        name: String,
+        schedule: String,  // cron expression
+        message: String,
+    },
+
+    /// Branch a session
+    #[serde(rename = "session_branch")]
+    SessionBranch {
+        request_id: u64,
+        agent: String,
+        team: Option<String>,
+        session_id: String,
+        label: Option<String>,
+    },
+
+    /// Compact a session
+    #[serde(rename = "session_compact")]
+    SessionCompact {
+        request_id: u64,
+        agent: String,
+        team: Option<String>,
+        session_id: String,
+        dry_run: bool,
+        instruction: Option<String>,
+    },
+
     /// Install an extension from a path
     #[serde(rename = "extension_install")]
     ExtensionInstall {
@@ -200,6 +230,54 @@ pub enum RequestPacket {
     ExtensionUninstall {
         request_id: u64,
         id: String,
+    },
+
+    /// Export an agent to a file
+    #[serde(rename = "agent_export")]
+    AgentExport {
+        request_id: u64,
+        name: String,
+        team: Option<String>,
+        output: Option<String>,
+        include_sessions: bool,
+    },
+
+    /// Import an agent from a file
+    #[serde(rename = "agent_import")]
+    AgentImport {
+        request_id: u64,
+        file_path: String,
+        name: Option<String>,
+        team: Option<String>,
+    },
+
+    /// Export a team
+    #[serde(rename = "team_export")]
+    TeamExport {
+        request_id: u64,
+        name: String,
+        output: Option<String>,
+        include_sessions: bool,
+    },
+
+    /// Import a team
+    #[serde(rename = "team_import")]
+    TeamImport {
+        request_id: u64,
+        file_path: String,
+        name: Option<String>,
+        force: bool,
+    },
+
+    /// Pull an agent from a registry
+    #[serde(rename = "registry_pull")]
+    RegistryPull {
+        request_id: u64,
+        registry_ref: String,
+        team: Option<String>,
+        force: bool,
+        registry_token: Option<String>,
+        registry_host: Option<String>,
     },
 }
 
@@ -236,8 +314,16 @@ impl RequestPacket {
             | Self::ExtensionEnable { request_id, .. }
             | Self::ExtensionDisable { request_id, .. }
             | Self::SystemClean { request_id, .. }
+            | Self::CronAddSimple { request_id, .. }
+            | Self::SessionBranch { request_id, .. }
+            | Self::SessionCompact { request_id, .. }
             | Self::ExtensionInstall { request_id, .. }
-            | Self::ExtensionUninstall { request_id, .. } => *request_id,
+            | Self::ExtensionUninstall { request_id, .. }
+            | Self::AgentExport { request_id, .. }
+            | Self::AgentImport { request_id, .. }
+            | Self::TeamExport { request_id, .. }
+            | Self::TeamImport { request_id, .. }
+            | Self::RegistryPull { request_id, .. } => *request_id,
         }
     }
 
@@ -461,6 +547,32 @@ pub enum ResponsePacket {
         bytes_freed: u64,
     },
 
+    /// Cron job added (simplified)
+    #[serde(rename = "cron_added_simple")]
+    CronAddedSimple {
+        request_id: u64,
+        job_id: String,
+    },
+
+    /// Session branched
+    #[serde(rename = "session_branched")]
+    SessionBranched {
+        request_id: u64,
+        new_session_id: String,
+        parent_session_id: String,
+    },
+
+    /// Session compacted
+    #[serde(rename = "session_compacted")]
+    SessionCompacted {
+        request_id: u64,
+        session_id: String,
+        messages_compacted: usize,
+        tokens_saved: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+    },
+
     /// Extension installed response
     #[serde(rename = "extension_installed")]
     ExtensionInstalled {
@@ -475,6 +587,49 @@ pub enum ResponsePacket {
         request_id: u64,
         id: String,
         message: String,
+    },
+
+    /// Agent exported
+    #[serde(rename = "agent_exported")]
+    AgentExported {
+        request_id: u64,
+        name: String,
+        team: String,
+        output_path: String,
+    },
+
+    /// Agent imported
+    #[serde(rename = "agent_imported")]
+    AgentImported {
+        request_id: u64,
+        name: String,
+        team: String,
+        config_path: String,
+    },
+
+    /// Team exported
+    #[serde(rename = "team_exported")]
+    TeamExported {
+        request_id: u64,
+        name: String,
+        output_path: String,
+    },
+
+    /// Team imported
+    #[serde(rename = "team_imported")]
+    TeamImported {
+        request_id: u64,
+        name: String,
+        path: String,
+    },
+
+    /// Registry pull completed
+    #[serde(rename = "registry_pulled")]
+    RegistryPulled {
+        request_id: u64,
+        name: String,
+        version: String,
+        digest: String,
     },
 }
 
@@ -535,8 +690,16 @@ impl ResponsePacket {
             | Self::ExtensionEnabled { request_id, .. }
             | Self::ExtensionDisabled { request_id, .. }
             | Self::SystemCleaned { request_id, .. }
+            | Self::CronAddedSimple { request_id, .. }
+            | Self::SessionBranched { request_id, .. }
+            | Self::SessionCompacted { request_id, .. }
             | Self::ExtensionInstalled { request_id, .. }
-            | Self::ExtensionUninstalled { request_id, .. } => *request_id,
+            | Self::ExtensionUninstalled { request_id, .. }
+            | Self::AgentExported { request_id, .. }
+            | Self::AgentImported { request_id, .. }
+            | Self::TeamExported { request_id, .. }
+            | Self::TeamImported { request_id, .. }
+            | Self::RegistryPulled { request_id, .. } => *request_id,
         }
     }
 
@@ -1887,5 +2050,502 @@ mod tests {
             message: "m".to_string(),
         };
         assert_eq!(resp_uninstalled.request_id(), 11);
+    }
+
+    #[test]
+    fn test_cron_add_simple_request_roundtrip() {
+        let req = RequestPacket::CronAddSimple {
+            request_id: 1200,
+            name: "Daily Report".to_string(),
+            schedule: "0 9 * * *".to_string(),
+            message: "Generate daily report".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CronAddSimple { request_id, name, schedule, message } => {
+                assert_eq!(request_id, 1200);
+                assert_eq!(name, "Daily Report");
+                assert_eq!(schedule, "0 9 * * *");
+                assert_eq!(message, "Generate daily report");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_branch_request_roundtrip() {
+        let req = RequestPacket::SessionBranch {
+            request_id: 1201,
+            agent: "test-agent".to_string(),
+            team: Some("default".to_string()),
+            session_id: "sess-123".to_string(),
+            label: Some("feature-x".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SessionBranch { request_id, agent, team, session_id, label } => {
+                assert_eq!(request_id, 1201);
+                assert_eq!(agent, "test-agent");
+                assert_eq!(team, Some("default".to_string()));
+                assert_eq!(session_id, "sess-123");
+                assert_eq!(label, Some("feature-x".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_compact_request_roundtrip() {
+        let req = RequestPacket::SessionCompact {
+            request_id: 1202,
+            agent: "test-agent".to_string(),
+            team: None,
+            session_id: "sess-123".to_string(),
+            dry_run: true,
+            instruction: Some("Summarize".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::SessionCompact { request_id, agent, team, session_id, dry_run, instruction } => {
+                assert_eq!(request_id, 1202);
+                assert_eq!(agent, "test-agent");
+                assert_eq!(team, None);
+                assert_eq!(session_id, "sess-123");
+                assert!(dry_run);
+                assert_eq!(instruction, Some("Summarize".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_added_simple_response_roundtrip() {
+        let resp = ResponsePacket::CronAddedSimple {
+            request_id: 2200,
+            job_id: "cron_abc123".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CronAddedSimple { request_id, job_id } => {
+                assert_eq!(request_id, 2200);
+                assert_eq!(job_id, "cron_abc123");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_branched_response_roundtrip() {
+        let resp = ResponsePacket::SessionBranched {
+            request_id: 2201,
+            new_session_id: "sess-new".to_string(),
+            parent_session_id: "sess-parent".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SessionBranched { request_id, new_session_id, parent_session_id } => {
+                assert_eq!(request_id, 2201);
+                assert_eq!(new_session_id, "sess-new");
+                assert_eq!(parent_session_id, "sess-parent");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_compacted_response_roundtrip() {
+        let resp = ResponsePacket::SessionCompacted {
+            request_id: 2202,
+            session_id: "sess-123".to_string(),
+            messages_compacted: 10,
+            tokens_saved: 500,
+            tokens_before: 2000,
+            tokens_after: 1500,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SessionCompacted { request_id, session_id, messages_compacted, tokens_saved, tokens_before, tokens_after } => {
+                assert_eq!(request_id, 2202);
+                assert_eq!(session_id, "sess-123");
+                assert_eq!(messages_compacted, 10);
+                assert_eq!(tokens_saved, 500);
+                assert_eq!(tokens_before, 2000);
+                assert_eq!(tokens_after, 1500);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_new_request_ids() {
+        let req_cron = RequestPacket::CronAddSimple {
+            request_id: 1,
+            name: "n".to_string(),
+            schedule: "* * * * *".to_string(),
+            message: "m".to_string(),
+        };
+        assert_eq!(req_cron.request_id(), 1);
+
+        let req_branch = RequestPacket::SessionBranch {
+            request_id: 2,
+            agent: "a".to_string(),
+            team: None,
+            session_id: "s".to_string(),
+            label: None,
+        };
+        assert_eq!(req_branch.request_id(), 2);
+
+        let req_compact = RequestPacket::SessionCompact {
+            request_id: 3,
+            agent: "a".to_string(),
+            team: None,
+            session_id: "s".to_string(),
+            dry_run: false,
+            instruction: None,
+        };
+        assert_eq!(req_compact.request_id(), 3);
+    }
+
+    #[test]
+    fn test_new_response_ids() {
+        let resp_cron = ResponsePacket::CronAddedSimple {
+            request_id: 10,
+            job_id: "j".to_string(),
+        };
+        assert_eq!(resp_cron.request_id(), 10);
+
+        let resp_branch = ResponsePacket::SessionBranched {
+            request_id: 11,
+            new_session_id: "n".to_string(),
+            parent_session_id: "p".to_string(),
+        };
+        assert_eq!(resp_branch.request_id(), 11);
+
+        let resp_compact = ResponsePacket::SessionCompacted {
+            request_id: 12,
+            session_id: "s".to_string(),
+            messages_compacted: 0,
+            tokens_saved: 0,
+            tokens_before: 0,
+            tokens_after: 0,
+        };
+        assert_eq!(resp_compact.request_id(), 12);
+    }
+
+    #[test]
+    fn test_agent_export_request_roundtrip() {
+        let req = RequestPacket::AgentExport {
+            request_id: 1200,
+            name: "test-agent".to_string(),
+            team: Some("default".to_string()),
+            output: Some("/tmp/export.zip".to_string()),
+            include_sessions: true,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::AgentExport { request_id, name, team, output, include_sessions } => {
+                assert_eq!(request_id, 1200);
+                assert_eq!(name, "test-agent");
+                assert_eq!(team, Some("default".to_string()));
+                assert_eq!(output, Some("/tmp/export.zip".to_string()));
+                assert!(include_sessions);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_import_request_roundtrip() {
+        let req = RequestPacket::AgentImport {
+            request_id: 1201,
+            file_path: "/tmp/export.zip".to_string(),
+            name: Some("renamed-agent".to_string()),
+            team: Some("default".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::AgentImport { request_id, file_path, name, team } => {
+                assert_eq!(request_id, 1201);
+                assert_eq!(file_path, "/tmp/export.zip");
+                assert_eq!(name, Some("renamed-agent".to_string()));
+                assert_eq!(team, Some("default".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_exported_response_roundtrip() {
+        let resp = ResponsePacket::AgentExported {
+            request_id: 2200,
+            name: "test-agent".to_string(),
+            team: "default".to_string(),
+            output_path: "/tmp/export.zip".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::AgentExported { request_id, name, team, output_path } => {
+                assert_eq!(request_id, 2200);
+                assert_eq!(name, "test-agent");
+                assert_eq!(team, "default");
+                assert_eq!(output_path, "/tmp/export.zip");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_imported_response_roundtrip() {
+        let resp = ResponsePacket::AgentImported {
+            request_id: 2201,
+            name: "test-agent".to_string(),
+            team: "default".to_string(),
+            config_path: "/tmp/agents/test-agent/config.toml".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::AgentImported { request_id, name, team, config_path } => {
+                assert_eq!(request_id, 2201);
+                assert_eq!(name, "test-agent");
+                assert_eq!(team, "default");
+                assert_eq!(config_path, "/tmp/agents/test-agent/config.toml");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_export_import_request_ids() {
+        let req_export = RequestPacket::AgentExport {
+            request_id: 1,
+            name: "a".to_string(),
+            team: None,
+            output: None,
+            include_sessions: false,
+        };
+        assert_eq!(req_export.request_id(), 1);
+
+        let req_import = RequestPacket::AgentImport {
+            request_id: 2,
+            file_path: "/tmp/x.zip".to_string(),
+            name: None,
+            team: None,
+        };
+        assert_eq!(req_import.request_id(), 2);
+    }
+
+    #[test]
+    fn test_agent_export_import_response_ids() {
+        let resp_exported = ResponsePacket::AgentExported {
+            request_id: 10,
+            name: "a".to_string(),
+            team: "t".to_string(),
+            output_path: "/tmp/x.zip".to_string(),
+        };
+        assert_eq!(resp_exported.request_id(), 10);
+
+        let resp_imported = ResponsePacket::AgentImported {
+            request_id: 11,
+            name: "a".to_string(),
+            team: "t".to_string(),
+            config_path: "/tmp/a/config.toml".to_string(),
+        };
+        assert_eq!(resp_imported.request_id(), 11);
+    }
+
+    #[test]
+    fn test_team_export_request_roundtrip() {
+        let req = RequestPacket::TeamExport {
+            request_id: 1300,
+            name: "my-team".to_string(),
+            output: Some("/tmp/export.team".to_string()),
+            include_sessions: true,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TeamExport { request_id, name, output, include_sessions } => {
+                assert_eq!(request_id, 1300);
+                assert_eq!(name, "my-team");
+                assert_eq!(output, Some("/tmp/export.team".to_string()));
+                assert!(include_sessions);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_import_request_roundtrip() {
+        let req = RequestPacket::TeamImport {
+            request_id: 1301,
+            file_path: "/tmp/import.team".to_string(),
+            name: Some("new-team".to_string()),
+            force: false,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TeamImport { request_id, file_path, name, force } => {
+                assert_eq!(request_id, 1301);
+                assert_eq!(file_path, "/tmp/import.team");
+                assert_eq!(name, Some("new-team".to_string()));
+                assert!(!force);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_exported_response_roundtrip() {
+        let resp = ResponsePacket::TeamExported {
+            request_id: 2300,
+            name: "my-team".to_string(),
+            output_path: "/tmp/export.team".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::TeamExported { request_id, name, output_path } => {
+                assert_eq!(request_id, 2300);
+                assert_eq!(name, "my-team");
+                assert_eq!(output_path, "/tmp/export.team");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_imported_response_roundtrip() {
+        let resp = ResponsePacket::TeamImported {
+            request_id: 2301,
+            name: "new-team".to_string(),
+            path: "/tmp/teams/new-team".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::TeamImported { request_id, name, path } => {
+                assert_eq!(request_id, 2301);
+                assert_eq!(name, "new-team");
+                assert_eq!(path, "/tmp/teams/new-team");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_team_export_import_request_ids() {
+        let req_export = RequestPacket::TeamExport {
+            request_id: 1,
+            name: "t".to_string(),
+            output: None,
+            include_sessions: false,
+        };
+        assert_eq!(req_export.request_id(), 1);
+
+        let req_import = RequestPacket::TeamImport {
+            request_id: 2,
+            file_path: "/tmp/f.team".to_string(),
+            name: None,
+            force: false,
+        };
+        assert_eq!(req_import.request_id(), 2);
+    }
+
+    #[test]
+    fn test_team_export_import_response_ids() {
+        let resp_exported = ResponsePacket::TeamExported {
+            request_id: 10,
+            name: "t".to_string(),
+            output_path: "/tmp/e.team".to_string(),
+        };
+        assert_eq!(resp_exported.request_id(), 10);
+
+        let resp_imported = ResponsePacket::TeamImported {
+            request_id: 11,
+            name: "t".to_string(),
+            path: "/tmp/t".to_string(),
+        };
+        assert_eq!(resp_imported.request_id(), 11);
+    }
+
+    #[test]
+    fn test_registry_pull_request_roundtrip() {
+        let req = RequestPacket::RegistryPull {
+            request_id: 1400,
+            registry_ref: "my-agent:v1.0".to_string(),
+            team: Some("default".to_string()),
+            force: false,
+            registry_token: Some("token123".to_string()),
+            registry_host: Some("pekohub.org".to_string()),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::RegistryPull { request_id, registry_ref, team, force, registry_token, registry_host } => {
+                assert_eq!(request_id, 1400);
+                assert_eq!(registry_ref, "my-agent:v1.0");
+                assert_eq!(team, Some("default".to_string()));
+                assert!(!force);
+                assert_eq!(registry_token, Some("token123".to_string()));
+                assert_eq!(registry_host, Some("pekohub.org".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_registry_pulled_response_roundtrip() {
+        let resp = ResponsePacket::RegistryPulled {
+            request_id: 2400,
+            name: "my-agent".to_string(),
+            version: "v1.0".to_string(),
+            digest: "sha256:abc123".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::RegistryPulled { request_id, name, version, digest } => {
+                assert_eq!(request_id, 2400);
+                assert_eq!(name, "my-agent");
+                assert_eq!(version, "v1.0");
+                assert_eq!(digest, "sha256:abc123");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_registry_pull_request_id() {
+        let req = RequestPacket::RegistryPull {
+            request_id: 1,
+            registry_ref: "a".to_string(),
+            team: None,
+            force: false,
+            registry_token: None,
+            registry_host: None,
+        };
+        assert_eq!(req.request_id(), 1);
+    }
+
+    #[test]
+    fn test_registry_pulled_response_id() {
+        let resp = ResponsePacket::RegistryPulled {
+            request_id: 10,
+            name: "a".to_string(),
+            version: "v1".to_string(),
+            digest: "sha256:d".to_string(),
+        };
+        assert_eq!(resp.request_id(), 10);
     }
 }

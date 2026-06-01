@@ -523,6 +523,49 @@ impl IpcServer {
                 }
             }
 
+            RequestPacket::AgentExport { request_id, name, team, output, include_sessions } => {
+                let service = state.agent_mgmt_service();
+                let opts = crate::common::types::agent::AgentExportOptions {
+                    output_path: output.map(std::path::PathBuf::from),
+                    include_sessions,
+                };
+                match service.export_agent(&name, team.as_deref(), opts).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::AgentExported {
+                            request_id,
+                            name: result.name,
+                            team: result.team,
+                            output_path: result.output_path.to_string_lossy().to_string(),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::AgentImport { request_id, file_path, name, team } => {
+                let service = state.agent_mgmt_service();
+                let opts = crate::common::types::agent::AgentImportOptions { name, team, force: false };
+                match service.import_agent(std::path::Path::new(&file_path), opts).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::AgentImported {
+                            request_id,
+                            name: result.name,
+                            team: result.team,
+                            config_path: result.config_path.to_string_lossy().to_string(),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
             // ─── Team CRUD ──────────────────────────────────────────────────
             RequestPacket::TeamList { request_id } => {
                 let service = state.team_service();
@@ -543,6 +586,42 @@ impl IpcServer {
                 match service.get_team(&name).await {
                     Ok(team) => {
                         let response = ResponsePacket::TeamGet { request_id, team };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::TeamExport { request_id, name, output, include_sessions } => {
+                let service = state.team_service();
+                match service.export_team(&name, output, !include_sessions, false, false).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::TeamExported {
+                            request_id,
+                            name: result.name,
+                            output_path: result.output_path.to_string_lossy().to_string(),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::TeamImport { request_id, file_path, name, force } => {
+                let service = state.team_service();
+                match service.import_team(&file_path, name, force, true).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::TeamImported {
+                            request_id,
+                            name: result.name,
+                            path: result.path.to_string_lossy().to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
@@ -797,6 +876,135 @@ impl IpcServer {
                 Self::send_packet(&socket, response, addr).await?;
             }
 
+            RequestPacket::CronAddSimple { request_id, name, schedule, message } => {
+                let cron_db = state.data_dir.join("cron.json");
+                match crate::cron::CronScheduler::new(&cron_db) {
+                    Ok(scheduler) => {
+                        let _normalized = crate::cron::normalize_cron_expr(&schedule);
+                        let schedule_kind = crate::cron::ScheduleKind::Cron { expr: schedule.clone(), tz: None };
+                        let next_run = match crate::cron::calculate_next_run(&schedule_kind, chrono::Utc::now()) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Invalid schedule: {e}") };
+                                Self::send_packet(&socket, response, addr).await?;
+                                return Ok(());
+                            }
+                        };
+                        let job = crate::cron::CronJob {
+                            id: format!("cron_{}", uuid::Uuid::new_v4().simple()),
+                            name,
+                            schedule: schedule_kind,
+                            target: crate::cron::ExecutionTarget::Main,
+                            agent_id: None,
+                            message,
+                            delivery: crate::cron::DeliveryMode::None,
+                            delete_after_run: false,
+                            enabled: true,
+                            created_at: chrono::Utc::now(),
+                            next_run,
+                            last_run: None,
+                            last_status: None,
+                            run_count: 0,
+                        };
+                        match scheduler.add_job(&job) {
+                            Ok(()) => {
+                                let response = ResponsePacket::CronAddedSimple { request_id, job_id: job.id };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Failed to add job: {e}") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::SessionBranch { request_id, agent, team, session_id, label } => {
+                let service = state.session_service();
+                match service.branch_session(&agent, team.as_deref(), &session_id, label).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::SessionBranched {
+                            request_id,
+                            new_session_id: result.new_session_id,
+                            parent_session_id: result.parent_session_id,
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::SessionCompact { request_id, agent, team, session_id, dry_run, instruction } => {
+                let service = state.session_service();
+                let sessions_dir = match service.get_sessions_dir(&agent, team.as_deref()).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                        return Ok(());
+                    }
+                };
+                if !sessions_dir.exists() {
+                    let response = ResponsePacket::Error { request_id, message: format!("Agent '{agent}' not found") };
+                    Self::send_packet(&socket, response, addr).await?;
+                    return Ok(());
+                }
+                let mut session = match service.open_session(&agent, team.as_deref(), &session_id, "default").await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                        return Ok(());
+                    }
+                };
+                let compactor = crate::compaction::cli::SessionCompactor::new();
+                if dry_run {
+                    match compactor.dry_run(&session, instruction).await {
+                        Ok(report) => {
+                            let response = ResponsePacket::SessionCompacted {
+                                request_id,
+                                session_id: session_id.clone(),
+                                messages_compacted: 0,
+                                tokens_saved: report.estimated_tokens,
+                                tokens_before: report.context_window,
+                                tokens_after: report.context_window.saturating_sub(report.estimated_tokens),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    }
+                } else {
+                    match compactor.compact(&mut session, instruction).await {
+                        Ok(result) => {
+                            let response = ResponsePacket::SessionCompacted {
+                                request_id,
+                                session_id: session_id.clone(),
+                                messages_compacted: result.entry.messages_compacted,
+                                tokens_saved: result.tokens_saved,
+                                tokens_before: result.entry.tokens_before,
+                                tokens_after: result.entry.tokens_after,
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    }
+                }
+            }
+
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let mut manager = state.extension_manager().write().await;
                 let install_path = std::path::PathBuf::from(path);
@@ -839,6 +1047,84 @@ impl IpcServer {
                             request_id,
                             message: format!("Failed to uninstall extension: {e}"),
                         };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::RegistryPull { request_id, registry_ref, team, force, registry_token, registry_host } => {
+                // Build registry config
+                let host = registry_host.unwrap_or_else(|| {
+                    crate::registry::client::RegistryRef::parse_with_default(&registry_ref, None, Some(crate::registry::client::ResourceType::Agent))
+                        .map(|r| r.host)
+                        .unwrap_or_else(|_| "pekohub.org".to_string())
+                });
+
+                let mut config = crate::registry::config::load_from_workspace(&state.data_dir);
+
+                // Add auth token if provided
+                if let Some(token) = registry_token {
+                    config.add_source(crate::registry::config::RegistrySource {
+                        url: host.clone(),
+                        priority: 1,
+                        auth: None,
+                        token: Some(token),
+                    });
+                }
+
+                let agent_registry = crate::portable::registry::AgentRegistry::new(
+                    crate::portable::registry::AgentRegistry::default_path()
+                );
+                if let Err(e) = agent_registry.init().await {
+                    let response = ResponsePacket::Error { request_id, message: format!("Registry init failed: {e}") };
+                    Self::send_packet(&socket, response, addr).await?;
+                    return Ok(());
+                }
+
+                let client = crate::registry::client::RegistryClient::new(config, agent_registry.clone());
+
+                match client.pull(&registry_ref, |_| {}).await {
+                    Ok(manifest) => {
+                        // Export from registry to temp file
+                        let tag = format!("{}:{}", manifest.name, manifest.version);
+                        let temp_path = state.cache_dir.join(format!("peko-pull-{}-{}.agent", manifest.name, std::process::id()));
+
+                        match agent_registry.export_package(&tag, &temp_path).await {
+                            Ok(_) => {
+                                // Import using AgentService
+                                let service = state.agent_mgmt_service();
+                                let import_opts = crate::common::types::agent::AgentImportOptions {
+                                    name: None,
+                                    team,
+                                    force,
+                                };
+
+                                match service.import_agent(&temp_path, import_opts).await {
+                                    Ok(result) => {
+                                        let _ = std::fs::remove_file(&temp_path);
+                                        let response = ResponsePacket::RegistryPulled {
+                                            request_id,
+                                            name: result.name,
+                                            version: manifest.version.clone(),
+                                            digest: manifest.digest.clone(),
+                                        };
+                                        Self::send_packet(&socket, response, addr).await?;
+                                    }
+                                    Err(e) => {
+                                        let _ = std::fs::remove_file(&temp_path);
+                                        let response = ResponsePacket::Error { request_id, message: format!("Import failed: {e}") };
+                                        Self::send_packet(&socket, response, addr).await?;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Export failed: {e}") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Pull failed: {e}") };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }

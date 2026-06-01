@@ -15,7 +15,7 @@
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
-use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
+use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo};
 use anyhow::Result;
 
 /// Unified team management service
@@ -97,6 +97,29 @@ impl TeamManagementService {
     /// Used by both CLI (`peko team delete`) and API (`DELETE /teams/{id}`).
     pub async fn delete_team(&self, name: &str) -> Result<TeamDeletionResult> {
         self.config_service.delete_team(name).await
+    }
+
+    /// Export a team to an archive
+    pub async fn export_team(
+        &self,
+        name: &str,
+        output: Option<String>,
+        exclude_sessions: bool,
+        exclude_workspace: bool,
+        exclude_mcp: bool,
+    ) -> Result<TeamExportResult> {
+        self.config_service.export_team(name, output, exclude_sessions, exclude_workspace, exclude_mcp).await
+    }
+
+    /// Import a team from an archive
+    pub async fn import_team(
+        &self,
+        file: &str,
+        name: Option<String>,
+        force: bool,
+        rotate_keys: bool,
+    ) -> Result<TeamImportResult> {
+        self.config_service.import_team(file, name, force, rotate_keys).await
     }
 
     /// Check if a team exists
