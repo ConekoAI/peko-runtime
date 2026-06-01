@@ -17,6 +17,7 @@ use tracing::{debug, info};
 /// Session information
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
+    #[serde(rename = "session_id")]
     pub id: String,
     pub agent_name: String,
     pub created_at: u64,

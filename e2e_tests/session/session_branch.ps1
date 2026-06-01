@@ -265,10 +265,10 @@ if ($jsonOutput.parent_session_id -eq $parentSessionId) {
     Write-Host "⚠️  JSON output parent_session_id: $($jsonOutput.parent_session_id)" -ForegroundColor Yellow
 }
 
-if ($jsonOutput.session_id) {
-    Write-Host "✅ JSON output contains session_id" -ForegroundColor Green
+if ($jsonOutput.new_session_id) {
+    Write-Host "✅ JSON output contains new_session_id" -ForegroundColor Green
 } else {
-    Write-Error "❌ JSON output missing session_id"
+    Write-Error "❌ JSON output missing new_session_id"
     exit 1
 }
 

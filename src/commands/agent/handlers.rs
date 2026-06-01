@@ -155,9 +155,11 @@ pub async fn handle_agent_create(
     force: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let request = AgentCreateRequest::new(&name, &provider)
-        .with_team(team.unwrap_or_default())
+    let mut request = AgentCreateRequest::new(&name, &provider)
         .with_force(force);
+    if let Some(team) = team {
+        request = request.with_team(team);
+    }
     let packet = crate::ipc::RequestPacket::AgentCreate { request_id: 1, request };
     let response = client.request_response(packet).await?;
 
