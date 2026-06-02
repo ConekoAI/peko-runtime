@@ -37,42 +37,43 @@ pub fn handle_registry(cmd: RegistryCommands, paths: &GlobalPaths, json: bool) -
                 String::new()
             };
 
-            // Parse as TOML to manipulate
-            let mut doc: toml::Value = if content.trim().is_empty() {
-                toml::Value::Table(toml::map::Map::new())
+            // Use toml_edit for proper TOML formatting
+            let mut doc = if content.trim().is_empty() {
+                toml_edit::DocumentMut::new()
             } else {
-                content.parse().unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
+                content.parse().unwrap_or_else(|_| toml_edit::DocumentMut::new())
             };
 
             // Set [registry].default
-            let table = doc.as_table_mut().unwrap();
-            let registry = table
-                .entry("registry")
-                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
-                .as_table_mut()
-                .unwrap();
-            registry.insert("default".to_string(), toml::Value::String(host.clone()));
+            let registry = doc["registry"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+            if let Some(table) = registry.as_table_mut() {
+                table.insert("default", toml_edit::value(host.clone()));
 
-            // Ensure the source is also in sources list
-            let sources = registry
-                .entry("sources")
-                .or_insert_with(|| toml::Value::Array(Vec::new()))
-                .as_array_mut()
-                .unwrap();
+                // Ensure the source is also in sources list
+                let sources = table.entry("sources").or_insert_with(|| {
+                    toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new()))
+                });
 
-            // Check if host already exists in sources
-            let exists = sources.iter().any(|s| {
-                s.get("url")
-                    .and_then(|u| u.as_str())
-                    .map(|u| u == host)
-                    .unwrap_or(false)
-            });
+                if let Some(arr) = sources.as_array_mut() {
+                    // Check if host already exists in sources
+                    let exists = arr.iter().any(|s| {
+                        if let toml_edit::Value::InlineTable(tbl) = s {
+                            tbl.get("url")
+                                .and_then(|u| u.as_str())
+                                .map(|u| u == host)
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        }
+                    });
 
-            if !exists {
-                let mut new_source = toml::map::Map::new();
-                new_source.insert("url".to_string(), toml::Value::String(host.clone()));
-                new_source.insert("priority".to_string(), toml::Value::Integer(1));
-                sources.push(toml::Value::Table(new_source));
+                    if !exists {
+                        let mut new_source = toml_edit::InlineTable::new();
+                        new_source.insert("url", host.clone().into());
+                        new_source.insert("priority", 1.into());
+                        arr.push(toml_edit::Value::InlineTable(new_source));
+                    }
+                }
             }
 
             // Write back

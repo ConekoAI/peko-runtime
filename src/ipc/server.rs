@@ -688,11 +688,11 @@ impl IpcServer {
             }
 
             // ─── Session CRUD ───────────────────────────────────────────────
-            RequestPacket::SessionList { request_id, agent } => {
+            RequestPacket::SessionList { request_id, agent, team } => {
                 let service = state.session_service();
                 match agent {
                     Some(agent_name) => {
-                        match service.list_sessions(&agent_name, None).await {
+                        match service.list_sessions(&agent_name, team.as_deref()).await {
                             Ok(sessions) => {
                                 let response = ResponsePacket::SessionList { request_id, sessions };
                                 Self::send_packet(&socket, response, addr).await?;
@@ -877,7 +877,7 @@ impl IpcServer {
                 Self::send_packet(&socket, response, addr).await?;
             }
 
-            RequestPacket::ExtensionEnable { request_id, id, target: _ } => {
+            RequestPacket::ExtensionEnable { request_id, id, target } => {
                 let mut manager = state.extension_manager().write().await;
                 let ext_services = state.extension_services();
 
@@ -902,6 +902,28 @@ impl IpcServer {
                     }
                 };
 
+                // If target agent specified, also update agent config whitelist
+                let result = if let Some(ref target_agent) = target {
+                    if let Err(e) = &result {
+                        Err(anyhow::anyhow!("{e}"))
+                    } else {
+                        // Parse team/agent identifier
+                        let parts: Vec<&str> = target_agent.split('/').collect();
+                        let (team, agent_name) = if parts.len() == 2 {
+                            (parts[0], parts[1])
+                        } else {
+                            ("default", target_agent.as_str())
+                        };
+                        let config_service = state.config_service();
+                        match config_service.enable_tool_sync(agent_name, team, &id) {
+                            Ok(()) => Ok(format!("Extension '{id}' enabled for {target_agent}")),
+                            Err(e) => Err(anyhow::anyhow!("Enabled extension but failed to update agent config: {e}")),
+                        }
+                    }
+                } else {
+                    result
+                };
+
                 match result {
                     Ok(msg) => {
                         let response = ResponsePacket::ExtensionEnabled { request_id, id, message: msg };
@@ -914,7 +936,7 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::ExtensionDisable { request_id, id, target: _ } => {
+            RequestPacket::ExtensionDisable { request_id, id, target } => {
                 let mut manager = state.extension_manager().write().await;
                 let ext_services = state.extension_services();
 
@@ -937,6 +959,27 @@ impl IpcServer {
                         Ok(()) => Ok(format!("Extension '{id}' disabled")),
                         Err(e) => Err(e),
                     }
+                };
+
+                // If target agent specified, also update agent config whitelist
+                let result = if let Some(ref target_agent) = target {
+                    if let Err(e) = &result {
+                        Err(anyhow::anyhow!("{e}"))
+                    } else {
+                        let parts: Vec<&str> = target_agent.split('/').collect();
+                        let (team, agent_name) = if parts.len() == 2 {
+                            (parts[0], parts[1])
+                        } else {
+                            ("default", target_agent.as_str())
+                        };
+                        let config_service = state.config_service();
+                        match config_service.disable_tool_sync(agent_name, team, &id) {
+                            Ok(()) => Ok(format!("Extension '{id}' disabled for {target_agent}")),
+                            Err(e) => Err(anyhow::anyhow!("Disabled extension but failed to update agent config: {e}")),
+                        }
+                    }
+                } else {
+                    result
                 };
 
                 match result {
@@ -1123,7 +1166,17 @@ impl IpcServer {
 
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let mut manager = state.extension_manager().write().await;
-                let install_path = std::path::PathBuf::from(path);
+                let install_path = match crate::commands::ext::prepare_install_path(std::path::Path::new(&path)) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Failed to prepare extension for install: {e}"),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                        return Ok(());
+                    }
+                };
 
                 match manager.install(&install_path).await {
                     Ok(ext_id) => {

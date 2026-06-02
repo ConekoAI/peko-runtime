@@ -49,7 +49,8 @@ $tests = @(
     @{ Name = "Agent Snapshot with Memory"; Script = "agent_snapshot_memory.ps1"; NeedsRegistry = $true },
     @{ Name = "Registry Layer Deduplication"; Script = "registry_layer_dedup.ps1"; NeedsRegistry = $true },
     @{ Name = "Team Registry Deduplication"; Script = "team_registry_dedup.ps1"; NeedsRegistry = $true },
-    @{ Name = "Team Full Lifecycle"; Script = "team_full_lifecycle.ps1"; NeedsRegistry = $true }
+    @{ Name = "Team Full Lifecycle"; Script = "team_full_lifecycle.ps1"; NeedsRegistry = $true },
+    @{ Name = "PekoHub Contract"; Script = "pekohub_contract_test.ps1"; NeedsRegistry = $true }
 )
 
 $results = @()

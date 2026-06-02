@@ -268,7 +268,7 @@ try {
         # Test MCP tool (requires daemon + runtime start)
         if (Test-Path $mcpSource) {
             Write-Host "Starting MCP runtime for standard-echo..." -ForegroundColor Yellow
-            & $pekoCmd ext start standard-echo 2>&1 | Out-Null
+            try { & $pekoCmd ext start standard-echo 2>&1 | Out-Null } catch {}
             Start-Sleep -Seconds 3
 
             Write-Host "Testing MCP echo tool..." -ForegroundColor Yellow
@@ -363,8 +363,8 @@ try {
     }
 
     # Uninstall extensions
-    & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
-    & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
+    try { & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null } catch {}
+    try { & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null } catch {}
     Write-Host "Uninstalled test extensions" -ForegroundColor Green
 
     try { & $pekoCmd team remove $importedTeamName --force 2>&1 | Out-Null } catch {}

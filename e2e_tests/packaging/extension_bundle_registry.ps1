@@ -304,7 +304,7 @@ try {
 
         if ($mcpInstalled) {
             Write-Host "Starting MCP runtime..." -ForegroundColor Yellow
-            & $pekoCmd ext start standard-echo 2>&1 | Out-Null
+            try { & $pekoCmd ext start standard-echo 2>&1 | Out-Null } catch {}
             Start-Sleep -Seconds 3
 
             $prompt2 = "Use the echo tool with message 'REGISTRY_VERIFY'. If the echoed message contains REGISTRY_VERIFY, respond MCP_SUCCESS. Otherwise respond MCP_FAILED."
@@ -369,11 +369,11 @@ try {
         Write-Host "Cleaned up test directory" -ForegroundColor Green
     }
 
-    & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
-    & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
+    try { & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null } catch {}
+    try { & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null } catch {}
     Write-Host "Uninstalled test extensions" -ForegroundColor Green
 
-    & $pekoCmd team remove $teamName --force 2>&1 | Out-Null
+    try { & $pekoCmd team remove $teamName -f 2>&1 | Out-Null } catch {}
     Write-Host "Removed test team" -ForegroundColor Green
 }
 

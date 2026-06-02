@@ -445,6 +445,13 @@ impl Unpackager {
 
         tokio::fs::create_dir_all(&sessions_dir).await?;
 
+        // Get the original agent name from manifest to know what to replace
+        let original_agent_name = self
+            .parse_manifest(files)
+            .ok()
+            .map(|m| m.agent.name)
+            .unwrap_or_default();
+
         for (path, content) in files {
             if path.starts_with("sessions/") {
                 let file_name = path.strip_prefix("sessions/").unwrap_or(path);
@@ -454,7 +461,25 @@ impl Unpackager {
                     tokio::fs::create_dir_all(parent).await?;
                 }
 
-                tokio::fs::write(dest_path, content).await?;
+                // If importing with a different name, update sessions.json agent_name fields
+                let final_content = if file_name == "sessions.json" && !original_agent_name.is_empty() && original_agent_name != agent_name {
+                    if let Ok(mut sessions) = serde_json::from_slice::<std::collections::HashMap<String, serde_json::Value>>(content) {
+                        for (_, session_val) in sessions.iter_mut() {
+                            if let Some(obj) = session_val.as_object_mut() {
+                                if let Some(agent_name_val) = obj.get_mut("agent_name") {
+                                    *agent_name_val = serde_json::Value::String(agent_name.to_string());
+                                }
+                            }
+                        }
+                        serde_json::to_vec_pretty(&sessions).unwrap_or_else(|_| content.clone())
+                    } else {
+                        content.clone()
+                    }
+                } else {
+                    content.clone()
+                };
+
+                tokio::fs::write(dest_path, final_content).await?;
             }
         }
 

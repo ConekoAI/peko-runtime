@@ -166,7 +166,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $snapshotPath = "$testDir/prod-team-snapshot.team"
-    $exportResult = & $pekoCmd team export $teamName -o $snapshotPath --json 2>&1 | ConvertFrom-Json
+    $exportResult = & $pekoCmd team export $teamName -o $snapshotPath --include-sessions --json 2>&1 | ConvertFrom-Json
     if (-not (Test-Path $snapshotPath)) {
         Write-Error "Team export failed: file not found"
     }

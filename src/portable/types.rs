@@ -148,12 +148,26 @@ impl LayerType {
             LayerType::TeamConfig => "application/vnd.peko.layer.team.v1.tar+gzip",
         }
     }
+
+    /// Derive layer type from OCI media type.
+    #[must_use]
+    pub fn from_media_type(media_type: &str) -> Self {
+        match media_type {
+            "application/vnd.peko.layer.identity.v1+json" => LayerType::Identity,
+            "application/vnd.peko.layer.skills.v1.tar+gzip" => LayerType::Skills,
+            "application/vnd.peko.layer.workspace.v1.tar+gzip" => LayerType::Workspace,
+            "application/vnd.peko.layer.sessions.v1.tar+gzip" => LayerType::Sessions,
+            "application/vnd.peko.layer.mcp.v1.tar+gzip" => LayerType::Mcp,
+            "application/vnd.peko.layer.team.v1.tar+gzip" => LayerType::TeamConfig,
+            _ => LayerType::Config,
+        }
+    }
 }
 
 /// A content-addressable layer with digest, type, and size
 ///
 /// Wire format follows OCI descriptor spec: `digest`, `mediaType`, `size`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Layer {
     /// SHA-256 digest of the layer content
     pub digest: String,
@@ -169,6 +183,34 @@ pub struct Layer {
     /// File paths included in this layer
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
+}
+
+impl<'de> Deserialize<'de> for Layer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct LayerWire {
+            digest: String,
+            #[serde(rename = "mediaType")]
+            media_type: String,
+            #[serde(rename = "size")]
+            size_bytes: u64,
+            paths: Option<Vec<String>>,
+        }
+
+        let wire = LayerWire::deserialize(deserializer)?;
+        let layer_type = LayerType::from_media_type(&wire.media_type);
+
+        Ok(Layer {
+            digest: wire.digest,
+            layer_type,
+            media_type: wire.media_type,
+            size_bytes: wire.size_bytes,
+            paths: wire.paths,
+        })
+    }
 }
 
 impl Layer {

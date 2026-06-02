@@ -199,7 +199,7 @@ try {
         # Test MCP tool
         if ($mcpInstalled) {
             Write-Host "Starting MCP runtime..." -ForegroundColor Yellow
-            & $pekoCmd ext start standard-echo 2>&1 | Out-Null
+            try { & $pekoCmd ext start standard-echo 2>&1 | Out-Null } catch {}
             Start-Sleep -Seconds 3
 
             $prompt2 = "Use the echo tool with message 'FULL_LIFECYCLE_VERIFY'. If the echoed message contains FULL_LIFECYCLE_VERIFY, respond MCP_SUCCESS. Otherwise respond MCP_FAILED."
@@ -299,12 +299,12 @@ try {
 
     # Uninstall extensions to simulate a fresh machine before pulling from registry.
     if ($skillInstalled) {
-        & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
+        try { & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null } catch {}
         Write-Host "Uninstalled calculator-skill" -ForegroundColor Yellow
     }
     if ($mcpInstalled) {
         try { & $pekoCmd ext stop standard-echo 2>&1 | Out-Null } catch {}
-        & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
+        try { & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null } catch {}
         Write-Host "Uninstalled standard-echo" -ForegroundColor Yellow
     }
 
@@ -329,7 +329,8 @@ try {
         Write-Host "Pulled calculator-skill" -ForegroundColor Green
     }
     if ($mcpInstalled) {
-        & $pekoCmd ext pull "127.0.0.1:$RegistryPort/peko/extensions/standard-echo:latest" 2>&1 | Out-Null
+        try { & $pekoCmd ext stop standard-echo 2>&1 | Out-Null } catch {}
+        try { & $pekoCmd ext pull "127.0.0.1:$RegistryPort/peko/extensions/standard-echo:latest" 2>&1 | Out-Null } catch {}
         Write-Host "Pulled standard-echo" -ForegroundColor Green
     }
 
@@ -519,15 +520,15 @@ try {
         $skillStillInstalled = $extListCleanup.extensions | Where-Object { $_.id -match "calculator" }
         $mcpStillInstalled = $extListCleanup.extensions | Where-Object { $_.id -match "echo" }
         if ($skillStillInstalled) {
-            & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null
+            try { & $pekoCmd ext uninstall calculator-skill 2>&1 | Out-Null } catch {}
         }
         if ($mcpStillInstalled) {
-            & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null
+            try { & $pekoCmd ext uninstall standard-echo 2>&1 | Out-Null } catch {}
         }
     }
     Write-Host "Uninstalled test extensions" -ForegroundColor Green
 
-    & $pekoCmd team remove $importedTeamName --force 2>&1 | Out-Null
+    try { & $pekoCmd team remove $importedTeamName -f 2>&1 | Out-Null } catch {}
     Write-Host "Removed imported team" -ForegroundColor Green
 }
 

@@ -99,6 +99,7 @@ pub async fn handle_session(
             let packet = crate::ipc::RequestPacket::SessionList {
                 request_id: 1,
                 agent: Some(agent_name.to_string()),
+                team: Some(team.to_string()),
             };
             let response = ipc_request(packet).await?;
             match response {

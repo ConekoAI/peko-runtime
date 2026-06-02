@@ -518,7 +518,32 @@ pub async fn handle_ext_command(
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
             let mut manager = create_manager_with_adapters(core.clone(), Some(storage)).await;
             manager.load_all().await?;
-            handle_ext_pull(&mut manager, &registry_ref, pull_json, no_deps, cli_registry, paths).await
+            
+            // Pull the extension to a temp file using local manager
+            let (temp_path, _manifest) = handle_ext_pull_to_temp(&mut manager, &registry_ref, pull_json, no_deps, cli_registry, paths).await?;
+            
+            // Install via IPC so the daemon knows about it
+            let client = crate::ipc::DaemonClient::connect().await?;
+            let packet = crate::ipc::RequestPacket::ExtensionInstall {
+                request_id: 1,
+                path: temp_path.to_string_lossy().to_string(),
+            };
+            let response = client.request_response(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::ExtensionInstalled { id, message, .. } => {
+                    if pull_json {
+                        println!("{{\"success\": true, \"id\": \"{}\", \"message\": \"{}\"}}", id, message);
+                    } else {
+                        println!("{message}");
+                        println!("   ID: {id}");
+                    }
+                    Ok(())
+                }
+                crate::ipc::ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to install pulled extension: {message}"))
+                }
+                _ => anyhow::bail!("Unexpected response from daemon during extension install"),
+            }
         }
     }
 }
@@ -561,6 +586,29 @@ fn print_validation_report(
 
 // --- Install ---
 
+/// Extract a `.ext` package file to a temp directory if needed.
+/// Returns the path to use for installation (either the extracted dir or the original path).
+pub fn prepare_install_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    if path.extension().map_or(false, |e| e == "ext") {
+        let temp_dir = std::env::temp_dir().join("PEKO_ext_install").join(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string(),
+        );
+        std::fs::create_dir_all(&temp_dir)?;
+        let extracted =
+            crate::extension::manager::packaging::ExtensionUnpackager::install(path, &temp_dir)
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
+                })?;
+        Ok(extracted)
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
+
 async fn handle_install(
     manager: &mut ExtensionManager,
     path: PathBuf,
@@ -571,27 +619,10 @@ async fn handle_install(
         println!("   Type: {t}");
     }
 
-    // Handle .ext package files
-    let install_path = if path.extension().map_or(false, |e| e == "ext") {
-        // Extract to a temp directory first to avoid copy_to_storage deleting the source
-        let temp_dir = std::env::temp_dir().join("PEKO_ext_install").join(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .to_string(),
-        );
-        std::fs::create_dir_all(&temp_dir)?;
-        let extracted =
-            crate::extension::manager::packaging::ExtensionUnpackager::install(&path, &temp_dir)
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
-                })?;
-        println!("   Extracted .ext package to: {}", extracted.display());
-        extracted
-    } else {
-        path
-    };
+    let install_path = prepare_install_path(&path)?;
+    if install_path != path {
+        println!("   Extracted .ext package to: {}", install_path.display());
+    }
 
     match manager.install(&install_path).await {
         Ok(id) => {
@@ -841,43 +872,17 @@ async fn handle_ext_push(
     Ok(())
 }
 
-/// Pull an extension from a registry and install it.
+/// Pull an extension from a registry to a temp file, returning the temp path and manifest.
 ///
-/// This is the public entry point used by both `peko ext pull` and
-/// `peko team pull` (for auto-pulling team extensions).
-pub async fn handle_ext_pull(
+/// This is used by `peko ext pull` when it wants to install via IPC.
+pub async fn handle_ext_pull_to_temp(
     manager: &mut ExtensionManager,
     registry_ref: &str,
     json: bool,
-    no_deps: bool,
+    _no_deps: bool,
     cli_registry: Option<&str>,
     paths: &GlobalPaths,
-) -> anyhow::Result<()> {
-    handle_ext_pull_with_seen(manager, registry_ref, json, no_deps, cli_registry, paths, &mut std::collections::HashSet::new()).await
-}
-
-/// Internal implementation that tracks which packages have already been pulled
-/// in this dependency tree to prevent infinite recursion on circular dependencies.
-async fn handle_ext_pull_with_seen(
-    manager: &mut ExtensionManager,
-    registry_ref: &str,
-    json: bool,
-    no_deps: bool,
-    cli_registry: Option<&str>,
-    paths: &GlobalPaths,
-    already_pulled: &mut std::collections::HashSet<String>,
-) -> anyhow::Result<()> {
-    use crate::extension::manager::{DependencyResolution, DependencyStatus};
-
-    // Prevent infinite recursion: if we've already attempted to pull this ref
-    // in the current dependency tree, skip it.
-    if !already_pulled.insert(registry_ref.to_string()) {
-        if !json {
-            eprintln!("  Skipping {} (already pulled in this dependency tree)", registry_ref);
-        }
-        return Ok(());
-    }
-
+) -> anyhow::Result<(std::path::PathBuf, crate::registry::manifest::RegistryManifest)> {
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
 
@@ -938,6 +943,54 @@ async fn handle_ext_pull_with_seen(
     std::fs::create_dir_all(&temp_dir)?;
     let temp_path = temp_dir.join(format!("{}.ext", manifest.name));
     tokio::fs::write(&temp_path, &data).await?;
+
+    // Record the registry source for this extension in local manager
+    let ext_id = crate::extension::types::ExtensionId::new(&manifest.name);
+    if manager.storage_dir().is_some() {
+        let _ = manager.storage().write_source(&ext_id, registry_ref);
+    }
+
+    Ok((temp_path, manifest))
+}
+
+/// Pull an extension from a registry and install it.
+///
+/// This is the public entry point used by both `peko ext pull` and
+/// `peko team pull` (for auto-pulling team extensions).
+pub async fn handle_ext_pull(
+    manager: &mut ExtensionManager,
+    registry_ref: &str,
+    json: bool,
+    no_deps: bool,
+    cli_registry: Option<&str>,
+    paths: &GlobalPaths,
+) -> anyhow::Result<()> {
+    handle_ext_pull_with_seen(manager, registry_ref, json, no_deps, cli_registry, paths, &mut std::collections::HashSet::new()).await
+}
+
+/// Internal implementation that tracks which packages have already been pulled
+/// in this dependency tree to prevent infinite recursion on circular dependencies.
+async fn handle_ext_pull_with_seen(
+    manager: &mut ExtensionManager,
+    registry_ref: &str,
+    json: bool,
+    no_deps: bool,
+    cli_registry: Option<&str>,
+    paths: &GlobalPaths,
+    already_pulled: &mut std::collections::HashSet<String>,
+) -> anyhow::Result<()> {
+    use crate::extension::manager::{DependencyResolution, DependencyStatus};
+
+    // Prevent infinite recursion: if we've already attempted to pull this ref
+    // in the current dependency tree, skip it.
+    if !already_pulled.insert(registry_ref.to_string()) {
+        if !json {
+            eprintln!("  Skipping {} (already pulled in this dependency tree)", registry_ref);
+        }
+        return Ok(());
+    }
+
+    let (temp_path, manifest) = handle_ext_pull_to_temp(manager, registry_ref, json, no_deps, cli_registry, paths).await?;
 
     // Install the main extension first — on success we get the manifest back
     let install_result = handle_install(manager, temp_path.clone(), None).await;

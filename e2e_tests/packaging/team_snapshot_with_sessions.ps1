@@ -247,7 +247,7 @@ try {
 
     # Verify session content if API key was available
     if ($env:MINIMAX_API_KEY -and $sessionsAfter1.sessions.Count -gt 0) {
-        $sessionId = $sessionsAfter1.sessions[0].id
+        $sessionId = $sessionsAfter1.sessions[0].session_id
         $sessionShow = & $pekoCmd session show "$importedTeam/$agent1" --session-id $sessionId --json | ConvertFrom-Json
         # Look for the secret code in session messages
         $sessionJsonlDir = "$env:APPDATA/peko/sessions/$importedTeam/$agent1"

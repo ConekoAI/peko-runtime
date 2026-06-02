@@ -476,7 +476,7 @@ fn resolve_registry_config(
 /// Handle agent push command
 pub async fn handle_agent_push(
     paths: &GlobalPaths,
-    local_tag: Option<String>,
+    local_tag: String,
     registry_ref: String,
     file: Option<String>,
     json: bool,
@@ -489,11 +489,10 @@ pub async fn handle_agent_push(
         // Load .agent file and store layers in local registry
         load_agent_file_into_registry(file_path, &registry).await?
     } else {
-        let tag = local_tag.as_ref().ok_or_else(|| anyhow::anyhow!("local_tag is required when --file is not used"))?;
         registry
-            .get_manifest_by_tag(tag)
+            .get_manifest_by_tag(&local_tag)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to load local tag '{tag}': {e}"))?
+            .map_err(|e| anyhow::anyhow!("Failed to load local tag '{local_tag}': {e}"))?
     };
 
     let reg_ref = RegistryRef::parse_with_default(
@@ -515,7 +514,7 @@ pub async fn handle_agent_push(
     let push_tag = if file.is_some() {
         "<file>".to_string()
     } else {
-        local_tag.clone().unwrap()
+        local_tag.clone()
     };
     let push_tag_ref: &str = &push_tag;
 
@@ -701,7 +700,8 @@ pub async fn handle_agent_pull(
 
     let resolved_ref = reg_ref.full_ref();
 
-    let manifest = if json {
+    let manifest = if json && output.is_some() {
+        // JSON mode with --output: just pull and store, print download result
         let manifest = client.pull(&resolved_ref, |_| {}).await?;
 
         // Store in AgentRegistry format as well
@@ -723,6 +723,18 @@ pub async fn handle_agent_pull(
             }
         });
         println!("{}", serde_json::to_string_pretty(&output_json)?);
+        manifest
+    } else if json {
+        // JSON mode without --output: pull silently, will print single JSON after import
+        let manifest = client.pull(&resolved_ref, |_| {}).await?;
+
+        // Store in AgentRegistry format as well
+        let agent_manifest = registry_to_agent_manifest(&manifest);
+        let tag = format!("{}:{}", manifest.name, reg_ref.tag);
+        agent_registry
+            .store_manifest(&agent_manifest, Some(&tag))
+            .await?;
+
         manifest
     } else {
         let mut seen_layers = HashSet::new();
@@ -841,6 +853,13 @@ pub async fn handle_agent_pull(
             "name": result.name,
             "team": result.team,
             "config_path": result.config_path,
+            "manifest": {
+                "name": manifest.name,
+                "version": manifest.version,
+                "digest": manifest.digest,
+                "layers": manifest.layers.len(),
+                "total_size": manifest.total_size_bytes(),
+            }
         });
         println!("{}", serde_json::to_string_pretty(&output_json)?);
     } else {

@@ -167,7 +167,7 @@ pub enum RequestPacket {
 
     // ─── Session CRUD ───────────────────────────────────────────────
     #[serde(rename = "session_list")]
-    SessionList { request_id: u64, agent: Option<String> },
+    SessionList { request_id: u64, agent: Option<String>, team: Option<String> },
 
     #[serde(rename = "session_get")]
     SessionGet { request_id: u64, id: String },
@@ -1383,13 +1383,15 @@ mod tests {
         let req = RequestPacket::SessionList {
             request_id: 500,
             agent: Some("test-agent".to_string()),
+            team: Some("test-team".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SessionList { request_id, agent } => {
+            RequestPacket::SessionList { request_id, agent, team } => {
                 assert_eq!(request_id, 500);
                 assert_eq!(agent, Some("test-agent".to_string()));
+                assert_eq!(team, Some("test-team".to_string()));
             }
             _ => panic!("Wrong variant"),
         }
@@ -1669,7 +1671,7 @@ mod tests {
         let req_team_get = RequestPacket::TeamGet { request_id: 6, name: "t".to_string() };
         assert_eq!(req_team_get.request_id(), 6);
 
-        let req_session_list = RequestPacket::SessionList { request_id: 7, agent: None };
+        let req_session_list = RequestPacket::SessionList { request_id: 7, agent: None, team: None };
         assert_eq!(req_session_list.request_id(), 7);
 
         let req_session_get = RequestPacket::SessionGet { request_id: 8, id: "s".to_string() };
