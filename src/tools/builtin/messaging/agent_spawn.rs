@@ -206,8 +206,15 @@ impl AgentSpawnTool {
                     _ => String::new(),
                 };
 
+                // Determine task_file path for agent polling
+                let task_file = self
+                    .executor
+                    .unified_executor()
+                    .task_file_writer()
+                    .map(|w| w.task_file_path(&run_id).to_string_lossy().to_string());
+
                 // Return receipt-style response for async mode
-                Ok(json!({
+                let mut receipt = json!({
                     "status": "accepted",
                     "childSessionKey": child_session_key,
                     "runId": run_id,
@@ -219,7 +226,13 @@ impl AgentSpawnTool {
                         SpawnCleanupPolicy::Keep => "keep",
                         SpawnCleanupPolicy::Delete => "delete",
                     }
-                }))
+                });
+
+                if let Some(path) = task_file {
+                    receipt["task_file"] = json!(path);
+                }
+
+                Ok(receipt)
             }
             Err(e) => Self::format_error_response(&e),
         }

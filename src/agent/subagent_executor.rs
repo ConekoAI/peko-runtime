@@ -769,24 +769,13 @@ async fn execute_subagent_task(
     // Update the subagent's session key provider so nested spawns know their parent
     subagent.session_key_provider().set_session_key(session_key);
 
-    // Build history for the subagent that includes the subagent context.
-    // We pass this as `history` to execute_with_session so the agentic loop
-    // sends the subagent context to the LLM instead of creating fresh messages.
-    let subagent_history = vec![
-        crate::types::message::LlmMessage::system(system_prompt),
-        crate::types::message::LlmMessage::user(task_message),
-    ];
-
-    // Also add these messages to the child session for persistence
-    {
-        let mut session_write = child_session.write().await;
-        if let Err(e) = session_write.add_system(system_prompt).await {
-            tracing::warn!("Failed to add system prompt to child session: {}", e);
-        }
-        if let Err(e) = session_write.add_user(task_message).await {
-            tracing::warn!("Failed to add user message to child session: {}", e);
-        }
-    }
+    // Combine subagent context and task into a single user message.
+    // We pass history: None so that run_with_resume prepends the FULL system
+    // prompt (including tool definitions from ExtensionCore). Previously we
+    // passed the subagent context as a system message in history, which caused
+    // run_with_resume to skip the full system prompt — leaving the subagent
+    // without knowledge of available tools.
+    let combined_prompt = format!("{}\n\n{}", system_prompt, task_message);
 
     // Execute the agentic loop with the child session
     info!(
@@ -797,14 +786,11 @@ async fn execute_subagent_task(
     // Clone child_session for potential recovery after execution
     let child_session_for_recovery = child_session.clone();
 
-    // Pass empty prompt since the task is already included in subagent_history.
-    // The agentic loop adds the prompt as a user message, so if we passed
-    // task_message here, it would appear twice in the conversation.
     let result = subagent
         .execute_with_session(
-            "", // Empty prompt - task is already in history
+            &combined_prompt,
             child_session,
-            Some(subagent_history), // Pass subagent context as history
+            None, // history: None => full system prompt (with tools) is prepended
             |_event| {
                 // Non-streaming: ignore events
             },
