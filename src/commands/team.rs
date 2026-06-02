@@ -228,19 +228,29 @@ pub async fn handle_team(
             }
         }
         TeamCommands::Show { name } => {
+            // Get team info
             let packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: name.clone() };
             let response = ipc_request(packet).await?;
-            match response {
-                crate::ipc::ResponsePacket::TeamGet { team: Some(team_info), .. } => {
-                    // Agents not available via IPC TeamGet; render without agent details
-                    render_team_show(&team_info, &[], json);
-                    Ok(())
-                }
+            let team_info = match response {
+                crate::ipc::ResponsePacket::TeamGet { team: Some(team_info), .. } => team_info,
                 crate::ipc::ResponsePacket::TeamGet { team: None, .. } => {
                     anyhow::bail!("Team '{name}' not found");
                 }
                 _ => anyhow::bail!("Unexpected response"),
-            }
+            };
+
+            // Get agents in the team
+            let agents_packet = crate::ipc::RequestPacket::AgentList { request_id: 2, team_filter: Some(name.clone()) };
+            let agents_response = ipc_request(agents_packet).await?;
+            let agents: Vec<(String, crate::types::agent::AgentConfig)> = match agents_response {
+                crate::ipc::ResponsePacket::AgentList { agents, .. } => {
+                    agents.into_iter().map(|a| (a.name, a.config)).collect()
+                }
+                _ => Vec::new(),
+            };
+
+            render_team_show(&team_info, &agents, json);
+            Ok(())
         }
         TeamCommands::Remove { name, force } => {
             // Get team info for confirmation via IPC
@@ -299,7 +309,19 @@ pub async fn handle_team(
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::TeamMoved { .. } => {
-                    println!("Moved team '{}' -> '{}'", old_name, new_name);
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "success": true,
+                                "old_name": old_name,
+                                "new_name": new_name,
+                                "agents_moved": team_info.agent_count,
+                            })
+                        );
+                    } else {
+                        println!("Moved team '{}' -> '{}'", old_name, new_name);
+                    }
                     Ok(())
                 }
                 _ => anyhow::bail!("Unexpected response"),
@@ -486,7 +508,7 @@ fn render_team_show(
                 "description": team.metadata.as_ref().and_then(|m| m.description.clone()),
                 "created_at": team.metadata.as_ref().map(|m| m.created_at.clone()),
                 "agents": agents_json,
-                "agent_count": agents.len(),
+                "agent_count": team.agent_count,
             })
         );
     } else {
@@ -500,14 +522,14 @@ fn render_team_show(
         println!("   Path: {}", team.path.display());
         println!();
 
-        if agents.is_empty() {
+        if team.agent_count == 0 {
             println!("   No agents in this team.");
             println!(
                 "   Create one with: peko agent create {}/<agent-name>",
                 team.name
             );
         } else {
-            println!("   Agents ({}):", agents.len());
+            println!("   Agents ({}):", team.agent_count);
             for (agent_name, config) in agents {
                 println!("   📦 {agent_name}");
                 if let Some(ref desc) = config.description {
