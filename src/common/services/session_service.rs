@@ -189,6 +189,27 @@ impl SessionService {
         Ok(sessions)
     }
 
+    /// List sessions for an agent, including the active session ID for a peer.
+    pub async fn list_sessions_with_active(
+        &self,
+        agent_name: &str,
+        team: Option<&str>,
+        peer: &crate::session::types::Peer,
+    ) -> Result<(Vec<SessionInfo>, Option<String>)> {
+        let sessions = self.list_sessions(agent_name, team).await?;
+
+        let active_session = if !sessions.is_empty() {
+            let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+            let mut controller = MetadataController::new(&sessions_dir);
+            let peer_key = crate::session::key::derive_base_session_key(agent_name, peer);
+            controller.get_active_session_id(&peer_key).await.ok().flatten()
+        } else {
+            None
+        };
+
+        Ok((sessions, active_session))
+    }
+
     /// Get session info by ID
     pub async fn get_session(
         &self,

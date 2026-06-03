@@ -551,7 +551,11 @@ pub enum ResponsePacket {
 
     /// Session list response
     #[serde(rename = "session_list")]
-    SessionList { request_id: u64, sessions: Vec<crate::common::services::session_service::SessionInfo> },
+    SessionList {
+        request_id: u64,
+        sessions: Vec<crate::common::services::session_service::SessionInfo>,
+        active_session: Option<String>,
+    },
 
     /// Session detail response
     #[serde(rename = "session_get")]
@@ -1599,14 +1603,16 @@ mod tests {
                 parent_session_id: None,
                 title: None,
             }],
+            active_session: Some("sess-123".to_string()),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SessionList { request_id, sessions } => {
+            ResponsePacket::SessionList { request_id, sessions, active_session } => {
                 assert_eq!(request_id, 800);
                 assert_eq!(sessions.len(), 1);
                 assert_eq!(sessions[0].id, "sess-123");
+                assert_eq!(active_session, Some("sess-123".to_string()));
             }
             _ => panic!("Wrong variant"),
         }
@@ -1726,7 +1732,7 @@ mod tests {
         let resp_team_get = ResponsePacket::TeamGet { request_id: 15, team: None };
         assert_eq!(resp_team_get.request_id(), 15);
 
-        let resp_session_list = ResponsePacket::SessionList { request_id: 16, sessions: vec![] };
+        let resp_session_list = ResponsePacket::SessionList { request_id: 16, sessions: vec![], active_session: None };
         assert_eq!(resp_session_list.request_id(), 16);
 
         let resp_session_get = ResponsePacket::SessionGet { request_id: 17, session: None };

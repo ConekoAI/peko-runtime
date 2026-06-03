@@ -692,9 +692,10 @@ impl IpcServer {
                 let service = state.session_service();
                 match agent {
                     Some(agent_name) => {
-                        match service.list_sessions(&agent_name, team.as_deref()).await {
-                            Ok(sessions) => {
-                                let response = ResponsePacket::SessionList { request_id, sessions };
+                        let peer = crate::session::types::Peer::User("desktop".to_string());
+                        match service.list_sessions_with_active(&agent_name, team.as_deref(), &peer).await {
+                            Ok((sessions, active_session)) => {
+                                let response = ResponsePacket::SessionList { request_id, sessions, active_session };
                                 Self::send_packet(&socket, response, addr).await?;
                             }
                             Err(e) => {
