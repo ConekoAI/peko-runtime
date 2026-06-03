@@ -285,26 +285,66 @@ impl McpManager {
 
     /// Start a specific server
     pub async fn start_server(&self, name: &str) -> Result<()> {
-        let mut servers = self.servers.write().await;
+        // First, check and fix stale state without holding a long-lived borrow.
+        let is_managed: bool;
+        {
+            let mut servers = self.servers.write().await;
+            let handle = servers
+                .get_mut(name)
+                .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))?;
 
-        let handle = servers
-            .get_mut(name)
-            .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))?;
+            if handle.state.running {
+                // Stale state: verify with BackgroundRuntimeManager before failing.
+                // The runtime may have been stopped externally (e.g. via `peko ext stop`)
+                // without updating our cached state.
+                if handle.managed {
+                    is_managed = true;
+                } else {
+                    return Err(ManagerError::ServerAlreadyRunning(name.to_string()));
+                }
+            } else {
+                is_managed = handle.managed;
+            }
+            // Drop the lock here; we'll re-acquire it below.
+        }
 
-        if handle.state.running {
-            return Err(ManagerError::ServerAlreadyRunning(name.to_string()));
+        // If we suspect stale state for a managed server, verify with the runtime manager.
+        if is_managed {
+            let actually_running = matches!(
+                self.runtime_manager().get_state(name).await,
+                Some(RuntimeState::Healthy | RuntimeState::Running | RuntimeState::Starting)
+            );
+            if actually_running {
+                return Err(ManagerError::ServerAlreadyRunning(name.to_string()));
+            }
+            // Runtime is gone — reset cached state
+            let mut servers = self.servers.write().await;
+            if let Some(handle) = servers.get_mut(name) {
+                handle.state.running = false;
+                handle.state.healthy = false;
+            }
         }
 
         info!("Starting MCP server: {}", name);
 
+        let mut servers = self.servers.write().await;
+        let handle = servers
+            .get_mut(name)
+            .ok_or_else(|| ManagerError::ServerNotFound(name.to_string()))?;
+
         match handle.config.transport {
             TransportType::Stdio => {
                 // Delegate to BackgroundRuntimeManager via McpRuntimeAdapter
-                self.start_managed_server(name, &handle.config).await?;
-                handle.state.running = true;
-                handle.state.healthy = true;
-                handle.state.last_error = None;
-                handle.managed = true;
+                let config = handle.config.clone();
+                drop(servers); // release lock before async call
+                self.start_managed_server(name, &config).await?;
+                let mut servers = self.servers.write().await;
+                if let Some(handle) = servers.get_mut(name) {
+                    handle.state.running = true;
+                    handle.state.healthy = true;
+                    handle.state.last_error = None;
+                    handle.managed = true;
+                }
             }
             TransportType::Sse => {
                 // SSE servers are still handled directly (external connection)

@@ -684,21 +684,22 @@ impl ExtensionTypeAdapter for McpAdapter {
 
     async fn initialize(&self, manifest: &ExtensionManifest) -> Result<ExtensionState> {
         let server_name = manifest.name.clone();
-        let manager = self.manager.read().await;
 
-        info!(server_name = %server_name, "Initializing MCP server");
+        info!(server_name = %server_name, "Initializing MCP server config");
 
-        match manager.start_server(&server_name).await {
-            Ok(()) => {
-                info!(server_name = %server_name, "MCP server started");
-                Ok(ExtensionState::Unit)
-            }
-            Err(crate::extensions::mcp::protocol::manager::ManagerError::ServerNotFound(_)) => {
-                debug!(server_name = %server_name, "MCP server not yet configured, will start on demand");
-                Ok(ExtensionState::Unit)
-            }
-            Err(e) => Err(anyhow::anyhow!("Failed to start MCP server: {e}")),
+        // Ensure the server config is registered so that register_tools()
+        // and the AgentInit hook can start it on demand.
+        // We do NOT start the server here — starting is the responsibility
+        // of the AgentInit hook (when an agent runs) or `peko ext start`.
+        if let Err(e) = self.ensure_server_config_from_manifest(manifest).await {
+            warn!(
+                server_name = %server_name,
+                error = %e,
+                "Failed to ensure MCP server config during initialize"
+            );
         }
+
+        Ok(ExtensionState::Unit)
     }
 
     async fn shutdown(&self, _state: ExtensionState) -> Result<()> {

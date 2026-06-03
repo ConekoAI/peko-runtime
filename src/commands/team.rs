@@ -846,10 +846,10 @@ async fn collect_extension_refs_from_team_files(
     let mut extension_refs = Vec::new();
 
     for (path, content) in files {
-        // Look for agent config files: agents/{name}/config/agent.toml
+        // Look for agent config files: agents/{name}/config.toml
         let Some(rest) = path.strip_prefix("agents/") else { continue };
         let Some((agent_name, file_path)) = rest.split_once('/') else { continue };
-        if file_path != "config/agent.toml" {
+        if file_path != "config.toml" {
             continue;
         }
 
