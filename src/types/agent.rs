@@ -244,6 +244,8 @@ impl ExtensionConfig {
     /// - If whitelist has entries: only listed extensions are allowed
     /// - If whitelist is empty: NO extensions allowed (secure by default)
     /// - Supports wildcard patterns like "mcp:identity:*"
+    /// - Also supports matching MCP server extension IDs against tool names:
+    ///   e.g., "standard-echo" in whitelist matches "mcp:standard-echo:echo"
     #[must_use]
     pub fn is_extension_enabled(&self, name: &str) -> bool {
         // Check if extension is in the whitelist (case-insensitive, supports wildcards)
@@ -258,6 +260,19 @@ impl ExtensionConfig {
                 let prefix = &pattern[..pattern.len() - 1];
                 return name.to_lowercase().starts_with(&prefix.to_lowercase());
             }
+
+            // MCP tool names are formatted as "mcp:{server_name}:{tool_name}".
+            // When a user runs `peko ext enable standard-echo --target <agent>`,
+            // the extension ID "standard-echo" is added to the whitelist.
+            // We need to match that against the full MCP tool name.
+            if let Some(rest) = name.strip_prefix("mcp:") {
+                if let Some(server_name) = rest.split(':').next() {
+                    if pattern.eq_ignore_ascii_case(server_name) {
+                        return true;
+                    }
+                }
+            }
+
             false
         });
 
