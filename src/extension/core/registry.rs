@@ -346,7 +346,7 @@ impl ExtensionCore {
 
         // ── 7. Index in ToolRegistry for O(1) lookup ────────────────────────────
         self.tool_registry
-            .register_tool(&tool_name, exec_hook_id)
+            .register_tool(&tool_name, exec_hook_id, extension_id.clone())
             .await?;
 
         debug!(

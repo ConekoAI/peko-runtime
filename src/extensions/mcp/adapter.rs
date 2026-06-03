@@ -331,7 +331,8 @@ impl McpAdapter {
             .map(|(_, tool)| tool)
             .collect();
 
-        let ext_id = ExtensionId::new(format!("mcp:{server_name}"));
+        // Use the server_name as the canonical extension ID (same as manifest id)
+        let ext_id = ExtensionId::new(server_name);
         let mut registered_count = 0;
 
         for tool in tools {

@@ -53,30 +53,14 @@ impl AgentConfig {
     }
 
     /// Check if an extension is enabled according to the whitelist.
+    ///
+    /// Delegates to `ExtensionConfig::is_extension_enabled`.
     #[must_use]
     pub fn is_extension_enabled(&self, name: &str) -> bool {
         let Some(ref extensions) = self.extensions else {
             return false;
         };
-
-        // Check whitelist (case-insensitive, supports wildcards)
-        let in_whitelist = extensions.enabled.iter().any(|pattern| {
-            if pattern.eq_ignore_ascii_case(name) {
-                return true;
-            }
-            if pattern.ends_with('*') {
-                let prefix = &pattern[..pattern.len() - 1];
-                return name.to_lowercase().starts_with(&prefix.to_lowercase());
-            }
-            false
-        });
-
-        // Get per-extension settings if they exist
-        let per_extension_enabled = extensions
-            .get_extension_settings(name)
-            .is_none_or(|s| s.enabled);
-
-        in_whitelist && per_extension_enabled
+        extensions.is_extension_enabled(name)
     }
 }
 
@@ -214,18 +198,19 @@ pub struct ExtensionConfig {
 impl Default for ExtensionConfig {
     fn default() -> Self {
         Self {
-            // Default: enable all common built-in tools so agents work out of the box
+            // Default: enable all common built-in tools so agents work out of the box.
+            // Whitelist stores canonical extension IDs, not bare tool names.
             enabled: vec![
-                "shell".to_string(),
-                "read_file".to_string(),
-                "write_file".to_string(),
-                "glob".to_string(),
-                "grep".to_string(),
-                "str_replace_file".to_string(),
-                "session".to_string(),
-                "cron".to_string(),
-                "agent_spawn".to_string(),
-                "task".to_string(),
+                "builtin:tool:shell".to_string(),
+                "builtin:tool:read_file".to_string(),
+                "builtin:tool:write_file".to_string(),
+                "builtin:tool:glob".to_string(),
+                "builtin:tool:grep".to_string(),
+                "builtin:tool:str_replace_file".to_string(),
+                "builtin:tool:session".to_string(),
+                "builtin:tool:cron".to_string(),
+                "builtin:tool:agent_spawn".to_string(),
+                "builtin:tool:task".to_string(),
             ],
             http: None,
             custom: None,
@@ -239,38 +224,27 @@ impl Default for ExtensionConfig {
 }
 
 impl ExtensionConfig {
-    /// Check if an extension is enabled according to the whitelist
+    /// Check if an extension is enabled according to the whitelist.
     ///
-    /// - If whitelist has entries: only listed extensions are allowed
-    /// - If whitelist is empty: NO extensions allowed (secure by default)
-    /// - Supports wildcard patterns like "mcp:identity:*"
-    /// - Also supports matching MCP server extension IDs against tool names:
-    ///   e.g., "standard-echo" in whitelist matches "mcp:standard-echo:echo"
+    /// The whitelist stores **canonical extension IDs** (e.g. `builtin:tool:shell`,
+    /// `mcp:standard-echo`, `universal:calculator`).  The caller is expected to
+    /// pass the canonical `extension_id` of the extension that owns the tool.
+    ///
+    /// - If whitelist has entries: only listed extensions are allowed.
+    /// - If whitelist is empty: NO extensions allowed (secure by default).
+    /// - Supports wildcard patterns like `mcp:identity:*`.
     #[must_use]
     pub fn is_extension_enabled(&self, name: &str) -> bool {
-        // Check if extension is in the whitelist (case-insensitive, supports wildcards)
         let in_whitelist = self.enabled.iter().any(|pattern| {
             // Direct match (case-insensitive)
             if pattern.eq_ignore_ascii_case(name) {
                 return true;
             }
 
-            // Support wildcard patterns like "mcp:identity:*"
+            // Wildcard match (e.g. "mcp:identity:*" matches "mcp:identity:echo")
             if pattern.ends_with('*') {
                 let prefix = &pattern[..pattern.len() - 1];
                 return name.to_lowercase().starts_with(&prefix.to_lowercase());
-            }
-
-            // MCP tool names are formatted as "mcp:{server_name}:{tool_name}".
-            // When a user runs `peko ext enable standard-echo --target <agent>`,
-            // the extension ID "standard-echo" is added to the whitelist.
-            // We need to match that against the full MCP tool name.
-            if let Some(rest) = name.strip_prefix("mcp:") {
-                if let Some(server_name) = rest.split(':').next() {
-                    if pattern.eq_ignore_ascii_case(server_name) {
-                        return true;
-                    }
-                }
             }
 
             false
@@ -279,14 +253,17 @@ impl ExtensionConfig {
         // Get per-extension settings if they exist
         let per_extension_enabled = self.get_extension_settings(name).is_none_or(|s| s.enabled);
 
-        // Extension is enabled if it's in the whitelist AND not explicitly disabled
         in_whitelist && per_extension_enabled
     }
 
-    /// Get per-extension settings for a specific extension (by snake_case name)
+    /// Get per-extension settings for a specific extension.
+    ///
+    /// `name` is the canonical extension ID.  For built-in tools the last
+    /// segment is the snake_case tool name.
     #[must_use]
     pub fn get_extension_settings(&self, name: &str) -> Option<&ExtensionSettings> {
-        match name {
+        let bare = name.rsplit(':').next().unwrap_or(name);
+        match bare {
             "read_file" => self.read_file.as_ref(),
             "write_file" => self.write_file.as_ref(),
             "glob" => self.glob.as_ref(),
@@ -393,48 +370,52 @@ mod tests {
     fn test_extension_config_default() {
         let config = ExtensionConfig::default();
         assert!(!config.enabled.is_empty());
-        assert!(config.enabled.contains(&"shell".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:shell".to_string()));
     }
 
     #[test]
     fn test_extension_config_default_whitelist() {
         let config = ExtensionConfig::default();
 
-        // Default whitelist enables common built-in tools so agents work out of the box
+        // Default whitelist enables common built-in tools using canonical extension IDs
         assert!(!config.enabled.is_empty());
-        assert!(config.enabled.contains(&"shell".to_string()));
-        assert!(config.enabled.contains(&"read_file".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:shell".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:read_file".to_string()));
     }
 
     #[test]
     fn test_extension_config_is_extension_enabled() {
         let config = ExtensionConfig {
             enabled: vec![
-                "shell".to_string(),
-                "read_file".to_string(),
-                "write_file".to_string(),
-                "glob".to_string(),
-                "grep".to_string(),
-                "str_replace_file".to_string(),
-                "session".to_string(),
-                "cron".to_string(),
+                "builtin:tool:shell".to_string(),
+                "builtin:tool:read_file".to_string(),
+                "builtin:tool:write_file".to_string(),
+                "builtin:tool:glob".to_string(),
+                "builtin:tool:grep".to_string(),
+                "builtin:tool:str_replace_file".to_string(),
+                "builtin:tool:session".to_string(),
+                "builtin:tool:cron".to_string(),
             ],
             ..Default::default()
         };
 
-        // All whitelisted extensions should be enabled
-        assert!(config.is_extension_enabled("shell"));
-        assert!(config.is_extension_enabled("read_file"));
-        assert!(config.is_extension_enabled("write_file"));
-        assert!(config.is_extension_enabled("glob"));
-        assert!(config.is_extension_enabled("grep"));
-        assert!(config.is_extension_enabled("str_replace_file"));
-        assert!(config.is_extension_enabled("session"));
-        assert!(config.is_extension_enabled("cron"));
+        // All whitelisted extensions should be enabled (canonical IDs)
+        assert!(config.is_extension_enabled("builtin:tool:shell"));
+        assert!(config.is_extension_enabled("builtin:tool:read_file"));
+        assert!(config.is_extension_enabled("builtin:tool:write_file"));
+        assert!(config.is_extension_enabled("builtin:tool:glob"));
+        assert!(config.is_extension_enabled("builtin:tool:grep"));
+        assert!(config.is_extension_enabled("builtin:tool:str_replace_file"));
+        assert!(config.is_extension_enabled("builtin:tool:session"));
+        assert!(config.is_extension_enabled("builtin:tool:cron"));
 
         // Case-insensitive matching
-        assert!(config.is_extension_enabled("SHELL"));
-        assert!(config.is_extension_enabled("Session"));
+        assert!(config.is_extension_enabled("BUILTIN:TOOL:SHELL"));
+        assert!(config.is_extension_enabled("Builtin:Tool:Session"));
+
+        // Bare tool names should NOT match (no special-case parsing)
+        assert!(!config.is_extension_enabled("shell"));
+        assert!(!config.is_extension_enabled("read_file"));
 
         // Unknown extensions should not be enabled
         assert!(!config.is_extension_enabled("unknown_tool"));
@@ -454,16 +435,19 @@ mod tests {
             str_replace_file: None,
         };
 
-        assert!(!config.is_extension_enabled("shell"));
-        assert!(!config.is_extension_enabled("read_file"));
-        assert!(!config.is_extension_enabled("any_tool"));
+        assert!(!config.is_extension_enabled("builtin:tool:shell"));
+        assert!(!config.is_extension_enabled("builtin:tool:read_file"));
+        assert!(!config.is_extension_enabled("mcp:any_server"));
     }
 
     #[test]
     fn test_extension_config_custom_whitelist() {
-        // Custom whitelist
+        // Custom whitelist using canonical extension IDs
         let config = ExtensionConfig {
-            enabled: vec!["read_file".to_string(), "write_file".to_string()],
+            enabled: vec![
+                "builtin:tool:read_file".to_string(),
+                "builtin:tool:write_file".to_string(),
+            ],
             http: None,
             custom: None,
             read_file: None,
@@ -473,9 +457,9 @@ mod tests {
             str_replace_file: None,
         };
 
-        assert!(config.is_extension_enabled("read_file"));
-        assert!(config.is_extension_enabled("write_file"));
-        assert!(!config.is_extension_enabled("shell"));
+        assert!(config.is_extension_enabled("builtin:tool:read_file"));
+        assert!(config.is_extension_enabled("builtin:tool:write_file"));
+        assert!(!config.is_extension_enabled("builtin:tool:shell"));
     }
 
     #[test]
@@ -486,20 +470,23 @@ mod tests {
         assert!(config.extensions.is_some());
         let extensions = config.extensions.unwrap();
         assert!(!extensions.enabled.is_empty());
-        assert!(extensions.enabled.contains(&"shell".to_string()));
+        assert!(extensions.enabled.contains(&"builtin:tool:shell".to_string()));
     }
 
     #[test]
     fn test_extension_config_toml_serialization() {
         let config = ExtensionConfig {
-            enabled: vec!["shell".to_string(), "read_file".to_string()],
+            enabled: vec![
+                "builtin:tool:shell".to_string(),
+                "builtin:tool:read_file".to_string(),
+            ],
             ..Default::default()
         };
         let toml = toml::to_string(&config).unwrap();
 
-        // Should contain the enabled list
+        // Should contain the enabled list with canonical IDs
         assert!(toml.contains("enabled"));
-        assert!(toml.contains("shell"));
-        assert!(toml.contains("read_file"));
+        assert!(toml.contains("builtin:tool:shell"));
+        assert!(toml.contains("builtin:tool:read_file"));
     }
 }

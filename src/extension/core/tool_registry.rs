@@ -7,8 +7,9 @@
 //! `Arc<RwLock<HashMap<K, V>>>` patterns.
 
 use crate::common::registry::SharedRegistry;
-use crate::extension::types::HookId;
+use crate::extension::types::{ExtensionId, HookId};
 use anyhow::Result;
+use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tracing::{debug, instrument, warn};
 
@@ -21,6 +22,10 @@ pub struct ToolRegistry {
     /// Tool index: maps tool name to hook ID for O(1) lookup
     pub(crate) tool_index: SharedRegistry<String, HookId>,
 
+    /// Maps tool name to the owning extension ID for whitelist checking.
+    /// This decouples the whitelist from tool-name string parsing.
+    tool_owners: RwLock<HashMap<String, ExtensionId>>,
+
     /// Tool configuration (whitelist, per-tool settings)
     tool_config: RwLock<crate::types::agent::ToolConfig>,
 }
@@ -31,6 +36,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tool_index: SharedRegistry::new(),
+            tool_owners: RwLock::new(HashMap::new()),
             tool_config: RwLock::new(crate::types::agent::ExtensionConfig::default()),
         }
     }
@@ -42,9 +48,22 @@ impl ToolRegistry {
         debug!("Updated tool configuration");
     }
 
-    /// Check if a tool is enabled according to whitelist
+    /// Check if a tool is enabled according to whitelist.
+    ///
+    /// Looks up the tool's owning `extension_id` and checks whether *that*
+    /// canonical ID is present in the whitelist.  This makes the check
+    /// independent of any tool-name naming convention.
     pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
         let config = self.tool_config.read().await;
+        let owners = self.tool_owners.read().await;
+
+        // Primary: check by owning extension_id (clean, future-proof)
+        if let Some(ext_id) = owners.get(tool_name) {
+            return config.is_extension_enabled(&ext_id.0);
+        }
+
+        // Fallback for tools registered before this change or direct
+        // tool-name whitelisting (should not happen in normal flow).
         config.is_extension_enabled(tool_name)
     }
 
@@ -53,9 +72,21 @@ impl ToolRegistry {
     /// # Arguments
     /// * `tool_name` - The name of the tool
     /// * `hook_id` - The hook ID associated with this tool
-    #[instrument(skip(self), fields(tool_name = %tool_name, hook_id = %hook_id))]
-    pub async fn register_tool(&self, tool_name: &str, hook_id: HookId) -> Result<()> {
-        self.tool_index.insert(tool_name.to_string(), hook_id).await;
+    /// * `extension_id` - ID of the extension that owns this tool
+    #[instrument(skip(self), fields(tool_name = %tool_name, hook_id = %hook_id, extension_id = %extension_id))]
+    pub async fn register_tool(
+        &self,
+        tool_name: &str,
+        hook_id: HookId,
+        extension_id: ExtensionId,
+    ) -> Result<()> {
+        self.tool_index
+            .insert(tool_name.to_string(), hook_id)
+            .await;
+        self.tool_owners
+            .write()
+            .await
+            .insert(tool_name.to_string(), extension_id);
         debug!(tool_name = %tool_name, hook_id = %hook_id, "Registered tool in index");
         Ok(())
     }
@@ -67,6 +98,7 @@ impl ToolRegistry {
     #[instrument(skip(self), fields(tool_name = %tool_name))]
     pub async fn unregister_tool(&self, tool_name: &str) -> Result<Option<HookId>> {
         let hook_id = self.tool_index.remove(&tool_name.to_string()).await;
+        self.tool_owners.write().await.remove(tool_name);
         if hook_id.is_some() {
             debug!(tool_name = %tool_name, "Unregistered tool from index");
         } else {

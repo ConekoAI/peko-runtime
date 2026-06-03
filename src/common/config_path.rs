@@ -273,7 +273,7 @@ mod tests {
         assert!(value.is_array());
         let arr = value.as_array().unwrap();
         assert!(!arr.is_empty());
-        assert!(arr.contains(&serde_json::json!("shell")));
+        assert!(arr.contains(&serde_json::json!("builtin:tool:shell")));
     }
 
     #[test]

@@ -902,7 +902,9 @@ impl IpcServer {
                     }
                 };
 
-                // If target agent specified, also update agent config whitelist
+                // If target agent specified, also update agent config whitelist.
+                // Store the canonical extension ID so the whitelist checker can
+                // match by owner without parsing tool names.
                 let result = if let Some(ref target_agent) = target {
                     if let Err(e) = &result {
                         Err(anyhow::anyhow!("{e}"))
@@ -915,8 +917,18 @@ impl IpcServer {
                             ("default", target_agent.as_str())
                         };
                         let config_service = state.config_service();
-                        match config_service.enable_tool_sync(agent_name, team, &id) {
-                            Ok(()) => Ok(format!("Extension '{id}' enabled for {target_agent}")),
+                        // Build canonical extension ID for the whitelist entry.
+                        let canonical_id = if is_builtin {
+                            if id.starts_with("builtin:") {
+                                id.clone()
+                            } else {
+                                format!("builtin:tool:{id}")
+                            }
+                        } else {
+                            id.clone()
+                        };
+                        match config_service.enable_tool_sync(agent_name, team, &canonical_id) {
+                            Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for {target_agent}")),
                             Err(e) => Err(anyhow::anyhow!("Enabled extension but failed to update agent config: {e}")),
                         }
                     }
@@ -961,7 +973,8 @@ impl IpcServer {
                     }
                 };
 
-                // If target agent specified, also update agent config whitelist
+                // If target agent specified, also update agent config whitelist.
+                // Use the same canonical ID that was stored during enable.
                 let result = if let Some(ref target_agent) = target {
                     if let Err(e) = &result {
                         Err(anyhow::anyhow!("{e}"))
@@ -973,8 +986,17 @@ impl IpcServer {
                             ("default", target_agent.as_str())
                         };
                         let config_service = state.config_service();
-                        match config_service.disable_tool_sync(agent_name, team, &id) {
-                            Ok(()) => Ok(format!("Extension '{id}' disabled for {target_agent}")),
+                        let canonical_id = if is_builtin {
+                            if id.starts_with("builtin:") {
+                                id.clone()
+                            } else {
+                                format!("builtin:tool:{id}")
+                            }
+                        } else {
+                            id.clone()
+                        };
+                        match config_service.disable_tool_sync(agent_name, team, &canonical_id) {
+                            Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for {target_agent}")),
                             Err(e) => Err(anyhow::anyhow!("Disabled extension but failed to update agent config: {e}")),
                         }
                     }

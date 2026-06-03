@@ -172,10 +172,14 @@ impl ToolRuntime {
             Arc::new(TaskTool::global()),
         ];
 
-        // Enable all built-in tools by default in the daemon context
-        let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+        // Enable all built-in tools by default in the daemon context.
+        // Use canonical extension IDs so the whitelist matches the owners stored in ToolRegistry.
+        let ext_ids: Vec<String> = tools
+            .iter()
+            .map(|t| format!("builtin:tool:{}", t.name()))
+            .collect();
         let ext_config = crate::types::agent::ExtensionConfig {
-            enabled: tool_names.clone(),
+            enabled: ext_ids,
             http: None,
             custom: None,
             read_file: None,
