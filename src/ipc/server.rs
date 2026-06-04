@@ -784,9 +784,14 @@ impl IpcServer {
 
             RequestPacket::ProviderList { request_id } => {
                 let registry = crate::providers::ProviderRegistry::new();
-                let providers: Vec<crate::ipc::packet::ProviderInfo> = registry.iter()
-                    .map(|(id, meta)| crate::ipc::packet::ProviderInfo {
-                        id: id.clone(),
+                let mut providers: Vec<crate::ipc::packet::ProviderInfo> = Vec::new();
+                let mut seen_ids = std::collections::HashSet::new();
+                for (id, meta) in registry.iter() {
+                    if !seen_ids.insert(meta.id) {
+                        continue;
+                    }
+                    providers.push(crate::ipc::packet::ProviderInfo {
+                        id: meta.id.to_string(),
                         display_name: meta.display_name.to_string(),
                         api_type: match meta.api_type {
                             crate::providers::registry::ApiType::OpenAICompletions => "openai".to_string(),
@@ -795,8 +800,8 @@ impl IpcServer {
                         default_model: meta.default_model.to_string(),
                         requires_key: !meta.api_key_env.is_empty(),
                         is_local: meta.api_key_env.is_empty(),
-                    })
-                    .collect();
+                    });
+                }
                 let response = ResponsePacket::ProviderList { request_id, providers };
                 Self::send_packet(&socket, response, addr).await?;
             }
