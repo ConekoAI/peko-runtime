@@ -54,7 +54,9 @@ pub struct AgentCreateRequest {
     pub provider: String,
     pub model: Option<String>,
     pub description: Option<String>,
+    #[serde(default)]
     pub auto_create_team: bool,
+    #[serde(default)]
     pub force: bool,
 }
 
