@@ -181,6 +181,10 @@ pub enum RequestPacket {
     #[serde(rename = "session_switch")]
     SessionSwitch { request_id: u64, agent: String, team: Option<String>, session_id: String, user: String },
 
+    // ─── Provider listing ───────────────────────────────────────────
+    #[serde(rename = "provider_list")]
+    ProviderList { request_id: u64 },
+
     // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
     #[serde(rename = "extension_list")]
     ExtensionList {
@@ -350,6 +354,7 @@ impl RequestPacket {
             | Self::SessionShow { request_id, .. }
             | Self::SessionRemove { request_id, .. }
             | Self::SessionSwitch { request_id, .. }
+            | Self::ProviderList { request_id }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
@@ -595,6 +600,13 @@ pub enum ResponsePacket {
         warnings: u32,
     },
 
+    /// Provider list response
+    #[serde(rename = "provider_list")]
+    ProviderList {
+        request_id: u64,
+        providers: Vec<ProviderInfo>,
+    },
+
     /// Extension list response
     #[serde(rename = "extension_list")]
     ExtensionList {
@@ -734,6 +746,17 @@ pub enum ResponsePacket {
 }
 
 /// Summary of an extension for IPC responses
+/// Provider info for listing available LLM providers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderInfo {
+    pub id: String,
+    pub display_name: String,
+    pub api_type: String,    // "openai" or "anthropic"
+    pub default_model: String,
+    pub requires_key: bool,
+    pub is_local: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionSummary {
     pub id: String,
@@ -792,6 +815,7 @@ impl ResponsePacket {
             | Self::SessionSwitched { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
+            | Self::ProviderList { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnabled { request_id, .. }
             | Self::ExtensionDisabled { request_id, .. }

@@ -122,6 +122,16 @@ impl ProviderRegistry {
         }
         None
     }
+
+    /// Iterate over all unique providers (by canonical id)
+    #[must_use]
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &ProviderMetadata)> + '_ {
+        // Deduplicate by metadata pointer to avoid aliases
+        let mut seen = std::collections::HashSet::new();
+        self.providers.iter()
+            .filter(move |(_, meta)| seen.insert(std::ptr::addr_of!(**meta)))
+            .map(|(k, v)| (k, *v))
+    }
 }
 
 /// Built-in provider metadata

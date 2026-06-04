@@ -782,6 +782,25 @@ impl IpcServer {
                 }
             }
 
+            RequestPacket::ProviderList { request_id } => {
+                let registry = crate::providers::ProviderRegistry::new();
+                let providers: Vec<crate::ipc::packet::ProviderInfo> = registry.iter()
+                    .map(|(id, meta)| crate::ipc::packet::ProviderInfo {
+                        id: id.clone(),
+                        display_name: meta.display_name.to_string(),
+                        api_type: match meta.api_type {
+                            crate::providers::registry::ApiType::OpenAICompletions => "openai".to_string(),
+                            crate::providers::registry::ApiType::AnthropicMessages => "anthropic".to_string(),
+                        },
+                        default_model: meta.default_model.to_string(),
+                        requires_key: !meta.api_key_env.is_empty(),
+                        is_local: meta.api_key_env.is_empty(),
+                    })
+                    .collect();
+                let response = ResponsePacket::ProviderList { request_id, providers };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+
             RequestPacket::SystemStatus { request_id } => {
                 let response = ResponsePacket::SystemStatus {
                     request_id,
