@@ -23,6 +23,7 @@ use crate::session::events::{
 };
 use crate::session::jsonl::SessionStorage;
 use crate::session::message::SessionMessage;
+use crate::session::metadata_controller::MetadataController;
 use crate::session::message_conversion::{
     entries_to_context_text, event_to_llm_message, normalized_entry_to_llm_message,
 };
@@ -68,6 +69,8 @@ pub struct Session {
     pub current_provider: Option<String>,
     /// Current model
     pub current_model: Option<String>,
+    /// Cached metadata controller for index updates
+    metadata_controller: Option<MetadataController>,
 }
 
 impl Session {
@@ -98,6 +101,7 @@ impl Session {
             total_output_tokens: 0,
             current_provider: None,
             current_model: None,
+            metadata_controller: None,
         }
     }
 
@@ -198,12 +202,33 @@ impl Session {
             total_output_tokens: 0,
             current_provider: None,
             current_model: None,
+            metadata_controller: None,
         })
     }
 
     // ============================================================
     // Metadata Operations
     // ============================================================
+
+    /// Sync message count to index (lazy-initializes metadata controller)
+    async fn sync_index_message_count(&mut self) -> Result<()> {
+        if self.metadata_controller.is_none() {
+            let dir = self.storage.storage_dir().to_path_buf();
+            self.metadata_controller = Some(MetadataController::new(dir));
+        }
+        if let Some(ref mut controller) = self.metadata_controller {
+            controller
+                .update_message_counts(
+                    &self.id,
+                    self.message_count,
+                    self.context_window,
+                    self.total_input_tokens,
+                    self.total_output_tokens,
+                )
+                .await?;
+        }
+        Ok(())
+    }
 
     /// Record token usage (in-memory only, persists to index via `MetadataController`)
     ///
@@ -519,6 +544,12 @@ impl Session {
         self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
+
+        // Update index message count
+        if let Err(e) = self.sync_index_message_count().await {
+            tracing::warn!("Failed to update index for session {}: {}", self.id, e);
+        }
+
         Ok(())
     }
 
