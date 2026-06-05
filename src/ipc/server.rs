@@ -1461,11 +1461,13 @@ impl IpcServer {
         use crate::engine::{AgenticEvent, LifecyclePhase};
 
         tracing::info!(
-            "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}",
+            "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}, session_id={:?}, new_session={}",
             request_id,
             agent,
             user,
-            stream_enabled
+            stream_enabled,
+            session_id,
+            new_session
         );
 
         let agent_service = state.agent_service().clone();

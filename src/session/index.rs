@@ -474,9 +474,10 @@ impl SessionIndex {
             .or_insert_with(|| PeerInfo::new(session_id.clone()));
 
         peer_info.add_session(session_id.clone());
+        let active_id = peer_info.active_session_id.clone();
         self.peers_modified = true;
 
-        info!("Created session {} for peer {}", session_id, peer_key);
+        info!("Created session {} for peer {}, active_session_id={}", session_id, peer_key, active_id);
         Ok(())
     }
 

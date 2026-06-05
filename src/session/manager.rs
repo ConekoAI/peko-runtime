@@ -669,8 +669,8 @@ impl SessionManager {
         };
 
         info!(
-            "Resolving session for agent '{}' (team: {:?}) with strategy {:?}",
-            agent_name, team, strategy
+            "Resolving session for agent '{}' (team: {:?}) with strategy {:?}, session_id={:?}, force_new={}",
+            agent_name, team, strategy, session_id, force_new
         );
 
         match strategy {
@@ -795,8 +795,8 @@ impl SessionManager {
         let ctx = build_session_context(&handle, Some(channel), false).await;
 
         info!(
-            "Created fresh session '{}' for agent '{}'",
-            session_id, agent_name
+            "Created fresh session '{}' for agent '{}', peer={:?}",
+            session_id, agent_name, peer
         );
         Ok((ctx, handle, session_id))
     }
