@@ -3,10 +3,13 @@
 #
 # Tests all options of the peko send command:
 # - Basic message sending
-# - Team specification (--team)
+# - Team context (--team)
 # - Session management (--session, --new)
 # - File input (--file)
 # - Stdin input (--stdin)
+#
+# NOTE: ADR-031 changed the agent-team relationship. Agents are standalone;
+# teams are joined via membership. Session listing uses agent name + --team flag.
 
 param(
     [string]$Provider = "minimax"
@@ -57,12 +60,12 @@ $teamName = "testteam"
 peko team create $teamName 2>&1 | Out-Null
 Write-Host "Created team: $teamName" -ForegroundColor Green
 
-# Create agents in default team and custom team
+# Create standalone agents (ADR-031: agents are standalone, not nested in teams)
 $defaultAgent = "defaultagent"
 $teamAgent = "teamagent"
 peko agent create $defaultAgent --provider $Provider 2>&1 | Out-Null
-peko agent create "$teamName/$teamAgent" --provider $Provider 2>&1 | Out-Null
-Write-Host "Created agents: $defaultAgent (default team), $teamAgent ($teamName team)" -ForegroundColor Green
+peko agent create $teamAgent --provider $Provider 2>&1 | Out-Null
+Write-Host "Created agents: $defaultAgent, $teamAgent" -ForegroundColor Green
 
 # ============================================================
 # TEST 1: Basic send with message argument
@@ -85,18 +88,18 @@ if ($sessions.sessions.Count -eq 1) {
 $sessionId1 = $sessions.sessions[0].session_id
 
 # ============================================================
-# TEST 2: Send with --team option
+# TEST 2: Send with --team option (execution context)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 2: Send with --team option" -ForegroundColor Cyan
+Write-Host "TEST 2: Send with --team option (execution context)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending message to $teamAgent with --team $teamName..." -ForegroundColor Yellow
 $result = peko send $teamAgent "What's Germany's capital?" --team $teamName 2>&1
 Write-Host "Response: $result"
 
-# Verify session was created
-$sessions = peko session list "$teamName/$teamAgent" --json 2>&1 | ConvertFrom-Json
+# Verify session was created (ADR-031: session list uses agent name + --team flag)
+$sessions = peko session list $teamAgent --team $teamName --json 2>&1 | ConvertFrom-Json
 if ($sessions.sessions.Count -eq 1) {
     Write-Host "✓ Session created successfully in team $teamName" -ForegroundColor Green
 } else {
@@ -104,18 +107,19 @@ if ($sessions.sessions.Count -eq 1) {
 }
 
 # ============================================================
-# TEST 3: Send with team/agent format
+# TEST 3: Send with --team and --no-stream
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 3: Send with team/agent format" -ForegroundColor Cyan
+Write-Host "TEST 3: Send with --team and --no-stream" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "Sending message using team/agent format..." -ForegroundColor Yellow
-$result = peko send "$teamName/$teamAgent" "What about Italy?" --no-stream 2>&1
+Write-Host "Sending message to $teamAgent with --team $teamName and --no-stream..." -ForegroundColor Yellow
+$result = peko send $teamAgent "What about Italy?" --team $teamName --no-stream 2>&1
 Write-Host "Response: $result"
 
 # Verify session count (should resume existing session)
-$sessions = peko session list "$teamName/$teamAgent" --json 2>&1 | ConvertFrom-Json
+# ADR-031: session list uses agent name + --team flag, not team/agent path
+$sessions = peko session list $teamAgent --team $teamName --json 2>&1 | ConvertFrom-Json
 if ($sessions.sessions.Count -eq 1) {
     Write-Host "✓ Resumed existing session correctly" -ForegroundColor Green
 } else {
