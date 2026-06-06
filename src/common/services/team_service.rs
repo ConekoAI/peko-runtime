@@ -116,12 +116,14 @@ impl TeamService {
             }
 
             let metadata = load_team_metadata(&path, &team_name).await;
-            let agent_count = self.count_team_members(&team_name).await;
+            let members = self.load_team_member_names(&team_name).await;
+            let agent_count = members.len();
 
             teams.push(TeamInfo {
                 name: team_name,
                 metadata,
                 agent_count,
+                members,
                 path,
             });
         }
@@ -154,12 +156,14 @@ impl TeamService {
         }
 
         let metadata = load_team_metadata(&team_dir, name).await;
-        let agent_count = self.count_team_members(name).await;
+        let members = self.load_team_member_names(name).await;
+        let agent_count = members.len();
 
         Ok(Some(TeamInfo {
             name: name.to_string(),
             metadata,
             agent_count,
+            members,
             path: team_dir,
         }))
     }
@@ -430,15 +434,20 @@ impl TeamService {
         Ok(members.has_member(agent))
     }
 
-    /// Count the number of members in a team
-    async fn count_team_members(&self, team_name: &str) -> usize {
+    /// Load member agent names for a team
+    async fn load_team_member_names(&self, team_name: &str) -> Vec<String> {
         let members_path = self.resolver.team_members(team_name);
         if members_path.exists() {
             if let Ok(members) = TeamMembers::load(&members_path) {
-                return members.members.len();
+                return members.members.iter().map(|m| m.agent.clone()).collect();
             }
         }
-        0
+        Vec::new()
+    }
+
+    /// Count the number of members in a team
+    async fn count_team_members(&self, team_name: &str) -> usize {
+        self.load_team_member_names(team_name).await.len()
     }
 
     /// Check if a team exists

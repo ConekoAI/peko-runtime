@@ -157,7 +157,13 @@ pub enum RequestPacket {
     TeamGet { request_id: u64, name: String },
 
     #[serde(rename = "team_create")]
-    TeamCreate { request_id: u64, name: String, description: Option<String> },
+    TeamCreate { request_id: u64, name: String, description: Option<String>, members: Option<Vec<String>> },
+
+    #[serde(rename = "team_join")]
+    TeamJoin { request_id: u64, team: String, agent: String },
+
+    #[serde(rename = "team_leave")]
+    TeamLeave { request_id: u64, team: String, agent: String },
 
     #[serde(rename = "team_delete")]
     TeamDelete { request_id: u64, name: String, force: bool },
@@ -376,6 +382,8 @@ impl RequestPacket {
             | Self::AgentMove { request_id, .. }
             | Self::TeamExport { request_id, .. }
             | Self::TeamImport { request_id, .. }
+            | Self::TeamJoin { request_id, .. }
+            | Self::TeamLeave { request_id, .. }
             | Self::RegistryPull { request_id, .. } => *request_id,
         }
     }
@@ -553,6 +561,14 @@ pub enum ResponsePacket {
     /// Team moved response
     #[serde(rename = "team_moved")]
     TeamMoved { request_id: u64, old_name: String, new_name: String },
+
+    /// Team join response
+    #[serde(rename = "team_joined")]
+    TeamJoined { request_id: u64, agent: String, team: String },
+
+    /// Team leave response
+    #[serde(rename = "team_left")]
+    TeamLeft { request_id: u64, agent: String, team: String, was_member: bool },
 
     /// Session list response
     #[serde(rename = "session_list")]
@@ -806,6 +822,8 @@ impl ResponsePacket {
             | Self::TeamCreated { request_id, .. }
             | Self::TeamDeleted { request_id, .. }
             | Self::TeamMoved { request_id, .. }
+            | Self::TeamJoined { request_id, .. }
+            | Self::TeamLeft { request_id, .. }
             | Self::SessionList { request_id, .. }
             | Self::SessionGet { request_id, .. }
             | Self::SessionShown { request_id, .. }
@@ -1564,6 +1582,7 @@ mod tests {
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                 },
                 agent_count: 0,
+                members: vec![],
                 path: std::path::PathBuf::from("/tmp/teams/default"),
             }],
         };
@@ -1591,6 +1610,7 @@ mod tests {
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                 },
                 agent_count: 0,
+                members: vec![],
                 path: std::path::PathBuf::from("/tmp/teams/default"),
             }),
         };
@@ -2745,11 +2765,12 @@ mod tests {
             request_id: 1500,
             name: "new-team".to_string(),
             description: Some("A new team".to_string()),
+            members: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::TeamCreate { request_id, name, description } => {
+            RequestPacket::TeamCreate { request_id, name, description, .. } => {
                 assert_eq!(request_id, 1500);
                 assert_eq!(name, "new-team");
                 assert_eq!(description, Some("A new team".to_string()));
@@ -2862,7 +2883,7 @@ mod tests {
 
     #[test]
     fn test_team_request_ids() {
-        let req_create = RequestPacket::TeamCreate { request_id: 1, name: "t".to_string(), description: None };
+        let req_create = RequestPacket::TeamCreate { request_id: 1, name: "t".to_string(), description: None, members: None };
         assert_eq!(req_create.request_id(), 1);
 
         let req_delete = RequestPacket::TeamDelete { request_id: 2, name: "t".to_string(), force: false };

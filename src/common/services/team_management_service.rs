@@ -15,6 +15,7 @@
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
+use crate::common::types::membership::{MembershipRole, TeamJoinResult, TeamLeaveResult};
 use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo, TeamMoveResult};
 use anyhow::Result;
 
@@ -125,6 +126,16 @@ impl TeamManagementService {
     /// Move/rename a team
     pub async fn move_team(&self, old_name: &str, new_name: &str) -> Result<TeamMoveResult> {
         self.config_service.move_team(old_name, new_name).await
+    }
+
+    /// Add an agent to a team
+    pub async fn join_team(&self, team: &str, agent: &str, role: MembershipRole) -> Result<TeamJoinResult> {
+        self.config_service.join_team(team, agent, role).await
+    }
+
+    /// Remove an agent from a team
+    pub async fn leave_team(&self, team: &str, agent: &str) -> Result<TeamLeaveResult> {
+        self.config_service.leave_team(team, agent).await
     }
 
     /// Check if a team exists

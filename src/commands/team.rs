@@ -206,7 +206,7 @@ pub async fn handle_team(
 ) -> Result<()> {
     match cmd {
         TeamCommands::Create { name, description } => {
-            let packet = crate::ipc::RequestPacket::TeamCreate { request_id: 1, name: name.clone(), description };
+            let packet = crate::ipc::RequestPacket::TeamCreate { request_id: 1, name: name.clone(), description, members: None };
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::TeamCreated { result, .. } => {

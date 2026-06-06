@@ -20,6 +20,7 @@ pub struct TeamInfo {
     pub name: String,
     pub metadata: TeamMetadata,
     pub agent_count: usize,
+    pub members: Vec<String>,
     pub path: PathBuf,
 }
 

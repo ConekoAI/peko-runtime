@@ -607,11 +607,45 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::TeamCreate { request_id, name, description } => {
+            RequestPacket::TeamCreate { request_id, name, description, members } => {
                 let service = state.team_service();
                 match service.create_team(&name, description.as_deref()).await {
                     Ok(result) => {
+                        // Auto-join members if provided
+                        if let Some(member_names) = members {
+                            for agent_name in member_names {
+                                let _ = service.join_team(&name, &agent_name, crate::common::types::membership::MembershipRole::Member).await;
+                            }
+                        }
                         let response = ResponsePacket::TeamCreated { request_id, result };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::TeamJoin { request_id, team, agent } => {
+                let service = state.team_service();
+                match service.join_team(&team, &agent, crate::common::types::membership::MembershipRole::Member).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::TeamJoined { request_id, agent: result.agent, team: result.team };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::TeamLeave { request_id, team, agent } => {
+                let service = state.team_service();
+                match service.leave_team(&team, &agent).await {
+                    Ok(result) => {
+                        let response = ResponsePacket::TeamLeft { request_id, agent: result.agent, team: result.team, was_member: result.was_member };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
@@ -933,25 +967,30 @@ impl IpcServer {
                         }
                     }
                     Some(ref target_str) if target_str.contains('/') => {
-                        // Agent scope: "team/agent"
+                        // Legacy compound scope: "team/agent" — resolves to agent
                         let parts: Vec<&str> = target_str.split('/').collect();
-                        let (team, agent_name) = if parts.len() == 2 {
-                            (parts[0], parts[1])
-                        } else {
-                            ("default", target_str.as_str())
-                        };
+                        let agent_name = if parts.len() == 2 { parts[1] } else { target_str.as_str() };
                         let config_service = state.config_service();
                         match config_service.enable_tool_sync(agent_name, &canonical_id) {
-                            Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for agent '{target_str}'")),
+                            Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for agent '{agent_name}'")),
                             Err(e) => Err(anyhow::anyhow!("Failed to enable extension for agent: {e}")),
                         }
                     }
-                    Some(ref team) => {
-                        // Team scope: enable for all agents in team
+                    Some(ref target_str) => {
                         let config_service = state.config_service();
-                        match config_service.enable_tool_for_team(team, &canonical_id) {
-                            Ok(count) => Ok(format!("Extension '{canonical_id}' enabled for {count} agent(s) in team '{team}'")),
-                            Err(e) => Err(anyhow::anyhow!("Failed to enable extension for team: {e}")),
+                        // Under ADR-031, bare names are agent scope if the agent exists,
+                        // otherwise team scope for backward compatibility.
+                        let agent_config_path = state.config_dir.join("agents").join(target_str).join("config.toml");
+                        if agent_config_path.exists() {
+                            match config_service.enable_tool_sync(target_str, &canonical_id) {
+                                Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for agent '{target_str}'")),
+                                Err(e) => Err(anyhow::anyhow!("Failed to enable extension for agent: {e}")),
+                            }
+                        } else {
+                            match config_service.enable_tool_for_team(target_str, &canonical_id) {
+                                Ok(count) => Ok(format!("Extension '{canonical_id}' enabled for {count} agent(s) in team '{target_str}'")),
+                                Err(e) => Err(anyhow::anyhow!("Failed to enable extension for team: {e}")),
+                            }
                         }
                     }
                 };
@@ -1000,25 +1039,30 @@ impl IpcServer {
                         }
                     }
                     Some(ref target_str) if target_str.contains('/') => {
-                        // Agent scope: "team/agent"
+                        // Legacy compound scope: "team/agent" — resolves to agent
                         let parts: Vec<&str> = target_str.split('/').collect();
-                        let (team, agent_name) = if parts.len() == 2 {
-                            (parts[0], parts[1])
-                        } else {
-                            ("default", target_str.as_str())
-                        };
+                        let agent_name = if parts.len() == 2 { parts[1] } else { target_str.as_str() };
                         let config_service = state.config_service();
                         match config_service.disable_tool_sync(agent_name, &canonical_id) {
-                            Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for agent '{target_str}'")),
+                            Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for agent '{agent_name}'")),
                             Err(e) => Err(anyhow::anyhow!("Failed to disable extension for agent: {e}")),
                         }
                     }
-                    Some(ref team) => {
-                        // Team scope: disable for all agents in team
+                    Some(ref target_str) => {
                         let config_service = state.config_service();
-                        match config_service.disable_tool_for_team(team, &canonical_id) {
-                            Ok(count) => Ok(format!("Extension '{canonical_id}' disabled for {count} agent(s) in team '{team}'")),
-                            Err(e) => Err(anyhow::anyhow!("Failed to disable extension for team: {e}")),
+                        // Under ADR-031, bare names are agent scope if the agent exists,
+                        // otherwise team scope for backward compatibility.
+                        let agent_config_path = state.config_dir.join("agents").join(target_str).join("config.toml");
+                        if agent_config_path.exists() {
+                            match config_service.disable_tool_sync(target_str, &canonical_id) {
+                                Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for agent '{target_str}'")),
+                                Err(e) => Err(anyhow::anyhow!("Failed to disable extension for agent: {e}")),
+                            }
+                        } else {
+                            match config_service.disable_tool_for_team(target_str, &canonical_id) {
+                                Ok(count) => Ok(format!("Extension '{canonical_id}' disabled for {count} agent(s) in team '{target_str}'")),
+                                Err(e) => Err(anyhow::anyhow!("Failed to disable extension for team: {e}")),
+                            }
                         }
                     }
                 };
