@@ -903,62 +903,59 @@ impl IpcServer {
             }
 
             RequestPacket::ExtensionEnable { request_id, id, target } => {
-                let mut manager = state.extension_manager().write().await;
-                let ext_services = state.extension_services();
-
                 let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
                     || id.starts_with("builtin:");
 
-                let result = if is_builtin {
-                    // Enable built-in hooks
-                    let capability = if id.starts_with("builtin:") {
-                        id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
-                    } else {
-                        id.clone()
-                    };
-                    ext_services.enable_builtin_hooks(&capability).await;
-                    Ok(format!("Built-in capability '{capability}' enabled"))
+                // Build canonical extension ID for whitelist entries.
+                let canonical_id = if is_builtin {
+                    if id.starts_with("builtin:") { id.clone() } else { format!("builtin:tool:{id}") }
                 } else {
-                    // Enable installed extension
-                    let ext_id = crate::extension::types::ExtensionId::new(&id);
-                    match manager.enable(&ext_id).await {
-                        Ok(()) => Ok(format!("Extension '{id}' enabled")),
-                        Err(e) => Err(e),
-                    }
+                    id.clone()
                 };
 
-                // If target agent specified, also update agent config whitelist.
-                // Store the canonical extension ID so the whitelist checker can
-                // match by owner without parsing tool names.
-                let result = if let Some(ref target_agent) = target {
-                    if let Err(e) = &result {
-                        Err(anyhow::anyhow!("{e}"))
-                    } else {
-                        // Parse team/agent identifier
-                        let parts: Vec<&str> = target_agent.split('/').collect();
+                let result = match target {
+                    None => {
+                        // Global scope: enable extension at daemon level
+                        let mut manager = state.extension_manager().write().await;
+                        let ext_services = state.extension_services();
+                        if is_builtin {
+                            let capability = if id.starts_with("builtin:") {
+                                id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
+                            } else {
+                                id.clone()
+                            };
+                            ext_services.enable_builtin_hooks(&capability).await;
+                            Ok(format!("Built-in capability '{capability}' enabled globally"))
+                        } else {
+                            let ext_id = crate::extension::types::ExtensionId::new(&id);
+                            match manager.enable(&ext_id).await {
+                                Ok(()) => Ok(format!("Extension '{id}' enabled globally")),
+                                Err(e) => Err(e),
+                            }
+                        }
+                    }
+                    Some(ref target_str) if target_str.contains('/') => {
+                        // Agent scope: "team/agent"
+                        let parts: Vec<&str> = target_str.split('/').collect();
                         let (team, agent_name) = if parts.len() == 2 {
                             (parts[0], parts[1])
                         } else {
-                            ("default", target_agent.as_str())
+                            ("default", target_str.as_str())
                         };
                         let config_service = state.config_service();
-                        // Build canonical extension ID for the whitelist entry.
-                        let canonical_id = if is_builtin {
-                            if id.starts_with("builtin:") {
-                                id.clone()
-                            } else {
-                                format!("builtin:tool:{id}")
-                            }
-                        } else {
-                            id.clone()
-                        };
                         match config_service.enable_tool_sync(agent_name, team, &canonical_id) {
-                            Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for {target_agent}")),
-                            Err(e) => Err(anyhow::anyhow!("Enabled extension but failed to update agent config: {e}")),
+                            Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for agent '{target_str}'")),
+                            Err(e) => Err(anyhow::anyhow!("Failed to enable extension for agent: {e}")),
                         }
                     }
-                } else {
-                    result
+                    Some(ref team) => {
+                        // Team scope: enable for all agents in team
+                        let config_service = state.config_service();
+                        match config_service.enable_tool_for_team(team, &canonical_id) {
+                            Ok(count) => Ok(format!("Extension '{canonical_id}' enabled for {count} agent(s) in team '{team}'")),
+                            Err(e) => Err(anyhow::anyhow!("Failed to enable extension for team: {e}")),
+                        }
+                    }
                 };
 
                 match result {
@@ -974,59 +971,58 @@ impl IpcServer {
             }
 
             RequestPacket::ExtensionDisable { request_id, id, target } => {
-                let mut manager = state.extension_manager().write().await;
-                let ext_services = state.extension_services();
-
                 let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
                     || id.starts_with("builtin:");
 
-                let result = if is_builtin {
-                    // Disable built-in hooks
-                    let capability = if id.starts_with("builtin:") {
-                        id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
-                    } else {
-                        id.clone()
-                    };
-                    ext_services.disable_builtin_hooks(&capability).await;
-                    Ok(format!("Built-in capability '{capability}' disabled"))
+                let canonical_id = if is_builtin {
+                    if id.starts_with("builtin:") { id.clone() } else { format!("builtin:tool:{id}") }
                 } else {
-                    // Disable installed extension
-                    let ext_id = crate::extension::types::ExtensionId::new(&id);
-                    match manager.disable(&ext_id).await {
-                        Ok(()) => Ok(format!("Extension '{id}' disabled")),
-                        Err(e) => Err(e),
-                    }
+                    id.clone()
                 };
 
-                // If target agent specified, also update agent config whitelist.
-                // Use the same canonical ID that was stored during enable.
-                let result = if let Some(ref target_agent) = target {
-                    if let Err(e) = &result {
-                        Err(anyhow::anyhow!("{e}"))
-                    } else {
-                        let parts: Vec<&str> = target_agent.split('/').collect();
+                let result = match target {
+                    None => {
+                        // Global scope: disable extension at daemon level
+                        let mut manager = state.extension_manager().write().await;
+                        let ext_services = state.extension_services();
+                        if is_builtin {
+                            let capability = if id.starts_with("builtin:") {
+                                id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
+                            } else {
+                                id.clone()
+                            };
+                            ext_services.disable_builtin_hooks(&capability).await;
+                            Ok(format!("Built-in capability '{capability}' disabled globally"))
+                        } else {
+                            let ext_id = crate::extension::types::ExtensionId::new(&id);
+                            match manager.disable(&ext_id).await {
+                                Ok(()) => Ok(format!("Extension '{id}' disabled globally")),
+                                Err(e) => Err(e),
+                            }
+                        }
+                    }
+                    Some(ref target_str) if target_str.contains('/') => {
+                        // Agent scope: "team/agent"
+                        let parts: Vec<&str> = target_str.split('/').collect();
                         let (team, agent_name) = if parts.len() == 2 {
                             (parts[0], parts[1])
                         } else {
-                            ("default", target_agent.as_str())
+                            ("default", target_str.as_str())
                         };
                         let config_service = state.config_service();
-                        let canonical_id = if is_builtin {
-                            if id.starts_with("builtin:") {
-                                id.clone()
-                            } else {
-                                format!("builtin:tool:{id}")
-                            }
-                        } else {
-                            id.clone()
-                        };
                         match config_service.disable_tool_sync(agent_name, team, &canonical_id) {
-                            Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for {target_agent}")),
-                            Err(e) => Err(anyhow::anyhow!("Disabled extension but failed to update agent config: {e}")),
+                            Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for agent '{target_str}'")),
+                            Err(e) => Err(anyhow::anyhow!("Failed to disable extension for agent: {e}")),
                         }
                     }
-                } else {
-                    result
+                    Some(ref team) => {
+                        // Team scope: disable for all agents in team
+                        let config_service = state.config_service();
+                        match config_service.disable_tool_for_team(team, &canonical_id) {
+                            Ok(count) => Ok(format!("Extension '{canonical_id}' disabled for {count} agent(s) in team '{team}'")),
+                            Err(e) => Err(anyhow::anyhow!("Failed to disable extension for team: {e}")),
+                        }
+                    }
                 };
 
                 match result {
