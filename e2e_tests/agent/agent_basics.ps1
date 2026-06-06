@@ -4,10 +4,14 @@
 # Tests all agent management subcommands (excluding deprecated and packaging commands):
 # - Agent creation (create)
 # - Agent listing (list, --long)
-# - Agent details (show, --team)
+# - Agent details (show)
 # - Agent removal (remove, --purge, --force)
-# - Agent move/rename (move, --team, --to-team)
+# - Agent move/rename (move)
 # - JSON output (--json)
+#
+# NOTE: ADR-031 changed the agent-team relationship. Agents are standalone;
+# teams are joined via membership. There is no "create agent in team" or
+# "cross-team move". Use `peko team join` for membership (tested separately).
 
 param(
     [string]$Provider = "minimax"
@@ -114,10 +118,10 @@ if ($result -match "Created agent") {
 }
 
 # ============================================================
-# TEST 4: Agent create in specific team
+# TEST 4: Agent create (standalone, then join team)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 4: Agent create in specific team" -ForegroundColor Cyan
+Write-Host "TEST 4: Agent create (standalone, then join team)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $teamName = "testteam"
@@ -125,15 +129,18 @@ peko team create $teamName 2>&1 | Out-Null
 Write-Host "Created team: $teamName" -ForegroundColor Green
 
 $teamAgent = "teamagent"
-Write-Host "Creating agent in team: $teamName/$teamAgent" -ForegroundColor Yellow
-$result = peko agent create "$teamName/$teamAgent" --provider $Provider 2>&1
+Write-Host "Creating standalone agent: $teamAgent" -ForegroundColor Yellow
+$result = peko agent create $teamAgent --provider $Provider 2>&1
 Write-Host "Output: $result"
 
 if ($result -match "Created agent") {
-    Write-Host "✓ Agent in team created successfully" -ForegroundColor Green
+    Write-Host "✓ Standalone agent created successfully" -ForegroundColor Green
 } else {
-    Write-Error "Agent creation in team failed"
+    Write-Error "Agent creation failed"
 }
+
+# NOTE: ADR-031 agents are standalone. Team membership is managed separately
+# via `peko team join` (tested in team_command e2e tests).
 
 # ============================================================
 # TEST 5: Agent create - duplicate without --force (error case)
@@ -228,19 +235,21 @@ if ($result -match "Agent: $agentName" -and $result -match "Provider:" -and $res
 }
 
 # ============================================================
-# TEST 10: Agent show with --team
+# TEST 10: Agent show with --team (context flag, no team field in output)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 10: Agent show with --team" -ForegroundColor Cyan
+Write-Host "TEST 10: Agent show with --team (context flag)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "Showing agent details with --team: $teamAgent in $teamName" -ForegroundColor Yellow
+Write-Host "Showing agent details with --team context: $teamAgent" -ForegroundColor Yellow
 $result = peko agent show $teamAgent --team $teamName 2>&1
 Write-Host "Output:"
 Write-Host $result
 
-if ($result -match "Agent: $teamAgent" -and $result -match "Team: $teamName") {
-    Write-Host "✓ Agent details with --team displayed correctly" -ForegroundColor Green
+# ADR-031: --team is an execution context hint, not a location. The agent
+# config no longer has a team field. The output should show the agent name.
+if ($result -match "Agent: $teamAgent" -and $result -match "Provider:" -and $result -match "Config:") {
+    Write-Host "✓ Agent details with --team context displayed correctly" -ForegroundColor Green
 } else {
     Write-Error "Agent show with --team missing expected details"
 }
@@ -257,7 +266,9 @@ $result = peko agent show $agentName --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
-if ($result.name -eq $agentName -and $result.team -eq "default") {
+# ADR-031: Agent config no longer has a team field. JSON output has name,
+# config, session_count but no team property.
+if ($result.name -eq $agentName -and $result.config -and $result.session_count -eq 0) {
     Write-Host "✓ JSON agent details correct" -ForegroundColor Green
 } else {
     Write-Error "JSON agent show output incorrect"
@@ -332,27 +343,26 @@ if ($result.old_name -eq $jsonAgent -and $result.new_name -eq $jsonNewName) {
 }
 
 # ============================================================
-# TEST 15: Agent move with --team (cross-team move)
+# TEST 15: Agent rename (ADR-031: no cross-team moves, agents are standalone)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 15: Agent move with --team (cross-team move)" -ForegroundColor Cyan
+Write-Host "TEST 15: Agent rename (standalone)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$crossTeamAgent = "crossteamagent"
-peko agent create $crossTeamAgent --provider $Provider 2>&1 | Out-Null
+$renameAgent = "renameagent"
+peko agent create $renameAgent --provider $Provider 2>&1 | Out-Null
 
-$newTeamName = "newteam"
-peko team create $newTeamName 2>&1 | Out-Null
-
-Write-Host "Moving agent to different team: $crossTeamAgent (default) -> $crossTeamAgent ($newTeamName)" -ForegroundColor Yellow
-$result = peko agent move $crossTeamAgent $crossTeamAgent --to-team $newTeamName --json 2>&1 | ConvertFrom-Json
+$renamedName = "renamedagent"
+Write-Host "Renaming agent: $renameAgent -> $renamedName" -ForegroundColor Yellow
+$result = peko agent move $renameAgent $renamedName --json 2>&1 | ConvertFrom-Json
 Write-Host "Output (parsed JSON):"
 $result | ConvertTo-Json -Depth 2 | Write-Host
 
-if ($result.team -eq $newTeamName) {
-    Write-Host "✓ Cross-team agent move successful" -ForegroundColor Green
+# ADR-031: move is just a rename. There is no team field in the result.
+if ($result.old_name -eq $renameAgent -and $result.new_name -eq $renamedName) {
+    Write-Host "✓ Agent rename successful" -ForegroundColor Green
 } else {
-    Write-Error "Cross-team agent move failed"
+    Write-Error "Agent rename failed"
 }
 
 # ============================================================
@@ -528,11 +538,11 @@ Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Clean up remaining test agents and teams
+# ADR-031: agents are standalone; remove by name only (no --team needed)
 peko agent remove $providerAgent --force 2>&1 | Out-Null
-peko agent remove $teamAgent --team $teamName --force 2>&1 | Out-Null
-peko agent remove $crossTeamAgent --team $newTeamName --force 2>&1 | Out-Null
+peko agent remove $teamAgent --force 2>&1 | Out-Null
+peko agent remove $renamedName --force 2>&1 | Out-Null
 peko team remove $teamName --force 2>&1 | Out-Null
-peko team remove $newTeamName --force 2>&1 | Out-Null
 Write-Host "Cleaned up remaining test agents and teams" -ForegroundColor Green
 
 # Final state check
