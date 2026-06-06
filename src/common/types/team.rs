@@ -18,7 +18,7 @@ pub struct TeamMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamInfo {
     pub name: String,
-    pub metadata: Option<TeamMetadata>,
+    pub metadata: TeamMetadata,
     pub agent_count: usize,
     pub path: PathBuf,
 }

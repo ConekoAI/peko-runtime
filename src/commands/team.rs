@@ -434,8 +434,8 @@ fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
                 serde_json::json!({
                     "name": t.name,
                     "agent_count": t.agent_count,
-                    "description": t.metadata.as_ref().and_then(|m| m.description.clone()),
-                    "created_at": t.metadata.as_ref().map(|m| m.created_at.clone()),
+                    "description": t.metadata.description.clone(),
+                    "created_at": t.metadata.created_at.clone(),
                 })
             })
             .collect();
@@ -453,26 +453,15 @@ fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
 
             if long {
                 println!("{} {}", icon, team.name);
-                if let Some(ref metadata) = team.metadata {
-                    if let Some(ref desc) = metadata.description {
-                        println!("   Description: {desc}");
-                    }
-                    println!("   Created: {}", format_timestamp(&metadata.created_at));
+                if let Some(ref desc) = team.metadata.description {
+                    println!("   Description: {desc}");
                 }
+                println!("   Created: {}", format_timestamp(&team.metadata.created_at));
                 println!("   Agents: {}", team.agent_count);
                 println!("   Path: {}", team.path.display());
                 println!();
             } else {
-                let desc_marker = if team
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.description.as_ref())
-                    .is_some()
-                {
-                    " •"
-                } else {
-                    ""
-                };
+                let desc_marker = if team.metadata.description.is_some() { " •" } else { "" };
                 println!(
                     "{} {}{} ({} agents)",
                     icon, team.name, desc_marker, team.agent_count
@@ -505,20 +494,18 @@ fn render_team_show(
             serde_json::json!({
                 "name": team.name,
                 "path": team.path.display().to_string(),
-                "description": team.metadata.as_ref().and_then(|m| m.description.clone()),
-                "created_at": team.metadata.as_ref().map(|m| m.created_at.clone()),
+                "description": team.metadata.description.clone(),
+                "created_at": team.metadata.created_at.clone(),
                 "agents": agents_json,
                 "agent_count": team.agent_count,
             })
         );
     } else {
         println!("📁 Team: {}", team.name);
-        if let Some(ref metadata) = team.metadata {
-            if let Some(ref desc) = metadata.description {
-                println!("   Description: {desc}");
-            }
-            println!("   Created: {}", format_timestamp(&metadata.created_at));
+        if let Some(ref desc) = team.metadata.description {
+            println!("   Description: {desc}");
         }
+        println!("   Created: {}", format_timestamp(&team.metadata.created_at));
         println!("   Path: {}", team.path.display());
         println!();
 
@@ -697,10 +684,8 @@ async fn handle_team_push(
 
     // Plumb team description from team metadata if available
     if let Ok(Some(team_info)) = service.get_team(&name).await {
-        if let Some(metadata) = &team_info.metadata {
-            if let Some(desc) = &metadata.description {
-                manifest = manifest.with_description(desc.clone());
-            }
+        if let Some(desc) = &team_info.metadata.description {
+            manifest = manifest.with_description(desc.clone());
         }
     }
 

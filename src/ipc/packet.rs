@@ -1570,7 +1570,11 @@ mod tests {
             request_id: 700,
             teams: vec![crate::common::types::team::TeamInfo {
                 name: "default".to_string(),
-                metadata: None,
+                metadata: crate::common::types::team::TeamMetadata {
+                    name: "default".to_string(),
+                    description: None,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                },
                 agent_count: 0,
                 path: std::path::PathBuf::from("/tmp/teams/default"),
             }],
@@ -1593,7 +1597,11 @@ mod tests {
             request_id: 701,
             team: Some(crate::common::types::team::TeamInfo {
                 name: "default".to_string(),
-                metadata: None,
+                metadata: crate::common::types::team::TeamMetadata {
+                    name: "default".to_string(),
+                    description: None,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                },
                 agent_count: 0,
                 path: std::path::PathBuf::from("/tmp/teams/default"),
             }),

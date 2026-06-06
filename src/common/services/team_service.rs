@@ -100,7 +100,7 @@ impl TeamService {
                 continue;
             }
 
-            let metadata = load_team_metadata(&path).await.ok();
+            let metadata = load_team_metadata(&path, &team_name).await;
             let agent_count = count_agents_in_team(&path).await;
 
             teams.push(TeamInfo {
@@ -138,7 +138,7 @@ impl TeamService {
             return Ok(None);
         }
 
-        let metadata = load_team_metadata(&team_dir).await.ok();
+        let metadata = load_team_metadata(&team_dir, name).await;
         let agent_count = count_agents_in_team(&team_dir).await;
 
         Ok(Some(TeamInfo {
@@ -304,10 +304,7 @@ impl TeamService {
 
         // Get team metadata for description
         let team_dir = self.resolver.team_dir(name);
-        let description = load_team_metadata(&team_dir)
-            .await
-            .ok()
-            .and_then(|m| m.description);
+        let description = load_team_metadata(&team_dir, name).await.description;
 
         // Export options
         let export_opts = TeamExportOptions {
@@ -408,14 +405,34 @@ impl TeamService {
 }
 
 /// Load team metadata from team.toml
-async fn load_team_metadata(team_dir: &PathBuf) -> Result<TeamMetadata> {
+async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata {
     let metadata_path = team_dir.join("team.toml");
-    let content = tokio::fs::read_to_string(&metadata_path)
+    
+    // Try to read existing team.toml
+    if let Ok(content) = tokio::fs::read_to_string(&metadata_path).await {
+        if let Ok(metadata) = toml::from_str::<TeamMetadata>(&content) {
+            return metadata;
+        }
+    }
+    
+    // Fallback: generate metadata from directory creation time or current time
+    let created_at = tokio::fs::metadata(team_dir)
         .await
-        .with_context(|| format!("Failed to read team metadata from {metadata_path:?}"))?;
-    let metadata: TeamMetadata = toml::from_str(&content)
-        .with_context(|| format!("Failed to parse team metadata from {metadata_path:?}"))?;
-    Ok(metadata)
+        .ok()
+        .and_then(|m| m.created().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| {
+            let dt = chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                .unwrap_or_else(|| chrono::Utc::now());
+            dt.to_rfc3339()
+        })
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    
+    TeamMetadata {
+        name: team_name.to_string(),
+        description: None,
+        created_at,
+    }
 }
 
 /// Count agents in a team
