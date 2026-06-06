@@ -182,10 +182,17 @@ impl AgentService {
                                 }
                             }
 
+                            let memberships = AgentMemberships::load(&self.resolver.agent_memberships(&agent_name))
+                                .unwrap_or_default()
+                                .memberships
+                                .into_iter()
+                                .map(|m| m.team)
+                                .collect();
                             agents.push(AgentSummary {
                                 name: agent_name,
                                 config,
                                 config_path,
+                                memberships,
                             });
                         }
                     }
@@ -223,12 +230,20 @@ impl AgentService {
             }
         }
 
+        let memberships = AgentMemberships::load(&self.resolver.agent_memberships(agent_name))
+            .unwrap_or_default()
+            .memberships
+            .into_iter()
+            .map(|m| m.team)
+            .collect();
+
         Ok(Some(AgentInfo {
             name: agent_name.to_string(),
             config,
             config_path,
             sessions_dir,
             session_count,
+            memberships,
         }))
     }
 

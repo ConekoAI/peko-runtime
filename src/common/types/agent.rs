@@ -13,6 +13,7 @@ pub struct AgentSummary {
     pub name: String,
     pub config: AgentConfig,
     pub config_path: PathBuf,
+    pub memberships: Vec<String>,
 }
 
 /// Agent information with optional session details
@@ -23,6 +24,7 @@ pub struct AgentInfo {
     pub config_path: PathBuf,
     pub sessions_dir: PathBuf,
     pub session_count: usize,
+    pub memberships: Vec<String>,
 }
 
 /// Agent creation result
