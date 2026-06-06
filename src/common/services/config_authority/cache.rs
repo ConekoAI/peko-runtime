@@ -10,7 +10,7 @@ use tracing::debug;
 
 /// Thread-safe configuration cache
 ///
-/// Uses a `HashMap` keyed by `"{team}/{agent}"` format, wrapped in an async `RwLock`
+/// Uses a `HashMap` keyed by agent name, wrapped in an async `RwLock`
 /// to allow concurrent reads with exclusive writes.
 #[derive(Debug)]
 pub struct ConfigCache {
@@ -32,50 +32,34 @@ impl ConfigCache {
         }
     }
 
-    /// Generate cache key from team and agent name
-    #[must_use]
-    pub fn cache_key(team: &str, agent: &str) -> String {
-        format!("{team}/{agent}")
-    }
-
     /// Get an entry from cache
-    pub async fn get(&self, team: &str, agent: &str) -> Option<AgentConfigEntry> {
-        let key = Self::cache_key(team, agent);
+    pub async fn get(&self, agent: &str) -> Option<AgentConfigEntry> {
         let cache = self.cache.read().await;
-        cache.get(&key).cloned()
+        cache.get(agent).cloned()
     }
 
     /// Insert an entry into cache
     pub async fn insert(&self, entry: &AgentConfigEntry) {
-        let key = Self::cache_key(&entry.team, &entry.name);
         let mut cache = self.cache.write().await;
-        cache.insert(key, entry.clone());
-        debug!(
-            "Cached config for agent '{}' in team '{}'",
-            entry.name, entry.team
-        );
+        cache.insert(entry.name.clone(), entry.clone());
+        debug!("Cached config for agent '{}'", entry.name);
     }
 
     /// Remove an entry from cache
-    pub async fn remove(&self, team: &str, agent: &str) {
-        let key = Self::cache_key(team, agent);
+    pub async fn remove(&self, agent: &str) {
         let mut cache = self.cache.write().await;
-        cache.remove(&key);
-        debug!("Removed cache for agent '{}' in team '{}'", agent, team);
+        cache.remove(agent);
+        debug!("Removed cache for agent '{}'", agent);
     }
 
     /// Remove an entry from cache (synchronous version for sync contexts)
-    pub fn remove_sync(&self, team: &str, agent: &str) {
-        let key = Self::cache_key(team, agent);
+    pub fn remove_sync(&self, agent: &str) {
         // Use try_write to avoid blocking; if lock is contended, skip
         if let Ok(mut cache) = self.cache.try_write() {
-            cache.remove(&key);
-            debug!("Removed cache for agent '{}' in team '{}'", agent, team);
+            cache.remove(agent);
+            debug!("Removed cache for agent '{}'", agent);
         } else {
-            debug!(
-                "Cache lock contested, skipping invalidation for '{}/{}'",
-                team, agent
-            );
+            debug!("Cache lock contested, skipping invalidation for '{}'", agent);
         }
     }
 
@@ -87,10 +71,11 @@ impl ConfigCache {
     }
 
     /// Get all cached entries for a team
-    pub async fn list_by_team(&self, team: &str) -> Vec<AgentConfigEntry> {
-        let _prefix = format!("{team}/");
+    ///
+    /// Currently returns all entries (membership filtering will be added later).
+    pub async fn list_by_team(&self, _team: &str) -> Vec<AgentConfigEntry> {
         let cache = self.cache.read().await;
-        cache.values().filter(|e| e.team == team).cloned().collect()
+        cache.values().cloned().collect()
     }
 
     /// Get all cached entries
@@ -100,10 +85,9 @@ impl ConfigCache {
     }
 
     /// Check if an entry exists in cache
-    pub async fn contains(&self, team: &str, agent: &str) -> bool {
-        let key = Self::cache_key(team, agent);
+    pub async fn contains(&self, agent: &str) -> bool {
         let cache = self.cache.read().await;
-        cache.contains_key(&key)
+        cache.contains_key(agent)
     }
 }
 
@@ -114,20 +98,10 @@ mod tests {
     use std::path::PathBuf;
 
     #[tokio::test]
-    async fn test_cache_key() {
-        assert_eq!(ConfigCache::cache_key("team1", "agent1"), "team1/agent1");
-        assert_eq!(
-            ConfigCache::cache_key("default", "myagent"),
-            "default/myagent"
-        );
-    }
-
-    #[tokio::test]
     async fn test_cache_insert_get() {
         let cache = ConfigCache::new();
         let entry = AgentConfigEntry {
             name: "test-agent".to_string(),
-            team: "default".to_string(),
             config: AgentConfig::default(),
             config_path: PathBuf::from("/path/to/config.toml"),
             source: None,
@@ -136,7 +110,7 @@ mod tests {
         };
 
         cache.insert(&entry).await;
-        let retrieved = cache.get("default", "test-agent").await;
+        let retrieved = cache.get("test-agent").await;
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().name, "test-agent");
     }
@@ -146,7 +120,6 @@ mod tests {
         let cache = ConfigCache::new();
         let entry = AgentConfigEntry {
             name: "test-agent".to_string(),
-            team: "default".to_string(),
             config: AgentConfig::default(),
             config_path: PathBuf::from("/path/to/config.toml"),
             source: None,
@@ -155,8 +128,8 @@ mod tests {
         };
 
         cache.insert(&entry).await;
-        cache.remove("default", "test-agent").await;
-        let retrieved = cache.get("default", "test-agent").await;
+        cache.remove("test-agent").await;
+        let retrieved = cache.get("test-agent").await;
         assert!(retrieved.is_none());
     }
 
@@ -166,7 +139,6 @@ mod tests {
         for i in 0..3 {
             let entry = AgentConfigEntry {
                 name: format!("agent-{i}"),
-                team: "default".to_string(),
                 config: AgentConfig::default(),
                 config_path: PathBuf::from("/path/to/config.toml"),
                 source: None,

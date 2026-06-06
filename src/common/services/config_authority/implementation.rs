@@ -64,81 +64,26 @@ impl ConfigAuthorityImpl {
     }
 
     /// Get the canonical config path for an agent
-    pub fn config_path(&self, agent_name: &str, team: Option<&str>) -> PathBuf {
-        self.path_resolver.agent_config(agent_name, team)
-    }
-
-    /// Find an agent by searching all teams
-    async fn find_agent_in_teams(
-        &self,
-        agent_name: &str,
-    ) -> ConfigResult<Option<(PathBuf, String)>> {
-        let teams_dir = self.path_resolver.teams_dir();
-
-        if !teams_dir.exists() {
-            return Ok(None);
-        }
-
-        let mut entries = match tokio::fs::read_dir(&teams_dir).await {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(ConfigError::Io(e));
-            }
-        };
-
-        while let Some(entry) = entries.next_entry().await.map_err(ConfigError::Io)? {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-
-            let team_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-            let config_path = self.config_path(agent_name, Some(team_name));
-            if config_path.exists() {
-                return Ok(Some((config_path, team_name.to_string())));
-            }
-        }
-
-        Ok(None)
+    pub fn config_path(&self, agent_name: &str) -> PathBuf {
+        self.path_resolver.agent_config(agent_name)
     }
 }
 
 #[async_trait]
 impl ConfigAuthority for ConfigAuthorityImpl {
-    async fn get(
-        &self,
-        agent_name: &str,
-        team: Option<&str>,
-    ) -> ConfigResult<Option<AgentConfigEntry>> {
-        let team_name = team.unwrap_or("default");
-
+    async fn get(&self, agent_name: &str) -> ConfigResult<Option<AgentConfigEntry>> {
         // Check cache first
-        if let Some(entry) = self.cache.get(team_name, agent_name).await {
-            debug!(
-                "Cache hit for agent '{}' in team '{}'",
-                agent_name, team_name
-            );
+        if let Some(entry) = self.cache.get(agent_name).await {
+            debug!("Cache hit for agent '{}'", agent_name);
             return Ok(Some(entry));
         }
 
-        // Try to find the agent in the specified team, or search all teams
-        let (config_path, found_team) = if team.is_some() {
-            let path = self.config_path(agent_name, team);
-            if !path.exists() {
-                return Ok(None);
-            }
-            (path, team_name.to_string())
-        } else {
-            // Search all teams for this agent
-            match self.find_agent_in_teams(agent_name).await? {
-                Some((path, found_team)) => (path, found_team),
-                None => return Ok(None),
-            }
-        };
-
         // Load from disk
+        let config_path = self.config_path(agent_name);
+        if !config_path.exists() {
+            return Ok(None);
+        }
+
         let mut config = self.io.load_toml(&config_path).await.map_err(|e| {
             ConfigError::Other(format!(
                 "Failed to load config from {}: {}",
@@ -152,7 +97,6 @@ impl ConfigAuthority for ConfigAuthorityImpl {
 
         let entry = AgentConfigEntry {
             name: agent_name.to_string(),
-            team: found_team,
             config,
             config_path,
             source: Some(ConfigSource::Direct {
@@ -171,10 +115,9 @@ impl ConfigAuthority for ConfigAuthorityImpl {
     async fn save(
         &self,
         agent_name: &str,
-        team: &str,
         config: &AgentConfig,
     ) -> ConfigResult<PathBuf> {
-        let config_path = self.config_path(agent_name, Some(team));
+        let config_path = self.config_path(agent_name);
 
         // Save to TOML
         self.io
@@ -183,16 +126,14 @@ impl ConfigAuthority for ConfigAuthorityImpl {
             .map_err(|e| ConfigError::Other(format!("Failed to save config: {e}")))?;
 
         info!(
-            "Saved agent '{}' config to team '{}' at {}",
+            "Saved agent '{}' config to {}",
             agent_name,
-            team,
             config_path.display()
         );
 
         // Create entry and cache it
         let entry = AgentConfigEntry {
             name: agent_name.to_string(),
-            team: team.to_string(),
             config: config.clone(),
             config_path: config_path.clone(),
             source: Some(ConfigSource::Direct {
@@ -207,66 +148,34 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         Ok(config_path)
     }
 
-    async fn exists(&self, agent_name: &str, team: Option<&str>) -> ConfigResult<bool> {
-        match self.get(agent_name, team).await {
+    async fn exists(&self, agent_name: &str) -> ConfigResult<bool> {
+        match self.get(agent_name).await {
             Ok(Some(_)) => Ok(true),
             Ok(None) => {
                 // Double-check by looking at file system
-                let config_path = self.config_path(agent_name, team);
+                let config_path = self.config_path(agent_name);
                 Ok(config_path.exists())
             }
             Err(e) => Err(e),
         }
     }
 
-    async fn list_in_team(&self, team: &str) -> ConfigResult<Vec<AgentConfigEntry>> {
-        let agents_dir = self.path_resolver.agents_dir(Some(team));
-        let mut agents = Vec::new();
-
-        if !agents_dir.exists() {
-            return Ok(agents);
-        }
-
-        let mut entries = match tokio::fs::read_dir(&agents_dir).await {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(agents),
-            Err(e) => return Err(ConfigError::Io(e)),
-        };
-
-        while let Some(entry) = entries.next_entry().await.map_err(ConfigError::Io)? {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-
-            let agent_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-            match self.get(agent_name, Some(team)).await {
-                Ok(Some(config_entry)) => agents.push(config_entry),
-                Ok(None) => {
-                    warn!(
-                        "Agent directory '{}' exists but has no valid config.toml",
-                        agent_name
-                    );
-                }
-                Err(e) => {
-                    warn!("Failed to load config for agent '{}': {}", agent_name, e);
-                }
-            }
-        }
-
-        Ok(agents)
+    async fn list_in_team(&self, _team: &str) -> ConfigResult<Vec<AgentConfigEntry>> {
+        // In the new layout, agents are top-level. For now, list all agents.
+        // Membership filtering will be added later.
+        self.list_all().await
     }
 
     async fn list_all(&self) -> ConfigResult<Vec<AgentConfigEntry>> {
-        let teams_dir = self.path_resolver.teams_dir();
         let mut all_agents = Vec::new();
 
-        if !teams_dir.exists() {
+        // In the new layout, list all agents from the top-level agents directory
+        let agents_dir = self.path_resolver.agents_root_dir();
+        if !agents_dir.exists() {
             return Ok(all_agents);
         }
 
-        let mut entries = match tokio::fs::read_dir(&teams_dir).await {
+        let mut entries = match tokio::fs::read_dir(&agents_dir).await {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(all_agents),
             Err(e) => return Err(ConfigError::Io(e)),
@@ -278,12 +187,29 @@ impl ConfigAuthority for ConfigAuthorityImpl {
                 continue;
             }
 
-            let team_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let agent_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let config_path = self.config_path(agent_name);
 
-            match self.list_in_team(team_name).await {
-                Ok(agents) => all_agents.extend(agents),
+            if !config_path.exists() {
+                continue;
+            }
+
+            match self.io.load_toml(&config_path).await {
+                Ok(mut config) => {
+                    self.api_key_resolver.resolve_config_api_key(&mut config);
+                    all_agents.push(AgentConfigEntry {
+                        name: agent_name.to_string(),
+                        config,
+                        config_path: config_path.clone(),
+                        source: Some(ConfigSource::Direct {
+                            reason: "file".to_string(),
+                        }),
+                        registered_at: Some(Utc::now()),
+                        updated_at: Some(Utc::now()),
+                    });
+                }
                 Err(e) => {
-                    warn!("Failed to list agents in team '{}': {}", team_name, e);
+                    warn!("Failed to load config for agent '{}': {}", agent_name, e);
                 }
             }
         }
@@ -291,15 +217,15 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         Ok(all_agents)
     }
 
-    async fn delete(&self, agent_name: &str, team: &str) -> ConfigResult<bool> {
-        let config_path = self.config_path(agent_name, Some(team));
+    async fn delete(&self, agent_name: &str) -> ConfigResult<bool> {
+        let config_path = self.config_path(agent_name);
 
         if !config_path.exists() {
             return Ok(false);
         }
 
         // Remove from cache
-        self.cache.remove(team, agent_name).await;
+        self.cache.remove(agent_name).await;
 
         // Delete file
         self.io
@@ -307,7 +233,7 @@ impl ConfigAuthority for ConfigAuthorityImpl {
             .await
             .map_err(|e| ConfigError::Other(format!("Failed to delete config: {e}")))?;
 
-        info!("Deleted agent '{}' config from team '{}'", agent_name, team);
+        info!("Deleted agent '{}' config", agent_name);
         Ok(true)
     }
 
@@ -316,12 +242,9 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         debug!("Agent configuration cache cleared");
     }
 
-    async fn invalidate_cache(&self, agent_name: &str, team: &str) {
-        self.cache.remove(team, agent_name).await;
-        debug!(
-            "Cache invalidated for agent '{}' in team '{}'",
-            agent_name, team
-        );
+    async fn invalidate_cache(&self, agent_name: &str) {
+        self.cache.remove(agent_name).await;
+        debug!("Cache invalidated for agent '{}'", agent_name);
     }
 
     fn path_resolver(&self) -> &PathResolver {
@@ -334,12 +257,11 @@ impl ConfigAuthorityImpl {
     pub fn enable_tool_sync(
         &self,
         agent_name: &str,
-        team: &str,
         tool_name: &str,
     ) -> anyhow::Result<()> {
-        let config_path = self.config_path(agent_name, Some(team));
+        let config_path = self.config_path(agent_name);
         if !config_path.exists() {
-            anyhow::bail!("Agent '{agent_name}' not found in team '{team}'");
+            anyhow::bail!("Agent '{agent_name}' not found");
         }
 
         let content = std::fs::read_to_string(&config_path)?;
@@ -358,7 +280,7 @@ impl ConfigAuthorityImpl {
         std::fs::write(&config_path, updated)?;
 
         // Invalidate cache so subsequent reads pick up the change
-        self.cache.remove_sync(team, agent_name);
+        self.cache.remove_sync(agent_name);
 
         Ok(())
     }
@@ -367,12 +289,11 @@ impl ConfigAuthorityImpl {
     pub fn disable_tool_sync(
         &self,
         agent_name: &str,
-        team: &str,
         tool_name: &str,
     ) -> anyhow::Result<()> {
-        let config_path = self.config_path(agent_name, Some(team));
+        let config_path = self.config_path(agent_name);
         if !config_path.exists() {
-            anyhow::bail!("Agent '{agent_name}' not found in team '{team}'");
+            anyhow::bail!("Agent '{agent_name}' not found");
         }
 
         let content = std::fs::read_to_string(&config_path)?;
@@ -388,16 +309,16 @@ impl ConfigAuthorityImpl {
         std::fs::write(&config_path, updated)?;
 
         // Invalidate cache so subsequent reads pick up the change
-        self.cache.remove_sync(team, agent_name);
+        self.cache.remove_sync(agent_name);
 
         Ok(())
     }
 
-    /// Enable a tool for all agents in a team
-    pub fn enable_tool_for_team(&self, team: &str, tool_name: &str) -> anyhow::Result<usize> {
-        let agents_dir = self.path_resolver.agents_dir(Some(team));
+    /// Enable a tool for all agents
+    pub fn enable_tool_for_team(&self, _team: &str, tool_name: &str) -> anyhow::Result<usize> {
+        let agents_dir = self.path_resolver.agents_root_dir();
         if !agents_dir.exists() {
-            anyhow::bail!("Team '{team}' not found (no agents directory)");
+            anyhow::bail!("No agents directory found");
         }
 
         let mut updated_count = 0;
@@ -408,9 +329,9 @@ impl ConfigAuthorityImpl {
             }
 
             let agent_name = entry.file_name().to_string_lossy().to_string();
-            let config_path = self.config_path(&agent_name, Some(team));
+            let config_path = self.config_path(&agent_name);
             if config_path.exists() {
-                self.enable_tool_sync(&agent_name, team, tool_name)?;
+                self.enable_tool_sync(&agent_name, tool_name)?;
                 updated_count += 1;
             }
         }
@@ -418,11 +339,11 @@ impl ConfigAuthorityImpl {
         Ok(updated_count)
     }
 
-    /// Disable a tool for all agents in a team
-    pub fn disable_tool_for_team(&self, team: &str, tool_name: &str) -> anyhow::Result<usize> {
-        let agents_dir = self.path_resolver.agents_dir(Some(team));
+    /// Disable a tool for all agents
+    pub fn disable_tool_for_team(&self, _team: &str, tool_name: &str) -> anyhow::Result<usize> {
+        let agents_dir = self.path_resolver.agents_root_dir();
         if !agents_dir.exists() {
-            anyhow::bail!("Team '{team}' not found (no agents directory)");
+            anyhow::bail!("No agents directory found");
         }
 
         let mut updated_count = 0;
@@ -433,9 +354,9 @@ impl ConfigAuthorityImpl {
             }
 
             let agent_name = entry.file_name().to_string_lossy().to_string();
-            let config_path = self.config_path(&agent_name, Some(team));
+            let config_path = self.config_path(&agent_name);
             if config_path.exists() {
-                self.disable_tool_sync(&agent_name, team, tool_name)?;
+                self.disable_tool_sync(&agent_name, tool_name)?;
                 updated_count += 1;
             }
         }
@@ -478,18 +399,17 @@ mod tests {
 
         // Save
         let path = authority
-            .save("test-agent", "default", &config)
+            .save("test-agent", &config)
             .await
             .unwrap();
         assert!(path.exists());
 
         // Retrieve
-        let entry = authority.get("test-agent", Some("default")).await.unwrap();
+        let entry = authority.get("test-agent").await.unwrap();
         assert!(entry.is_some());
 
         let entry = entry.unwrap();
         assert_eq!(entry.name, "test-agent");
-        assert_eq!(entry.team, "default");
     }
 
     #[tokio::test]
@@ -500,17 +420,17 @@ mod tests {
 
         // Non-existent
         assert!(!authority
-            .exists("nonexistent", Some("default"))
+            .exists("nonexistent")
             .await
             .unwrap());
 
         // Create and check
         let config = AgentConfig::default();
         authority
-            .save("existing", "default", &config)
+            .save("existing", &config)
             .await
             .unwrap();
-        assert!(authority.exists("existing", Some("default")).await.unwrap());
+        assert!(authority.exists("existing").await.unwrap());
     }
 
     #[tokio::test]
@@ -527,7 +447,7 @@ mod tests {
         for i in 0..3 {
             let config = AgentConfig::default();
             authority
-                .save(&format!("agent-{i}"), "default", &config)
+                .save(&format!("agent-{i}"), &config)
                 .await
                 .unwrap();
         }
@@ -545,23 +465,23 @@ mod tests {
         // Create an agent
         let config = AgentConfig::default();
         authority
-            .save("to-delete", "default", &config)
+            .save("to-delete", &config)
             .await
             .unwrap();
 
         // Verify exists
         assert!(authority
-            .exists("to-delete", Some("default"))
+            .exists("to-delete")
             .await
             .unwrap());
 
         // Delete
-        let deleted = authority.delete("to-delete", "default").await.unwrap();
+        let deleted = authority.delete("to-delete").await.unwrap();
         assert!(deleted);
 
         // Verify gone
         assert!(!authority
-            .exists("to-delete", Some("default"))
+            .exists("to-delete")
             .await
             .unwrap());
     }
@@ -575,13 +495,13 @@ mod tests {
 
         let config = AgentConfig::default();
         authority1
-            .save("shared-agent", "default", &config)
+            .save("shared-agent", &config)
             .await
             .unwrap();
 
         // Both should be able to read
-        let entry1 = authority1.get("shared-agent", Some("default")).await;
-        let entry2 = authority2.get("shared-agent", Some("default")).await;
+        let entry1 = authority1.get("shared-agent").await;
+        let entry2 = authority2.get("shared-agent").await;
 
         assert!(entry1.is_ok());
         assert!(entry2.is_ok());

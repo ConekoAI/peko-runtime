@@ -59,11 +59,14 @@ impl Default for ConfigSource {
 ///
 /// This is the canonical entry type used by `ConfigAuthority` for all
 /// agent configuration operations. It combines configuration data with
-/// metadata such as source, team, and timestamps.
+/// metadata such as source and timestamps.
+///
+/// Agents are standalone first-class citizens (ADR-031). They live at
+/// `agents/{agent}/config.toml` and team membership is tracked separately
+/// via `memberships.toml`. There is no single "team" that an agent belongs to.
 ///
 /// # Fields
-/// - `name`: Agent name (unique within team)
-/// - `team`: Team name
+/// - `name`: Agent name (globally unique)
 /// - `config`: The agent configuration itself
 /// - `config_path`: Canonical path to TOML config file
 /// - `source`: Optional source (image/direct) - for backward compat
@@ -73,8 +76,6 @@ impl Default for ConfigSource {
 pub struct AgentConfigEntry {
     /// Agent name
     pub name: String,
-    /// Team name
-    pub team: String,
     /// Agent configuration
     pub config: AgentConfig,
     /// Config file path (always TOML in canonical location)

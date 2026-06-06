@@ -33,16 +33,13 @@ pub type ConfigResult<T> = std::result::Result<T, ConfigError>;
 /// This is the single interface for all agent configuration operations.
 /// It provides a clean abstraction that can be implemented by different
 /// backends and easily mocked for testing.
+///
+/// Agents are standalone first-class citizens (ADR-031). They live at
+/// `agents/{agent}/config.toml` and team membership is tracked separately.
 #[async_trait]
 pub trait ConfigAuthority: Send + Sync {
-    /// Get agent configuration by name and optional team
-    ///
-    /// If team is None, searches all teams for the agent.
-    async fn get(
-        &self,
-        agent_name: &str,
-        team: Option<&str>,
-    ) -> ConfigResult<Option<AgentConfigEntry>>;
+    /// Get agent configuration by name
+    async fn get(&self, agent_name: &str) -> ConfigResult<Option<AgentConfigEntry>>;
 
     /// Save agent configuration
     ///
@@ -51,14 +48,15 @@ pub trait ConfigAuthority: Send + Sync {
     async fn save(
         &self,
         agent_name: &str,
-        team: &str,
         config: &AgentConfig,
     ) -> ConfigResult<PathBuf>;
 
     /// Check if an agent exists
-    async fn exists(&self, agent_name: &str, team: Option<&str>) -> ConfigResult<bool>;
+    async fn exists(&self, agent_name: &str) -> ConfigResult<bool>;
 
     /// List all agents in a team
+    ///
+    /// Currently lists all agents (membership filtering will be added later).
     async fn list_in_team(&self, team: &str) -> ConfigResult<Vec<AgentConfigEntry>>;
 
     /// List all agents across all teams
@@ -68,13 +66,13 @@ pub trait ConfigAuthority: Send + Sync {
     ///
     /// Removes from cache and deletes the config file.
     /// Note: This does NOT delete the agent directory or sessions.
-    async fn delete(&self, agent_name: &str, team: &str) -> ConfigResult<bool>;
+    async fn delete(&self, agent_name: &str) -> ConfigResult<bool>;
 
     /// Clear the configuration cache
     async fn clear_cache(&self);
 
     /// Invalidate a specific entry in the cache
-    async fn invalidate_cache(&self, agent_name: &str, team: &str);
+    async fn invalidate_cache(&self, agent_name: &str);
 
     /// Get the path resolver for this authority
     fn path_resolver(&self) -> &crate::common::paths::PathResolver;

@@ -18,7 +18,7 @@
 //! use crate::common::services::config_authority::{ConfigAuthority, ConfigAuthorityImpl};
 //!
 //! let authority = ConfigAuthorityImpl::new(path_resolver);
-//! let entry = authority.get("my-agent", Some("default")).await?;
+//! let entry = authority.get("my-agent").await?;
 //! ```
 
 pub mod authority_trait;

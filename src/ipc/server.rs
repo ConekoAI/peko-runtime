@@ -523,9 +523,9 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::AgentMove { request_id, old_name, new_name, team, to_team } => {
+            RequestPacket::AgentMove { request_id, old_name, new_name, team } => {
                 let service = state.agent_mgmt_service();
-                match service.rename_agent(&old_name, &new_name, team.as_deref(), to_team.as_deref()).await {
+                match service.rename_agent(&old_name, &new_name, team.as_deref()).await {
                     Ok(result) => {
                         let response = ResponsePacket::AgentMoved { request_id, result };
                         Self::send_packet(&socket, response, addr).await?;
@@ -548,7 +548,6 @@ impl IpcServer {
                         let response = ResponsePacket::AgentExported {
                             request_id,
                             name: result.name,
-                            team: result.team,
                             output_path: result.output_path.to_string_lossy().to_string(),
                         };
                         Self::send_packet(&socket, response, addr).await?;
@@ -560,15 +559,14 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::AgentImport { request_id, file_path, name, team } => {
+            RequestPacket::AgentImport { request_id, file_path, name, team: _team } => {
                 let service = state.agent_mgmt_service();
-                let opts = crate::common::types::agent::AgentImportOptions { name, team, force: false };
+                let opts = crate::common::types::agent::AgentImportOptions { name, force: false };
                 match service.import_agent(std::path::Path::new(&file_path), opts).await {
                     Ok(result) => {
                         let response = ResponsePacket::AgentImported {
                             request_id,
                             name: result.name,
-                            team: result.team,
                             config_path: result.config_path.to_string_lossy().to_string(),
                         };
                         Self::send_packet(&socket, response, addr).await?;
@@ -943,7 +941,7 @@ impl IpcServer {
                             ("default", target_str.as_str())
                         };
                         let config_service = state.config_service();
-                        match config_service.enable_tool_sync(agent_name, team, &canonical_id) {
+                        match config_service.enable_tool_sync(agent_name, &canonical_id) {
                             Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for agent '{target_str}'")),
                             Err(e) => Err(anyhow::anyhow!("Failed to enable extension for agent: {e}")),
                         }
@@ -1010,7 +1008,7 @@ impl IpcServer {
                             ("default", target_str.as_str())
                         };
                         let config_service = state.config_service();
-                        match config_service.disable_tool_sync(agent_name, team, &canonical_id) {
+                        match config_service.disable_tool_sync(agent_name, &canonical_id) {
                             Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for agent '{target_str}'")),
                             Err(e) => Err(anyhow::anyhow!("Failed to disable extension for agent: {e}")),
                         }
@@ -1400,7 +1398,6 @@ impl IpcServer {
                                 let service = state.agent_mgmt_service();
                                 let import_opts = crate::common::types::agent::AgentImportOptions {
                                     name: None,
-                                    team,
                                     force,
                                 };
 

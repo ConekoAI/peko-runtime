@@ -134,22 +134,8 @@ impl SystemPromptService {
             .workspace
             .clone()
             .or_else(|| {
-                let team = agent.config.team.as_deref().unwrap_or("default");
-                dirs::data_dir()
-                    .map(|d| {
-                        d.join("peko")
-                            .join("workspaces")
-                            .join(team)
-                            .join(agent.name())
-                    })
-                    .or_else(|| {
-                        dirs::home_dir().map(|h| {
-                            h.join(".peko")
-                                .join("workspaces")
-                                .join(team)
-                                .join(agent.name())
-                        })
-                    })
+                let resolver = crate::common::paths::PathResolver::new();
+                Some(resolver.agent_personal_workspace(agent.name()))
             })
             .unwrap_or_else(|| PathBuf::from("."))
     }

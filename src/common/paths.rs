@@ -1,44 +1,44 @@
 //! Common path resolution utilities
 //!
 //! This module provides standardized path resolution for Pekobot's
-//! team-aware directory structure. All components (CLI, API, daemon)
-//! should use these utilities for consistent path resolution.
+//! directory structure. All components (CLI, API, daemon) should use
+//! these utilities for consistent path resolution.
 //!
-//! # Directory Structure
+//! # Directory Structure (ADR-031)
 //!
 //! ## Config Directory (`{config_dir}`, e.g., `~/.peko`)
 //! ```text
 //! ~/.peko/                          # Config root
+//! ├── agents/                       # Top-level agent storage
+//! │   └── {agent}/
+//! │       ├── config.toml           # Agent configuration
+//! │       ├── memberships.toml      # Team memberships
+//! │       ├── tools/                # Agent-specific tools
+//! │       └── skills/               # Agent-specific skills
 //! └── teams/
 //!     └── {team}/
-//!         └── agents/
-//!             └── {agent}/
-//!                 ├── config.toml      # Agent configuration
-//!                 ├── tools/           # Agent-specific tools
-//!                 └── skills/          # Agent-specific skills
+//!         ├── team.toml             # Team metadata
+//!         ├── members.toml          # Agent references + roles
+//!         ├── extensions.toml       # Team-wide extensions
+//!         └── shared/               # Shared files
 //! ```
 //!
 //! ## Data Directory (`{data_dir}`, e.g., `~/.local/share/peko`)
 //! ```text
 //! {data_dir}/
-//! ├── tools/                           # Downloaded/installed tools
-//! ├── cron.json                       # Cron job database
-//! ├── sessions/                       # Session history (*.jsonl)
-//! │   └── {team}/
-//! │       └── {agent}/
-//! │           └── {session_id}.jsonl
-//! └── workspaces/                     # Agent workspace files
-//!     └── {team}/
-//!         └── {agent}/
-//!             ├── AGENTS.md
-//!             ├── SOUL.md
-//!             └── ...
+//! ├── tools/                        # Downloaded/installed tools
+//! ├── cron.json                     # Cron job database
+//! ├── sessions/                     # Session history (*.jsonl)
+//! │   └── {agent}/                  # Agent-scoped sessions
+//! │       ├── personal/             # Standalone sessions
+//! │       └── {team}/               # Team-context sessions
+//! └── workspaces/                   # Agent workspace files
+//!     └── {agent}/
+//!         ├── personal/             # Standalone workspace
+//!         └── {team}/               # Team-context workspace
 //! ```
 
 use std::path::{Path, PathBuf};
-
-/// Default team name when none is specified
-pub const DEFAULT_TEAM: &str = "default";
 
 /// Get the default configuration directory
 ///
@@ -152,6 +152,38 @@ impl PathResolver {
     // Config Directory Paths (configuration, metadata)
     // ====================================================================================
 
+    /// Get the top-level agents directory
+    ///
+    /// Path: `{config_dir}/agents`
+    #[must_use]
+    pub fn agents_root_dir(&self) -> PathBuf {
+        self.config_dir.join("agents")
+    }
+
+    /// Get a specific agent's directory
+    ///
+    /// Path: `{config_dir}/agents/{agent}`
+    #[must_use]
+    pub fn agent_dir(&self, agent: &str) -> PathBuf {
+        self.agents_root_dir().join(agent)
+    }
+
+    /// Get the path to an agent's config file
+    ///
+    /// Path: `{config_dir}/agents/{agent}/config.toml`
+    #[must_use]
+    pub fn agent_config(&self, agent: &str) -> PathBuf {
+        self.agent_dir(agent).join("config.toml")
+    }
+
+    /// Get the path to an agent's memberships file
+    ///
+    /// Path: `{config_dir}/agents/{agent}/memberships.toml`
+    #[must_use]
+    pub fn agent_memberships(&self, agent: &str) -> PathBuf {
+        self.agent_dir(agent).join("memberships.toml")
+    }
+
     /// Get the teams configuration directory
     ///
     /// Path: `{config_dir}/teams`
@@ -168,21 +200,18 @@ impl PathResolver {
         self.teams_dir().join(team)
     }
 
-    /// Get the agents directory for a specific team
+    /// Get the team members file path
     ///
-    /// Path: `{config_dir}/teams/{team}/agents`
+    /// Path: `{config_dir}/teams/{team}/members.toml`
     #[must_use]
-    pub fn agents_dir(&self, team: Option<&str>) -> PathBuf {
-        let team = team.unwrap_or(DEFAULT_TEAM);
-        self.team_dir(team).join("agents")
+    pub fn team_members(&self, team: &str) -> PathBuf {
+        self.team_dir(team).join("members.toml")
     }
 
-    /// Get the path to an agent's configuration file
-    ///
-    /// Path: `{config_dir}/teams/{team}/agents/{agent}/config.toml`
+    /// Check if an agent exists
     #[must_use]
-    pub fn agent_config(&self, agent: &str, team: Option<&str>) -> PathBuf {
-        self.agents_dir(team).join(agent).join("config.toml")
+    pub fn agent_exists(&self, agent: &str) -> bool {
+        self.agent_config(agent).exists()
     }
 
     /// Get the MCP configuration file path
@@ -221,26 +250,46 @@ impl PathResolver {
         self.data_dir.join("sessions")
     }
 
-    /// Get the sessions directory for a specific team
+    /// Get the agent-scoped sessions root directory
     ///
-    /// Path: `{data_dir}/sessions/{team}`
+    /// Path: `{data_dir}/sessions/{agent}`
     #[must_use]
-    pub fn team_sessions_dir(&self, team: &str) -> PathBuf {
-        self.sessions_root().join(team)
+    pub fn agent_sessions_root(&self, agent: &str) -> PathBuf {
+        self.sessions_root().join(agent)
+    }
+
+    /// Get the personal sessions directory for an agent
+    ///
+    /// Path: `{data_dir}/sessions/{agent}/personal`
+    #[must_use]
+    pub fn agent_personal_sessions_dir(&self, agent: &str) -> PathBuf {
+        self.agent_sessions_root(agent).join("personal")
+    }
+
+    /// Get the team-context sessions directory for an agent
+    ///
+    /// Path: `{data_dir}/sessions/{agent}/{team}`
+    #[must_use]
+    pub fn agent_team_sessions_dir(&self, agent: &str, team: &str) -> PathBuf {
+        self.agent_sessions_root(agent).join(team)
     }
 
     /// Get the path to an agent's sessions directory
     ///
-    /// Path: `{data_dir}/sessions/{team}/{agent}`
+    /// If `team` is `None`, returns the personal sessions directory.
+    /// If `team` is `Some`, returns the team-context sessions directory.
     #[must_use]
     pub fn agent_sessions_dir(&self, agent: &str, team: Option<&str>) -> PathBuf {
-        let team = team.unwrap_or(DEFAULT_TEAM);
-        self.team_sessions_dir(team).join(agent)
+        match team {
+            Some(team) => self.agent_team_sessions_dir(agent, team),
+            None => self.agent_personal_sessions_dir(agent),
+        }
     }
 
     /// Get the path to an agent's session file
     ///
-    /// Path: `{data_dir}/sessions/{team}/{agent}/{session_id}.jsonl`
+    /// Path: `{data_dir}/sessions/{agent}/personal/{session_id}.jsonl` (no team)
+    /// or `{data_dir}/sessions/{agent}/{team}/{session_id}.jsonl` (with team)
     #[must_use]
     pub fn agent_session_file(&self, agent: &str, team: Option<&str>, session_id: &str) -> PathBuf {
         self.agent_sessions_dir(agent, team)
@@ -255,30 +304,48 @@ impl PathResolver {
         self.data_dir.join("workspaces")
     }
 
-    /// Get the workspace directory for a specific team
+    /// Get the agent-scoped workspaces root directory
     ///
-    /// Path: `{data_dir}/workspaces/{team}`
+    /// Path: `{data_dir}/workspaces/{agent}`
     #[must_use]
-    pub fn team_workspaces_dir(&self, team: &str) -> PathBuf {
-        self.workspaces_root().join(team)
+    pub fn agent_workspaces_root(&self, agent: &str) -> PathBuf {
+        self.workspaces_root().join(agent)
+    }
+
+    /// Get the personal workspace directory for an agent
+    ///
+    /// Path: `{data_dir}/workspaces/{agent}/personal`
+    #[must_use]
+    pub fn agent_personal_workspace(&self, agent: &str) -> PathBuf {
+        self.agent_workspaces_root(agent).join("personal")
+    }
+
+    /// Get the team-context workspace directory for an agent
+    ///
+    /// Path: `{data_dir}/workspaces/{agent}/{team}`
+    #[must_use]
+    pub fn agent_team_workspace(&self, agent: &str, team: &str) -> PathBuf {
+        self.agent_workspaces_root(agent).join(team)
     }
 
     /// Get the path to an agent's workspace directory
     ///
-    /// Path: `{data_dir}/workspaces/{team}/{agent}`
+    /// If `team` is `None`, returns the personal workspace directory.
+    /// If `team` is `Some`, returns the team-context workspace directory.
     #[must_use]
     pub fn agent_workspace(&self, agent: &str, team: Option<&str>) -> PathBuf {
-        let team = team.unwrap_or(DEFAULT_TEAM);
-        self.team_workspaces_dir(team).join(agent)
+        match team {
+            Some(team) => self.agent_team_workspace(agent, team),
+            None => self.agent_personal_workspace(agent),
+        }
     }
 
     /// Get the path to an agent's workspace directory with explicit team
     ///
     /// Same as `agent_workspace` but requires an explicit team.
-    /// Path: `{data_dir}/workspaces/{team}/{agent}`
     #[must_use]
     pub fn agent_workspace_with_team(&self, agent: &str, team: &str) -> PathBuf {
-        self.team_workspaces_dir(team).join(agent)
+        self.agent_workspace(agent, Some(team))
     }
 
     /// Get the tools directory
@@ -314,15 +381,15 @@ impl PathResolver {
 
     /// Ensure an agent's config directories exist
     ///
-    /// Creates the agent's config directory.
-    pub fn ensure_agent_config_dirs(&self, agent: &str, team: Option<&str>) -> std::io::Result<()> {
-        std::fs::create_dir_all(self.agents_dir(team).join(agent))?;
+    /// Creates the agent's config directory at `{config_dir}/agents/{agent}`.
+    pub fn ensure_agent_config_dirs(&self, agent: &str) -> std::io::Result<()> {
+        std::fs::create_dir_all(self.agent_dir(agent))?;
         Ok(())
     }
 
     /// Ensure an agent's data directories exist
     ///
-    /// Creates the agent's sessions and workspace directories.
+    /// Creates the appropriate sessions and workspace directories for the agent.
     pub fn ensure_agent_data_dirs(&self, agent: &str, team: Option<&str>) -> std::io::Result<()> {
         std::fs::create_dir_all(self.agent_sessions_dir(agent, team))?;
         std::fs::create_dir_all(self.agent_workspace(agent, team))?;
@@ -331,7 +398,7 @@ impl PathResolver {
 
     /// Ensure all directories for an agent exist (both config and data)
     pub fn ensure_agent_dirs(&self, agent: &str, team: Option<&str>) -> std::io::Result<()> {
-        self.ensure_agent_config_dirs(agent, team)?;
+        self.ensure_agent_config_dirs(agent)?;
         self.ensure_agent_data_dirs(agent, team)?;
         Ok(())
     }
@@ -355,7 +422,7 @@ pub fn resolve_team_agent(identifier: &str) -> anyhow::Result<(String, String)> 
         }
         Ok((parts[0].to_string(), parts[1].to_string()))
     } else {
-        Ok((DEFAULT_TEAM.to_string(), identifier.to_string()))
+        Ok(("default".to_string(), identifier.to_string()))
     }
 }
 
@@ -410,64 +477,167 @@ mod tests {
         assert!(resolver.config_dir().to_string_lossy().contains(".peko"));
     }
 
+    // ====================================================================================
+    // New Layout Path Tests
+    // ====================================================================================
+
     #[test]
-    fn test_config_paths() {
+    fn test_new_layout_agent_paths() {
         let resolver = PathResolver::with_dirs(
             PathBuf::from("/config"),
             PathBuf::from("/data"),
             PathBuf::from("/cache"),
         );
 
-        // Config paths should be in config_dir
         assert_eq!(
-            resolver.agent_config("myagent", None),
-            PathBuf::from("/config/teams/default/agents/myagent/config.toml")
+            resolver.agents_root_dir(),
+            PathBuf::from("/config/agents")
         );
 
         assert_eq!(
-            resolver.agent_config("myagent", Some("myteam")),
-            PathBuf::from("/config/teams/myteam/agents/myagent/config.toml")
+            resolver.agent_dir("alice"),
+            PathBuf::from("/config/agents/alice")
         );
 
-        assert_eq!(resolver.teams_dir(), PathBuf::from("/config/teams"));
+        assert_eq!(
+            resolver.agent_config("alice"),
+            PathBuf::from("/config/agents/alice/config.toml")
+        );
+
+        assert_eq!(
+            resolver.agent_memberships("alice"),
+            PathBuf::from("/config/agents/alice/memberships.toml")
+        );
     }
 
     #[test]
-    fn test_data_paths() {
+    fn test_new_layout_team_paths() {
         let resolver = PathResolver::with_dirs(
             PathBuf::from("/config"),
             PathBuf::from("/data"),
             PathBuf::from("/cache"),
         );
 
-        // Data paths should be in data_dir
         assert_eq!(
-            resolver.agent_sessions_dir("myagent", Some("myteam")),
-            PathBuf::from("/data/sessions/myteam/myagent")
+            resolver.team_members("engineering"),
+            PathBuf::from("/config/teams/engineering/members.toml")
+        );
+    }
+
+    #[test]
+    fn test_new_layout_session_paths() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
         );
 
         assert_eq!(
-            resolver.agent_session_file("myagent", Some("myteam"), "sess_123"),
-            PathBuf::from("/data/sessions/myteam/myagent/sess_123.jsonl")
+            resolver.agent_personal_sessions_dir("alice"),
+            PathBuf::from("/data/sessions/alice/personal")
         );
 
         assert_eq!(
-            resolver.agent_workspace("myagent", Some("myteam")),
-            PathBuf::from("/data/workspaces/myteam/myagent")
+            resolver.agent_team_sessions_dir("alice", "engineering"),
+            PathBuf::from("/data/sessions/alice/engineering")
+        );
+    }
+
+    #[test]
+    fn test_new_layout_workspace_paths() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
         );
 
         assert_eq!(
-            resolver.agent_workspace_with_team("myagent", "myteam"),
-            PathBuf::from("/data/workspaces/myteam/myagent")
+            resolver.agent_personal_workspace("alice"),
+            PathBuf::from("/data/workspaces/alice/personal")
         );
-
-        assert_eq!(resolver.tools_dir(), PathBuf::from("/data/tools"));
-
-        assert_eq!(resolver.sessions_root(), PathBuf::from("/data/sessions"));
 
         assert_eq!(
-            resolver.workspaces_root(),
-            PathBuf::from("/data/workspaces")
+            resolver.agent_team_workspace("alice", "engineering"),
+            PathBuf::from("/data/workspaces/alice/engineering")
         );
+    }
+
+    #[test]
+    fn test_agent_sessions_dir() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+
+        assert_eq!(
+            resolver.agent_sessions_dir("alice", None),
+            PathBuf::from("/data/sessions/alice/personal")
+        );
+
+        assert_eq!(
+            resolver.agent_sessions_dir("alice", Some("engineering")),
+            PathBuf::from("/data/sessions/alice/engineering")
+        );
+    }
+
+    #[test]
+    fn test_agent_workspace() {
+        let resolver = PathResolver::with_dirs(
+            PathBuf::from("/config"),
+            PathBuf::from("/data"),
+            PathBuf::from("/cache"),
+        );
+
+        assert_eq!(
+            resolver.agent_workspace("alice", None),
+            PathBuf::from("/data/workspaces/alice/personal")
+        );
+
+        assert_eq!(
+            resolver.agent_workspace("alice", Some("engineering")),
+            PathBuf::from("/data/workspaces/alice/engineering")
+        );
+    }
+
+    #[test]
+    fn test_agent_exists() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
+
+        // Create agent
+        let agent_dir = config_dir.join("agents").join("alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("config.toml"), "").unwrap();
+
+        assert!(resolver.agent_exists("alice"));
+        assert!(!resolver.agent_exists("bob"));
+    }
+
+    #[test]
+    fn test_ensure_agent_dirs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir.clone(), cache_dir);
+
+        // Ensure dirs for personal context
+        resolver.ensure_agent_dirs("alice", None).unwrap();
+
+        assert!(config_dir.join("agents").join("alice").exists());
+        assert!(data_dir.join("sessions").join("alice").join("personal").exists());
+        assert!(data_dir.join("workspaces").join("alice").join("personal").exists());
+
+        // Ensure dirs for team context
+        resolver.ensure_agent_dirs("alice", Some("engineering")).unwrap();
+
+        assert!(data_dir.join("sessions").join("alice").join("engineering").exists());
+        assert!(data_dir.join("workspaces").join("alice").join("engineering").exists());
     }
 }

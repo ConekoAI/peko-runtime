@@ -14,11 +14,7 @@ pub struct AgentConfig {
     pub name: String,
     /// Human-readable description
     pub description: Option<String>,
-    /// Team this agent belongs to (replaces tenant for team-based organization)
-    #[serde(default)]
-    pub team: Option<String>,
-    /// Tenant/organization this agent belongs to (legacy, use team)
-    pub tenant: Option<String>,
+    /// LLM provider configuration
     /// LLM provider configuration
     pub provider: super::provider::ProviderConfig,
     /// Extension configurations — unified whitelist and settings for all extension types
@@ -70,8 +66,6 @@ impl Default for AgentConfig {
             version: default_config_version(),
             name: "unnamed-agent".to_string(),
             description: None,
-            team: None,
-            tenant: None,
             provider: super::provider::ProviderConfig::default(),
             extensions: Some(ExtensionConfig::default()),
             channels: None,

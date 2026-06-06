@@ -21,7 +21,7 @@ pub use identifiers::{
 };
 pub use paths::{
     default_cache_dir, default_config_dir, default_data_dir, resolve_team_agent,
-    resolve_team_agent_with_override, PathResolver, DEFAULT_TEAM,
+    resolve_team_agent_with_override, PathResolver,
 };
 pub use time::{format_timestamp, format_timestamp_ms, format_timestamp_rfc3339};
 pub use types::{AgentInfo, AgentSummary, TeamInfo, TeamMetadata};

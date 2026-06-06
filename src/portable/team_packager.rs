@@ -141,16 +141,18 @@ impl TeamPackager {
             packager
         };
 
+        // ADR-031 layout: workspaces/{agent}/{team}/
         let workspace_dir = self
             .base_dir
             .join("workspaces")
-            .join(&self.team_name)
-            .join(name);
+            .join(name)
+            .join(&self.team_name);
+        // ADR-031 layout: sessions/{agent}/{team}/
         let sessions_dir = self
             .base_dir
             .join("sessions")
-            .join(&self.team_name)
-            .join(name);
+            .join(name)
+            .join(&self.team_name);
 
         let packager = packager
             .with_workspace_dir(&workspace_dir)

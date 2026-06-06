@@ -151,12 +151,12 @@ impl StatelessAgentManager {
         let team = team_id.as_deref().unwrap_or("default");
 
         // Save config using ConfigAuthorityImpl
-        self.config_service.save(name, team, &config).await?;
+        self.config_service.save(name, &config).await?;
 
         // Load and return the entry
         let entry = self
             .config_service
-            .get(name, Some(team))
+            .get(name)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Failed to retrieve saved agent config"))?;
 
@@ -173,8 +173,8 @@ impl StatelessAgentManager {
     }
 
     /// Unregister an agent
-    pub async fn unregister(&self, name: &str, team: &str) -> Result<bool> {
-        let removed = self.config_service.delete(name, team).await?;
+    pub async fn unregister(&self, name: &str, _team: &str) -> Result<bool> {
+        let removed = self.config_service.delete(name).await?;
 
         if removed {
             let _ = self
@@ -189,8 +189,8 @@ impl StatelessAgentManager {
     }
 
     /// Get agent configuration
-    pub async fn get(&self, name: &str, team: Option<&str>) -> Result<Option<AgentConfigEntry>> {
-        Ok(self.config_service.get(name, team).await?)
+    pub async fn get(&self, name: &str, _team: Option<&str>) -> Result<Option<AgentConfigEntry>> {
+        Ok(self.config_service.get(name).await?)
     }
 
     /// List all registered agents
@@ -204,8 +204,8 @@ impl StatelessAgentManager {
     }
 
     /// Check if agent is registered
-    pub async fn exists(&self, name: &str, team: Option<&str>) -> Result<bool> {
-        Ok(self.config_service.exists(name, team).await?)
+    pub async fn exists(&self, name: &str, _team: Option<&str>) -> Result<bool> {
+        Ok(self.config_service.exists(name).await?)
     }
 
     /// Execute agent statelessly

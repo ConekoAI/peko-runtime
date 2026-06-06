@@ -1,6 +1,6 @@
 //! Agent Validation Service
 //!
-//! Centralized agent existence and permission validation.
+//! Centralized agent existence validation.
 //! This service provides early validation to prevent creating
 //! session infrastructure for non-existent agents.
 
@@ -29,7 +29,6 @@ impl AgentValidator {
     ///
     /// # Arguments
     /// * `agent_name` - Name of the agent to validate
-    /// * `team` - Optional team name (searches all teams if None)
     ///
     /// # Returns
     /// * `Ok(AgentConfigEntry)` - Agent exists, returns config entry
@@ -38,58 +37,19 @@ impl AgentValidator {
     /// # Example
     /// ```rust,ignore
     /// let validator = AgentValidator::new(config_service);
-    /// match validator.validate_exists("myagent", Some("myteam")).await {
-    ///     Ok(entry) => println!("Found agent in team: {}", entry.team),
+    /// match validator.validate_exists("myagent").await {
+    ///     Ok(entry) => println!("Found agent: {}", entry.name),
     ///     Err(e) => println!("Agent not found: {}", e),
     /// }
     /// ```
-    pub async fn validate_exists(
-        &self,
-        agent_name: &str,
-        team: Option<&str>,
-    ) -> Result<AgentConfigEntry> {
-        debug!(
-            "Validating agent '{}' exists in team {:?}",
-            agent_name, team
-        );
+    pub async fn validate_exists(&self, agent_name: &str) -> Result<AgentConfigEntry> {
+        debug!("Validating agent '{}' exists", agent_name);
 
-        if let Some(entry) = self.config_service.get(agent_name, team).await? {
-            info!("Validated agent '{}' in team '{}'", entry.name, entry.team);
+        if let Some(entry) = self.config_service.get(agent_name).await? {
+            info!("Validated agent '{}'", entry.name);
             Ok(entry)
         } else {
-            let team_str = team.unwrap_or("(any)");
-            Err(anyhow::anyhow!(
-                "Agent '{agent_name}' not found in team '{team_str}'"
-            ))
-        }
-    }
-
-    /// Validate agent exists with explicit team requirement
-    ///
-    /// Unlike `validate_exists`, this method fails if the team doesn't match
-    /// even if the agent exists in a different team.
-    pub async fn validate_in_team(&self, agent_name: &str, team: &str) -> Result<AgentConfigEntry> {
-        debug!(
-            "Validating agent '{}' is specifically in team '{}'",
-            agent_name, team
-        );
-
-        match self.config_service.get(agent_name, Some(team)).await? {
-            Some(entry) => {
-                if entry.team == team {
-                    Ok(entry)
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Agent '{}' found in team '{}', not in '{}'",
-                        agent_name,
-                        entry.team,
-                        team
-                    ))
-                }
-            }
-            None => Err(anyhow::anyhow!(
-                "Agent '{agent_name}' not found in team '{team}'"
-            )),
+            Err(anyhow::anyhow!("Agent '{agent_name}' not found"))
         }
     }
 
@@ -97,9 +57,9 @@ impl AgentValidator {
     ///
     /// Returns true if agent exists, false otherwise.
     /// This method does not fail on other errors.
-    pub async fn exists(&self, agent_name: &str, team: Option<&str>) -> bool {
+    pub async fn exists(&self, agent_name: &str) -> bool {
         self.config_service
-            .exists(agent_name, team)
+            .exists(agent_name)
             .await
             .unwrap_or(false)
     }
@@ -108,14 +68,11 @@ impl AgentValidator {
     ///
     /// Returns Ok only if all agents exist.
     /// Returns Err on first missing agent.
-    pub async fn validate_all_exist(
-        &self,
-        agents: &[(&str, Option<&str>)],
-    ) -> Result<Vec<AgentConfigEntry>> {
+    pub async fn validate_all_exist(&self, agents: &[&str]) -> Result<Vec<AgentConfigEntry>> {
         let mut results = Vec::with_capacity(agents.len());
 
-        for (agent_name, team) in agents {
-            results.push(self.validate_exists(agent_name, *team).await?);
+        for agent_name in agents {
+            results.push(self.validate_exists(agent_name).await?);
         }
 
         Ok(results)
@@ -143,7 +100,7 @@ mod tests {
         // Create a test agent
         let config = AgentConfig::default();
         config_service
-            .save("test-agent", "default", &config)
+            .save("test-agent", &config)
             .await
             .unwrap();
 
@@ -154,23 +111,18 @@ mod tests {
     async fn test_validate_exists_found() {
         let (validator, _temp) = create_test_validator().await;
 
-        let result = validator
-            .validate_exists("test-agent", Some("default"))
-            .await;
+        let result = validator.validate_exists("test-agent").await;
         assert!(result.is_ok());
 
         let entry = result.unwrap();
         assert_eq!(entry.name, "test-agent");
-        assert_eq!(entry.team, "default");
     }
 
     #[tokio::test]
     async fn test_validate_exists_not_found() {
         let (validator, _temp) = create_test_validator().await;
 
-        let result = validator
-            .validate_exists("nonexistent", Some("default"))
-            .await;
+        let result = validator.validate_exists("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -179,14 +131,14 @@ mod tests {
     async fn test_exists_true() {
         let (validator, _temp) = create_test_validator().await;
 
-        assert!(validator.exists("test-agent", Some("default")).await);
+        assert!(validator.exists("test-agent").await);
     }
 
     #[tokio::test]
     async fn test_exists_false() {
         let (validator, _temp) = create_test_validator().await;
 
-        assert!(!validator.exists("nonexistent", Some("default")).await);
+        assert!(!validator.exists("nonexistent").await);
     }
 
     #[tokio::test]
@@ -194,18 +146,11 @@ mod tests {
         let (validator, _temp) = create_test_validator().await;
 
         // This should succeed with one agent
-        let result = validator
-            .validate_all_exist(&[("test-agent", Some("default"))])
-            .await;
+        let result = validator.validate_all_exist(&["test-agent"]).await;
         assert!(result.is_ok());
 
         // This should fail with missing agent
-        let result = validator
-            .validate_all_exist(&[
-                ("test-agent", Some("default")),
-                ("nonexistent", Some("default")),
-            ])
-            .await;
+        let result = validator.validate_all_exist(&["test-agent", "nonexistent"]).await;
         assert!(result.is_err());
     }
 
@@ -226,9 +171,7 @@ mod tests {
         let validator = AgentValidator::new(config_service);
 
         // Validate non-existent agent (should fail)
-        let result = validator
-            .validate_exists("nonexistentagent123", Some("default"))
-            .await;
+        let result = validator.validate_exists("nonexistentagent123").await;
         assert!(result.is_err());
 
         // Verify NO session directory was created

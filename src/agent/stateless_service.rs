@@ -325,35 +325,18 @@ impl StatelessAgentService {
         self
     }
 
-    /// Get team for an agent (helper to avoid repetition)
-    async fn get_team(&self, agent_name: &str) -> Result<Option<String>> {
-        // First try cache; if miss, search all teams
-        if let Some(entry) = self.config_service.get(agent_name, None).await? {
-            return Ok(Some(entry.team));
-        }
-        Ok(None)
-    }
-
     /// Load agent config fresh, bypassing any stale cache
     async fn load_config_fresh(
         &self,
         agent_name: &str,
     ) -> Result<crate::common::services::AgentConfigEntry> {
-        // Determine team first (may use cache, but we'll invalidate before loading config)
-        let team = self
-            .get_team(agent_name)
-            .await?
-            .unwrap_or_else(|| "default".to_string());
-
         // Invalidate cache to ensure we read the latest config from disk
         // This is critical for mid-session tool enable/disable changes made by CLI
-        self.config_service
-            .invalidate_cache(agent_name, &team)
-            .await;
+        self.config_service.invalidate_cache(agent_name).await;
 
         let entry = self
             .config_service
-            .get(agent_name, Some(&team))
+            .get(agent_name)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_name))?;
 
@@ -374,18 +357,18 @@ impl StatelessAgentService {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
-        let team = self.get_team(&request.agent_name).await?;
+        let team = request.team.as_deref();
         let mut session_manager = SessionManager::for_cli(
             self.path_resolver.clone(),
             &request.agent_name,
-            team.as_deref(),
+            team,
             &request.user,
         );
 
         let resolved = session_manager
             .resolve_session(
                 &request.agent_name,
-                request.team.as_deref(),
+                team,
                 ChannelType::Http,
                 "default",
                 request.session_id.clone(),
@@ -459,18 +442,18 @@ impl StatelessAgentService {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
-        let team = self.get_team(&request.agent_name).await?;
+        let team = request.team.as_deref();
         let mut session_manager = SessionManager::for_cli(
             self.path_resolver.clone(),
             &request.agent_name,
-            team.as_deref(),
+            team,
             &request.user,
         );
 
         let resolved = session_manager
             .resolve_session(
                 &request.agent_name,
-                request.team.as_deref(),
+                team,
                 ChannelType::Http,
                 "default",
                 request.session_id.clone(),
@@ -560,7 +543,8 @@ impl StatelessAgentService {
 
         // 2. Open the specific session by ID
         // This ensures we write to the correct session file
-        let team = Some(config_entry.team.as_str());
+        // ExecutionRequest does not carry team context; use personal context (None)
+        let team = None;
         let mut session_manager = SessionManager::for_cli(
             self.path_resolver.clone(),
             &request.agent_name,
@@ -794,7 +778,7 @@ impl StatelessAgentService {
         // Load config, history, agent, session - these are all Send-safe
         let config_entry = self
             .config_service
-            .get(&request.agent_name, None)
+            .get(&request.agent_name)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
@@ -803,7 +787,8 @@ impl StatelessAgentService {
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
         // Open the specific session by ID (same logic as execute_inner)
-        let team = Some(config_entry.team.as_str());
+        // ExecutionRequest does not carry team context; use personal context (None)
+        let team = None;
         let mut session_manager = SessionManager::for_cli(
             self.path_resolver.clone(),
             &request.agent_name,
@@ -1105,27 +1090,6 @@ mod tests {
     // ====================================================================================
     // Service method tests (ADR-016 Phase 1)
     // ====================================================================================
-
-    #[tokio::test]
-    async fn test_get_team_helper() {
-        let temp_dir = TempDir::new().unwrap();
-
-        let path_resolver = PathResolver::with_dirs(
-            temp_dir.path().join("config"),
-            temp_dir.path().join("data"),
-            temp_dir.path().join("cache"),
-        );
-
-        let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
-        let service = StatelessAgentService::new(config_service, path_resolver)
-            .await
-            .unwrap();
-
-        // Test get_team for non-existent agent
-        let team = service.get_team("non-existent-agent").await;
-        assert!(team.is_ok());
-        assert_eq!(team.unwrap(), None);
-    }
 
     #[test]
     fn test_message_request_caller_agent_opt_filters_empty() {

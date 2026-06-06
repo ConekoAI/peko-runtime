@@ -151,11 +151,13 @@ impl TeamUnpackager {
             imported_agents.push(agent_result);
         }
 
+        // Per ADR-031, workspaces are agent-scoped under workspaces/{agent}/{team}/.
+        // There is no single team workspace directory; return the workspaces root.
         Ok(TeamImportResult {
             name: team_name.clone(),
             agent_count: imported_agents.len(),
             agents: imported_agents,
-            workspace_path: self.base_dir.join("workspaces").join(&team_name),
+            workspace_path: self.base_dir.join("workspaces"),
         })
     }
 
@@ -268,10 +270,10 @@ impl TeamUnpackager {
         // Clone files for this agent to pass to unpackager
         let agent_files = files.clone();
 
-        // Use the regular Unpackager with in-memory files
-        let team_dir = self.base_dir.join("teams").join(team_name);
+        // Use the regular Unpackager with in-memory files.
+        // Agents are standalone per ADR-031, so import to the global agents directory.
         let unpackager = Unpackager::new("dummy.agent") // Path doesn't matter for in-memory import
-            .with_base_dir(&team_dir)
+            .with_base_dir(&self.base_dir)
             .with_team(team_name);
 
         let agent_opts = AgentImportOptions {

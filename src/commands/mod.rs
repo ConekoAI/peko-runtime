@@ -276,18 +276,22 @@ impl GlobalPaths {
         self.resolver.team_dir(team)
     }
 
-    /// Get agents directory for a specific team
+    /// Get the top-level agents root directory
     #[must_use]
-    pub fn agents_dir(&self, team: Option<&str>) -> PathBuf {
-        self.resolver.agents_dir(team)
+    pub fn agents_root_dir(&self) -> PathBuf {
+        self.resolver.agents_root_dir()
+    }
+
+    /// Get a specific agent's directory
+    #[must_use]
+    pub fn agent_dir(&self, agent: &str) -> PathBuf {
+        self.resolver.agent_dir(agent)
     }
 
     /// Get agent config file path
-    ///
-    /// If team is None, uses the "default" team
     #[must_use]
-    pub fn agent_config(&self, name: &str, team: Option<&str>) -> PathBuf {
-        self.resolver.agent_config(name, team)
+    pub fn agent_config(&self, name: &str) -> PathBuf {
+        self.resolver.agent_config(name)
     }
 
     /// Get agent sessions directory
@@ -311,11 +315,11 @@ impl GlobalPaths {
     /// Get agent workspace directory
     ///
     /// Returns the path to an agent's workspace directory.
-    /// Format: `<data_dir>/workspaces/<team>/<agent>`
+    /// Format: `<data_dir>/workspaces/<agent>/<context>`
     ///
     /// # Arguments
     /// * `agent` - The agent name
-    /// * `team` - Optional team name (defaults to "default")
+    /// * `team` - Optional team context (defaults to "personal")
     #[must_use]
     pub fn agent_workspace(&self, agent: &str, team: Option<&str>) -> PathBuf {
         self.resolver.agent_workspace(agent, team)

@@ -225,7 +225,7 @@ impl Agent {
         // Initialize session manager with path resolver
         let path_resolver = PathResolver::new();
         let session_manager = SessionManager::new()
-            .with_path_resolver(path_resolver, &config.name, config.team.as_deref())
+            .with_path_resolver(path_resolver, &config.name, None)
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
         Self::new_with_session_manager(config, session_manager).await
@@ -881,19 +881,18 @@ impl Agent {
             temp_dir.join("cache"),
         );
         let session_manager = SessionManager::new()
-            .with_path_resolver(path_resolver, &config.name, config.team.as_deref())
+            .with_path_resolver(path_resolver, &config.name, None)
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
 
         // Load or create identity in temp storage
         let identity = {
             let storage = KeyStorage::with_path(temp_dir.join("data").join("identities"))?;
-            let tenant = config.tenant.as_deref().unwrap_or("default");
-            let identity_name = format!("{}-{}", tenant, config.name);
+            let identity_name = config.name.clone();
             if let Ok(identity) = storage.load(&identity_name) {
                 identity
             } else {
-                let identity = Identity::generate(DIDScope::Local, Some(tenant))?;
+                let identity = Identity::generate(DIDScope::Local, None)?;
                 storage.store(&identity)?;
                 identity
             }
@@ -937,8 +936,7 @@ impl Agent {
     async fn load_or_create_identity(config: &AgentConfig) -> Result<Identity> {
         let storage = KeyStorage::new()?;
 
-        let tenant = config.tenant.as_deref().unwrap_or("default");
-        let identity_name = format!("{}-{}", tenant, config.name);
+        let identity_name = config.name.clone();
 
         // Try to load existing identity
         if let Ok(identity) = storage.load(&identity_name) {
@@ -948,7 +946,7 @@ impl Agent {
 
         // Create new identity
         info!("Creating new identity for: {}", identity_name);
-        let identity = Identity::generate(DIDScope::Local, Some(tenant))?;
+        let identity = Identity::generate(DIDScope::Local, None)?;
 
         storage.store(&identity)?;
         info!("Created and stored new identity: {}", identity.did);

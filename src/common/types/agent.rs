@@ -11,7 +11,6 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSummary {
     pub name: String,
-    pub team: String,
     pub config: AgentConfig,
     pub config_path: PathBuf,
 }
@@ -20,7 +19,6 @@ pub struct AgentSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub name: String,
-    pub team: String,
     pub config: AgentConfig,
     pub config_path: PathBuf,
     pub sessions_dir: PathBuf,
@@ -31,7 +29,6 @@ pub struct AgentInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCreationResult {
     pub name: String,
-    pub team: String,
     pub config_path: PathBuf,
     pub provider: String,
 }
@@ -41,8 +38,6 @@ pub struct AgentCreationResult {
 pub struct AgentRenameResult {
     pub old_name: String,
     pub new_name: String,
-    pub from_team: String,
-    pub to_team: String,
     pub new_config_path: PathBuf,
 }
 
@@ -50,12 +45,9 @@ pub struct AgentRenameResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCreateRequest {
     pub name: String,
-    pub team: Option<String>,
     pub provider: String,
     pub model: Option<String>,
     pub description: Option<String>,
-    #[serde(default)]
-    pub auto_create_team: bool,
     #[serde(default)]
     pub force: bool,
 }
@@ -64,18 +56,11 @@ impl AgentCreateRequest {
     pub fn new(name: impl Into<String>, provider: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            team: None,
             provider: provider.into(),
             model: None,
             description: None,
-            auto_create_team: true,
             force: false,
         }
-    }
-
-    pub fn with_team(mut self, team: impl Into<String>) -> Self {
-        self.team = Some(team.into());
-        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -85,12 +70,6 @@ impl AgentCreateRequest {
 
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_auto_create_team(mut self, auto: bool) -> Self {
-        self.auto_create_team = auto;
         self
     }
 
@@ -112,7 +91,6 @@ pub struct AgentDeleteOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDeleteResult {
     pub name: String,
-    pub team: String,
     pub config_deleted: bool,
     pub sessions_deleted: bool,
 }
@@ -121,7 +99,6 @@ pub struct AgentDeleteResult {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentUpdateRequest {
     pub image: Option<String>,
-    pub team_id: Option<String>,
 }
 
 /// Agent export options
@@ -135,7 +112,6 @@ pub struct AgentExportOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentExportResult {
     pub name: String,
-    pub team: String,
     pub output_path: PathBuf,
     pub encrypted: bool,
 }
@@ -144,7 +120,6 @@ pub struct AgentExportResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentImportOptions {
     pub name: Option<String>,
-    pub team: Option<String>,
     pub force: bool,
 }
 
@@ -152,6 +127,5 @@ pub struct AgentImportOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentImportResult {
     pub name: String,
-    pub team: String,
     pub config_path: PathBuf,
 }

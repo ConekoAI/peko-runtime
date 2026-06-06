@@ -216,19 +216,21 @@ impl Unpackager {
         // Save config
         let config_path = self.save_config(&config, &name).await?;
 
+        // ADR-031 layout: workspaces/{agent}/{team}/
         let workspace_path = if options.import_workspace {
             Some(dirs::data_dir().map_or_else(
-                || self.base_dir.join("workspaces").join(team).join(&name),
-                |d| d.join("peko").join("workspaces").join(team).join(&name),
+                || self.base_dir.join("workspaces").join(&name).join(team),
+                |d| d.join("peko").join("workspaces").join(&name).join(team),
             ))
         } else {
             None
         };
 
+        // ADR-031 layout: sessions/{agent}/{team}/
         let sessions_path = if options.import_sessions {
             Some(dirs::data_dir().map_or_else(
-                || self.base_dir.join("sessions").join(team).join(&name),
-                |d| d.join("peko").join("sessions").join(team).join(&name),
+                || self.base_dir.join("sessions").join(&name).join(team),
+                |d| d.join("peko").join("sessions").join(&name).join(team),
             ))
         } else {
             None
@@ -391,18 +393,19 @@ impl Unpackager {
         files: &HashMap<String, Vec<u8>>,
         agent_name: &str,
     ) -> anyhow::Result<()> {
+        // ADR-031 layout: workspaces/{agent}/{team}/
         let workspace_dir = dirs::data_dir()
             .map(|d| {
                 d.join("peko")
                     .join("workspaces")
-                    .join(&self.team)
                     .join(agent_name)
+                    .join(&self.team)
             })
             .unwrap_or_else(|| {
                 self.base_dir
                     .join("workspaces")
-                    .join(&self.team)
                     .join(agent_name)
+                    .join(&self.team)
             });
 
         tokio::fs::create_dir_all(&workspace_dir).await?;
@@ -429,18 +432,19 @@ impl Unpackager {
         files: &HashMap<String, Vec<u8>>,
         agent_name: &str,
     ) -> anyhow::Result<()> {
+        // ADR-031 layout: sessions/{agent}/{team}/
         let sessions_dir = dirs::data_dir()
             .map(|d| {
                 d.join("peko")
                     .join("sessions")
-                    .join(&self.team)
                     .join(agent_name)
+                    .join(&self.team)
             })
             .unwrap_or_else(|| {
                 self.base_dir
                     .join("sessions")
-                    .join(&self.team)
                     .join(agent_name)
+                    .join(&self.team)
             });
 
         tokio::fs::create_dir_all(&sessions_dir).await?;
@@ -493,14 +497,15 @@ impl Unpackager {
         agent_name: &str,
         team: &str,
     ) -> anyhow::Result<()> {
+        // ADR-031 layout: sessions/{agent}/{team}/
         let sessions_dir = dirs::data_dir()
             .map(|d| {
                 d.join("peko")
                     .join("sessions")
-                    .join(team)
                     .join(agent_name)
+                    .join(team)
             })
-            .unwrap_or_else(|| self.base_dir.join("sessions").join(team).join(agent_name));
+            .unwrap_or_else(|| self.base_dir.join("sessions").join(agent_name).join(team));
 
         if !sessions_dir.exists() {
             return Ok(());

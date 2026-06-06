@@ -147,7 +147,7 @@ pub enum RequestPacket {
     AgentDelete { request_id: u64, name: String, team: Option<String>, force: bool },
 
     #[serde(rename = "agent_move")]
-    AgentMove { request_id: u64, old_name: String, new_name: String, team: Option<String>, to_team: Option<String> },
+    AgentMove { request_id: u64, old_name: String, new_name: String, team: Option<String> },
 
     // ─── Team CRUD ──────────────────────────────────────────────────
     #[serde(rename = "team_list")]
@@ -706,7 +706,6 @@ pub enum ResponsePacket {
     AgentExported {
         request_id: u64,
         name: String,
-        team: String,
         output_path: String,
     },
 
@@ -715,7 +714,6 @@ pub enum ResponsePacket {
     AgentImported {
         request_id: u64,
         name: String,
-        team: String,
         config_path: String,
     },
 
@@ -1306,11 +1304,9 @@ mod tests {
     fn test_agent_create_request_roundtrip() {
         let request = crate::common::types::agent::AgentCreateRequest {
             name: "new-agent".to_string(),
-            team: Some("default".to_string()),
             provider: "ollama".to_string(),
             model: Some("llama3.2".to_string()),
             description: Some("A test agent".to_string()),
-            auto_create_team: true,
             force: false,
         };
         let req = RequestPacket::AgentCreate {
@@ -1358,17 +1354,15 @@ mod tests {
             old_name: "old-agent".to_string(),
             new_name: "new-agent".to_string(),
             team: Some("default".to_string()),
-            to_team: Some("new-team".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentMove { request_id, old_name, new_name, team, to_team } => {
+            RequestPacket::AgentMove { request_id, old_name, new_name, team } => {
                 assert_eq!(request_id, 304);
                 assert_eq!(old_name, "old-agent");
                 assert_eq!(new_name, "new-agent");
                 assert_eq!(team, Some("default".to_string()));
-                assert_eq!(to_team, Some("new-team".to_string()));
             }
             _ => panic!("Wrong variant"),
         }
@@ -1448,7 +1442,6 @@ mod tests {
             request_id: 600,
             agents: vec![crate::common::types::agent::AgentSummary {
                 name: "test-agent".to_string(),
-                team: "default".to_string(),
                 config: crate::types::agent::AgentConfig {
                     name: "test-agent".to_string(),
                     ..Default::default()
@@ -1474,7 +1467,6 @@ mod tests {
             request_id: 601,
             agent: Some(crate::common::types::agent::AgentInfo {
                 name: "test-agent".to_string(),
-                team: "default".to_string(),
                 config: crate::types::agent::AgentConfig {
                     name: "test-agent".to_string(),
                     ..Default::default()
@@ -1502,7 +1494,6 @@ mod tests {
             request_id: 602,
             result: crate::common::types::agent::AgentCreationResult {
                 name: "new-agent".to_string(),
-                team: "default".to_string(),
                 config_path: std::path::PathBuf::from("/tmp/new-agent/config.toml"),
                 provider: "ollama".to_string(),
             },
@@ -1524,7 +1515,6 @@ mod tests {
             request_id: 603,
             result: crate::common::types::agent::AgentDeleteResult {
                 name: "old-agent".to_string(),
-                team: "default".to_string(),
                 config_deleted: true,
                 sessions_deleted: true,
             },
@@ -1547,9 +1537,7 @@ mod tests {
             result: crate::common::types::agent::AgentRenameResult {
                 old_name: "old-agent".to_string(),
                 new_name: "new-agent".to_string(),
-                from_team: "default".to_string(),
-                to_team: "new-team".to_string(),
-                new_config_path: std::path::PathBuf::from("/tmp/new-team/new-agent/config.toml"),
+                new_config_path: std::path::PathBuf::from("/tmp/new-agent/config.toml"),
             },
         };
         let bytes = resp.to_bytes().unwrap();
@@ -1700,7 +1688,7 @@ mod tests {
         let req_agent_delete = RequestPacket::AgentDelete { request_id: 4, name: "a".to_string(), team: None, force: false };
         assert_eq!(req_agent_delete.request_id(), 4);
 
-        let req_agent_move = RequestPacket::AgentMove { request_id: 4, old_name: "a".to_string(), new_name: "b".to_string(), team: None, to_team: None };
+        let req_agent_move = RequestPacket::AgentMove { request_id: 4, old_name: "a".to_string(), new_name: "b".to_string(), team: None };
         assert_eq!(req_agent_move.request_id(), 4);
 
         let req_team_list = RequestPacket::TeamList { request_id: 5 };
@@ -1728,7 +1716,6 @@ mod tests {
             request_id: 12,
             result: crate::common::types::agent::AgentCreationResult {
                 name: "a".to_string(),
-                team: "t".to_string(),
                 config_path: std::path::PathBuf::from("/tmp"),
                 provider: "p".to_string(),
             },
@@ -1739,7 +1726,6 @@ mod tests {
             request_id: 13,
             result: crate::common::types::agent::AgentDeleteResult {
                 name: "a".to_string(),
-                team: "t".to_string(),
                 config_deleted: true,
                 sessions_deleted: false,
             },
@@ -1751,8 +1737,6 @@ mod tests {
             result: crate::common::types::agent::AgentRenameResult {
                 old_name: "a".to_string(),
                 new_name: "b".to_string(),
-                from_team: "t".to_string(),
-                to_team: "t".to_string(),
                 new_config_path: std::path::PathBuf::from("/tmp"),
             },
         };
@@ -2497,16 +2481,14 @@ mod tests {
         let resp = ResponsePacket::AgentExported {
             request_id: 2200,
             name: "test-agent".to_string(),
-            team: "default".to_string(),
             output_path: "/tmp/export.zip".to_string(),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::AgentExported { request_id, name, team, output_path } => {
+            ResponsePacket::AgentExported { request_id, name, output_path } => {
                 assert_eq!(request_id, 2200);
                 assert_eq!(name, "test-agent");
-                assert_eq!(team, "default");
                 assert_eq!(output_path, "/tmp/export.zip");
             }
             _ => panic!("Wrong variant"),
@@ -2518,16 +2500,14 @@ mod tests {
         let resp = ResponsePacket::AgentImported {
             request_id: 2201,
             name: "test-agent".to_string(),
-            team: "default".to_string(),
             config_path: "/tmp/agents/test-agent/config.toml".to_string(),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::AgentImported { request_id, name, team, config_path } => {
+            ResponsePacket::AgentImported { request_id, name, config_path } => {
                 assert_eq!(request_id, 2201);
                 assert_eq!(name, "test-agent");
-                assert_eq!(team, "default");
                 assert_eq!(config_path, "/tmp/agents/test-agent/config.toml");
             }
             _ => panic!("Wrong variant"),
@@ -2559,7 +2539,6 @@ mod tests {
         let resp_exported = ResponsePacket::AgentExported {
             request_id: 10,
             name: "a".to_string(),
-            team: "t".to_string(),
             output_path: "/tmp/x.zip".to_string(),
         };
         assert_eq!(resp_exported.request_id(), 10);
@@ -2567,7 +2546,6 @@ mod tests {
         let resp_imported = ResponsePacket::AgentImported {
             request_id: 11,
             name: "a".to_string(),
-            team: "t".to_string(),
             config_path: "/tmp/a/config.toml".to_string(),
         };
         assert_eq!(resp_imported.request_id(), 11);

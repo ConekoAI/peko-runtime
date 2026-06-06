@@ -2,9 +2,21 @@
 //!
 //! Provides filesystem-based team operations used by both CLI and API.
 //! All business logic for team management lives here.
+//!
+//! # Membership Model (ADR-031)
+//!
+//! Teams no longer own agents. Instead, agents exist independently and
+//! join teams via explicit membership. Membership is stored bidirectionally:
+//!
+//! - Agent-side: `agents/{agent}/memberships.toml`
+//! - Team-side: `teams/{team}/members.toml`
 
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
+use crate::common::types::membership::{
+    AgentMembership, AgentMemberships, MembershipRole, TeamJoinResult, TeamLeaveResult, TeamMember,
+    TeamMembers,
+};
 use crate::common::types::team::{
     TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo,
     TeamMetadata, TeamMoveResult,
@@ -53,8 +65,7 @@ impl TeamService {
         }
 
         // Create team directory structure
-        let agents_dir = team_dir.join("agents");
-        tokio::fs::create_dir_all(&agents_dir).await?;
+        tokio::fs::create_dir_all(&team_dir).await?;
 
         // Create team metadata file
         let metadata = TeamMetadata {
@@ -66,6 +77,10 @@ impl TeamService {
         let metadata_path = team_dir.join("team.toml");
         let metadata_content = toml::to_string_pretty(&metadata)?;
         tokio::fs::write(&metadata_path, metadata_content).await?;
+
+        // Initialize empty members file
+        let members = TeamMembers::new();
+        members.save(&self.resolver.team_members(name))?;
 
         Ok(TeamCreationResult {
             metadata,
@@ -101,7 +116,7 @@ impl TeamService {
             }
 
             let metadata = load_team_metadata(&path, &team_name).await;
-            let agent_count = count_agents_in_team(&path).await;
+            let agent_count = self.count_team_members(&team_name).await;
 
             teams.push(TeamInfo {
                 name: team_name,
@@ -139,7 +154,7 @@ impl TeamService {
         }
 
         let metadata = load_team_metadata(&team_dir, name).await;
-        let agent_count = count_agents_in_team(&team_dir).await;
+        let agent_count = self.count_team_members(name).await;
 
         Ok(Some(TeamInfo {
             name: name.to_string(),
@@ -149,7 +164,9 @@ impl TeamService {
         }))
     }
 
-    /// Get agents in a team with their configs
+    /// Get agents in a team with their configs.
+    ///
+    /// Returns membership-based agents from the new layout.
     pub async fn get_team_agents(&self, name: &str) -> Result<Vec<(String, AgentConfig)>> {
         let team_dir = self.resolver.team_dir(name);
 
@@ -157,17 +174,35 @@ impl TeamService {
             anyhow::bail!("Team '{name}' not found");
         }
 
-        list_agents_in_team(&team_dir).await
+        let mut agents = Vec::new();
+
+        // Get members from the membership model
+        let members_path = self.resolver.team_members(name);
+        if members_path.exists() {
+            let members = TeamMembers::load(&members_path)?;
+            for member in &members.members {
+                let agent_name = &member.agent;
+                let config_path = self.resolver.agent_config(agent_name);
+                if config_path.exists() {
+                    if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
+                        if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
+                            agents.push((agent_name.clone(), config));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort alphabetically
+        agents.sort_by(|a, b| a.0.cmp(&b.0));
+
+        Ok(agents)
     }
 
-    /// Delete a team and all its agents
+    /// Delete a team.
     ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The team name is invalid
-    /// - The team is the default team (cannot be deleted)
-    /// - The team doesn't exist
-    /// - The filesystem operation fails
+    /// In the new model, deleting a team removes the team directory and
+    /// membership references, but does NOT delete the member agents.
     pub async fn delete_team(&self, name: &str) -> Result<TeamDeletionResult> {
         // Validate team name
         if let Err(e) = validate_team_name(name) {
@@ -185,26 +220,34 @@ impl TeamService {
             anyhow::bail!("Team '{name}' not found");
         }
 
-        let agent_count = count_agents_in_team(&team_dir).await;
+        let member_count = self.count_team_members(name).await;
 
-        // Delete team directory
+        // Remove memberships from all member agents
+        let members_path = self.resolver.team_members(name);
+        if members_path.exists() {
+            let members = TeamMembers::load(&members_path)?;
+            for member in &members.members {
+                let agent_memberships_path = self.resolver.agent_memberships(&member.agent);
+                if agent_memberships_path.exists() {
+                    if let Ok(mut agent_memberships) = AgentMemberships::load(&agent_memberships_path)
+                    {
+                        agent_memberships.remove(name);
+                        let _ = agent_memberships.save(&agent_memberships_path);
+                    }
+                }
+            }
+        }
+
+        // Delete team directory (this removes members.toml, team.toml, etc.)
         tokio::fs::remove_dir_all(&team_dir).await?;
 
         Ok(TeamDeletionResult {
             name: name.to_string(),
-            agents_deleted: agent_count,
+            agents_deleted: member_count,
         })
     }
 
     /// Move/rename a team
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - Either team name is invalid
-    /// - The source team doesn't exist
-    /// - The target team already exists
-    /// - The team is the default team (cannot be renamed)
-    /// - The filesystem operation fails
     pub async fn move_team(&self, old_name: &str, new_name: &str) -> Result<TeamMoveResult> {
         // Validate team names
         if let Err(e) = validate_team_name(old_name) {
@@ -233,7 +276,31 @@ impl TeamService {
         }
 
         // Count agents before move
-        let agents_moved = count_agents_in_team(&old_team_dir).await;
+        let agents_moved = self.count_team_members(old_name).await;
+
+        // Update agent memberships to point to the new team name
+        let members_path = self.resolver.team_members(old_name);
+        if members_path.exists() {
+            let members = TeamMembers::load(&members_path)?;
+            for member in &members.members {
+                let agent_memberships_path = self.resolver.agent_memberships(&member.agent);
+                if agent_memberships_path.exists() {
+                    if let Ok(mut agent_memberships) = AgentMemberships::load(&agent_memberships_path)
+                    {
+                        if let Some(m) = agent_memberships.get(old_name) {
+                            let updated = AgentMembership {
+                                team: new_name.to_string(),
+                                joined_at: m.joined_at.clone(),
+                                role: m.role,
+                            };
+                            agent_memberships.remove(old_name);
+                            agent_memberships.add(updated);
+                            let _ = agent_memberships.save(&agent_memberships_path);
+                        }
+                    }
+                }
+            }
+        }
 
         // Update metadata file if it exists
         let metadata_path = old_team_dir.join("team.toml");
@@ -256,6 +323,122 @@ impl TeamService {
             new_path: new_team_dir,
             agents_moved,
         })
+    }
+
+    // ========================================================================
+    // Membership Operations (NEW - ADR-031)
+    // ========================================================================
+
+    /// Add an agent to a team (join).
+    ///
+    /// Updates both the team's members.toml and the agent's memberships.toml.
+    pub async fn join_team(
+        &self,
+        team: &str,
+        agent: &str,
+        role: MembershipRole,
+    ) -> Result<TeamJoinResult> {
+        // Validate team exists
+        if !self.team_exists(team) {
+            anyhow::bail!("Team '{team}' not found");
+        }
+
+        // Validate agent exists
+        if !self.resolver.agent_exists(agent) {
+            anyhow::bail!("Agent '{agent}' not found");
+        }
+
+        let joined_at = chrono::Utc::now().to_rfc3339();
+
+        // Update team-side members.toml
+        let members_path = self.resolver.team_members(team);
+        let mut members = TeamMembers::load(&members_path)?;
+        members.add(TeamMember {
+            agent: agent.to_string(),
+            joined_at: joined_at.clone(),
+            role,
+        });
+        members.save(&members_path)?;
+
+        // Update agent-side memberships.toml
+        let memberships_path = self.resolver.agent_memberships(agent);
+        let mut memberships = AgentMemberships::load(&memberships_path)?;
+        memberships.add(AgentMembership {
+            team: team.to_string(),
+            joined_at: joined_at.clone(),
+            role,
+        });
+        memberships.save(&memberships_path)?;
+
+        Ok(TeamJoinResult {
+            agent: agent.to_string(),
+            team: team.to_string(),
+            role,
+        })
+    }
+
+    /// Remove an agent from a team (leave).
+    ///
+    /// Updates both the team's members.toml and the agent's memberships.toml.
+    pub async fn leave_team(&self, team: &str, agent: &str) -> Result<TeamLeaveResult> {
+        // Validate team exists
+        if !self.team_exists(team) {
+            anyhow::bail!("Team '{team}' not found");
+        }
+
+        let members_path = self.resolver.team_members(team);
+        let mut members = TeamMembers::load(&members_path)?;
+        let was_member = members.has_member(agent);
+        members.remove(agent);
+        members.save(&members_path)?;
+
+        // Update agent-side memberships.toml
+        let memberships_path = self.resolver.agent_memberships(agent);
+        if memberships_path.exists() {
+            if let Ok(mut memberships) = AgentMemberships::load(&memberships_path) {
+                memberships.remove(team);
+                let _ = memberships.save(&memberships_path);
+            }
+        }
+
+        Ok(TeamLeaveResult {
+            agent: agent.to_string(),
+            team: team.to_string(),
+            was_member,
+        })
+    }
+
+    /// Get the members of a team
+    pub async fn get_members(&self, team: &str) -> Result<TeamMembers> {
+        if !self.team_exists(team) {
+            anyhow::bail!("Team '{team}' not found");
+        }
+
+        let members_path = self.resolver.team_members(team);
+        Ok(TeamMembers::load(&members_path)?)
+    }
+
+    /// Get the teams an agent belongs to
+    pub async fn get_agent_memberships(&self, agent: &str) -> Result<AgentMemberships> {
+        let memberships_path = self.resolver.agent_memberships(agent);
+        Ok(AgentMemberships::load(&memberships_path)?)
+    }
+
+    /// Check if an agent is a member of a team
+    pub async fn is_member(&self, team: &str, agent: &str) -> Result<bool> {
+        let members = self.get_members(team).await?;
+        Ok(members.has_member(agent))
+    }
+
+    /// Count the number of members in a team
+    async fn count_team_members(&self, team_name: &str) -> usize {
+        let members_path = self.resolver.team_members(team_name);
+        if members_path.exists() {
+            if let Ok(members) = TeamMembers::load(&members_path) {
+                return members.members.len();
+            }
+        }
+        0
     }
 
     /// Check if a team exists
@@ -318,7 +501,7 @@ impl TeamService {
         // Get base directory for workspace/sessions paths
         let base_dir = self.resolver.data_dir();
 
-        // Export the team — pass config_dir so team.toml is included
+        // Export the team
         let config_dir = self.resolver.config_dir().to_path_buf();
         let output_path = portable::export_team_with_config_dir(
             name,
@@ -362,8 +545,6 @@ impl TeamService {
             anyhow::bail!("Team '{team_name}' already exists. Use --force to overwrite.");
         }
 
-        // Import options
-        // Note: force is always true here because TeamService already handled the existence check
         let import_opts = TeamImportOptions {
             new_name: new_name.clone(),
             import_sessions: true,
@@ -373,11 +554,9 @@ impl TeamService {
             force: true,
         };
 
-        // Get config directory for base path (must match PathResolver's config_dir)
         let config_dir = self.resolver.config_dir();
         let result_team_dir = self.resolver.team_dir(team_name);
 
-        // Import the team with correct base directory
         let result = portable::import_team_with_base_dir(&path, &config_dir, import_opts)
             .await
             .with_context(|| format!("Failed to import team from '{file_path}'"))?;
@@ -387,7 +566,6 @@ impl TeamService {
         if team_toml_path.exists() {
             if let Ok(content) = tokio::fs::read_to_string(&team_toml_path).await {
                 if let Ok(mut metadata) = toml::from_str::<TeamMetadata>(&content) {
-                    // Update name in case it was imported with a different name
                     metadata.name = team_name.to_string();
                     if let Ok(updated) = toml::to_string_pretty(&metadata) {
                         let _ = tokio::fs::write(&team_toml_path, updated).await;
@@ -407,14 +585,14 @@ impl TeamService {
 /// Load team metadata from team.toml
 async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata {
     let metadata_path = team_dir.join("team.toml");
-    
+
     // Try to read existing team.toml
     if let Ok(content) = tokio::fs::read_to_string(&metadata_path).await {
         if let Ok(metadata) = toml::from_str::<TeamMetadata>(&content) {
             return metadata;
         }
     }
-    
+
     // Fallback: generate metadata from directory creation time or current time
     let created_at = tokio::fs::metadata(team_dir)
         .await
@@ -427,84 +605,12 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
             dt.to_rfc3339()
         })
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-    
+
     TeamMetadata {
         name: team_name.to_string(),
         description: None,
         created_at,
     }
-}
-
-/// Count agents in a team
-/// Only counts directories with a valid, parseable config.toml
-async fn count_agents_in_team(team_dir: &PathBuf) -> usize {
-    use crate::types::agent::AgentConfig;
-
-    let agents_dir = team_dir.join("agents");
-
-    if !agents_dir.exists() {
-        return 0;
-    }
-
-    match tokio::fs::read_dir(&agents_dir).await {
-        Ok(mut entries) => {
-            let mut count = 0;
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-
-                // Only count if config.toml exists and is valid
-                let config_path = path.join("config.toml");
-                if config_path.exists() {
-                    if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
-                        if toml::from_str::<AgentConfig>(&content).is_ok() {
-                            count += 1;
-                        }
-                    }
-                }
-            }
-            count
-        }
-        Err(_) => 0,
-    }
-}
-
-/// List agents in a team with their configs
-async fn list_agents_in_team(team_dir: &PathBuf) -> Result<Vec<(String, AgentConfig)>> {
-    let agents_dir = team_dir.join("agents");
-    let mut agents = Vec::new();
-
-    if !agents_dir.exists() {
-        return Ok(agents);
-    }
-
-    let mut entries = tokio::fs::read_dir(&agents_dir).await?;
-
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let agent_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let config_path = path.join("config.toml");
-        if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
-            if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
-                agents.push((agent_name, config));
-            }
-        }
-    }
-
-    // Sort alphabetically
-    agents.sort_by(|a, b| a.0.cmp(&b.0));
-
-    Ok(agents)
 }
 
 /// Map validation error to anyhow error with descriptive message
@@ -537,5 +643,255 @@ mod tests {
     fn test_team_service_creation() {
         let resolver = PathResolver::new();
         let _service = TeamService::new(resolver);
+    }
+
+    // ========================================================================
+    // Membership Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_join_team_adds_bidirectional_membership() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
+        let service = TeamService::new(resolver.clone());
+
+        // Create team
+        service.create_team("engineering", None).await.unwrap();
+
+        // Create agent in new layout
+        let agent_dir = config_dir.join("agents").join("alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
+
+        // Join team
+        let result = service
+            .join_team("engineering", "alice", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        assert_eq!(result.agent, "alice");
+        assert_eq!(result.team, "engineering");
+        assert_eq!(result.role, MembershipRole::Member);
+
+        // Verify team-side members.toml
+        let members = service.get_members("engineering").await.unwrap();
+        assert!(members.has_member("alice"));
+        assert_eq!(members.len(), 1);
+
+        // Verify agent-side memberships.toml
+        let memberships = service.get_agent_memberships("alice").await.unwrap();
+        assert!(memberships.belongs_to("engineering"));
+        assert_eq!(memberships.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_leave_team_removes_bidirectional_membership() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
+        let service = TeamService::new(resolver.clone());
+
+        // Create team and agent
+        service.create_team("engineering", None).await.unwrap();
+        let agent_dir = config_dir.join("agents").join("alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
+
+        // Join then leave
+        service
+            .join_team("engineering", "alice", MembershipRole::Member)
+            .await
+            .unwrap();
+        let result = service.leave_team("engineering", "alice").await.unwrap();
+
+        assert!(result.was_member);
+
+        // Verify removed from both sides
+        let members = service.get_members("engineering").await.unwrap();
+        assert!(!members.has_member("alice"));
+
+        let memberships = service.get_agent_memberships("alice").await.unwrap();
+        assert!(!memberships.belongs_to("engineering"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_team_removes_memberships_but_not_agents() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
+        let service = TeamService::new(resolver.clone());
+
+        // Create team and agent
+        service.create_team("engineering", None).await.unwrap();
+        let agent_dir = config_dir.join("agents").join("alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
+
+        service
+            .join_team("engineering", "alice", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        // Delete team
+        let result = service.delete_team("engineering").await.unwrap();
+        assert_eq!(result.agents_deleted, 1);
+
+        // Agent should still exist
+        assert!(agent_dir.exists());
+
+        // Agent should no longer have engineering membership
+        let memberships = service.get_agent_memberships("alice").await.unwrap();
+        assert!(!memberships.belongs_to("engineering"));
+    }
+
+    #[tokio::test]
+    async fn test_move_team_updates_memberships() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
+        let service = TeamService::new(resolver.clone());
+
+        // Create teams and agent
+        service.create_team("engineering", None).await.unwrap();
+        let agent_dir = config_dir.join("agents").join("alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
+
+        service
+            .join_team("engineering", "alice", MembershipRole::Admin)
+            .await
+            .unwrap();
+
+        // Move team
+        let result = service.move_team("engineering", "dev").await.unwrap();
+        assert_eq!(result.agents_moved, 1);
+
+        // Agent's membership should point to new team name
+        let memberships = service.get_agent_memberships("alice").await.unwrap();
+        assert!(!memberships.belongs_to("engineering"));
+        assert!(memberships.belongs_to("dev"));
+
+        // Role should be preserved
+        let m = memberships.get("dev").unwrap();
+        assert_eq!(m.role, MembershipRole::Admin);
+    }
+
+    #[tokio::test]
+    async fn test_multi_team_membership() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
+        let service = TeamService::new(resolver.clone());
+
+        // Create teams and agent
+        service.create_team("engineering", None).await.unwrap();
+        service.create_team("ops", None).await.unwrap();
+
+        let agent_dir = config_dir.join("agents").join("alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
+
+        // Join multiple teams
+        service
+            .join_team("engineering", "alice", MembershipRole::Member)
+            .await
+            .unwrap();
+        service
+            .join_team("ops", "alice", MembershipRole::Admin)
+            .await
+            .unwrap();
+
+        // Verify agent belongs to both
+        let memberships = service.get_agent_memberships("alice").await.unwrap();
+        assert!(memberships.belongs_to("engineering"));
+        assert!(memberships.belongs_to("ops"));
+        assert_eq!(memberships.len(), 2);
+
+        // Verify both teams list alice as member
+        let eng_members = service.get_members("engineering").await.unwrap();
+        assert!(eng_members.has_member("alice"));
+
+        let ops_members = service.get_members("ops").await.unwrap();
+        assert!(ops_members.has_member("alice"));
+    }
+
+    #[tokio::test]
+    async fn test_join_nonexistent_team_fails() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let resolver = PathResolver::with_dirs(
+            temp_dir.path().join("config"),
+            temp_dir.path().join("data"),
+            temp_dir.path().join("cache"),
+        );
+        let service = TeamService::new(resolver);
+
+        let result = service
+            .join_team("nonexistent", "alice", MembershipRole::Member)
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_join_nonexistent_agent_fails() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let resolver = PathResolver::with_dirs(
+            temp_dir.path().join("config"),
+            temp_dir.path().join("data"),
+            temp_dir.path().join("cache"),
+        );
+        let service = TeamService::new(resolver);
+
+        service.create_team("engineering", None).await.unwrap();
+
+        let result = service
+            .join_team("engineering", "nonexistent", MembershipRole::Member)
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_list_teams_counts_members() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
+        let service = TeamService::new(resolver.clone());
+
+        service.create_team("engineering", None).await.unwrap();
+
+        let agent_dir = config_dir.join("agents").join("alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
+
+        service
+            .join_team("engineering", "alice", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let teams = service.list_teams().await.unwrap();
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].agent_count, 1);
     }
 }

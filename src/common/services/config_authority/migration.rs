@@ -64,8 +64,7 @@ pub async fn migrate_json_entry(
         .with_context(|| format!("Failed to parse JSON: {}", json_path.display()))?;
 
     // Determine TOML path
-    let team = entry.team_id.as_deref().unwrap_or("default");
-    let toml_path = resolver.agent_config(&entry.name, Some(team));
+    let toml_path = resolver.agent_config(&entry.name);
 
     // Skip if TOML already exists
     if toml_path.exists() {

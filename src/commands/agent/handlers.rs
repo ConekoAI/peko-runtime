@@ -10,7 +10,7 @@ use crate::common::config_path;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::ConfigAuthority;
 use crate::common::services::CredentialsService;
-use crate::common::types::agent::{AgentCreateRequest, AgentImportOptions};
+use crate::common::types::agent::AgentImportOptions;
 use crate::portable::manifest::{AgentLayers, AgentManifest};
 use crate::portable::registry::AgentRegistry;
 use crate::portable::types::{ImageDigest, Layer, LayerType};
@@ -29,32 +29,19 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
     match response {
         crate::ipc::ResponsePacket::AgentList { agents, .. } => {
             if json {
-                // Build JSON output with team structure
-                let mut teams: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
-                let mut total_agents = 0;
-
-                for agent in &agents {
-                    let entry = serde_json::json!({
-                        "name": agent.name,
-                        "provider": format!("{:?}", agent.config.provider.provider_type),
-                        "model": agent.config.provider.default_model,
-                        "description": agent.config.description,
-                    });
-                    teams.entry(agent.team.clone()).or_default().push(entry);
-                    total_agents += 1;
-                }
-
-                let teams_json: Vec<_> = teams
-                    .into_iter()
-                    .map(|(name, agents)| {
+                let entries: Vec<_> = agents
+                    .iter()
+                    .map(|agent| {
                         serde_json::json!({
-                            "name": name,
-                            "agents": agents
+                            "name": agent.name,
+                            "provider": format!("{:?}", agent.config.provider.provider_type),
+                            "model": agent.config.provider.default_model,
+                            "description": agent.config.description,
                         })
                     })
                     .collect();
 
-                let output = serde_json::json!({"teams": teams_json, "total_agents": total_agents});
+                let output = serde_json::json!({"agents": entries, "total_agents": agents.len()});
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else if agents.is_empty() {
                 println!("No agents configured.");
@@ -62,39 +49,16 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
             } else {
                 println!("🐱 Configured Agents ({}):", agents.len());
 
-                // Group by team
-                let mut teams: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
                 for agent in agents {
-                    teams.entry(agent.team.clone()).or_default().push(agent);
-                }
-
-                // Sort teams: default first, then alphabetically
-                let mut team_names: Vec<_> = teams.keys().cloned().collect();
-                team_names.sort_by(|a, b| {
-                    if a == "default" {
-                        return std::cmp::Ordering::Less;
-                    }
-                    if b == "default" {
-                        return std::cmp::Ordering::Greater;
-                    }
-                    a.cmp(b)
-                });
-
-                for team_name in team_names {
-                    let team_agents = teams.get(&team_name).unwrap();
-                    println!("\n  📁 Team: {team_name}");
-
-                    for agent in team_agents {
-                        if long {
-                            println!("\n    📦 {}", agent.name);
-                            println!("       Provider: {:?}", agent.config.provider.provider_type);
-                            println!("       Model: {}", agent.config.provider.default_model);
-                            if let Some(desc) = &agent.config.description {
-                                println!("       Description: {desc}");
-                            }
-                        } else {
-                            println!("    📦 {}", agent.name);
+                    if long {
+                        println!("\n  📦 {}", agent.name);
+                        println!("     Provider: {:?}", agent.config.provider.provider_type);
+                        println!("     Model: {}", agent.config.provider.default_model);
+                        if let Some(desc) = &agent.config.description {
+                            println!("     Description: {desc}");
                         }
+                    } else {
+                        println!("  📦 {}", agent.name);
                     }
                 }
             }
@@ -123,14 +87,12 @@ pub async fn handle_agent_show(
             if json {
                 let output = serde_json::json!({
                     "name": agent.name,
-                    "team": agent.team,
                     "config": agent.config,
                     "session_count": agent.session_count,
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("📦 Agent: {}", agent.name);
-                println!("   Team: {}", agent.team);
                 println!("   Config: {}", agent.config_path.display());
                 println!("   Provider: {:?}", agent.config.provider.provider_type);
                 println!("   Model: {}", agent.config.provider.default_model);
@@ -150,24 +112,21 @@ pub async fn handle_agent_show(
 pub async fn handle_agent_create(
     _paths: &GlobalPaths,
     name: String,
-    team: Option<String>,
+    _team: Option<String>,
     provider: String,
     force: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let mut request = AgentCreateRequest::new(&name, &provider)
+    let request = crate::common::types::agent::AgentCreateRequest::new(&name, &provider)
         .with_force(force);
-    if let Some(team) = team {
-        request = request.with_team(team);
-    }
     let packet = crate::ipc::RequestPacket::AgentCreate { request_id: 1, request };
     let response = client.request_response(packet).await?;
 
     match response {
         crate::ipc::ResponsePacket::AgentCreated { result, .. } => {
             println!(
-                "✅ Created agent '{}' in team '{}'",
-                result.name, result.team
+                "✅ Created agent '{}'",
+                result.name
             );
             println!("   Provider: {}", result.provider);
             println!("   Config: {}", result.config_path.display());
@@ -195,8 +154,8 @@ pub async fn handle_agent_remove(
         crate::ipc::ResponsePacket::AgentDeleted { result, .. } => {
             if json {
                 println!(
-                    "{{\"success\": true, \"name\": \"{}\", \"team\": \"{}\", \"purged\": {}}}",
-                    result.name, result.team, purge
+                    "{{\"success\": true, \"name\": \"{}\", \"purged\": {}}}",
+                    result.name, purge
                 );
             } else {
                 if purge {
@@ -204,8 +163,8 @@ pub async fn handle_agent_remove(
                 }
 
                 println!(
-                    "✅ Deleted agent '{}' from team '{}'",
-                    result.name, result.team
+                    "✅ Deleted agent '{}'",
+                    result.name
                 );
             }
             Ok(())
@@ -220,7 +179,7 @@ pub async fn handle_agent_move(
     old_name: String,
     new_name: String,
     team: Option<String>,
-    to_team: Option<String>,
+    _to_team: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
@@ -229,7 +188,6 @@ pub async fn handle_agent_move(
         old_name,
         new_name,
         team,
-        to_team,
     };
     let response = client.request_response(packet).await?;
 
@@ -237,21 +195,14 @@ pub async fn handle_agent_move(
         crate::ipc::ResponsePacket::AgentMoved { result, .. } => {
             if json {
                 println!(
-                    "{{\"success\": true, \"old_name\": \"{}\", \"new_name\": \"{}\", \"team\": \"{}\"}}",
-                    result.old_name, result.new_name, result.to_team
+                    "{{\"success\": true, \"old_name\": \"{}\", \"new_name\": \"{}\"}}",
+                    result.old_name, result.new_name
                 );
             } else {
-                if result.from_team == result.to_team {
-                    println!(
-                        "✅ Renamed agent '{}' to '{}' in team '{}'",
-                        result.old_name, result.new_name, result.from_team
-                    );
-                } else {
-                    println!(
-                        "✅ Moved agent '{}' from team '{}' to '{}' as '{}'",
-                        result.old_name, result.from_team, result.to_team, result.new_name
-                    );
-                }
+                println!(
+                    "✅ Renamed agent '{}' to '{}'",
+                    result.old_name, result.new_name
+                );
                 println!("   Config: {}", result.new_config_path.display());
             }
             Ok(())
@@ -273,10 +224,10 @@ pub async fn handle_agent_export(
     let response = client.request_response(packet).await?;
 
     match response {
-        crate::ipc::ResponsePacket::AgentExported { name, team, output_path, .. } => {
+        crate::ipc::ResponsePacket::AgentExported { name, output_path, .. } => {
             println!(
-                "📦 Exported agent '{}' from team '{}' to '{}'",
-                name, team, output_path
+                "📦 Exported agent '{}' to '{}'",
+                name, output_path
             );
             Ok(())
         }
@@ -296,9 +247,8 @@ pub async fn handle_agent_import(
     let response = client.request_response(packet).await?;
 
     match response {
-        crate::ipc::ResponsePacket::AgentImported { name, team, config_path, .. } => {
+        crate::ipc::ResponsePacket::AgentImported { name, config_path, .. } => {
             println!("📥 Imported '{}' as '{}'", file_path, name);
-            println!("   Team: {}", team);
             println!("   Config: {}", config_path);
             Ok(())
         }
@@ -404,12 +354,12 @@ async fn handle_agent_config_set(
     let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
 
     let mut entry = config_service
-        .get(agent_name, Some(team))
+        .get(agent_name)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found in team '{team}'"))?;
 
     config_path::set_config_value(&mut entry.config, &key, &value)?;
-    config_service.save(agent_name, team, &entry.config).await?;
+    config_service.save(agent_name, &entry.config).await?;
 
     if json {
         println!(
@@ -838,7 +788,6 @@ pub async fn handle_agent_pull(
     let service = paths.services().agent();
     let import_opts = AgentImportOptions {
         name: None, // Use manifest name from package
-        team,
         force,
     };
     let result = service.import_agent(&temp_path, import_opts).await?;
@@ -851,7 +800,6 @@ pub async fn handle_agent_pull(
             "success": true,
             "registry_ref": resolved_ref,
             "name": result.name,
-            "team": result.team,
             "config_path": result.config_path,
             "manifest": {
                 "name": manifest.name,
@@ -863,9 +811,9 @@ pub async fn handle_agent_pull(
         });
         println!("{}", serde_json::to_string_pretty(&output_json)?);
     } else {
-        println!("📥 Imported '{}' into team '{}'", result.name, result.team);
+        println!("📥 Imported '{}'", result.name);
         println!("   Config: {}", result.config_path.display());
-        println!("   Use: peko send {}/{} <message>", result.team, result.name);
+        println!("   Use: peko send {} <message>", result.name);
     }
 
     Ok(())
