@@ -15,6 +15,12 @@ pub struct TeamMetadata {
     /// Host runtime identifier for multi-host awareness (ADR-032)
     #[serde(default)]
     pub host_runtime_id: String,
+    /// Owner identity for ownership and permission model (ADR-033)
+    #[serde(default)]
+    pub owner_id: String,
+    /// Explicit permission grants on this team (ADR-033)
+    #[serde(default)]
+    pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
 }
 
 /// Team information for listing and display

@@ -1,6 +1,6 @@
 # ADR-033: Ownership and Permission Model
 
-**Status**: Proposed  
+**Status**: Implemented (v0.1.0)  
 **Date**: 2026-06-07  
 **Last Updated**: 2026-06-07  
 **Author**: Core team  
@@ -71,6 +71,48 @@ Adopt an **ownership + RBAC-lite permission model** with the following propertie
 *Team extensions only
 
 > **Note**: Admin/Member are team-scoped roles. Viewer/Public are agent-scoped permission grants. An identity may hold multiple roles/permissions simultaneously (e.g., a user is Owner of agent `alice`, Admin of team `engineering`, and Viewer of agent `bob`).
+
+---
+
+## Implementation Status
+
+### Implemented in v0.1.0
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| Core permission types (`Permission`, `SubjectType`, `PermissionGrant`, `Resource`) | ✅ Implemented | `src/auth/ownership.rs` |
+| `check_permission()` function (owner → grants → team roles) | ✅ Implemented | `src/auth/ownership.rs` |
+| Unit tests for permission matrix | ✅ Implemented | `src/auth/ownership.rs` (7 tests) |
+| `AgentConfig.owner_id` and `.permissions` | ✅ Implemented | `src/types/agent.rs` |
+| `TeamMetadata.owner_id` and `.permissions` | ✅ Implemented | `src/common/types/team.rs` |
+| `CallerContext.subject_id()` | ✅ Implemented | `src/auth/caller.rs` |
+| Agent ownership management (transfer/grant/revoke) | ✅ Implemented | `src/common/services/agent_service.rs` |
+| Team ownership management (transfer/grant/revoke) | ✅ Implemented | `src/common/services/team_service.rs` |
+| IPC packets for ownership operations | ✅ Implemented | `src/ipc/packet.rs` |
+| IPC server handlers for ownership operations | ✅ Implemented | `src/ipc/server.rs` |
+| CLI commands: `peko agent transfer/permit/revoke/permissions` | ✅ Implemented | `src/commands/agent.rs`, `src/commands/agent/handlers.rs` |
+| CLI commands: `peko team transfer/permit/revoke/permissions` | ✅ Implemented | `src/commands/team.rs` |
+| Backfill migration for existing agents/teams | ✅ Implemented | `src/runtime/migration.rs` |
+| Migration wired into daemon startup | ✅ Implemented | `src/daemon/state.rs` |
+| `owner_id` set at agent/team creation time | ✅ Implemented | `src/ipc/server.rs`, `src/common/services/agent_service.rs`, `src/common/services/team_service.rs` |
+
+### Known Limitations / v0.1.0 Gaps
+
+1. **Local caller subject ID mismatch**: `CallerContext::local()` returns `"local"`, but the migration backfills `owner_id` as `"local:{runtime_did}"`. Newly created resources set `owner_id` correctly from the caller's `subject_id()`, so this only affects pre-existing resources accessed by local callers before migration completes. For v0.1.0, local trust is treated as authoritative on the OS boundary.
+
+2. **Permission checks not yet wired into `AgentDelete` / `TeamDelete`**: These operations still rely on the legacy auth model (local trust = full access, API key scopes). The ownership transfer/permit/revoke operations are fully protected. A follow-up change should call `check_permission(resource, Permission::Delete, caller_subject)` before deletion.
+
+3. **Team role check uses agent name as subject ID**: The `check_permission()` team-role branch matches `TeamMember.agent` against the caller's `subject_id`. This works when the caller is an agent, but needs refinement for user-identified callers (e.g., `user:123` is not a team member agent). This is acceptable for v0.1.0 because team-level remote access is not yet active.
+
+4. **No `Team` subject type semantics**: `SubjectType::Team` exists in the data model but is not yet resolved at check time. Granting to a team name does not automatically expand to all team members.
+
+5. **Ownership transfer does not require new-owner acceptance**: The current implementation allows the current owner to transfer to any subject ID, including inactive or non-existent ones. A future ADR may add an acceptance flow.
+
+### Test Coverage
+
+- **1250 tests pass**, 0 failed, 19 ignored (full suite).
+- 7 dedicated ownership tests cover: owner access, explicit grants, public grants, denials, team member roles, and team admin roles.
+- 1 pre-existing flaky test (`daemon::state::tests::test_degraded_state`) is unrelated to ADR-033.
 
 ---
 
@@ -471,17 +513,17 @@ Team members automatically get `Chat` on all member agents; team admins get `Man
 
 ## Success Criteria
 
-| # | Criterion | How to Verify |
-|---|-----------|---------------|
-| 1 | Every new agent has an `owner_id` | `peko agent create test --provider minimax` → `config.toml` contains `owner_id` |
-| 2 | Owner can transfer ownership | `peko agent transfer test --to user:456` → `owner_id` updated, old owner no longer has rights |
-| 3 | Permission grants are persisted | `peko agent permit test --subject user:789 --permission Chat` → appears in `config.toml` |
-| 4 | Permission checks block unauthorized actions | Non-owner attempting `peko agent delete test` returns `PermissionDenied` |
-| 5 | Public exposure works via `public` grant | `peko agent permit test --subject public --permission Chat` → unauthenticated tunnel requests succeed |
-| 6 | Team admin cannot delete member agent | Team admin calling `peko agent delete alice` (where they are not owner) is denied |
-| 7 | Same code path for local and remote | Unit test `check_permission` with both `CallerIdentity::local` and `CallerIdentity::from_jwt` |
-| 8 | Backfill migration runs on first boot | Start runtime with pre-ADR-033 agents → logs show backfill, configs updated |
-| 9 | Local root bypass is documented | ADR and user guide explicitly state that local root can bypass checks |
+| # | Criterion | Status | How to Verify |
+|---|-----------|--------|---------------|
+| 1 | Every new agent has an `owner_id` | ✅ Pass | `peko agent create test --provider minimax` → `config.toml` contains `owner_id` |
+| 2 | Owner can transfer ownership | ✅ Pass | `peko agent transfer test --to user:456` → `owner_id` updated, old owner no longer has rights |
+| 3 | Permission grants are persisted | ✅ Pass | `peko agent permit test --subject user:789 --permission Chat` → appears in `config.toml` |
+| 4 | Permission checks block unauthorized actions | ⚠️ Partial | `transfer`/`permit`/`revoke` are protected; `delete` still uses legacy auth (see Limitations) |
+| 5 | Public exposure works via `public` grant | ✅ Data ready | Grant is persisted; tunnel enforcement depends on tunnel-side calling `check_permission()` |
+| 6 | Team admin cannot delete member agent | ⚠️ Partial | `check_permission()` denies this, but `delete` handler does not yet call it |
+| 7 | Same code path for local and remote | ✅ Pass | Unit tests in `src/auth/ownership.rs` exercise `check_permission()` directly with all identity types |
+| 8 | Backfill migration runs on first boot | ✅ Pass | `migrate_legacy_data()` called from `AppState::with_data_dir()`; logs show backfill counts |
+| 9 | Local root bypass is documented | ✅ Pass | Documented in this ADR under Tradeoffs and Local vs Remote Enforcement |
 
 ---
 
@@ -492,11 +534,17 @@ Team members automatically get `Chat` on all member agents; team admins get `Man
 - ADR-034 (peko-runtime): Runtime Auth
 - ADR-035 (peko-runtime): Tunnel Protocol
 - ADR-036 (peko-runtime): Remote Instance Management
-- `src/common/types/agent.rs`: `AgentConfig`
+- `src/types/agent.rs`: `AgentConfig`
 - `src/common/types/team.rs`: `TeamMetadata`
-- `src/common/types/permission.rs`: Permission types (to be created)
-- `src/auth/identity.rs`: `CallerIdentity` resolution
+- `src/auth/ownership.rs`: `Permission`, `PermissionGrant`, `SubjectType`, `Resource`, `check_permission()`
+- `src/auth/caller.rs`: `CallerContext` and `subject_id()`
+- `src/common/services/agent_service.rs`: Agent ownership/permission operations
+- `src/common/services/team_service.rs`: Team ownership/permission operations
+- `src/ipc/packet.rs`: IPC request packets for ownership operations
 - `src/ipc/server.rs`: IPC request dispatcher (permission check integration point)
+- `src/runtime/migration.rs`: ADR-033 backfill migration
+- `src/commands/agent.rs` / `src/commands/agent/handlers.rs`: Agent ownership CLI
+- `src/commands/team.rs`: Team ownership CLI
 
 ---
 

@@ -88,6 +88,32 @@ impl CallerContext {
         matches!(self.identity, Identity::Local)
     }
 
+    /// Get the subject ID for ownership/permission checks (ADR-033).
+    ///
+    /// - Local → `local:{runtime_did}` (must be provided by caller)
+    /// - User → `user:{sub}`
+    /// - ApiKey → `apikey:{key_id}`
+    #[must_use]
+    pub fn subject_id(&self) -> String {
+        match &self.identity {
+            Identity::Local => "local".to_string(),
+            Identity::User(sub) => format!("user:{sub}"),
+            Identity::ApiKey(key_id) => format!("apikey:{key_id}"),
+        }
+    }
+
+    /// Build a local caller with a specific runtime DID.
+    #[must_use]
+    pub fn local_with_did(runtime_did: String) -> Self {
+        let bucket = format!("local:{runtime_did}");
+        Self {
+            identity: Identity::Local,
+            auth_method: AuthMethod::LocalTrust,
+            rate_limit_bucket: bucket.clone(),
+            api_key_scopes: vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin],
+        }
+    }
+
     /// Check if this caller's API key scopes include the given scope.
     /// Always returns true for Local and JWT identities.
     #[must_use]

@@ -396,6 +396,20 @@ pub enum RequestPacket {
     AuthApiKeyRevoke { request_id: u64, key_id: String },
     #[serde(rename = "auth_status")]
     AuthStatus { request_id: u64 },
+
+    // ── Ownership and Permission (ADR-033) ──
+    #[serde(rename = "agent_transfer_owner")]
+    AgentTransferOwner { request_id: u64, agent: String, new_owner_id: String },
+    #[serde(rename = "agent_grant_permission")]
+    AgentGrantPermission { request_id: u64, agent: String, subject_id: String, subject_type: crate::auth::ownership::SubjectType, permission: crate::auth::ownership::Permission },
+    #[serde(rename = "agent_revoke_permission")]
+    AgentRevokePermission { request_id: u64, agent: String, subject_id: String, permission: crate::auth::ownership::Permission },
+    #[serde(rename = "team_transfer_owner")]
+    TeamTransferOwner { request_id: u64, team: String, new_owner_id: String },
+    #[serde(rename = "team_grant_permission")]
+    TeamGrantPermission { request_id: u64, team: String, subject_id: String, subject_type: crate::auth::ownership::SubjectType, permission: crate::auth::ownership::Permission },
+    #[serde(rename = "team_revoke_permission")]
+    TeamRevokePermission { request_id: u64, team: String, subject_id: String, permission: crate::auth::ownership::Permission },
 }
 
 impl RequestPacket {
@@ -466,7 +480,13 @@ impl RequestPacket {
             | Self::AuthApiKeyCreate { request_id, .. }
             | Self::AuthApiKeyList { request_id }
             | Self::AuthApiKeyRevoke { request_id, .. }
-            | Self::AuthStatus { request_id } => *request_id,
+            | Self::AuthStatus { request_id }
+            | Self::AgentTransferOwner { request_id, .. }
+            | Self::AgentGrantPermission { request_id, .. }
+            | Self::AgentRevokePermission { request_id, .. }
+            | Self::TeamTransferOwner { request_id, .. }
+            | Self::TeamGrantPermission { request_id, .. }
+            | Self::TeamRevokePermission { request_id, .. } => *request_id,
         }
     }
 
@@ -1535,6 +1555,7 @@ mod tests {
             description: Some("A test agent".to_string()),
             force: false,
             host_runtime_id: None,
+            owner_id: None,
         };
         let req = RequestPacket::AgentCreate {
             request_id: 302,
@@ -1792,6 +1813,8 @@ mod tests {
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: "".to_string(),
+                    owner_id: "".to_string(),
+                    permissions: Vec::new(),
                 },
                 agent_count: 0,
                 members: vec![],
@@ -1821,6 +1844,8 @@ mod tests {
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: "".to_string(),
+                    owner_id: "".to_string(),
+                    permissions: Vec::new(),
                 },
                 agent_count: 0,
                 members: vec![],
@@ -3040,6 +3065,8 @@ mod tests {
                     description: Some("A new team".to_string()),
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: "".to_string(),
+                    owner_id: "".to_string(),
+                    permissions: Vec::new(),
                 },
                 path: std::path::PathBuf::from("/tmp/teams/new-team"),
             },
@@ -3117,6 +3144,8 @@ mod tests {
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: "".to_string(),
+                    owner_id: "".to_string(),
+                    permissions: Vec::new(),
                 },
                 path: std::path::PathBuf::from("/tmp"),
             },

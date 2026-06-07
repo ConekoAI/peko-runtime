@@ -153,6 +153,45 @@ pub enum TeamCommands {
         #[arg(long)]
         no_extensions: bool,
     },
+
+    /// Transfer ownership of a team
+    Transfer {
+        /// Team name
+        name: String,
+        /// New owner ID (e.g., user:456)
+        #[arg(short, long)]
+        to: String,
+    },
+
+    /// Grant a permission on a team
+    Permit {
+        /// Team name
+        name: String,
+        /// Subject to grant permission to
+        #[arg(short, long)]
+        subject: String,
+        /// Permission to grant
+        #[arg(short, long)]
+        permission: String,
+    },
+
+    /// Revoke a permission from a team
+    Revoke {
+        /// Team name
+        name: String,
+        /// Subject to revoke permission from
+        #[arg(short, long)]
+        subject: String,
+        /// Permission to revoke
+        #[arg(short, long)]
+        permission: String,
+    },
+
+    /// List permission grants on a team
+    Permissions {
+        /// Team name
+        name: String,
+    },
 }
 
 /// Resolve registry configuration for push/pull operations
@@ -394,6 +433,136 @@ pub async fn handle_team(
             json: pull_json,
             no_extensions,
         } => handle_team_pull(paths, registry_ref, name, force, pull_json, cli_registry, no_extensions).await,
+        TeamCommands::Transfer { name, to } => {
+            let packet = crate::ipc::RequestPacket::TeamTransferOwner { request_id: 1, team: name.clone(), new_owner_id: to.clone() };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::Done { success, error, .. } => {
+                    if success {
+                        if json {
+                            println!("{{\"success\": true, \"team\": \"{name}\", \"new_owner\": \"{to}\"}}");
+                        } else {
+                            println!("✅ Transferred ownership of team '{name}' to {to}");
+                        }
+                        Ok(())
+                    } else {
+                        anyhow::bail!("Transfer failed: {}", error.unwrap_or_default())
+                    }
+                }
+                crate::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!("Transfer failed: {message}"),
+                _ => anyhow::bail!("Unexpected response"),
+            }
+        }
+        TeamCommands::Permit { name, subject, permission } => {
+            let subject_type = if subject == "public" {
+                crate::auth::ownership::SubjectType::Public
+            } else {
+                crate::auth::ownership::SubjectType::User
+            };
+            let permission = parse_team_permission(&permission)?;
+            let packet = crate::ipc::RequestPacket::TeamGrantPermission {
+                request_id: 1,
+                team: name.clone(),
+                subject_id: subject.clone(),
+                subject_type,
+                permission,
+            };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::Done { success, error, .. } => {
+                    if success {
+                        if json {
+                            println!("{{\"success\": true, \"team\": \"{name}\", \"subject\": \"{subject}\"}}");
+                        } else {
+                            println!("✅ Granted permission on team '{name}' to {subject}");
+                        }
+                        Ok(())
+                    } else {
+                        anyhow::bail!("Permit failed: {}", error.unwrap_or_default())
+                    }
+                }
+                crate::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!("Permit failed: {message}"),
+                _ => anyhow::bail!("Unexpected response"),
+            }
+        }
+        TeamCommands::Revoke { name, subject, permission } => {
+            let permission = parse_team_permission(&permission)?;
+            let packet = crate::ipc::RequestPacket::TeamRevokePermission {
+                request_id: 1,
+                team: name.clone(),
+                subject_id: subject.clone(),
+                permission,
+            };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::Done { success, error, .. } => {
+                    if success {
+                        if json {
+                            println!("{{\"success\": true, \"team\": \"{name}\", \"subject\": \"{subject}\"}}");
+                        } else {
+                            println!("✅ Revoked permission on team '{name}' from {subject}");
+                        }
+                        Ok(())
+                    } else {
+                        anyhow::bail!("Revoke failed: {}", error.unwrap_or_default())
+                    }
+                }
+                crate::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!("Revoke failed: {message}"),
+                _ => anyhow::bail!("Unexpected response"),
+            }
+        }
+        TeamCommands::Permissions { name } => {
+            let packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: name.clone() };
+            let response = ipc_request(packet).await?;
+            match response {
+                crate::ipc::ResponsePacket::TeamGet { team: Some(team_info), .. } => {
+                    if json {
+                        let grants: Vec<_> = team_info.metadata.permissions.iter().map(|g| {
+                            serde_json::json!({
+                                "subject_id": g.subject_id,
+                                "subject_type": g.subject_type,
+                                "permission": g.permission,
+                                "granted_at": g.granted_at,
+                                "granted_by": g.granted_by,
+                            })
+                        }).collect();
+                        println!("{{\"team\": \"{name}\", \"owner_id\": \"{}\", \"permissions\": {}}}",
+                            team_info.metadata.owner_id, serde_json::to_string(&grants).unwrap_or_default());
+                    } else {
+                        println!("📁 Team: {}", name);
+                        println!("   Owner: {}", team_info.metadata.owner_id);
+                        if team_info.metadata.permissions.is_empty() {
+                            println!("   Permissions: none");
+                        } else {
+                            println!("   Permissions:");
+                            for g in &team_info.metadata.permissions {
+                                println!("     - {} ({:?}): {:?} (by {} at {})",
+                                    g.subject_id, g.subject_type, g.permission, g.granted_by, g.granted_at);
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                crate::ipc::ResponsePacket::TeamGet { team: None, .. } => {
+                    anyhow::bail!("Team '{name}' not found")
+                }
+                _ => anyhow::bail!("Unexpected response"),
+            }
+        }
+    }
+}
+
+fn parse_team_permission(s: &str) -> anyhow::Result<crate::auth::ownership::Permission> {
+    use crate::auth::ownership::Permission;
+    match s.to_lowercase().as_str() {
+        "chat" => Ok(Permission::Chat),
+        "viewsettings" | "view_settings" => Ok(Permission::ViewSettings),
+        "managesettings" | "manage_settings" => Ok(Permission::ManageSettings),
+        "manageextensions" | "manage_extensions" => Ok(Permission::ManageExtensions),
+        "managemembers" | "manage_members" => Ok(Permission::ManageMembers),
+        "expose" => Ok(Permission::Expose),
+        "delete" => Ok(Permission::Delete),
+        _ => anyhow::bail!("Unknown permission: {s}. Valid: Chat, ViewSettings, ManageSettings, ManageExtensions, ManageMembers, Expose, Delete"),
     }
 }
 

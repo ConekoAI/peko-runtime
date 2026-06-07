@@ -308,6 +308,179 @@ pub async fn handle_agent_config(
     }
 }
 
+/// Handle agent ownership transfer
+pub async fn handle_agent_transfer(
+    _paths: &GlobalPaths,
+    name: String,
+    new_owner: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let client = crate::ipc::DaemonClient::connect().await?;
+    let packet = crate::ipc::RequestPacket::AgentTransferOwner {
+        request_id: 1,
+        agent: name.clone(),
+        new_owner_id: new_owner.clone(),
+    };
+    let response = client.request_response(packet).await?;
+    match response {
+        crate::ipc::ResponsePacket::Done { success, error, .. } => {
+            if success {
+                if json {
+                    println!("{{\"success\": true, \"agent\": \"{name}\", \"new_owner\": \"{new_owner}\"}}");
+                } else {
+                    println!("✅ Transferred ownership of '{name}' to {new_owner}");
+                }
+                Ok(())
+            } else {
+                anyhow::bail!("Transfer failed: {}", error.unwrap_or_default())
+            }
+        }
+        crate::ipc::ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Transfer failed: {message}")
+        }
+        _ => anyhow::bail!("Unexpected response"),
+    }
+}
+
+/// Handle agent permit command
+pub async fn handle_agent_permit(
+    _paths: &GlobalPaths,
+    name: String,
+    subject: String,
+    permission: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let client = crate::ipc::DaemonClient::connect().await?;
+    let subject_type = if subject == "public" {
+        crate::auth::ownership::SubjectType::Public
+    } else {
+        crate::auth::ownership::SubjectType::User
+    };
+    let permission = parse_permission(&permission)?;
+    let packet = crate::ipc::RequestPacket::AgentGrantPermission {
+        request_id: 1,
+        agent: name.clone(),
+        subject_id: subject.clone(),
+        subject_type,
+        permission,
+    };
+    let response = client.request_response(packet).await?;
+    match response {
+        crate::ipc::ResponsePacket::Done { success, error, .. } => {
+            if success {
+                if json {
+                    println!("{{\"success\": true, \"agent\": \"{name}\", \"subject\": \"{subject}\"}}");
+                } else {
+                    println!("✅ Granted permission on '{name}' to {subject}");
+                }
+                Ok(())
+            } else {
+                anyhow::bail!("Permit failed: {}", error.unwrap_or_default())
+            }
+        }
+        crate::ipc::ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Permit failed: {message}")
+        }
+        _ => anyhow::bail!("Unexpected response"),
+    }
+}
+
+/// Handle agent revoke command
+pub async fn handle_agent_revoke(
+    _paths: &GlobalPaths,
+    name: String,
+    subject: String,
+    permission: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let client = crate::ipc::DaemonClient::connect().await?;
+    let permission = parse_permission(&permission)?;
+    let packet = crate::ipc::RequestPacket::AgentRevokePermission {
+        request_id: 1,
+        agent: name.clone(),
+        subject_id: subject.clone(),
+        permission,
+    };
+    let response = client.request_response(packet).await?;
+    match response {
+        crate::ipc::ResponsePacket::Done { success, error, .. } => {
+            if success {
+                if json {
+                    println!("{{\"success\": true, \"agent\": \"{name}\", \"subject\": \"{subject}\"}}");
+                } else {
+                    println!("✅ Revoked permission on '{name}' from {subject}");
+                }
+                Ok(())
+            } else {
+                anyhow::bail!("Revoke failed: {}", error.unwrap_or_default())
+            }
+        }
+        crate::ipc::ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Revoke failed: {message}")
+        }
+        _ => anyhow::bail!("Unexpected response"),
+    }
+}
+
+/// Handle agent permissions list command
+pub async fn handle_agent_permissions(
+    _paths: &GlobalPaths,
+    name: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let client = crate::ipc::DaemonClient::connect().await?;
+    let packet = crate::ipc::RequestPacket::AgentGet { request_id: 1, name: name.clone(), team: None };
+    let response = client.request_response(packet).await?;
+    match response {
+        crate::ipc::ResponsePacket::AgentGet { agent: Some(agent), .. } => {
+            if json {
+                let grants: Vec<_> = agent.config.permissions.iter().map(|g| {
+                    serde_json::json!({
+                        "subject_id": g.subject_id,
+                        "subject_type": g.subject_type,
+                        "permission": g.permission,
+                        "granted_at": g.granted_at,
+                        "granted_by": g.granted_by,
+                    })
+                }).collect();
+                println!("{{\"agent\": \"{name}\", \"owner_id\": \"{}\", \"permissions\": {}}}",
+                    agent.config.owner_id, serde_json::to_string(&grants)?);
+            } else {
+                println!("📦 Agent: {}", name);
+                println!("   Owner: {}", agent.config.owner_id);
+                if agent.config.permissions.is_empty() {
+                    println!("   Permissions: none");
+                } else {
+                    println!("   Permissions:");
+                    for g in &agent.config.permissions {
+                        println!("     - {} ({:?}): {:?} (by {} at {})",
+                            g.subject_id, g.subject_type, g.permission, g.granted_by, g.granted_at);
+                    }
+                }
+            }
+            Ok(())
+        }
+        crate::ipc::ResponsePacket::AgentGet { agent: None, .. } => {
+            anyhow::bail!("Agent '{name}' not found")
+        }
+        _ => anyhow::bail!("Unexpected response"),
+    }
+}
+
+fn parse_permission(s: &str) -> anyhow::Result<crate::auth::ownership::Permission> {
+    use crate::auth::ownership::Permission;
+    match s.to_lowercase().as_str() {
+        "chat" => Ok(Permission::Chat),
+        "viewsettings" | "view_settings" => Ok(Permission::ViewSettings),
+        "managesettings" | "manage_settings" => Ok(Permission::ManageSettings),
+        "manageextensions" | "manage_extensions" => Ok(Permission::ManageExtensions),
+        "managemembers" | "manage_members" => Ok(Permission::ManageMembers),
+        "expose" => Ok(Permission::Expose),
+        "delete" => Ok(Permission::Delete),
+        _ => anyhow::bail!("Unknown permission: {s}. Valid: Chat, ViewSettings, ManageSettings, ManageExtensions, ManageMembers, Expose, Delete"),
+    }
+}
+
 async fn handle_agent_config_get(
     paths: &GlobalPaths,
     name: String,

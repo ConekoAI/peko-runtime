@@ -286,6 +286,9 @@ impl AgentService {
         if let Some(ref host_id) = request.host_runtime_id {
             config.host_runtime_id = host_id.clone();
         }
+        if let Some(ref owner_id) = request.owner_id {
+            config.owner_id = owner_id.clone();
+        }
         let toml = toml::to_string_pretty(&config)?;
 
         tokio::fs::write(&config_path, toml).await?;
@@ -574,6 +577,102 @@ impl AgentService {
     #[must_use]
     pub fn resolver(&self) -> &PathResolver {
         &self.resolver
+    }
+
+    // ============================================================================
+    // Ownership and Permission (ADR-033)
+    // ============================================================================
+
+    /// Transfer ownership of an agent.
+    pub async fn transfer_agent_owner(
+        &self,
+        name: &str,
+        new_owner_id: &str,
+        caller_subject: &str,
+    ) -> Result<()> {
+        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let config_path = self.resolver.agent_config(agent_name);
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{agent_name}' not found");
+        }
+
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        let mut config: AgentConfig = toml::from_str(&content)?;
+
+        // Only current owner can transfer
+        if config.owner_id != caller_subject {
+            anyhow::bail!("Permission denied: only the owner can transfer ownership");
+        }
+
+        config.owner_id = new_owner_id.to_string();
+        let updated = toml::to_string_pretty(&config)?;
+        tokio::fs::write(&config_path, updated).await?;
+        Ok(())
+    }
+
+    /// Grant a permission on an agent.
+    pub async fn grant_agent_permission(
+        &self,
+        name: &str,
+        grant: crate::auth::ownership::PermissionGrant,
+        caller_subject: &str,
+    ) -> Result<()> {
+        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let config_path = self.resolver.agent_config(agent_name);
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{agent_name}' not found");
+        }
+
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        let mut config: AgentConfig = toml::from_str(&content)?;
+
+        // Only owner can grant permissions
+        if config.owner_id != caller_subject {
+            anyhow::bail!("Permission denied: only the owner can grant permissions");
+        }
+
+        // Remove existing grant for same subject+permission
+        config.permissions.retain(|g| {
+            !(g.subject_id == grant.subject_id
+                && std::mem::discriminant(&g.permission) == std::mem::discriminant(&grant.permission))
+        });
+        config.permissions.push(grant);
+
+        let updated = toml::to_string_pretty(&config)?;
+        tokio::fs::write(&config_path, updated).await?;
+        Ok(())
+    }
+
+    /// Revoke a permission from an agent.
+    pub async fn revoke_agent_permission(
+        &self,
+        name: &str,
+        subject_id: &str,
+        permission: &crate::auth::ownership::Permission,
+        caller_subject: &str,
+    ) -> Result<()> {
+        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let config_path = self.resolver.agent_config(agent_name);
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{agent_name}' not found");
+        }
+
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        let mut config: AgentConfig = toml::from_str(&content)?;
+
+        // Only owner can revoke permissions
+        if config.owner_id != caller_subject {
+            anyhow::bail!("Permission denied: only the owner can revoke permissions");
+        }
+
+        config.permissions.retain(|g| {
+            !(g.subject_id == subject_id
+                && std::mem::discriminant(&g.permission) == std::mem::discriminant(permission))
+        });
+
+        let updated = toml::to_string_pretty(&config)?;
+        tokio::fs::write(&config_path, updated).await?;
+        Ok(())
     }
 
     // ============================================================================

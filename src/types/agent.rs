@@ -35,6 +35,12 @@ pub struct AgentConfig {
     /// Host runtime identifier for multi-host awareness (ADR-032)
     #[serde(default)]
     pub host_runtime_id: String,
+    /// Owner identity for ownership and permission model (ADR-033)
+    #[serde(default)]
+    pub owner_id: String,
+    /// Explicit permission grants on this agent (ADR-033)
+    #[serde(default)]
+    pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
 }
 
 fn default_config_version() -> String {
@@ -78,6 +84,8 @@ impl Default for AgentConfig {
             workspace: None,
             prompt: None,
             host_runtime_id: "".to_string(),
+            owner_id: "".to_string(),
+            permissions: Vec::new(),
         }
     }
 }

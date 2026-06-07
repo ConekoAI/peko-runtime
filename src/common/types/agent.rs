@@ -54,6 +54,9 @@ pub struct AgentCreateRequest {
     pub force: bool,
     #[serde(default)]
     pub host_runtime_id: Option<String>,
+    /// Owner subject ID (e.g., `local:{runtime_did}`, `user:123`)
+    #[serde(default)]
+    pub owner_id: Option<String>,
 }
 
 impl AgentCreateRequest {
@@ -65,6 +68,7 @@ impl AgentCreateRequest {
             description: None,
             force: false,
             host_runtime_id: None,
+            owner_id: None,
         }
     }
 

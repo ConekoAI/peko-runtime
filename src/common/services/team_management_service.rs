@@ -63,8 +63,9 @@ impl TeamManagementService {
         name: &str,
         description: Option<&str>,
         host_runtime_id: Option<&str>,
+        owner_id: Option<&str>,
     ) -> Result<TeamCreationResult> {
-        self.config_service.create_team(name, description, host_runtime_id).await
+        self.config_service.create_team(name, description, host_runtime_id, owner_id).await
     }
 
     /// List all teams

@@ -52,6 +52,7 @@ impl TeamService {
         name: &str,
         description: Option<&str>,
         host_runtime_id: Option<&str>,
+        owner_id: Option<&str>,
     ) -> Result<TeamCreationResult> {
         // Validate team name
         if let Err(e) = validate_team_name(name) {
@@ -74,6 +75,8 @@ impl TeamService {
             description: description.map(String::from),
             created_at: chrono::Utc::now().to_rfc3339(),
             host_runtime_id: host_runtime_id.unwrap_or("").to_string(),
+            owner_id: owner_id.unwrap_or("").to_string(),
+            permissions: Vec::new(),
         };
 
         let metadata_path = team_dir.join("team.toml");
@@ -464,6 +467,98 @@ impl TeamService {
         &self.resolver
     }
 
+    // ============================================================================
+    // Ownership and Permission (ADR-033)
+    // ============================================================================
+
+    /// Transfer ownership of a team.
+    pub async fn transfer_team_owner(
+        &self,
+        name: &str,
+        new_owner_id: &str,
+        caller_subject: &str,
+    ) -> Result<()> {
+        let team_dir = self.resolver.team_dir(name);
+        if !team_dir.exists() {
+            anyhow::bail!("Team '{name}' not found");
+        }
+
+        let meta_path = team_dir.join("team.toml");
+        let content = tokio::fs::read_to_string(&meta_path).await?;
+        let mut meta: crate::common::types::team::TeamMetadata = toml::from_str(&content)?;
+
+        if meta.owner_id != caller_subject {
+            anyhow::bail!("Permission denied: only the owner can transfer ownership");
+        }
+
+        meta.owner_id = new_owner_id.to_string();
+        let updated = toml::to_string_pretty(&meta)?;
+        tokio::fs::write(&meta_path, updated).await?;
+        Ok(())
+    }
+
+    /// Grant a permission on a team.
+    pub async fn grant_team_permission(
+        &self,
+        name: &str,
+        grant: crate::auth::ownership::PermissionGrant,
+        caller_subject: &str,
+    ) -> Result<()> {
+        let team_dir = self.resolver.team_dir(name);
+        if !team_dir.exists() {
+            anyhow::bail!("Team '{name}' not found");
+        }
+
+        let meta_path = team_dir.join("team.toml");
+        let content = tokio::fs::read_to_string(&meta_path).await?;
+        let mut meta: crate::common::types::team::TeamMetadata = toml::from_str(&content)?;
+
+        if meta.owner_id != caller_subject {
+            anyhow::bail!("Permission denied: only the owner can grant permissions");
+        }
+
+        meta.permissions.retain(|g| {
+            !(g.subject_id == grant.subject_id
+                && std::mem::discriminant(&g.permission) == std::mem::discriminant(&grant.permission))
+        });
+        meta.permissions.push(grant);
+
+        let updated = toml::to_string_pretty(&meta)?;
+        tokio::fs::write(&meta_path, updated).await?;
+        Ok(())
+    }
+
+    /// Revoke a permission from a team.
+    pub async fn revoke_team_permission(
+        &self,
+        name: &str,
+        subject_id: &str,
+        permission: &crate::auth::ownership::Permission,
+        caller_subject: &str,
+    ) -> Result<()> {
+        let team_dir = self.resolver.team_dir(name);
+        if !team_dir.exists() {
+            anyhow::bail!("Team '{name}' not found");
+        }
+
+        let meta_path = team_dir.join("team.toml");
+        let content = tokio::fs::read_to_string(&meta_path).await?;
+        let mut meta: crate::common::types::team::TeamMetadata = toml::from_str(&content)?;
+
+        if meta.owner_id != caller_subject {
+            anyhow::bail!("Permission denied: only the owner can revoke permissions");
+        }
+
+        meta.permissions.retain(|g| {
+            !(g.subject_id == subject_id
+                && std::mem::discriminant(&g.permission) == std::mem::discriminant(permission))
+        });
+
+        let updated = toml::to_string_pretty(&meta)?;
+        tokio::fs::write(&meta_path, updated).await?;
+        Ok(())
+    }
+
     /// Export a team to a .team package
     pub async fn export_team(
         &self,
@@ -551,7 +646,7 @@ impl TeamService {
         let team_name = new_name.as_deref().unwrap_or("imported");
 
         if !self.team_exists(team_name) {
-            self.create_team(team_name, Some(&format!("Imported team from {file_path}")), None)
+            self.create_team(team_name, Some(&format!("Imported team from {file_path}")), None, None)
                 .await?;
         } else if !force {
             anyhow::bail!("Team '{team_name}' already exists. Use --force to overwrite.");
@@ -626,6 +721,8 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         description: None,
         created_at,
         host_runtime_id: "".to_string(),
+        owner_id: "".to_string(),
+        permissions: Vec::new(),
     }
 }
 
@@ -676,7 +773,7 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team
-        service.create_team("engineering", None, None).await.unwrap();
+        service.create_team("engineering", None, None, None).await.unwrap();
 
         // Create agent in new layout
         let agent_dir = config_dir.join("agents").join("alice");
@@ -715,7 +812,7 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team and agent
-        service.create_team("engineering", None, None).await.unwrap();
+        service.create_team("engineering", None, None, None).await.unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -748,7 +845,7 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team and agent
-        service.create_team("engineering", None, None).await.unwrap();
+        service.create_team("engineering", None, None, None).await.unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -781,7 +878,7 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create teams and agent
-        service.create_team("engineering", None, None).await.unwrap();
+        service.create_team("engineering", None, None, None).await.unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -816,8 +913,8 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create teams and agent
-        service.create_team("engineering", None, None).await.unwrap();
-        service.create_team("ops", None, None).await.unwrap();
+        service.create_team("engineering", None, None, None).await.unwrap();
+        service.create_team("ops", None, None, None).await.unwrap();
 
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
@@ -875,7 +972,7 @@ mod tests {
         );
         let service = TeamService::new(resolver);
 
-        service.create_team("engineering", None, None).await.unwrap();
+        service.create_team("engineering", None, None, None).await.unwrap();
 
         let result = service
             .join_team("engineering", "nonexistent", MembershipRole::Member)
@@ -895,7 +992,7 @@ mod tests {
         let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
         let service = TeamService::new(resolver.clone());
 
-        service.create_team("engineering", None, None).await.unwrap();
+        service.create_team("engineering", None, None, None).await.unwrap();
 
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();

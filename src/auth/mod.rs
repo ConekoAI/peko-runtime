@@ -9,6 +9,7 @@ pub mod api_key;
 pub mod caller;
 pub mod config;
 pub mod jwt;
+pub mod ownership;
 pub mod permissions;
 pub mod rate_limit;
 pub mod types;
@@ -17,6 +18,10 @@ pub use api_key::{ApiKeyStore, ApiKeyVerifier};
 pub use caller::{AuthMethod, CallerContext, Identity};
 pub use config::{AuthConfig, RateLimitConfig};
 pub use jwt::{JwtValidator, ValidatedJwt};
+pub use ownership::{
+    agent_resource, check_permission as check_ownership_permission, team_resource, Permission,
+    PermissionDenied, PermissionGrant, Resource as OwnedResource, SubjectType,
+};
 pub use permissions::{check_permission, Action, AuthError, Resource};
 pub use rate_limit::{RateLimitEntry, RateLimiter};
 pub use types::{ApiKeyEntry, ApiKeyScope, PekohubConfig, PekohubCredential};

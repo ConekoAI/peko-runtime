@@ -598,6 +598,9 @@ impl IpcServer {
                 if request.host_runtime_id.is_none() {
                     request.host_runtime_id = Some(state.runtime_identity().runtime_did.clone());
                 }
+                if request.owner_id.is_none() {
+                    request.owner_id = Some(caller.subject_id());
+                }
                 match service.create_agent(request).await {
                     Ok(result) => {
                         let response = ResponsePacket::AgentCreated { request_id, result };
@@ -725,7 +728,8 @@ impl IpcServer {
             RequestPacket::TeamCreate { request_id, name, description, members } => {
                 let service = state.team_service();
                 let host_runtime_id = state.runtime_identity().runtime_did.clone();
-                match service.create_team(&name, description.as_deref(), Some(&host_runtime_id)).await {
+                let owner_id = caller.subject_id();
+                match service.create_team(&name, description.as_deref(), Some(&host_runtime_id), Some(&owner_id)).await {
                     Ok(result) => {
                         // Auto-join members if provided
                         if let Some(member_names) = members {
@@ -1780,6 +1784,106 @@ impl IpcServer {
                     api_key_count,
                 };
                 Self::send_packet(&socket, response, addr).await?;
+            }
+
+            // ── Ownership and Permission (ADR-033) ──
+            RequestPacket::AgentTransferOwner { request_id, agent, new_owner_id } => {
+                let service = state.agent_mgmt_service();
+                let caller_subject = caller.subject_id();
+                match service.transfer_agent_owner(&agent, &new_owner_id, &caller_subject).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+            RequestPacket::AgentGrantPermission { request_id, agent, subject_id, subject_type, permission } => {
+                let service = state.agent_mgmt_service();
+                let caller_subject = caller.subject_id();
+                let grant = crate::auth::ownership::PermissionGrant {
+                    subject_id,
+                    subject_type,
+                    permission,
+                    granted_at: chrono::Utc::now().to_rfc3339(),
+                    granted_by: caller_subject.clone(),
+                };
+                match service.grant_agent_permission(&agent, grant, &caller_subject).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+            RequestPacket::AgentRevokePermission { request_id, agent, subject_id, permission } => {
+                let service = state.agent_mgmt_service();
+                let caller_subject = caller.subject_id();
+                match service.revoke_agent_permission(&agent, &subject_id, &permission, &caller_subject).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+            RequestPacket::TeamTransferOwner { request_id, team, new_owner_id } => {
+                let service = crate::common::services::TeamService::new(state.team_service().resolver().clone());
+                let caller_subject = caller.subject_id();
+                match service.transfer_team_owner(&team, &new_owner_id, &caller_subject).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("{e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+            RequestPacket::TeamGrantPermission { request_id, team, subject_id, subject_type, permission } => {
+                let service = crate::common::services::TeamService::new(state.team_service().resolver().clone());
+                let caller_subject = caller.subject_id();
+                let grant = crate::auth::ownership::PermissionGrant {
+                    subject_id,
+                    subject_type,
+                    permission,
+                    granted_at: chrono::Utc::now().to_rfc3339(),
+                    granted_by: caller_subject.clone(),
+                };
+                match service.grant_team_permission(&team, grant, &caller_subject).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("{e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+            RequestPacket::TeamRevokePermission { request_id, team, subject_id, permission } => {
+                let service = crate::common::services::TeamService::new(state.team_service().resolver().clone());
+                let caller_subject = caller.subject_id();
+                match service.revoke_team_permission(&team, &subject_id, &permission, &caller_subject).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("{e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
             }
         }
 

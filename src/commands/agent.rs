@@ -151,6 +151,45 @@ pub enum AgentCommands {
     /// Manage agent configuration
     #[command(subcommand)]
     Config(AgentConfigCommands),
+
+    /// Transfer ownership of an agent
+    Transfer {
+        /// Agent name
+        name: String,
+        /// New owner ID (e.g., user:456)
+        #[arg(short, long)]
+        to: String,
+    },
+
+    /// Grant a permission on an agent
+    Permit {
+        /// Agent name
+        name: String,
+        /// Subject to grant permission to (e.g., user:456 or public)
+        #[arg(short, long)]
+        subject: String,
+        /// Permission to grant (Chat, ViewSettings, ManageSettings, ManageExtensions, Expose, Delete)
+        #[arg(short, long)]
+        permission: String,
+    },
+
+    /// Revoke a permission from an agent
+    Revoke {
+        /// Agent name
+        name: String,
+        /// Subject to revoke permission from
+        #[arg(short, long)]
+        subject: String,
+        /// Permission to revoke
+        #[arg(short, long)]
+        permission: String,
+    },
+
+    /// List permission grants on an agent
+    Permissions {
+        /// Agent name
+        name: String,
+    },
 }
 
 /// Agent configuration subcommands
@@ -235,5 +274,17 @@ pub async fn handle_agent(
             json,
         } => handlers::handle_agent_pull(paths, registry_ref, output, team, force, json, cli_registry).await,
         AgentCommands::Config(cmd) => handlers::handle_agent_config(cmd, paths, json).await,
+        AgentCommands::Transfer { name, to } => {
+            handlers::handle_agent_transfer(paths, name, to, json).await
+        }
+        AgentCommands::Permit { name, subject, permission } => {
+            handlers::handle_agent_permit(paths, name, subject, permission, json).await
+        }
+        AgentCommands::Revoke { name, subject, permission } => {
+            handlers::handle_agent_revoke(paths, name, subject, permission, json).await
+        }
+        AgentCommands::Permissions { name } => {
+            handlers::handle_agent_permissions(paths, name, json).await
+        }
     }
 }
