@@ -12,6 +12,9 @@ pub struct TeamMetadata {
     pub name: String,
     pub description: Option<String>,
     pub created_at: String,
+    /// Host runtime identifier for multi-host awareness (ADR-032)
+    #[serde(default)]
+    pub host_runtime_id: String,
 }
 
 /// Team information for listing and display

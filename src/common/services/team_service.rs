@@ -51,6 +51,7 @@ impl TeamService {
         &self,
         name: &str,
         description: Option<&str>,
+        host_runtime_id: Option<&str>,
     ) -> Result<TeamCreationResult> {
         // Validate team name
         if let Err(e) = validate_team_name(name) {
@@ -72,6 +73,7 @@ impl TeamService {
             name: name.to_string(),
             description: description.map(String::from),
             created_at: chrono::Utc::now().to_rfc3339(),
+            host_runtime_id: host_runtime_id.unwrap_or("").to_string(),
         };
 
         let metadata_path = team_dir.join("team.toml");
@@ -537,6 +539,7 @@ impl TeamService {
         new_name: Option<String>,
         force: bool,
         rotate_keys: bool,
+        host_runtime_id: Option<&str>,
     ) -> Result<TeamImportResult> {
         let path = std::path::PathBuf::from(file_path);
 
@@ -548,7 +551,7 @@ impl TeamService {
         let team_name = new_name.as_deref().unwrap_or("imported");
 
         if !self.team_exists(team_name) {
-            self.create_team(team_name, Some(&format!("Imported team from {file_path}")))
+            self.create_team(team_name, Some(&format!("Imported team from {file_path}")), None)
                 .await?;
         } else if !force {
             anyhow::bail!("Team '{team_name}' already exists. Use --force to overwrite.");
@@ -570,12 +573,15 @@ impl TeamService {
             .await
             .with_context(|| format!("Failed to import team from '{file_path}'"))?;
 
-        // If the package restored a team.toml, preserve its description
+        // If the package restored a team.toml, preserve its name and update host_runtime_id
         let team_toml_path = result_team_dir.join("team.toml");
         if team_toml_path.exists() {
             if let Ok(content) = tokio::fs::read_to_string(&team_toml_path).await {
                 if let Ok(mut metadata) = toml::from_str::<TeamMetadata>(&content) {
                     metadata.name = team_name.to_string();
+                    if let Some(host_id) = host_runtime_id {
+                        metadata.host_runtime_id = host_id.to_string();
+                    }
                     if let Ok(updated) = toml::to_string_pretty(&metadata) {
                         let _ = tokio::fs::write(&team_toml_path, updated).await;
                     }
@@ -619,6 +625,7 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         name: team_name.to_string(),
         description: None,
         created_at,
+        host_runtime_id: "".to_string(),
     }
 }
 
@@ -669,7 +676,7 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team
-        service.create_team("engineering", None).await.unwrap();
+        service.create_team("engineering", None, None).await.unwrap();
 
         // Create agent in new layout
         let agent_dir = config_dir.join("agents").join("alice");
@@ -708,7 +715,7 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team and agent
-        service.create_team("engineering", None).await.unwrap();
+        service.create_team("engineering", None, None).await.unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -741,7 +748,7 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team and agent
-        service.create_team("engineering", None).await.unwrap();
+        service.create_team("engineering", None, None).await.unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -774,7 +781,7 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create teams and agent
-        service.create_team("engineering", None).await.unwrap();
+        service.create_team("engineering", None, None).await.unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -809,8 +816,8 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create teams and agent
-        service.create_team("engineering", None).await.unwrap();
-        service.create_team("ops", None).await.unwrap();
+        service.create_team("engineering", None, None).await.unwrap();
+        service.create_team("ops", None, None).await.unwrap();
 
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
@@ -868,7 +875,7 @@ mod tests {
         );
         let service = TeamService::new(resolver);
 
-        service.create_team("engineering", None).await.unwrap();
+        service.create_team("engineering", None, None).await.unwrap();
 
         let result = service
             .join_team("engineering", "nonexistent", MembershipRole::Member)
@@ -888,7 +895,7 @@ mod tests {
         let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
         let service = TeamService::new(resolver.clone());
 
-        service.create_team("engineering", None).await.unwrap();
+        service.create_team("engineering", None, None).await.unwrap();
 
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();

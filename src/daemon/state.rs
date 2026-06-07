@@ -107,6 +107,15 @@ pub struct AppState {
 
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
+
+    /// Runtime identity (ADR-032)
+    pub runtime_identity: crate::runtime::identity::RuntimeIdentity,
+
+    /// Runtime metadata (ADR-032)
+    pub runtime_metadata: crate::runtime::metadata::RuntimeMetadata,
+
+    /// Known runtimes registry (ADR-032)
+    pub known_runtimes: std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -132,6 +141,9 @@ impl std::fmt::Debug for AppState {
             )
             .field("extension_manager", &"<ExtensionManager>")
             .field("extension_services", &"<ExtensionServices>")
+            .field("runtime_identity", &self.runtime_identity.runtime_did)
+            .field("runtime_metadata", &self.runtime_metadata.display_name)
+            .field("known_runtimes", &format!("{} runtimes", self.runtime_identity.runtime_did))
             .finish()
     }
 }
@@ -223,6 +235,34 @@ impl AppState {
             data_dir.clone(),
             cache_dir.clone(),
         );
+
+        // ADR-032: Initialize runtime identity, metadata, and registry
+        let runtime_identity =
+            crate::runtime::identity::RuntimeIdentity::generate_or_load(&path_resolver)?;
+        let runtime_metadata = crate::runtime::metadata::RuntimeMetadata::load_or_create(
+            &path_resolver,
+            &runtime_identity.runtime_did,
+        )?;
+        let mut known_runtimes =
+            crate::runtime::registry::KnownRuntimes::load_or_create(&path_resolver)?;
+        known_runtimes.register(
+            &runtime_identity.runtime_did,
+            &runtime_metadata.display_name,
+            None,
+            crate::runtime::registry::TrustLevel::SelfRuntime,
+        );
+        let known_runtimes =
+            std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
+
+        // ADR-032: Backfill legacy agents and teams with host_runtime_id
+        if let Err(e) = crate::runtime::migration::migrate_legacy_data(
+            &path_resolver,
+            &runtime_identity.runtime_did,
+        )
+        .await
+        {
+            tracing::warn!("Failed to run ADR-032 legacy migration: {}", e);
+        }
 
         let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
@@ -371,6 +411,9 @@ impl AppState {
             extension_services,
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
+            runtime_identity,
+            runtime_metadata,
+            known_runtimes,
         })
     }
 
@@ -563,6 +606,24 @@ impl AppState {
         }
     }
 
+    /// Get the runtime identity (ADR-032)
+    #[must_use]
+    pub fn runtime_identity(&self) -> &crate::runtime::identity::RuntimeIdentity {
+        &self.runtime_identity
+    }
+
+    /// Get the runtime metadata (ADR-032)
+    #[must_use]
+    pub fn runtime_metadata(&self) -> &crate::runtime::metadata::RuntimeMetadata {
+        &self.runtime_metadata
+    }
+
+    /// Get the known runtimes registry (ADR-032)
+    #[must_use]
+    pub fn known_runtimes(&self) -> &std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>> {
+        &self.known_runtimes
+    }
+
     /// Get the count of registered agents
     pub async fn agent_count(&self) -> anyhow::Result<usize> {
         let agents = self.config_service.list_all().await?;
@@ -573,6 +634,7 @@ impl AppState {
     pub async fn active_execution_count(&self) -> usize {
         self.lifecycle.active_count().await
     }
+
 }
 
 impl Default for DaemonConfigSnapshot {

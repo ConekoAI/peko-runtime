@@ -493,6 +493,10 @@ impl IpcServer {
 
             RequestPacket::AgentCreate { request_id, request } => {
                 let service = state.agent_mgmt_service();
+                let mut request = request;
+                if request.host_runtime_id.is_none() {
+                    request.host_runtime_id = Some(state.runtime_identity().runtime_did.clone());
+                }
                 match service.create_agent(request).await {
                     Ok(result) => {
                         let response = ResponsePacket::AgentCreated { request_id, result };
@@ -564,6 +568,16 @@ impl IpcServer {
                 let opts = crate::common::types::agent::AgentImportOptions { name, force: false };
                 match service.import_agent(std::path::Path::new(&file_path), opts).await {
                     Ok(result) => {
+                        // Update host_runtime_id to current runtime
+                        let config_path = result.config_path.clone();
+                        if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
+                            if let Ok(mut config) = toml::from_str::<crate::types::agent::AgentConfig>(&content) {
+                                config.host_runtime_id = state.runtime_identity().runtime_did.clone();
+                                if let Ok(updated) = toml::to_string_pretty(&config) {
+                                    let _ = tokio::fs::write(&config_path, updated).await;
+                                }
+                            }
+                        }
                         let response = ResponsePacket::AgentImported {
                             request_id,
                             name: result.name,
@@ -609,7 +623,8 @@ impl IpcServer {
 
             RequestPacket::TeamCreate { request_id, name, description, members } => {
                 let service = state.team_service();
-                match service.create_team(&name, description.as_deref()).await {
+                let host_runtime_id = state.runtime_identity().runtime_did.clone();
+                match service.create_team(&name, description.as_deref(), Some(&host_runtime_id)).await {
                     Ok(result) => {
                         // Auto-join members if provided
                         if let Some(member_names) = members {
@@ -703,7 +718,8 @@ impl IpcServer {
 
             RequestPacket::TeamImport { request_id, file_path, name, force } => {
                 let service = state.team_service();
-                match service.import_team(&file_path, name, force, true).await {
+                let host_runtime_id = state.runtime_identity().runtime_did.clone();
+                match service.import_team(&file_path, name, force, true, Some(&host_runtime_id)).await {
                     Ok(result) => {
                         let response = ResponsePacket::TeamImported {
                             request_id,
@@ -1448,6 +1464,16 @@ impl IpcServer {
                                 match service.import_agent(&temp_path, import_opts).await {
                                     Ok(result) => {
                                         let _ = std::fs::remove_file(&temp_path);
+                                        // Update host_runtime_id to current runtime
+                                        let config_path = result.config_path.clone();
+                                        if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
+                                            if let Ok(mut config) = toml::from_str::<crate::types::agent::AgentConfig>(&content) {
+                                                config.host_runtime_id = state.runtime_identity().runtime_did.clone();
+                                                if let Ok(updated) = toml::to_string_pretty(&config) {
+                                                    let _ = tokio::fs::write(&config_path, updated).await;
+                                                }
+                                            }
+                                        }
                                         let response = ResponsePacket::RegistryPulled {
                                             request_id,
                                             name: result.name,
@@ -1471,6 +1497,97 @@ impl IpcServer {
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error { request_id, message: format!("Pull failed: {e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            // ── Runtime (ADR-032) ──
+            RequestPacket::RuntimeId { request_id } => {
+                let did = state.runtime_identity().runtime_did.clone();
+                let response = ResponsePacket::RuntimeId { request_id, did };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            RequestPacket::RuntimeInfo { request_id } => {
+                let meta = state.runtime_metadata();
+                let response = ResponsePacket::RuntimeInfo {
+                    request_id,
+                    metadata: super::packet::RuntimeMetadataResponse {
+                        runtime_id: meta.runtime_id.clone(),
+                        display_name: meta.display_name.clone(),
+                        created_at: meta.created_at.to_rfc3339(),
+                        last_seen_at: meta.last_seen_at.to_rfc3339(),
+                        version: meta.version.clone(),
+                        capabilities: meta.capabilities.clone(),
+                        host_info: super::packet::HostInfoResponse {
+                            os: meta.host_info.os.clone(),
+                            arch: meta.host_info.arch.clone(),
+                            hostname: meta.host_info.hostname.clone(),
+                        },
+                    },
+                };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            RequestPacket::RuntimeRename { request_id, .. } => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: "Runtime rename not yet implemented".to_string(),
+                };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            RequestPacket::RuntimeList { request_id } => {
+                let registry = state.known_runtimes().read().await;
+                let runtimes: Vec<super::packet::KnownRuntimeResponse> = registry.list().iter().map(|r| super::packet::KnownRuntimeResponse {
+                    runtime_id: r.runtime_id.clone(),
+                    display_name: r.display_name.clone(),
+                    last_seen: Some(r.last_seen.to_rfc3339()),
+                    connection_endpoint: r.connection_endpoint.clone(),
+                    trust_level: format!("{:?}", r.trust_level).to_lowercase(),
+                }).collect();
+                let response = ResponsePacket::RuntimeList { request_id, runtimes };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            RequestPacket::RuntimeRegister { request_id, runtime_id, display_name } => {
+                let mut registry = state.known_runtimes().write().await;
+                registry.register(&runtime_id, &display_name, None, crate::runtime::registry::TrustLevel::Untrusted);
+                let resolver = crate::common::paths::PathResolver::with_dirs(state.config_dir.clone(), state.data_dir.clone(), state.cache_dir.clone());
+                match registry.save(&resolver) {
+                    Ok(()) => {
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+            RequestPacket::RuntimeTrust { request_id, runtime_id } => {
+                let mut registry = state.known_runtimes().write().await;
+                match registry.trust(&runtime_id, crate::runtime::registry::TrustLevel::Authorized) {
+                    Ok(()) => {
+                        let resolver = crate::common::paths::PathResolver::with_dirs(state.config_dir.clone(), state.data_dir.clone(), state.cache_dir.clone());
+                        let _ = registry.save(&resolver);
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+            RequestPacket::RuntimeRemove { request_id, runtime_id } => {
+                let mut registry = state.known_runtimes().write().await;
+                match registry.remove(&runtime_id) {
+                    Ok(()) => {
+                        let resolver = crate::common::paths::PathResolver::with_dirs(state.config_dir.clone(), state.data_dir.clone(), state.cache_dir.clone());
+                        let _ = registry.save(&resolver);
+                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }

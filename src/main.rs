@@ -2,7 +2,7 @@ use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
     agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, registry,
-    search, send, session, system, team, update, Cli, Commands, GlobalPaths,
+    runtime, search, send, session, system, team, update, Cli, Commands, GlobalPaths,
 };
 use pekobot::types::config::PekobotConfig;
 
@@ -112,6 +112,7 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool, cli_reg
         Commands::Provider(cmd) => provider::execute(cmd).await,
         Commands::Search(cmd) => search::handle_search(cmd, paths, json).await,
         Commands::Registry(cmd) => registry::handle_registry(cmd, paths, json),
+        Commands::Runtime(cmd) => runtime::handle_runtime(cmd, paths, json).await,
         Commands::Login { registry, api_key } => {
             let host = registry.unwrap_or_else(|| paths.registry_config().default);
             auth::handle_login(paths, &host, api_key)

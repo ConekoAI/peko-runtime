@@ -49,6 +49,9 @@ futures = "0.3"
 # System calls (for daemon process management)
 libc = "0.2"
 
+# Hostname detection
+hostname = "0.4"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.8"

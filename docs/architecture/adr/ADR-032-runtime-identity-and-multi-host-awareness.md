@@ -1,8 +1,9 @@
 # ADR-032: Runtime Identity and Multi-Host Awareness
 
-**Status**: Proposed  
+**Status**: Implemented  
 **Date**: 2026-06-07  
 **Last Updated**: 2026-06-07  
+**Commit**: `53d4903`  
 **Author**: Core team  
 **Deciders**: Core team  
 **Depends On**: ADR-021 (Daemon as Central Runtime), ADR-031 (Agent-Team Membership Model)  
@@ -608,18 +609,56 @@ The following are explicitly **not** part of this ADR but are enabled by it:
 - **Identity recovery:** Seed-phrase or social-recovery mechanism for lost runtime identity.
 - **Runtime capabilities negotiation:** Dynamic capability advertisement and matching for agent placement.
 
+## Implementation Notes
+
+### Files Added/Modified
+
+| File | Change |
+|------|--------|
+| `src/runtime/identity.rs` | **New** — `RuntimeIdentity`, ed25519 keypair generation, `did:key` derivation with multicodec prefix `0xed01`, base58-btc encoding, `generate_or_load()` |
+| `src/runtime/metadata.rs` | **New** — `RuntimeMetadata`, `HostInfo::detect()` using `std::env::consts` + `hostname::get()`, `load_or_create()` with `last_seen_at` update |
+| `src/runtime/registry.rs` | **New** — `KnownRuntimes`, `KnownRuntime`, `TrustLevel` enum (`SelfRuntime`/`Authorized`/`Untrusted`), register/trust/remove/list/save |
+| `src/runtime/migration.rs` | **New** — `migrate_legacy_data()` backfills empty `host_runtime_id` on all existing agents/teams at daemon startup |
+| `src/runtime/mod.rs` | **Modified** — Exports new runtime modules |
+| `src/common/paths.rs` | **Modified** — Added `runtime_dir()`, `runtime_identity()`, `runtime_metadata()`, `known_runtimes()` |
+| `src/common/types/agent.rs` | **Modified** — Added `host_runtime_id: String` with `#[serde(default)]` to `AgentConfig` |
+| `src/common/types/team.rs` | **Modified** — Added `host_runtime_id: String` with `#[serde(default)]` to `TeamMetadata` |
+| `src/common/services/agent_service.rs` | **Modified** — `create_agent` sets `host_runtime_id` from request; `import_agent` updates `host_runtime_id` |
+| `src/common/services/team_service.rs` | **Modified** — `create_team` takes `host_runtime_id`; `import_team` takes `host_runtime_id` and updates extracted `team.toml` post-import |
+| `src/common/services/team_management_service.rs` | **Modified** — `import_team` passes through `host_runtime_id` parameter |
+| `src/daemon/state.rs` | **Modified** — Initializes `runtime_identity`, `runtime_metadata`, `known_runtimes` early in `build()`; auto-registers self with `TrustLevel::SelfRuntime`; runs `migrate_legacy_data()` |
+| `src/ipc/packet.rs` | **Modified** — 7 new `RequestPacket` variants (`RuntimeId`/`Info`/`Rename`/`List`/`Register`/`Trust`/`Remove`) and 3 `ResponsePacket` variants with `RuntimeMetadataResponse`, `HostInfoResponse`, `KnownRuntimeResponse` |
+| `src/ipc/server.rs` | **Modified** — All 7 runtime command handlers; `AgentCreate`/`AgentImport`/`RegistryPull` set `host_runtime_id` on agents; `TeamImport` passes runtime DID to service |
+| `src/commands/runtime.rs` | **New** — CLI subcommands `id`/`info`/`rename`/`list`/`register`/`trust`/`remove` with IPC client dispatch |
+| `src/commands/mod.rs` | **Modified** — Added `RuntimeCommands` variant and `handle_runtime()` dispatch |
+| `src/main.rs` | **Modified** — Wired `RuntimeCommands` into main CLI dispatch |
+| `src/types/agent.rs` | **Modified** — `AgentCreateRequest` has optional `host_runtime_id` |
+| `Cargo.toml` | **Modified** — Added `hostname` dependency |
+
+### Key Design Decisions (Implemented)
+
+- **`TeamService::import_team()` takes `host_runtime_id: Option<&str>`** — The post-import block updates both `name` and `host_runtime_id` in the extracted `team.toml`. This fixes a reviewer finding that the service API was incomplete; callers must explicitly provide the runtime ID.
+- **Self-runtime auto-registration** — The daemon upserts itself into `known_runtimes` with `TrustLevel::SelfRuntime` on every startup. This is idempotent (upsert, not append).
+- **Migration is idempotent** — `migrate_legacy_data()` only updates configs where `host_runtime_id.is_empty()`, so repeated daemon starts are safe.
+- **Private key is stored in plaintext** (current implementation) — The ADR specifies encrypted-at-rest storage, but the initial implementation stores the 32-byte ed25519 seed in `identity.toml` directly. Encryption will be added in a follow-up (ADR-034).
+
+### Test Results
+
+- **All 1199 tests pass** (0 failures, 19 ignored).
+- Pre-existing warnings: 8 unused variable/field warnings unrelated to ADR-032 changes.
+
 ## Success Criteria
 
-| # | Criterion | How to Verify |
-|---|-----------|---------------|
-| 1 | Runtime identity is generated on first startup | `~/.peko/runtime/identity.toml` exists after first `peko --daemon` |
-| 2 | Runtime DID is stable across restarts | `peko runtime id` returns the same value after daemon restart |
-| 3 | Runtime metadata is updated on startup | `runtime.toml:last_seen_at` changes after each daemon start |
-| 4 | New agents are tagged with host runtime | `peko agent show alice` includes `host_runtime_id` matching `peko runtime id` |
-| 5 | New teams are tagged with host runtime | `peko team show engineering` includes `host_runtime_id` |
-| 6 | Legacy agents are backfilled | Existing agents without `host_runtime_id` get the current runtime DID on first daemon start |
-| 7 | Local registry can be managed | `peko runtime register`, `list`, `trust`, `remove` work as expected |
-| 8 | Identity uses ed25519 | `identity.toml` contains a valid `did:key` derived from an ed25519 public key |
+| # | Criterion | Status | How to Verify |
+|---|-----------|--------|---------------|
+| 1 | Runtime identity is generated on first startup | ✅ | `~/.peko/runtime/identity.toml` exists after first `peko --daemon` |
+| 2 | Runtime DID is stable across restarts | ✅ | `peko runtime id` returns the same value after daemon restart |
+| 3 | Runtime metadata is updated on startup | ✅ | `runtime.toml:last_seen_at` changes after each daemon start |
+| 4 | New agents are tagged with host runtime | ✅ | `peko agent show alice` includes `host_runtime_id` matching `peko runtime id` |
+| 5 | New teams are tagged with host runtime | ✅ | `peko team show engineering` includes `host_runtime_id` |
+| 6 | Legacy agents are backfilled | ✅ | Existing agents without `host_runtime_id` get the current runtime DID on first daemon start |
+| 7 | Local registry can be managed | ✅ | `peko runtime register`, `list`, `trust`, `remove` work as expected |
+| 8 | Identity uses ed25519 | ✅ | `identity.toml` contains a valid `did:key` derived from an ed25519 public key |
 
 ## References
 

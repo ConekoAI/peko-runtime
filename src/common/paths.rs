@@ -222,6 +222,38 @@ impl PathResolver {
         self.config_dir.join("mcp.toml")
     }
 
+    /// Get the runtime directory
+    ///
+    /// Path: `{config_dir}/runtime`
+    #[must_use]
+    pub fn runtime_dir(&self) -> PathBuf {
+        self.config_dir.join("runtime")
+    }
+
+    /// Get the runtime identity file path
+    ///
+    /// Path: `{config_dir}/runtime/identity.toml`
+    #[must_use]
+    pub fn runtime_identity(&self) -> PathBuf {
+        self.runtime_dir().join("identity.toml")
+    }
+
+    /// Get the runtime metadata file path
+    ///
+    /// Path: `{config_dir}/runtime/runtime.toml`
+    #[must_use]
+    pub fn runtime_metadata(&self) -> PathBuf {
+        self.runtime_dir().join("runtime.toml")
+    }
+
+    /// Get the known runtimes file path
+    ///
+    /// Path: `{config_dir}/runtime/known_runtimes.toml`
+    #[must_use]
+    pub fn known_runtimes(&self) -> PathBuf {
+        self.runtime_dir().join("known_runtimes.toml")
+    }
+
     /// Get the Universal Tools directory
     ///
     /// Path: `{data_dir}/tools`

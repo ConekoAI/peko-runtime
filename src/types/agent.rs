@@ -32,6 +32,9 @@ pub struct AgentConfig {
     pub workspace: Option<PathBuf>,
     /// System prompt configuration
     pub prompt: Option<PromptConfig>,
+    /// Host runtime identifier for multi-host awareness (ADR-032)
+    #[serde(default)]
+    pub host_runtime_id: String,
 }
 
 fn default_config_version() -> String {
@@ -74,6 +77,7 @@ impl Default for AgentConfig {
             default_timeout_seconds: 300,
             workspace: None,
             prompt: None,
+            host_runtime_id: "".to_string(),
         }
     }
 }

@@ -283,6 +283,9 @@ impl AgentService {
         // Build config with workspace set
         let mut config = build_default_agent_config(name, &request.provider, request.model);
         config.workspace = Some(workspace_dir.clone());
+        if let Some(ref host_id) = request.host_runtime_id {
+            config.host_runtime_id = host_id.clone();
+        }
         let toml = toml::to_string_pretty(&config)?;
 
         tokio::fs::write(&config_path, toml).await?;

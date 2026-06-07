@@ -325,6 +325,22 @@ pub enum RequestPacket {
         registry_token: Option<String>,
         registry_host: Option<String>,
     },
+
+    // ── Runtime (ADR-032) ──
+    #[serde(rename = "runtime_id")]
+    RuntimeId { request_id: u64 },
+    #[serde(rename = "runtime_info")]
+    RuntimeInfo { request_id: u64 },
+    #[serde(rename = "runtime_rename")]
+    RuntimeRename { request_id: u64, display_name: String },
+    #[serde(rename = "runtime_list")]
+    RuntimeList { request_id: u64 },
+    #[serde(rename = "runtime_register")]
+    RuntimeRegister { request_id: u64, runtime_id: String, display_name: String },
+    #[serde(rename = "runtime_trust")]
+    RuntimeTrust { request_id: u64, runtime_id: String },
+    #[serde(rename = "runtime_remove")]
+    RuntimeRemove { request_id: u64, runtime_id: String },
 }
 
 impl RequestPacket {
@@ -384,7 +400,14 @@ impl RequestPacket {
             | Self::TeamImport { request_id, .. }
             | Self::TeamJoin { request_id, .. }
             | Self::TeamLeave { request_id, .. }
-            | Self::RegistryPull { request_id, .. } => *request_id,
+            | Self::RegistryPull { request_id, .. }
+            | Self::RuntimeId { request_id }
+            | Self::RuntimeInfo { request_id }
+            | Self::RuntimeRename { request_id, .. }
+            | Self::RuntimeList { request_id }
+            | Self::RuntimeRegister { request_id, .. }
+            | Self::RuntimeTrust { request_id, .. }
+            | Self::RuntimeRemove { request_id, .. } => *request_id,
         }
     }
 
@@ -757,6 +780,14 @@ pub enum ResponsePacket {
         version: String,
         digest: String,
     },
+
+    // ── Runtime (ADR-032) ──
+    #[serde(rename = "runtime_id")]
+    RuntimeId { request_id: u64, did: String },
+    #[serde(rename = "runtime_info")]
+    RuntimeInfo { request_id: u64, metadata: RuntimeMetadataResponse },
+    #[serde(rename = "runtime_list")]
+    RuntimeList { request_id: u64, runtimes: Vec<KnownRuntimeResponse> },
 }
 
 /// Summary of an extension for IPC responses
@@ -784,6 +815,36 @@ pub struct ExtensionSummary {
 }
 
 /// A single doctor check result
+/// Runtime metadata response for IPC (ADR-032)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeMetadataResponse {
+    pub runtime_id: String,
+    pub display_name: String,
+    pub created_at: String,
+    pub last_seen_at: String,
+    pub version: String,
+    pub capabilities: Vec<String>,
+    pub host_info: HostInfoResponse,
+}
+
+/// Host information response for IPC (ADR-032)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostInfoResponse {
+    pub os: String,
+    pub arch: String,
+    pub hostname: String,
+}
+
+/// Known runtime response for IPC (ADR-032)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownRuntimeResponse {
+    pub runtime_id: String,
+    pub display_name: String,
+    pub last_seen: Option<String>,
+    pub connection_endpoint: Option<String>,
+    pub trust_level: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorCheck {
     pub name: String,
@@ -851,7 +912,10 @@ impl ResponsePacket {
             | Self::AgentMoved { request_id, .. }
             | Self::TeamExported { request_id, .. }
             | Self::TeamImported { request_id, .. }
-            | Self::RegistryPulled { request_id, .. } => *request_id,
+            | Self::RegistryPulled { request_id, .. }
+            | Self::RuntimeId { request_id, .. }
+            | Self::RuntimeInfo { request_id, .. }
+            | Self::RuntimeList { request_id, .. } => *request_id,
         }
     }
 
@@ -1326,6 +1390,7 @@ mod tests {
             model: Some("llama3.2".to_string()),
             description: Some("A test agent".to_string()),
             force: false,
+            host_runtime_id: None,
         };
         let req = RequestPacket::AgentCreate {
             request_id: 302,
@@ -1582,6 +1647,7 @@ mod tests {
                     name: "default".to_string(),
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
+                    host_runtime_id: "".to_string(),
                 },
                 agent_count: 0,
                 members: vec![],
@@ -1610,6 +1676,7 @@ mod tests {
                     name: "default".to_string(),
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
+                    host_runtime_id: "".to_string(),
                 },
                 agent_count: 0,
                 members: vec![],
@@ -2828,6 +2895,7 @@ mod tests {
                     name: "new-team".to_string(),
                     description: Some("A new team".to_string()),
                     created_at: "2024-01-01T00:00:00Z".to_string(),
+                    host_runtime_id: "".to_string(),
                 },
                 path: std::path::PathBuf::from("/tmp/teams/new-team"),
             },
@@ -2904,6 +2972,7 @@ mod tests {
                     name: "t".to_string(),
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
+                    host_runtime_id: "".to_string(),
                 },
                 path: std::path::PathBuf::from("/tmp"),
             },

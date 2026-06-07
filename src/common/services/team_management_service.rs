@@ -62,8 +62,9 @@ impl TeamManagementService {
         &self,
         name: &str,
         description: Option<&str>,
+        host_runtime_id: Option<&str>,
     ) -> Result<TeamCreationResult> {
-        self.config_service.create_team(name, description).await
+        self.config_service.create_team(name, description, host_runtime_id).await
     }
 
     /// List all teams
@@ -119,8 +120,9 @@ impl TeamManagementService {
         name: Option<String>,
         force: bool,
         rotate_keys: bool,
+        host_runtime_id: Option<&str>,
     ) -> Result<TeamImportResult> {
-        self.config_service.import_team(file, name, force, rotate_keys).await
+        self.config_service.import_team(file, name, force, rotate_keys, host_runtime_id).await
     }
 
     /// Move/rename a team

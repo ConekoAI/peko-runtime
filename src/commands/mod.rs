@@ -21,6 +21,7 @@ pub mod ext;
 pub mod orchestration;
 pub mod provider;
 pub mod registry;
+pub mod runtime;
 pub mod search;
 pub mod send;
 pub mod session;
@@ -153,6 +154,10 @@ pub enum Commands {
     /// Registry management (set-default, get-default, list)
     #[command(subcommand)]
     Registry(registry::RegistryCommands),
+
+    /// Runtime identity and registry management (ADR-032)
+    #[command(subcommand)]
+    Runtime(runtime::RuntimeCommands),
 
     /// Log in to the PekoHub registry
     Login {
@@ -351,6 +356,30 @@ impl GlobalPaths {
     #[must_use]
     pub fn registry_config(&self) -> crate::registry::config::RegistryConfig {
         crate::registry::config::load_from_config_dir(&self.config_dir)
+    }
+
+    /// Get the runtime directory
+    #[must_use]
+    pub fn runtime_dir(&self) -> PathBuf {
+        self.resolver.runtime_dir()
+    }
+
+    /// Get the runtime identity file path
+    #[must_use]
+    pub fn runtime_identity(&self) -> PathBuf {
+        self.resolver.runtime_identity()
+    }
+
+    /// Get the runtime metadata file path
+    #[must_use]
+    pub fn runtime_metadata(&self) -> PathBuf {
+        self.resolver.runtime_metadata()
+    }
+
+    /// Get the known runtimes file path
+    #[must_use]
+    pub fn known_runtimes(&self) -> PathBuf {
+        self.resolver.known_runtimes()
     }
 }
 

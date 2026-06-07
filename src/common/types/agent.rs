@@ -52,6 +52,8 @@ pub struct AgentCreateRequest {
     pub description: Option<String>,
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub host_runtime_id: Option<String>,
 }
 
 impl AgentCreateRequest {
@@ -62,6 +64,7 @@ impl AgentCreateRequest {
             model: None,
             description: None,
             force: false,
+            host_runtime_id: None,
         }
     }
 
@@ -78,6 +81,12 @@ impl AgentCreateRequest {
     #[must_use]
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
+        self
+    }
+
+    #[must_use]
+    pub fn with_host_runtime_id(mut self, host_runtime_id: impl Into<String>) -> Self {
+        self.host_runtime_id = Some(host_runtime_id.into());
         self
     }
 }
