@@ -92,6 +92,10 @@ secrecy = "0.10"
 walkdir = "2.5"
 tokio-stream = "0.1"
 
+# WebSocket tunnel (ADR-035)
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
 # Windows system calls
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects"] }
 toml_edit = "0.25.12"

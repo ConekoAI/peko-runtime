@@ -27,6 +27,7 @@ pub mod send;
 pub mod session;
 pub mod system;
 pub mod team;
+pub mod tunnel;
 
 pub mod update;
 
@@ -158,6 +159,10 @@ pub enum Commands {
     /// Runtime identity and registry management (ADR-032)
     #[command(subcommand)]
     Runtime(runtime::RuntimeCommands),
+
+    /// PekoHub tunnel management (ADR-035)
+    #[command(subcommand)]
+    Tunnel(tunnel::TunnelCommands),
 
     /// Log in to the PekoHub registry
     Login {

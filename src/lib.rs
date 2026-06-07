@@ -230,6 +230,9 @@ pub mod portable;
 /// Remote registry client (push/pull)
 pub mod registry;
 
+/// Runtime-Pekohub tunnel protocol (ADR-035)
+pub mod tunnel;
+
 /// Compaction and transcript management
 pub(crate) mod compaction;
 

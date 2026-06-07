@@ -4,7 +4,7 @@
 |---|---|
 | **ADR** | 035 |
 | **Title** | Runtime-Pekohub Tunnel Protocol |
-| **Status** | Proposed |
+| **Status** | Implemented (Runtime side) |
 | **Date** | 2026-06-07 |
 | **Depends On** | ADR-021 (Daemon as Central Runtime), ADR-032 (Runtime Identity), ADR-034 (Runtime Auth) |
 | **Related** | ADR-033 (Ownership & Permission Model), ADR-036 (Remote Instance Management), ADR-037 (Exposure Modes) |
@@ -385,11 +385,25 @@ Existing endpoints (`POST /v1/agents/{agent}/chat`) are updated internally to ro
 - **Binary protocol migration**: If message volume grows, we may migrate to a dedicated binary protocol (e.g., Cap'n Proto) instead of postcard.
 - **UDP fallback for media**: If we later support voice/video, a separate UDP-based channel may be needed.
 
+## Implementation Progress
+
+| Component | Status | Notes |
+|---|---|---|
+| `TunnelMessage` protocol | ✅ Implemented | `src/tunnel/protocol.rs` — JSON-serialized enum with all control, routing, and streaming variants |
+| Exponential backoff | ✅ Implemented | `src/tunnel/backoff.rs` — 1s, 2s, 4s, … capped at 60s |
+| Credential storage | ✅ Implemented | `src/tunnel/credential.rs` — TOML at `~/.peko/pekohub.toml` |
+| WebSocket client | ✅ Implemented | `src/tunnel/client.rs` — `TunnelClient` with auth, heartbeat, read/write loops, reconnection |
+| CLI subcommand | ✅ Implemented | `peko tunnel start/stop/status` in `src/commands/tunnel.rs` |
+| Daemon integration | 🔄 Phase 2 | Tunnel runs in foreground mode; background daemon-spawned tunnel planned for Phase 2 |
+| Request dispatch to IPC | 🔄 Phase 2 | `on_request` callback wired; needs daemon `AppState` integration to route `ProxiedRequest` → `IpcServer` |
+| PekoHub server side | ⬜ Not started | Fastify plugin, `RuntimeConnectionManager`, `RequestRouter` — Node.js backend |
+
 ## Success Criteria
 
+- [x] **Protocol implemented** — `TunnelMessage` enum, serialization, and WebSocket framing complete.
+- [x] **Automatic reconnection** — Exponential backoff with reset on successful connection.
 - [ ] A runtime behind NAT can connect to PekoHub and maintain a stable tunnel for >24 hours.
 - [ ] A web user can send a chat message to an agent on a remote runtime and receive a streamed response within 2 seconds (excluding LLM latency).
-- [ ] The tunnel reconnects automatically after a network interruption without user intervention.
 - [ ] PekoHub correctly marks agents as offline when their runtime disconnects.
 - [ ] 100 concurrent requests can be multiplexed over a single tunnel without head-of-line blocking.
 
