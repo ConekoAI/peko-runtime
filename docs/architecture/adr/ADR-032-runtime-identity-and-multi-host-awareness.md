@@ -43,16 +43,19 @@ Every peko runtime instance receives a persistent, unique identifier generated o
 
 **Format:**
 
+We use the W3C-standard [`did:key`](https://w3c-ccg.github.io/did-method-key/) method. The DID is derived directly from the ed25519 public key — no separate UUID, no indirection.
+
 ```
-did:pekobot:runtime:{uuid}
+did:key:z6Mk{base58-btc-multicodec-ed25519-pubkey}
 ```
 
-Example: `did:pekobot:runtime:a1b2c3d4-e5f6-7890-abcd-ef1234567890`
+Example: `did:key:z6MkhaXgZCiMTaW8m5pX4z7kR3FqYqN3d2y1vQpLrStUvWxw`
 
 **Generation:**
-- On first daemon startup, if no identity exists, the daemon generates a new ed25519 keypair and a UUID v4.
-- The DID is derived from the UUID and stored alongside the public key.
+- On first daemon startup, if no identity exists, the daemon generates a new ed25519 keypair.
+- The DID is derived from the public key using the `did:key` encoding (multicodec prefix `0xed01` + base58-btc).
 - The private key is stored encrypted at rest (using the same key-encryption scheme as agent identities).
+- **Self-certifying:** The DID *is* the public key. Anyone can derive the public key from the DID string alone — no registry lookup required for identity verification.
 
 **Storage:**
 
@@ -67,12 +70,11 @@ Example: `did:pekobot:runtime:a1b2c3d4-e5f6-7890-abcd-ef1234567890`
 
 ```toml
 [identity]
-runtime_did = "did:pekobot:runtime:a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-public_key = "base64-encoded-ed25519-public-key"
+runtime_did = "did:key:z6MkhaXgZCiMTaW8m5pX4z7kR3FqYqN3d2y1vQpLrStUvWxw"
 key_id = "key1"
 created_at = "2026-06-07T15:00:00Z"
 
-# Private key is stored separately or encrypted inline; reuse agent identity encryption
+# Private key is stored encrypted at rest; reuse agent identity encryption scheme
 [keys.key1]
 encrypted_private_key = "base64-encoded-encrypted-private-key"
 algorithm = "ed25519"
@@ -80,8 +82,7 @@ algorithm = "ed25519"
 
 ```rust
 pub struct RuntimeIdentity {
-    pub runtime_did: String,
-    pub public_key: Vec<u8>,
+    pub runtime_did: String,  // did:key format — self-certifying
     pub key_id: String,
     pub created_at: DateTime<Utc>,
 }
@@ -90,12 +91,23 @@ pub struct RuntimeIdentityFile {
     pub identity: RuntimeIdentity,
     pub keys: HashMap<String, EncryptedKey>,
 }
+
+/// Derive the ed25519 public key from the did:key string.
+/// This is a pure function — no database lookup, no network call.
+pub fn did_key_to_public_key(did: &str) -> Result<[u8; 32], DidError> {
+    // 1. Strip "did:key:" prefix
+    // 2. Base58-btc decode
+    // 3. Strip multicodec prefix (0xed01 for ed25519-pub)
+    // 4. Return 32-byte public key
+}
 ```
 
-**Rationale for DID-based identity:**
-- Reuses the existing ed25519 key infrastructure already used for agent identities.
-- Provides cryptographic identity for the runtime itself, enabling future signature-based auth (ADR-034) and runtime-to-runtime trust (ADR-035).
-- DID format is extensible and self-describing.
+**Rationale for `did:key`:**
+- **Self-certifying:** The DID *is* the public key. No separate registry is needed to verify that a DID maps to a key — the mapping is deterministic and universal.
+- **Spoofing-resistant:** An attacker cannot generate a different keypair with the same DID. The DID is derived from the key, not assigned.
+- **Reuses existing ed25519 infrastructure** already used for agent identities.
+- **W3C standard** with broad interoperability.
+- **No UUID indirection:** Eliminates the risk of DID collision or registration race conditions.
 
 ### 2. Runtime Metadata
 
@@ -103,7 +115,7 @@ Runtime metadata is stored in `~/.peko/runtime/runtime.toml` and updated on ever
 
 ```toml
 [runtime]
-runtime_id = "did:pekobot:runtime:a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+runtime_id = "did:key:z6MkhaXgZCiMTaW8m5pX4z7kR3FqYqN3d2y1vQpLrStUvWxw"
 display_name = "megad-desktop"
 created_at = "2026-06-07T15:00:00Z"
 last_seen_at = "2026-06-07T15:19:22Z"
@@ -138,7 +150,7 @@ pub struct HostInfo {
 
 | Field | Default | Mutable |
 |-------|---------|---------|
-| `runtime_id` | Generated once | Immutable |
+| `runtime_id` | Derived from ed25519 pubkey on first start | Immutable |
 | `display_name` | `hostname` | User-configurable |
 | `created_at` | First startup | Immutable |
 | `last_seen_at` | Updated on every daemon start | Daemon-managed |
@@ -187,7 +199,7 @@ pub struct TeamMetadata {
 version = "0.1.0"
 name = "alice"
 description = "General-purpose assistant"
-host_runtime_id = "did:pekobot:runtime:a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+host_runtime_id = "did:key:z6MkhaXgZCiMTaW8m5pX4z7kR3FqYqN3d2y1vQpLrStUvWxw"
 
 [agent.provider]
 model = "minimax"
@@ -204,14 +216,14 @@ A local registry file `~/.peko/runtime/known_runtimes.toml` tracks other runtime
 
 ```toml
 [[runtimes]]
-runtime_id = "did:pekobot:runtime:bbbbcccc-dddd-eeee-ffff-000011112222"
+runtime_id = "did:key:z6MktS3..."
 display_name = "megad-laptop"
 last_seen = "2026-06-06T10:00:00Z"
 connection_endpoint = "tunnel://pekobot.run/megad-laptop"
 trust_level = "self"
 
 [[runtimes]]
-runtime_id = "did:pekobot:runtime:33334444-5555-6666-7777-88889999aaaa"
+runtime_id = "did:key:z6MkrP7..."
 display_name = "prod-vps-01"
 last_seen = "2026-06-05T08:00:00Z"
 connection_endpoint = "https://vps01.example.com:11435"
@@ -329,11 +341,13 @@ impl RuntimeIdentity {
 // src/common/types/runtime.rs
 
 pub struct RuntimeIdentity {
-    pub runtime_did: String,
-    pub public_key: Vec<u8>,
+    pub runtime_did: String,  // did:key format — self-certifying
     pub key_id: String,
     pub created_at: DateTime<Utc>,
 }
+
+/// Derive the ed25519 public key from a did:key string.
+pub fn did_key_to_public_key(did: &str) -> Result<[u8; 32], DidError> { ... }
 
 pub struct RuntimeMetadata {
     pub runtime_id: String,
@@ -503,11 +517,15 @@ No migration needed. Runtime identity is generated on first daemon startup befor
 
 ## Reasoning
 
-### Why DID-based identity instead of plain UUID?
+### Why `did:key` instead of `did:pekobot:runtime:{uuid}`?
 
-**Cryptographic verifiability.** A plain UUID is just a random string. A DID backed by an ed25519 keypair allows the runtime to sign messages, prove identity to other runtimes, and participate in trust networks. This is essential for ADR-034 (Runtime Auth) and ADR-035 (Tunnel Protocol).
+**Self-certifying and spoofing-resistant.** With `did:pekobot:runtime:{uuid}`, the DID string and the public key are separate. An attacker could generate a different keypair and claim the same UUID in the DID, or race to register a UUID they don't own. With `did:key`, the DID *is* the public key — there is no separate identifier to fake. Anyone can derive the public key from the DID alone and verify signatures immediately, with no registry lookup.
 
-**Alignment with agent identity.** Agents already use `did:pekobot:local:{tenant}:{agent_name}`. Using the same DID scheme for runtimes creates a consistent identity namespace.
+**No registration race condition.** Because the DID is derived from the key, there is no "claiming" step where an attacker can squat on a desirable DID. The only way to present a valid `did:key` is to possess the corresponding private key.
+
+**Standard and interoperable.** `did:key` is a W3C CCG standard with implementations in multiple languages. It avoids creating a custom DID method that other systems cannot parse.
+
+**Simpler mental model.** One keypair = one identity. No UUID, no indirection, no mapping table.
 
 ### Why store metadata separately from identity?
 
@@ -525,33 +543,39 @@ No migration needed. Runtime identity is generated on first daemon startup befor
 
 | Tradeoff | Mitigation |
 |----------|------------|
-| **Identity file loss = new identity** | Users should back up `~/.peko/runtime/identity.toml`. Future work may add identity recovery via seed phrase. |
-| **DID format adds complexity** | Reuses existing DID parsing code from agent identity subsystem. No new parser needed. |
+| **Identity file loss = new identity** | Users should back up `~/.peko/runtime/identity.toml`. Future work may add identity recovery via seed phrase. Loss creates a new `did:key` — old agents remain tagged with the old DID as provenance. |
+| **`did:key` requires multicodec/base58 encoding** | Standard libraries available (`multibase`, `tiny-bip39`). The encoding is well-documented and tested. |
 | **Backfill on legacy installs** | One-time, automatic, idempotent. No user action required. |
 | **Local registry is device-local** | User can sync `known_runtimes.toml` via their own tools. Future work may add encrypted cloud sync. |
 | **No immediate use for `connection_endpoint`** | Field is optional and reserved. No code paths depend on it yet. |
 
 ## Alternatives Considered
 
-### Alternative A: Plain UUID v4 Stored in Config
+### Alternative A: `did:pekobot:runtime:{uuid}` (Custom DID Method)
+
+Use a project-specific DID format with a UUID and a separate ed25519 keypair.
+
+**Rejected:** The DID string and public key are decoupled, creating a spoofing vulnerability. An attacker could generate a keypair and claim any UUID in the DID. Verifying identity requires a registry lookup (DID → public key), adding complexity and a trust bottleneck. Replaced by `did:key` which is self-certifying.
+
+### Alternative B: Plain UUID v4 Stored in Config
 
 Store a simple UUID in `~/.peko/runtime/id.txt` with no cryptographic backing.
 
 **Rejected:** Cannot support signature-based auth or runtime-to-runtime trust verification. Would require a separate key system later, creating migration friction.
 
-### Alternative B: Hostname + Random Suffix
+### Alternative C: Hostname + Random Suffix
 
 Use `hostname + "-" + random_suffix` as the runtime ID.
 
 **Rejected:** Not globally unique. Hostname collisions are common (e.g., multiple machines named `MacBook-Pro`). No cryptographic properties.
 
-### Alternative C: Hardware-Bound Identity
+### Alternative D: Hardware-Bound Identity
 
 Derive runtime identity from hardware fingerprints (CPU serial, disk UUID, etc.).
 
 **Rejected:** Not portable across hardware upgrades. Violates the principle that identity should survive machine replacement. Hardware identifiers are also unreliable in VMs and containers.
 
-### Alternative D: Global Runtime Registry
+### Alternative E: Global Runtime Registry
 
 Maintain a central server where runtimes register themselves and receive a global ID.
 
@@ -595,7 +619,7 @@ The following are explicitly **not** part of this ADR but are enabled by it:
 | 5 | New teams are tagged with host runtime | `peko team show engineering` includes `host_runtime_id` |
 | 6 | Legacy agents are backfilled | Existing agents without `host_runtime_id` get the current runtime DID on first daemon start |
 | 7 | Local registry can be managed | `peko runtime register`, `list`, `trust`, `remove` work as expected |
-| 8 | Identity uses ed25519 | `identity.toml` contains a valid ed25519 public key |
+| 8 | Identity uses ed25519 | `identity.toml` contains a valid `did:key` derived from an ed25519 public key |
 
 ## References
 

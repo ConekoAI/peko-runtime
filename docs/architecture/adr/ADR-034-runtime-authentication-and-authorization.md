@@ -151,7 +151,7 @@ pub fn check(
 | Field | Value |
 |-------|-------|
 | Issuer (`iss`) | `pekohub` (or user's self-hosted instance hostname) |
-| Audience (`aud`) | Runtime DID — `did:pekobot:runtime:{uuid}` |
+| Audience (`aud`) | Runtime DID — `did:key:z6Mk...` |
 | Subject (`sub`) | pekohub user ID |
 | Claims | `name`, `email`, `permissions` (array of granted permissions on this runtime), `exp` |
 | Expiry | Short-lived — default 15 minutes |
@@ -253,7 +253,7 @@ When the owner links a runtime to a pekohub account:
 
 **Step-by-step:**
 
-1. **Runtime** generates a registration request containing its DID and a nonce, signed with the runtime's Ed25519 key.
+1. **Runtime** generates a registration request containing its `did:key` and a nonce, signed with the runtime's Ed25519 key. Pekohub derives the public key directly from the DID string to verify the signature — no registry lookup needed.
 2. **User** authorizes the request via pekohub web UI (OAuth flow or device code flow).
 3. **Pekohub** issues a runtime credential — either a shared secret or an mTLS client certificate — and returns it to the runtime via a callback or polling endpoint.
 4. **Runtime** stores the credential in `~/.peko/runtime/pekohub.toml`:
@@ -261,7 +261,7 @@ When the owner links a runtime to a pekohub account:
    ```toml
    # ~/.peko/runtime/pekohub.toml
    version = "1"
-   runtime_did = "did:pekobot:runtime:a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+   runtime_did = "did:key:z6MkhaXgZCiMTaW8m5pX4z7kR3FqYqN3d2y1vQpLrStUvWxw"
    
    [credential]
    type = "shared_secret"  # or "mtls"
@@ -327,7 +327,7 @@ pub enum ApiKeyScope {
 }
 
 pub struct PekohubConfig {
-    pub runtime_did: String,
+    pub runtime_did: String,  // did:key format
     pub credential: PekohubCredential,
     pub jwks_url: String,
     pub issuer: String,
@@ -512,7 +512,7 @@ fn enforce_auth_for_public_bind(bind_addr: &SocketAddr, auth_config: &AuthConfig
 ## References
 
 - ADR-021: Daemon as Central Runtime — defines the UDP/Unix-socket IPC protocol.
-- ADR-032: Runtime Identity — defines runtime DIDs and Ed25519 keypairs.
+- ADR-032: Runtime Identity — defines `did:key` runtime identity and Ed25519 keypairs.
 - ADR-033: Ownership & Permission Model — defines `Resource`, `Action`, and permission checks.
 - ADR-035: Tunnel Protocol — defines how pekohub tunnels connect to the runtime.
 - ADR-001-pekohub: Refresh Token Rotation — defines pekohub's OAuth token lifecycle.

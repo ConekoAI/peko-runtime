@@ -43,8 +43,8 @@ The runtime opens an **outbound** WebSocket connection to PekoHub's `/v1/tunnel`
 ```text
 1. Runtime starts → checks for PekoHub credential in ~/.peko/
 2. If credential exists → opens WebSocket to wss://pekohub.org/v1/tunnel
-3. Runtime sends RuntimeHello with runtime DID + signed nonce
-4. PekoHub verifies signature, looks up runtime in DB
+3. Runtime sends RuntimeHello with runtime `did:key` + signed nonce
+4. PekoHub derives the public key from the DID, verifies the signature, then looks up the runtime in DB
 5. PekoHub sends TunnelReady with heartbeat interval
 6. Connection stays open; both sides send periodic heartbeats
 7. On disconnect → runtime backs off and retries with exponential backoff
@@ -58,9 +58,9 @@ Messages are sent as **binary WebSocket frames** using the same compact serializ
 pub enum TunnelMessage {
     // --- Control ---
     RuntimeHello {
-        runtime_id: String,
+        runtime_id: String,  // did:key format — self-certifying
         nonce: String,
-        signature: String,
+        signature: String,   // ed25519 signature of nonce, verifiable using key derived from runtime_id
     },
     TunnelReady {
         heartbeat_interval_secs: u32,
@@ -142,7 +142,7 @@ pub enum TunnelMessage {
 ### Security
 
 - **mTLS (optional, enterprise)**: The runtime may present a client certificate; PekoHub verifies it at the TLS layer.
-- **Message authentication**: The runtime signs `RuntimeHello` with its Ed25519 key. PekoHub verifies the signature against the registered runtime DID (see ADR-032).
+- **Message authentication**: The runtime signs `RuntimeHello` with its Ed25519 key. PekoHub derives the public key directly from the `did:key` string and verifies the signature — no registry lookup is needed for identity verification (see ADR-032).
 - **Opaque payloads**: All proxied `payload` fields are opaque to PekoHub. PekoHub does not inspect or modify them.
 - **End-to-end encryption (future work)**: The inner IPC payload may be encrypted between the web user and the runtime so that PekoHub cannot read it even if it wanted to. This is documented as future work.
 - **Rate limiting**: Per-runtime and per-agent rate limits are enforced on PekoHub.
@@ -222,6 +222,7 @@ impl TunnelClient {
         let (mut write, mut read) = ws_stream.split();
 
         // 1. Send RuntimeHello
+        // runtime_id is did:key — pekohub derives the pubkey from it directly
         let hello = TunnelMessage::RuntimeHello {
             runtime_id: self.credential.runtime_id.clone(),
             nonce: generate_nonce(),
@@ -251,7 +252,7 @@ Runtime                                          PekoHub
   │                                                │
   │ ─── WebSocket connect wss://pekohub.org/v1/tunnel ───→ │
   │                                                │
-  │ ───────── RuntimeHello {did, nonce, sig} ──────→ │
+  │ ─────── RuntimeHello {did:key, nonce, sig} ─────→ │
   │                                                │
   │ ←──────────────── TunnelReady {interval} ────── │
   │                                                │
@@ -305,8 +306,9 @@ The runtime stores its PekoHub credential in `~/.peko/credentials.toml`:
 ```toml
 [pekohub]
 url = "wss://pekohub.org/v1/tunnel"
-runtime_id = "did:peko:runtime:abc123"
+runtime_id = "did:key:z6MkhaXgZCiMTaW8m5pX4z7kR3FqYqN3d2y1vQpLrStUvWxw"
 # Ed25519 signing key is stored separately in the OS keychain or ~/.peko/keys/
+# The public key can be derived from the did:key above — no separate storage needed
 ```
 
 ## CLI/API Changes
@@ -394,7 +396,7 @@ Existing endpoints (`POST /v1/agents/{agent}/chat`) are updated internally to ro
 ## References
 
 - ADR-021: Daemon as Central Runtime
-- ADR-032: Runtime Identity
+- ADR-032: Runtime Identity (`did:key` self-certifying identity)
 - ADR-033: Ownership & Permission Model
 - ADR-034: Runtime Auth
 - ADR-036: Remote Instance Management
