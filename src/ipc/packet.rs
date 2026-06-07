@@ -1465,6 +1465,7 @@ mod tests {
                     ..Default::default()
                 },
                 config_path: std::path::PathBuf::from("/tmp/test-agent/config.toml"),
+                memberships: vec![],
             }],
         };
         let bytes = resp.to_bytes().unwrap();
@@ -1492,6 +1493,7 @@ mod tests {
                 config_path: std::path::PathBuf::from("/tmp/test-agent/config.toml"),
                 sessions_dir: std::path::PathBuf::from("/tmp/test-agent/sessions"),
                 session_count: 0,
+                memberships: vec![],
             }),
         };
         let bytes = resp.to_bytes().unwrap();
