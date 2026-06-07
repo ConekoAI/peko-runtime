@@ -26,7 +26,7 @@ pub mod stream;
 
 pub use client::DaemonClient;
 pub use connection::{ConnectionHandle, ConnectionManager};
-pub use packet::{RequestPacket, ResponsePacket};
+pub use packet::{AuthCredential, AuthHeader, AuthenticatedRequest, RequestPacket, ResponsePacket};
 pub use server::IpcServer;
 pub use stream::PacketStream;
 

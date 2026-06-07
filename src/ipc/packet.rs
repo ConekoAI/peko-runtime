@@ -13,6 +13,51 @@ use std::path::PathBuf;
 /// Maximum packet size in bytes (conservative UDP limit)
 pub const MAX_PACKET_SIZE: usize = 60_000;
 
+// ============================================================================
+// Auth Credential Types (ADR-034)
+// ============================================================================
+
+/// Authentication credential sent with every request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "token")]
+pub enum AuthCredential {
+    /// Local trust — no token provided.
+    /// Allowed only for Unix-socket or localhost-UDP connections.
+    #[serde(rename = "none")]
+    None,
+    /// pekohub-issued JWT (short-lived).
+    #[serde(rename = "jwt")]
+    Jwt(String),
+    /// Long-lived programmatic key.
+    #[serde(rename = "api_key")]
+    ApiKey(String),
+}
+
+impl Default for AuthCredential {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// Authentication header appended to every request.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuthHeader {
+    pub credential: AuthCredential,
+}
+
+/// Authenticated request envelope (ADR-034).
+///
+/// New clients wrap their `RequestPacket` in this envelope.
+/// Old clients send bare `RequestPacket`s, which deserialize with
+/// `auth = AuthCredential::None` when parsed as this type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticatedRequest {
+    #[serde(default)]
+    pub auth: AuthHeader,
+    #[serde(flatten)]
+    pub packet: RequestPacket,
+}
+
 /// Heartbeat interval from daemon to CLI during streams (seconds)
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 2;
 
@@ -341,6 +386,16 @@ pub enum RequestPacket {
     RuntimeTrust { request_id: u64, runtime_id: String },
     #[serde(rename = "runtime_remove")]
     RuntimeRemove { request_id: u64, runtime_id: String },
+
+    // ── Auth management (ADR-034) ──
+    #[serde(rename = "auth_api_key_create")]
+    AuthApiKeyCreate { request_id: u64, name: String, scopes: Vec<String> },
+    #[serde(rename = "auth_api_key_list")]
+    AuthApiKeyList { request_id: u64 },
+    #[serde(rename = "auth_api_key_revoke")]
+    AuthApiKeyRevoke { request_id: u64, key_id: String },
+    #[serde(rename = "auth_status")]
+    AuthStatus { request_id: u64 },
 }
 
 impl RequestPacket {
@@ -407,7 +462,11 @@ impl RequestPacket {
             | Self::RuntimeList { request_id }
             | Self::RuntimeRegister { request_id, .. }
             | Self::RuntimeTrust { request_id, .. }
-            | Self::RuntimeRemove { request_id, .. } => *request_id,
+            | Self::RuntimeRemove { request_id, .. }
+            | Self::AuthApiKeyCreate { request_id, .. }
+            | Self::AuthApiKeyList { request_id }
+            | Self::AuthApiKeyRevoke { request_id, .. }
+            | Self::AuthStatus { request_id } => *request_id,
         }
     }
 
@@ -433,6 +492,16 @@ impl RequestPacket {
     /// Returns error if deserialization fails
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
         Ok(serde_json::from_slice(bytes)?)
+    }
+
+    /// Extract the auth credential from this request.
+    ///
+    /// For v0.1.0, this always returns `AuthCredential::None` because
+    /// `RequestPacket` variants do not carry auth directly. Use
+    /// `AuthenticatedRequest::from_bytes` to parse requests that include auth.
+    #[must_use]
+    pub fn auth(&self) -> AuthCredential {
+        AuthCredential::None
     }
 }
 
@@ -788,6 +857,22 @@ pub enum ResponsePacket {
     RuntimeInfo { request_id: u64, metadata: RuntimeMetadataResponse },
     #[serde(rename = "runtime_list")]
     RuntimeList { request_id: u64, runtimes: Vec<KnownRuntimeResponse> },
+
+    // ── Auth management (ADR-034) ──
+    #[serde(rename = "auth_api_key_created")]
+    AuthApiKeyCreated { request_id: u64, key_id: String, full_key: String },
+    #[serde(rename = "auth_api_key_list")]
+    AuthApiKeyList { request_id: u64, keys: Vec<ApiKeySummary> },
+    #[serde(rename = "auth_api_key_revoked")]
+    AuthApiKeyRevoked { request_id: u64, key_id: String },
+    #[serde(rename = "auth_status")]
+    AuthStatus {
+        request_id: u64,
+        local_trust_enabled: bool,
+        pekohub_jwt_enabled: bool,
+        api_key_enabled: bool,
+        api_key_count: usize,
+    },
 }
 
 /// Summary of an extension for IPC responses
@@ -853,6 +938,61 @@ pub struct DoctorCheck {
     pub suggestion: Option<String>,
 }
 
+/// API key summary for IPC responses (ADR-034)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeySummary {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+    pub scopes: Vec<String>,
+    pub enabled: bool,
+}
+
+impl AuthenticatedRequest {
+    /// Deserialize an authenticated request from JSON bytes.
+    ///
+    /// First tries to parse as `AuthenticatedRequest` (with auth envelope).
+    /// If that fails, falls back to plain `RequestPacket` with `AuthCredential::None`.
+    ///
+    /// # Errors
+    /// Returns error if deserialization fails for both formats.
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        // Try the new format first
+        if let Ok(envelope) = serde_json::from_slice::<Self>(bytes) {
+            return Ok(envelope);
+        }
+        // Fall back to plain RequestPacket (old clients)
+        let packet = serde_json::from_slice::<RequestPacket>(bytes)?;
+        Ok(Self {
+            auth: AuthHeader::default(),
+            packet,
+        })
+    }
+
+    /// Get the request ID from the inner packet
+    #[must_use]
+    pub fn request_id(&self) -> u64 {
+        self.packet.request_id()
+    }
+
+    /// Serialize to JSON bytes
+    ///
+    /// # Errors
+    /// Returns error if serialization fails
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        let json = serde_json::to_vec(self)?;
+        if json.len() > MAX_PACKET_SIZE {
+            anyhow::bail!(
+                "Packet size {} exceeds maximum {}",
+                json.len(),
+                MAX_PACKET_SIZE
+            );
+        }
+        Ok(json)
+    }
+}
+
 impl ResponsePacket {
     /// Get the request ID from any variant
     #[must_use]
@@ -915,7 +1055,11 @@ impl ResponsePacket {
             | Self::RegistryPulled { request_id, .. }
             | Self::RuntimeId { request_id, .. }
             | Self::RuntimeInfo { request_id, .. }
-            | Self::RuntimeList { request_id, .. } => *request_id,
+            | Self::RuntimeList { request_id, .. }
+            | Self::AuthApiKeyCreated { request_id, .. }
+            | Self::AuthApiKeyList { request_id, .. }
+            | Self::AuthApiKeyRevoked { request_id, .. }
+            | Self::AuthStatus { request_id, .. } => *request_id,
         }
     }
 

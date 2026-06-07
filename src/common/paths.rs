@@ -254,6 +254,30 @@ impl PathResolver {
         self.runtime_dir().join("known_runtimes.toml")
     }
 
+    /// Get the auth config file path
+    ///
+    /// Path: `{config_dir}/runtime/auth_config.toml`
+    #[must_use]
+    pub fn auth_config(&self) -> PathBuf {
+        self.runtime_dir().join("auth_config.toml")
+    }
+
+    /// Get the API keys file path
+    ///
+    /// Path: `{config_dir}/runtime/api_keys.toml`
+    #[must_use]
+    pub fn api_keys(&self) -> PathBuf {
+        self.runtime_dir().join("api_keys.toml")
+    }
+
+    /// Get the pekohub config file path
+    ///
+    /// Path: `{config_dir}/runtime/pekohub.toml`
+    #[must_use]
+    pub fn pekohub_config(&self) -> PathBuf {
+        self.runtime_dir().join("pekohub.toml")
+    }
+
     /// Get the Universal Tools directory
     ///
     /// Path: `{data_dir}/tools`

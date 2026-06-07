@@ -116,6 +116,21 @@ pub struct AppState {
 
     /// Known runtimes registry (ADR-032)
     pub known_runtimes: std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>>,
+
+    /// Auth configuration (ADR-034)
+    auth_config: crate::auth::config::AuthConfig,
+
+    /// API key store (ADR-034)
+    api_key_store: Option<crate::auth::api_key::ApiKeyStore>,
+
+    /// API key verifier (ADR-034)
+    api_key_verifier: Option<crate::auth::api_key::ApiKeyVerifier>,
+
+    /// JWT validator (ADR-034)
+    jwt_validator: Option<crate::auth::jwt::JwtValidator>,
+
+    /// Rate limiter (ADR-034)
+    rate_limiter: Option<crate::auth::rate_limit::RateLimiter>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -144,6 +159,7 @@ impl std::fmt::Debug for AppState {
             .field("runtime_identity", &self.runtime_identity.runtime_did)
             .field("runtime_metadata", &self.runtime_metadata.display_name)
             .field("known_runtimes", &format!("{} runtimes", self.runtime_identity.runtime_did))
+            .field("auth", &"<AuthConfig>")
             .finish()
     }
 }
@@ -268,7 +284,7 @@ impl AppState {
 
         let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_service.clone(), path_resolver)
+            StatelessAgentService::new(config_service.clone(), path_resolver.clone())
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create agent service: {e}"))?,
         );
@@ -381,6 +397,33 @@ impl AppState {
             Arc::clone(&global_core),
         ));
 
+        // ADR-034: Initialize auth components
+        let auth_config = crate::auth::config::AuthConfig::load(&path_resolver)?;
+        let api_key_store = if auth_config.enable_api_key() {
+            Some(crate::auth::api_key::ApiKeyStore::load(&path_resolver)?)
+        } else {
+            None
+        };
+        let api_key_verifier = api_key_store.as_ref().map(|s| crate::auth::api_key::ApiKeyVerifier::new(s.clone()));
+        let jwt_validator = if auth_config.enable_pekohub_jwt() {
+            Some(crate::auth::jwt::JwtValidator::new(
+                auth_config.trusted_issuers().to_vec(),
+                runtime_identity.runtime_did.clone(),
+            ))
+        } else {
+            None
+        };
+        let rate_limiter = if auth_config.has_any_remote_auth_method() {
+            Some(crate::auth::rate_limit::RateLimiter::new(
+                auth_config.rate_limit().jwt_requests_per_minute,
+                auth_config.rate_limit().api_key_requests_per_minute,
+                auth_config.rate_limit().burst_jwt,
+                auth_config.rate_limit().burst_api_key,
+            ))
+        } else {
+            None
+        };
+
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
@@ -414,6 +457,11 @@ impl AppState {
             runtime_identity,
             runtime_metadata,
             known_runtimes,
+            auth_config,
+            api_key_store,
+            api_key_verifier,
+            jwt_validator,
+            rate_limiter,
         })
     }
 
@@ -590,6 +638,36 @@ impl AppState {
     #[must_use]
     pub fn extension_services(&self) -> &Arc<crate::extension::services::Services> {
         &self.extension_services
+    }
+
+    /// Get the auth configuration (ADR-034)
+    #[must_use]
+    pub fn auth_config(&self) -> crate::auth::config::AuthConfig {
+        self.auth_config.clone()
+    }
+
+    /// Get the API key store (ADR-034)
+    #[must_use]
+    pub fn api_key_store(&self) -> Option<crate::auth::api_key::ApiKeyStore> {
+        self.api_key_store.clone()
+    }
+
+    /// Get the API key verifier (ADR-034)
+    #[must_use]
+    pub fn api_key_verifier(&self) -> Option<crate::auth::api_key::ApiKeyVerifier> {
+        self.api_key_verifier.clone()
+    }
+
+    /// Get the JWT validator (ADR-034)
+    #[must_use]
+    pub fn jwt_validator(&self) -> Option<crate::auth::jwt::JwtValidator> {
+        self.jwt_validator.clone()
+    }
+
+    /// Get the rate limiter (ADR-034)
+    #[must_use]
+    pub fn rate_limiter(&self) -> Option<crate::auth::rate_limit::RateLimiter> {
+        self.rate_limiter.clone()
     }
 
     /// Build a `StarterContext` for use by runtime starters.

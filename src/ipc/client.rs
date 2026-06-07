@@ -348,6 +348,66 @@ impl DaemonClient {
             None => anyhow::bail!("Ext status stream closed unexpectedly"),
         }
     }
+
+    // ── Auth management (ADR-034) ──
+
+    /// Create an API key
+    pub async fn auth_api_key_create(
+        &self,
+        name: impl Into<String>,
+        scopes: Vec<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::AuthApiKeyCreate {
+            request_id,
+            name: name.into(),
+            scopes,
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Auth API key create stream closed unexpectedly"),
+        }
+    }
+
+    /// List API keys
+    pub async fn auth_api_key_list(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::AuthApiKeyList { request_id };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Auth API key list stream closed unexpectedly"),
+        }
+    }
+
+    /// Revoke an API key
+    pub async fn auth_api_key_revoke(
+        &self,
+        key_id: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::AuthApiKeyRevoke {
+            request_id,
+            key_id: key_id.into(),
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Auth API key revoke stream closed unexpectedly"),
+        }
+    }
+
+    /// Get auth status
+    pub async fn auth_status(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::AuthStatus { request_id };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Auth status stream closed unexpectedly"),
+        }
+    }
 }
 
 #[cfg(test)]

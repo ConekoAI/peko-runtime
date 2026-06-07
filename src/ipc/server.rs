@@ -13,8 +13,11 @@ use tokio::net::UnixDatagram;
 use tokio::time::interval;
 use tracing::{error, info, trace, warn};
 
-use super::packet::{RequestPacket, ResponsePacket, HEARTBEAT_INTERVAL_SECS};
+use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket, HEARTBEAT_INTERVAL_SECS};
 use super::{DEFAULT_HOST, DEFAULT_PORT};
+use crate::auth::caller::CallerContext;
+use crate::auth::config::enforce_auth_for_public_bind;
+use crate::auth::permissions::AuthError;
 use crate::daemon::state::AppState;
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
@@ -84,9 +87,10 @@ impl IpcServer {
     /// Create and bind the IPC server
     ///
     /// Tries Unix socket first (on Unix), falls back to UDP.
+    /// Enforces auth requirements for public binds (ADR-034).
     ///
     /// # Errors
-    /// Returns error if socket binding fails
+    /// Returns error if socket binding fails or if public bind without auth
     pub async fn new(app_state: AppState) -> anyhow::Result<Self> {
         // Try Unix socket on Unix platforms
         #[cfg(unix)]
@@ -115,12 +119,18 @@ impl IpcServer {
         }
 
         // Fall back to UDP
-        let addr = format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT);
-        let socket = UdpSocket::bind(&addr)
+        let addr_str = format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT);
+        let socket = UdpSocket::bind(&addr_str)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket to {}: {}", addr, e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket to {}: {}", addr_str, e))?;
 
-        info!("IPC server bound to UDP: {}", addr);
+        let bound_addr = socket.local_addr()?;
+
+        // ADR-034: Enforce auth for public binds
+        let auth_config = app_state.auth_config();
+        enforce_auth_for_public_bind(&bound_addr, &auth_config)?;
+
+        info!("IPC server bound to UDP: {}", addr_str);
         Ok(Self {
             socket: ServerSocket::Udp {
                 socket: Arc::new(socket),
@@ -149,16 +159,44 @@ impl IpcServer {
                                 continue;
                             }
 
-                            match RequestPacket::from_bytes(&buf[..len]) {
-                                Ok(request) => {
-                                    trace!("Received request: {:?}", request);
-                                    let request_id = request.request_id();
+                            match AuthenticatedRequest::from_bytes(&buf[..len]) {
+                                Ok(envelope) => {
+                                    trace!("Received request: {:?}", envelope.packet);
+                                    let request_id = envelope.request_id();
+
+                                    // Resolve caller identity
+                                    let caller = match Self::resolve_caller(&envelope, addr, &self.app_state).await {
+                                        Ok(caller) => caller,
+                                        Err(auth_err) => {
+                                            warn!("Auth failed for request {}: {}", request_id, auth_err);
+                                            let response = ResponsePacket::Error {
+                                                request_id,
+                                                message: format!("Authentication failed: {}", auth_err),
+                                            };
+                                            let _ = Self::send_packet(&self.socket, response, addr).await;
+                                            continue;
+                                        }
+                                    };
+
+                                    // Check rate limit
+                                    if let Some(rate_limiter) = self.app_state.rate_limiter() {
+                                        let is_jwt = matches!(envelope.auth.credential, super::packet::AuthCredential::Jwt(_));
+                                        if !rate_limiter.check(&caller.rate_limit_bucket, is_jwt).await {
+                                            warn!("Rate limit exceeded for {}", caller.rate_limit_bucket);
+                                            let response = ResponsePacket::Error {
+                                                request_id,
+                                                message: "Rate limit exceeded. Try again later.".to_string(),
+                                            };
+                                            let _ = Self::send_packet(&self.socket, response, addr).await;
+                                            continue;
+                                        }
+                                    }
 
                                     // Spawn a task to handle the request
                                     let state = self.app_state.clone();
                                     let socket = self.socket.clone();
                                     tokio::spawn(async move {
-                                        if let Err(e) = Self::handle_request(request, state, socket, addr).await {
+                                        if let Err(e) = Self::handle_request(envelope.packet, caller, state, socket, addr).await {
                                             error!("Error handling request {}: {}", request_id, e);
                                         }
                                     });
@@ -185,13 +223,76 @@ impl IpcServer {
         Ok(())
     }
 
+    /// Resolve the caller identity from an authenticated request.
+    async fn resolve_caller(
+        envelope: &AuthenticatedRequest,
+        addr: Option<std::net::SocketAddr>,
+        state: &AppState,
+    ) -> Result<CallerContext, AuthError> {
+        use super::packet::AuthCredential;
+
+        let is_local_connection = addr.map_or(true, |a| a.ip().is_loopback());
+        let auth_config = state.auth_config();
+
+        match &envelope.auth.credential {
+            AuthCredential::None => {
+                // Local trust: only allowed for localhost/Unix socket
+                if !is_local_connection && !auth_config.enable_local_trust() {
+                    return Err(AuthError::LocalTrustDisabled);
+                }
+                // For non-local connections without credentials, reject
+                if !is_local_connection {
+                    return Err(AuthError::InvalidCredential);
+                }
+                Ok(CallerContext::local())
+            }
+            AuthCredential::Jwt(token) => {
+                if !auth_config.enable_pekohub_jwt() {
+                    return Err(AuthError::InvalidCredential);
+                }
+                if let Some(validator) = state.jwt_validator() {
+                    match validator.validate(token) {
+                        Ok(validated) => Ok(crate::auth::jwt::JwtValidator::to_caller(validated)),
+                        Err(e) => {
+                            tracing::warn!("JWT validation failed: {}", e);
+                            Err(AuthError::InvalidCredential)
+                        }
+                    }
+                } else {
+                    Err(AuthError::InvalidCredential)
+                }
+            }
+            AuthCredential::ApiKey(key) => {
+                if !auth_config.enable_api_key() {
+                    return Err(AuthError::InvalidCredential);
+                }
+                if let Some(verifier) = state.api_key_verifier() {
+                    match verifier.verify(key).await {
+                        Some(entry) => {
+                            let key_id = crate::auth::api_key::ApiKeyStore::extract_key_id(key);
+                            Ok(CallerContext::from_api_key(key_id, entry.scopes))
+                        }
+                        None => Err(AuthError::InvalidCredential),
+                    }
+                } else {
+                    Err(AuthError::InvalidCredential)
+                }
+            }
+        }
+    }
+
     /// Handle a single request
     async fn handle_request(
         request: RequestPacket,
+        caller: CallerContext,
         state: AppState,
         socket: ServerSocket,
         addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<()> {
+        // For v0.1.0, local trust is treated as owner (all actions allowed).
+        // JWT users have full access.
+        // API key scopes are checked at resolution time.
+        // Future: enforce per-resource ACLs here.
         match request {
             RequestPacket::Ping { request_id } => {
                 let uptime = state.uptime_seconds();
@@ -1591,6 +1692,94 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
+            }
+
+            // ── Auth management (ADR-034) ──
+            // API key management is restricted to local-trust (owner) for v0.1.0.
+            RequestPacket::AuthApiKeyCreate { request_id, name, scopes } => {
+                if !caller.is_local() {
+                    let response = ResponsePacket::Error { request_id, message: "API key management requires local access".to_string() };
+                    Self::send_packet(&socket, response, addr).await?;
+                } else if let Some(store) = state.api_key_store() {
+                    let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> = scopes
+                        .iter()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    match store.create_key(name, parsed_scopes).await {
+                        Ok((full_key, key_id)) => {
+                            let response = ResponsePacket::AuthApiKeyCreated { request_id, key_id, full_key };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    }
+                } else {
+                    let response = ResponsePacket::Error { request_id, message: "API key store not initialized".to_string() };
+                    Self::send_packet(&socket, response, addr).await?;
+                }
+            }
+            RequestPacket::AuthApiKeyList { request_id } => {
+                if !caller.is_local() {
+                    let response = ResponsePacket::Error { request_id, message: "API key management requires local access".to_string() };
+                    Self::send_packet(&socket, response, addr).await?;
+                } else if let Some(store) = state.api_key_store() {
+                    let keys = store.list_keys().await;
+                    let summaries: Vec<super::packet::ApiKeySummary> = keys.into_iter().map(|k| super::packet::ApiKeySummary {
+                        id: k.id,
+                        name: k.name,
+                        created_at: k.created_at.to_rfc3339(),
+                        last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
+                        scopes: k.scopes.iter().map(|s| s.to_string()).collect(),
+                        enabled: k.enabled,
+                    }).collect();
+                    let response = ResponsePacket::AuthApiKeyList { request_id, keys: summaries };
+                    Self::send_packet(&socket, response, addr).await?;
+                } else {
+                    let response = ResponsePacket::AuthApiKeyList { request_id, keys: Vec::new() };
+                    Self::send_packet(&socket, response, addr).await?;
+                }
+            }
+            RequestPacket::AuthApiKeyRevoke { request_id, key_id } => {
+                if !caller.is_local() {
+                    let response = ResponsePacket::Error { request_id, message: "API key management requires local access".to_string() };
+                    Self::send_packet(&socket, response, addr).await?;
+                } else if let Some(store) = state.api_key_store() {
+                    match store.revoke_key(&key_id).await {
+                        Ok(true) => {
+                            let response = ResponsePacket::AuthApiKeyRevoked { request_id, key_id };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Ok(false) => {
+                            let response = ResponsePacket::Error { request_id, message: format!("Key '{key_id}' not found") };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    }
+                } else {
+                    let response = ResponsePacket::Error { request_id, message: "API key store not initialized".to_string() };
+                    Self::send_packet(&socket, response, addr).await?;
+                }
+            }
+            RequestPacket::AuthStatus { request_id } => {
+                let auth_config = state.auth_config();
+                let api_key_count = if let Some(store) = state.api_key_store() {
+                    store.list_keys().await.len()
+                } else {
+                    0
+                };
+                let response = ResponsePacket::AuthStatus {
+                    request_id,
+                    local_trust_enabled: auth_config.enable_local_trust(),
+                    pekohub_jwt_enabled: auth_config.enable_pekohub_jwt(),
+                    api_key_enabled: auth_config.enable_api_key(),
+                    api_key_count,
+                };
+                Self::send_packet(&socket, response, addr).await?;
             }
         }
 

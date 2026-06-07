@@ -182,6 +182,9 @@ pub mod types;
 /// Agent identity and key management
 pub mod identity;
 
+/// Authentication and authorization (ADR-034)
+pub mod auth;
+
 // ============================================================================
 // Infrastructure
 // ============================================================================
