@@ -665,8 +665,8 @@ The following are explicitly **not** part of this ADR but are enabled by it:
 - ADR-021: Daemon as Central Runtime — UDP/Unix socket IPC, daemon startup sequence
 - ADR-031: Agent-Team Membership Model — `AgentConfig`, `TeamMetadata`, filesystem layout
 - ADR-033: Ownership & Permission Model — builds on runtime identity for access control
-- ADR-034: Runtime Auth — will use runtime DID + ed25519 keys for authentication
-- ADR-035: Tunnel Protocol — will use `known_runtimes.toml` connection endpoints
+- ADR-034: Runtime Auth — uses runtime DID + ed25519 keys for authentication
+- ADR-035: Tunnel Protocol — uses `did:key` for runtime authentication to pekohub
 - `src/common/types/agent.rs`: `AgentConfig` definition
 - `src/common/types/team.rs`: `TeamMetadata` definition
 - `src/common/paths.rs`: `GlobalPaths`, path resolution

@@ -7,7 +7,7 @@
 | **Status** | Implemented (Runtime side) |
 | **Date** | 2026-06-07 |
 | **Depends On** | ADR-021 (Daemon as Central Runtime), ADR-032 (Runtime Identity), ADR-034 (Runtime Auth) |
-| **Related** | ADR-033 (Ownership & Permission Model), ADR-036 (Remote Instance Management), ADR-037 (Exposure Modes) |
+| **Related** | ADR-033 (Ownership & Permission Model), ADR-002-pekohub (Remote Instance Management API), ADR-003-pekohub (Exposure Modes) |
 
 ---
 
@@ -413,7 +413,7 @@ Existing endpoints (`POST /v1/agents/{agent}/chat`) are updated internally to ro
 - ADR-032: Runtime Identity (`did:key` self-certifying identity)
 - ADR-033: Ownership & Permission Model
 - ADR-034: Runtime Auth
-- ADR-036: Remote Instance Management
-- ADR-037: Exposure Modes
+- ADR-002-pekohub: Remote Instance Management API
+- ADR-003-pekohub: Exposure Modes and Public Agent Discovery
 - [RFC 6455 — The WebSocket Protocol](https://datatracker.ietf.org/doc/html/rfc6455)
 - [Postcard — A no_std + serde compatible binary serialization format](https://docs.rs/postcard/latest/postcard/)

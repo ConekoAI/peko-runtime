@@ -6,7 +6,7 @@
 **Author**: Core team  
 **Deciders**: Core team  
 **Depends On**: ADR-031 (Agent-Team Membership Model)  
-**Related**: ADR-032 (Runtime Identity), ADR-034 (Runtime Auth), ADR-035 (Tunnel Protocol), ADR-036 (Remote Instance Management)  
+**Related**: ADR-032 (Runtime Identity), ADR-034 (Runtime Auth), ADR-035 (Tunnel Protocol), ADR-002-pekohub (Remote Instance Management API)  
 
 ---
 
@@ -533,7 +533,7 @@ Team members automatically get `Chat` on all member agents; team admins get `Man
 - ADR-032 (peko-runtime): Runtime Identity
 - ADR-034 (peko-runtime): Runtime Auth
 - ADR-035 (peko-runtime): Tunnel Protocol
-- ADR-036 (peko-runtime): Remote Instance Management
+- ADR-002-pekohub (pekohub): Remote Instance Management API
 - `src/types/agent.rs`: `AgentConfig`
 - `src/common/types/team.rs`: `TeamMetadata`
 - `src/auth/ownership.rs`: `Permission`, `PermissionGrant`, `SubjectType`, `Resource`, `check_permission()`

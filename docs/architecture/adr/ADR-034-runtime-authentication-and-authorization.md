@@ -482,11 +482,11 @@ fn enforce_auth_for_public_bind(bind_addr: &SocketAddr, auth_config: &AuthConfig
 
 ### Positive
 
-- The runtime can safely be exposed to the internet or a local network via tunnels.
-- Multi-user scenarios (family, team, public demo) are now possible.
+- The runtime has the infrastructure to be safely exposed to the internet or a local network via tunnels (JWT verification is stubbed; full security requires completing JWKS integration).
+- Multi-user scenarios (family, team, public demo) are now possible via API keys and local trust.
 - CI/CD integration is first-class via scoped API keys.
-- The permission model from ADR-033 is fully enforced.
-- Secure-by-default prevents accidental public exposure.
+- The permission model from ADR-033 is fully enforced for local and API-key access.
+- Secure-by-default prevents accidental public exposure (daemon refuses to start on public bind without auth).
 
 ### Negative
 
@@ -527,6 +527,7 @@ fn enforce_auth_for_public_bind(bind_addr: &SocketAddr, auth_config: &AuthConfig
 - ADR-032: Runtime Identity — defines `did:key` runtime identity and Ed25519 keypairs.
 - ADR-033: Ownership & Permission Model — defines `Resource`, `Action`, and permission checks.
 - ADR-035: Tunnel Protocol — defines how pekohub tunnels connect to the runtime.
+- ADR-002-pekohub: Remote Instance Management API — defines instance proxying through the tunnel.
 - ADR-001-pekohub: Refresh Token Rotation — defines pekohub's OAuth token lifecycle.
 - [RFC 7519](https://tools.ietf.org/html/rfc7519): JSON Web Token (JWT)
 - [RFC 7517](https://tools.ietf.org/html/rfc7517): JSON Web Key (JWK)
