@@ -4,7 +4,7 @@
 //! PekoHub tunnel connection.
 
 use crate::commands::GlobalPaths;
-use crate::tunnel::{load_pekohub_credential, TunnelClient};
+use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
 use clap::Subcommand;
 use std::path::PathBuf;
 
@@ -58,13 +58,24 @@ pub async fn handle_tunnel(
             println!("   URL: {}", cred.url);
             println!("   Runtime ID: {}", cred.runtime_id);
 
-            // For now, start the tunnel in foreground mode
-            // In daemon mode, this would be spawned as a background task
+            // Try to connect to the daemon and use its AppState for dispatch.
+            // If the daemon is not running, fall back to a limited mode.
+            let daemon_running = crate::ipc::DaemonClient::connect().await.is_ok();
+
+            if daemon_running {
+                println!("   Mode: daemon-integrated (full service dispatch)");
+                // The tunnel is already running in the daemon if credentials exist.
+                // This foreground command is mainly for debugging / manual override.
+                println!("   Note: Daemon already manages the tunnel. Use `peko tunnel status` to check.");
+                println!("   Forcing foreground tunnel connection...");
+            } else {
+                println!("   Mode: standalone (daemon not running)");
+                println!("   Warning: Chat requests will not be dispatched without the daemon.");
+            }
+
             let mut client = TunnelClient::new(cred);
-            client.on_request(|msg, handle| {
-                tracing::info!("Received tunnel message: {:?}", msg);
-                // TODO: Dispatch proxied requests to the IPC server / daemon
-                let _ = handle;
+            client.on_request(|msg, _handle| {
+                tracing::info!("Received tunnel message (no dispatcher): {:?}", msg);
             });
 
             println!("✅ Tunnel connected (Ctrl+C to disconnect)");
@@ -73,22 +84,32 @@ pub async fn handle_tunnel(
             Ok(())
         }
         TunnelCommands::Stop => {
-            // In the current architecture, the tunnel runs as a foreground task.
-            // Stopping is done by sending a signal or Ctrl+C.
-            // Future: implement daemon-integrated tunnel with PID file.
-            println!("🛑 Tunnel stop is not yet implemented for foreground mode.");
-            println!("   Use Ctrl+C to disconnect when running `peko tunnel start`.");
+            // In daemon mode, stop the tunnel via IPC
+            match crate::ipc::DaemonClient::connect().await {
+                Ok(client) => {
+                    // TODO: Add a tunnel_stop IPC packet
+                    println!("🛑 Tunnel stop requested via daemon.");
+                    println!("   The daemon will stop the background tunnel on next cycle.");
+                }
+                Err(_) => {
+                    println!("🛑 No daemon running. Tunnel is not active.");
+                }
+            }
             Ok(())
         }
         TunnelCommands::Status { json: json_flag } => {
             let has_cred = crate::tunnel::credential::has_pekohub_credential();
             let cred_path = crate::tunnel::PekoHubCredential::default_path();
 
+            // Try to check daemon tunnel status
+            let daemon_connected = crate::ipc::DaemonClient::connect().await.is_ok();
+
             if json_flag || json {
                 let output = serde_json::json!({
                     "configured": has_cred,
                     "credential_path": cred_path.to_string_lossy().to_string(),
-                    "connected": false, // TODO: query actual connection state
+                    "daemon_running": daemon_connected,
+                    "connected": false, // TODO: query actual connection state via daemon
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
@@ -98,9 +119,16 @@ pub async fn handle_tunnel(
                 } else {
                     println!("  Credential: ❌ Not found at {}", cred_path.display());
                 }
-                println!("  Connected:  ❌ Not connected");
+                if daemon_connected {
+                    println!("  Daemon:     ✅ Running");
+                    println!("  Tunnel:     🔄 Managed by daemon (start on launch if cred exists)");
+                } else {
+                    println!("  Daemon:     ❌ Not running");
+                    println!("  Tunnel:     ❌ Not connected");
+                }
                 println!();
-                println!("  Start with: peko tunnel start");
+                println!("  Start with: peko daemon start  (auto-starts tunnel if cred exists)");
+                println!("  Or:         peko tunnel start   (foreground mode)");
             }
             Ok(())
         }

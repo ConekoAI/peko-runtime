@@ -858,6 +858,7 @@ mod tests {
     // RT-001: Engine MUST execute the agentic loop
     // ===================================================================
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_rt001_basic_agentic_loop() {
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
@@ -918,6 +919,7 @@ mod tests {
     // RT-002: Engine MUST support streaming output
     // ===================================================================
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_rt002_streaming_output() {
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
@@ -966,6 +968,7 @@ mod tests {
     // RT-003: Engine MUST enforce a configurable timeout per LLM request
     // ===================================================================
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_rt003_timeout_config_propagation() {
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
@@ -998,6 +1001,7 @@ mod tests {
     // RT-004: Engine MUST gracefully handle LLM API failures
     // ===================================================================
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_rt004_graceful_error_handling() {
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
@@ -1050,6 +1054,7 @@ mod tests {
     // RT-005: Engine MUST persist every message to JSONL atomically
     // ===================================================================
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_rt005_session_persistence() {
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
@@ -1097,6 +1102,7 @@ mod tests {
     // RT-006: Engine MUST support up to 10 iterations per turn
     // ===================================================================
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_rt006_max_iterations_enforced() {
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
@@ -1143,6 +1149,7 @@ mod tests {
     // RT-006 variant: Verify default max_iterations is 10
     // ===================================================================
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_rt006_default_max_iterations_is_10() {
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
@@ -1165,6 +1172,7 @@ mod tests {
     // Integration: tool call -> tool execution -> next iteration
     // ===================================================================
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_tool_call_iteration() {
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();

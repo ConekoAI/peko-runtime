@@ -385,7 +385,11 @@ impl TunnelClient {
             TunnelMessage::ProxiedRequest { .. }
             | TunnelMessage::ProxiedResponse { .. }
             | TunnelMessage::StreamChunk { .. }
-            | TunnelMessage::StreamEnd { .. } => {
+            | TunnelMessage::StreamEnd { .. }
+            | TunnelMessage::InstanceAnnounce { .. }
+            | TunnelMessage::InstanceHeartbeat { .. }
+            | TunnelMessage::InstanceDeregister { .. }
+            | TunnelMessage::ExposureUpdate { .. } => {
                 if let Some(handler) = request_handler {
                     handler(msg, handle.clone());
                 } else {

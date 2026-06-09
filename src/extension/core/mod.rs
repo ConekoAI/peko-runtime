@@ -407,6 +407,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_global_instance() {
         // Note: This test may run after other tests that already set the global core.
         // We can only verify that global_core() returns consistent results.

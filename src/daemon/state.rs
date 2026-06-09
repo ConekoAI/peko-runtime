@@ -131,6 +131,9 @@ pub struct AppState {
 
     /// Rate limiter (ADR-034)
     rate_limiter: Option<crate::auth::rate_limit::RateLimiter>,
+
+    /// Tunnel cancellation token — set when tunnel is active
+    tunnel_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -246,6 +249,52 @@ impl AppState {
         data_dir: PathBuf,
         cache_dir: PathBuf,
     ) -> anyhow::Result<Self> {
+        Self::build_internal(
+            workspace_path,
+            host,
+            port,
+            config,
+            config_dir,
+            data_dir,
+            cache_dir,
+            false,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    async fn build_for_test(
+        workspace_path: PathBuf,
+        host: String,
+        port: u16,
+        config: DaemonConfigSnapshot,
+        config_dir: PathBuf,
+        data_dir: PathBuf,
+        cache_dir: PathBuf,
+    ) -> anyhow::Result<Self> {
+        Self::build_internal(
+            workspace_path,
+            host,
+            port,
+            config,
+            config_dir,
+            data_dir,
+            cache_dir,
+            true,
+        )
+        .await
+    }
+
+    async fn build_internal(
+        workspace_path: PathBuf,
+        host: String,
+        port: u16,
+        config: DaemonConfigSnapshot,
+        config_dir: PathBuf,
+        data_dir: PathBuf,
+        cache_dir: PathBuf,
+        for_test: bool,
+    ) -> anyhow::Result<Self> {
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             config_dir.clone(),
             data_dir.clone(),
@@ -308,7 +357,21 @@ impl AppState {
         // reuse it and register tools on that instance. Otherwise create a new one.
         // This prevents a race where main.rs sets an empty core and AppState's
         // tool-filled core gets discarded by the OnceLock.
-        let global_core = if let Some(existing) = crate::extension::core::global_core() {
+        //
+        // For tests, always create a fresh core to avoid shared mutable state
+        // between concurrent tests.
+        let global_core = if for_test {
+            use crate::extension::core::{ExtensionCore, ExtensionServices};
+            use crate::extension::services::AsyncExecutionRouter;
+            let router = AsyncExecutionRouter::with_transport(
+                crate::extension::services::async_transport::create_local_transport(),
+            );
+            let services = ExtensionServices::with_async_router_and_agent_service(
+                router,
+                Arc::clone(&agent_service),
+            );
+            Arc::new(ExtensionCore::with_services(Arc::new(services)))
+        } else if let Some(existing) = crate::extension::core::global_core() {
             tracing::info!("Reusing global ExtensionCore initialized by main.rs");
             existing
         } else {
@@ -462,6 +525,7 @@ impl AppState {
             api_key_verifier,
             jwt_validator,
             rate_limiter,
+            tunnel_cancel: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -713,6 +777,49 @@ impl AppState {
         self.lifecycle.active_count().await
     }
 
+    /// Start the PekoHub tunnel as a background task
+    ///
+    /// Returns true if the tunnel was started, false if no credentials exist
+    pub async fn start_tunnel(&self) -> anyhow::Result<bool> {
+        use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
+        use tracing::info;
+
+        let cred = match load_pekohub_credential(None)? {
+            Some(c) => c,
+            None => return Ok(false),
+        };
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        {
+            let mut tc = self.tunnel_cancel.write().await;
+            *tc = Some(cancel.clone());
+        }
+
+        let dispatcher = TunnelDispatcher::new(self.clone());
+        let dispatcher_for_handler = dispatcher.clone();
+
+        let mut client = TunnelClient::new(cred);
+        client.on_request(move |msg, handle| {
+            dispatcher_for_handler.handle_message(msg, handle);
+        });
+
+        tokio::spawn(async move {
+            info!("Starting PekoHub tunnel in background");
+            client.run_cancellable(cancel).await;
+            info!("PekoHub tunnel stopped");
+        });
+
+        Ok(true)
+    }
+
+    /// Stop the PekoHub tunnel
+    pub async fn stop_tunnel(&self) {
+        let mut tc = self.tunnel_cancel.write().await;
+        if let Some(ref cancel) = *tc {
+            cancel.cancel();
+            *tc = None;
+        }
+    }
 }
 
 impl Default for DaemonConfigSnapshot {
@@ -732,12 +839,16 @@ mod tests {
 
     async fn create_test_state() -> AppState {
         let temp_dir = TempDir::new().unwrap();
-        AppState::with_data_dir(
-            temp_dir.path(),
-            "127.0.0.1",
+        let data_dir = temp_dir.path().to_path_buf();
+        let cache_dir = data_dir.join("cache");
+        AppState::build_for_test(
+            temp_dir.path().to_path_buf(),
+            "127.0.0.1".to_string(),
             11435,
             DaemonConfigSnapshot::default(),
-            temp_dir.path().to_path_buf(),
+            data_dir.clone(),
+            data_dir,
+            cache_dir,
         )
         .await
         .unwrap()
@@ -843,6 +954,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_agent_init_preserves_pre_registered_tools() {
         use crate::agent::Agent;
         use crate::extension::core::init_global_core;

@@ -108,6 +108,7 @@ mcp = []
 tokio-test = "0.4"
 tempfile = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
+serial_test = "3.0"
 
 
 [[bin]]

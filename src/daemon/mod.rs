@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Daemon configuration
 #[derive(Debug, Clone)]
@@ -207,6 +207,13 @@ impl Daemon {
         app_state.set_ready(true).await;
         info!("✅ Daemon ready to accept requests");
 
+        // Start PekoHub tunnel if credentials exist (ADR-035)
+        match app_state.start_tunnel().await {
+            Ok(true) => info!("🌐 PekoHub tunnel started in background"),
+            Ok(false) => info!("📡 No PekoHub credentials found; tunnel not started"),
+            Err(e) => warn!("Failed to start PekoHub tunnel: {}", e),
+        }
+
         // Start IPC server (replaces HTTP API per ADR-021)
         let ipc_shutdown_rx = app_state.subscribe_shutdown();
         let ipc_server = crate::ipc::IpcServer::new(app_state.clone())
@@ -319,6 +326,9 @@ impl Daemon {
 
         // Mark daemon as not ready
         app_state.set_ready(false).await;
+
+        // Stop PekoHub tunnel
+        app_state.stop_tunnel().await;
 
         // Wait for IPC server to finish
         let _ = ipc_handle.await;

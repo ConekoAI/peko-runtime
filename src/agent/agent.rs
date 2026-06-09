@@ -1049,6 +1049,7 @@ mod tests {
     use crate::types::agent::AgentConfig;
 
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_agent_creation() {
         use crate::extension::core::ExtensionCore;
         use crate::types::provider::{ProviderConfig, ProviderType};
@@ -1075,6 +1076,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_agent_has_session_manager() {
         use crate::extension::core::ExtensionCore;
         use crate::types::provider::{ProviderConfig, ProviderType};
@@ -1101,6 +1103,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
         use crate::extension::core::ExtensionCore;
         use crate::session::types::{ChannelType, Peer};

@@ -475,17 +475,38 @@ impl Default for ExtensionCore {
 }
 
 /// Global instance of `ExtensionCore` (optional convenience)
+#[cfg(not(test))]
 use std::sync::OnceLock;
+#[cfg(not(test))]
 static GLOBAL_EXTENSION_CORE: OnceLock<Arc<ExtensionCore>> = OnceLock::new();
+
+#[cfg(test)]
+static GLOBAL_EXTENSION_CORE: std::sync::RwLock<Option<Arc<ExtensionCore>>> =
+    std::sync::RwLock::new(None);
 
 /// Initialize the global extension core
 pub fn init_global_core(core: Arc<ExtensionCore>) {
-    let _ = GLOBAL_EXTENSION_CORE.set(core);
+    #[cfg(not(test))]
+    {
+        let _ = GLOBAL_EXTENSION_CORE.set(core);
+    }
+    #[cfg(test)]
+    {
+        let mut guard = GLOBAL_EXTENSION_CORE.write().unwrap();
+        *guard = Some(core);
+    }
 }
 
 /// Get the global extension core
 pub fn global_core() -> Option<Arc<ExtensionCore>> {
-    GLOBAL_EXTENSION_CORE.get().cloned()
+    #[cfg(not(test))]
+    {
+        GLOBAL_EXTENSION_CORE.get().cloned()
+    }
+    #[cfg(test)]
+    {
+        GLOBAL_EXTENSION_CORE.read().unwrap().clone()
+    }
 }
 
 #[cfg(test)]
