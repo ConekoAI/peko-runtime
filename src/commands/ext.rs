@@ -6,8 +6,8 @@
 //! - `ipc::client_service::DaemonClientService` — daemon IPC
 //! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
-use anyhow::Context;
 use crate::commands::GlobalPaths;
+use crate::common::services::CredentialsService;
 use crate::extension::core::ExtensionCore;
 use crate::extension::manager::packaging::ExtensionPackager;
 use crate::extension::manager::{ExtensionManager, ExtensionStorage};
@@ -18,8 +18,8 @@ use crate::portable::registry::AgentRegistry;
 use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
-use crate::common::services::CredentialsService;
 use crate::registry::manifest::RegistryManifest;
+use anyhow::Context;
 use clap::Subcommand;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -274,7 +274,9 @@ pub async fn handle_ext_command(
             let response = client.request_response(packet).await?;
 
             match response {
-                crate::ipc::ResponsePacket::ExtensionList { extensions, total, .. } => {
+                crate::ipc::ResponsePacket::ExtensionList {
+                    extensions, total, ..
+                } => {
                     if json {
                         println!(
                             "{{\"extensions\": {}, \"total\": {}}}",
@@ -402,7 +404,12 @@ pub async fn handle_ext_command(
             };
             let response = client.request_response(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::ExtensionValidated { valid, errors, warnings, .. } => {
+                crate::ipc::ResponsePacket::ExtensionValidated {
+                    valid,
+                    errors,
+                    warnings,
+                    ..
+                } => {
                     let report = crate::extension::adapters::ValidationReport {
                         detected_type: "unknown".to_string(),
                         errors,
@@ -427,12 +434,32 @@ pub async fn handle_ext_command(
             let response = client.request_response(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::ExtensionDebugInfo { info, .. } => {
-                    println!("Debug Information for Extension: {}", info.get("id").and_then(|v| v.as_str()).unwrap_or(&id));
-                    println!("  Name: {}", info.get("name").and_then(|v| v.as_str()).unwrap_or("n/a"));
-                    println!("  Type: {}", info.get("type").and_then(|v| v.as_str()).unwrap_or("n/a"));
-                    println!("  Version: {}", info.get("version").and_then(|v| v.as_str()).unwrap_or("n/a"));
-                    println!("  Path: {}", info.get("path").and_then(|v| v.as_str()).unwrap_or("n/a"));
-                    println!("  Hooks: {}", info.get("hooks").and_then(|v| v.as_u64()).unwrap_or(0));
+                    println!(
+                        "Debug Information for Extension: {}",
+                        info.get("id").and_then(|v| v.as_str()).unwrap_or(&id)
+                    );
+                    println!(
+                        "  Name: {}",
+                        info.get("name").and_then(|v| v.as_str()).unwrap_or("n/a")
+                    );
+                    println!(
+                        "  Type: {}",
+                        info.get("type").and_then(|v| v.as_str()).unwrap_or("n/a")
+                    );
+                    println!(
+                        "  Version: {}",
+                        info.get("version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("n/a")
+                    );
+                    println!(
+                        "  Path: {}",
+                        info.get("path").and_then(|v| v.as_str()).unwrap_or("n/a")
+                    );
+                    println!(
+                        "  Hooks: {}",
+                        info.get("hooks").and_then(|v| v.as_u64()).unwrap_or(0)
+                    );
                     Ok(())
                 }
                 _ => anyhow::bail!("Unexpected response"),
@@ -518,10 +545,18 @@ pub async fn handle_ext_command(
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
             let mut manager = create_manager_with_adapters(core.clone(), Some(storage)).await;
             manager.load_all().await?;
-            
+
             // Pull the extension to a temp file using local manager
-            let (temp_path, _manifest) = handle_ext_pull_to_temp(&mut manager, &registry_ref, pull_json, no_deps, cli_registry, paths).await?;
-            
+            let (temp_path, _manifest) = handle_ext_pull_to_temp(
+                &mut manager,
+                &registry_ref,
+                pull_json,
+                no_deps,
+                cli_registry,
+                paths,
+            )
+            .await?;
+
             // Install via IPC so the daemon knows about it
             let client = crate::ipc::DaemonClient::connect().await?;
             let packet = crate::ipc::RequestPacket::ExtensionInstall {
@@ -532,16 +567,19 @@ pub async fn handle_ext_command(
             match response {
                 crate::ipc::ResponsePacket::ExtensionInstalled { id, message, .. } => {
                     if pull_json {
-                        println!("{{\"success\": true, \"id\": \"{}\", \"message\": \"{}\"}}", id, message);
+                        println!(
+                            "{{\"success\": true, \"id\": \"{}\", \"message\": \"{}\"}}",
+                            id, message
+                        );
                     } else {
                         println!("{message}");
                         println!("   ID: {id}");
                     }
                     Ok(())
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => {
-                    Err(anyhow::anyhow!("Failed to install pulled extension: {message}"))
-                }
+                crate::ipc::ResponsePacket::Error { message, .. } => Err(anyhow::anyhow!(
+                    "Failed to install pulled extension: {message}"
+                )),
                 _ => anyhow::bail!("Unexpected response from daemon during extension install"),
             }
         }
@@ -882,7 +920,10 @@ pub async fn handle_ext_pull_to_temp(
     _no_deps: bool,
     cli_registry: Option<&str>,
     paths: &GlobalPaths,
-) -> anyhow::Result<(std::path::PathBuf, crate::registry::manifest::RegistryManifest)> {
+) -> anyhow::Result<(
+    std::path::PathBuf,
+    crate::registry::manifest::RegistryManifest,
+)> {
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
 
@@ -965,7 +1006,16 @@ pub async fn handle_ext_pull(
     cli_registry: Option<&str>,
     paths: &GlobalPaths,
 ) -> anyhow::Result<()> {
-    handle_ext_pull_with_seen(manager, registry_ref, json, no_deps, cli_registry, paths, &mut std::collections::HashSet::new()).await
+    handle_ext_pull_with_seen(
+        manager,
+        registry_ref,
+        json,
+        no_deps,
+        cli_registry,
+        paths,
+        &mut std::collections::HashSet::new(),
+    )
+    .await
 }
 
 /// Internal implementation that tracks which packages have already been pulled
@@ -985,12 +1035,16 @@ async fn handle_ext_pull_with_seen(
     // in the current dependency tree, skip it.
     if !already_pulled.insert(registry_ref.to_string()) {
         if !json {
-            eprintln!("  Skipping {} (already pulled in this dependency tree)", registry_ref);
+            eprintln!(
+                "  Skipping {} (already pulled in this dependency tree)",
+                registry_ref
+            );
         }
         return Ok(());
     }
 
-    let (temp_path, manifest) = handle_ext_pull_to_temp(manager, registry_ref, json, no_deps, cli_registry, paths).await?;
+    let (temp_path, manifest) =
+        handle_ext_pull_to_temp(manager, registry_ref, json, no_deps, cli_registry, paths).await?;
 
     // Install the main extension first — on success we get the manifest back
     let install_result = handle_install(manager, temp_path.clone(), None).await;
@@ -1041,7 +1095,15 @@ async fn handle_ext_pull_with_seen(
             let optional_count = dep_resolution
                 .missing
                 .iter()
-                .filter(|d| matches!(d, DependencyStatus::Missing { required: false, .. }))
+                .filter(|d| {
+                    matches!(
+                        d,
+                        DependencyStatus::Missing {
+                            required: false,
+                            ..
+                        }
+                    )
+                })
                 .count();
 
             println!();
@@ -1051,9 +1113,15 @@ async fn handle_ext_pull_with_seen(
                     required_count, optional_count
                 );
             } else if required_count > 0 {
-                println!("Dependencies ({} required need installation):", required_count);
+                println!(
+                    "Dependencies ({} required need installation):",
+                    required_count
+                );
             } else {
-                println!("Dependencies ({} optional need installation):", optional_count);
+                println!(
+                    "Dependencies ({} optional need installation):",
+                    optional_count
+                );
             }
 
             for dep in &dep_resolution.missing {
@@ -1086,7 +1154,10 @@ async fn handle_ext_pull_with_seen(
         if json {
             // Warning included in JSON output below
         } else {
-            let ext_name = install_result.as_ref().map(|m| m.name.as_str()).unwrap_or(&manifest.name);
+            let ext_name = install_result
+                .as_ref()
+                .map(|m| m.name.as_str())
+                .unwrap_or(&manifest.name);
             let missing_count = dep_resolution.missing.len();
             eprintln!();
             eprintln!(
@@ -1101,10 +1172,7 @@ async fn handle_ext_pull_with_seen(
                     eprintln!("  - {}: {}", req_label, package);
                 }
             }
-            eprintln!(
-                "Run 'peko ext pull {}' to install them.",
-                registry_ref
-            );
+            eprintln!("Run 'peko ext pull {}' to install them.", registry_ref);
         }
     }
 
@@ -1134,7 +1202,11 @@ async fn handle_ext_pull_with_seen(
         }
     }
     for dep in &dep_resolution.satisfied {
-        if let DependencyStatus::Satisfied { package, installed_version } = dep {
+        if let DependencyStatus::Satisfied {
+            package,
+            installed_version,
+        } = dep
+        {
             dep_json.push(serde_json::json!({
                 "package": package,
                 "status": "satisfied",
@@ -1143,7 +1215,12 @@ async fn handle_ext_pull_with_seen(
         }
     }
     for dep in &dep_resolution.version_mismatches {
-        if let DependencyStatus::VersionMismatch { package, have, need } = dep {
+        if let DependencyStatus::VersionMismatch {
+            package,
+            have,
+            need,
+        } = dep
+        {
             dep_json.push(serde_json::json!({
                 "package": package,
                 "status": "version_mismatch",
@@ -1202,5 +1279,3 @@ async fn store_registry_manifest_for_client(
     tokio::fs::write(&manifest_path, json).await?;
     Ok(digest)
 }
-
-

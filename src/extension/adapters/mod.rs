@@ -304,7 +304,9 @@ pub mod parsing {
                 if let Some(key) = k.as_str() {
                     if key == "dependencies" {
                         // Try to parse as structured dependencies first
-                        if let Ok(deps) = serde_yaml::from_value::<Vec<ExtensionDependency>>(v.clone()) {
+                        if let Ok(deps) =
+                            serde_yaml::from_value::<Vec<ExtensionDependency>>(v.clone())
+                        {
                             manifest.dependencies = deps;
                         } else if let Some(arr) = v.as_sequence() {
                             // Fallback: array of strings (legacy format)
@@ -649,18 +651,23 @@ dependencies:
         )
         .unwrap();
 
-        let manifest = parsing::build_manifest_from_yaml(
-            &yaml,
-            "skill",
-            Path::new("/tmp/test"),
-        )
-        .unwrap();
+        let manifest =
+            parsing::build_manifest_from_yaml(&yaml, "skill", Path::new("/tmp/test")).unwrap();
 
         assert_eq!(manifest.dependencies.len(), 2);
-        assert_eq!(manifest.dependencies[0].package, "pekohub.com/ext/base-tools");
-        assert_eq!(manifest.dependencies[0].version, Some(">=1.0.0".to_string()));
+        assert_eq!(
+            manifest.dependencies[0].package,
+            "pekohub.com/ext/base-tools"
+        );
+        assert_eq!(
+            manifest.dependencies[0].version,
+            Some(">=1.0.0".to_string())
+        );
         assert!(manifest.dependencies[0].required);
-        assert_eq!(manifest.dependencies[1].package, "pekohub.com/ext/optional-utils");
+        assert_eq!(
+            manifest.dependencies[1].package,
+            "pekohub.com/ext/optional-utils"
+        );
         assert!(!manifest.dependencies[1].required);
     }
 
@@ -679,12 +686,8 @@ dependencies:
         )
         .unwrap();
 
-        let manifest = parsing::build_manifest_from_yaml(
-            &yaml,
-            "skill",
-            Path::new("/tmp/test"),
-        )
-        .unwrap();
+        let manifest =
+            parsing::build_manifest_from_yaml(&yaml, "skill", Path::new("/tmp/test")).unwrap();
 
         assert_eq!(manifest.dependencies.len(), 2);
         assert_eq!(manifest.dependencies[0].package, "pekohub.com/ext/legacy-a");
@@ -705,12 +708,8 @@ description: A test extension
         )
         .unwrap();
 
-        let manifest = parsing::build_manifest_from_yaml(
-            &yaml,
-            "skill",
-            Path::new("/tmp/test"),
-        )
-        .unwrap();
+        let manifest =
+            parsing::build_manifest_from_yaml(&yaml, "skill", Path::new("/tmp/test")).unwrap();
 
         assert!(manifest.dependencies.is_empty());
     }

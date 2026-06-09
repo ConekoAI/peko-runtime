@@ -101,8 +101,8 @@ impl RuntimeIdentity {
         if identity_path.exists() {
             let content = fs::read_to_string(&identity_path)
                 .with_context(|| format!("Failed to read identity file: {identity_path:?}"))?;
-            let file: RuntimeIdentityFile = toml::from_str(&content)
-                .with_context(|| "Failed to parse identity.toml")?;
+            let file: RuntimeIdentityFile =
+                toml::from_str(&content).with_context(|| "Failed to parse identity.toml")?;
             info!("Loaded runtime identity from: {:?}", identity_path);
             return Ok(file.identity);
         }

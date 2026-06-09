@@ -371,7 +371,10 @@ impl RegistryManifest {
     }
 
     /// Extract fields from annotations map for pull-side reconstruction.
-    fn apply_annotations(&mut self, annotations: &Option<serde_json::Map<String, serde_json::Value>>) {
+    fn apply_annotations(
+        &mut self,
+        annotations: &Option<serde_json::Map<String, serde_json::Value>>,
+    ) {
         if let Some(map) = annotations {
             // Identity fields
             if let Some(v) = map.get("org.peko.name").and_then(|v| v.as_str()) {
@@ -403,10 +406,7 @@ impl RegistryManifest {
             {
                 self.license = Some(v.to_string());
             }
-            if let Some(v) = map
-                .get("dev.pekohub.bundleType")
-                .and_then(|v| v.as_str())
-            {
+            if let Some(v) = map.get("dev.pekohub.bundleType").and_then(|v| v.as_str()) {
                 self.bundle_type = Some(v.to_string());
             }
             if let Some(v) = map
@@ -427,7 +427,10 @@ impl RegistryManifest {
             if let Some(v) = map.get("dev.pekohub.hooks").and_then(|v| v.as_str()) {
                 self.hooks = Some(v.to_string());
             }
-            if let Some(v) = map.get("dev.pekohub.compatibility").and_then(|v| v.as_str()) {
+            if let Some(v) = map
+                .get("dev.pekohub.compatibility")
+                .and_then(|v| v.as_str())
+            {
                 self.compatibility = Some(v.to_string());
             }
             if let Some(v) = map
@@ -634,7 +637,13 @@ mod tests {
         assert_eq!(manifest.license, Some("MIT".to_string()));
         assert_eq!(manifest.bundle_type, Some("extension".to_string()));
         assert_eq!(manifest.extension_type, Some("skill".to_string()));
-        assert_eq!(manifest.tags, Some("[\"nlp\", \"transformers\"]".to_string()));
-        assert_eq!(manifest.hooks, Some("[{\"point\": \"tool.register\"}]".to_string()));
+        assert_eq!(
+            manifest.tags,
+            Some("[\"nlp\", \"transformers\"]".to_string())
+        );
+        assert_eq!(
+            manifest.hooks,
+            Some("[{\"point\": \"tool.register\"}]".to_string())
+        );
     }
 }

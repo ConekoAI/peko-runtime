@@ -44,11 +44,7 @@ pub enum SearchCommands {
 }
 
 /// Handle search commands
-pub async fn handle_search(
-    cmd: SearchCommands,
-    paths: &GlobalPaths,
-    json: bool,
-) -> Result<()> {
+pub async fn handle_search(cmd: SearchCommands, paths: &GlobalPaths, json: bool) -> Result<()> {
     match cmd {
         SearchCommands::Query {
             query,
@@ -196,21 +192,13 @@ async fn handle_search_query(
 
         println!(
             "{:<30} {:<10} {:<12} {:<8} {:<8} {}",
-            name_display,
-            item.version,
-            bundle_type,
-            pulls,
-            stars,
-            desc_display
+            name_display, item.version, bundle_type, pulls, stars, desc_display
         );
     }
 
     if data.page < data.total_pages {
         println!();
-        println!(
-            "Use --page {} to see more results",
-            data.page + 1
-        );
+        println!("Use --page {} to see more results", data.page + 1);
     }
 
     Ok(())

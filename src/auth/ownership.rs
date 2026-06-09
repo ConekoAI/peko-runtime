@@ -149,9 +149,10 @@ pub fn check_permission(
     }
 
     // 2. Look up explicit grants for this subject or "public"
-    let grants = resource.permissions().iter().filter(|g| {
-        g.subject_id == caller_subject_id || g.subject_id == "public"
-    });
+    let grants = resource
+        .permissions()
+        .iter()
+        .filter(|g| g.subject_id == caller_subject_id || g.subject_id == "public");
 
     for grant in grants {
         if grant.permission.covers(&action) {
@@ -174,7 +175,9 @@ pub fn check_permission(
                             | Permission::ManageMembers
                     )
                 }
-                MembershipRole::Member => matches!(action, Permission::Chat | Permission::ViewSettings),
+                MembershipRole::Member => {
+                    matches!(action, Permission::Chat | Permission::ViewSettings)
+                }
             };
             if role_covers {
                 return Ok(());

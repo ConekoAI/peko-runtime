@@ -265,24 +265,42 @@ pub async fn handle_agent(
             local_tag,
             registry_ref,
             file,
-        } => handlers::handle_agent_push(paths, local_tag, registry_ref, file, json, cli_registry).await,
+        } => {
+            handlers::handle_agent_push(paths, local_tag, registry_ref, file, json, cli_registry)
+                .await
+        }
         AgentCommands::Pull {
             registry_ref,
             output,
             team,
             force,
             json,
-        } => handlers::handle_agent_pull(paths, registry_ref, output, team, force, json, cli_registry).await,
+        } => {
+            handlers::handle_agent_pull(
+                paths,
+                registry_ref,
+                output,
+                team,
+                force,
+                json,
+                cli_registry,
+            )
+            .await
+        }
         AgentCommands::Config(cmd) => handlers::handle_agent_config(cmd, paths, json).await,
         AgentCommands::Transfer { name, to } => {
             handlers::handle_agent_transfer(paths, name, to, json).await
         }
-        AgentCommands::Permit { name, subject, permission } => {
-            handlers::handle_agent_permit(paths, name, subject, permission, json).await
-        }
-        AgentCommands::Revoke { name, subject, permission } => {
-            handlers::handle_agent_revoke(paths, name, subject, permission, json).await
-        }
+        AgentCommands::Permit {
+            name,
+            subject,
+            permission,
+        } => handlers::handle_agent_permit(paths, name, subject, permission, json).await,
+        AgentCommands::Revoke {
+            name,
+            subject,
+            permission,
+        } => handlers::handle_agent_revoke(paths, name, subject, permission, json).await,
         AgentCommands::Permissions { name } => {
             handlers::handle_agent_permissions(paths, name, json).await
         }

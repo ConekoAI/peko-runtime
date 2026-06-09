@@ -41,11 +41,14 @@ pub fn handle_registry(cmd: RegistryCommands, paths: &GlobalPaths, json: bool) -
             let mut doc = if content.trim().is_empty() {
                 toml_edit::DocumentMut::new()
             } else {
-                content.parse().unwrap_or_else(|_| toml_edit::DocumentMut::new())
+                content
+                    .parse()
+                    .unwrap_or_else(|_| toml_edit::DocumentMut::new())
             };
 
             // Set [registry].default
-            let registry = doc["registry"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+            let registry =
+                doc["registry"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
             if let Some(table) = registry.as_table_mut() {
                 table.insert("default", toml_edit::value(host.clone()));
 

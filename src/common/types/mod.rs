@@ -13,8 +13,8 @@ pub use agent::{
     AgentRenameResult, AgentSummary, AgentUpdateRequest,
 };
 pub use membership::{
-    AgentMembership, AgentMemberships, MembershipRole, TeamJoinResult, TeamLeaveResult,
-    TeamMember, TeamMembers,
+    AgentMembership, AgentMemberships, MembershipRole, TeamJoinResult, TeamLeaveResult, TeamMember,
+    TeamMembers,
 };
 pub use team::{
     TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamExtConfig, TeamImportResult,

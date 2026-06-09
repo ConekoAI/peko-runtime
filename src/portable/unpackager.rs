@@ -466,12 +466,19 @@ impl Unpackager {
                 }
 
                 // If importing with a different name, update sessions.json agent_name fields
-                let final_content = if file_name == "sessions.json" && !original_agent_name.is_empty() && original_agent_name != agent_name {
-                    if let Ok(mut sessions) = serde_json::from_slice::<std::collections::HashMap<String, serde_json::Value>>(content) {
+                let final_content = if file_name == "sessions.json"
+                    && !original_agent_name.is_empty()
+                    && original_agent_name != agent_name
+                {
+                    if let Ok(mut sessions) = serde_json::from_slice::<
+                        std::collections::HashMap<String, serde_json::Value>,
+                    >(content)
+                    {
                         for (_, session_val) in sessions.iter_mut() {
                             if let Some(obj) = session_val.as_object_mut() {
                                 if let Some(agent_name_val) = obj.get_mut("agent_name") {
-                                    *agent_name_val = serde_json::Value::String(agent_name.to_string());
+                                    *agent_name_val =
+                                        serde_json::Value::String(agent_name.to_string());
                                 }
                             }
                         }
@@ -499,12 +506,7 @@ impl Unpackager {
     ) -> anyhow::Result<()> {
         // ADR-031 layout: sessions/{agent}/{team}/
         let sessions_dir = dirs::data_dir()
-            .map(|d| {
-                d.join("peko")
-                    .join("sessions")
-                    .join(agent_name)
-                    .join(team)
-            })
+            .map(|d| d.join("peko").join("sessions").join(agent_name).join(team))
             .unwrap_or_else(|| self.base_dir.join("sessions").join(agent_name).join(team));
 
         if !sessions_dir.exists() {

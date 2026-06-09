@@ -79,8 +79,8 @@ impl RuntimeMetadata {
         if runtime_path.exists() {
             let content = fs::read_to_string(&runtime_path)
                 .with_context(|| format!("Failed to read runtime metadata: {runtime_path:?}"))?;
-            let mut metadata: RuntimeMetadata = toml::from_str(&content)
-                .with_context(|| "Failed to parse runtime.toml")?;
+            let mut metadata: RuntimeMetadata =
+                toml::from_str(&content).with_context(|| "Failed to parse runtime.toml")?;
 
             // Update last_seen_at on every load
             metadata.last_seen_at = Utc::now();
@@ -116,8 +116,8 @@ impl RuntimeMetadata {
     pub fn touch(&mut self, resolver: &PathResolver) -> Result<()> {
         self.last_seen_at = Utc::now();
         let runtime_path = resolver.runtime_dir().join("runtime.toml");
-        let toml = toml::to_string_pretty(self)
-            .with_context(|| "Failed to serialize runtime metadata")?;
+        let toml =
+            toml::to_string_pretty(self).with_context(|| "Failed to serialize runtime metadata")?;
         fs::write(&runtime_path, toml)
             .with_context(|| format!("Failed to write runtime metadata: {runtime_path:?}"))?;
         Ok(())

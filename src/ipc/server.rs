@@ -564,7 +564,10 @@ impl IpcServer {
             }
 
             // ─── Agent CRUD ─────────────────────────────────────────────────
-            RequestPacket::AgentList { request_id, team_filter } => {
+            RequestPacket::AgentList {
+                request_id,
+                team_filter,
+            } => {
                 let service = state.agent_mgmt_service();
                 match service.list_agents(team_filter.as_deref()).await {
                     Ok(agents) => {
@@ -572,13 +575,20 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::AgentGet { request_id, name, team } => {
+            RequestPacket::AgentGet {
+                request_id,
+                name,
+                team,
+            } => {
                 let service = state.agent_mgmt_service();
                 match service.get_agent(&name, team.as_deref()).await {
                     Ok(agent) => {
@@ -586,13 +596,19 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::AgentCreate { request_id, request } => {
+            RequestPacket::AgentCreate {
+                request_id,
+                request,
+            } => {
                 let service = state.agent_mgmt_service();
                 let mut request = request;
                 if request.host_runtime_id.is_none() {
@@ -607,13 +623,21 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::AgentDelete { request_id, name, team, force } => {
+            RequestPacket::AgentDelete {
+                request_id,
+                name,
+                team,
+                force,
+            } => {
                 let service = state.agent_mgmt_service();
                 let opts = crate::common::types::agent::AgentDeleteOptions {
                     force,
@@ -625,27 +649,47 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::AgentMove { request_id, old_name, new_name, team } => {
+            RequestPacket::AgentMove {
+                request_id,
+                old_name,
+                new_name,
+                team,
+            } => {
                 let service = state.agent_mgmt_service();
-                match service.rename_agent(&old_name, &new_name, team.as_deref()).await {
+                match service
+                    .rename_agent(&old_name, &new_name, team.as_deref())
+                    .await
+                {
                     Ok(result) => {
                         let response = ResponsePacket::AgentMoved { request_id, result };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::AgentExport { request_id, name, team, output, include_sessions } => {
+            RequestPacket::AgentExport {
+                request_id,
+                name,
+                team,
+                output,
+                include_sessions,
+            } => {
                 let service = state.agent_mgmt_service();
                 let opts = crate::common::types::agent::AgentExportOptions {
                     output_path: output.map(std::path::PathBuf::from),
@@ -661,22 +705,36 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::AgentImport { request_id, file_path, name, team: _team } => {
+            RequestPacket::AgentImport {
+                request_id,
+                file_path,
+                name,
+                team: _team,
+            } => {
                 let service = state.agent_mgmt_service();
                 let opts = crate::common::types::agent::AgentImportOptions { name, force: false };
-                match service.import_agent(std::path::Path::new(&file_path), opts).await {
+                match service
+                    .import_agent(std::path::Path::new(&file_path), opts)
+                    .await
+                {
                     Ok(result) => {
                         // Update host_runtime_id to current runtime
                         let config_path = result.config_path.clone();
                         if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
-                            if let Ok(mut config) = toml::from_str::<crate::types::agent::AgentConfig>(&content) {
-                                config.host_runtime_id = state.runtime_identity().runtime_did.clone();
+                            if let Ok(mut config) =
+                                toml::from_str::<crate::types::agent::AgentConfig>(&content)
+                            {
+                                config.host_runtime_id =
+                                    state.runtime_identity().runtime_did.clone();
                                 if let Ok(updated) = toml::to_string_pretty(&config) {
                                     let _ = tokio::fs::write(&config_path, updated).await;
                                 }
@@ -690,7 +748,10 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -705,7 +766,10 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -719,63 +783,122 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::TeamCreate { request_id, name, description, members } => {
+            RequestPacket::TeamCreate {
+                request_id,
+                name,
+                description,
+                members,
+            } => {
                 let service = state.team_service();
                 let host_runtime_id = state.runtime_identity().runtime_did.clone();
                 let owner_id = caller.subject_id();
-                match service.create_team(&name, description.as_deref(), Some(&host_runtime_id), Some(&owner_id)).await {
+                match service
+                    .create_team(
+                        &name,
+                        description.as_deref(),
+                        Some(&host_runtime_id),
+                        Some(&owner_id),
+                    )
+                    .await
+                {
                     Ok(result) => {
                         // Auto-join members if provided
                         if let Some(member_names) = members {
                             for agent_name in member_names {
-                                let _ = service.join_team(&name, &agent_name, crate::common::types::membership::MembershipRole::Member).await;
+                                let _ = service
+                                    .join_team(
+                                        &name,
+                                        &agent_name,
+                                        crate::common::types::membership::MembershipRole::Member,
+                                    )
+                                    .await;
                             }
                         }
                         let response = ResponsePacket::TeamCreated { request_id, result };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::TeamJoin { request_id, team, agent } => {
+            RequestPacket::TeamJoin {
+                request_id,
+                team,
+                agent,
+            } => {
                 let service = state.team_service();
-                match service.join_team(&team, &agent, crate::common::types::membership::MembershipRole::Member).await {
+                match service
+                    .join_team(
+                        &team,
+                        &agent,
+                        crate::common::types::membership::MembershipRole::Member,
+                    )
+                    .await
+                {
                     Ok(result) => {
-                        let response = ResponsePacket::TeamJoined { request_id, agent: result.agent, team: result.team };
+                        let response = ResponsePacket::TeamJoined {
+                            request_id,
+                            agent: result.agent,
+                            team: result.team,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::TeamLeave { request_id, team, agent } => {
+            RequestPacket::TeamLeave {
+                request_id,
+                team,
+                agent,
+            } => {
                 let service = state.team_service();
                 match service.leave_team(&team, &agent).await {
                     Ok(result) => {
-                        let response = ResponsePacket::TeamLeft { request_id, agent: result.agent, team: result.team, was_member: result.was_member };
+                        let response = ResponsePacket::TeamLeft {
+                            request_id,
+                            agent: result.agent,
+                            team: result.team,
+                            was_member: result.was_member,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::TeamDelete { request_id, name, force: _ } => {
+            RequestPacket::TeamDelete {
+                request_id,
+                name,
+                force: _,
+            } => {
                 let service = state.team_service();
                 match service.delete_team(&name).await {
                     Ok(result) => {
@@ -783,29 +906,51 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::TeamMove { request_id, old_name, new_name } => {
+            RequestPacket::TeamMove {
+                request_id,
+                old_name,
+                new_name,
+            } => {
                 let service = state.team_service();
                 match service.move_team(&old_name, &new_name).await {
                     Ok(_) => {
-                        let response = ResponsePacket::TeamMoved { request_id, old_name, new_name };
+                        let response = ResponsePacket::TeamMoved {
+                            request_id,
+                            old_name,
+                            new_name,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::TeamExport { request_id, name, output, include_sessions } => {
+            RequestPacket::TeamExport {
+                request_id,
+                name,
+                output,
+                include_sessions,
+            } => {
                 let service = state.team_service();
-                match service.export_team(&name, output, !include_sessions, false, false).await {
+                match service
+                    .export_team(&name, output, !include_sessions, false, false)
+                    .await
+                {
                     Ok(result) => {
                         let response = ResponsePacket::TeamExported {
                             request_id,
@@ -815,16 +960,27 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::TeamImport { request_id, file_path, name, force } => {
+            RequestPacket::TeamImport {
+                request_id,
+                file_path,
+                name,
+                force,
+            } => {
                 let service = state.team_service();
                 let host_runtime_id = state.runtime_identity().runtime_did.clone();
-                match service.import_team(&file_path, name, force, true, Some(&host_runtime_id)).await {
+                match service
+                    .import_team(&file_path, name, force, true, Some(&host_runtime_id))
+                    .await
+                {
                     Ok(result) => {
                         let response = ResponsePacket::TeamImported {
                             request_id,
@@ -834,25 +990,42 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
             // ─── Session CRUD ───────────────────────────────────────────────
-            RequestPacket::SessionList { request_id, agent, team } => {
+            RequestPacket::SessionList {
+                request_id,
+                agent,
+                team,
+            } => {
                 let service = state.session_service();
                 match agent {
                     Some(agent_name) => {
                         let peer = crate::session::types::Peer::User("desktop".to_string());
-                        match service.list_sessions_with_active(&agent_name, team.as_deref(), &peer).await {
+                        match service
+                            .list_sessions_with_active(&agent_name, team.as_deref(), &peer)
+                            .await
+                        {
                             Ok((sessions, active_session)) => {
-                                let response = ResponsePacket::SessionList { request_id, sessions, active_session };
+                                let response = ResponsePacket::SessionList {
+                                    request_id,
+                                    sessions,
+                                    active_session,
+                                };
                                 Self::send_packet(&socket, response, addr).await?;
                             }
                             Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: e.to_string(),
+                                };
                                 Self::send_packet(&socket, response, addr).await?;
                             }
                         }
@@ -875,49 +1048,105 @@ impl IpcServer {
                 Self::send_packet(&socket, response, addr).await?;
             }
 
-            RequestPacket::SessionShow { request_id, agent, team, session_id, history } => {
+            RequestPacket::SessionShow {
+                request_id,
+                agent,
+                team,
+                session_id,
+                history,
+            } => {
                 let service = state.session_service();
-                match service.get_session_details(&agent, team.as_deref(), &session_id).await {
+                match service
+                    .get_session_details(&agent, team.as_deref(), &session_id)
+                    .await
+                {
                     Ok(Some(details)) => {
                         let history_events = if history {
-                            match service.get_history(&agent, team.as_deref(), &session_id, crate::common::services::HistoryQuery { limit: 100, ..Default::default() }).await {
+                            match service
+                                .get_history(
+                                    &agent,
+                                    team.as_deref(),
+                                    &session_id,
+                                    crate::common::services::HistoryQuery {
+                                        limit: 100,
+                                        ..Default::default()
+                                    },
+                                )
+                                .await
+                            {
                                 Ok(result) => Some(result.events),
                                 Err(_) => None,
                             }
                         } else {
                             None
                         };
-                        let response = ResponsePacket::SessionShown { request_id, session: details, history: history_events };
+                        let response = ResponsePacket::SessionShown {
+                            request_id,
+                            session: details,
+                            history: history_events,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Ok(None) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Session '{session_id}' not found") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Session '{session_id}' not found"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::SessionRemove { request_id, agent, team, session_id, force: _ } => {
+            RequestPacket::SessionRemove {
+                request_id,
+                agent,
+                team,
+                session_id,
+                force: _,
+            } => {
                 let service = state.session_service();
-                match service.delete_session(&agent, team.as_deref(), &session_id).await {
+                match service
+                    .delete_session(&agent, team.as_deref(), &session_id)
+                    .await
+                {
                     Ok(deleted) => {
-                        let response = ResponsePacket::SessionRemoved { request_id, session_id, deleted };
+                        let response = ResponsePacket::SessionRemoved {
+                            request_id,
+                            session_id,
+                            deleted,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::SessionSwitch { request_id, agent, team, session_id, user } => {
+            RequestPacket::SessionSwitch {
+                request_id,
+                agent,
+                team,
+                session_id,
+                user,
+            } => {
                 let mut manager = crate::session::SessionManager::for_cli(
-                    crate::common::paths::PathResolver::with_dirs(state.config_dir.clone(), state.data_dir.clone(), state.cache_dir.clone()),
+                    crate::common::paths::PathResolver::with_dirs(
+                        state.config_dir.clone(),
+                        state.data_dir.clone(),
+                        state.cache_dir.clone(),
+                    ),
                     &agent,
                     team.as_deref(),
                     &user,
@@ -925,11 +1154,19 @@ impl IpcServer {
                 let peer = crate::session::Peer::User(user);
                 match manager.switch_session(&peer, &session_id).await {
                     Ok(_) => {
-                        let response = ResponsePacket::SessionSwitched { request_id, session_id, agent, team: team.unwrap_or_else(|| "default".to_string()) };
+                        let response = ResponsePacket::SessionSwitched {
+                            request_id,
+                            session_id,
+                            agent,
+                            team: team.unwrap_or_else(|| "default".to_string()),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -939,7 +1176,7 @@ impl IpcServer {
                 let registry = crate::providers::ProviderRegistry::new();
                 let mut providers: Vec<crate::ipc::packet::ProviderInfo> = Vec::new();
                 let mut seen_ids = std::collections::HashSet::new();
-                for (id, meta) in registry.iter() {
+                for (_id, meta) in registry.iter() {
                     if !seen_ids.insert(meta.id) {
                         continue;
                     }
@@ -947,15 +1184,22 @@ impl IpcServer {
                         id: meta.id.to_string(),
                         display_name: meta.display_name.to_string(),
                         api_type: match meta.api_type {
-                            crate::providers::registry::ApiType::OpenAICompletions => "openai".to_string(),
-                            crate::providers::registry::ApiType::AnthropicMessages => "anthropic".to_string(),
+                            crate::providers::registry::ApiType::OpenAICompletions => {
+                                "openai".to_string()
+                            }
+                            crate::providers::registry::ApiType::AnthropicMessages => {
+                                "anthropic".to_string()
+                            }
                         },
                         default_model: meta.default_model.to_string(),
                         requires_key: !meta.api_key_env.is_empty(),
                         is_local: meta.api_key_env.is_empty(),
                     });
                 }
-                let response = ResponsePacket::ProviderList { request_id, providers };
+                let response = ResponsePacket::ProviderList {
+                    request_id,
+                    providers,
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
 
@@ -978,17 +1222,41 @@ impl IpcServer {
                 let ready = state.is_ready().await;
                 checks.push(super::packet::DoctorCheck {
                     name: "daemon_ready".to_string(),
-                    status: if ready { "pass".to_string() } else { "fail".to_string() },
-                    message: if ready { "Daemon is ready to serve requests".to_string() } else { "Daemon is not ready".to_string() },
-                    suggestion: if !ready { Some("Check daemon logs for startup errors".to_string()) } else { None },
+                    status: if ready {
+                        "pass".to_string()
+                    } else {
+                        "fail".to_string()
+                    },
+                    message: if ready {
+                        "Daemon is ready to serve requests".to_string()
+                    } else {
+                        "Daemon is not ready".to_string()
+                    },
+                    suggestion: if !ready {
+                        Some("Check daemon logs for startup errors".to_string())
+                    } else {
+                        None
+                    },
                 });
 
                 let degraded = state.is_degraded().await;
                 checks.push(super::packet::DoctorCheck {
                     name: "not_degraded".to_string(),
-                    status: if !degraded { "pass".to_string() } else { "warn".to_string() },
-                    message: if !degraded { "Daemon is operating normally".to_string() } else { "Daemon is in degraded mode".to_string() },
-                    suggestion: if degraded { Some("Check resource usage and consider restarting".to_string()) } else { None },
+                    status: if !degraded {
+                        "pass".to_string()
+                    } else {
+                        "warn".to_string()
+                    },
+                    message: if !degraded {
+                        "Daemon is operating normally".to_string()
+                    } else {
+                        "Daemon is in degraded mode".to_string()
+                    },
+                    suggestion: if degraded {
+                        Some("Check resource usage and consider restarting".to_string())
+                    } else {
+                        None
+                    },
                 });
 
                 let uptime = state.uptime_seconds();
@@ -1003,12 +1271,22 @@ impl IpcServer {
                 let failed = checks.iter().filter(|c| c.status == "fail").count() as u32;
                 let warnings = checks.iter().filter(|c| c.status == "warn").count() as u32;
 
-                let response = ResponsePacket::SystemDoctor { request_id, checks, passed, failed, warnings };
+                let response = ResponsePacket::SystemDoctor {
+                    request_id,
+                    checks,
+                    passed,
+                    failed,
+                    warnings,
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
 
             // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
-            RequestPacket::ExtensionList { request_id, enabled_only: _, ext_type } => {
+            RequestPacket::ExtensionList {
+                request_id,
+                enabled_only: _,
+                ext_type,
+            } => {
                 let manager = state.extension_manager().read().await;
                 let ext_services = state.extension_services();
 
@@ -1051,17 +1329,29 @@ impl IpcServer {
                 }
 
                 let total = extensions.len();
-                let response = ResponsePacket::ExtensionList { request_id, extensions, total };
+                let response = ResponsePacket::ExtensionList {
+                    request_id,
+                    extensions,
+                    total,
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
 
-            RequestPacket::ExtensionEnable { request_id, id, target } => {
+            RequestPacket::ExtensionEnable {
+                request_id,
+                id,
+                target,
+            } => {
                 let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
                     || id.starts_with("builtin:");
 
                 // Build canonical extension ID for whitelist entries.
                 let canonical_id = if is_builtin {
-                    if id.starts_with("builtin:") { id.clone() } else { format!("builtin:tool:{id}") }
+                    if id.starts_with("builtin:") {
+                        id.clone()
+                    } else {
+                        format!("builtin:tool:{id}")
+                    }
                 } else {
                     id.clone()
                 };
@@ -1078,7 +1368,9 @@ impl IpcServer {
                                 id.clone()
                             };
                             ext_services.enable_builtin_hooks(&capability).await;
-                            Ok(format!("Built-in capability '{capability}' enabled globally"))
+                            Ok(format!(
+                                "Built-in capability '{capability}' enabled globally"
+                            ))
                         } else {
                             let ext_id = crate::extension::types::ExtensionId::new(&id);
                             match manager.enable(&ext_id).await {
@@ -1090,22 +1382,38 @@ impl IpcServer {
                     Some(ref target_str) if target_str.contains('/') => {
                         // Legacy compound scope: "team/agent" — resolves to agent
                         let parts: Vec<&str> = target_str.split('/').collect();
-                        let agent_name = if parts.len() == 2 { parts[1] } else { target_str.as_str() };
+                        let agent_name = if parts.len() == 2 {
+                            parts[1]
+                        } else {
+                            target_str.as_str()
+                        };
                         let config_service = state.config_service();
                         match config_service.enable_tool_sync(agent_name, &canonical_id) {
-                            Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for agent '{agent_name}'")),
-                            Err(e) => Err(anyhow::anyhow!("Failed to enable extension for agent: {e}")),
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' enabled for agent '{agent_name}'"
+                            )),
+                            Err(e) => {
+                                Err(anyhow::anyhow!("Failed to enable extension for agent: {e}"))
+                            }
                         }
                     }
                     Some(ref target_str) => {
                         let config_service = state.config_service();
                         // Under ADR-031, bare names are agent scope if the agent exists,
                         // otherwise team scope for backward compatibility.
-                        let agent_config_path = state.config_dir.join("agents").join(target_str).join("config.toml");
+                        let agent_config_path = state
+                            .config_dir
+                            .join("agents")
+                            .join(target_str)
+                            .join("config.toml");
                         if agent_config_path.exists() {
                             match config_service.enable_tool_sync(target_str, &canonical_id) {
-                                Ok(()) => Ok(format!("Extension '{canonical_id}' enabled for agent '{target_str}'")),
-                                Err(e) => Err(anyhow::anyhow!("Failed to enable extension for agent: {e}")),
+                                Ok(()) => Ok(format!(
+                                    "Extension '{canonical_id}' enabled for agent '{target_str}'"
+                                )),
+                                Err(e) => Err(anyhow::anyhow!(
+                                    "Failed to enable extension for agent: {e}"
+                                )),
                             }
                         } else {
                             match config_service.enable_tool_for_team(target_str, &canonical_id) {
@@ -1118,22 +1426,37 @@ impl IpcServer {
 
                 match result {
                     Ok(msg) => {
-                        let response = ResponsePacket::ExtensionEnabled { request_id, id, message: msg };
+                        let response = ResponsePacket::ExtensionEnabled {
+                            request_id,
+                            id,
+                            message: msg,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::ExtensionDisable { request_id, id, target } => {
+            RequestPacket::ExtensionDisable {
+                request_id,
+                id,
+                target,
+            } => {
                 let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
                     || id.starts_with("builtin:");
 
                 let canonical_id = if is_builtin {
-                    if id.starts_with("builtin:") { id.clone() } else { format!("builtin:tool:{id}") }
+                    if id.starts_with("builtin:") {
+                        id.clone()
+                    } else {
+                        format!("builtin:tool:{id}")
+                    }
                 } else {
                     id.clone()
                 };
@@ -1150,7 +1473,9 @@ impl IpcServer {
                                 id.clone()
                             };
                             ext_services.disable_builtin_hooks(&capability).await;
-                            Ok(format!("Built-in capability '{capability}' disabled globally"))
+                            Ok(format!(
+                                "Built-in capability '{capability}' disabled globally"
+                            ))
                         } else {
                             let ext_id = crate::extension::types::ExtensionId::new(&id);
                             match manager.disable(&ext_id).await {
@@ -1162,22 +1487,38 @@ impl IpcServer {
                     Some(ref target_str) if target_str.contains('/') => {
                         // Legacy compound scope: "team/agent" — resolves to agent
                         let parts: Vec<&str> = target_str.split('/').collect();
-                        let agent_name = if parts.len() == 2 { parts[1] } else { target_str.as_str() };
+                        let agent_name = if parts.len() == 2 {
+                            parts[1]
+                        } else {
+                            target_str.as_str()
+                        };
                         let config_service = state.config_service();
                         match config_service.disable_tool_sync(agent_name, &canonical_id) {
-                            Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for agent '{agent_name}'")),
-                            Err(e) => Err(anyhow::anyhow!("Failed to disable extension for agent: {e}")),
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' disabled for agent '{agent_name}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to disable extension for agent: {e}"
+                            )),
                         }
                     }
                     Some(ref target_str) => {
                         let config_service = state.config_service();
                         // Under ADR-031, bare names are agent scope if the agent exists,
                         // otherwise team scope for backward compatibility.
-                        let agent_config_path = state.config_dir.join("agents").join(target_str).join("config.toml");
+                        let agent_config_path = state
+                            .config_dir
+                            .join("agents")
+                            .join(target_str)
+                            .join("config.toml");
                         if agent_config_path.exists() {
                             match config_service.disable_tool_sync(target_str, &canonical_id) {
-                                Ok(()) => Ok(format!("Extension '{canonical_id}' disabled for agent '{target_str}'")),
-                                Err(e) => Err(anyhow::anyhow!("Failed to disable extension for agent: {e}")),
+                                Ok(()) => Ok(format!(
+                                    "Extension '{canonical_id}' disabled for agent '{target_str}'"
+                                )),
+                                Err(e) => Err(anyhow::anyhow!(
+                                    "Failed to disable extension for agent: {e}"
+                                )),
                             }
                         } else {
                             match config_service.disable_tool_for_team(target_str, &canonical_id) {
@@ -1190,11 +1531,18 @@ impl IpcServer {
 
                 match result {
                     Ok(msg) => {
-                        let response = ResponsePacket::ExtensionDisabled { request_id, id, message: msg };
+                        let response = ResponsePacket::ExtensionDisabled {
+                            request_id,
+                            id,
+                            message: msg,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -1237,20 +1585,38 @@ impl IpcServer {
                     }
                 }
 
-                let response = ResponsePacket::SystemCleaned { request_id, cleaned, bytes_freed };
+                let response = ResponsePacket::SystemCleaned {
+                    request_id,
+                    cleaned,
+                    bytes_freed,
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
 
-            RequestPacket::CronAddSimple { request_id, name, schedule, message } => {
+            RequestPacket::CronAddSimple {
+                request_id,
+                name,
+                schedule,
+                message,
+            } => {
                 let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
                     Ok(scheduler) => {
                         let _normalized = crate::cron::normalize_cron_expr(&schedule);
-                        let schedule_kind = crate::cron::ScheduleKind::Cron { expr: schedule.clone(), tz: None };
-                        let next_run = match crate::cron::calculate_next_run(&schedule_kind, chrono::Utc::now()) {
+                        let schedule_kind = crate::cron::ScheduleKind::Cron {
+                            expr: schedule.clone(),
+                            tz: None,
+                        };
+                        let next_run = match crate::cron::calculate_next_run(
+                            &schedule_kind,
+                            chrono::Utc::now(),
+                        ) {
                             Ok(t) => t,
                             Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Invalid schedule: {e}") };
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: format!("Invalid schedule: {e}"),
+                                };
                                 Self::send_packet(&socket, response, addr).await?;
                                 return Ok(());
                             }
@@ -1273,25 +1639,43 @@ impl IpcServer {
                         };
                         match scheduler.add_job(&job) {
                             Ok(()) => {
-                                let response = ResponsePacket::CronAddedSimple { request_id, job_id: job.id };
+                                let response = ResponsePacket::CronAddedSimple {
+                                    request_id,
+                                    job_id: job.id,
+                                };
                                 Self::send_packet(&socket, response, addr).await?;
                             }
                             Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Failed to add job: {e}") };
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: format!("Failed to add job: {e}"),
+                                };
                                 Self::send_packet(&socket, response, addr).await?;
                             }
                         }
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Cron DB error: {e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::SessionBranch { request_id, agent, team, session_id, label } => {
+            RequestPacket::SessionBranch {
+                request_id,
+                agent,
+                team,
+                session_id,
+                label,
+            } => {
                 let service = state.session_service();
-                match service.branch_session(&agent, team.as_deref(), &session_id, label).await {
+                match service
+                    .branch_session(&agent, team.as_deref(), &session_id, label)
+                    .await
+                {
                     Ok(result) => {
                         let response = ResponsePacket::SessionBranched {
                             request_id,
@@ -1301,31 +1685,53 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::SessionCompact { request_id, agent, team, session_id, dry_run, instruction } => {
+            RequestPacket::SessionCompact {
+                request_id,
+                agent,
+                team,
+                session_id,
+                dry_run,
+                instruction,
+            } => {
                 let service = state.session_service();
                 let sessions_dir = match service.get_sessions_dir(&agent, team.as_deref()).await {
                     Ok(d) => d,
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                         return Ok(());
                     }
                 };
                 if !sessions_dir.exists() {
-                    let response = ResponsePacket::Error { request_id, message: format!("Agent '{agent}' not found") };
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("Agent '{agent}' not found"),
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                     return Ok(());
                 }
-                let mut session = match service.open_session(&agent, team.as_deref(), &session_id, "default").await {
+                let mut session = match service
+                    .open_session(&agent, team.as_deref(), &session_id, "default")
+                    .await
+                {
                     Ok(s) => s,
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                         return Ok(());
                     }
@@ -1340,12 +1746,17 @@ impl IpcServer {
                                 messages_compacted: 0,
                                 tokens_saved: report.estimated_tokens,
                                 tokens_before: report.context_window,
-                                tokens_after: report.context_window.saturating_sub(report.estimated_tokens),
+                                tokens_after: report
+                                    .context_window
+                                    .saturating_sub(report.estimated_tokens),
                             };
                             Self::send_packet(&socket, response, addr).await?;
                         }
                         Err(e) => {
-                            let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: e.to_string(),
+                            };
                             Self::send_packet(&socket, response, addr).await?;
                         }
                     }
@@ -1363,7 +1774,10 @@ impl IpcServer {
                             Self::send_packet(&socket, response, addr).await?;
                         }
                         Err(e) => {
-                            let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: e.to_string(),
+                            };
                             Self::send_packet(&socket, response, addr).await?;
                         }
                     }
@@ -1372,17 +1786,18 @@ impl IpcServer {
 
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let mut manager = state.extension_manager().write().await;
-                let install_path = match crate::commands::ext::prepare_install_path(std::path::Path::new(&path)) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Failed to prepare extension for install: {e}"),
-                        };
-                        Self::send_packet(&socket, response, addr).await?;
-                        return Ok(());
-                    }
-                };
+                let install_path =
+                    match crate::commands::ext::prepare_install_path(std::path::Path::new(&path)) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to prepare extension for install: {e}"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                            return Ok(());
+                        }
+                    };
 
                 match manager.install(&install_path).await {
                     Ok(ext_id) => {
@@ -1427,8 +1842,17 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::ExtensionValidate { request_id, path, verbose } => {
-                match crate::extension::adapters::ExtensionValidationService::validate(std::path::Path::new(&path), verbose).await {
+            RequestPacket::ExtensionValidate {
+                request_id,
+                path,
+                verbose,
+            } => {
+                match crate::extension::adapters::ExtensionValidationService::validate(
+                    std::path::Path::new(&path),
+                    verbose,
+                )
+                .await
+                {
                     Ok(report) => {
                         let response = ResponsePacket::ExtensionValidated {
                             request_id,
@@ -1439,7 +1863,10 @@ impl IpcServer {
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -1458,11 +1885,18 @@ impl IpcServer {
                             "path": ext.path.to_string_lossy().to_string(),
                             "hooks": ext.hook_ids.len(),
                         });
-                        let response = ResponsePacket::ExtensionDebugInfo { request_id, id, info };
+                        let response = ResponsePacket::ExtensionDebugInfo {
+                            request_id,
+                            id,
+                            info,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     None => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Extension '{id}' not found") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Extension '{id}' not found"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -1480,52 +1914,97 @@ impl IpcServer {
                             "version": ext.manifest.version,
                             "description": ext.manifest.description,
                         });
-                        let response = ResponsePacket::ExtensionInfoResponse { request_id, id, info };
+                        let response = ResponsePacket::ExtensionInfoResponse {
+                            request_id,
+                            id,
+                            info,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     None => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Extension '{id}' not found") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Extension '{id}' not found"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::ExtensionExport { request_id, id, output } => {
+            RequestPacket::ExtensionExport {
+                request_id,
+                id,
+                output,
+            } => {
                 let manager = state.extension_manager().read().await;
                 let ext_id = crate::extension::types::ExtensionId::new(&id);
-                match crate::extension::manager::packaging::ExtensionPackager::export(&manager, &ext_id, &output) {
+                match crate::extension::manager::packaging::ExtensionPackager::export(
+                    &manager, &ext_id, &output,
+                ) {
                     Ok(_) => {
-                        let response = ResponsePacket::ExtensionExported { request_id, id, output };
+                        let response = ResponsePacket::ExtensionExported {
+                            request_id,
+                            id,
+                            output,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::ExtensionBundle { request_id, name, ids } => {
+            RequestPacket::ExtensionBundle {
+                request_id,
+                name,
+                ids,
+            } => {
                 let manager = state.extension_manager().read().await;
-                let ext_ids: Vec<_> = ids.iter().map(|id| crate::extension::types::ExtensionId::new(id)).collect();
+                let ext_ids: Vec<_> = ids
+                    .iter()
+                    .map(|id| crate::extension::types::ExtensionId::new(id))
+                    .collect();
                 match manager.create_bundle(ext_ids, &name) {
                     Ok(bundle) => {
-                        let response = ResponsePacket::ExtensionBundled { request_id, name, count: bundle.extensions.len() };
+                        let response = ResponsePacket::ExtensionBundled {
+                            request_id,
+                            name,
+                            count: bundle.extensions.len(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
 
-            RequestPacket::RegistryPull { request_id, registry_ref, team, force, registry_token, registry_host } => {
+            RequestPacket::RegistryPull {
+                request_id,
+                registry_ref,
+                team: _,
+                force,
+                registry_token,
+                registry_host,
+            } => {
                 // Build registry config
                 let host = registry_host.unwrap_or_else(|| {
-                    crate::registry::client::RegistryRef::parse_with_default(&registry_ref, None, Some(crate::registry::client::ResourceType::Agent))
-                        .map(|r| r.host)
-                        .unwrap_or_else(|_| "pekohub.org".to_string())
+                    crate::registry::client::RegistryRef::parse_with_default(
+                        &registry_ref,
+                        None,
+                        Some(crate::registry::client::ResourceType::Agent),
+                    )
+                    .map(|r| r.host)
+                    .unwrap_or_else(|_| "pekohub.org".to_string())
                 });
 
                 let mut config = crate::registry::config::load_from_workspace(&state.data_dir);
@@ -1541,21 +2020,29 @@ impl IpcServer {
                 }
 
                 let agent_registry = crate::portable::registry::AgentRegistry::new(
-                    crate::portable::registry::AgentRegistry::default_path()
+                    crate::portable::registry::AgentRegistry::default_path(),
                 );
                 if let Err(e) = agent_registry.init().await {
-                    let response = ResponsePacket::Error { request_id, message: format!("Registry init failed: {e}") };
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("Registry init failed: {e}"),
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                     return Ok(());
                 }
 
-                let client = crate::registry::client::RegistryClient::new(config, agent_registry.clone());
+                let client =
+                    crate::registry::client::RegistryClient::new(config, agent_registry.clone());
 
                 match client.pull(&registry_ref, |_| {}).await {
                     Ok(manifest) => {
                         // Export from registry to temp file
                         let tag = format!("{}:{}", manifest.name, manifest.version);
-                        let temp_path = state.cache_dir.join(format!("peko-pull-{}-{}.agent", manifest.name, std::process::id()));
+                        let temp_path = state.cache_dir.join(format!(
+                            "peko-pull-{}-{}.agent",
+                            manifest.name,
+                            std::process::id()
+                        ));
 
                         match agent_registry.export_package(&tag, &temp_path).await {
                             Ok(_) => {
@@ -1571,11 +2058,20 @@ impl IpcServer {
                                         let _ = std::fs::remove_file(&temp_path);
                                         // Update host_runtime_id to current runtime
                                         let config_path = result.config_path.clone();
-                                        if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
-                                            if let Ok(mut config) = toml::from_str::<crate::types::agent::AgentConfig>(&content) {
-                                                config.host_runtime_id = state.runtime_identity().runtime_did.clone();
-                                                if let Ok(updated) = toml::to_string_pretty(&config) {
-                                                    let _ = tokio::fs::write(&config_path, updated).await;
+                                        if let Ok(content) =
+                                            tokio::fs::read_to_string(&config_path).await
+                                        {
+                                            if let Ok(mut config) =
+                                                toml::from_str::<crate::types::agent::AgentConfig>(
+                                                    &content,
+                                                )
+                                            {
+                                                config.host_runtime_id =
+                                                    state.runtime_identity().runtime_did.clone();
+                                                if let Ok(updated) = toml::to_string_pretty(&config)
+                                                {
+                                                    let _ = tokio::fs::write(&config_path, updated)
+                                                        .await;
                                                 }
                                             }
                                         }
@@ -1589,19 +2085,28 @@ impl IpcServer {
                                     }
                                     Err(e) => {
                                         let _ = std::fs::remove_file(&temp_path);
-                                        let response = ResponsePacket::Error { request_id, message: format!("Import failed: {e}") };
+                                        let response = ResponsePacket::Error {
+                                            request_id,
+                                            message: format!("Import failed: {e}"),
+                                        };
                                         Self::send_packet(&socket, response, addr).await?;
                                     }
                                 }
                             }
                             Err(e) => {
-                                let response = ResponsePacket::Error { request_id, message: format!("Export failed: {e}") };
+                                let response = ResponsePacket::Error {
+                                    request_id,
+                                    message: format!("Export failed: {e}"),
+                                };
                                 Self::send_packet(&socket, response, addr).await?;
                             }
                         }
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("Pull failed: {e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Pull failed: {e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -1642,57 +2147,115 @@ impl IpcServer {
             }
             RequestPacket::RuntimeList { request_id } => {
                 let registry = state.known_runtimes().read().await;
-                let runtimes: Vec<super::packet::KnownRuntimeResponse> = registry.list().iter().map(|r| super::packet::KnownRuntimeResponse {
-                    runtime_id: r.runtime_id.clone(),
-                    display_name: r.display_name.clone(),
-                    last_seen: Some(r.last_seen.to_rfc3339()),
-                    connection_endpoint: r.connection_endpoint.clone(),
-                    trust_level: format!("{:?}", r.trust_level).to_lowercase(),
-                }).collect();
-                let response = ResponsePacket::RuntimeList { request_id, runtimes };
+                let runtimes: Vec<super::packet::KnownRuntimeResponse> = registry
+                    .list()
+                    .iter()
+                    .map(|r| super::packet::KnownRuntimeResponse {
+                        runtime_id: r.runtime_id.clone(),
+                        display_name: r.display_name.clone(),
+                        last_seen: Some(r.last_seen.to_rfc3339()),
+                        connection_endpoint: r.connection_endpoint.clone(),
+                        trust_level: format!("{:?}", r.trust_level).to_lowercase(),
+                    })
+                    .collect();
+                let response = ResponsePacket::RuntimeList {
+                    request_id,
+                    runtimes,
+                };
                 Self::send_packet(&socket, response, addr).await?;
             }
-            RequestPacket::RuntimeRegister { request_id, runtime_id, display_name } => {
+            RequestPacket::RuntimeRegister {
+                request_id,
+                runtime_id,
+                display_name,
+            } => {
                 let mut registry = state.known_runtimes().write().await;
-                registry.register(&runtime_id, &display_name, None, crate::runtime::registry::TrustLevel::Untrusted);
-                let resolver = crate::common::paths::PathResolver::with_dirs(state.config_dir.clone(), state.data_dir.clone(), state.cache_dir.clone());
+                registry.register(
+                    &runtime_id,
+                    &display_name,
+                    None,
+                    crate::runtime::registry::TrustLevel::Untrusted,
+                );
+                let resolver = crate::common::paths::PathResolver::with_dirs(
+                    state.config_dir.clone(),
+                    state.data_dir.clone(),
+                    state.cache_dir.clone(),
+                );
                 match registry.save(&resolver) {
                     Ok(()) => {
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
-            RequestPacket::RuntimeTrust { request_id, runtime_id } => {
+            RequestPacket::RuntimeTrust {
+                request_id,
+                runtime_id,
+            } => {
                 let mut registry = state.known_runtimes().write().await;
-                match registry.trust(&runtime_id, crate::runtime::registry::TrustLevel::Authorized) {
+                match registry.trust(
+                    &runtime_id,
+                    crate::runtime::registry::TrustLevel::Authorized,
+                ) {
                     Ok(()) => {
-                        let resolver = crate::common::paths::PathResolver::with_dirs(state.config_dir.clone(), state.data_dir.clone(), state.cache_dir.clone());
+                        let resolver = crate::common::paths::PathResolver::with_dirs(
+                            state.config_dir.clone(),
+                            state.data_dir.clone(),
+                            state.cache_dir.clone(),
+                        );
                         let _ = registry.save(&resolver);
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
-            RequestPacket::RuntimeRemove { request_id, runtime_id } => {
+            RequestPacket::RuntimeRemove {
+                request_id,
+                runtime_id,
+            } => {
                 let mut registry = state.known_runtimes().write().await;
                 match registry.remove(&runtime_id) {
                     Ok(()) => {
-                        let resolver = crate::common::paths::PathResolver::with_dirs(state.config_dir.clone(), state.data_dir.clone(), state.cache_dir.clone());
+                        let resolver = crate::common::paths::PathResolver::with_dirs(
+                            state.config_dir.clone(),
+                            state.data_dir.clone(),
+                            state.cache_dir.clone(),
+                        );
                         let _ = registry.save(&resolver);
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
@@ -1700,54 +2263,84 @@ impl IpcServer {
 
             // ── Auth management (ADR-034) ──
             // API key management is restricted to local-trust (owner) for v0.1.0.
-            RequestPacket::AuthApiKeyCreate { request_id, name, scopes } => {
+            RequestPacket::AuthApiKeyCreate {
+                request_id,
+                name,
+                scopes,
+            } => {
                 if !caller.is_local() {
-                    let response = ResponsePacket::Error { request_id, message: "API key management requires local access".to_string() };
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "API key management requires local access".to_string(),
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                 } else if let Some(store) = state.api_key_store() {
-                    let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> = scopes
-                        .iter()
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
+                    let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> =
+                        scopes.iter().filter_map(|s| s.parse().ok()).collect();
                     match store.create_key(name, parsed_scopes).await {
                         Ok((full_key, key_id)) => {
-                            let response = ResponsePacket::AuthApiKeyCreated { request_id, key_id, full_key };
+                            let response = ResponsePacket::AuthApiKeyCreated {
+                                request_id,
+                                key_id,
+                                full_key,
+                            };
                             Self::send_packet(&socket, response, addr).await?;
                         }
                         Err(e) => {
-                            let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: e.to_string(),
+                            };
                             Self::send_packet(&socket, response, addr).await?;
                         }
                     }
                 } else {
-                    let response = ResponsePacket::Error { request_id, message: "API key store not initialized".to_string() };
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "API key store not initialized".to_string(),
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                 }
             }
             RequestPacket::AuthApiKeyList { request_id } => {
                 if !caller.is_local() {
-                    let response = ResponsePacket::Error { request_id, message: "API key management requires local access".to_string() };
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "API key management requires local access".to_string(),
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                 } else if let Some(store) = state.api_key_store() {
                     let keys = store.list_keys().await;
-                    let summaries: Vec<super::packet::ApiKeySummary> = keys.into_iter().map(|k| super::packet::ApiKeySummary {
-                        id: k.id,
-                        name: k.name,
-                        created_at: k.created_at.to_rfc3339(),
-                        last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
-                        scopes: k.scopes.iter().map(|s| s.to_string()).collect(),
-                        enabled: k.enabled,
-                    }).collect();
-                    let response = ResponsePacket::AuthApiKeyList { request_id, keys: summaries };
+                    let summaries: Vec<super::packet::ApiKeySummary> = keys
+                        .into_iter()
+                        .map(|k| super::packet::ApiKeySummary {
+                            id: k.id,
+                            name: k.name,
+                            created_at: k.created_at.to_rfc3339(),
+                            last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
+                            scopes: k.scopes.iter().map(|s| s.to_string()).collect(),
+                            enabled: k.enabled,
+                        })
+                        .collect();
+                    let response = ResponsePacket::AuthApiKeyList {
+                        request_id,
+                        keys: summaries,
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                 } else {
-                    let response = ResponsePacket::AuthApiKeyList { request_id, keys: Vec::new() };
+                    let response = ResponsePacket::AuthApiKeyList {
+                        request_id,
+                        keys: Vec::new(),
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                 }
             }
             RequestPacket::AuthApiKeyRevoke { request_id, key_id } => {
                 if !caller.is_local() {
-                    let response = ResponsePacket::Error { request_id, message: "API key management requires local access".to_string() };
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "API key management requires local access".to_string(),
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                 } else if let Some(store) = state.api_key_store() {
                     match store.revoke_key(&key_id).await {
@@ -1756,16 +2349,25 @@ impl IpcServer {
                             Self::send_packet(&socket, response, addr).await?;
                         }
                         Ok(false) => {
-                            let response = ResponsePacket::Error { request_id, message: format!("Key '{key_id}' not found") };
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Key '{key_id}' not found"),
+                            };
                             Self::send_packet(&socket, response, addr).await?;
                         }
                         Err(e) => {
-                            let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: e.to_string(),
+                            };
                             Self::send_packet(&socket, response, addr).await?;
                         }
                     }
                 } else {
-                    let response = ResponsePacket::Error { request_id, message: "API key store not initialized".to_string() };
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "API key store not initialized".to_string(),
+                    };
                     Self::send_packet(&socket, response, addr).await?;
                 }
             }
@@ -1787,21 +2389,41 @@ impl IpcServer {
             }
 
             // ── Ownership and Permission (ADR-033) ──
-            RequestPacket::AgentTransferOwner { request_id, agent, new_owner_id } => {
+            RequestPacket::AgentTransferOwner {
+                request_id,
+                agent,
+                new_owner_id,
+            } => {
                 let service = state.agent_mgmt_service();
                 let caller_subject = caller.subject_id();
-                match service.transfer_agent_owner(&agent, &new_owner_id, &caller_subject).await {
+                match service
+                    .transfer_agent_owner(&agent, &new_owner_id, &caller_subject)
+                    .await
+                {
                     Ok(()) => {
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
-            RequestPacket::AgentGrantPermission { request_id, agent, subject_id, subject_type, permission } => {
+            RequestPacket::AgentGrantPermission {
+                request_id,
+                agent,
+                subject_id,
+                subject_type,
+                permission,
+            } => {
                 let service = state.agent_mgmt_service();
                 let caller_subject = caller.subject_id();
                 let grant = crate::auth::ownership::PermissionGrant {
@@ -1811,47 +2433,96 @@ impl IpcServer {
                     granted_at: chrono::Utc::now().to_rfc3339(),
                     granted_by: caller_subject.clone(),
                 };
-                match service.grant_agent_permission(&agent, grant, &caller_subject).await {
+                match service
+                    .grant_agent_permission(&agent, grant, &caller_subject)
+                    .await
+                {
                     Ok(()) => {
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
-            RequestPacket::AgentRevokePermission { request_id, agent, subject_id, permission } => {
+            RequestPacket::AgentRevokePermission {
+                request_id,
+                agent,
+                subject_id,
+                permission,
+            } => {
                 let service = state.agent_mgmt_service();
                 let caller_subject = caller.subject_id();
-                match service.revoke_agent_permission(&agent, &subject_id, &permission, &caller_subject).await {
+                match service
+                    .revoke_agent_permission(&agent, &subject_id, &permission, &caller_subject)
+                    .await
+                {
                     Ok(()) => {
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: e.to_string() };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
-            RequestPacket::TeamTransferOwner { request_id, team, new_owner_id } => {
-                let service = crate::common::services::TeamService::new(state.team_service().resolver().clone());
+            RequestPacket::TeamTransferOwner {
+                request_id,
+                team,
+                new_owner_id,
+            } => {
+                let service = crate::common::services::TeamService::new(
+                    state.team_service().resolver().clone(),
+                );
                 let caller_subject = caller.subject_id();
-                match service.transfer_team_owner(&team, &new_owner_id, &caller_subject).await {
+                match service
+                    .transfer_team_owner(&team, &new_owner_id, &caller_subject)
+                    .await
+                {
                     Ok(()) => {
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("{e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("{e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
-            RequestPacket::TeamGrantPermission { request_id, team, subject_id, subject_type, permission } => {
-                let service = crate::common::services::TeamService::new(state.team_service().resolver().clone());
+            RequestPacket::TeamGrantPermission {
+                request_id,
+                team,
+                subject_id,
+                subject_type,
+                permission,
+            } => {
+                let service = crate::common::services::TeamService::new(
+                    state.team_service().resolver().clone(),
+                );
                 let caller_subject = caller.subject_id();
                 let grant = crate::auth::ownership::PermissionGrant {
                     subject_id,
@@ -1860,27 +2531,54 @@ impl IpcServer {
                     granted_at: chrono::Utc::now().to_rfc3339(),
                     granted_by: caller_subject.clone(),
                 };
-                match service.grant_team_permission(&team, grant, &caller_subject).await {
+                match service
+                    .grant_team_permission(&team, grant, &caller_subject)
+                    .await
+                {
                     Ok(()) => {
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("{e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("{e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }
             }
-            RequestPacket::TeamRevokePermission { request_id, team, subject_id, permission } => {
-                let service = crate::common::services::TeamService::new(state.team_service().resolver().clone());
+            RequestPacket::TeamRevokePermission {
+                request_id,
+                team,
+                subject_id,
+                permission,
+            } => {
+                let service = crate::common::services::TeamService::new(
+                    state.team_service().resolver().clone(),
+                );
                 let caller_subject = caller.subject_id();
-                match service.revoke_team_permission(&team, &subject_id, &permission, &caller_subject).await {
+                match service
+                    .revoke_team_permission(&team, &subject_id, &permission, &caller_subject)
+                    .await
+                {
                     Ok(()) => {
-                        let response = ResponsePacket::Done { request_id, success: true, error: None };
+                        let response = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
-                        let response = ResponsePacket::Error { request_id, message: format!("{e}") };
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("{e}"),
+                        };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                 }

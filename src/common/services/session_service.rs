@@ -202,7 +202,11 @@ impl SessionService {
             let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
             let mut controller = MetadataController::new(&sessions_dir);
             let peer_key = crate::session::key::derive_base_session_key(agent_name, peer);
-            controller.get_active_session_id(&peer_key).await.ok().flatten()
+            controller
+                .get_active_session_id(&peer_key)
+                .await
+                .ok()
+                .flatten()
         } else {
             None
         };

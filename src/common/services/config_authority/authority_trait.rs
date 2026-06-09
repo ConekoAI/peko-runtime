@@ -45,11 +45,7 @@ pub trait ConfigAuthority: Send + Sync {
     ///
     /// Creates parent directories if they don't exist.
     /// Updates cache after saving.
-    async fn save(
-        &self,
-        agent_name: &str,
-        config: &AgentConfig,
-    ) -> ConfigResult<PathBuf>;
+    async fn save(&self, agent_name: &str, config: &AgentConfig) -> ConfigResult<PathBuf>;
 
     /// Check if an agent exists
     async fn exists(&self, agent_name: &str) -> ConfigResult<bool>;

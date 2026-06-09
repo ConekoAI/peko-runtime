@@ -93,7 +93,10 @@ pub async fn handle_runtime(
         }
         RuntimeCommands::Rename { display_name } => {
             let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeRename { request_id: 1, display_name };
+            let packet = crate::ipc::RequestPacket::RuntimeRename {
+                request_id: 1,
+                display_name,
+            };
             let response = client.request_response(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::Done { success, error, .. } => {
@@ -117,7 +120,12 @@ pub async fn handle_runtime(
             match response {
                 crate::ipc::ResponsePacket::RuntimeList { runtimes, .. } => {
                     if json {
-                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({"runtimes": runtimes}))?);
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(
+                                &serde_json::json!({"runtimes": runtimes})
+                            )?
+                        );
                     } else if runtimes.is_empty() {
                         println!("No known runtimes.");
                     } else {
@@ -128,7 +136,10 @@ pub async fn handle_runtime(
                                 "authorized" => "✅",
                                 _ => "❓",
                             };
-                            println!("{} {} — {} (trust: {})", icon, rt.runtime_id, rt.display_name, rt.trust_level);
+                            println!(
+                                "{} {} — {} (trust: {})",
+                                icon, rt.runtime_id, rt.display_name, rt.trust_level
+                            );
                         }
                     }
                     Ok(())
@@ -141,7 +152,11 @@ pub async fn handle_runtime(
         }
         RuntimeCommands::Register { runtime_id, name } => {
             let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeRegister { request_id: 1, runtime_id: runtime_id.clone(), display_name: name };
+            let packet = crate::ipc::RequestPacket::RuntimeRegister {
+                request_id: 1,
+                runtime_id: runtime_id.clone(),
+                display_name: name,
+            };
             let response = client.request_response(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::Done { success, error, .. } => {
@@ -160,7 +175,10 @@ pub async fn handle_runtime(
         }
         RuntimeCommands::Trust { runtime_id } => {
             let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeTrust { request_id: 1, runtime_id: runtime_id.clone() };
+            let packet = crate::ipc::RequestPacket::RuntimeTrust {
+                request_id: 1,
+                runtime_id: runtime_id.clone(),
+            };
             let response = client.request_response(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::Done { success, error, .. } => {
@@ -179,7 +197,10 @@ pub async fn handle_runtime(
         }
         RuntimeCommands::Remove { runtime_id } => {
             let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeRemove { request_id: 1, runtime_id: runtime_id.clone() };
+            let packet = crate::ipc::RequestPacket::RuntimeRemove {
+                request_id: 1,
+                runtime_id: runtime_id.clone(),
+            };
             let response = client.request_response(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::Done { success, error, .. } => {

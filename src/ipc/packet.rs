@@ -180,19 +180,39 @@ pub enum RequestPacket {
 
     // ─── Agent CRUD ─────────────────────────────────────────────────
     #[serde(rename = "agent_list")]
-    AgentList { request_id: u64, team_filter: Option<String> },
+    AgentList {
+        request_id: u64,
+        team_filter: Option<String>,
+    },
 
     #[serde(rename = "agent_get")]
-    AgentGet { request_id: u64, name: String, team: Option<String> },
+    AgentGet {
+        request_id: u64,
+        name: String,
+        team: Option<String>,
+    },
 
     #[serde(rename = "agent_create")]
-    AgentCreate { request_id: u64, request: crate::common::types::agent::AgentCreateRequest },
+    AgentCreate {
+        request_id: u64,
+        request: crate::common::types::agent::AgentCreateRequest,
+    },
 
     #[serde(rename = "agent_delete")]
-    AgentDelete { request_id: u64, name: String, team: Option<String>, force: bool },
+    AgentDelete {
+        request_id: u64,
+        name: String,
+        team: Option<String>,
+        force: bool,
+    },
 
     #[serde(rename = "agent_move")]
-    AgentMove { request_id: u64, old_name: String, new_name: String, team: Option<String> },
+    AgentMove {
+        request_id: u64,
+        old_name: String,
+        new_name: String,
+        team: Option<String>,
+    },
 
     // ─── Team CRUD ──────────────────────────────────────────────────
     #[serde(rename = "team_list")]
@@ -202,35 +222,78 @@ pub enum RequestPacket {
     TeamGet { request_id: u64, name: String },
 
     #[serde(rename = "team_create")]
-    TeamCreate { request_id: u64, name: String, description: Option<String>, members: Option<Vec<String>> },
+    TeamCreate {
+        request_id: u64,
+        name: String,
+        description: Option<String>,
+        members: Option<Vec<String>>,
+    },
 
     #[serde(rename = "team_join")]
-    TeamJoin { request_id: u64, team: String, agent: String },
+    TeamJoin {
+        request_id: u64,
+        team: String,
+        agent: String,
+    },
 
     #[serde(rename = "team_leave")]
-    TeamLeave { request_id: u64, team: String, agent: String },
+    TeamLeave {
+        request_id: u64,
+        team: String,
+        agent: String,
+    },
 
     #[serde(rename = "team_delete")]
-    TeamDelete { request_id: u64, name: String, force: bool },
+    TeamDelete {
+        request_id: u64,
+        name: String,
+        force: bool,
+    },
 
     #[serde(rename = "team_move")]
-    TeamMove { request_id: u64, old_name: String, new_name: String },
+    TeamMove {
+        request_id: u64,
+        old_name: String,
+        new_name: String,
+    },
 
     // ─── Session CRUD ───────────────────────────────────────────────
     #[serde(rename = "session_list")]
-    SessionList { request_id: u64, agent: Option<String>, team: Option<String> },
+    SessionList {
+        request_id: u64,
+        agent: Option<String>,
+        team: Option<String>,
+    },
 
     #[serde(rename = "session_get")]
     SessionGet { request_id: u64, id: String },
 
     #[serde(rename = "session_show")]
-    SessionShow { request_id: u64, agent: String, team: Option<String>, session_id: String, history: bool },
+    SessionShow {
+        request_id: u64,
+        agent: String,
+        team: Option<String>,
+        session_id: String,
+        history: bool,
+    },
 
     #[serde(rename = "session_remove")]
-    SessionRemove { request_id: u64, agent: String, team: Option<String>, session_id: String, force: bool },
+    SessionRemove {
+        request_id: u64,
+        agent: String,
+        team: Option<String>,
+        session_id: String,
+        force: bool,
+    },
 
     #[serde(rename = "session_switch")]
-    SessionSwitch { request_id: u64, agent: String, team: Option<String>, session_id: String, user: String },
+    SessionSwitch {
+        request_id: u64,
+        agent: String,
+        team: Option<String>,
+        session_id: String,
+        user: String,
+    },
 
     // ─── Provider listing ───────────────────────────────────────────
     #[serde(rename = "provider_list")]
@@ -259,7 +322,11 @@ pub enum RequestPacket {
     },
 
     #[serde(rename = "extension_validate")]
-    ExtensionValidate { request_id: u64, path: String, verbose: bool },
+    ExtensionValidate {
+        request_id: u64,
+        path: String,
+        verbose: bool,
+    },
 
     #[serde(rename = "extension_debug")]
     ExtensionDebug { request_id: u64, id: String },
@@ -268,10 +335,18 @@ pub enum RequestPacket {
     ExtensionInfo { request_id: u64, id: String },
 
     #[serde(rename = "extension_export")]
-    ExtensionExport { request_id: u64, id: String, output: String },
+    ExtensionExport {
+        request_id: u64,
+        id: String,
+        output: String,
+    },
 
     #[serde(rename = "extension_bundle")]
-    ExtensionBundle { request_id: u64, name: String, ids: Vec<String> },
+    ExtensionBundle {
+        request_id: u64,
+        name: String,
+        ids: Vec<String>,
+    },
 
     #[serde(rename = "system_clean")]
     SystemClean {
@@ -284,7 +359,7 @@ pub enum RequestPacket {
     CronAddSimple {
         request_id: u64,
         name: String,
-        schedule: String,  // cron expression
+        schedule: String, // cron expression
         message: String,
     },
 
@@ -311,17 +386,11 @@ pub enum RequestPacket {
 
     /// Install an extension from a path
     #[serde(rename = "extension_install")]
-    ExtensionInstall {
-        request_id: u64,
-        path: String,
-    },
+    ExtensionInstall { request_id: u64, path: String },
 
     /// Uninstall an extension by ID
     #[serde(rename = "extension_uninstall")]
-    ExtensionUninstall {
-        request_id: u64,
-        id: String,
-    },
+    ExtensionUninstall { request_id: u64, id: String },
 
     /// Export an agent to a file
     #[serde(rename = "agent_export")]
@@ -377,11 +446,18 @@ pub enum RequestPacket {
     #[serde(rename = "runtime_info")]
     RuntimeInfo { request_id: u64 },
     #[serde(rename = "runtime_rename")]
-    RuntimeRename { request_id: u64, display_name: String },
+    RuntimeRename {
+        request_id: u64,
+        display_name: String,
+    },
     #[serde(rename = "runtime_list")]
     RuntimeList { request_id: u64 },
     #[serde(rename = "runtime_register")]
-    RuntimeRegister { request_id: u64, runtime_id: String, display_name: String },
+    RuntimeRegister {
+        request_id: u64,
+        runtime_id: String,
+        display_name: String,
+    },
     #[serde(rename = "runtime_trust")]
     RuntimeTrust { request_id: u64, runtime_id: String },
     #[serde(rename = "runtime_remove")]
@@ -389,7 +465,11 @@ pub enum RequestPacket {
 
     // ── Auth management (ADR-034) ──
     #[serde(rename = "auth_api_key_create")]
-    AuthApiKeyCreate { request_id: u64, name: String, scopes: Vec<String> },
+    AuthApiKeyCreate {
+        request_id: u64,
+        name: String,
+        scopes: Vec<String>,
+    },
     #[serde(rename = "auth_api_key_list")]
     AuthApiKeyList { request_id: u64 },
     #[serde(rename = "auth_api_key_revoke")]
@@ -399,17 +479,47 @@ pub enum RequestPacket {
 
     // ── Ownership and Permission (ADR-033) ──
     #[serde(rename = "agent_transfer_owner")]
-    AgentTransferOwner { request_id: u64, agent: String, new_owner_id: String },
+    AgentTransferOwner {
+        request_id: u64,
+        agent: String,
+        new_owner_id: String,
+    },
     #[serde(rename = "agent_grant_permission")]
-    AgentGrantPermission { request_id: u64, agent: String, subject_id: String, subject_type: crate::auth::ownership::SubjectType, permission: crate::auth::ownership::Permission },
+    AgentGrantPermission {
+        request_id: u64,
+        agent: String,
+        subject_id: String,
+        subject_type: crate::auth::ownership::SubjectType,
+        permission: crate::auth::ownership::Permission,
+    },
     #[serde(rename = "agent_revoke_permission")]
-    AgentRevokePermission { request_id: u64, agent: String, subject_id: String, permission: crate::auth::ownership::Permission },
+    AgentRevokePermission {
+        request_id: u64,
+        agent: String,
+        subject_id: String,
+        permission: crate::auth::ownership::Permission,
+    },
     #[serde(rename = "team_transfer_owner")]
-    TeamTransferOwner { request_id: u64, team: String, new_owner_id: String },
+    TeamTransferOwner {
+        request_id: u64,
+        team: String,
+        new_owner_id: String,
+    },
     #[serde(rename = "team_grant_permission")]
-    TeamGrantPermission { request_id: u64, team: String, subject_id: String, subject_type: crate::auth::ownership::SubjectType, permission: crate::auth::ownership::Permission },
+    TeamGrantPermission {
+        request_id: u64,
+        team: String,
+        subject_id: String,
+        subject_type: crate::auth::ownership::SubjectType,
+        permission: crate::auth::ownership::Permission,
+    },
     #[serde(rename = "team_revoke_permission")]
-    TeamRevokePermission { request_id: u64, team: String, subject_id: String, permission: crate::auth::ownership::Permission },
+    TeamRevokePermission {
+        request_id: u64,
+        team: String,
+        subject_id: String,
+        permission: crate::auth::ownership::Permission,
+    },
 }
 
 impl RequestPacket {
@@ -636,51 +746,91 @@ pub enum ResponsePacket {
 
     /// Agent list response
     #[serde(rename = "agent_list")]
-    AgentList { request_id: u64, agents: Vec<crate::common::types::agent::AgentSummary> },
+    AgentList {
+        request_id: u64,
+        agents: Vec<crate::common::types::agent::AgentSummary>,
+    },
 
     /// Agent detail response
     #[serde(rename = "agent_get")]
-    AgentGet { request_id: u64, agent: Option<crate::common::types::agent::AgentInfo> },
+    AgentGet {
+        request_id: u64,
+        agent: Option<crate::common::types::agent::AgentInfo>,
+    },
 
     /// Agent created response
     #[serde(rename = "agent_created")]
-    AgentCreated { request_id: u64, result: crate::common::types::agent::AgentCreationResult },
+    AgentCreated {
+        request_id: u64,
+        result: crate::common::types::agent::AgentCreationResult,
+    },
 
     /// Agent deleted response
     #[serde(rename = "agent_deleted")]
-    AgentDeleted { request_id: u64, result: crate::common::types::agent::AgentDeleteResult },
+    AgentDeleted {
+        request_id: u64,
+        result: crate::common::types::agent::AgentDeleteResult,
+    },
 
     /// Agent moved/renamed response
     #[serde(rename = "agent_moved")]
-    AgentMoved { request_id: u64, result: crate::common::types::agent::AgentRenameResult },
+    AgentMoved {
+        request_id: u64,
+        result: crate::common::types::agent::AgentRenameResult,
+    },
 
     /// Team list response
     #[serde(rename = "team_list")]
-    TeamList { request_id: u64, teams: Vec<crate::common::types::team::TeamInfo> },
+    TeamList {
+        request_id: u64,
+        teams: Vec<crate::common::types::team::TeamInfo>,
+    },
 
     /// Team detail response
     #[serde(rename = "team_get")]
-    TeamGet { request_id: u64, team: Option<crate::common::types::team::TeamInfo> },
+    TeamGet {
+        request_id: u64,
+        team: Option<crate::common::types::team::TeamInfo>,
+    },
 
     /// Team created response
     #[serde(rename = "team_created")]
-    TeamCreated { request_id: u64, result: crate::common::types::team::TeamCreationResult },
+    TeamCreated {
+        request_id: u64,
+        result: crate::common::types::team::TeamCreationResult,
+    },
 
     /// Team deleted response
     #[serde(rename = "team_deleted")]
-    TeamDeleted { request_id: u64, result: crate::common::types::team::TeamDeletionResult },
+    TeamDeleted {
+        request_id: u64,
+        result: crate::common::types::team::TeamDeletionResult,
+    },
 
     /// Team moved response
     #[serde(rename = "team_moved")]
-    TeamMoved { request_id: u64, old_name: String, new_name: String },
+    TeamMoved {
+        request_id: u64,
+        old_name: String,
+        new_name: String,
+    },
 
     /// Team join response
     #[serde(rename = "team_joined")]
-    TeamJoined { request_id: u64, agent: String, team: String },
+    TeamJoined {
+        request_id: u64,
+        agent: String,
+        team: String,
+    },
 
     /// Team leave response
     #[serde(rename = "team_left")]
-    TeamLeft { request_id: u64, agent: String, team: String, was_member: bool },
+    TeamLeft {
+        request_id: u64,
+        agent: String,
+        team: String,
+        was_member: bool,
+    },
 
     /// Session list response
     #[serde(rename = "session_list")]
@@ -692,19 +842,35 @@ pub enum ResponsePacket {
 
     /// Session detail response
     #[serde(rename = "session_get")]
-    SessionGet { request_id: u64, session: Option<crate::common::services::session_service::SessionDetails> },
+    SessionGet {
+        request_id: u64,
+        session: Option<crate::common::services::session_service::SessionDetails>,
+    },
 
     /// Session shown response
     #[serde(rename = "session_shown")]
-    SessionShown { request_id: u64, session: crate::common::services::session_service::SessionDetails, history: Option<Vec<crate::common::services::session_service::HistoryEvent>> },
+    SessionShown {
+        request_id: u64,
+        session: crate::common::services::session_service::SessionDetails,
+        history: Option<Vec<crate::common::services::session_service::HistoryEvent>>,
+    },
 
     /// Session removed response
     #[serde(rename = "session_removed")]
-    SessionRemoved { request_id: u64, session_id: String, deleted: bool },
+    SessionRemoved {
+        request_id: u64,
+        session_id: String,
+        deleted: bool,
+    },
 
     /// Session switched response
     #[serde(rename = "session_switched")]
-    SessionSwitched { request_id: u64, session_id: String, agent: String, team: String },
+    SessionSwitched {
+        request_id: u64,
+        session_id: String,
+        agent: String,
+        team: String,
+    },
 
     /// System status response
     #[serde(rename = "system_status")]
@@ -761,23 +927,44 @@ pub enum ResponsePacket {
 
     /// Extension validated response
     #[serde(rename = "extension_validated")]
-    ExtensionValidated { request_id: u64, valid: bool, errors: Vec<String>, warnings: Vec<String> },
+    ExtensionValidated {
+        request_id: u64,
+        valid: bool,
+        errors: Vec<String>,
+        warnings: Vec<String>,
+    },
 
     /// Extension debug info response
     #[serde(rename = "extension_debug_info")]
-    ExtensionDebugInfo { request_id: u64, id: String, info: serde_json::Value },
+    ExtensionDebugInfo {
+        request_id: u64,
+        id: String,
+        info: serde_json::Value,
+    },
 
     /// Extension info response
     #[serde(rename = "extension_info_response")]
-    ExtensionInfoResponse { request_id: u64, id: String, info: serde_json::Value },
+    ExtensionInfoResponse {
+        request_id: u64,
+        id: String,
+        info: serde_json::Value,
+    },
 
     /// Extension exported response
     #[serde(rename = "extension_exported")]
-    ExtensionExported { request_id: u64, id: String, output: String },
+    ExtensionExported {
+        request_id: u64,
+        id: String,
+        output: String,
+    },
 
     /// Extension bundled response
     #[serde(rename = "extension_bundled")]
-    ExtensionBundled { request_id: u64, name: String, count: usize },
+    ExtensionBundled {
+        request_id: u64,
+        name: String,
+        count: usize,
+    },
 
     /// System clean response
     #[serde(rename = "system_cleaned")]
@@ -789,10 +976,7 @@ pub enum ResponsePacket {
 
     /// Cron job added (simplified)
     #[serde(rename = "cron_added_simple")]
-    CronAddedSimple {
-        request_id: u64,
-        job_id: String,
-    },
+    CronAddedSimple { request_id: u64, job_id: String },
 
     /// Session branched
     #[serde(rename = "session_branched")]
@@ -874,15 +1058,28 @@ pub enum ResponsePacket {
     #[serde(rename = "runtime_id")]
     RuntimeId { request_id: u64, did: String },
     #[serde(rename = "runtime_info")]
-    RuntimeInfo { request_id: u64, metadata: RuntimeMetadataResponse },
+    RuntimeInfo {
+        request_id: u64,
+        metadata: RuntimeMetadataResponse,
+    },
     #[serde(rename = "runtime_list")]
-    RuntimeList { request_id: u64, runtimes: Vec<KnownRuntimeResponse> },
+    RuntimeList {
+        request_id: u64,
+        runtimes: Vec<KnownRuntimeResponse>,
+    },
 
     // ── Auth management (ADR-034) ──
     #[serde(rename = "auth_api_key_created")]
-    AuthApiKeyCreated { request_id: u64, key_id: String, full_key: String },
+    AuthApiKeyCreated {
+        request_id: u64,
+        key_id: String,
+        full_key: String,
+    },
     #[serde(rename = "auth_api_key_list")]
-    AuthApiKeyList { request_id: u64, keys: Vec<ApiKeySummary> },
+    AuthApiKeyList {
+        request_id: u64,
+        keys: Vec<ApiKeySummary>,
+    },
     #[serde(rename = "auth_api_key_revoked")]
     AuthApiKeyRevoked { request_id: u64, key_id: String },
     #[serde(rename = "auth_status")]
@@ -901,7 +1098,7 @@ pub enum ResponsePacket {
 pub struct ProviderInfo {
     pub id: String,
     pub display_name: String,
-    pub api_type: String,    // "openai" or "anthropic"
+    pub api_type: String, // "openai" or "anthropic"
     pub default_model: String,
     pub requires_key: bool,
     pub is_local: bool,
@@ -913,9 +1110,9 @@ pub struct ExtensionSummary {
     pub name: String,
     pub ext_type: String,
     pub version: String,
-    pub source: String,      // "built-in" or "installed"
+    pub source: String, // "built-in" or "installed"
     pub enabled: bool,
-    pub runtime: String,     // "running", "stopped", or "n/a"
+    pub runtime: String, // "running", "stopped", or "n/a"
     pub description: String,
 }
 
@@ -1519,7 +1716,10 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentList { request_id, team_filter } => {
+            RequestPacket::AgentList {
+                request_id,
+                team_filter,
+            } => {
                 assert_eq!(request_id, 300);
                 assert_eq!(team_filter, Some("default".to_string()));
             }
@@ -1537,7 +1737,11 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentGet { request_id, name, team } => {
+            RequestPacket::AgentGet {
+                request_id,
+                name,
+                team,
+            } => {
                 assert_eq!(request_id, 301);
                 assert_eq!(name, "test-agent");
                 assert_eq!(team, Some("default".to_string()));
@@ -1564,7 +1768,10 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentCreate { request_id, request: decoded_request } => {
+            RequestPacket::AgentCreate {
+                request_id,
+                request: decoded_request,
+            } => {
                 assert_eq!(request_id, 302);
                 assert_eq!(decoded_request.name, "new-agent");
                 assert_eq!(decoded_request.provider, "ollama");
@@ -1585,7 +1792,12 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentDelete { request_id, name, team, force } => {
+            RequestPacket::AgentDelete {
+                request_id,
+                name,
+                team,
+                force,
+            } => {
                 assert_eq!(request_id, 303);
                 assert_eq!(name, "old-agent");
                 assert_eq!(team, Some("default".to_string()));
@@ -1606,7 +1818,12 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentMove { request_id, old_name, new_name, team } => {
+            RequestPacket::AgentMove {
+                request_id,
+                old_name,
+                new_name,
+                team,
+            } => {
                 assert_eq!(request_id, 304);
                 assert_eq!(old_name, "old-agent");
                 assert_eq!(new_name, "new-agent");
@@ -1618,9 +1835,7 @@ mod tests {
 
     #[test]
     fn test_team_list_request_roundtrip() {
-        let req = RequestPacket::TeamList {
-            request_id: 400,
-        };
+        let req = RequestPacket::TeamList { request_id: 400 };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
@@ -1658,7 +1873,11 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SessionList { request_id, agent, team } => {
+            RequestPacket::SessionList {
+                request_id,
+                agent,
+                team,
+            } => {
                 assert_eq!(request_id, 500);
                 assert_eq!(agent, Some("test-agent".to_string()));
                 assert_eq!(team, Some("test-team".to_string()));
@@ -1886,7 +2105,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SessionList { request_id, sessions, active_session } => {
+            ResponsePacket::SessionList {
+                request_id,
+                sessions,
+                active_session,
+            } => {
                 assert_eq!(request_id, 800);
                 assert_eq!(sessions.len(), 1);
                 assert_eq!(sessions[0].id, "sess-123");
@@ -1914,13 +2137,17 @@ mod tests {
                     parent_session_id: None,
                     title: None,
                 },
-                history_summary: crate::common::services::session_service::HistorySummary::default(),
+                history_summary: crate::common::services::session_service::HistorySummary::default(
+                ),
             }),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SessionGet { request_id, session } => {
+            ResponsePacket::SessionGet {
+                request_id,
+                session,
+            } => {
                 assert_eq!(request_id, 801);
                 assert!(session.is_some());
                 assert_eq!(session.unwrap().info.id, "sess-123");
@@ -1931,10 +2158,17 @@ mod tests {
 
     #[test]
     fn test_crud_request_ids() {
-        let req_agent_list = RequestPacket::AgentList { request_id: 1, team_filter: None };
+        let req_agent_list = RequestPacket::AgentList {
+            request_id: 1,
+            team_filter: None,
+        };
         assert_eq!(req_agent_list.request_id(), 1);
 
-        let req_agent_get = RequestPacket::AgentGet { request_id: 2, name: "a".to_string(), team: None };
+        let req_agent_get = RequestPacket::AgentGet {
+            request_id: 2,
+            name: "a".to_string(),
+            team: None,
+        };
         assert_eq!(req_agent_get.request_id(), 2);
 
         let req_agent_create = RequestPacket::AgentCreate {
@@ -1943,31 +2177,57 @@ mod tests {
         };
         assert_eq!(req_agent_create.request_id(), 3);
 
-        let req_agent_delete = RequestPacket::AgentDelete { request_id: 4, name: "a".to_string(), team: None, force: false };
+        let req_agent_delete = RequestPacket::AgentDelete {
+            request_id: 4,
+            name: "a".to_string(),
+            team: None,
+            force: false,
+        };
         assert_eq!(req_agent_delete.request_id(), 4);
 
-        let req_agent_move = RequestPacket::AgentMove { request_id: 4, old_name: "a".to_string(), new_name: "b".to_string(), team: None };
+        let req_agent_move = RequestPacket::AgentMove {
+            request_id: 4,
+            old_name: "a".to_string(),
+            new_name: "b".to_string(),
+            team: None,
+        };
         assert_eq!(req_agent_move.request_id(), 4);
 
         let req_team_list = RequestPacket::TeamList { request_id: 5 };
         assert_eq!(req_team_list.request_id(), 5);
 
-        let req_team_get = RequestPacket::TeamGet { request_id: 6, name: "t".to_string() };
+        let req_team_get = RequestPacket::TeamGet {
+            request_id: 6,
+            name: "t".to_string(),
+        };
         assert_eq!(req_team_get.request_id(), 6);
 
-        let req_session_list = RequestPacket::SessionList { request_id: 7, agent: None, team: None };
+        let req_session_list = RequestPacket::SessionList {
+            request_id: 7,
+            agent: None,
+            team: None,
+        };
         assert_eq!(req_session_list.request_id(), 7);
 
-        let req_session_get = RequestPacket::SessionGet { request_id: 8, id: "s".to_string() };
+        let req_session_get = RequestPacket::SessionGet {
+            request_id: 8,
+            id: "s".to_string(),
+        };
         assert_eq!(req_session_get.request_id(), 8);
     }
 
     #[test]
     fn test_crud_response_ids() {
-        let resp_agent_list = ResponsePacket::AgentList { request_id: 10, agents: vec![] };
+        let resp_agent_list = ResponsePacket::AgentList {
+            request_id: 10,
+            agents: vec![],
+        };
         assert_eq!(resp_agent_list.request_id(), 10);
 
-        let resp_agent_get = ResponsePacket::AgentGet { request_id: 11, agent: None };
+        let resp_agent_get = ResponsePacket::AgentGet {
+            request_id: 11,
+            agent: None,
+        };
         assert_eq!(resp_agent_get.request_id(), 11);
 
         let resp_agent_created = ResponsePacket::AgentCreated {
@@ -2000,16 +2260,29 @@ mod tests {
         };
         assert_eq!(resp_agent_moved.request_id(), 13);
 
-        let resp_team_list = ResponsePacket::TeamList { request_id: 14, teams: vec![] };
+        let resp_team_list = ResponsePacket::TeamList {
+            request_id: 14,
+            teams: vec![],
+        };
         assert_eq!(resp_team_list.request_id(), 14);
 
-        let resp_team_get = ResponsePacket::TeamGet { request_id: 15, team: None };
+        let resp_team_get = ResponsePacket::TeamGet {
+            request_id: 15,
+            team: None,
+        };
         assert_eq!(resp_team_get.request_id(), 15);
 
-        let resp_session_list = ResponsePacket::SessionList { request_id: 16, sessions: vec![], active_session: None };
+        let resp_session_list = ResponsePacket::SessionList {
+            request_id: 16,
+            sessions: vec![],
+            active_session: None,
+        };
         assert_eq!(resp_session_list.request_id(), 16);
 
-        let resp_session_get = ResponsePacket::SessionGet { request_id: 17, session: None };
+        let resp_session_get = ResponsePacket::SessionGet {
+            request_id: 17,
+            session: None,
+        };
         assert_eq!(resp_session_get.request_id(), 17);
     }
 
@@ -2053,7 +2326,15 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SystemStatus { request_id, version, uptime_secs, degraded, instance_count, team_count, ready } => {
+            ResponsePacket::SystemStatus {
+                request_id,
+                version,
+                uptime_secs,
+                degraded,
+                instance_count,
+                team_count,
+                ready,
+            } => {
                 assert_eq!(request_id, 902);
                 assert_eq!(version, "1.0.0");
                 assert_eq!(uptime_secs, 12345);
@@ -2091,7 +2372,13 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SystemDoctor { request_id, checks, passed, failed, warnings } => {
+            ResponsePacket::SystemDoctor {
+                request_id,
+                checks,
+                passed,
+                failed,
+                warnings,
+            } => {
                 assert_eq!(request_id, 903);
                 assert_eq!(checks.len(), 2);
                 assert_eq!(checks[0].name, "daemon_ready");
@@ -2217,10 +2504,7 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SystemClean {
-                request_id,
-                scope,
-            } => {
+            RequestPacket::SystemClean { request_id, scope } => {
                 assert_eq!(request_id, 1003);
                 assert_eq!(scope, Some("logs".to_string()));
             }
@@ -2232,18 +2516,16 @@ mod tests {
     fn test_extension_list_response_roundtrip() {
         let resp = ResponsePacket::ExtensionList {
             request_id: 2000,
-            extensions: vec![
-                ExtensionSummary {
-                    id: "ext-1".to_string(),
-                    name: "Test Extension".to_string(),
-                    ext_type: "tool".to_string(),
-                    version: "1.0.0".to_string(),
-                    source: "installed".to_string(),
-                    enabled: true,
-                    runtime: "running".to_string(),
-                    description: "A test extension".to_string(),
-                },
-            ],
+            extensions: vec![ExtensionSummary {
+                id: "ext-1".to_string(),
+                name: "Test Extension".to_string(),
+                ext_type: "tool".to_string(),
+                version: "1.0.0".to_string(),
+                source: "installed".to_string(),
+                enabled: true,
+                runtime: "running".to_string(),
+                description: "A test extension".to_string(),
+            }],
             total: 1,
         };
         let bytes = resp.to_bytes().unwrap();
@@ -2444,7 +2726,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ExtensionInstalled { request_id, id, message } => {
+            ResponsePacket::ExtensionInstalled {
+                request_id,
+                id,
+                message,
+            } => {
                 assert_eq!(request_id, 2100);
                 assert_eq!(id, "ext-1");
                 assert_eq!(message, "Extension 'ext-1' installed successfully");
@@ -2463,7 +2749,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ExtensionUninstalled { request_id, id, message } => {
+            ResponsePacket::ExtensionUninstalled {
+                request_id,
+                id,
+                message,
+            } => {
                 assert_eq!(request_id, 2101);
                 assert_eq!(id, "ext-1");
                 assert_eq!(message, "Extension 'ext-1' uninstalled");
@@ -2515,7 +2805,12 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::CronAddSimple { request_id, name, schedule, message } => {
+            RequestPacket::CronAddSimple {
+                request_id,
+                name,
+                schedule,
+                message,
+            } => {
                 assert_eq!(request_id, 1200);
                 assert_eq!(name, "Daily Report");
                 assert_eq!(schedule, "0 9 * * *");
@@ -2537,7 +2832,13 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SessionBranch { request_id, agent, team, session_id, label } => {
+            RequestPacket::SessionBranch {
+                request_id,
+                agent,
+                team,
+                session_id,
+                label,
+            } => {
                 assert_eq!(request_id, 1201);
                 assert_eq!(agent, "test-agent");
                 assert_eq!(team, Some("default".to_string()));
@@ -2561,7 +2862,14 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SessionCompact { request_id, agent, team, session_id, dry_run, instruction } => {
+            RequestPacket::SessionCompact {
+                request_id,
+                agent,
+                team,
+                session_id,
+                dry_run,
+                instruction,
+            } => {
                 assert_eq!(request_id, 1202);
                 assert_eq!(agent, "test-agent");
                 assert_eq!(team, None);
@@ -2600,7 +2908,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SessionBranched { request_id, new_session_id, parent_session_id } => {
+            ResponsePacket::SessionBranched {
+                request_id,
+                new_session_id,
+                parent_session_id,
+            } => {
                 assert_eq!(request_id, 2201);
                 assert_eq!(new_session_id, "sess-new");
                 assert_eq!(parent_session_id, "sess-parent");
@@ -2622,7 +2934,14 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SessionCompacted { request_id, session_id, messages_compacted, tokens_saved, tokens_before, tokens_after } => {
+            ResponsePacket::SessionCompacted {
+                request_id,
+                session_id,
+                messages_compacted,
+                tokens_saved,
+                tokens_before,
+                tokens_after,
+            } => {
                 assert_eq!(request_id, 2202);
                 assert_eq!(session_id, "sess-123");
                 assert_eq!(messages_compacted, 10);
@@ -2702,7 +3021,13 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentExport { request_id, name, team, output, include_sessions } => {
+            RequestPacket::AgentExport {
+                request_id,
+                name,
+                team,
+                output,
+                include_sessions,
+            } => {
                 assert_eq!(request_id, 1200);
                 assert_eq!(name, "test-agent");
                 assert_eq!(team, Some("default".to_string()));
@@ -2724,7 +3049,12 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentImport { request_id, file_path, name, team } => {
+            RequestPacket::AgentImport {
+                request_id,
+                file_path,
+                name,
+                team,
+            } => {
                 assert_eq!(request_id, 1201);
                 assert_eq!(file_path, "/tmp/export.zip");
                 assert_eq!(name, Some("renamed-agent".to_string()));
@@ -2744,7 +3074,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::AgentExported { request_id, name, output_path } => {
+            ResponsePacket::AgentExported {
+                request_id,
+                name,
+                output_path,
+            } => {
                 assert_eq!(request_id, 2200);
                 assert_eq!(name, "test-agent");
                 assert_eq!(output_path, "/tmp/export.zip");
@@ -2763,7 +3097,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::AgentImported { request_id, name, config_path } => {
+            ResponsePacket::AgentImported {
+                request_id,
+                name,
+                config_path,
+            } => {
                 assert_eq!(request_id, 2201);
                 assert_eq!(name, "test-agent");
                 assert_eq!(config_path, "/tmp/agents/test-agent/config.toml");
@@ -2820,7 +3158,12 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::TeamExport { request_id, name, output, include_sessions } => {
+            RequestPacket::TeamExport {
+                request_id,
+                name,
+                output,
+                include_sessions,
+            } => {
                 assert_eq!(request_id, 1300);
                 assert_eq!(name, "my-team");
                 assert_eq!(output, Some("/tmp/export.team".to_string()));
@@ -2841,7 +3184,12 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::TeamImport { request_id, file_path, name, force } => {
+            RequestPacket::TeamImport {
+                request_id,
+                file_path,
+                name,
+                force,
+            } => {
                 assert_eq!(request_id, 1301);
                 assert_eq!(file_path, "/tmp/import.team");
                 assert_eq!(name, Some("new-team".to_string()));
@@ -2861,7 +3209,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::TeamExported { request_id, name, output_path } => {
+            ResponsePacket::TeamExported {
+                request_id,
+                name,
+                output_path,
+            } => {
                 assert_eq!(request_id, 2300);
                 assert_eq!(name, "my-team");
                 assert_eq!(output_path, "/tmp/export.team");
@@ -2880,7 +3232,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::TeamImported { request_id, name, path } => {
+            ResponsePacket::TeamImported {
+                request_id,
+                name,
+                path,
+            } => {
                 assert_eq!(request_id, 2301);
                 assert_eq!(name, "new-team");
                 assert_eq!(path, "/tmp/teams/new-team");
@@ -2938,7 +3294,14 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::RegistryPull { request_id, registry_ref, team, force, registry_token, registry_host } => {
+            RequestPacket::RegistryPull {
+                request_id,
+                registry_ref,
+                team,
+                force,
+                registry_token,
+                registry_host,
+            } => {
                 assert_eq!(request_id, 1400);
                 assert_eq!(registry_ref, "my-agent:v1.0");
                 assert_eq!(team, Some("default".to_string()));
@@ -2961,7 +3324,12 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::RegistryPulled { request_id, name, version, digest } => {
+            ResponsePacket::RegistryPulled {
+                request_id,
+                name,
+                version,
+                digest,
+            } => {
                 assert_eq!(request_id, 2400);
                 assert_eq!(name, "my-agent");
                 assert_eq!(version, "v1.0");
@@ -3008,7 +3376,12 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::TeamCreate { request_id, name, description, .. } => {
+            RequestPacket::TeamCreate {
+                request_id,
+                name,
+                description,
+                ..
+            } => {
                 assert_eq!(request_id, 1500);
                 assert_eq!(name, "new-team");
                 assert_eq!(description, Some("A new team".to_string()));
@@ -3027,7 +3400,11 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::TeamDelete { request_id, name, force } => {
+            RequestPacket::TeamDelete {
+                request_id,
+                name,
+                force,
+            } => {
                 assert_eq!(request_id, 1501);
                 assert_eq!(name, "old-team");
                 assert!(force);
@@ -3046,7 +3423,11 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::TeamMove { request_id, old_name, new_name } => {
+            RequestPacket::TeamMove {
+                request_id,
+                old_name,
+                new_name,
+            } => {
                 assert_eq!(request_id, 1502);
                 assert_eq!(old_name, "old-team");
                 assert_eq!(new_name, "new-team");
@@ -3113,7 +3494,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::TeamMoved { request_id, old_name, new_name } => {
+            ResponsePacket::TeamMoved {
+                request_id,
+                old_name,
+                new_name,
+            } => {
                 assert_eq!(request_id, 2502);
                 assert_eq!(old_name, "old-team");
                 assert_eq!(new_name, "new-team");
@@ -3124,13 +3509,26 @@ mod tests {
 
     #[test]
     fn test_team_request_ids() {
-        let req_create = RequestPacket::TeamCreate { request_id: 1, name: "t".to_string(), description: None, members: None };
+        let req_create = RequestPacket::TeamCreate {
+            request_id: 1,
+            name: "t".to_string(),
+            description: None,
+            members: None,
+        };
         assert_eq!(req_create.request_id(), 1);
 
-        let req_delete = RequestPacket::TeamDelete { request_id: 2, name: "t".to_string(), force: false };
+        let req_delete = RequestPacket::TeamDelete {
+            request_id: 2,
+            name: "t".to_string(),
+            force: false,
+        };
         assert_eq!(req_delete.request_id(), 2);
 
-        let req_move = RequestPacket::TeamMove { request_id: 3, old_name: "a".to_string(), new_name: "b".to_string() };
+        let req_move = RequestPacket::TeamMove {
+            request_id: 3,
+            old_name: "a".to_string(),
+            new_name: "b".to_string(),
+        };
         assert_eq!(req_move.request_id(), 3);
     }
 
@@ -3183,7 +3581,13 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SessionShow { request_id, agent, team, session_id, history } => {
+            RequestPacket::SessionShow {
+                request_id,
+                agent,
+                team,
+                session_id,
+                history,
+            } => {
                 assert_eq!(request_id, 1600);
                 assert_eq!(agent, "test-agent");
                 assert_eq!(team, Some("default".to_string()));
@@ -3206,7 +3610,13 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SessionRemove { request_id, agent, team, session_id, force } => {
+            RequestPacket::SessionRemove {
+                request_id,
+                agent,
+                team,
+                session_id,
+                force,
+            } => {
                 assert_eq!(request_id, 1601);
                 assert_eq!(agent, "test-agent");
                 assert_eq!(team, None);
@@ -3229,7 +3639,13 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SessionSwitch { request_id, agent, team, session_id, user } => {
+            RequestPacket::SessionSwitch {
+                request_id,
+                agent,
+                team,
+                session_id,
+                user,
+            } => {
                 assert_eq!(request_id, 1602);
                 assert_eq!(agent, "test-agent");
                 assert_eq!(team, Some("default".to_string()));
@@ -3258,7 +3674,8 @@ mod tests {
                     parent_session_id: None,
                     title: None,
                 },
-                history_summary: crate::common::services::session_service::HistorySummary::default(),
+                history_summary: crate::common::services::session_service::HistorySummary::default(
+                ),
             },
             history: Some(vec![
                 crate::common::services::session_service::HistoryEvent::Message {
@@ -3271,7 +3688,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SessionShown { request_id, session, history } => {
+            ResponsePacket::SessionShown {
+                request_id,
+                session,
+                history,
+            } => {
                 assert_eq!(request_id, 2600);
                 assert_eq!(session.info.id, "sess-123");
                 assert!(history.is_some());
@@ -3291,7 +3712,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SessionRemoved { request_id, session_id, deleted } => {
+            ResponsePacket::SessionRemoved {
+                request_id,
+                session_id,
+                deleted,
+            } => {
                 assert_eq!(request_id, 2601);
                 assert_eq!(session_id, "sess-123");
                 assert!(deleted);
@@ -3311,7 +3736,12 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::SessionSwitched { request_id, session_id, agent, team } => {
+            ResponsePacket::SessionSwitched {
+                request_id,
+                session_id,
+                agent,
+                team,
+            } => {
                 assert_eq!(request_id, 2602);
                 assert_eq!(session_id, "sess-123");
                 assert_eq!(agent, "test-agent");
@@ -3324,17 +3754,29 @@ mod tests {
     #[test]
     fn test_session_request_ids() {
         let req_show = RequestPacket::SessionShow {
-            request_id: 1, agent: "a".to_string(), team: None, session_id: "s".to_string(), history: false,
+            request_id: 1,
+            agent: "a".to_string(),
+            team: None,
+            session_id: "s".to_string(),
+            history: false,
         };
         assert_eq!(req_show.request_id(), 1);
 
         let req_remove = RequestPacket::SessionRemove {
-            request_id: 2, agent: "a".to_string(), team: None, session_id: "s".to_string(), force: false,
+            request_id: 2,
+            agent: "a".to_string(),
+            team: None,
+            session_id: "s".to_string(),
+            force: false,
         };
         assert_eq!(req_remove.request_id(), 2);
 
         let req_switch = RequestPacket::SessionSwitch {
-            request_id: 3, agent: "a".to_string(), team: None, session_id: "s".to_string(), user: "u".to_string(),
+            request_id: 3,
+            agent: "a".to_string(),
+            team: None,
+            session_id: "s".to_string(),
+            user: "u".to_string(),
         };
         assert_eq!(req_switch.request_id(), 3);
     }
@@ -3357,7 +3799,8 @@ mod tests {
                     parent_session_id: None,
                     title: None,
                 },
-                history_summary: crate::common::services::session_service::HistorySummary::default(),
+                history_summary: crate::common::services::session_service::HistorySummary::default(
+                ),
             },
             history: None,
         };
@@ -3391,7 +3834,11 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::ExtensionValidate { request_id, path, verbose } => {
+            RequestPacket::ExtensionValidate {
+                request_id,
+                path,
+                verbose,
+            } => {
                 assert_eq!(request_id, 1700);
                 assert_eq!(path, "/path/to/ext");
                 assert!(verbose);
@@ -3444,7 +3891,11 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::ExtensionExport { request_id, id, output } => {
+            RequestPacket::ExtensionExport {
+                request_id,
+                id,
+                output,
+            } => {
                 assert_eq!(request_id, 1703);
                 assert_eq!(id, "ext-1");
                 assert_eq!(output, "/tmp/export.ext");
@@ -3463,7 +3914,11 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::ExtensionBundle { request_id, name, ids } => {
+            RequestPacket::ExtensionBundle {
+                request_id,
+                name,
+                ids,
+            } => {
                 assert_eq!(request_id, 1704);
                 assert_eq!(name, "my-bundle");
                 assert_eq!(ids, vec!["ext-1".to_string(), "ext-2".to_string()]);
@@ -3483,7 +3938,12 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ExtensionValidated { request_id, valid, errors, warnings } => {
+            ResponsePacket::ExtensionValidated {
+                request_id,
+                valid,
+                errors,
+                warnings,
+            } => {
                 assert_eq!(request_id, 2700);
                 assert!(valid);
                 assert!(errors.is_empty());
@@ -3503,7 +3963,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ExtensionDebugInfo { request_id, id, info } => {
+            ResponsePacket::ExtensionDebugInfo {
+                request_id,
+                id,
+                info,
+            } => {
                 assert_eq!(request_id, 2701);
                 assert_eq!(id, "ext-1");
                 assert_eq!(info["hooks"], 5);
@@ -3522,7 +3986,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ExtensionInfoResponse { request_id, id, info } => {
+            ResponsePacket::ExtensionInfoResponse {
+                request_id,
+                id,
+                info,
+            } => {
                 assert_eq!(request_id, 2702);
                 assert_eq!(id, "ext-1");
                 assert_eq!(info["name"], "Test Extension");
@@ -3541,7 +4009,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ExtensionExported { request_id, id, output } => {
+            ResponsePacket::ExtensionExported {
+                request_id,
+                id,
+                output,
+            } => {
                 assert_eq!(request_id, 2703);
                 assert_eq!(id, "ext-1");
                 assert_eq!(output, "/tmp/export.ext");
@@ -3560,7 +4032,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::ExtensionBundled { request_id, name, count } => {
+            ResponsePacket::ExtensionBundled {
+                request_id,
+                name,
+                count,
+            } => {
                 assert_eq!(request_id, 2704);
                 assert_eq!(name, "my-bundle");
                 assert_eq!(count, 3);
@@ -3571,37 +4047,76 @@ mod tests {
 
     #[test]
     fn test_extension_ops_request_ids() {
-        let req_validate = RequestPacket::ExtensionValidate { request_id: 1, path: "/tmp".to_string(), verbose: false };
+        let req_validate = RequestPacket::ExtensionValidate {
+            request_id: 1,
+            path: "/tmp".to_string(),
+            verbose: false,
+        };
         assert_eq!(req_validate.request_id(), 1);
 
-        let req_debug = RequestPacket::ExtensionDebug { request_id: 2, id: "e".to_string() };
+        let req_debug = RequestPacket::ExtensionDebug {
+            request_id: 2,
+            id: "e".to_string(),
+        };
         assert_eq!(req_debug.request_id(), 2);
 
-        let req_info = RequestPacket::ExtensionInfo { request_id: 3, id: "e".to_string() };
+        let req_info = RequestPacket::ExtensionInfo {
+            request_id: 3,
+            id: "e".to_string(),
+        };
         assert_eq!(req_info.request_id(), 3);
 
-        let req_export = RequestPacket::ExtensionExport { request_id: 4, id: "e".to_string(), output: "/tmp".to_string() };
+        let req_export = RequestPacket::ExtensionExport {
+            request_id: 4,
+            id: "e".to_string(),
+            output: "/tmp".to_string(),
+        };
         assert_eq!(req_export.request_id(), 4);
 
-        let req_bundle = RequestPacket::ExtensionBundle { request_id: 5, name: "b".to_string(), ids: vec![] };
+        let req_bundle = RequestPacket::ExtensionBundle {
+            request_id: 5,
+            name: "b".to_string(),
+            ids: vec![],
+        };
         assert_eq!(req_bundle.request_id(), 5);
     }
 
     #[test]
     fn test_extension_ops_response_ids() {
-        let resp_validated = ResponsePacket::ExtensionValidated { request_id: 10, valid: true, errors: vec![], warnings: vec![] };
+        let resp_validated = ResponsePacket::ExtensionValidated {
+            request_id: 10,
+            valid: true,
+            errors: vec![],
+            warnings: vec![],
+        };
         assert_eq!(resp_validated.request_id(), 10);
 
-        let resp_debug = ResponsePacket::ExtensionDebugInfo { request_id: 11, id: "e".to_string(), info: serde_json::Value::Null };
+        let resp_debug = ResponsePacket::ExtensionDebugInfo {
+            request_id: 11,
+            id: "e".to_string(),
+            info: serde_json::Value::Null,
+        };
         assert_eq!(resp_debug.request_id(), 11);
 
-        let resp_info = ResponsePacket::ExtensionInfoResponse { request_id: 12, id: "e".to_string(), info: serde_json::Value::Null };
+        let resp_info = ResponsePacket::ExtensionInfoResponse {
+            request_id: 12,
+            id: "e".to_string(),
+            info: serde_json::Value::Null,
+        };
         assert_eq!(resp_info.request_id(), 12);
 
-        let resp_exported = ResponsePacket::ExtensionExported { request_id: 13, id: "e".to_string(), output: "/tmp".to_string() };
+        let resp_exported = ResponsePacket::ExtensionExported {
+            request_id: 13,
+            id: "e".to_string(),
+            output: "/tmp".to_string(),
+        };
         assert_eq!(resp_exported.request_id(), 13);
 
-        let resp_bundled = ResponsePacket::ExtensionBundled { request_id: 14, name: "b".to_string(), count: 0 };
+        let resp_bundled = ResponsePacket::ExtensionBundled {
+            request_id: 14,
+            name: "b".to_string(),
+            count: 0,
+        };
         assert_eq!(resp_bundled.request_id(), 14);
     }
 }

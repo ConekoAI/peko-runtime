@@ -87,7 +87,12 @@ async fn init_extension_core(command: &Commands) {
     tracing::debug!("Initialized global ExtensionCore with async transport");
 }
 
-async fn run_command(command: Commands, paths: &GlobalPaths, json: bool, cli_registry: Option<&str>) -> anyhow::Result<()> {
+async fn run_command(
+    command: Commands,
+    paths: &GlobalPaths,
+    json: bool,
+    cli_registry: Option<&str>,
+) -> anyhow::Result<()> {
     match command {
         Commands::Agent(cmd) => agent::handle_agent(cmd, paths, json, cli_registry).await,
         Commands::Team(cmd) => team::handle_team(cmd, paths, json, cli_registry).await,

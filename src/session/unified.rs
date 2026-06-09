@@ -23,10 +23,10 @@ use crate::session::events::{
 };
 use crate::session::jsonl::SessionStorage;
 use crate::session::message::SessionMessage;
-use crate::session::metadata_controller::MetadataController;
 use crate::session::message_conversion::{
     entries_to_context_text, event_to_llm_message, normalized_entry_to_llm_message,
 };
+use crate::session::metadata_controller::MetadataController;
 use crate::session::types::Peer;
 use crate::session::NormalizedEntry;
 use crate::types::message::LlmMessage;

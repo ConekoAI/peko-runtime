@@ -141,10 +141,8 @@ mod tests {
 
     #[test]
     fn test_api_key_admin_allowed_with_admin_scope() {
-        let caller = CallerContext::from_api_key(
-            "pkr_abc123".to_string(),
-            vec![ApiKeyScope::Admin],
-        );
+        let caller =
+            CallerContext::from_api_key("pkr_abc123".to_string(), vec![ApiKeyScope::Admin]);
         assert!(check_permission(&caller, &Resource::System, Action::Admin).is_ok());
     }
 

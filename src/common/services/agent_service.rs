@@ -174,20 +174,23 @@ impl AgentService {
                         if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
                             // Apply team filter using memberships
                             if let Some(filter) = team_filter {
-                                let memberships =
-                                    AgentMemberships::load(&self.resolver.agent_memberships(&agent_name))
-                                        .unwrap_or_default();
+                                let memberships = AgentMemberships::load(
+                                    &self.resolver.agent_memberships(&agent_name),
+                                )
+                                .unwrap_or_default();
                                 if !memberships.belongs_to(filter) {
                                     continue;
                                 }
                             }
 
-                            let memberships = AgentMemberships::load(&self.resolver.agent_memberships(&agent_name))
-                                .unwrap_or_default()
-                                .memberships
-                                .into_iter()
-                                .map(|m| m.team)
-                                .collect();
+                            let memberships = AgentMemberships::load(
+                                &self.resolver.agent_memberships(&agent_name),
+                            )
+                            .unwrap_or_default()
+                            .memberships
+                            .into_iter()
+                            .map(|m| m.team)
+                            .collect();
                             agents.push(AgentSummary {
                                 name: agent_name,
                                 config,
@@ -252,10 +255,7 @@ impl AgentService {
     // ========================================================================
 
     /// Create a new agent in the top-level `agents/` directory.
-    pub async fn create_agent(
-        &self,
-        request: AgentCreateRequest,
-    ) -> Result<AgentCreationResult> {
+    pub async fn create_agent(&self, request: AgentCreateRequest) -> Result<AgentCreationResult> {
         let name = &request.name;
 
         // Validate agent name
@@ -444,7 +444,9 @@ impl AgentService {
         let updated_toml = toml::to_string_pretty(&config)?;
         tokio::fs::write(&config_path, updated_toml).await?;
 
-        self.get_agent(name, None).await?.ok_or_else(|| anyhow::anyhow!("Agent not found after update"))
+        self.get_agent(name, None)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Agent not found after update"))
     }
 
     /// Export an agent to a package
@@ -529,7 +531,7 @@ impl AgentService {
         }
 
         // Default to new layout (standalone agent)
-        let agent_name = opts.name.as_deref().unwrap_or("imported");
+        let _agent_name = opts.name.as_deref().unwrap_or("imported");
 
         // Build portable import options
         let import_opts = PortableImportOptions {
@@ -634,7 +636,8 @@ impl AgentService {
         // Remove existing grant for same subject+permission
         config.permissions.retain(|g| {
             !(g.subject_id == grant.subject_id
-                && std::mem::discriminant(&g.permission) == std::mem::discriminant(&grant.permission))
+                && std::mem::discriminant(&g.permission)
+                    == std::mem::discriminant(&grant.permission))
         });
         config.permissions.push(grant);
 
@@ -891,10 +894,7 @@ mod tests {
         let request = AgentCreateRequest::new("alice", "minimax");
         service.create_agent(request).await.unwrap();
 
-        let result = service
-            .rename_agent("alice", "alicia", None)
-            .await
-            .unwrap();
+        let result = service.rename_agent("alice", "alicia", None).await.unwrap();
 
         assert_eq!(result.old_name, "alice");
         assert_eq!(result.new_name, "alicia");

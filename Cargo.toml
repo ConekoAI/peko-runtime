@@ -59,7 +59,7 @@ cron = "0.12"
 once_cell = "1.19"
 
 # UUID
-uuid = { version = "1.7", features = ["v4", "serde"] }
+uuid = { version = "1.7", features = ["v4", "v5", "serde"] }
 
 # Directories
 dirs = "5.0"

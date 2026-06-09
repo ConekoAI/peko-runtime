@@ -182,7 +182,10 @@ impl ExtensionStorage {
 
     /// Write the source registry reference for an installed extension
     pub fn write_source(&self, extension_id: &ExtensionId, registry_ref: &str) -> Result<()> {
-        let storage_dir = self.storage_dir.as_ref().context("Storage directory not configured")?;
+        let storage_dir = self
+            .storage_dir
+            .as_ref()
+            .context("Storage directory not configured")?;
         let source_path = storage_dir.join(&extension_id.0).join(".source");
         std::fs::write(&source_path, registry_ref)
             .with_context(|| format!("Failed to write source file at {source_path:?}"))?;

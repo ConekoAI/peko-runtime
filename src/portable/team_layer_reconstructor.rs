@@ -294,8 +294,8 @@ include_mcp = false
 
     #[tokio::test]
     async fn test_team_config_index_with_extensions() {
-        use crate::portable::team_packager::{ExtensionRef, TeamManifest};
         use crate::portable::team_layer_builder::build_team_config_layer;
+        use crate::portable::team_packager::{ExtensionRef, TeamManifest};
         use std::collections::HashMap;
 
         let temp_dir = tempfile::tempdir().unwrap();
@@ -328,13 +328,8 @@ include_mcp = false
             registry_ref: "pekohub.com/extensions/calculator:latest".to_string(),
         }];
 
-        let layer = build_team_config_layer(
-            &team_manifest,
-            &HashMap::new(),
-            None,
-            &extensions,
-        )
-        .unwrap();
+        let layer =
+            build_team_config_layer(&team_manifest, &HashMap::new(), None, &extensions).unwrap();
 
         registry
             .store_layer(&layer.digest, &layer.bytes)
@@ -344,7 +339,10 @@ include_mcp = false
         let index = extract_team_config_index(&layer.bytes).unwrap();
         assert_eq!(index.extensions.len(), 1);
         assert_eq!(index.extensions[0].id, "calc-ext");
-        assert_eq!(index.extensions[0].registry_ref, "pekohub.com/extensions/calculator:latest");
+        assert_eq!(
+            index.extensions[0].registry_ref,
+            "pekohub.com/extensions/calculator:latest"
+        );
     }
 
     #[tokio::test]

@@ -18,7 +18,9 @@ use anyhow::Result;
 use clap::Subcommand;
 
 /// Helper: connect to daemon and send a request/response packet
-async fn ipc_request(packet: crate::ipc::RequestPacket) -> anyhow::Result<crate::ipc::ResponsePacket> {
+async fn ipc_request(
+    packet: crate::ipc::RequestPacket,
+) -> anyhow::Result<crate::ipc::ResponsePacket> {
     let client = crate::ipc::DaemonClient::connect().await?;
     client.request_response(packet).await
 }
@@ -111,12 +113,23 @@ pub async fn handle_session(
                         paths.user(),
                     );
                     let peer = Peer::User(paths.user().to_string());
-                    let active_session_id = manager.get_active_session_id(&peer).await.ok().flatten();
+                    let active_session_id =
+                        manager.get_active_session_id(&peer).await.ok().flatten();
 
                     if json {
-                        render_session_list_json(&sessions, team, agent_name, active_session_id.as_deref())?;
+                        render_session_list_json(
+                            &sessions,
+                            team,
+                            agent_name,
+                            active_session_id.as_deref(),
+                        )?;
                     } else {
-                        render_session_list(&sessions, team, agent_name, active_session_id.as_deref());
+                        render_session_list(
+                            &sessions,
+                            team,
+                            agent_name,
+                            active_session_id.as_deref(),
+                        );
                     }
                     Ok(())
                 }
@@ -163,7 +176,11 @@ pub async fn handle_session(
             };
             let response = ipc_request(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::SessionBranched { new_session_id, parent_session_id, .. } => {
+                crate::ipc::ResponsePacket::SessionBranched {
+                    new_session_id,
+                    parent_session_id,
+                    ..
+                } => {
                     if json {
                         let result = crate::common::services::session_service::BranchResult {
                             new_session_id,
@@ -218,7 +235,11 @@ pub async fn handle_session(
             match response {
                 crate::ipc::ResponsePacket::SessionRemoved { deleted, .. } => {
                     if json {
-                        let deleted_items = if deleted { vec!["jsonl", "index"] } else { vec![] };
+                        let deleted_items = if deleted {
+                            vec!["jsonl", "index"]
+                        } else {
+                            vec![]
+                        };
                         println!("{{\"success\": true, \"deleted\": {:?}}}", deleted_items);
                     } else {
                         render_delete_success(&session_id, deleted);

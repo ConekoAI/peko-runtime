@@ -255,10 +255,7 @@ mod tests {
         .to_string();
         let token = format!(
             "{}.{}.dummy",
-            base64_encode(
-                serde_json::json!({"alg":"RS256","typ":"JWT"})
-                    .to_string()
-            ),
+            base64_encode(serde_json::json!({"alg":"RS256","typ":"JWT"}).to_string()),
             base64_encode(claims)
         );
         assert_eq!(
@@ -289,10 +286,7 @@ mod tests {
         .to_string();
         let token = format!(
             "{}.{}.dummy",
-            base64_encode(
-                serde_json::json!({"alg":"RS256","typ":"JWT"})
-                    .to_string()
-            ),
+            base64_encode(serde_json::json!({"alg":"RS256","typ":"JWT"}).to_string()),
             base64_encode(claims)
         );
         assert_eq!(
@@ -314,10 +308,7 @@ mod tests {
         .to_string();
         let token = format!(
             "{}.{}.dummy",
-            base64_encode(
-                serde_json::json!({"alg":"RS256","typ":"JWT"})
-                    .to_string()
-            ),
+            base64_encode(serde_json::json!({"alg":"RS256","typ":"JWT"}).to_string()),
             base64_encode(claims)
         );
         assert_eq!(
@@ -339,10 +330,7 @@ mod tests {
         .to_string();
         let token = format!(
             "{}.{}.dummy",
-            base64_encode(
-                serde_json::json!({"alg":"RS256","typ":"JWT"})
-                    .to_string()
-            ),
+            base64_encode(serde_json::json!({"alg":"RS256","typ":"JWT"}).to_string()),
             base64_encode(claims)
         );
         assert_eq!(
@@ -364,10 +352,7 @@ mod tests {
         .to_string();
         let token = format!(
             "{}.{}.dummy",
-            base64_encode(
-                serde_json::json!({"alg":"HS256","typ":"JWT"})
-                    .to_string()
-            ),
+            base64_encode(serde_json::json!({"alg":"HS256","typ":"JWT"}).to_string()),
             base64_encode(claims)
         );
         assert_eq!(
@@ -392,10 +377,7 @@ mod tests {
         .to_string();
         let token = format!(
             "{}.{}.dummy",
-            base64_encode(
-                serde_json::json!({"alg":"RS256","typ":"JWT"})
-                    .to_string()
-            ),
+            base64_encode(serde_json::json!({"alg":"RS256","typ":"JWT"}).to_string()),
             base64_encode(claims)
         );
         let result = validator.validate_structural(&token).unwrap();

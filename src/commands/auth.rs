@@ -283,10 +283,8 @@ fn handle_api_key_command(cmd: ApiKeyCommands, paths: &GlobalPaths) -> Result<()
     match cmd {
         ApiKeyCommands::Create { name, scopes } => {
             let store = crate::auth::api_key::ApiKeyStore::load(&resolver)?;
-            let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> = scopes
-                .iter()
-                .filter_map(|s| s.parse().ok())
-                .collect();
+            let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> =
+                scopes.iter().filter_map(|s| s.parse().ok()).collect();
             let (full_key, key_id) = rt.block_on(store.create_key(name, parsed_scopes))?;
             println!("✓ API key created");
             println!("  Key ID: {key_id}");

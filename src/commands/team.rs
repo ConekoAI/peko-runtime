@@ -7,18 +7,16 @@
 //! This module only handles CLI argument parsing and output formatting.
 
 use crate::commands::GlobalPaths;
+use crate::common::services::CredentialsService;
 use crate::common::time::format_timestamp;
-use crate::common::types::team::{
-    TeamCreationResult, TeamDeletionResult, TeamInfo,
-};
-use crate::extension::manager::{ExtensionManager, ExtensionStorage};
+use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
 use crate::extension::core::global_core;
+use crate::extension::manager::{ExtensionManager, ExtensionStorage};
 use crate::portable::registry::AgentRegistry;
 use crate::portable::team_layer_builder::{build_team_config_layer, decompose_team_archive};
 use crate::portable::team_layer_reconstructor::reconstruct_team;
 use crate::portable::team_packager::ExtensionRef;
 use crate::portable::types::{ImageDigest, Layer, LayerType};
-use crate::common::services::CredentialsService;
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
@@ -27,7 +25,9 @@ use clap::Subcommand;
 use std::collections::HashSet;
 
 /// Helper: connect to daemon and send a request/response packet
-async fn ipc_request(packet: crate::ipc::RequestPacket) -> anyhow::Result<crate::ipc::ResponsePacket> {
+async fn ipc_request(
+    packet: crate::ipc::RequestPacket,
+) -> anyhow::Result<crate::ipc::ResponsePacket> {
     let client = crate::ipc::DaemonClient::connect().await?;
     client.request_response(packet).await
 }
@@ -245,7 +245,12 @@ pub async fn handle_team(
 ) -> Result<()> {
     match cmd {
         TeamCommands::Create { name, description } => {
-            let packet = crate::ipc::RequestPacket::TeamCreate { request_id: 1, name: name.clone(), description, members: None };
+            let packet = crate::ipc::RequestPacket::TeamCreate {
+                request_id: 1,
+                name: name.clone(),
+                description,
+                members: None,
+            };
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::TeamCreated { result, .. } => {
@@ -268,10 +273,16 @@ pub async fn handle_team(
         }
         TeamCommands::Show { name } => {
             // Get team info
-            let packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: name.clone() };
+            let packet = crate::ipc::RequestPacket::TeamGet {
+                request_id: 1,
+                name: name.clone(),
+            };
             let response = ipc_request(packet).await?;
             let team_info = match response {
-                crate::ipc::ResponsePacket::TeamGet { team: Some(team_info), .. } => team_info,
+                crate::ipc::ResponsePacket::TeamGet {
+                    team: Some(team_info),
+                    ..
+                } => team_info,
                 crate::ipc::ResponsePacket::TeamGet { team: None, .. } => {
                     anyhow::bail!("Team '{name}' not found");
                 }
@@ -279,7 +290,10 @@ pub async fn handle_team(
             };
 
             // Get agents in the team
-            let agents_packet = crate::ipc::RequestPacket::AgentList { request_id: 2, team_filter: Some(name.clone()) };
+            let agents_packet = crate::ipc::RequestPacket::AgentList {
+                request_id: 2,
+                team_filter: Some(name.clone()),
+            };
             let agents_response = ipc_request(agents_packet).await?;
             let agents: Vec<(String, crate::types::agent::AgentConfig)> = match agents_response {
                 crate::ipc::ResponsePacket::AgentList { agents, .. } => {
@@ -293,7 +307,10 @@ pub async fn handle_team(
         }
         TeamCommands::Remove { name, force } => {
             // Get team info for confirmation via IPC
-            let info_packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: name.clone() };
+            let info_packet = crate::ipc::RequestPacket::TeamGet {
+                request_id: 1,
+                name: name.clone(),
+            };
             let info_response = ipc_request(info_packet).await?;
             let team_info = match info_response {
                 crate::ipc::ResponsePacket::TeamGet { team: Some(t), .. } => t,
@@ -310,7 +327,11 @@ pub async fn handle_team(
                 return Ok(());
             }
 
-            let packet = crate::ipc::RequestPacket::TeamDelete { request_id: 1, name: name.clone(), force };
+            let packet = crate::ipc::RequestPacket::TeamDelete {
+                request_id: 1,
+                name: name.clone(),
+                force,
+            };
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::TeamDeleted { result, .. } => {
@@ -327,7 +348,10 @@ pub async fn handle_team(
             force,
         } => {
             // Get team info for confirmation via IPC
-            let info_packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: old_name.clone() };
+            let info_packet = crate::ipc::RequestPacket::TeamGet {
+                request_id: 1,
+                name: old_name.clone(),
+            };
             let info_response = ipc_request(info_packet).await?;
             let team_info = match info_response {
                 crate::ipc::ResponsePacket::TeamGet { team: Some(t), .. } => t,
@@ -344,7 +368,11 @@ pub async fn handle_team(
                 return Ok(());
             }
 
-            let packet = crate::ipc::RequestPacket::TeamMove { request_id: 1, old_name: old_name.clone(), new_name: new_name.clone() };
+            let packet = crate::ipc::RequestPacket::TeamMove {
+                request_id: 1,
+                old_name: old_name.clone(),
+                new_name: new_name.clone(),
+            };
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::TeamMoved { .. } => {
@@ -382,7 +410,11 @@ pub async fn handle_team(
             };
             let response = ipc_request(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::TeamExported { name: resp_name, output_path, .. } => {
+                crate::ipc::ResponsePacket::TeamExported {
+                    name: resp_name,
+                    output_path,
+                    ..
+                } => {
                     let result = crate::common::types::team::TeamExportResult {
                         name: resp_name,
                         output_path: std::path::PathBuf::from(output_path),
@@ -409,7 +441,11 @@ pub async fn handle_team(
             };
             let response = ipc_request(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::TeamImported { name: resp_name, path, .. } => {
+                crate::ipc::ResponsePacket::TeamImported {
+                    name: resp_name,
+                    path,
+                    ..
+                } => {
                     let result = crate::common::types::team::TeamImportResult {
                         name: resp_name,
                         path: std::path::PathBuf::from(path),
@@ -432,9 +468,24 @@ pub async fn handle_team(
             force,
             json: pull_json,
             no_extensions,
-        } => handle_team_pull(paths, registry_ref, name, force, pull_json, cli_registry, no_extensions).await,
+        } => {
+            handle_team_pull(
+                paths,
+                registry_ref,
+                name,
+                force,
+                pull_json,
+                cli_registry,
+                no_extensions,
+            )
+            .await
+        }
         TeamCommands::Transfer { name, to } => {
-            let packet = crate::ipc::RequestPacket::TeamTransferOwner { request_id: 1, team: name.clone(), new_owner_id: to.clone() };
+            let packet = crate::ipc::RequestPacket::TeamTransferOwner {
+                request_id: 1,
+                team: name.clone(),
+                new_owner_id: to.clone(),
+            };
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::Done { success, error, .. } => {
@@ -449,11 +500,17 @@ pub async fn handle_team(
                         anyhow::bail!("Transfer failed: {}", error.unwrap_or_default())
                     }
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!("Transfer failed: {message}"),
+                crate::ipc::ResponsePacket::Error { message, .. } => {
+                    anyhow::bail!("Transfer failed: {message}")
+                }
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
-        TeamCommands::Permit { name, subject, permission } => {
+        TeamCommands::Permit {
+            name,
+            subject,
+            permission,
+        } => {
             let subject_type = if subject == "public" {
                 crate::auth::ownership::SubjectType::Public
             } else {
@@ -481,11 +538,17 @@ pub async fn handle_team(
                         anyhow::bail!("Permit failed: {}", error.unwrap_or_default())
                     }
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!("Permit failed: {message}"),
+                crate::ipc::ResponsePacket::Error { message, .. } => {
+                    anyhow::bail!("Permit failed: {message}")
+                }
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
-        TeamCommands::Revoke { name, subject, permission } => {
+        TeamCommands::Revoke {
+            name,
+            subject,
+            permission,
+        } => {
             let permission = parse_team_permission(&permission)?;
             let packet = crate::ipc::RequestPacket::TeamRevokePermission {
                 request_id: 1,
@@ -507,27 +570,43 @@ pub async fn handle_team(
                         anyhow::bail!("Revoke failed: {}", error.unwrap_or_default())
                     }
                 }
-                crate::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!("Revoke failed: {message}"),
+                crate::ipc::ResponsePacket::Error { message, .. } => {
+                    anyhow::bail!("Revoke failed: {message}")
+                }
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
         TeamCommands::Permissions { name } => {
-            let packet = crate::ipc::RequestPacket::TeamGet { request_id: 1, name: name.clone() };
+            let packet = crate::ipc::RequestPacket::TeamGet {
+                request_id: 1,
+                name: name.clone(),
+            };
             let response = ipc_request(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::TeamGet { team: Some(team_info), .. } => {
+                crate::ipc::ResponsePacket::TeamGet {
+                    team: Some(team_info),
+                    ..
+                } => {
                     if json {
-                        let grants: Vec<_> = team_info.metadata.permissions.iter().map(|g| {
-                            serde_json::json!({
-                                "subject_id": g.subject_id,
-                                "subject_type": g.subject_type,
-                                "permission": g.permission,
-                                "granted_at": g.granted_at,
-                                "granted_by": g.granted_by,
+                        let grants: Vec<_> = team_info
+                            .metadata
+                            .permissions
+                            .iter()
+                            .map(|g| {
+                                serde_json::json!({
+                                    "subject_id": g.subject_id,
+                                    "subject_type": g.subject_type,
+                                    "permission": g.permission,
+                                    "granted_at": g.granted_at,
+                                    "granted_by": g.granted_by,
+                                })
                             })
-                        }).collect();
-                        println!("{{\"team\": \"{name}\", \"owner_id\": \"{}\", \"permissions\": {}}}",
-                            team_info.metadata.owner_id, serde_json::to_string(&grants).unwrap_or_default());
+                            .collect();
+                        println!(
+                            "{{\"team\": \"{name}\", \"owner_id\": \"{}\", \"permissions\": {}}}",
+                            team_info.metadata.owner_id,
+                            serde_json::to_string(&grants).unwrap_or_default()
+                        );
                     } else {
                         println!("📁 Team: {}", name);
                         println!("   Owner: {}", team_info.metadata.owner_id);
@@ -536,8 +615,14 @@ pub async fn handle_team(
                         } else {
                             println!("   Permissions:");
                             for g in &team_info.metadata.permissions {
-                                println!("     - {} ({:?}): {:?} (by {} at {})",
-                                    g.subject_id, g.subject_type, g.permission, g.granted_by, g.granted_at);
+                                println!(
+                                    "     - {} ({:?}): {:?} (by {} at {})",
+                                    g.subject_id,
+                                    g.subject_type,
+                                    g.permission,
+                                    g.granted_by,
+                                    g.granted_at
+                                );
                             }
                         }
                     }
@@ -625,12 +710,19 @@ fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
                 if let Some(ref desc) = team.metadata.description {
                     println!("   Description: {desc}");
                 }
-                println!("   Created: {}", format_timestamp(&team.metadata.created_at));
+                println!(
+                    "   Created: {}",
+                    format_timestamp(&team.metadata.created_at)
+                );
                 println!("   Agents: {}", team.agent_count);
                 println!("   Path: {}", team.path.display());
                 println!();
             } else {
-                let desc_marker = if team.metadata.description.is_some() { " •" } else { "" };
+                let desc_marker = if team.metadata.description.is_some() {
+                    " •"
+                } else {
+                    ""
+                };
                 println!(
                     "{} {}{} ({} agents)",
                     icon, team.name, desc_marker, team.agent_count
@@ -674,7 +766,10 @@ fn render_team_show(
         if let Some(ref desc) = team.metadata.description {
             println!("   Description: {desc}");
         }
-        println!("   Created: {}", format_timestamp(&team.metadata.created_at));
+        println!(
+            "   Created: {}",
+            format_timestamp(&team.metadata.created_at)
+        );
         println!("   Path: {}", team.path.display());
         println!();
 
@@ -802,7 +897,8 @@ async fn handle_team_push(
 
     // Rebuild the TeamConfig layer with extension refs included
     let team_manifest = {
-        let manifest_bytes = files.get("team/manifest.toml")
+        let manifest_bytes = files
+            .get("team/manifest.toml")
             .ok_or_else(|| anyhow::anyhow!("Missing team/manifest.toml in package"))?;
         let manifest_str = std::str::from_utf8(manifest_bytes)?;
         crate::portable::team_packager::TeamManifest::from_toml(manifest_str)?
@@ -985,7 +1081,11 @@ async fn collect_extension_refs_from_team_files(
     use crate::extensions::mcp::McpAdapter;
     use crate::extensions::skill::SkillAdapter;
     use crate::extensions::universal::UniversalToolAdapter;
-    let _ = BuiltinToolAdapter::register_all(&manager.core_arc(), &BuiltinToolRegistrarConfig::default()).await;
+    let _ = BuiltinToolAdapter::register_all(
+        &manager.core_arc(),
+        &BuiltinToolRegistrarConfig::default(),
+    )
+    .await;
     manager.register_adapter(Box::new(SkillAdapter::new()));
     manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
     manager.register_adapter(Box::new(UniversalToolAdapter::new()));
@@ -1001,8 +1101,12 @@ async fn collect_extension_refs_from_team_files(
 
     for (path, content) in files {
         // Look for agent config files: agents/{name}/config.toml
-        let Some(rest) = path.strip_prefix("agents/") else { continue };
-        let Some((agent_name, file_path)) = rest.split_once('/') else { continue };
+        let Some(rest) = path.strip_prefix("agents/") else {
+            continue;
+        };
+        let Some((agent_name, file_path)) = rest.split_once('/') else {
+            continue;
+        };
         if file_path != "config.toml" {
             continue;
         }
@@ -1176,7 +1280,10 @@ async fn handle_team_pull(
         // Log warnings for any failures, but don't fail the whole pull
         if !extension_results.failed.is_empty() && !json {
             eprintln!();
-            eprintln!("Warning: {} extension(s) could not be pulled:", extension_results.failed.len());
+            eprintln!(
+                "Warning: {} extension(s) could not be pulled:",
+                extension_results.failed.len()
+            );
             for (ext_id, err) in &extension_results.failed {
                 eprintln!("  - {}: {}", ext_id, err);
             }
@@ -1217,7 +1324,10 @@ async fn handle_team_pull(
             }
         }
         if !extension_results.already_present.is_empty() {
-            println!("   Extensions already present: {}", extension_results.already_present.len());
+            println!(
+                "   Extensions already present: {}",
+                extension_results.already_present.len()
+            );
             for ext in &extension_results.already_present {
                 println!("     ✓ {}", ext);
             }
@@ -1258,7 +1368,9 @@ async fn ensure_extensions_for_team(
         None => {
             tracing::warn!("Global ExtensionCore not initialized; skipping extension ensure");
             for ext in extensions {
-                result.failed.push((ext.id.clone(), "ExtensionCore not initialized".to_string()));
+                result
+                    .failed
+                    .push((ext.id.clone(), "ExtensionCore not initialized".to_string()));
             }
             return result;
         }
@@ -1274,7 +1386,11 @@ async fn ensure_extensions_for_team(
     use crate::extensions::mcp::McpAdapter;
     use crate::extensions::skill::SkillAdapter;
     use crate::extensions::universal::UniversalToolAdapter;
-    let _ = BuiltinToolAdapter::register_all(&manager.core_arc(), &BuiltinToolRegistrarConfig::default()).await;
+    let _ = BuiltinToolAdapter::register_all(
+        &manager.core_arc(),
+        &BuiltinToolRegistrarConfig::default(),
+    )
+    .await;
     manager.register_adapter(Box::new(SkillAdapter::new()));
     manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
     manager.register_adapter(Box::new(UniversalToolAdapter::new()));
@@ -1317,7 +1433,8 @@ async fn ensure_extensions_for_team(
     // Ensure all extensions are enabled in the team's extensions.toml
     let team_dir = paths.data_dir.join("teams").join(team_name);
     let ext_config_path = team_dir.join("extensions.toml");
-    let mut ext_config = crate::common::types::TeamExtConfig::load(&ext_config_path).unwrap_or_default();
+    let mut ext_config =
+        crate::common::types::TeamExtConfig::load(&ext_config_path).unwrap_or_default();
 
     for ext_ref in extensions {
         // Enable by extension name (not ID) to match agent whitelist conventions

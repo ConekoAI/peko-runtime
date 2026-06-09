@@ -16,7 +16,10 @@ use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
 use crate::common::types::membership::{MembershipRole, TeamJoinResult, TeamLeaveResult};
-use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo, TeamMoveResult};
+use crate::common::types::team::{
+    TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo,
+    TeamMoveResult,
+};
 use anyhow::Result;
 
 /// Unified team management service
@@ -65,7 +68,9 @@ impl TeamManagementService {
         host_runtime_id: Option<&str>,
         owner_id: Option<&str>,
     ) -> Result<TeamCreationResult> {
-        self.config_service.create_team(name, description, host_runtime_id, owner_id).await
+        self.config_service
+            .create_team(name, description, host_runtime_id, owner_id)
+            .await
     }
 
     /// List all teams
@@ -111,7 +116,15 @@ impl TeamManagementService {
         exclude_workspace: bool,
         exclude_mcp: bool,
     ) -> Result<TeamExportResult> {
-        self.config_service.export_team(name, output, exclude_sessions, exclude_workspace, exclude_mcp).await
+        self.config_service
+            .export_team(
+                name,
+                output,
+                exclude_sessions,
+                exclude_workspace,
+                exclude_mcp,
+            )
+            .await
     }
 
     /// Import a team from an archive
@@ -123,7 +136,9 @@ impl TeamManagementService {
         rotate_keys: bool,
         host_runtime_id: Option<&str>,
     ) -> Result<TeamImportResult> {
-        self.config_service.import_team(file, name, force, rotate_keys, host_runtime_id).await
+        self.config_service
+            .import_team(file, name, force, rotate_keys, host_runtime_id)
+            .await
     }
 
     /// Move/rename a team
@@ -132,7 +147,12 @@ impl TeamManagementService {
     }
 
     /// Add an agent to a team
-    pub async fn join_team(&self, team: &str, agent: &str, role: MembershipRole) -> Result<TeamJoinResult> {
+    pub async fn join_team(
+        &self,
+        team: &str,
+        agent: &str,
+        role: MembershipRole,
+    ) -> Result<TeamJoinResult> {
         self.config_service.join_team(team, agent, role).await
     }
 

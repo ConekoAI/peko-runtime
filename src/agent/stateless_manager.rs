@@ -65,10 +65,7 @@ impl StatelessAgentManager {
             .join("peko");
 
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            dirs::home_dir().map_or_else(
-                || PathBuf::from(".").join(".peko"),
-                |d| d.join(".peko"),
-            ),
+            dirs::home_dir().map_or_else(|| PathBuf::from(".").join(".peko"), |d| d.join(".peko")),
             data_dir.clone(),
             dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("peko")),
         );
@@ -148,7 +145,7 @@ impl StatelessAgentManager {
         // TODO: Implement image-based config extraction using ImageRegistry
         // For now, create a default config
         let config = crate::types::agent::AgentConfig::default();
-        let team = team_id.as_deref().unwrap_or("default");
+        let _team = team_id.as_deref().unwrap_or("default");
 
         // Save config using ConfigAuthorityImpl
         self.config_service.save(name, &config).await?;

@@ -112,11 +112,7 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         Ok(Some(entry))
     }
 
-    async fn save(
-        &self,
-        agent_name: &str,
-        config: &AgentConfig,
-    ) -> ConfigResult<PathBuf> {
+    async fn save(&self, agent_name: &str, config: &AgentConfig) -> ConfigResult<PathBuf> {
         let config_path = self.config_path(agent_name);
 
         // Save to TOML
@@ -254,11 +250,7 @@ impl ConfigAuthority for ConfigAuthorityImpl {
 
 impl ConfigAuthorityImpl {
     /// Enable an extension in an agent's config whitelist (synchronous)
-    pub fn enable_tool_sync(
-        &self,
-        agent_name: &str,
-        tool_name: &str,
-    ) -> anyhow::Result<()> {
+    pub fn enable_tool_sync(&self, agent_name: &str, tool_name: &str) -> anyhow::Result<()> {
         let config_path = self.config_path(agent_name);
         if !config_path.exists() {
             anyhow::bail!("Agent '{agent_name}' not found");
@@ -286,11 +278,7 @@ impl ConfigAuthorityImpl {
     }
 
     /// Disable an extension in an agent's config whitelist (synchronous)
-    pub fn disable_tool_sync(
-        &self,
-        agent_name: &str,
-        tool_name: &str,
-    ) -> anyhow::Result<()> {
+    pub fn disable_tool_sync(&self, agent_name: &str, tool_name: &str) -> anyhow::Result<()> {
         let config_path = self.config_path(agent_name);
         if !config_path.exists() {
             anyhow::bail!("Agent '{agent_name}' not found");
@@ -398,10 +386,7 @@ mod tests {
         let config = AgentConfig::default();
 
         // Save
-        let path = authority
-            .save("test-agent", &config)
-            .await
-            .unwrap();
+        let path = authority.save("test-agent", &config).await.unwrap();
         assert!(path.exists());
 
         // Retrieve
@@ -419,17 +404,11 @@ mod tests {
         let authority = ConfigAuthorityImpl::new(resolver);
 
         // Non-existent
-        assert!(!authority
-            .exists("nonexistent")
-            .await
-            .unwrap());
+        assert!(!authority.exists("nonexistent").await.unwrap());
 
         // Create and check
         let config = AgentConfig::default();
-        authority
-            .save("existing", &config)
-            .await
-            .unwrap();
+        authority.save("existing", &config).await.unwrap();
         assert!(authority.exists("existing").await.unwrap());
     }
 
@@ -464,26 +443,17 @@ mod tests {
 
         // Create an agent
         let config = AgentConfig::default();
-        authority
-            .save("to-delete", &config)
-            .await
-            .unwrap();
+        authority.save("to-delete", &config).await.unwrap();
 
         // Verify exists
-        assert!(authority
-            .exists("to-delete")
-            .await
-            .unwrap());
+        assert!(authority.exists("to-delete").await.unwrap());
 
         // Delete
         let deleted = authority.delete("to-delete").await.unwrap();
         assert!(deleted);
 
         // Verify gone
-        assert!(!authority
-            .exists("to-delete")
-            .await
-            .unwrap());
+        assert!(!authority.exists("to-delete").await.unwrap());
     }
 
     #[tokio::test]
@@ -494,10 +464,7 @@ mod tests {
         let authority2 = authority1.clone();
 
         let config = AgentConfig::default();
-        authority1
-            .save("shared-agent", &config)
-            .await
-            .unwrap();
+        authority1.save("shared-agent", &config).await.unwrap();
 
         // Both should be able to read
         let entry1 = authority1.get("shared-agent").await;

@@ -13,10 +13,10 @@
 //!   cargo test --test registry_integration -- --ignored
 
 use pekobot::portable::{manifest::AgentLayers, AgentManifest, AgentRegistry, Layer, LayerType};
+use pekobot::registry::client::ResourceType;
 use pekobot::registry::{
     media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,
 };
-use pekobot::registry::client::ResourceType;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -37,11 +37,13 @@ impl MockRegistry {
     /// # Panics
     /// Panics if the server cannot be started or the port cannot be read.
     async fn start(auth_token: Option<&str>) -> Self {
-        let script_path =
-            std::env::var("MOCK_REGISTRY_SCRIPT").unwrap_or_else(|_| {
-                concat!(env!("CARGO_MANIFEST_DIR"), "/e2e_tests/packaging/mock_registry/main.py")
-                    .to_string()
-            });
+        let script_path = std::env::var("MOCK_REGISTRY_SCRIPT").unwrap_or_else(|_| {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/e2e_tests/packaging/mock_registry/main.py"
+            )
+            .to_string()
+        });
 
         let mut cmd = Command::new("python");
         cmd.arg(&script_path)
@@ -58,7 +60,7 @@ impl MockRegistry {
 
         let mut child = cmd.spawn().expect(
             "Failed to start mock registry. Is Python with fastapi+uvicorn installed? \
-             Install with: pip install fastapi uvicorn"
+             Install with: pip install fastapi uvicorn",
         );
 
         // Read stdout for the PORT= line
@@ -204,12 +206,9 @@ async fn store_registry_manifest_local(
         .join("registry_manifests")
         .join(digest.dir_name());
     tokio::fs::create_dir_all(&image_dir).await.unwrap();
-    tokio::fs::write(
-        image_dir.join("manifest.json"),
-        manifest.to_json().unwrap(),
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(image_dir.join("manifest.json"), manifest.to_json().unwrap())
+        .await
+        .unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -761,7 +760,11 @@ async fn test_registry_client_push_with_auth_token() {
         )
         .await;
 
-    assert!(result.is_ok(), "Push with auth token failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Push with auth token failed: {:?}",
+        result.err()
+    );
 
     let has_done = events
         .iter()
@@ -780,32 +783,22 @@ async fn test_registry_client_bare_ref_resolution() {
     let host = server.url.strip_prefix("http://").unwrap();
 
     // Test bare ref resolution: "my-agent:v1.0" -> "host/peko/agents/my-agent:v1.0"
-    let resolved = RegistryRef::parse_with_default(
-        "my-agent:v1.0",
-        Some(host),
-        Some(ResourceType::Agent),
-    )
-    .unwrap();
+    let resolved =
+        RegistryRef::parse_with_default("my-agent:v1.0", Some(host), Some(ResourceType::Agent))
+            .unwrap();
     assert_eq!(resolved.host, host);
     assert_eq!(resolved.path, "peko/agents/my-agent");
     assert_eq!(resolved.tag, "v1.0");
 
     // Test bare ref without tag defaults to "latest"
-    let resolved = RegistryRef::parse_with_default(
-        "my-agent",
-        Some(host),
-        Some(ResourceType::Agent),
-    )
-    .unwrap();
+    let resolved =
+        RegistryRef::parse_with_default("my-agent", Some(host), Some(ResourceType::Agent)).unwrap();
     assert_eq!(resolved.tag, "latest");
 
     // Test team resource type
-    let resolved = RegistryRef::parse_with_default(
-        "my-team:v2.0",
-        Some(host),
-        Some(ResourceType::Team),
-    )
-    .unwrap();
+    let resolved =
+        RegistryRef::parse_with_default("my-team:v2.0", Some(host), Some(ResourceType::Team))
+            .unwrap();
     assert_eq!(resolved.path, "peko/teams/my-team");
     assert_eq!(resolved.tag, "v2.0");
 }

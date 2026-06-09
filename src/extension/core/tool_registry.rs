@@ -80,9 +80,7 @@ impl ToolRegistry {
         hook_id: HookId,
         extension_id: ExtensionId,
     ) -> Result<()> {
-        self.tool_index
-            .insert(tool_name.to_string(), hook_id)
-            .await;
+        self.tool_index.insert(tool_name.to_string(), hook_id).await;
         self.tool_owners
             .write()
             .await

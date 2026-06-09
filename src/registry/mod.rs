@@ -128,19 +128,16 @@ mod tests {
             media_types::MANIFEST_OCI,
             "application/vnd.oci.image.manifest.v1+json"
         );
-        assert_eq!(
-            media_types::LAYER,
-            "application/vnd.peko.layer.v1.tar+gzip"
-        );
-        assert_eq!(
-            media_types::CONFIG,
-            "application/vnd.peko.config.v1+json"
-        );
+        assert_eq!(media_types::LAYER, "application/vnd.peko.layer.v1.tar+gzip");
+        assert_eq!(media_types::CONFIG, "application/vnd.peko.config.v1+json");
         assert_eq!(media_types::MANIFEST_DEFAULT, media_types::MANIFEST_OCI);
-        assert_eq!(media_types::MANIFEST_ALL, &[
-            "application/vnd.peko.manifest.v1+json",
-            "application/vnd.oci.image.manifest.v1+json"
-        ]);
+        assert_eq!(
+            media_types::MANIFEST_ALL,
+            &[
+                "application/vnd.peko.manifest.v1+json",
+                "application/vnd.oci.image.manifest.v1+json"
+            ]
+        );
     }
 
     #[test]

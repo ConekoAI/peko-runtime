@@ -4,7 +4,7 @@
 //! PekoHub tunnel connection.
 
 use crate::commands::GlobalPaths;
-use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
+use crate::tunnel::{load_pekohub_credential, TunnelClient};
 use clap::Subcommand;
 use std::path::PathBuf;
 
@@ -33,7 +33,7 @@ pub enum TunnelCommands {
 /// Handle tunnel commands
 pub async fn handle_tunnel(
     cmd: TunnelCommands,
-    paths: &GlobalPaths,
+    _paths: &GlobalPaths,
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
@@ -86,7 +86,7 @@ pub async fn handle_tunnel(
         TunnelCommands::Stop => {
             // In daemon mode, stop the tunnel via IPC
             match crate::ipc::DaemonClient::connect().await {
-                Ok(client) => {
+                Ok(_client) => {
                     // TODO: Add a tunnel_stop IPC packet
                     println!("🛑 Tunnel stop requested via daemon.");
                     println!("   The daemon will stop the background tunnel on next cycle.");

@@ -115,7 +115,8 @@ pub struct AppState {
     pub runtime_metadata: crate::runtime::metadata::RuntimeMetadata,
 
     /// Known runtimes registry (ADR-032)
-    pub known_runtimes: std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>>,
+    pub known_runtimes:
+        std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>>,
 
     /// Auth configuration (ADR-034)
     auth_config: crate::auth::config::AuthConfig,
@@ -161,7 +162,10 @@ impl std::fmt::Debug for AppState {
             .field("extension_services", &"<ExtensionServices>")
             .field("runtime_identity", &self.runtime_identity.runtime_did)
             .field("runtime_metadata", &self.runtime_metadata.display_name)
-            .field("known_runtimes", &format!("{} runtimes", self.runtime_identity.runtime_did))
+            .field(
+                "known_runtimes",
+                &format!("{} runtimes", self.runtime_identity.runtime_did),
+            )
             .field("auth", &"<AuthConfig>")
             .finish()
     }
@@ -316,8 +320,7 @@ impl AppState {
             None,
             crate::runtime::registry::TrustLevel::SelfRuntime,
         );
-        let known_runtimes =
-            std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
+        let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
 
         // ADR-032: Backfill legacy agents and teams with host_runtime_id
         if let Err(e) = crate::runtime::migration::migrate_legacy_data(
@@ -430,19 +433,18 @@ impl AppState {
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
         // ADR-030: Initialize ExtensionManager for IPC extension operations
-        let ext_storage = crate::extension::manager::ExtensionStorage::with_dir(
-            data_dir.join("extensions"),
-        );
-        let mut ext_manager = crate::extension::manager::ExtensionManager::with_core(
-            Arc::clone(&global_core),
-        ).with_storage_dir(ext_storage.dir().unwrap().to_path_buf());
+        let ext_storage =
+            crate::extension::manager::ExtensionStorage::with_dir(data_dir.join("extensions"));
+        let mut ext_manager =
+            crate::extension::manager::ExtensionManager::with_core(Arc::clone(&global_core))
+                .with_storage_dir(ext_storage.dir().unwrap().to_path_buf());
 
         // Register adapters (same as CLI create_manager_with_adapters)
-        use crate::extensions::skill::SkillAdapter;
-        use crate::extensions::mcp::McpAdapter;
-        use crate::extensions::universal::UniversalToolAdapter;
         use crate::extensions::gateway::GatewayAdapter;
         use crate::extensions::general::GeneralExtensionAdapter;
+        use crate::extensions::mcp::McpAdapter;
+        use crate::extensions::skill::SkillAdapter;
+        use crate::extensions::universal::UniversalToolAdapter;
 
         ext_manager.register_adapter(Box::new(SkillAdapter::new()));
         ext_manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
@@ -452,7 +454,10 @@ impl AppState {
 
         // Load all extensions (log warnings but don't fail startup)
         if let Err(e) = ext_manager.load_all().await {
-            tracing::warn!("Failed to load some extensions during daemon startup: {}", e);
+            tracing::warn!(
+                "Failed to load some extensions during daemon startup: {}",
+                e
+            );
         }
 
         let extension_manager = Arc::new(tokio::sync::RwLock::new(ext_manager));
@@ -467,7 +472,9 @@ impl AppState {
         } else {
             None
         };
-        let api_key_verifier = api_key_store.as_ref().map(|s| crate::auth::api_key::ApiKeyVerifier::new(s.clone()));
+        let api_key_verifier = api_key_store
+            .as_ref()
+            .map(|s| crate::auth::api_key::ApiKeyVerifier::new(s.clone()));
         let jwt_validator = if auth_config.enable_pekohub_jwt() {
             Some(crate::auth::jwt::JwtValidator::new(
                 auth_config.trusted_issuers().to_vec(),
@@ -694,7 +701,9 @@ impl AppState {
 
     /// Get the extension manager
     #[must_use]
-    pub fn extension_manager(&self) -> &Arc<tokio::sync::RwLock<crate::extension::manager::ExtensionManager>> {
+    pub fn extension_manager(
+        &self,
+    ) -> &Arc<tokio::sync::RwLock<crate::extension::manager::ExtensionManager>> {
         &self.extension_manager
     }
 
@@ -762,7 +771,9 @@ impl AppState {
 
     /// Get the known runtimes registry (ADR-032)
     #[must_use]
-    pub fn known_runtimes(&self) -> &std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>> {
+    pub fn known_runtimes(
+        &self,
+    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>> {
         &self.known_runtimes
     }
 

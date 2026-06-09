@@ -7,14 +7,18 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+/// Namespace UUID for generating stable instance IDs from (runtime_did, agent_name).
+/// This is a fixed UUIDv4 that acts as the namespace for UUIDv5 generation.
+const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6");
+
 use crate::agent::stateless_service::MessageRequest;
 
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
 
 use super::protocol::{
-    ExposureUpdatePayload, InstanceAnnouncePayload,
-    InstanceHeartbeatPayload, InstanceStatus, InstanceType, InstanceExposure, TunnelMessage,
+    ExposureUpdatePayload, InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload,
+    InstanceStatus, InstanceType, TunnelMessage,
 };
 use super::TunnelHandle;
 
@@ -36,19 +40,16 @@ pub struct TunnelDispatcher {
     app_state: AppState,
     state: Arc<RwLock<TunnelDispatcherState>>,
     runtime_display_name: String,
-    runtime_did: String,
 }
 
 impl TunnelDispatcher {
     /// Create a new tunnel dispatcher bound to the daemon's AppState
     pub fn new(app_state: AppState) -> Self {
-        let runtime_did = app_state.runtime_identity().runtime_did.clone();
         let runtime_display_name = app_state.runtime_metadata().display_name.clone();
         Self {
             app_state,
             state: Arc::new(RwLock::new(TunnelDispatcherState::default())),
             runtime_display_name,
-            runtime_did,
         }
     }
 
@@ -67,7 +68,10 @@ impl TunnelDispatcher {
         let mut state = self.state.write().await;
         state.ready = true;
         state.heartbeat_interval_secs = heartbeat_interval_secs;
-        info!("Tunnel dispatcher ready, heartbeat interval: {}s", heartbeat_interval_secs);
+        info!(
+            "Tunnel dispatcher ready, heartbeat interval: {}s",
+            heartbeat_interval_secs
+        );
     }
 
     /// Mark the tunnel as disconnected
@@ -80,6 +84,16 @@ impl TunnelDispatcher {
     /// Check if the tunnel is ready
     pub async fn is_ready(&self) -> bool {
         self.state.read().await.ready
+    }
+
+    /// Generate a stable instance ID from runtime DID and agent name.
+    fn instance_id(&self, agent_name: &str) -> String {
+        let name = format!(
+            "{}:{}",
+            self.app_state.runtime_identity().runtime_did,
+            agent_name
+        );
+        uuid::Uuid::new_v5(&INSTANCE_ID_NAMESPACE, name.as_bytes()).to_string()
     }
 
     /// Send initial instance announcements for all local agents
@@ -95,7 +109,7 @@ impl TunnelDispatcher {
 
         for agent in agents {
             let payload = InstanceAnnouncePayload {
-                id: agent.name.clone(),
+                id: self.instance_id(&agent.name),
                 instance_type: InstanceType::Agent,
                 name: agent.name.clone(),
                 bundle_ref: None,
@@ -141,7 +155,7 @@ impl TunnelDispatcher {
         let now = chrono::Utc::now().to_rfc3339();
         for agent in agents {
             let payload = InstanceHeartbeatPayload {
-                id: agent.name.clone(),
+                id: self.instance_id(&agent.name),
                 status: InstanceStatus::Online,
                 timestamp: now.clone(),
             };
@@ -231,13 +245,11 @@ impl TunnelDispatcher {
         let agent_service = self.app_state.agent_service();
         match agent_service.execute_message_streaming(request).await {
             Ok(event_stream) => {
-                self.stream_response(event_stream, handle, request_id).await?;
+                self.stream_response(event_stream, handle, request_id)
+                    .await?;
             }
             Err(e) => {
-                warn!(
-                    "Agent execution failed for {}: {}",
-                    agent_name, e
-                );
+                warn!("Agent execution failed for {}: {}", agent_name, e);
                 return self
                     .send_error_response(&handle, &request_id, &format!("Execution failed: {}", e))
                     .await;
@@ -259,7 +271,11 @@ impl TunnelDispatcher {
 
         while let Some(event) = event_stream.receiver.recv().await {
             match event {
-                AgenticEvent::AssistantText { text, is_interstitial: false, .. } => {
+                AgenticEvent::AssistantText {
+                    text,
+                    is_interstitial: false,
+                    ..
+                } => {
                     buffer.push_str(&text);
                 }
                 AgenticEvent::AssistantDelta { text, .. } => {
@@ -288,7 +304,7 @@ impl TunnelDispatcher {
                                 seq,
                                 done.to_string().into_bytes(),
                             );
-                            let _ = handle.send_stream_end(request_id);
+                            let _ = handle.send_stream_end(request_id.clone());
                             break;
                         }
                         crate::engine::LifecyclePhase::Error => {
@@ -296,9 +312,11 @@ impl TunnelDispatcher {
                             let _ = handle.send_stream_chunk(
                                 request_id.clone(),
                                 seq,
-                                serde_json::json!({ "error": err_msg }).to_string().into_bytes(),
+                                serde_json::json!({ "error": err_msg })
+                                    .to_string()
+                                    .into_bytes(),
                             );
-                            let _ = handle.send_stream_end(request_id);
+                            let _ = handle.send_stream_end(request_id.clone());
                             break;
                         }
                         _ => {}
@@ -323,6 +341,19 @@ impl TunnelDispatcher {
                 seq += 1;
             }
         }
+
+        // Flush any remaining buffer if the stream closed without Lifecycle::End
+        if !buffer.is_empty() {
+            let chunk = serde_json::json!({
+                "chunk": buffer,
+                "done": false,
+            });
+            let _ =
+                handle.send_stream_chunk(request_id.clone(), seq, chunk.to_string().into_bytes());
+            seq += 1;
+        }
+        // Ensure stream end is sent even if the event loop exited unexpectedly
+        let _ = handle.send_stream_end(request_id.clone());
 
         // Wait for session persistence
         let _ = tokio::time::timeout(
@@ -352,10 +383,7 @@ impl TunnelDispatcher {
     }
 
     /// Handle exposure update control message from PekoHub
-    async fn handle_exposure_update(
-        &self,
-        payload: ExposureUpdatePayload,
-    ) -> anyhow::Result<()> {
+    async fn handle_exposure_update(&self, payload: ExposureUpdatePayload) -> anyhow::Result<()> {
         info!(
             "Exposure update for instance {}: {:?}",
             payload.instance_id, payload.exposure
@@ -365,5 +393,3 @@ impl TunnelDispatcher {
         Ok(())
     }
 }
-
-

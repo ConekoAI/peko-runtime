@@ -286,7 +286,10 @@ mod tests {
     #[test]
     fn test_instance_announce_roundtrip() {
         let mut metadata = serde_json::Map::new();
-        metadata.insert("key".to_string(), serde_json::Value::String("value".to_string()));
+        metadata.insert(
+            "key".to_string(),
+            serde_json::Value::String("value".to_string()),
+        );
 
         let msg = TunnelMessage::InstanceAnnounce {
             payload: InstanceAnnouncePayload {
@@ -310,7 +313,10 @@ mod tests {
                 assert_eq!(payload.name, "Test Agent");
                 assert_eq!(payload.bundle_ref, Some("bundle-abc".to_string()));
                 assert_eq!(payload.runtime_display_name, Some("My Runtime".to_string()));
-                assert_eq!(payload.allowed_users, Some(vec!["user1".to_string(), "user2".to_string()]));
+                assert_eq!(
+                    payload.allowed_users,
+                    Some(vec!["user1".to_string(), "user2".to_string()])
+                );
                 assert_eq!(payload.capabilities, Some(vec!["chat".to_string()]));
                 assert!(payload.metadata.is_some());
             }

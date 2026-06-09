@@ -112,8 +112,8 @@ impl RegistryRef {
         //   "host/path"           → full (has slash, no colon)
         //   "host:port/path:tag"  → full (colon is part of host:port, not a bare ref)
         let is_bare = match (r#ref.find('/'), r#ref.find(':')) {
-            (None, _) => true,           // No slash at all — bare
-            (Some(_), None) => false,    // Has slash but no colon — full ref with default tag
+            (None, _) => true,        // No slash at all — bare
+            (Some(_), None) => false, // Has slash but no colon — full ref with default tag
             (Some(slash), Some(colon)) => {
                 if colon < slash {
                     // Colon before slash — could be bare ("name:tag") or host:port ("host:port/path")
@@ -339,7 +339,10 @@ impl RegistryClient {
                     .map_err(|e| {
                         progress(ProgressEvent::Error {
                             code: "config_push_failed".to_string(),
-                            message: format!("Failed to push config {}: {}", manifest.config.digest, e),
+                            message: format!(
+                                "Failed to push config {}: {}",
+                                manifest.config.digest, e
+                            ),
                         });
                         e
                     })?;
@@ -429,7 +432,9 @@ impl RegistryClient {
         let mut manifest = RegistryManifest::from_json(&json)?;
 
         // Compute digest from the raw JSON (OCI spec)
-        manifest.digest = ImageDigest::from_bytes(json.as_bytes()).as_str().to_string();
+        manifest.digest = ImageDigest::from_bytes(json.as_bytes())
+            .as_str()
+            .to_string();
 
         Ok(manifest)
     }

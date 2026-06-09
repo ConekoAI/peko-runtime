@@ -477,7 +477,10 @@ impl SessionIndex {
         let active_id = peer_info.active_session_id.clone();
         self.peers_modified = true;
 
-        info!("Created session {} for peer {}, active_session_id={}", session_id, peer_key, active_id);
+        info!(
+            "Created session {} for peer {}, active_session_id={}",
+            session_id, peer_key, active_id
+        );
         Ok(())
     }
 

@@ -220,8 +220,7 @@ impl ConnectionManager {
             anyhow::bail!("Unix socket does not exist: {}", path);
         }
 
-        let tmp_path =
-            std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id()));
+        let tmp_path = std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&tmp_path);
         let socket = UnixDatagram::bind(&tmp_path)
             .map_err(|e| anyhow::anyhow!("Failed to bind Unix socket: {e}"))?;

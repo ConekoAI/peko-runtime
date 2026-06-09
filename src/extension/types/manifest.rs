@@ -196,16 +196,12 @@ mod tests {
         manifest.migrate_legacy_dependencies();
         assert_eq!(manifest.dependencies.len(), 1);
         // Typed version should be preserved (not overwritten)
-        assert_eq!(
-            manifest.dependencies[0].version,
-            Some("^1.0".to_string())
-        );
+        assert_eq!(manifest.dependencies[0].version, Some("^1.0".to_string()));
     }
 
     #[test]
     fn test_dependency_default_required() {
-        let dep: ExtensionDependency =
-            serde_json::from_str(r#"{"package": "foo"}"#).unwrap();
+        let dep: ExtensionDependency = serde_json::from_str(r#"{"package": "foo"}"#).unwrap();
         assert!(dep.required);
     }
 

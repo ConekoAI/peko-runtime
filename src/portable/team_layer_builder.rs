@@ -7,7 +7,9 @@
 //! This enables cross-team deduplication: shared agents between teams reuse
 //! the same layer digests and are skipped during registry push.
 
-use crate::portable::team_packager::{AgentLayerRef, ExtensionRef, TeamAgentIndex, TeamInfo, TeamManifest};
+use crate::portable::team_packager::{
+    AgentLayerRef, ExtensionRef, TeamAgentIndex, TeamInfo, TeamManifest,
+};
 use crate::portable::types::{compute_digest, LayerType};
 use anyhow::Context;
 use std::collections::{BTreeMap, HashMap};

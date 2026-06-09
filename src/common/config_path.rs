@@ -234,12 +234,14 @@ pub fn format_toml_value(value: &toml::Value) -> Result<String> {
                     toml::Value::Integer(i) => serde_json::Value::Number((*i).into()),
                     toml::Value::Float(f) => serde_json::json!(f),
                     toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
-                    toml::Value::Array(a) => {
-                        serde_json::from_str(&format_toml_value(&toml::Value::Array(a.clone())).unwrap_or_default())
+                    toml::Value::Array(a) => serde_json::from_str(
+                        &format_toml_value(&toml::Value::Array(a.clone())).unwrap_or_default(),
+                    )
+                    .unwrap_or_default(),
+                    toml::Value::Table(t) => {
+                        serde_json::from_str(&toml::to_string_pretty(t).unwrap_or_default())
                             .unwrap_or_default()
                     }
-                    toml::Value::Table(t) => serde_json::from_str(&toml::to_string_pretty(t).unwrap_or_default())
-                        .unwrap_or_default(),
                     toml::Value::Datetime(d) => serde_json::Value::String(d.to_string()),
                 })
                 .collect();

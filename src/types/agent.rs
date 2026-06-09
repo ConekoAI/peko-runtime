@@ -386,7 +386,9 @@ mod tests {
         // Default whitelist enables common built-in tools using canonical extension IDs
         assert!(!config.enabled.is_empty());
         assert!(config.enabled.contains(&"builtin:tool:shell".to_string()));
-        assert!(config.enabled.contains(&"builtin:tool:read_file".to_string()));
+        assert!(config
+            .enabled
+            .contains(&"builtin:tool:read_file".to_string()));
     }
 
     #[test]
@@ -476,7 +478,9 @@ mod tests {
         assert!(config.extensions.is_some());
         let extensions = config.extensions.unwrap();
         assert!(!extensions.enabled.is_empty());
-        assert!(extensions.enabled.contains(&"builtin:tool:shell".to_string()));
+        assert!(extensions
+            .enabled
+            .contains(&"builtin:tool:shell".to_string()));
     }
 
     #[test]

@@ -66,8 +66,8 @@ impl KnownRuntimes {
         if registry_path.exists() {
             let content = fs::read_to_string(&registry_path)
                 .with_context(|| format!("Failed to read known runtimes: {registry_path:?}"))?;
-            let registry: KnownRuntimes = toml::from_str(&content)
-                .with_context(|| "Failed to parse known_runtimes.toml")?;
+            let registry: KnownRuntimes =
+                toml::from_str(&content).with_context(|| "Failed to parse known_runtimes.toml")?;
             info!("Loaded known runtimes registry from: {:?}", registry_path);
             return Ok(registry);
         }
@@ -85,7 +85,10 @@ impl KnownRuntimes {
         fs::write(&registry_path, toml)
             .with_context(|| format!("Failed to write known runtimes: {registry_path:?}"))?;
 
-        info!("Created empty known runtimes registry at: {:?}", registry_path);
+        info!(
+            "Created empty known runtimes registry at: {:?}",
+            registry_path
+        );
         Ok(registry)
     }
 
@@ -98,8 +101,8 @@ impl KnownRuntimes {
                 .with_context(|| format!("Failed to create runtime directory: {parent:?}"))?;
         }
 
-        let toml = toml::to_string_pretty(self)
-            .with_context(|| "Failed to serialize known runtimes")?;
+        let toml =
+            toml::to_string_pretty(self).with_context(|| "Failed to serialize known runtimes")?;
         fs::write(&registry_path, toml)
             .with_context(|| format!("Failed to write known runtimes: {registry_path:?}"))?;
 
@@ -117,7 +120,11 @@ impl KnownRuntimes {
         let runtime_id = runtime_id.into();
         let display_name = display_name.into();
 
-        if let Some(existing) = self.runtimes.iter_mut().find(|r| r.runtime_id == runtime_id) {
+        if let Some(existing) = self
+            .runtimes
+            .iter_mut()
+            .find(|r| r.runtime_id == runtime_id)
+        {
             existing.display_name = display_name;
             existing.last_seen = Utc::now();
             existing.connection_endpoint = connection_endpoint;
@@ -137,7 +144,11 @@ impl KnownRuntimes {
 
     /// Set the trust level for a runtime
     pub fn trust(&mut self, runtime_id: &str, trust_level: TrustLevel) -> Result<()> {
-        if let Some(runtime) = self.runtimes.iter_mut().find(|r| r.runtime_id == runtime_id) {
+        if let Some(runtime) = self
+            .runtimes
+            .iter_mut()
+            .find(|r| r.runtime_id == runtime_id)
+        {
             runtime.trust_level = trust_level;
             info!("Set trust level for {} to {:?}", runtime_id, trust_level);
             Ok(())
@@ -173,7 +184,9 @@ impl KnownRuntimes {
 
     /// Find a runtime by ID (mutable)
     pub fn find_mut(&mut self, runtime_id: &str) -> Option<&mut KnownRuntime> {
-        self.runtimes.iter_mut().find(|r| r.runtime_id == runtime_id)
+        self.runtimes
+            .iter_mut()
+            .find(|r| r.runtime_id == runtime_id)
     }
 }
 
@@ -199,12 +212,7 @@ mod tests {
     #[test]
     fn test_register_update_existing() {
         let mut registry = KnownRuntimes::new();
-        registry.register(
-            "did:key:z6MkA",
-            "Runtime A",
-            None,
-            TrustLevel::Untrusted,
-        );
+        registry.register("did:key:z6MkA", "Runtime A", None, TrustLevel::Untrusted);
         registry.register(
             "did:key:z6MkA",
             "Runtime A Updated",
@@ -226,7 +234,9 @@ mod tests {
         let mut registry = KnownRuntimes::new();
         registry.register("did:key:z6MkA", "Runtime A", None, TrustLevel::Untrusted);
 
-        registry.trust("did:key:z6MkA", TrustLevel::Authorized).unwrap();
+        registry
+            .trust("did:key:z6MkA", TrustLevel::Authorized)
+            .unwrap();
         assert_eq!(registry.runtimes[0].trust_level, TrustLevel::Authorized);
 
         registry.remove("did:key:z6MkA").unwrap();
@@ -242,7 +252,9 @@ mod tests {
     #[test]
     fn test_trust_unknown() {
         let mut registry = KnownRuntimes::new();
-        assert!(registry.trust("did:key:z6MkUnknown", TrustLevel::Authorized).is_err());
+        assert!(registry
+            .trust("did:key:z6MkUnknown", TrustLevel::Authorized)
+            .is_err());
     }
 
     #[test]

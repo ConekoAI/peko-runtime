@@ -64,7 +64,10 @@ impl ApiKeyStore {
         };
 
         let full_key = format!("{API_KEY_PREFIX}{}", URL_SAFE_NO_PAD.encode(&random_bytes));
-        let key_id = format!("{API_KEY_PREFIX}{}", &full_key[API_KEY_PREFIX.len()..API_KEY_PREFIX.len() + 8]);
+        let key_id = format!(
+            "{API_KEY_PREFIX}{}",
+            &full_key[API_KEY_PREFIX.len()..API_KEY_PREFIX.len() + 8]
+        );
 
         let hash = format!("sha256:{:x}", Sha256::digest(full_key.as_bytes()));
 

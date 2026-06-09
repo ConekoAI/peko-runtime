@@ -46,7 +46,9 @@ pub enum SystemCommands {
 }
 
 /// Helper: connect to daemon and send a request/response packet
-async fn ipc_request(packet: crate::ipc::RequestPacket) -> anyhow::Result<crate::ipc::ResponsePacket> {
+async fn ipc_request(
+    packet: crate::ipc::RequestPacket,
+) -> anyhow::Result<crate::ipc::ResponsePacket> {
     let client = crate::ipc::DaemonClient::connect().await?;
     client.request_response(packet).await
 }
@@ -148,7 +150,9 @@ pub async fn handle_system(
                             }
                         }
                         println!();
-                        println!("  Results: {passed} passed, {failed} failed, {warnings} warnings");
+                        println!(
+                            "  Results: {passed} passed, {failed} failed, {warnings} warnings"
+                        );
                     }
                     Ok(())
                 }
@@ -173,7 +177,11 @@ pub async fn handle_system(
             };
             let response = ipc_request(packet).await?;
             match response {
-                crate::ipc::ResponsePacket::SystemCleaned { cleaned, bytes_freed, .. } => {
+                crate::ipc::ResponsePacket::SystemCleaned {
+                    cleaned,
+                    bytes_freed,
+                    ..
+                } => {
                     if json {
                         println!(
                             "{}",
@@ -195,7 +203,10 @@ pub async fn handle_system(
                             println!("  - Everything (full reset)");
                         }
                         if !cleaned.is_empty() {
-                            println!("  Cleaned {} item(s), freed {bytes_freed} bytes", cleaned.len());
+                            println!(
+                                "  Cleaned {} item(s), freed {bytes_freed} bytes",
+                                cleaned.len()
+                            );
                         }
                     }
                     Ok(())

@@ -35,10 +35,9 @@ impl PekohubBackend {
     /// # Panics
     /// Panics if the server cannot be started or the port cannot be read.
     async fn start() -> Self {
-        let backend_path =
-            std::env::var("PEKOHUB_BACKEND_PATH").unwrap_or_else(|_| {
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../pekohub/backend").to_string()
-            });
+        let backend_path = std::env::var("PEKOHUB_BACKEND_PATH").unwrap_or_else(|_| {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../pekohub/backend").to_string()
+        });
 
         let script_path = format!("{backend_path}/tests/fixtures/server.ts");
 
@@ -70,7 +69,7 @@ impl PekohubBackend {
 
         let mut child = cmd.spawn().expect(
             "Failed to start PekoHub backend. Is Node.js 22+ with tsx installed? \
-             Install with: cd pekohub/backend && npm install"
+             Install with: cd pekohub/backend && npm install",
         );
 
         // Read stdout for the PORT= line
@@ -180,7 +179,12 @@ async fn test_pekohub_manifest_roundtrip() {
         .await
         .unwrap();
     assert_eq!(post_resp.status(), 202);
-    let location = post_resp.headers().get("location").unwrap().to_str().unwrap();
+    let location = post_resp
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
     let upload_url = if location.starts_with("http") {
         location.to_string()
     } else {
@@ -198,7 +202,8 @@ async fn test_pekohub_manifest_roundtrip() {
     // PUT manifest with OCI media type
     let manifest_json = format!(
         r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[],"annotations":{{"org.opencontainers.image.description":"Test bundle"}}}}"#,
-        config_digest, config_data.len()
+        config_digest,
+        config_data.len()
     );
 
     let put_resp = client
@@ -317,7 +322,12 @@ async fn test_pekohub_catalog_and_tags() {
             .await
             .unwrap();
         assert_eq!(post_resp.status(), 202);
-        let location = post_resp.headers().get("location").unwrap().to_str().unwrap();
+        let location = post_resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
         let upload_url = if location.starts_with("http") {
             location.to_string()
         } else {
@@ -331,11 +341,16 @@ async fn test_pekohub_catalog_and_tags() {
             .send()
             .await
             .unwrap();
-        assert!(blob_put.status().is_success(), "Config blob upload failed: {}", blob_put.status());
+        assert!(
+            blob_put.status().is_success(),
+            "Config blob upload failed: {}",
+            blob_put.status()
+        );
 
         let manifest = format!(
             r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[],"annotations":{{"org.opencontainers.image.description":"{_name}"}}}}"#,
-            config_digest, config_data.len()
+            config_digest,
+            config_data.len()
         );
         let resp = client
             .put(format!("{}/v2/{}/manifests/v1.0", backend.url, repo))
@@ -349,7 +364,8 @@ async fn test_pekohub_catalog_and_tags() {
         assert!(
             status.is_success(),
             "Push failed for {repo}: {} - {}",
-            status, body
+            status,
+            body
         );
     }
 
@@ -409,7 +425,12 @@ async fn test_pekohub_search_api() {
         .await
         .unwrap();
     assert_eq!(post_resp.status(), 202);
-    let location = post_resp.headers().get("location").unwrap().to_str().unwrap();
+    let location = post_resp
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
     let upload_url = if location.starts_with("http") {
         location.to_string()
     } else {
@@ -450,11 +471,7 @@ async fn test_pekohub_search_api() {
         .unwrap();
     let status = put_resp.status();
     let body = put_resp.text().await.unwrap_or_default();
-    assert!(
-        status.is_success(),
-        "Push failed: {} - {}",
-        status, body
-    );
+    assert!(status.is_success(), "Push failed: {} - {}", status, body);
 
     // Search for the agent
     let search_resp = client
@@ -497,7 +514,12 @@ async fn test_pekohub_bundle_detail_api() {
         .await
         .unwrap();
     assert_eq!(post_resp.status(), 202);
-    let location = post_resp.headers().get("location").unwrap().to_str().unwrap();
+    let location = post_resp
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
     let upload_url = if location.starts_with("http") {
         location.to_string()
     } else {
@@ -530,7 +552,10 @@ async fn test_pekohub_bundle_detail_api() {
     .to_string();
 
     let put_resp = client
-        .put(format!("{}/v2/ns/detail-test/manifests/v2.0.0", backend.url))
+        .put(format!(
+            "{}/v2/ns/detail-test/manifests/v2.0.0",
+            backend.url
+        ))
         .header("Content-Type", media_types::MANIFEST_OCI)
         .body(manifest)
         .send()

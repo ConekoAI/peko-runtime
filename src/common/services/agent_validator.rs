@@ -99,10 +99,7 @@ mod tests {
 
         // Create a test agent
         let config = AgentConfig::default();
-        config_service
-            .save("test-agent", &config)
-            .await
-            .unwrap();
+        config_service.save("test-agent", &config).await.unwrap();
 
         (validator, temp)
     }
@@ -150,7 +147,9 @@ mod tests {
         assert!(result.is_ok());
 
         // This should fail with missing agent
-        let result = validator.validate_all_exist(&["test-agent", "nonexistent"]).await;
+        let result = validator
+            .validate_all_exist(&["test-agent", "nonexistent"])
+            .await;
         assert!(result.is_err());
     }
 

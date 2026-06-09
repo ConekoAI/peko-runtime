@@ -23,7 +23,10 @@ use std::io::Read;
 /// Handle agent list command
 pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let packet = crate::ipc::RequestPacket::AgentList { request_id: 1, team_filter: None };
+    let packet = crate::ipc::RequestPacket::AgentList {
+        request_id: 1,
+        team_filter: None,
+    };
     let response = client.request_response(packet).await?;
 
     match response {
@@ -77,7 +80,11 @@ pub async fn handle_agent_show(
     json: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let packet = crate::ipc::RequestPacket::AgentGet { request_id: 1, name, team };
+    let packet = crate::ipc::RequestPacket::AgentGet {
+        request_id: 1,
+        name,
+        team,
+    };
     let response = client.request_response(packet).await?;
 
     match response {
@@ -117,17 +124,17 @@ pub async fn handle_agent_create(
     force: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let request = crate::common::types::agent::AgentCreateRequest::new(&name, &provider)
-        .with_force(force);
-    let packet = crate::ipc::RequestPacket::AgentCreate { request_id: 1, request };
+    let request =
+        crate::common::types::agent::AgentCreateRequest::new(&name, &provider).with_force(force);
+    let packet = crate::ipc::RequestPacket::AgentCreate {
+        request_id: 1,
+        request,
+    };
     let response = client.request_response(packet).await?;
 
     match response {
         crate::ipc::ResponsePacket::AgentCreated { result, .. } => {
-            println!(
-                "✅ Created agent '{}'",
-                result.name
-            );
+            println!("✅ Created agent '{}'", result.name);
             println!("   Provider: {}", result.provider);
             println!("   Config: {}", result.config_path.display());
 
@@ -147,7 +154,12 @@ pub async fn handle_agent_remove(
     json: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let packet = crate::ipc::RequestPacket::AgentDelete { request_id: 1, name: name.clone(), team, force };
+    let packet = crate::ipc::RequestPacket::AgentDelete {
+        request_id: 1,
+        name: name.clone(),
+        team,
+        force,
+    };
     let response = client.request_response(packet).await?;
 
     match response {
@@ -162,10 +174,7 @@ pub async fn handle_agent_remove(
                     println!("🗑️  Purged identity for '{}'", result.name);
                 }
 
-                println!(
-                    "✅ Deleted agent '{}'",
-                    result.name
-                );
+                println!("✅ Deleted agent '{}'", result.name);
             }
             Ok(())
         }
@@ -220,15 +229,20 @@ pub async fn handle_agent_export(
     include_sessions: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let packet = crate::ipc::RequestPacket::AgentExport { request_id: 1, name: name.clone(), team, output, include_sessions };
+    let packet = crate::ipc::RequestPacket::AgentExport {
+        request_id: 1,
+        name: name.clone(),
+        team,
+        output,
+        include_sessions,
+    };
     let response = client.request_response(packet).await?;
 
     match response {
-        crate::ipc::ResponsePacket::AgentExported { name, output_path, .. } => {
-            println!(
-                "📦 Exported agent '{}' to '{}'",
-                name, output_path
-            );
+        crate::ipc::ResponsePacket::AgentExported {
+            name, output_path, ..
+        } => {
+            println!("📦 Exported agent '{}' to '{}'", name, output_path);
             Ok(())
         }
         _ => anyhow::bail!("Unexpected response"),
@@ -243,11 +257,18 @@ pub async fn handle_agent_import(
     team: Option<String>,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let packet = crate::ipc::RequestPacket::AgentImport { request_id: 1, file_path: file_path.clone(), name, team };
+    let packet = crate::ipc::RequestPacket::AgentImport {
+        request_id: 1,
+        file_path: file_path.clone(),
+        name,
+        team,
+    };
     let response = client.request_response(packet).await?;
 
     match response {
-        crate::ipc::ResponsePacket::AgentImported { name, config_path, .. } => {
+        crate::ipc::ResponsePacket::AgentImported {
+            name, config_path, ..
+        } => {
             println!("📥 Imported '{}' as '{}'", file_path, name);
             println!("   Config: {}", config_path);
             Ok(())
@@ -369,7 +390,9 @@ pub async fn handle_agent_permit(
         crate::ipc::ResponsePacket::Done { success, error, .. } => {
             if success {
                 if json {
-                    println!("{{\"success\": true, \"agent\": \"{name}\", \"subject\": \"{subject}\"}}");
+                    println!(
+                        "{{\"success\": true, \"agent\": \"{name}\", \"subject\": \"{subject}\"}}"
+                    );
                 } else {
                     println!("✅ Granted permission on '{name}' to {subject}");
                 }
@@ -406,7 +429,9 @@ pub async fn handle_agent_revoke(
         crate::ipc::ResponsePacket::Done { success, error, .. } => {
             if success {
                 if json {
-                    println!("{{\"success\": true, \"agent\": \"{name}\", \"subject\": \"{subject}\"}}");
+                    println!(
+                        "{{\"success\": true, \"agent\": \"{name}\", \"subject\": \"{subject}\"}}"
+                    );
                 } else {
                     println!("✅ Revoked permission on '{name}' from {subject}");
                 }
@@ -429,22 +454,36 @@ pub async fn handle_agent_permissions(
     json: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let packet = crate::ipc::RequestPacket::AgentGet { request_id: 1, name: name.clone(), team: None };
+    let packet = crate::ipc::RequestPacket::AgentGet {
+        request_id: 1,
+        name: name.clone(),
+        team: None,
+    };
     let response = client.request_response(packet).await?;
     match response {
-        crate::ipc::ResponsePacket::AgentGet { agent: Some(agent), .. } => {
+        crate::ipc::ResponsePacket::AgentGet {
+            agent: Some(agent), ..
+        } => {
             if json {
-                let grants: Vec<_> = agent.config.permissions.iter().map(|g| {
-                    serde_json::json!({
-                        "subject_id": g.subject_id,
-                        "subject_type": g.subject_type,
-                        "permission": g.permission,
-                        "granted_at": g.granted_at,
-                        "granted_by": g.granted_by,
+                let grants: Vec<_> = agent
+                    .config
+                    .permissions
+                    .iter()
+                    .map(|g| {
+                        serde_json::json!({
+                            "subject_id": g.subject_id,
+                            "subject_type": g.subject_type,
+                            "permission": g.permission,
+                            "granted_at": g.granted_at,
+                            "granted_by": g.granted_by,
+                        })
                     })
-                }).collect();
-                println!("{{\"agent\": \"{name}\", \"owner_id\": \"{}\", \"permissions\": {}}}",
-                    agent.config.owner_id, serde_json::to_string(&grants)?);
+                    .collect();
+                println!(
+                    "{{\"agent\": \"{name}\", \"owner_id\": \"{}\", \"permissions\": {}}}",
+                    agent.config.owner_id,
+                    serde_json::to_string(&grants)?
+                );
             } else {
                 println!("📦 Agent: {}", name);
                 println!("   Owner: {}", agent.config.owner_id);
@@ -453,8 +492,10 @@ pub async fn handle_agent_permissions(
                 } else {
                     println!("   Permissions:");
                     for g in &agent.config.permissions {
-                        println!("     - {} ({:?}): {:?} (by {} at {})",
-                            g.subject_id, g.subject_type, g.permission, g.granted_by, g.granted_at);
+                        println!(
+                            "     - {} ({:?}): {:?} (by {} at {})",
+                            g.subject_id, g.subject_type, g.permission, g.granted_by, g.granted_at
+                        );
                     }
                 }
             }
@@ -804,7 +845,7 @@ pub async fn handle_agent_pull(
     paths: &GlobalPaths,
     registry_ref: String,
     output: Option<String>,
-    team: Option<String>,
+    _team: Option<String>,
     force: bool,
     json: bool,
     cli_registry: Option<&str>,
@@ -1048,7 +1089,9 @@ async fn agent_to_registry_manifest(
         "kind": "agent",
     }))?;
     let config_digest = ImageDigest::from_bytes(config_json.as_bytes());
-    registry.store_layer(config_digest.as_str(), config_json.as_bytes()).await?;
+    registry
+        .store_layer(config_digest.as_str(), config_json.as_bytes())
+        .await?;
     manifest.config = crate::registry::manifest::ConfigDescriptor {
         media_type: "application/vnd.oci.image.config.v1+json".to_string(),
         digest: config_digest.as_str().to_string(),

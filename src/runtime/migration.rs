@@ -91,9 +91,8 @@ async fn migrate_adr032(resolver: &PathResolver, runtime_id: &str) -> Result<()>
                 if meta_path.exists() {
                     match tokio::fs::read_to_string(&meta_path).await {
                         Ok(content) => {
-                            if let Ok(mut meta) = toml::from_str::<
-                                crate::common::types::team::TeamMetadata,
-                            >(&content)
+                            if let Ok(mut meta) =
+                                toml::from_str::<crate::common::types::team::TeamMetadata>(&content)
                             {
                                 if meta.host_runtime_id.is_empty() {
                                     meta.host_runtime_id = runtime_id.to_string();
@@ -116,7 +115,7 @@ async fn migrate_adr032(resolver: &PathResolver, runtime_id: &str) -> Result<()>
                                                 "Failed to serialize migrated team metadata {}: {}",
                                                 meta_path.display(),
                                                 e
-                                                );
+                                            );
                                         }
                                     }
                                 }
@@ -177,12 +176,17 @@ async fn migrate_adr033(resolver: &PathResolver, runtime_id: &str) -> Result<()>
                                         Ok(updated) => {
                                             let tmp = config_path.with_extension("tmp");
                                             if tokio::fs::write(&tmp, updated).await.is_ok() {
-                                                if let Err(e) = tokio::fs::rename(&tmp, &config_path).await {
+                                                if let Err(e) =
+                                                    tokio::fs::rename(&tmp, &config_path).await
+                                                {
                                                     warn!("Failed to rename migrated agent config {}: {}", config_path.display(), e);
                                                     let _ = tokio::fs::remove_file(&tmp).await;
                                                 } else {
                                                     migrated_agents += 1;
-                                                    info!("Backfilled owner_id for agent {}", config.name);
+                                                    info!(
+                                                        "Backfilled owner_id for agent {}",
+                                                        config.name
+                                                    );
                                                 }
                                             }
                                         }
@@ -223,9 +227,8 @@ async fn migrate_adr033(resolver: &PathResolver, runtime_id: &str) -> Result<()>
                 if meta_path.exists() {
                     match tokio::fs::read_to_string(&meta_path).await {
                         Ok(content) => {
-                            if let Ok(mut meta) = toml::from_str::<
-                                crate::common::types::team::TeamMetadata,
-                            >(&content)
+                            if let Ok(mut meta) =
+                                toml::from_str::<crate::common::types::team::TeamMetadata>(&content)
                             {
                                 let mut changed = false;
                                 if meta.owner_id.is_empty() {
@@ -237,12 +240,17 @@ async fn migrate_adr033(resolver: &PathResolver, runtime_id: &str) -> Result<()>
                                         Ok(updated) => {
                                             let tmp = meta_path.with_extension("tmp");
                                             if tokio::fs::write(&tmp, updated).await.is_ok() {
-                                                if let Err(e) = tokio::fs::rename(&tmp, &meta_path).await {
+                                                if let Err(e) =
+                                                    tokio::fs::rename(&tmp, &meta_path).await
+                                                {
                                                     warn!("Failed to rename migrated team metadata {}: {}", meta_path.display(), e);
                                                     let _ = tokio::fs::remove_file(&tmp).await;
                                                 } else {
                                                     migrated_teams += 1;
-                                                    info!("Backfilled owner_id for team {}", meta.name);
+                                                    info!(
+                                                        "Backfilled owner_id for team {}",
+                                                        meta.name
+                                                    );
                                                 }
                                             }
                                         }

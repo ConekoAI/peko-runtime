@@ -75,7 +75,10 @@ pub struct BundleMetadata {
 #[derive(Debug, Clone)]
 pub enum DependencyStatus {
     /// Already installed and version satisfies constraint
-    Satisfied { package: String, installed_version: String },
+    Satisfied {
+        package: String,
+        installed_version: String,
+    },
     /// Not installed, needs pull
     Missing { package: String, required: bool },
     /// Installed but version doesn't satisfy constraint (informational only for v1)
@@ -110,7 +113,9 @@ impl DependencyResolution {
     /// Check if there are any required missing dependencies
     #[must_use]
     pub fn has_required_missing(&self) -> bool {
-        self.missing.iter().any(|m| matches!(m, DependencyStatus::Missing { required: true, .. }))
+        self.missing
+            .iter()
+            .any(|m| matches!(m, DependencyStatus::Missing { required: true, .. }))
     }
 
     /// Get only the optional missing dependencies
@@ -118,7 +123,15 @@ impl DependencyResolution {
     pub fn optional_missing(&self) -> Vec<&DependencyStatus> {
         self.missing
             .iter()
-            .filter(|m| matches!(m, DependencyStatus::Missing { required: false, .. }))
+            .filter(|m| {
+                matches!(
+                    m,
+                    DependencyStatus::Missing {
+                        required: false,
+                        ..
+                    }
+                )
+            })
             .collect()
     }
 }
@@ -729,11 +742,13 @@ impl ExtensionManager {
                     // v1: version constraints are informational only
                     // We report the mismatch but still mark as satisfied
                     if installed_version != required_version {
-                        resolution.version_mismatches.push(DependencyStatus::VersionMismatch {
-                            package: dep.package.clone(),
-                            have: installed_version.clone(),
-                            need: Some(required_version.clone()),
-                        });
+                        resolution
+                            .version_mismatches
+                            .push(DependencyStatus::VersionMismatch {
+                                package: dep.package.clone(),
+                                have: installed_version.clone(),
+                                need: Some(required_version.clone()),
+                            });
                     }
                 }
                 resolution.satisfied.push(DependencyStatus::Satisfied {
@@ -755,7 +770,10 @@ impl ExtensionManager {
     }
 
     /// Convenience wrapper that starts with an empty visited set.
-    pub fn resolve_dependencies_root(&self, manifest: &ExtensionManifest) -> Result<DependencyResolution> {
+    pub fn resolve_dependencies_root(
+        &self,
+        manifest: &ExtensionManifest,
+    ) -> Result<DependencyResolution> {
         self.resolve_dependencies(manifest, &mut HashSet::new())
     }
 
@@ -832,7 +850,9 @@ impl ExtensionManager {
     /// Returns None for built-in tools or unknown names.
     pub fn resolve_tool_name(&self, name: &str) -> Option<ToolResolution> {
         // Check if it's a built-in tool
-        if crate::extensions::builtin::BuiltinToolAdapter::is_builtin(name) || name.starts_with("builtin:") {
+        if crate::extensions::builtin::BuiltinToolAdapter::is_builtin(name)
+            || name.starts_with("builtin:")
+        {
             return None;
         }
 
@@ -1294,7 +1314,9 @@ mod tests {
         // Simulate circular by visiting ext-a, then ext-b which depends on ext-a
         let mut visited = HashSet::new();
         visited.insert("ext-a".to_string());
-        let _resolution = manager.resolve_dependencies(&manifest_a, &mut visited).unwrap();
+        let _resolution = manager
+            .resolve_dependencies(&manifest_a, &mut visited)
+            .unwrap();
         // Since ext-b is not installed, it goes to missing — the circular check
         // only fires if the SAME extension is visited twice in the chain.
         // For a true cycle test, we'd need ext-b to also be in `visited`.

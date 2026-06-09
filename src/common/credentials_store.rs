@@ -72,12 +72,7 @@ impl CredentialsStore {
     }
 
     /// Set (or overwrite) registry credentials
-    pub fn set_registry(
-        &mut self,
-        token: String,
-        host: String,
-        namespace: Option<String>,
-    ) {
+    pub fn set_registry(&mut self, token: String, host: String, namespace: Option<String>) {
         self.registry = Some(RegistryCredential {
             token,
             registry_host: host,

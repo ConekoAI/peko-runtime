@@ -238,7 +238,8 @@ impl TeamService {
             for member in &members.members {
                 let agent_memberships_path = self.resolver.agent_memberships(&member.agent);
                 if agent_memberships_path.exists() {
-                    if let Ok(mut agent_memberships) = AgentMemberships::load(&agent_memberships_path)
+                    if let Ok(mut agent_memberships) =
+                        AgentMemberships::load(&agent_memberships_path)
                     {
                         agent_memberships.remove(name);
                         let _ = agent_memberships.save(&agent_memberships_path);
@@ -294,7 +295,8 @@ impl TeamService {
             for member in &members.members {
                 let agent_memberships_path = self.resolver.agent_memberships(&member.agent);
                 if agent_memberships_path.exists() {
-                    if let Ok(mut agent_memberships) = AgentMemberships::load(&agent_memberships_path)
+                    if let Ok(mut agent_memberships) =
+                        AgentMemberships::load(&agent_memberships_path)
                     {
                         if let Some(m) = agent_memberships.get(old_name) {
                             let updated = AgentMembership {
@@ -519,7 +521,8 @@ impl TeamService {
 
         meta.permissions.retain(|g| {
             !(g.subject_id == grant.subject_id
-                && std::mem::discriminant(&g.permission) == std::mem::discriminant(&grant.permission))
+                && std::mem::discriminant(&g.permission)
+                    == std::mem::discriminant(&grant.permission))
         });
         meta.permissions.push(grant);
 
@@ -646,8 +649,13 @@ impl TeamService {
         let team_name = new_name.as_deref().unwrap_or("imported");
 
         if !self.team_exists(team_name) {
-            self.create_team(team_name, Some(&format!("Imported team from {file_path}")), None, None)
-                .await?;
+            self.create_team(
+                team_name,
+                Some(&format!("Imported team from {file_path}")),
+                None,
+                None,
+            )
+            .await?;
         } else if !force {
             anyhow::bail!("Team '{team_name}' already exists. Use --force to overwrite.");
         }
@@ -773,7 +781,10 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
 
         // Create agent in new layout
         let agent_dir = config_dir.join("agents").join("alice");
@@ -812,7 +823,10 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team and agent
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -845,7 +859,10 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create team and agent
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -878,7 +895,10 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create teams and agent
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("config.toml"), "name = 'alice'\n").unwrap();
@@ -913,7 +933,10 @@ mod tests {
         let service = TeamService::new(resolver.clone());
 
         // Create teams and agent
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
         service.create_team("ops", None, None, None).await.unwrap();
 
         let agent_dir = config_dir.join("agents").join("alice");
@@ -972,7 +995,10 @@ mod tests {
         );
         let service = TeamService::new(resolver);
 
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
 
         let result = service
             .join_team("engineering", "nonexistent", MembershipRole::Member)
@@ -992,7 +1018,10 @@ mod tests {
         let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir, cache_dir);
         let service = TeamService::new(resolver.clone());
 
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
 
         let agent_dir = config_dir.join("agents").join("alice");
         std::fs::create_dir_all(&agent_dir).unwrap();

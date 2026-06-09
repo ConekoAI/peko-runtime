@@ -59,7 +59,10 @@ impl ConfigCache {
             cache.remove(agent);
             debug!("Removed cache for agent '{}'", agent);
         } else {
-            debug!("Cache lock contested, skipping invalidation for '{}'", agent);
+            debug!(
+                "Cache lock contested, skipping invalidation for '{}'",
+                agent
+            );
         }
     }
 

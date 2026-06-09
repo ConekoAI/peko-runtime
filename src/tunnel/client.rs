@@ -54,7 +54,10 @@ impl TunnelHandle {
 
     /// Send a proxied response back to PekoHub
     pub fn send_response(&self, request_id: String, payload: Vec<u8>) -> anyhow::Result<()> {
-        self.send(TunnelMessage::ProxiedResponse { request_id, payload })
+        self.send(TunnelMessage::ProxiedResponse {
+            request_id,
+            payload,
+        })
     }
 
     /// Send a streaming chunk back to PekoHub
@@ -161,16 +164,15 @@ impl TunnelClient {
         info!("Connecting to PekoHub tunnel: {}", self.hub_url);
 
         let (ws_stream, response) = connect_async(&self.hub_url).await?;
-        info!(
-            "WebSocket connected, status: {:?}",
-            response.status()
-        );
+        info!("WebSocket connected, status: {:?}", response.status());
 
         let (mut write, mut read) = ws_stream.split();
 
         // 1. Send RuntimeHello
         let hello = self.build_runtime_hello()?;
-        let hello_bytes = hello.to_bytes().map_err(|e| TunnelError::AuthFailed(format!("Failed to serialize hello: {e}")))?;
+        let hello_bytes = hello
+            .to_bytes()
+            .map_err(|e| TunnelError::AuthFailed(format!("Failed to serialize hello: {e}")))?;
         write
             .send(Message::Binary(hello_bytes))
             .await
@@ -185,14 +187,10 @@ impl TunnelClient {
             .map_err(TunnelError::WebSocket)?;
 
         let ready = match ready_msg {
-            Message::Binary(bytes) => {
-                TunnelMessage::from_bytes(&bytes)
-                    .map_err(|e| TunnelError::InvalidMessage(e.to_string()))?
-            }
-            Message::Text(text) => {
-                TunnelMessage::from_bytes(text.as_bytes())
-                    .map_err(|e| TunnelError::InvalidMessage(e.to_string()))?
-            }
+            Message::Binary(bytes) => TunnelMessage::from_bytes(&bytes)
+                .map_err(|e| TunnelError::InvalidMessage(e.to_string()))?,
+            Message::Text(text) => TunnelMessage::from_bytes(text.as_bytes())
+                .map_err(|e| TunnelError::InvalidMessage(e.to_string()))?,
             Message::Close(frame) => {
                 return Err(TunnelError::AuthFailed(format!(
                     "Connection closed before auth: {:?}",
@@ -268,23 +266,21 @@ impl TunnelClient {
         let read_handle = tokio::spawn(async move {
             loop {
                 match read.next().await {
-                    Some(Ok(Message::Binary(bytes))) => {
-                        match TunnelMessage::from_bytes(&bytes) {
-                            Ok(msg) => {
-                                Self::handle_incoming_message(
-                                    msg,
-                                    &read_state,
-                                    &internal_tx,
-                                    request_handler.as_ref(),
-                                    &handle,
-                                )
-                                .await;
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse tunnel message: {}", e);
-                            }
+                    Some(Ok(Message::Binary(bytes))) => match TunnelMessage::from_bytes(&bytes) {
+                        Ok(msg) => {
+                            Self::handle_incoming_message(
+                                msg,
+                                &read_state,
+                                &internal_tx,
+                                request_handler.as_ref(),
+                                &handle,
+                            )
+                            .await;
                         }
-                    }
+                        Err(e) => {
+                            warn!("Failed to parse tunnel message: {}", e);
+                        }
+                    },
                     Some(Ok(Message::Text(text))) => {
                         match TunnelMessage::from_bytes(text.as_bytes()) {
                             Ok(msg) => {
@@ -306,7 +302,7 @@ impl TunnelClient {
                         info!("WebSocket closed: {:?}", frame);
                         break;
                     }
-                    Some(Ok(Message::Ping(data))) => {
+                    Some(Ok(Message::Ping(_data))) => {
                         trace!("Received WebSocket ping");
                         let _ = internal_tx.send(TunnelMessage::HeartbeatAck { seq: 0 });
                     }
@@ -463,9 +459,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = TunnelHandle { tx };
 
-        handle
-            .send(TunnelMessage::Heartbeat { seq: 1 })
-            .unwrap();
+        handle.send(TunnelMessage::Heartbeat { seq: 1 }).unwrap();
 
         match rx.recv().await {
             Some(TunnelMessage::Heartbeat { seq }) => assert_eq!(seq, 1),

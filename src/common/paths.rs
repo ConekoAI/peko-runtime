@@ -46,10 +46,7 @@ use std::path::{Path, PathBuf};
 /// as a fallback if home directory is not available.
 #[must_use]
 pub fn default_config_dir() -> PathBuf {
-    dirs::home_dir().map_or_else(
-        || PathBuf::from(".").join(".peko"),
-        |d| d.join(".peko"),
-    )
+    dirs::home_dir().map_or_else(|| PathBuf::from(".").join(".peko"), |d| d.join(".peko"))
 }
 
 /// Get the default data directory
@@ -545,10 +542,7 @@ mod tests {
             PathBuf::from("/cache"),
         );
 
-        assert_eq!(
-            resolver.agents_root_dir(),
-            PathBuf::from("/config/agents")
-        );
+        assert_eq!(resolver.agents_root_dir(), PathBuf::from("/config/agents"));
 
         assert_eq!(
             resolver.agent_dir("alice"),
@@ -687,13 +681,31 @@ mod tests {
         resolver.ensure_agent_dirs("alice", None).unwrap();
 
         assert!(config_dir.join("agents").join("alice").exists());
-        assert!(data_dir.join("sessions").join("alice").join("personal").exists());
-        assert!(data_dir.join("workspaces").join("alice").join("personal").exists());
+        assert!(data_dir
+            .join("sessions")
+            .join("alice")
+            .join("personal")
+            .exists());
+        assert!(data_dir
+            .join("workspaces")
+            .join("alice")
+            .join("personal")
+            .exists());
 
         // Ensure dirs for team context
-        resolver.ensure_agent_dirs("alice", Some("engineering")).unwrap();
+        resolver
+            .ensure_agent_dirs("alice", Some("engineering"))
+            .unwrap();
 
-        assert!(data_dir.join("sessions").join("alice").join("engineering").exists());
-        assert!(data_dir.join("workspaces").join("alice").join("engineering").exists());
+        assert!(data_dir
+            .join("sessions")
+            .join("alice")
+            .join("engineering")
+            .exists());
+        assert!(data_dir
+            .join("workspaces")
+            .join("alice")
+            .join("engineering")
+            .exists());
     }
 }
