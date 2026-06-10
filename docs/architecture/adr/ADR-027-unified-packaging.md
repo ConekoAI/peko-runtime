@@ -122,13 +122,20 @@ my-agent.agent (gzip-compressed tar)
 │   └── keys.json
 ├── config/
 │   └── agent.toml          # Single source of truth for behavior
-├── skills/
-│   └── {name}/
-│       └── SKILL.md
 ├── workspace/
 ├── sessions/
-└── mcp/
+└── extensions/             # Optional — embedded .ext packages (ADR-037)
+    └── {id}.ext
 ```
+
+**Note:** Standalone `skills/` and `mcp/` layers were deprecated by
+[ADR-037](ADR-037-agent-extension-bundling-and-layer-rationalization.md).
+Skills and MCP servers are now managed as extensions and are declared in
+`agent.toml`'s `extensions.enabled` list. Their dependency metadata is
+recorded in `manifest.extensions` (a list of `ExtensionRef` structs) so
+that `peko agent pull` can auto-install missing extensions. Legacy
+packages that still contain `skills/` or `mcp/` layers can still be
+imported, but new exports do not emit them.
 
 **`manifest.toml` schema (clean — packaging only)**:
 
@@ -138,7 +145,7 @@ name = "researcher"
 version = "1.0.0"
 description = "A research assistant agent"
 created_at = "2026-05-08T10:00:00Z"
-export_format = "2.0"
+export_format = "1.2"     # ADR-037: extension dependency tracking
 peko_version = "0.1.0"
 did = "did:peko:local:abc123..."
 
@@ -149,10 +156,17 @@ encrypted = false
 [layers]
 config = "sha256:abc123..."
 identity = "sha256:def456..."
-skills = "sha256:ghi789..."
 workspace = "sha256:jkl012..."
 sessions = "sha256:mno345..."
-mcp = "sha256:pqr678..."
+extensions = "sha256:stu901..."   # Optional — embedded extensions layer
+
+[[extensions]]              # ADR-037: dependency metadata
+id = "docker-skill"
+registry_ref = "pekohub.com/extensions/docker-skill:latest"
+
+[[extensions]]
+id = "filesystem-mcp"
+registry_ref = "pekohub.com/extensions/filesystem-mcp:v1.2.0"
 
 [packaging]
 files = ["manifest.toml", "identity/did.json", "config/agent.toml", ...]
@@ -163,14 +177,29 @@ archive_format = "tar"
 
 ### Layer Semantics
 
-| Layer | Source Files | Optional | Contains Behavior Config? |
-|-------|-------------|----------|---------------------------|
-| `config` | `config/agent.toml` | No | ✅ Yes — agent.toml is the SSOT |
-| `identity` | `identity/did.json`, `identity/keys.json` | No | ❌ No |
-| `skills` | `skills/**` | Yes | ❌ No |
-| `workspace` | `workspace/**` | Yes | ❌ No |
-| `sessions` | `sessions/**` | Yes | ❌ No |
-| `mcp` | `mcp/**` | Yes | ❌ No |
+| Layer | Source Files | Optional | Status | Contains Behavior Config? |
+|-------|-------------|----------|--------|---------------------------|
+| `config` | `config/agent.toml` | No | ✅ Active | ✅ Yes — agent.toml is the SSOT |
+| `identity` | `identity/did.json`, `identity/keys.json` | No | ✅ Active | ❌ No |
+| `workspace` | `workspace/**` | Yes | ✅ Active | ❌ No |
+| `sessions` | `sessions/**` | Yes | ✅ Active | ❌ No |
+| `extensions` | `extensions/*.ext` | Yes | ✅ Active (ADR-037) | ❌ No |
+| `skills` | `skills/**` | Yes | ⚠️ Deprecated (ADR-037) | ❌ No |
+| `mcp` | `mcp/**` | Yes | ⚠️ Deprecated (ADR-037) | ❌ No |
+
+**Deprecation rationale (ADR-037):** Under the unified extension
+architecture (ADR-017), skills are `skill` extensions and MCP servers are
+`mcp` extensions. Treating them as special-case package layers was
+inconsistent and left the `mcp/` layer only half-implemented. The
+replacement is:
+
+1. `agent.toml`'s `extensions.enabled` list declares which tools/skills/MCP
+   servers the agent uses.
+2. `AgentManifest.extensions` records `ExtensionRef { id, registry_ref }`
+   for each non-built-in extension so that `peko agent pull` can
+   auto-install missing extensions.
+3. For air-gapped use, `peko agent push --with-extensions` embeds the
+   actual `.ext` packages in the `extensions/` layer.
 
 ### Local Registry Store
 

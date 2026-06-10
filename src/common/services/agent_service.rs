@@ -21,13 +21,198 @@ use crate::common::types::agent::{
 use crate::common::types::membership::AgentMemberships;
 use crate::identity::Identity;
 use crate::portable::{
-    self, ExportOptions as PortableExportOptions, ImportOptions as PortableImportOptions,
+    self, ExportOptions as PortableExportOptions, ExtensionRef, ImportOptions as PortableImportOptions,
 };
 use crate::types::agent::{AgentConfig, PromptConfig, SystemFileConfig};
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// Resolve extension references from an agent's enabled extensions.
+///
+/// Reads `config.extensions.enabled`, skips built-ins and wildcards, and resolves
+/// each entry to an installed extension with a known registry reference.
+async fn resolve_extension_refs(
+    config: &AgentConfig,
+    extensions_dir: &std::path::Path,
+) -> Vec<ExtensionRef> {
+    use crate::extension::core::global_core;
+    use crate::extension::manager::{ExtensionManager, ExtensionStorage};
+    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+    use crate::extensions::gateway::GatewayAdapter;
+    use crate::extensions::general::GeneralExtensionAdapter;
+    use crate::extensions::mcp::McpAdapter;
+    use crate::extensions::skill::SkillAdapter;
+    use crate::extensions::universal::UniversalToolAdapter;
+    use std::collections::HashSet;
+
+    let ext_config = match config.extensions.as_ref() {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+
+    let core = match global_core() {
+        Some(c) => c,
+        None => {
+            tracing::warn!("Global ExtensionCore not initialized; skipping extension ref resolution");
+            return Vec::new();
+        }
+    };
+
+    let storage = ExtensionStorage::with_dir(extensions_dir.to_path_buf());
+    let mut manager = ExtensionManager::with_core(core);
+    manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
+
+    let _ = BuiltinToolAdapter::register_all(
+        &manager.core_arc(),
+        &BuiltinToolRegistrarConfig::default(),
+    )
+    .await;
+    manager.register_adapter(Box::new(SkillAdapter::new()));
+    manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+    manager.register_adapter(Box::new(GatewayAdapter::new(manager.core_arc())));
+    manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+
+    if let Err(e) = manager.load_all().await {
+        tracing::warn!("Failed to load extensions for export: {}", e);
+    }
+
+    let mut seen = HashSet::new();
+    let mut extension_refs = Vec::new();
+
+    for tool_name in &ext_config.enabled {
+        // Skip built-in tools
+        if tool_name.starts_with("builtin:") {
+            continue;
+        }
+        // Skip wildcard patterns — can't resolve them to a single extension
+        if tool_name.ends_with('*') {
+            continue;
+        }
+
+        match manager.resolve_tool_name(tool_name) {
+            Some(resolution) => {
+                if let Some(registry_ref) = resolution.registry_ref {
+                    let key = format!("{}:{}", resolution.id, registry_ref);
+                    if seen.insert(key) {
+                        extension_refs.push(ExtensionRef {
+                            id: resolution.id,
+                            registry_ref,
+                        });
+                    }
+                } else {
+                    tracing::warn!(
+                        "Extension '{}' is enabled but has no registry reference; \
+                         omit from package manifest (push extension to registry or use --with-extensions)",
+                        tool_name
+                    );
+                }
+            }
+            None => {
+                // Unknown — may be a built-in alias or missing extension
+                tracing::debug!("Could not resolve enabled extension '{}' to an installed extension", tool_name);
+            }
+        }
+    }
+
+    extension_refs
+}
+
+/// Build embedded extension packages for each `ExtensionRef`.
+///
+/// Returns a map of package-relative paths (`extensions/{id}.ext`) to the raw
+/// `.ext` file bytes. Extensions without a local installation are skipped with
+/// a warning.
+async fn build_embedded_extensions(
+    extension_refs: &[ExtensionRef],
+    extensions_dir: &std::path::Path,
+) -> HashMap<String, Vec<u8>> {
+    use crate::extension::core::global_core;
+    use crate::extension::manager::{
+        packaging::ExtensionPackager, ExtensionManager, ExtensionStorage,
+    };
+    use crate::extension::types::ExtensionId;
+    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+    use crate::extensions::gateway::GatewayAdapter;
+    use crate::extensions::general::GeneralExtensionAdapter;
+    use crate::extensions::mcp::McpAdapter;
+    use crate::extensions::skill::SkillAdapter;
+    use crate::extensions::universal::UniversalToolAdapter;
+
+    let mut embedded = HashMap::new();
+
+    let core = match global_core() {
+        Some(c) => c,
+        None => {
+            tracing::warn!("Global ExtensionCore not initialized; skipping embedded extension build");
+            return embedded;
+        }
+    };
+
+    let storage = ExtensionStorage::with_dir(extensions_dir.to_path_buf());
+    let mut manager = ExtensionManager::with_core(core);
+    manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
+
+    let _ = BuiltinToolAdapter::register_all(
+        &manager.core_arc(),
+        &BuiltinToolRegistrarConfig::default(),
+    )
+    .await;
+    manager.register_adapter(Box::new(SkillAdapter::new()));
+    manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+    manager.register_adapter(Box::new(GatewayAdapter::new(manager.core_arc())));
+    manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+
+    if let Err(e) = manager.load_all().await {
+        tracing::warn!("Failed to load extensions for embedded export: {}", e);
+    }
+
+    for ext_ref in extension_refs {
+        let ext_id = ExtensionId::new(&ext_ref.id);
+        if manager.get_extension(&ext_id).is_none() {
+            tracing::warn!(
+                "Extension '{}' is referenced but not installed; cannot embed it",
+                ext_ref.id
+            );
+            continue;
+        }
+
+        let temp_path = std::env::temp_dir().join(format!(
+            "peko-embed-{}-{}.ext",
+            ext_ref.id,
+            std::process::id()
+        ));
+
+        match ExtensionPackager::export(&manager, &ext_id, &temp_path) {
+            Ok(_) => match tokio::fs::read(&temp_path).await {
+                Ok(bytes) => {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    embedded.insert(format!("extensions/{}.ext", ext_ref.id), bytes);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to read embedded extension '{}' from {}: {}",
+                        ext_ref.id,
+                        temp_path.display(),
+                        e
+                    );
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to export embedded extension '{}': {}",
+                    ext_ref.id,
+                    e
+                );
+            }
+        }
+    }
+
+    embedded
+}
 
 /// Service for managing agents on the filesystem
 #[derive(Debug, Clone)]
@@ -479,16 +664,18 @@ impl AgentService {
             .context("Failed to create identity for export")?;
 
         // Set up export paths
-        let skills_dir = self.resolver.skills_dir();
         let workspace_dir = self.resolver.agent_personal_workspace(agent_name);
         let sessions_dir = self.resolver.agent_personal_sessions_dir(agent_name);
-        let mcp_config_path = self.resolver.mcp_config();
-        let tools_dir = self.resolver.tools_dir();
 
-        let mcp_config_path = if mcp_config_path.exists() {
-            Some(mcp_config_path)
+        // Resolve extension references from the agent config
+        let extensions_dir = self.resolver.data_dir().join("extensions");
+        let extension_refs = resolve_extension_refs(&config, &extensions_dir).await;
+
+        // Build embedded extension packages if --with-extensions was requested.
+        let embedded_extensions = if opts.with_extensions {
+            build_embedded_extensions(&extension_refs, &extensions_dir).await
         } else {
-            None
+            HashMap::new()
         };
 
         let export_opts = PortableExportOptions {
@@ -499,14 +686,18 @@ impl AgentService {
             rotate_keys: false,
             description: Some(format!("Exported agent: {agent_name}")),
             output_path: Some(output_path.to_string_lossy().to_string()),
-            mcp_config_path,
-            tools_dir: Some(tools_dir),
+            with_extensions: opts.with_extensions,
+            // ADR-037: skills and MCP are now handled via extensions; these
+            // deprecated fields are no longer used by agent packaging.
+            mcp_config_path: None,
+            tools_dir: None,
         };
 
         let packager = portable::Packager::new(config, identity, None)
-            .with_skills_dir(&skills_dir)
             .with_workspace_dir(&workspace_dir)
-            .with_sessions_dir(&sessions_dir);
+            .with_sessions_dir(&sessions_dir)
+            .with_extension_refs(extension_refs)
+            .with_embedded_extensions(embedded_extensions);
 
         let result_path = packager
             .export(export_opts)

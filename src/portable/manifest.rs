@@ -2,6 +2,7 @@
 //!
 //! Defines the structure of the manifest.toml file inside .agent packages
 
+use crate::portable::types::ExtensionRef;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -14,7 +15,12 @@ pub struct AgentLayers {
     /// Identity layer digest
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
-    /// Skills layer digest
+    /// Skills layer digest (deprecated — retained for reading legacy packages).
+    ///
+    /// Under ADR-037, skills are managed as `skill` extensions and are
+    /// recorded in `AgentManifest.extensions`. New exports no longer emit
+    /// this layer digest, but it is preserved here so that legacy packages
+    /// can still be deserialized and validated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skills: Option<String>,
     /// Workspace layer digest
@@ -23,9 +29,20 @@ pub struct AgentLayers {
     /// Sessions layer digest
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<String>,
-    /// MCP layer digest
+    /// MCP layer digest (deprecated — retained for reading legacy packages).
+    ///
+    /// Under ADR-037, MCP servers are managed as `mcp` extensions and are
+    /// recorded in `AgentManifest.extensions`. New exports no longer emit
+    /// this layer digest, but it is preserved here so that legacy packages
+    /// can still be deserialized and validated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp: Option<String>,
+    /// Extensions layer digest (optional composite bundle).
+    ///
+    /// Contains embedded `.ext` packages for air-gapped sharing.
+    /// Only present when the package was created with `--with-extensions`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<String>,
 }
 
 /// Agent manifest - defines packaging metadata for a portable agent package
@@ -42,6 +59,9 @@ pub struct AgentManifest {
     /// Content-addressable layer digests
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layers: Option<AgentLayers>,
+    /// Extension dependencies required by this agent
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<ExtensionRef>,
     /// Packaging metadata
     pub packaging: PackagingMetadata,
     /// Digital signatures
@@ -120,7 +140,7 @@ impl AgentManifest {
                 version: version.into(),
                 description: None,
                 created_at: now,
-                export_format: "1.1".to_string(), // Updated for MCP/tool_registry support
+                export_format: "1.2".to_string(), // ADR-037: extension dependency tracking
                 did: did.into(),
                 peko_version: crate::VERSION.to_string(),
             },
@@ -131,6 +151,7 @@ impl AgentManifest {
                 kdf_params: None,
             },
             layers: None,
+            extensions: Vec::new(),
             packaging: PackagingMetadata {
                 files: Vec::new(),
                 checksums: HashMap::new(),
@@ -223,3 +244,59 @@ mod tests {
         assert!(!AgentManifest::verify_checksum(b"wrong data", &checksum));
     }
 }
+
+    #[test]
+    fn test_manifest_with_extension_refs_roundtrip() {
+        use crate::portable::types::ExtensionRef;
+
+        let mut manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
+        manifest.extensions = vec![
+            ExtensionRef {
+                id: "docker-skill".to_string(),
+                registry_ref: "pekohub.com/extensions/docker-skill:latest".to_string(),
+            },
+            ExtensionRef {
+                id: "filesystem-mcp".to_string(),
+                registry_ref: "pekohub.com/extensions/filesystem-mcp:v1.2.0".to_string(),
+            },
+        ];
+
+        let toml = manifest.to_toml().unwrap();
+        assert!(toml.contains("docker-skill"));
+        assert!(toml.contains("pekohub.com/extensions/docker-skill:latest"));
+
+        let parsed = AgentManifest::from_toml(&toml).unwrap();
+        assert_eq!(parsed.extensions.len(), 2);
+        assert_eq!(parsed.extensions[0].id, "docker-skill");
+        assert_eq!(
+            parsed.extensions[0].registry_ref,
+            "pekohub.com/extensions/docker-skill:latest"
+        );
+    }
+
+    #[test]
+    fn test_agent_layers_extensions_roundtrip() {
+        let layers = AgentLayers {
+            config: Some("sha256:abc".to_string()),
+            identity: Some("sha256:def".to_string()),
+            skills: None,
+            workspace: Some("sha256:ghi".to_string()),
+            sessions: None,
+            mcp: None,
+            extensions: Some("sha256:jkl".to_string()),
+        };
+
+        let toml = toml::to_string(&layers).unwrap();
+        assert!(toml.contains("extensions"));
+        assert!(!toml.contains("skills"));
+        assert!(!toml.contains("mcp"));
+
+        let parsed: AgentLayers = toml::from_str(&toml).unwrap();
+        assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
+    }
+
+    #[test]
+    fn test_manifest_export_format_is_1_2() {
+        let manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
+        assert_eq!(manifest.agent.export_format, "1.2");
+    }

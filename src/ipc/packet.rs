@@ -402,6 +402,8 @@ pub enum RequestPacket {
         team: Option<String>,
         output: Option<String>,
         include_sessions: bool,
+        /// Embed extension packages in an `extensions/` layer (ADR-037).
+        with_extensions: bool,
     },
 
     /// Import an agent from a file
@@ -3019,6 +3021,7 @@ mod tests {
             team: Some("default".to_string()),
             output: Some("/tmp/export.zip".to_string()),
             include_sessions: true,
+            with_extensions: false,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3029,12 +3032,14 @@ mod tests {
                 team,
                 output,
                 include_sessions,
+                with_extensions,
             } => {
                 assert_eq!(request_id, 1200);
                 assert_eq!(name, "test-agent");
                 assert_eq!(team, Some("default".to_string()));
                 assert_eq!(output, Some("/tmp/export.zip".to_string()));
                 assert!(include_sessions);
+                assert!(!with_extensions);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3120,6 +3125,7 @@ mod tests {
             team: None,
             output: None,
             include_sessions: false,
+            with_extensions: false,
         };
         assert_eq!(req_export.request_id(), 1);
 

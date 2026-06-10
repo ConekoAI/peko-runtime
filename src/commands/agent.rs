@@ -98,6 +98,9 @@ pub enum AgentCommands {
         /// Include session history
         #[arg(long)]
         include_sessions: bool,
+        /// Embed extension packages in an `extensions/` layer (ADR-037)
+        #[arg(long)]
+        with_extensions: bool,
     },
 
     /// Import agent from .agent package
@@ -256,7 +259,8 @@ pub async fn handle_agent(
             team,
             output,
             include_sessions,
-        } => handlers::handle_agent_export(paths, name, team, output, include_sessions).await,
+            with_extensions,
+        } => handlers::handle_agent_export(paths, name, team, output, include_sessions, with_extensions).await,
         AgentCommands::Import { file, name, team } => {
             handlers::handle_agent_import(paths, file, name, team).await
         }

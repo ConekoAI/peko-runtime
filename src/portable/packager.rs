@@ -1,25 +1,33 @@
 //! Packager for creating portable agent packages
 //!
 //! Exports agents to `.agent` files (tar.gz archives with manifest)
+//!
+//! # Deprecation notice
+//!
+//! Standalone `skills/` and `mcp/` layers are deprecated as of ADR-037.
+//! Skills and MCP servers are now managed through the extension framework
+//! and are recorded in `AgentManifest.extensions`. Legacy packages that
+//! already contain these layers can still be imported, but new agent
+//! exports no longer emit them. The deprecated fields and methods on
+//! [`ExportOptions`] and [`Packager`] are retained only for backward
+//! compatibility with team packaging, which still uses the skills layer.
 
-use crate::extensions::mcp::protocol::config::TransportType;
 use crate::identity::Identity;
 use crate::portable::manifest::{AgentLayers, AgentManifest};
-use crate::portable::types::{compute_digest, LayerType};
+use crate::portable::types::{compute_digest, ExtensionRef, LayerType};
 use crate::types::agent::AgentConfig;
 use anyhow::Context;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-/// Convert transport type to string representation
-fn transport_to_string(transport: &TransportType) -> &'static str {
-    match transport {
-        TransportType::Stdio => "stdio",
-        TransportType::Sse => "sse",
-    }
-}
-
 /// Export options
+///
+/// # Deprecated options
+///
+/// `mcp_config_path` and `tools_dir` are deprecated and no longer used by
+/// agent packaging. They are retained on this struct for backward
+/// compatibility with team packaging, which may still initialize them.
+/// MCP servers and skills are now handled via `AgentManifest.extensions`.
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
     /// Encrypt the package with a passphrase
@@ -37,9 +45,15 @@ pub struct ExportOptions {
     pub description: Option<String>,
     /// Output path
     pub output_path: Option<String>,
-    /// MCP config path (for bundling MCP servers)
+    /// Embed extension packages in an `extensions/` layer (ADR-037).
+    /// When true, each enabled non-built-in extension is exported as a
+    /// `.ext` package inside the `.agent` archive.
+    pub with_extensions: bool,
+    /// **Deprecated:** MCP config path is no longer used by agent packaging.
+    /// Retained for team-packaging backward compatibility.
     pub mcp_config_path: Option<std::path::PathBuf>,
-    /// Universal Tools directory (for discovering tool versions)
+    /// **Deprecated:** Universal Tools directory is no longer used by agent packaging.
+    /// Retained for team-packaging backward compatibility.
     pub tools_dir: Option<std::path::PathBuf>,
 }
 
@@ -54,6 +68,7 @@ impl Default for ExportOptions {
             rotate_keys: false,
             description: None,
             output_path: None,
+            with_extensions: false,
             mcp_config_path: None,
             tools_dir: None,
         }
@@ -68,12 +83,19 @@ pub struct Packager {
     identity: Identity,
     /// Memory database path (if any)
     memory_path: Option<std::path::PathBuf>,
-    /// Skills directory
+    /// **Deprecated:** Skills directory is no longer used by agent packaging.
+    /// Retained for team-packaging backward compatibility.
     skills_dir: Option<std::path::PathBuf>,
     /// Workspace directory (SYSTEM.md, etc.)
     workspace_dir: Option<std::path::PathBuf>,
     /// Sessions directory (conversation history)
     sessions_dir: Option<std::path::PathBuf>,
+    /// Extension references to record in the manifest
+    extension_refs: Vec<ExtensionRef>,
+    /// Embedded extension packages to include in the `extensions/` layer.
+    /// Map of package-relative path (e.g. `extensions/docker-skill.ext`)
+    /// to the raw `.ext` file bytes.
+    embedded_extensions: HashMap<String, Vec<u8>>,
 }
 
 impl Packager {
@@ -91,10 +113,16 @@ impl Packager {
             skills_dir: None,
             workspace_dir: None,
             sessions_dir: None,
+            extension_refs: Vec::new(),
+            embedded_extensions: HashMap::new(),
         }
     }
 
-    /// Set skills directory
+    /// **Deprecated:** Set skills directory.
+    ///
+    /// Agent packaging no longer emits a `skills/` layer; skills are now
+    /// managed as extensions via `AgentManifest.extensions`. This method
+    /// is retained for backward compatibility with team packaging.
     pub fn with_skills_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.skills_dir = Some(dir.as_ref().to_path_buf());
         self
@@ -109,6 +137,20 @@ impl Packager {
     /// Set sessions directory
     pub fn with_sessions_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.sessions_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set extension references to record in the manifest
+    pub fn with_extension_refs(mut self, refs: Vec<ExtensionRef>) -> Self {
+        self.extension_refs = refs;
+        self
+    }
+
+    /// Set embedded extension packages to include in the `extensions/` layer.
+    /// Each entry is a package-relative path (e.g. `extensions/docker-skill.ext`)
+    /// and the raw `.ext` file bytes.
+    pub fn with_embedded_extensions(mut self, extensions: HashMap<String, Vec<u8>>) -> Self {
+        self.embedded_extensions = extensions;
         self
     }
 
@@ -157,33 +199,44 @@ impl Packager {
         self.export_config(&mut files, &mut manifest)
             .context("Failed to export config")?;
 
-        // 3. Export skills
+        // 3. Export skills (legacy — only emitted when `skills_dir` is set by team packaging)
         self.export_skills(&mut files, &mut manifest)
             .await
             .context("Failed to export skills")?;
 
-        // 5. Export workspace (if included)
+        // 4. Record extension references in manifest
+        manifest.extensions = self.extension_refs.clone();
+
+        // 5. Embed extension packages (if --with-extensions)
+        if options.with_extensions {
+            for (path, content) in &self.embedded_extensions {
+                files.insert(path.clone(), content.clone());
+                manifest.add_file(path, content);
+            }
+        }
+
+        // 6. Export workspace (if included)
         if options.include_workspace {
             self.export_workspace(&mut files, &mut manifest)
                 .await
                 .context("Failed to export workspace")?;
         }
 
-        // 6. Export sessions (if included)
+        // 7. Export sessions (if included)
         if options.include_sessions {
             self.export_sessions(&mut files, &mut manifest)
                 .await
                 .context("Failed to export sessions")?;
         }
 
-        // 7. Compute layer digests from collected files
+        // 8. Compute layer digests from collected files
         manifest.layers = Some(Self::compute_layers(&files)?);
 
-        // 8. Sign manifest
+        // 9. Sign manifest
         self.sign_manifest(&mut manifest)
             .context("Failed to sign manifest")?;
 
-        // 9. Add manifest to files
+        // 10. Add manifest to files
         let manifest_toml = manifest.to_toml().context("Failed to serialize manifest")?;
         files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
 
@@ -194,6 +247,11 @@ impl Packager {
     ///
     /// Groups files by their top-level directory prefix (config/, identity/, etc.),
     /// builds a gzipped tarball for each group, and computes its SHA-256 digest.
+    ///
+    /// `LayerType::Skills` and `LayerType::Mcp` are retained here so that legacy
+    /// packages containing those prefixes still have their digests computed
+    /// correctly; current agent exports no longer emit those layers unless
+    /// team packaging explicitly provides a skills directory.
     fn compute_layers(files: &HashMap<String, Vec<u8>>) -> anyhow::Result<AgentLayers> {
         let mut layers = AgentLayers::default();
 
@@ -204,6 +262,7 @@ impl Packager {
             (LayerType::Workspace, "workspace"),
             (LayerType::Sessions, "sessions"),
             (LayerType::Mcp, "mcp"),
+            (LayerType::Extensions, "extensions"),
         ];
 
         for (layer_type, prefix) in layer_types {
@@ -225,6 +284,11 @@ impl Packager {
                     LayerType::Workspace => layers.workspace = Some(digest),
                     LayerType::Sessions => layers.sessions = Some(digest),
                     LayerType::Mcp => layers.mcp = Some(digest),
+                    LayerType::Extensions => {
+                        // Extensions layer is optional and appears only when
+                        // extensions are embedded via --with-extensions.
+                        layers.extensions = Some(digest);
+                    }
                     LayerType::TeamConfig => {
                         // TeamConfig is not part of an agent manifest;
                         // it only appears in team registry manifests.
@@ -298,9 +362,12 @@ impl Packager {
         Ok(())
     }
 
-    /// Export memory database
-    /// Export skills
-    /// Copies entire skill directories (not just .toml files)
+    /// **Deprecated:** Export skills from `skills_dir`.
+    ///
+    /// This method is kept for backward compatibility with team packaging.
+    /// Agent packaging no longer sets `skills_dir`, so new agent exports
+    /// do not contain a `skills/` layer. Skills are now managed as
+    /// extensions via `AgentManifest.extensions`.
     async fn export_skills(
         &self,
         files: &mut HashMap<String, Vec<u8>>,
@@ -330,7 +397,9 @@ impl Packager {
         Ok(())
     }
 
-    /// Recursively export a skill directory
+    /// **Deprecated:** Recursively export a skill directory.
+    ///
+    /// This method is kept for backward compatibility with team packaging.
     async fn export_skill_dir(
         &self,
         src_dir: &std::path::Path,
@@ -533,3 +602,41 @@ mod tests {
         assert!(!opts.rotate_keys);
     }
 }
+
+    #[test]
+    fn test_export_options_with_extensions_default_false() {
+        let opts = ExportOptions::default();
+        assert!(!opts.with_extensions);
+    }
+
+    #[test]
+    fn test_compute_layers_includes_extensions_digest() {
+        let mut files = std::collections::HashMap::new();
+        files.insert("config/agent.toml".to_string(), b"[agent]\nname = \"test\"".to_vec());
+        files.insert(
+            "extensions/docker-skill.ext".to_string(),
+            b"fake ext bytes".to_vec(),
+        );
+
+        let layers = Packager::compute_layers(&files).unwrap();
+        assert!(layers.config.is_some());
+        assert!(layers.extensions.is_some());
+        // skills/mcp should not be present in a clean ADR-037 package
+        assert!(layers.skills.is_none());
+        assert!(layers.mcp.is_none());
+    }
+
+    #[test]
+    fn test_compute_layers_skills_legacy_backward_compat() {
+        let mut files = std::collections::HashMap::new();
+        files.insert("config/agent.toml".to_string(), b"[agent]\nname = \"test\"".to_vec());
+        files.insert(
+            "skills/legacy-skill/SKILL.md".to_string(),
+            b"# Legacy skill".to_vec(),
+        );
+
+        let layers = Packager::compute_layers(&files).unwrap();
+        assert!(layers.config.is_some());
+        assert!(layers.skills.is_some());
+        assert!(layers.extensions.is_none());
+    }

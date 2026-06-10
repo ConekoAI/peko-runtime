@@ -121,6 +121,10 @@ pub struct AgentUpdateRequest {
 pub struct AgentExportOptions {
     pub output_path: Option<PathBuf>,
     pub include_sessions: bool,
+    /// Embed extension packages in an `extensions/` layer (ADR-037).
+    /// When true, each enabled non-built-in extension is exported as a
+    /// `.ext` package inside the `.agent` archive.
+    pub with_extensions: bool,
 }
 
 /// Agent export result

@@ -689,11 +689,13 @@ impl IpcServer {
                 team,
                 output,
                 include_sessions,
+                with_extensions,
             } => {
                 let service = state.agent_mgmt_service();
                 let opts = crate::common::types::agent::AgentExportOptions {
                     output_path: output.map(std::path::PathBuf::from),
                     include_sessions,
+                    with_extensions,
                 };
                 match service.export_agent(&name, team.as_deref(), opts).await {
                     Ok(result) => {

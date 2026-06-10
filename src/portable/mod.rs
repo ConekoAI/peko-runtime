@@ -11,10 +11,14 @@
 //! - `identity/did.json` - DID document
 //! - `identity/keys.enc` - Encrypted private keys (AES-256-GCM)
 //! - `config/agent.toml` - Agent configuration
-//! - `skills/{name}/SKILL.md` - Bundled skills (full directories)
 //! - `workspace/` - Workspace files (SYSTEM.md, AGENTS.md, etc.)
 //! - `sessions/` - Session history (optional, can be large)
-//! - `memory/memory.db` - `SQLite` memory database
+//! - `extensions/` - Embedded extension packages (optional, air-gapped bundles)
+//!
+//! **Deprecated:** `skills/{name}/SKILL.md` and `mcp/` layers are legacy.
+//! Under ADR-037, skills and MCP servers are managed as extensions and
+//! recorded in `manifest.extensions`. Legacy packages containing these
+//! layers can still be imported, but new agent exports no longer emit them.
 //!
 //! ## Example
 //!
@@ -68,7 +72,7 @@ pub use team_unpackager::{
     import_team, import_team_with_base_dir, inspect_team, TeamImportOptions, TeamImportResult,
     TeamUnpackager,
 };
-pub use types::{compute_digest, ImageDigest, Layer, LayerDigest, LayerType};
+pub use types::{compute_digest, ExtensionRef, ImageDigest, Layer, LayerDigest, LayerType};
 pub use unpackager::{import_agent, inspect_agent, ImportOptions, ImportResult, Unpackager};
 pub use validation::{validate_package, ValidationResult};
 

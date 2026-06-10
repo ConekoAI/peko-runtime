@@ -284,6 +284,9 @@ impl AgentRegistry {
             if let Some(ref digest) = layers.mcp {
                 Self::collect_layer_files(digest, LayerType::Mcp, self, &mut files).await?;
             }
+            if let Some(ref digest) = layers.extensions {
+                Self::collect_layer_files(digest, LayerType::Extensions, self, &mut files).await?;
+            }
         }
 
         // Update manifest packaging metadata with actual files and checksums

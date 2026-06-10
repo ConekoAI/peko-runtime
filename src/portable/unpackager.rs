@@ -183,6 +183,10 @@ impl Unpackager {
         // Import skills
         self.import_skills(&files).await?;
 
+        // Install embedded extensions from `extensions/` layer (ADR-037).
+        // Failures are logged but do not break the agent import.
+        self.import_embedded_extensions(&files).await?;
+
         // Import workspace (if present in package)
         if options.import_workspace {
             self.import_workspace(&files, &name).await?;
@@ -363,7 +367,15 @@ impl Unpackager {
         Ok(config)
     }
 
-    /// Import skills
+    /// Import skills from a legacy `skills/` layer.
+    ///
+    /// # Deprecation
+    ///
+    /// The `skills/` layer is legacy. New packages produced by ADR-037
+    /// tooling use `AgentManifest.extensions` to declare skill/MCP
+    /// dependencies, which are resolved and installed via the extension
+    /// manager on pull. This method is kept for backward compatibility
+    /// with older `.agent` files that still contain a `skills/` layer.
     async fn import_skills(&self, files: &HashMap<String, Vec<u8>>) -> anyhow::Result<()> {
         let skills_dir = dirs::data_dir()
             .map(|d| d.join("peko").join("skills"))
@@ -382,6 +394,122 @@ impl Unpackager {
 
                 tokio::fs::write(dest_path, content).await?;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Install embedded extension packages from the `extensions/` layer.
+    ///
+    /// Each file matching `extensions/{id}.ext` is written to a temporary
+    /// `.ext` file and installed through the extension manager. Failures
+    /// for individual extensions are logged but do not fail the overall
+    /// agent import.
+    async fn import_embedded_extensions(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        use crate::extension::manager::{
+            packaging::ExtensionUnpackager, ExtensionManager,
+        };
+        use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+        use crate::extensions::gateway::GatewayAdapter;
+        use crate::extensions::general::GeneralExtensionAdapter;
+        use crate::extensions::mcp::McpAdapter;
+        use crate::extensions::skill::SkillAdapter;
+        use crate::extensions::universal::UniversalToolAdapter;
+
+        let extensions_dir = dirs::data_dir()
+            .map(|d| d.join("peko").join("extensions"))
+            .unwrap_or_else(|| self.base_dir.join("extensions"));
+        tokio::fs::create_dir_all(&extensions_dir).await?;
+
+        for (path, content) in files {
+            let Some(ext_file) = path.strip_prefix("extensions/") else {
+                continue;
+            };
+            // Only process .ext files directly under extensions/
+            if !ext_file.ends_with(".ext") || ext_file.contains('/') {
+                continue;
+            }
+
+            let temp_dir = std::env::temp_dir().join(format!(
+                "peko-agent-embed-{}-{}",
+                ext_file,
+                std::process::id()
+            ));
+            if let Err(e) = tokio::fs::create_dir_all(&temp_dir).await {
+                tracing::warn!(
+                    "Failed to create temp dir for embedded extension '{}': {}",
+                    ext_file,
+                    e
+                );
+                continue;
+            }
+
+            let temp_ext_path = temp_dir.join(ext_file);
+            if let Err(e) = tokio::fs::write(&temp_ext_path, content).await {
+                tracing::warn!(
+                    "Failed to write embedded extension '{}': {}",
+                    ext_file,
+                    e
+                );
+                let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+                continue;
+            }
+
+            // Extract the .ext package to a temp directory, then install it
+            let extract_dir = temp_dir.join("extracted");
+            let install_result = tokio::task::spawn_blocking({
+                let extract_dir = extract_dir.clone();
+                let temp_ext_path = temp_ext_path.clone();
+                move || ExtensionUnpackager::install(&temp_ext_path, &extract_dir)
+            })
+            .await;
+
+            match install_result {
+                Ok(Ok(extracted_path)) => {
+                    let mut manager = ExtensionManager::new().with_storage_dir(extensions_dir.clone());
+                    let _ = BuiltinToolAdapter::register_all(
+                        &manager.core_arc(),
+                        &BuiltinToolRegistrarConfig::default(),
+                    )
+                    .await;
+                    manager.register_adapter(Box::new(SkillAdapter::new()));
+                    manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+                    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+                    manager.register_adapter(Box::new(GatewayAdapter::new(manager.core_arc())));
+                    manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+                    if let Err(e) = manager.install(&extracted_path).await {
+                        tracing::warn!(
+                            "Failed to install embedded extension '{}': {}",
+                            ext_file,
+                            e
+                        );
+                    } else {
+                        tracing::info!(
+                            "Installed embedded extension '{}' from agent package",
+                            ext_file
+                        );
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "Failed to extract embedded extension '{}': {}",
+                        ext_file,
+                        e
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Panic while extracting embedded extension '{}': {}",
+                        ext_file,
+                        e
+                    );
+                }
+            }
+
+            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         }
 
         Ok(())

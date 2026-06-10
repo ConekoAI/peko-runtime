@@ -15,7 +15,7 @@ use crate::extension::manager::{ExtensionManager, ExtensionStorage};
 use crate::portable::registry::AgentRegistry;
 use crate::portable::team_layer_builder::{build_team_config_layer, decompose_team_archive};
 use crate::portable::team_layer_reconstructor::reconstruct_team;
-use crate::portable::team_packager::ExtensionRef;
+use crate::portable::types::ExtensionRef;
 use crate::portable::types::{ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};

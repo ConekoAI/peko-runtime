@@ -97,6 +97,17 @@ impl<'de> Deserialize<'de> for ImageDigest {
     }
 }
 
+/// Extension reference for agent/team packages.
+///
+/// Maps an extension ID to the registry reference used for pull.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionRef {
+    /// Extension ID as declared in manifest.yaml
+    pub id: String,
+    /// Registry reference for pull (e.g., "pekohub.com/extensions/calculator-skill:latest")
+    pub registry_ref: String,
+}
+
 /// Layer types for .agent packages
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -106,17 +117,29 @@ pub enum LayerType {
     Config,
     /// Identity layer (DID document, keys)
     Identity,
-    /// Skills layer
+    /// Skills layer (deprecated — retained for reading legacy packages).
+    ///
+    /// Under ADR-037, skills are managed as `skill` extensions and are
+    /// recorded in `AgentManifest.extensions`. New exports no longer emit
+    /// this layer, but legacy packages containing `skills/` can still be
+    /// imported.
     Skills,
     /// Workspace layer
     Workspace,
     /// Sessions layer
     Sessions,
-    /// MCP layer
+    /// MCP layer (deprecated — retained for reading legacy packages).
+    ///
+    /// Under ADR-037, MCP servers are managed as `mcp` extensions and are
+    /// recorded in `AgentManifest.extensions`. New exports no longer emit
+    /// this layer, but legacy packages containing `mcp/` can still be
+    /// imported.
     Mcp,
     /// Team config layer (team.toml, manifest.toml, agent index)
     /// Used for team registry push/pull to enable cross-team agent deduplication.
     TeamConfig,
+    /// Extensions layer — embedded extension packages (optional composite bundle)
+    Extensions,
 }
 
 impl LayerType {
@@ -132,6 +155,7 @@ impl LayerType {
             LayerType::Sessions => "sessions",
             LayerType::Mcp => "mcp",
             LayerType::TeamConfig => "team",
+            LayerType::Extensions => "extensions",
         }
     }
 
@@ -146,6 +170,7 @@ impl LayerType {
             LayerType::Sessions => "application/vnd.peko.layer.sessions.v1.tar+gzip",
             LayerType::Mcp => "application/vnd.peko.layer.mcp.v1.tar+gzip",
             LayerType::TeamConfig => "application/vnd.peko.layer.team.v1.tar+gzip",
+            LayerType::Extensions => "application/vnd.peko.layer.extensions.v1.tar+gzip",
         }
     }
 
@@ -159,6 +184,7 @@ impl LayerType {
             "application/vnd.peko.layer.sessions.v1.tar+gzip" => LayerType::Sessions,
             "application/vnd.peko.layer.mcp.v1.tar+gzip" => LayerType::Mcp,
             "application/vnd.peko.layer.team.v1.tar+gzip" => LayerType::TeamConfig,
+            "application/vnd.peko.layer.extensions.v1.tar+gzip" => LayerType::Extensions,
             _ => LayerType::Config,
         }
     }
@@ -304,6 +330,7 @@ mod tests {
         assert_eq!(LayerType::Sessions.dir_name(), "sessions");
         assert_eq!(LayerType::Mcp.dir_name(), "mcp");
         assert_eq!(LayerType::TeamConfig.dir_name(), "team");
+        assert_eq!(LayerType::Extensions.dir_name(), "extensions");
     }
 
     #[test]

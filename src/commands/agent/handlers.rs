@@ -13,7 +13,7 @@ use crate::common::services::CredentialsService;
 use crate::common::types::agent::AgentImportOptions;
 use crate::portable::manifest::{AgentLayers, AgentManifest};
 use crate::portable::registry::AgentRegistry;
-use crate::portable::types::{ImageDigest, Layer, LayerType};
+use crate::portable::types::{ExtensionRef, ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
@@ -227,6 +227,7 @@ pub async fn handle_agent_export(
     team: Option<String>,
     output: Option<String>,
     include_sessions: bool,
+    with_extensions: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
     let packet = crate::ipc::RequestPacket::AgentExport {
@@ -235,6 +236,7 @@ pub async fn handle_agent_export(
         team,
         output,
         include_sessions,
+        with_extensions,
     };
     let response = client.request_response(packet).await?;
 
@@ -998,6 +1000,12 @@ pub async fn handle_agent_pull(
         let _ = std::fs::remove_file(&p);
     });
 
+    // Inspect the temp package to read manifest extensions before import.
+    // The registry manifest does not carry extension dependency metadata;
+    // it is stored only in the agent manifest TOML inside the .agent package.
+    let (agent_manifest, _) = crate::portable::inspect_agent(&temp_path, None).await?;
+    let extension_refs = agent_manifest.extensions;
+
     // Import using AgentService (properly registers config/identity/workspace/etc.)
     let service = paths.services().agent();
     let import_opts = AgentImportOptions {
@@ -1009,12 +1017,26 @@ pub async fn handle_agent_pull(
     // Temp file will be cleaned up by scopeguard when `cleanup` drops
     drop(cleanup);
 
+    // Ensure any extensions declared by the agent manifest are installed.
+    // Failures are logged but do not break the pull — the user can install
+    // missing extensions manually afterwards.
+    let extension_results = if extension_refs.is_empty() {
+        ExtensionPullResult::default()
+    } else {
+        ensure_extensions_for_agent(paths, &extension_refs, &result.name, cli_registry).await
+    };
+
     if json {
         let output_json = serde_json::json!({
             "success": true,
             "registry_ref": resolved_ref,
             "name": result.name,
             "config_path": result.config_path,
+            "extensions": {
+                "pulled": extension_results.pulled,
+                "already_present": extension_results.already_present,
+                "failed": extension_results.failed.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            },
             "manifest": {
                 "name": manifest.name,
                 "version": manifest.version,
@@ -1027,6 +1049,31 @@ pub async fn handle_agent_pull(
     } else {
         println!("📥 Imported '{}'", result.name);
         println!("   Config: {}", result.config_path.display());
+        if !extension_results.pulled.is_empty() {
+            println!("   Extensions pulled: {}", extension_results.pulled.len());
+            for ext in &extension_results.pulled {
+                println!("     ✓ {}", ext);
+            }
+        }
+        if !extension_results.already_present.is_empty() {
+            println!(
+                "   Extensions already present: {}",
+                extension_results.already_present.len()
+            );
+            for ext in &extension_results.already_present {
+                println!("     ✓ {}", ext);
+            }
+        }
+        if !extension_results.failed.is_empty() {
+            eprintln!();
+            eprintln!(
+                "Warning: {} extension(s) could not be pulled:",
+                extension_results.failed.len()
+            );
+            for (ext_id, err) in &extension_results.failed {
+                eprintln!("  - {}: {}", ext_id, err);
+            }
+        }
         println!("   Use: peko send {} <message>", result.name);
     }
 
@@ -1080,6 +1127,10 @@ async fn agent_to_registry_manifest(
             let size = layer_size(registry, digest).await?;
             manifest.add_layer(Layer::new(digest.clone(), LayerType::Mcp, size));
         }
+        if let Some(digest) = &layers.extensions {
+            let size = layer_size(registry, digest).await?;
+            manifest.add_layer(Layer::new(digest.clone(), LayerType::Extensions, size));
+        }
     }
 
     // Create a config blob (required by OCI spec) from agent metadata
@@ -1123,6 +1174,9 @@ fn registry_to_agent_manifest(registry_manifest: &RegistryManifest) -> AgentMani
             LayerType::Workspace => layers.workspace = Some(layer.digest.clone()),
             LayerType::Sessions => layers.sessions = Some(layer.digest.clone()),
             LayerType::Mcp => layers.mcp = Some(layer.digest.clone()),
+            LayerType::Extensions => {
+                layers.extensions = Some(layer.digest.clone());
+            }
             LayerType::TeamConfig => {
                 // TeamConfig layers are not part of agent manifests;
                 // they are skipped when reconstructing an agent manifest.
@@ -1166,4 +1220,100 @@ async fn store_registry_manifest_for_client(
     let json = manifest.to_json()?;
     tokio::fs::write(&manifest_path, json).await?;
     Ok(digest)
+}
+
+/// Result of pulling extensions for an agent.
+#[derive(Default)]
+struct ExtensionPullResult {
+    pulled: Vec<String>,
+    already_present: Vec<String>,
+    failed: Vec<(String, String)>,
+}
+
+/// Ensure all extensions referenced by an agent manifest are installed.
+///
+/// For each `ExtensionRef`:
+/// - If already installed, mark as already present
+/// - If not installed, call `handle_ext_pull` (which handles dependencies)
+///
+/// Failures are collected and returned rather than failing the whole operation,
+/// so that a missing extension does not prevent the agent from being imported.
+async fn ensure_extensions_for_agent(
+    paths: &GlobalPaths,
+    extensions: &[ExtensionRef],
+    agent_name: &str,
+    cli_registry: Option<&str>,
+) -> ExtensionPullResult {
+    use crate::extension::core::global_core;
+    use crate::extension::manager::{ExtensionManager, ExtensionStorage};
+    use crate::extension::types::ExtensionId;
+    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+    use crate::extensions::gateway::GatewayAdapter;
+    use crate::extensions::general::GeneralExtensionAdapter;
+    use crate::extensions::mcp::McpAdapter;
+    use crate::extensions::skill::SkillAdapter;
+    use crate::extensions::universal::UniversalToolAdapter;
+
+    let mut result = ExtensionPullResult::default();
+
+    let core = match global_core() {
+        Some(c) => c,
+        None => {
+            tracing::warn!("Global ExtensionCore not initialized; skipping extension ensure for agent '{}'", agent_name);
+            for ext in extensions {
+                result
+                    .failed
+                    .push((ext.id.clone(), "ExtensionCore not initialized".to_string()));
+            }
+            return result;
+        }
+    };
+
+    let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
+    let mut manager = ExtensionManager::with_core(core);
+    manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
+
+    let _ = BuiltinToolAdapter::register_all(
+        &manager.core_arc(),
+        &BuiltinToolRegistrarConfig::default(),
+    )
+    .await;
+    manager.register_adapter(Box::new(SkillAdapter::new()));
+    manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+    manager.register_adapter(Box::new(GatewayAdapter::new(manager.core_arc())));
+    manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+
+    if let Err(e) = manager.load_all().await {
+        tracing::warn!("Failed to load extensions during agent pull: {}", e);
+    }
+
+    for ext_ref in extensions {
+        let ext_id = ExtensionId::new(&ext_ref.id);
+
+        if manager.get_extension(&ext_id).is_some() {
+            result.already_present.push(ext_ref.id.clone());
+        } else {
+            match crate::commands::ext::handle_ext_pull(
+                &mut manager,
+                &ext_ref.registry_ref,
+                false, // json
+                false, // no_deps — let dependency resolution work
+                cli_registry,
+                paths,
+            )
+            .await
+            {
+                Ok(()) => {
+                    result.pulled.push(ext_ref.id.clone());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to pull extension '{}': {}", ext_ref.id, e);
+                    result.failed.push((ext_ref.id.clone(), e.to_string()));
+                }
+            }
+        }
+    }
+
+    result
 }
