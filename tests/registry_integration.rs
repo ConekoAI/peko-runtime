@@ -190,6 +190,7 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
         workspace: None,
         sessions: None,
         mcp: None,
+        extensions: None,
     });
 
     (manifest, layers)
@@ -651,6 +652,7 @@ async fn test_registry_client_skips_existing_layers() {
         workspace: None,
         sessions: None,
         mcp: None,
+        extensions: None,
     });
 
     let manifest_digest = registry
@@ -730,6 +732,7 @@ async fn test_registry_client_push_with_auth_token() {
         workspace: None,
         sessions: None,
         mcp: None,
+        extensions: None,
     });
 
     let manifest_digest = registry

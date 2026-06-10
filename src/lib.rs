@@ -195,7 +195,12 @@ pub(crate) mod cron;
 // / Hook registry and management (Milestone 8 — deprecated, see Issue 001)
 // pub mod hooks; // Removed per Issue 001 — use extensions::core instead
 /// Daemon mode for background execution (internal, exposed for integration tests)
+#[cfg(not(feature = "test-utils"))]
 pub(crate) mod daemon;
+
+/// Daemon mode for background execution (exposed for integration tests with test-utils feature)
+#[cfg(feature = "test-utils")]
+pub mod daemon;
 
 /// Re-exports for integration tests (only available with `test-utils` feature)
 #[cfg(feature = "test-utils")]

@@ -289,7 +289,7 @@ async fn test_e2e_tunnel_chat_with_real_llm() {
         log_level: "warn".to_string(),
     };
 
-    let app_state = AppState::with_data_dir(
+    let app_state: AppState = AppState::with_data_dir(
         workspace_path,
         "127.0.0.1",
         0, // random port — we don't need the HTTP server for this test
@@ -360,7 +360,7 @@ async fn test_e2e_tunnel_chat_with_real_llm() {
     });
 
     // 6. Start tunnel
-    let tunnel_started = app_state
+    let tunnel_started: bool = app_state
         .start_tunnel()
         .await
         .expect("Failed to start tunnel");

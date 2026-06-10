@@ -101,7 +101,7 @@ windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_
 toml_edit = "0.25.12"
 
 [features]
-default = []
+default = ["test-utils"]
 mcp = []
 # Expose internal modules for integration tests
 test-utils = []
