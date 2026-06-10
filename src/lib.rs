@@ -194,8 +194,14 @@ pub(crate) mod cron;
 
 // / Hook registry and management (Milestone 8 — deprecated, see Issue 001)
 // pub mod hooks; // Removed per Issue 001 — use extensions::core instead
-/// Daemon mode for background execution
+/// Daemon mode for background execution (internal, exposed for integration tests)
 pub(crate) mod daemon;
+
+/// Re-exports for integration tests (only available with `test-utils` feature)
+#[cfg(feature = "test-utils")]
+pub mod test_utils {
+    pub use crate::daemon::state::{AppState, DaemonConfigSnapshot};
+}
 
 /// IPC layer (UDP/Unix socket) for CLI↔daemon communication
 pub mod ipc;

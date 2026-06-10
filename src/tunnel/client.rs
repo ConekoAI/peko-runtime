@@ -232,12 +232,22 @@ impl TunnelClient {
             }
         };
 
-        // 3. Start heartbeat + read loops
+        // 3. Forward TunnelReady to handler so dispatcher can announce instances
         let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<TunnelMessage>();
         let handle = TunnelHandle {
             tx: internal_tx.clone(),
         };
 
+        if let Some(handler) = &self.request_handler {
+            handler(
+                TunnelMessage::TunnelReady {
+                    heartbeat_interval_secs: heartbeat_interval,
+                },
+                handle.clone(),
+            );
+        }
+
+        // 4. Start heartbeat + read loops
         let state = self.state.clone();
         let request_handler = self.request_handler.clone();
 
@@ -392,8 +402,16 @@ impl TunnelClient {
                     debug!("No request handler registered, dropping message");
                 }
             }
-            TunnelMessage::RuntimeHello { .. } | TunnelMessage::TunnelReady { .. } => {
+            TunnelMessage::RuntimeHello { .. } => {
                 warn!("Unexpected control message received after auth");
+            }
+            TunnelMessage::TunnelReady { .. } => {
+                // Forward TunnelReady to the handler so dispatcher can announce instances
+                if let Some(handler) = request_handler {
+                    handler(msg, handle.clone());
+                } else {
+                    debug!("No request handler registered, dropping TunnelReady");
+                }
             }
         }
     }

@@ -103,12 +103,15 @@ toml_edit = "0.25.12"
 [features]
 default = []
 mcp = []
+# Expose internal modules for integration tests
+test-utils = []
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
 serial_test = "3.0"
+jsonwebtoken = "9"
 
 
 [[bin]]

@@ -28,6 +28,38 @@ use pekobot::tunnel::protocol::{
     InstanceExposure, TunnelMessage,
 };
 
+// JWT secret must match the PekoHub test fixture
+const PEKOHUB_JWT_SECRET: &str = "test-secret-key-that-is-32-chars-long!!";
+
+/// Generate a JWT token for the test user
+fn generate_jwt(user_id: i64, namespace: &str) -> String {
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct Claims {
+        sub: String,
+        namespace: String,
+        iat: u64,
+    }
+
+    let claims = Claims {
+        sub: user_id.to_string(),
+        namespace: namespace.to_string(),
+        iat: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    };
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(PEKOHUB_JWT_SECRET.as_bytes()),
+    )
+    .unwrap()
+}
+
 // ---------------------------------------------------------------------------
 // Test harness: auto-start pekohub backend
 // ---------------------------------------------------------------------------
@@ -301,9 +333,9 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
         .build()
         .unwrap();
 
-    // Create user via dev auth bypass
-    let _user_resp = client
-        .post(format!("{}/v1/auth/dev-login", backend.url))
+    // Create user via test-only endpoint
+    let user_resp = client
+        .post(format!("{}/test/create-user", backend.url))
         .json(&serde_json::json!({
             "external_id": "tunnel-test-user",
             "provider": "github",
@@ -312,7 +344,28 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             "email": "tunnel@test.com"
         }))
         .send()
-        .await;
+        .await
+        .expect("Failed to create test user");
+    assert!(user_resp.status().is_success(), "Test user creation failed");
+    let user_body: serde_json::Value = user_resp.json().await.unwrap();
+    let user_id = user_body["id"].as_i64().expect("No user id") as i32;
+
+    // Create runtime record for owner resolution
+    let runtime_resp = client
+        .post(format!("{}/test/create-runtime", backend.url))
+        .json(&serde_json::json!({
+            "runtime_did": did,
+            "owner_id": user_id,
+            "display_name": "Test Runtime"
+        }))
+        .send()
+        .await
+        .expect("Failed to create runtime");
+    assert!(runtime_resp.status().is_success(), "Runtime creation failed");
+
+    // Generate JWT for authenticated requests
+    let jwt_token = generate_jwt(user_id as i64, "tunneltestuser");
+    let auth_header = format!("Bearer {jwt_token}");
 
     let (mut write, read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
     let _read = read; // keep alive
@@ -346,9 +399,10 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
     // Give PekoHub time to process
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Query instances API
+    // Query instances API with auth
     let list_resp = client
         .get(format!("{}/v1/instances", backend.url))
+        .header("Authorization", &auth_header)
         .query(&[("runtime_id", &did)])
         .send()
         .await
@@ -381,6 +435,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
     // Verify instance is still online
     let detail_resp = client
         .get(format!("{}/v1/instances/{instance_id}", backend.url))
+        .header("Authorization", &auth_header)
         .send()
         .await
         .expect("Failed to get instance detail");
@@ -398,6 +453,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
 
     let offline_resp = client
         .get(format!("{}/v1/instances/{instance_id}", backend.url))
+        .header("Authorization", &auth_header)
         .send()
         .await
         .expect("Failed to get instance after disconnect");
