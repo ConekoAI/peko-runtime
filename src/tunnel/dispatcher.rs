@@ -22,6 +22,15 @@ use super::protocol::{
 };
 use super::TunnelHandle;
 
+/// Per-instance access control state (defense-in-depth: mirrors PekoHub's ACL).
+#[derive(Debug, Clone)]
+pub struct InstanceAcl {
+    /// Current exposure level
+    pub exposure: InstanceExposure,
+    /// Allowed user IDs (for private exposure)
+    pub allowed_users: Vec<String>,
+}
+
 /// Shared dispatcher state for instance lifecycle management
 #[derive(Debug, Default)]
 pub struct TunnelDispatcherState {
@@ -29,6 +38,8 @@ pub struct TunnelDispatcherState {
     pub ready: bool,
     /// Heartbeat interval from server (seconds)
     pub heartbeat_interval_secs: u32,
+    /// Local ACL cache: instance_id -> ACL (updated by exposure_update)
+    pub instance_acl: std::collections::HashMap<String, InstanceAcl>,
 }
 
 /// Dispatches tunnel messages to daemon services.
@@ -78,7 +89,9 @@ impl TunnelDispatcher {
     pub async fn mark_disconnected(&self) {
         let mut state = self.state.write().await;
         state.ready = false;
-        info!("Tunnel dispatcher disconnected");
+        // Clear ACL cache to prevent stale permissions on reconnect
+        state.instance_acl.clear();
+        info!("Tunnel dispatcher disconnected, ACL cache cleared");
     }
 
     /// Check if the tunnel is ready
@@ -108,8 +121,9 @@ impl TunnelDispatcher {
         };
 
         for agent in agents {
+            let instance_id = self.instance_id(&agent.name);
             let payload = InstanceAnnouncePayload {
-                id: self.instance_id(&agent.name),
+                id: instance_id.clone(),
                 instance_type: InstanceType::Agent,
                 name: agent.name.clone(),
                 bundle_ref: None,
@@ -120,6 +134,17 @@ impl TunnelDispatcher {
                 capabilities: None,
                 metadata: None,
             };
+
+            // Seed local ACL cache with default Private exposure
+            let mut state = self.state.write().await;
+            state.instance_acl.insert(
+                instance_id,
+                InstanceAcl {
+                    exposure: InstanceExposure::Private,
+                    allowed_users: Vec::new(),
+                },
+            );
+            drop(state);
 
             if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce { payload }) {
                 warn!("Failed to announce instance {}: {}", agent.name, e);
@@ -221,6 +246,14 @@ impl TunnelDispatcher {
                     .await;
             }
         };
+
+        // Defense-in-depth: enforce local ACL even though PekoHub already checked
+        if let Err(e) = self.check_request_allowed(&agent_name, &bridge_payload).await {
+            warn!("Tunnel ACL denied request for {}: {}", agent_name, e);
+            return self
+                .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
+                .await;
+        }
 
         // Extract message from the bridge payload
         let message = bridge_payload
@@ -388,8 +421,68 @@ impl TunnelDispatcher {
             "Exposure update for instance {}: {:?}",
             payload.instance_id, payload.exposure
         );
-        // The runtime re-announces the instance to confirm the change
-        // The actual exposure enforcement is handled by PekoHub's auth layer
+
+        // Update local ACL cache for defense-in-depth enforcement
+        let mut state = self.state.write().await;
+        state.instance_acl.insert(
+            payload.instance_id.clone(),
+            InstanceAcl {
+                exposure: payload.exposure.clone(),
+                allowed_users: payload.allowed_user_ids.clone().unwrap_or_default(),
+            },
+        );
+        drop(state);
+
+        // Re-announce the instance to confirm the change
         Ok(())
+    }
+
+    /// Check if a proxied request is allowed for the given agent/instance.
+    ///
+    /// Returns `Ok(())` if allowed, or an error message if denied.
+    /// This is defense-in-depth: PekoHub already checks auth, but the runtime
+    /// should also enforce its own ACL in case the tunnel is bypassed.
+    async fn check_request_allowed(
+        &self,
+        agent_name: &str,
+        bridge_payload: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let instance_id = self.instance_id(agent_name);
+
+        let state = self.state.read().await;
+        let acl = match state.instance_acl.get(&instance_id) {
+            Some(acl) => acl.clone(),
+            None => {
+                // No ACL cached yet — agent was never announced or exposure
+                // was never set. Default to allowing (backward compat).
+                return Ok(());
+            }
+        };
+        drop(state);
+
+        match acl.exposure {
+            InstanceExposure::Public => Ok(()),
+            InstanceExposure::Unexposed => {
+                anyhow::bail!("Agent is not exposed")
+            }
+            InstanceExposure::Private => {
+                // Extract user ID from bridge payload (set by PekoHub)
+                let user_id = bridge_payload
+                    .get("headers")
+                    .and_then(|h| h.get("x-pekohub-user-id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if user_id.is_empty() {
+                    anyhow::bail!("Authentication required")
+                }
+
+                if acl.allowed_users.iter().any(|u| u == user_id) {
+                    Ok(())
+                } else {
+                    anyhow::bail!("Forbidden")
+                }
+            }
+        }
     }
 }
