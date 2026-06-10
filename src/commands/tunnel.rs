@@ -86,10 +86,22 @@ pub async fn handle_tunnel(
         TunnelCommands::Stop => {
             // In daemon mode, stop the tunnel via IPC
             match crate::ipc::DaemonClient::connect().await {
-                Ok(_client) => {
-                    // TODO: Add a tunnel_stop IPC packet
-                    println!("🛑 Tunnel stop requested via daemon.");
-                    println!("   The daemon will stop the background tunnel on next cycle.");
+                Ok(client) => {
+                    match client.tunnel_stop().await {
+                        Ok(crate::ipc::ResponsePacket::Done { success, .. }) => {
+                            if success {
+                                println!("🛑 Tunnel stopped.");
+                            } else {
+                                println!("⚠️  Tunnel stop returned unsuccessful.");
+                            }
+                        }
+                        Ok(other) => {
+                            println!("⚠️  Unexpected response from daemon: {:?}", other);
+                        }
+                        Err(e) => {
+                            println!("❌ Failed to stop tunnel: {}", e);
+                        }
+                    }
                 }
                 Err(_) => {
                     println!("🛑 No daemon running. Tunnel is not active.");
@@ -102,33 +114,102 @@ pub async fn handle_tunnel(
             let cred_path = crate::tunnel::PekoHubCredential::default_path();
 
             // Try to check daemon tunnel status
-            let daemon_connected = crate::ipc::DaemonClient::connect().await.is_ok();
-
-            if json_flag || json {
-                let output = serde_json::json!({
-                    "configured": has_cred,
-                    "credential_path": cred_path.to_string_lossy().to_string(),
-                    "daemon_running": daemon_connected,
-                    "connected": false, // TODO: query actual connection state via daemon
-                });
-                println!("{}", serde_json::to_string_pretty(&output)?);
-            } else {
-                println!("📡 Tunnel Status:");
-                if has_cred {
-                    println!("  Credential: ✅ Found at {}", cred_path.display());
-                } else {
-                    println!("  Credential: ❌ Not found at {}", cred_path.display());
+            match crate::ipc::DaemonClient::connect().await {
+                Ok(client) => {
+                    match client.tunnel_status().await {
+                        Ok(crate::ipc::ResponsePacket::TunnelStatus {
+                            configured,
+                            daemon_running,
+                            connected,
+                            ..
+                        }) => {
+                            if json_flag || json {
+                                let output = serde_json::json!({
+                                    "configured": configured,
+                                    "credential_path": cred_path.to_string_lossy().to_string(),
+                                    "daemon_running": daemon_running,
+                                    "connected": connected,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&output)?);
+                            } else {
+                                println!("📡 Tunnel Status:");
+                                if configured {
+                                    println!("  Credential: ✅ Found at {}", cred_path.display());
+                                } else {
+                                    println!("  Credential: ❌ Not found at {}", cred_path.display());
+                                }
+                                if daemon_running {
+                                    println!("  Daemon:     ✅ Running");
+                                } else {
+                                    println!("  Daemon:     ❌ Not running");
+                                }
+                                if connected {
+                                    println!("  Tunnel:     ✅ Connected");
+                                } else {
+                                    println!("  Tunnel:     ❌ Not connected");
+                                }
+                                println!();
+                                println!("  Start with: peko daemon start  (auto-starts tunnel if cred exists)");
+                                println!("  Or:         peko tunnel start   (foreground mode)");
+                            }
+                        }
+                        Ok(other) => {
+                            if json_flag || json {
+                                let output = serde_json::json!({
+                                    "configured": has_cred,
+                                    "credential_path": cred_path.to_string_lossy().to_string(),
+                                    "daemon_running": true,
+                                    "connected": false,
+                                    "warning": format!("Unexpected response: {:?}", other),
+                                });
+                                println!("{}", serde_json::to_string_pretty(&output)?);
+                            } else {
+                                println!("📡 Tunnel Status:");
+                                println!("  Daemon:     ✅ Running");
+                                println!("  Warning:    Unexpected response from daemon");
+                            }
+                        }
+                        Err(e) => {
+                            if json_flag || json {
+                                let output = serde_json::json!({
+                                    "configured": has_cred,
+                                    "credential_path": cred_path.to_string_lossy().to_string(),
+                                    "daemon_running": true,
+                                    "connected": false,
+                                    "error": format!("Failed to get status: {}", e),
+                                });
+                                println!("{}", serde_json::to_string_pretty(&output)?);
+                            } else {
+                                println!("📡 Tunnel Status:");
+                                println!("  Daemon:     ✅ Running");
+                                println!("  Error:      Failed to get status: {}", e);
+                            }
+                        }
+                    }
                 }
-                if daemon_connected {
-                    println!("  Daemon:     ✅ Running");
-                    println!("  Tunnel:     🔄 Managed by daemon (start on launch if cred exists)");
-                } else {
-                    println!("  Daemon:     ❌ Not running");
-                    println!("  Tunnel:     ❌ Not connected");
+                Err(_) => {
+                    if json_flag || json {
+                        let output = serde_json::json!({
+                            "configured": has_cred,
+                            "credential_path": cred_path.to_string_lossy().to_string(),
+                            "daemon_running": false,
+                            "connected": false,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output)?);
+                    } else {
+                        println!("📡 Tunnel Status:");
+                        if has_cred {
+                            println!("  Credential: ✅ Found at {}", cred_path.display());
+                        } else {
+                            println!("  Credential: ❌ Not found at {}", cred_path.display());
+                        }
+                        println!("  Daemon:     ❌ Not running");
+                        println!("  Tunnel:     ❌ Not connected");
+                        println!();
+                        println!("  Start with: peko daemon start  (auto-starts tunnel if cred exists)");
+                        println!("  Or:         peko tunnel start   (foreground mode)");
+                    }
                 }
-                println!();
-                println!("  Start with: peko daemon start  (auto-starts tunnel if cred exists)");
-                println!("  Or:         peko tunnel start   (foreground mode)");
             }
             Ok(())
         }
@@ -138,11 +219,81 @@ pub async fn handle_tunnel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::packet::{RequestPacket, ResponsePacket};
 
     #[test]
     fn test_tunnel_commands_enum() {
         let _cmd = TunnelCommands::Start { credential: None };
         let _cmd = TunnelCommands::Stop;
         let _cmd = TunnelCommands::Status { json: true };
+    }
+
+    #[test]
+    fn test_tunnel_stop_request_serialization() {
+        let req = RequestPacket::TunnelStop { request_id: 700 };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TunnelStop { request_id } => {
+                assert_eq!(request_id, 700);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_tunnel_status_request_serialization() {
+        let req = RequestPacket::TunnelStatus { request_id: 701 };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::TunnelStatus { request_id } => {
+                assert_eq!(request_id, 701);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_tunnel_status_response_serialization() {
+        let resp = ResponsePacket::TunnelStatus {
+            request_id: 702,
+            configured: true,
+            daemon_running: true,
+            connected: false,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::TunnelStatus {
+                request_id,
+                configured,
+                daemon_running,
+                connected,
+            } => {
+                assert_eq!(request_id, 702);
+                assert!(configured);
+                assert!(daemon_running);
+                assert!(!connected);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_tunnel_request_ids() {
+        let req_stop = RequestPacket::TunnelStop { request_id: 1 };
+        assert_eq!(req_stop.request_id(), 1);
+
+        let req_status = RequestPacket::TunnelStatus { request_id: 2 };
+        assert_eq!(req_status.request_id(), 2);
+
+        let resp = ResponsePacket::TunnelStatus {
+            request_id: 3,
+            configured: false,
+            daemon_running: true,
+            connected: false,
+        };
+        assert_eq!(resp.request_id(), 3);
     }
 }

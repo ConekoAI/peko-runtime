@@ -100,6 +100,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects"] }
 toml_edit = "0.25.12"
 
+# JWT validation
+jsonwebtoken = "9"
+
 [features]
 default = ["test-utils"]
 mcp = []
@@ -111,7 +114,7 @@ tokio-test = "0.4"
 tempfile = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
 serial_test = "3.0"
-jsonwebtoken = "9"
+rsa = "0.9"
 
 
 [[bin]]

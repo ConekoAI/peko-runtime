@@ -214,6 +214,17 @@ pub enum RequestPacket {
         team: Option<String>,
     },
 
+    #[serde(rename = "agent_update")]
+    AgentUpdate {
+        request_id: u64,
+        name: String,
+        team: Option<String>,
+        model: Option<String>,
+        description: Option<String>,
+        system_prompt: Option<String>,
+        config: Option<serde_json::Value>,
+    },
+
     // ─── Team CRUD ──────────────────────────────────────────────────
     #[serde(rename = "team_list")]
     TeamList { request_id: u64 },
@@ -467,6 +478,12 @@ pub enum RequestPacket {
     #[serde(rename = "runtime_remove")]
     RuntimeRemove { request_id: u64, runtime_id: String },
 
+    // ── Tunnel (ADR-035) ──
+    #[serde(rename = "tunnel_stop")]
+    TunnelStop { request_id: u64 },
+    #[serde(rename = "tunnel_status")]
+    TunnelStatus { request_id: u64 },
+
     // ── Auth management (ADR-034) ──
     #[serde(rename = "auth_api_key_create")]
     AuthApiKeyCreate {
@@ -579,6 +596,7 @@ impl RequestPacket {
             | Self::AgentExport { request_id, .. }
             | Self::AgentImport { request_id, .. }
             | Self::AgentMove { request_id, .. }
+            | Self::AgentUpdate { request_id, .. }
             | Self::TeamExport { request_id, .. }
             | Self::TeamImport { request_id, .. }
             | Self::TeamJoin { request_id, .. }
@@ -595,6 +613,8 @@ impl RequestPacket {
             | Self::AuthApiKeyList { request_id }
             | Self::AuthApiKeyRevoke { request_id, .. }
             | Self::AuthStatus { request_id }
+            | Self::TunnelStop { request_id }
+            | Self::TunnelStatus { request_id }
             | Self::AgentTransferOwner { request_id, .. }
             | Self::AgentGrantPermission { request_id, .. }
             | Self::AgentRevokePermission { request_id, .. }
@@ -781,6 +801,13 @@ pub enum ResponsePacket {
     AgentMoved {
         request_id: u64,
         result: crate::common::types::agent::AgentRenameResult,
+    },
+
+    /// Agent updated response
+    #[serde(rename = "agent_updated")]
+    AgentUpdated {
+        request_id: u64,
+        name: String,
     },
 
     /// Team list response
@@ -1072,6 +1099,15 @@ pub enum ResponsePacket {
         runtimes: Vec<KnownRuntimeResponse>,
     },
 
+    // ── Tunnel (ADR-035) ──
+    #[serde(rename = "tunnel_status")]
+    TunnelStatus {
+        request_id: u64,
+        configured: bool,
+        daemon_running: bool,
+        connected: bool,
+    },
+
     // ── Auth management (ADR-034) ──
     #[serde(rename = "auth_api_key_created")]
     AuthApiKeyCreated {
@@ -1271,6 +1307,7 @@ impl ResponsePacket {
             | Self::AgentExported { request_id, .. }
             | Self::AgentImported { request_id, .. }
             | Self::AgentMoved { request_id, .. }
+            | Self::AgentUpdated { request_id, .. }
             | Self::TeamExported { request_id, .. }
             | Self::TeamImported { request_id, .. }
             | Self::RegistryPulled { request_id, .. }
@@ -1280,7 +1317,8 @@ impl ResponsePacket {
             | Self::AuthApiKeyCreated { request_id, .. }
             | Self::AuthApiKeyList { request_id, .. }
             | Self::AuthApiKeyRevoked { request_id, .. }
-            | Self::AuthStatus { request_id, .. } => *request_id,
+            | Self::AuthStatus { request_id, .. }
+            | Self::TunnelStatus { request_id, .. } => *request_id,
         }
     }
 
@@ -1947,6 +1985,7 @@ mod tests {
                 sessions_dir: std::path::PathBuf::from("/tmp/test-agent/sessions"),
                 session_count: 0,
                 memberships: vec![],
+                system_prompt: None,
             }),
         };
         let bytes = resp.to_bytes().unwrap();

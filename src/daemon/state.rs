@@ -135,6 +135,9 @@ pub struct AppState {
 
     /// Tunnel cancellation token — set when tunnel is active
     tunnel_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
+
+    /// Whether the tunnel is currently connected
+    tunnel_connected: Arc<RwLock<bool>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -479,6 +482,7 @@ impl AppState {
             Some(crate::auth::jwt::JwtValidator::new(
                 auth_config.trusted_issuers().to_vec(),
                 runtime_identity.runtime_did.clone(),
+                None,
             ))
         } else {
             None
@@ -533,6 +537,7 @@ impl AppState {
             jwt_validator,
             rate_limiter,
             tunnel_cancel: Arc::new(RwLock::new(None)),
+            tunnel_connected: Arc::new(RwLock::new(false)),
         })
     }
 
@@ -814,13 +819,33 @@ impl AppState {
             dispatcher_for_handler.handle_message(msg, handle);
         });
 
+        {
+            let mut connected = self.tunnel_connected.write().await;
+            *connected = true;
+        }
+
+        let connected_flag = self.tunnel_connected.clone();
         tokio::spawn(async move {
             info!("Starting PekoHub tunnel in background");
             client.run_cancellable(cancel).await;
             info!("PekoHub tunnel stopped");
+            let mut connected = connected_flag.write().await;
+            *connected = false;
         });
 
         Ok(true)
+    }
+
+    /// Check if the tunnel is currently connected
+    pub async fn tunnel_connected(&self) -> bool {
+        let connected = self.tunnel_connected.read().await;
+        *connected
+    }
+
+    /// Check if the tunnel has been started (has a cancellation token)
+    pub async fn tunnel_started(&self) -> bool {
+        let tc = self.tunnel_cancel.read().await;
+        tc.is_some()
     }
 
     /// Stop the PekoHub tunnel
@@ -828,8 +853,10 @@ impl AppState {
         let mut tc = self.tunnel_cancel.write().await;
         if let Some(ref cancel) = *tc {
             cancel.cancel();
-            *tc = None;
         }
+        *tc = None;
+        let mut connected = self.tunnel_connected.write().await;
+        *connected = false;
     }
 }
 

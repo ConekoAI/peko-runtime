@@ -425,6 +425,19 @@ impl AgentService {
             .map(|m| m.team)
             .collect();
 
+        // Resolve the first configured system prompt file, if any.
+        let system_prompt = config
+            .prompt
+            .as_ref()
+            .and_then(|p| p.system.as_ref())
+            .and_then(|s| s.files.as_ref())
+            .and_then(|files| files.first())
+            .and_then(|file| {
+                let workspace_dir = self.resolver.agent_workspace(agent_name, None);
+                let path = workspace_dir.join(file);
+                std::fs::read_to_string(&path).ok()
+            });
+
         Ok(Some(AgentInfo {
             name: agent_name.to_string(),
             config,
@@ -432,6 +445,7 @@ impl AgentService {
             sessions_dir,
             session_count,
             memberships,
+            system_prompt,
         }))
     }
 
@@ -624,6 +638,43 @@ impl AgentService {
         if let Some(image_ref) = update.image {
             let model_name = parse_image_model_name(&image_ref)?;
             config.provider.default_model = model_name;
+        }
+
+        if let Some(model) = update.model {
+            config.provider.default_model = model;
+        }
+
+        if update.description.is_some() {
+            config.description = update.description;
+        }
+
+        if let Some(system_prompt) = update.system_prompt {
+            if !system_prompt.is_empty() {
+                config.prompt = Some(PromptConfig {
+                    system: Some(SystemFileConfig {
+                        files: Some(vec!["SYSTEM.md".to_string()]),
+                        ..Default::default()
+                    }),
+                });
+                // Write the system prompt to a SYSTEM.md file in the agent workspace
+                let workspace_dir = self.resolver.agent_workspace(agent_name, None);
+                tokio::fs::create_dir_all(&workspace_dir).await.ok();
+                let system_md_path = workspace_dir.join("SYSTEM.md");
+                tokio::fs::write(&system_md_path, &system_prompt).await?;
+            } else {
+                config.prompt = None;
+            }
+        }
+
+        if let Some(patch) = update.config {
+            // Merge the JSON patch into the TOML config by converting both to serde_json::Value
+            let mut config_json = serde_json::to_value(&config)?;
+            if let Some(patch_obj) = patch.as_object() {
+                for (key, value) in patch_obj {
+                    config_json[key] = value.clone();
+                }
+            }
+            config = serde_json::from_value(config_json)?;
         }
 
         let updated_toml = toml::to_string_pretty(&config)?;
@@ -1112,5 +1163,82 @@ mod tests {
         assert_eq!(result.name, "alice");
         assert!(result.config_path.to_string_lossy().contains("agents"));
         assert!(result.config_path.to_string_lossy().contains("alice"));
+    }
+
+    #[tokio::test]
+    async fn test_update_agent_model_description_and_system_prompt() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
+        let service = AgentService::new(resolver);
+
+        let request = AgentCreateRequest::new("alice", "minimax");
+        service.create_agent(request).await.unwrap();
+
+        let update = AgentUpdateRequest {
+            model: Some("mini-4".to_string()),
+            description: Some("Agent for testing".to_string()),
+            system_prompt: Some("You are a test assistant.".to_string()),
+            ..Default::default()
+        };
+        service.update_agent("alice", None, update).await.unwrap();
+
+        let info = service.get_agent("alice", None).await.unwrap().unwrap();
+        assert_eq!(info.config.provider.default_model, "mini-4");
+        assert_eq!(info.config.description.as_deref(), Some("Agent for testing"));
+        assert_eq!(info.system_prompt.as_deref(), Some("You are a test assistant."));
+        assert!(info
+            .config
+            .prompt
+            .as_ref()
+            .and_then(|p| p.system.as_ref())
+            .and_then(|s| s.files.as_ref())
+            .unwrap()
+            .contains(&"SYSTEM.md".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_agent_clears_system_prompt() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
+        let service = AgentService::new(resolver);
+
+        let request = AgentCreateRequest::new("alice", "minimax");
+        service.create_agent(request).await.unwrap();
+
+        service
+            .update_agent(
+                "alice",
+                None,
+                AgentUpdateRequest {
+                    system_prompt: Some("You are a test assistant.".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        service
+            .update_agent(
+                "alice",
+                None,
+                AgentUpdateRequest {
+                    system_prompt: Some("".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let info = service.get_agent("alice", None).await.unwrap().unwrap();
+        assert!(info.config.prompt.is_none());
+        assert!(info.system_prompt.is_none());
     }
 }

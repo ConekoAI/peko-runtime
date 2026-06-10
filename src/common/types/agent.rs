@@ -25,6 +25,9 @@ pub struct AgentInfo {
     pub sessions_dir: PathBuf,
     pub session_count: usize,
     pub memberships: Vec<String>,
+    /// Resolved content of the first system prompt file, if configured.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 /// Agent creation result
@@ -114,6 +117,14 @@ pub struct AgentDeleteResult {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentUpdateRequest {
     pub image: Option<String>,
+    /// Update the model (provider.default_model)
+    pub model: Option<String>,
+    /// Update the description
+    pub description: Option<String>,
+    /// Update the system prompt (writes to prompt.system.files)
+    pub system_prompt: Option<String>,
+    /// Merge arbitrary config values
+    pub config: Option<serde_json::Value>,
 }
 
 /// Agent export options

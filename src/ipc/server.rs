@@ -251,7 +251,7 @@ impl IpcServer {
                     return Err(AuthError::InvalidCredential);
                 }
                 if let Some(validator) = state.jwt_validator() {
-                    match validator.validate(token) {
+                    match validator.validate(token).await {
                         Ok(validated) => Ok(crate::auth::jwt::JwtValidator::to_caller(validated)),
                         Err(e) => {
                             tracing::warn!("JWT validation failed: {}", e);
@@ -671,6 +671,38 @@ impl IpcServer {
                 {
                     Ok(result) => {
                         let response = ResponsePacket::AgentMoved { request_id, result };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::AgentUpdate {
+                request_id,
+                name,
+                team,
+                model,
+                description,
+                system_prompt,
+                config,
+            } => {
+                let service = state.agent_mgmt_service();
+                let update_req = crate::common::types::agent::AgentUpdateRequest {
+                    image: None,
+                    model,
+                    description,
+                    system_prompt,
+                    config,
+                };
+                match service.update_agent(&name, team.as_deref(), update_req).await {
+                    Ok(_) => {
+                        let response = ResponsePacket::AgentUpdated { request_id, name };
                         Self::send_packet(&socket, response, addr).await?;
                     }
                     Err(e) => {
@@ -2393,6 +2425,28 @@ impl IpcServer {
                     pekohub_jwt_enabled: auth_config.enable_pekohub_jwt(),
                     api_key_enabled: auth_config.enable_api_key(),
                     api_key_count,
+                };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+
+            // ── Tunnel (ADR-035) ──
+            RequestPacket::TunnelStop { request_id } => {
+                state.stop_tunnel().await;
+                let response = ResponsePacket::Done {
+                    request_id,
+                    success: true,
+                    error: None,
+                };
+                Self::send_packet(&socket, response, addr).await?;
+            }
+            RequestPacket::TunnelStatus { request_id } => {
+                let configured = crate::tunnel::credential::has_pekohub_credential();
+                let connected = state.tunnel_connected().await;
+                let response = ResponsePacket::TunnelStatus {
+                    request_id,
+                    configured,
+                    daemon_running: true,
+                    connected,
                 };
                 Self::send_packet(&socket, response, addr).await?;
             }

@@ -349,6 +349,30 @@ impl DaemonClient {
         }
     }
 
+    // ── Tunnel (ADR-035) ──
+
+    /// Stop the PekoHub tunnel
+    pub async fn tunnel_stop(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::TunnelStop { request_id };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Tunnel stop stream closed unexpectedly"),
+        }
+    }
+
+    /// Get tunnel status
+    pub async fn tunnel_status(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::TunnelStatus { request_id };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Tunnel status stream closed unexpectedly"),
+        }
+    }
+
     // ── Auth management (ADR-034) ──
 
     /// Create an API key
