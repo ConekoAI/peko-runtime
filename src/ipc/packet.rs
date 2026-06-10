@@ -326,6 +326,8 @@ pub enum RequestPacket {
         request_id: u64,
         path: String,
         verbose: bool,
+        #[serde(default)]
+        semantic: bool,
     },
 
     #[serde(rename = "extension_debug")]
@@ -3830,6 +3832,7 @@ mod tests {
             request_id: 1700,
             path: "/path/to/ext".to_string(),
             verbose: true,
+            semantic: false,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3838,10 +3841,12 @@ mod tests {
                 request_id,
                 path,
                 verbose,
+                semantic,
             } => {
                 assert_eq!(request_id, 1700);
                 assert_eq!(path, "/path/to/ext");
                 assert!(verbose);
+                assert!(!semantic);
             }
             _ => panic!("Wrong variant"),
         }
@@ -4051,6 +4056,7 @@ mod tests {
             request_id: 1,
             path: "/tmp".to_string(),
             verbose: false,
+            semantic: false,
         };
         assert_eq!(req_validate.request_id(), 1);
 

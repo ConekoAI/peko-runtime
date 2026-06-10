@@ -19,6 +19,9 @@ pub struct ExtensionPackageManifest {
     pub extension: ExtensionInfo,
     /// Packaging metadata (checksums, compression)
     pub packaging: ExtensionPackagingMetadata,
+    /// Bundled dependencies (ADR-036)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<DepInfo>,
 }
 
 /// Package format version info
@@ -43,6 +46,17 @@ pub struct ExtensionInfo {
     pub version: String,
     /// Description
     pub description: String,
+}
+
+/// Bundled dependency info
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DepInfo {
+    /// Dependency extension ID
+    pub id: String,
+    /// Dependency name
+    pub name: String,
+    /// Dependency version
+    pub version: String,
 }
 
 /// Packaging metadata with checksums
@@ -141,6 +155,130 @@ impl ExtensionPackager {
                 description: ext.manifest.description.clone(),
             },
             packaging,
+            dependencies: Vec::new(),
+        };
+
+        // Create tar.gz archive
+        let tar_gz = std::fs::File::create(output_path)
+            .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+        let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+
+        // Add manifest
+        let manifest_toml = manifest
+            .to_toml()
+            .context("Failed to serialize extension package manifest")?;
+        let mut header = tar::Header::new_gnu();
+        header.set_path("manifest.toml")?;
+        header.set_size(manifest_toml.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append(&header, manifest_toml.as_bytes())?;
+
+        // Add all extension files
+        for (path, content) in &all_files {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(path)?;
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+
+            tar.append(&header, content.as_slice())
+                .with_context(|| format!("Failed to add file: {path}"))?;
+        }
+
+        tar.finish()
+            .context("Failed to finalize extension archive")?;
+
+        Ok(output_path.to_path_buf())
+    }
+
+    /// Export an installed extension with its dependencies to a `.ext` package.
+    ///
+    /// # Arguments
+    /// * `manager` - The extension manager containing the installed extension
+    /// * `id` - The extension ID to export
+    /// * `dep_ids` - IDs of dependency extensions to bundle
+    /// * `output_path` - Where to write the `.ext` file
+    ///
+    /// # Returns
+    /// The path to the created `.ext` package
+    pub fn export_with_deps(
+        manager: &ExtensionManager,
+        id: &ExtensionId,
+        dep_ids: &[ExtensionId],
+        output_path: impl AsRef<Path>,
+    ) -> anyhow::Result<PathBuf> {
+        let output_path = output_path.as_ref();
+
+        // Look up the primary extension
+        let ext = manager
+            .get_extension(id)
+            .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
+
+        let source_path = &ext.path;
+        if !source_path.exists() {
+            anyhow::bail!("Extension path does not exist: {}", source_path.display());
+        }
+
+        // Ensure parent directory exists
+        if let Some(parent) = output_path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create output directory: {}", parent.display())
+                })?;
+            }
+        }
+
+        // Collect all files from the extension directory
+        let mut all_files: HashMap<String, Vec<u8>> = HashMap::new();
+        Self::collect_files_recursive(source_path, "extension", &mut all_files)?;
+
+        // Collect dependency files
+        let mut dep_manifests = Vec::new();
+        for dep_id in dep_ids {
+            if let Some(dep_ext) = manager.get_extension(dep_id) {
+                let dep_path = &dep_ext.path;
+                if dep_path.exists() {
+                    Self::collect_files_recursive(dep_path, &format!("deps/{}", dep_id), &mut all_files)?;
+                    dep_manifests.push(DepInfo {
+                        id: dep_id.to_string(),
+                        name: dep_ext.manifest.name.clone(),
+                        version: dep_ext.manifest.version.clone(),
+                    });
+                }
+            }
+        }
+
+        // Build packaging metadata with checksums
+        let mut packaging = ExtensionPackagingMetadata {
+            files: Vec::new(),
+            checksums: HashMap::new(),
+            compression: "gzip".to_string(),
+            archive_format: "tar".to_string(),
+        };
+
+        for (path, content) in &all_files {
+            packaging.files.push(path.clone());
+            let checksum = Self::compute_checksum(content);
+            packaging.checksums.insert(path.clone(), checksum);
+        }
+
+        // Create package manifest
+        let manifest = ExtensionPackageManifest {
+            format: PackageFormat {
+                version: "1.0".to_string(),
+                peko_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            extension: ExtensionInfo {
+                id: ext.manifest.id.to_string(),
+                name: ext.manifest.name.clone(),
+                extension_type: ext.extension_type.clone(),
+                version: ext.manifest.version.clone(),
+                description: ext.manifest.description.clone(),
+            },
+            packaging,
+            dependencies: dep_manifests,
         };
 
         // Create tar.gz archive
@@ -550,6 +688,7 @@ archive_format = "tar"
                 compression: "gzip".to_string(),
                 archive_format: "tar".to_string(),
             },
+            dependencies: Vec::new(),
         };
 
         let toml = manifest.to_toml().unwrap();

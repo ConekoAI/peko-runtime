@@ -1,0 +1,27 @@
+id: "{{id}}"
+name: "{{name}}"
+version: "1.0.0"
+description: "{{description}}"
+extension_type: "gateway"
+gateway_type: "{{gateway_type}}"
+
+config:
+  # For out-of-process gateways
+  command: "{{command}}"
+  args: ["{{handler_file}}"]
+  env:
+    # Use peko ext config to set secrets
+    EXAMPLE_TOKEN: "${secret:EXAMPLE_TOKEN}"
+
+  # Routing configuration
+  routing:
+    default_agent: "assistant"
+    channel_map:
+      "#general": "assistant"
+    dm_agents: {}
+
+hooks:
+  - point: "channel.input"
+    handler: "on_input"
+  - point: "channel.output"
+    handler: "on_output"

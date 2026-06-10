@@ -1,0 +1,17 @@
+id: "{{id}}"
+name: "{{name}}"
+version: "1.0.0"
+description: "{{description}}"
+extension_type: "mcp"
+
+# MCP wrapper configuration — embed one or more MCP servers
+mcp_servers:
+  {{id}}:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-example"]
+    auto_start: true
+
+# Optional: add Pekobot-specific hooks
+# hooks:
+#   - point: "agent.init"
+#     handler: "init_handler"

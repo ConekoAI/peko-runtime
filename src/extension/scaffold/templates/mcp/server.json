@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-03-26/server.schema.json",
+  "name": "{{name}}",
+  "version": "1.0.0",
+  "description": "{{description}}",
+  "transport": {
+    "type": "stdio",
+    "command": "npx -y @modelcontextprotocol/server-example"
+  },
+  "tools": [],
+  "resources": [],
+  "prompts": []
+}

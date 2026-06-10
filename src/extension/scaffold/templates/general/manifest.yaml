@@ -1,0 +1,22 @@
+id: "{{id}}"
+name: "{{name}}"
+version: "1.0.0"
+description: "{{description}}"
+extension_type: "general"
+
+# Hook registrations — see EXTENSION_SYSTEM.md for all 22 hook points
+hooks:
+  - point: "prompt.system_section"
+    section: "custom"
+    priority: 100
+    handler: "add_custom_instructions"
+
+  - point: "tool.execute"
+    tool_name: "custom:*"
+    handler: "handle_custom_tools"
+
+  - point: "agent.init"
+    handler: "initialize_state"
+
+  - point: "agent.shutdown"
+    handler: "cleanup_state"

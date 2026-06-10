@@ -1,0 +1,13 @@
+id: "{{id}}"
+name: "{{name}}"
+version: "1.0.0"
+description: "{{description}}"
+extension_type: "universal-tool"
+
+parameters:
+  type: object
+  properties:
+    input:
+      type: string
+      description: "Input parameter for the tool"
+  required: [input]

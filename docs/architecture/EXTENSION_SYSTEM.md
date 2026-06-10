@@ -230,7 +230,38 @@ hooks:
 
 ## Creating Extensions
 
-### Quick Start: Skill Extension
+### The Easy Way: `peko ext init` (ADR-036)
+
+Pekobot provides scaffolding for all extension types. One command creates a working extension:
+
+```bash
+# Skill extension
+peko ext init my-skill --type skill
+
+# Universal tool with Python handler
+peko ext init my-tool --type universal-tool --lang python
+
+# MCP server (bare server.json)
+peko ext init my-mcp --type mcp --bare
+
+# Gateway (Discord bot, HTTP webhook, etc.)
+peko ext init my-gateway --type gateway --lang javascript --gateway-type out-of-process
+
+# General multi-hook extension
+peko ext init my-extension --type general
+```
+
+Each command creates a directory with:
+- The correct manifest file for the type
+- Stub code (when applicable)
+- A `README.md` with usage instructions
+- A `.gitignore`
+
+### Manual Creation (Expert Mode)
+
+If you prefer to write manifests by hand, follow the format references below.
+
+#### Quick Start: Skill Extension
 
 1. Create directory:
 ```bash
@@ -257,17 +288,16 @@ EOF
 peko ext enable my-skill
 ```
 
-### Quick Start: General Extension
+#### Quick Start: General Extension
 
 1. Create directory:
 ```bash
 mkdir -p ~/.peko/extensions/my-extension
 ```
 
-2. Create extension.yaml:
+2. Create manifest.yaml:
 ```bash
-cat > ~/.peko/extensions/my-extension/extension.yaml << 'EOF'
----
+cat > ~/.peko/extensions/my-extension/manifest.yaml << 'EOF'
 id: my-extension
 name: My Extension
 version: "1.0.0"
@@ -327,14 +357,17 @@ peko ext uninstall my-extension
 ### Validation and Debugging
 
 ```bash
-# Validate manifest
+# Validate manifest (static check)
 peko ext validate ./my-extension
+
+# Semantic validation — checks referenced files, commands in PATH, schemas
+peko ext validate ./my-extension --semantic
 
 # Show resolved hooks
 peko ext debug my-extension
 ```
 
-### Bundling
+### Bundling and Publishing
 
 ```bash
 # Create bundle with multiple extensions
@@ -345,6 +378,12 @@ peko ext bundle create production-bundle \
 
 # Install bundle
 peko ext bundle install ./production-bundle.tar.gz
+
+# Push to registry
+peko ext push my-extension pekohub.com/user/my-extension:latest
+
+# Push with bundled dependencies
+peko ext push my-extension pekohub.com/user/my-extension:latest --with-deps
 ```
 
 ---

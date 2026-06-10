@@ -1846,10 +1846,17 @@ impl IpcServer {
                 request_id,
                 path,
                 verbose,
+                semantic,
             } => {
-                match crate::extension::adapters::ExtensionValidationService::validate(
+                let depth = if semantic {
+                    crate::extension::adapters::ValidationDepth::Semantic
+                } else {
+                    crate::extension::adapters::ValidationDepth::Static
+                };
+                match crate::extension::adapters::ExtensionValidationService::validate_with_depth(
                     std::path::Path::new(&path),
                     verbose,
+                    depth,
                 )
                 .await
                 {

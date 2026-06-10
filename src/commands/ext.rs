@@ -11,6 +11,7 @@ use crate::common::services::CredentialsService;
 use crate::extension::core::ExtensionCore;
 use crate::extension::manager::packaging::ExtensionPackager;
 use crate::extension::manager::{ExtensionManager, ExtensionStorage};
+use crate::extension::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
 use crate::extension::services::{ConfigScope, ExtensionConfigService};
 use crate::extension::types::{ExtensionId, ExtensionManifest};
 use crate::ipc::client_service::DaemonClientService;
@@ -129,6 +130,9 @@ pub enum ExtCommands {
         /// Show detailed validation output
         #[arg(long)]
         verbose: bool,
+        /// Enable semantic validation (check referenced files, commands, schemas)
+        #[arg(long)]
+        semantic: bool,
     },
 
     /// Debug an installed extension
@@ -152,6 +156,9 @@ pub enum ExtCommands {
         id: String,
         /// Registry reference (host/path:tag)
         registry_ref: String,
+        /// Bundle transitive dependencies into the package
+        #[arg(long)]
+        with_deps: bool,
     },
 
     /// Pull an extension from a registry
@@ -164,6 +171,27 @@ pub enum ExtCommands {
         /// Skip pulling dependencies
         #[arg(long)]
         no_deps: bool,
+    },
+
+    /// Initialize a new extension project
+    Init {
+        /// Project name / extension ID
+        name: String,
+        /// Extension type
+        #[arg(short, long)]
+        r#type: String,
+        /// Output directory (default: ./<name>)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Programming language for stub code (python, javascript)
+        #[arg(short, long)]
+        lang: Option<String>,
+        /// For MCP: ship server.json instead of manifest.yaml wrapper
+        #[arg(long)]
+        bare: bool,
+        /// For gateway: the gateway type
+        #[arg(long)]
+        gateway_type: Option<String>,
     },
 }
 
@@ -395,12 +423,13 @@ pub async fn handle_ext_command(
         }
 
         // --- IPC commands ---
-        ExtCommands::Validate { path, verbose } => {
+        ExtCommands::Validate { path, verbose, semantic } => {
             let client = crate::ipc::DaemonClient::connect().await?;
             let packet = crate::ipc::RequestPacket::ExtensionValidate {
                 request_id: 1,
                 path: path.to_string_lossy().to_string(),
                 verbose,
+                semantic,
             };
             let response = client.request_response(packet).await?;
             match response {
@@ -530,11 +559,15 @@ pub async fn handle_ext_command(
             agent,
         } => handle_config(paths, id, show, set, unset, global, team, agent).await,
 
-        ExtCommands::Push { id, registry_ref } => {
+        ExtCommands::Push {
+            id,
+            registry_ref,
+            with_deps,
+        } => {
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
             let mut manager = create_manager_with_adapters(core.clone(), Some(storage)).await;
             manager.load_all().await?;
-            handle_ext_push(&manager, &id, &registry_ref, json, cli_registry, paths).await
+            handle_ext_push(&manager, &id, &registry_ref, json, cli_registry, paths, with_deps).await
         }
 
         ExtCommands::Pull {
@@ -582,6 +615,59 @@ pub async fn handle_ext_command(
                 )),
                 _ => anyhow::bail!("Unexpected response from daemon during extension install"),
             }
+        }
+
+        ExtCommands::Init {
+            name,
+            r#type,
+            output,
+            lang,
+            bare,
+            gateway_type,
+        } => {
+            let output_dir = output.unwrap_or_else(|| PathBuf::from(&name));
+            let lang = lang
+                .and_then(|l| ScaffoldLang::from_str(&l))
+                .unwrap_or_default();
+
+            let options = ScaffoldOptions {
+                id: name.clone(),
+                name: name.clone(),
+                description: format!("A {} extension", r#type),
+                output_dir: output_dir.clone(),
+                lang,
+                bare_mcp: bare,
+                gateway_type,
+            };
+
+            let result = ScaffoldEngine::scaffold(&r#type, &options)?;
+
+            println!("Created {} extension '{}' in {}", r#type, name, result.display());
+            println!();
+
+            // List created files
+            let mut entries: Vec<_> = std::fs::read_dir(&result)?.collect::<Result<Vec<_>, _>>()?;
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                let marker = if file_name == "manifest.yaml" || file_name == "SKILL.md" || file_name == "server.json" {
+                    "  — edit your extension metadata"
+                } else if file_name.starts_with("handler.") || file_name.starts_with("gateway.") {
+                    "  — implement your logic here"
+                } else if file_name == "README.md" {
+                    "  — documentation for users"
+                } else {
+                    ""
+                };
+                println!("  {}{}", file_name, marker);
+            }
+
+            println!();
+            println!("Next steps:");
+            println!("  peko ext validate {}", result.display());
+            println!("  peko ext install {}", result.display());
+
+            Ok(())
         }
     }
 }
@@ -802,6 +888,7 @@ async fn handle_ext_push(
     json: bool,
     cli_registry: Option<&str>,
     paths: &GlobalPaths,
+    with_deps: bool,
 ) -> anyhow::Result<()> {
     let ext_id = ExtensionId::new(id);
 
@@ -810,12 +897,35 @@ async fn handle_ext_push(
         .get_extension(&ext_id)
         .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
 
+    // Resolve dependencies if --with-deps
+    let mut dep_ids = Vec::new();
+    if with_deps {
+        let resolution = manager.resolve_dependencies_root(&ext.manifest)?;
+        if resolution.has_required_missing() {
+            let missing: Vec<_> = resolution
+                .missing
+                .iter()
+                .filter(|m| matches!(m, crate::extension::manager::DependencyStatus::Missing { required: true, .. }))
+                .map(|m| format!("{m:?}"))
+                .collect();
+            anyhow::bail!(
+                "Cannot push with --with-deps: required dependencies are not installed: {}",
+                missing.join(", ")
+            );
+        }
+        for dep in &resolution.satisfied {
+            if let crate::extension::manager::DependencyStatus::Satisfied { package, .. } = dep {
+                dep_ids.push(crate::extension::types::ExtensionId::new(package));
+            }
+        }
+    }
+
     // Export to a temp .ext file
     let temp_dir = std::env::temp_dir().join("PEKO_ext_push");
     std::fs::create_dir_all(&temp_dir)?;
     let temp_path = temp_dir.join(format!("{}.ext", ext.manifest.id.0));
 
-    ExtensionPackager::export(manager, &ext_id, temp_path.to_string_lossy().as_ref())?;
+    ExtensionPackager::export_with_deps(manager, &ext_id, &dep_ids, temp_path.to_string_lossy().as_ref())?;
 
     // Read file bytes and compute digest
     let data = tokio::fs::read(&temp_path).await?;

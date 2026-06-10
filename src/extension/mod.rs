@@ -80,6 +80,9 @@ pub mod transport;
 /// Extension type definitions (ExtensionManifest, HookResult, etc.).
 pub mod types;
 
+/// Extension scaffolding — `peko ext init` templates and engine.
+pub mod scaffold;
+
 /// Prelude for convenient imports
 pub mod prelude {
     pub use super::core::{

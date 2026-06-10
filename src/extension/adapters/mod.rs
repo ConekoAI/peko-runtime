@@ -553,7 +553,7 @@ impl ExtensionState {
 
 pub mod validation;
 
-pub use validation::{ExtensionValidationService, ValidationReport};
+pub use validation::{ExtensionValidationService, ValidationDepth, ValidationReport};
 
 #[cfg(test)]
 mod tests {
