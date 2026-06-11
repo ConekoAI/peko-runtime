@@ -3,6 +3,7 @@
 //! Manages the outbound WebSocket tunnel: connection, authentication,
 //! heartbeat, request dispatch, and automatic reconnection with backoff.
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +40,7 @@ pub enum TunnelError {
 }
 
 /// Handle to an active tunnel connection, used to send responses back to PekoHub.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TunnelHandle {
     tx: mpsc::UnboundedSender<TunnelMessage>,
 }
@@ -101,7 +102,8 @@ pub struct TunnelClient {
     backoff: ExponentialBackoff,
     state: Arc<RwLock<TunnelState>>,
     /// Optional callback for handling proxied requests
-    request_handler: Option<Arc<dyn Fn(TunnelMessage, TunnelHandle) + Send + Sync>>,
+    request_handler:
+        Option<Arc<dyn Fn(TunnelMessage, TunnelHandle) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
 }
 
 impl TunnelClient {
@@ -125,11 +127,12 @@ impl TunnelClient {
     }
 
     /// Set a callback for handling proxied requests
-    pub fn on_request<F>(&mut self, handler: F)
+    pub fn on_request<F, Fut>(&mut self, handler: F)
     where
-        F: Fn(TunnelMessage, TunnelHandle) + Send + Sync + 'static,
+        F: Fn(TunnelMessage, TunnelHandle) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        self.request_handler = Some(Arc::new(handler));
+        self.request_handler = Some(Arc::new(move |msg, handle| Box::pin(handler(msg, handle))));
     }
 
     /// Run the tunnel client loop (reconnects forever until cancelled)
@@ -244,7 +247,8 @@ impl TunnelClient {
                     heartbeat_interval_secs: heartbeat_interval,
                 },
                 handle.clone(),
-            );
+            )
+            .await;
         }
 
         // 4. Start heartbeat + read loops
@@ -370,7 +374,13 @@ impl TunnelClient {
         msg: TunnelMessage,
         state: &Arc<RwLock<TunnelState>>,
         _internal_tx: &mpsc::UnboundedSender<TunnelMessage>,
-        request_handler: Option<&Arc<dyn Fn(TunnelMessage, TunnelHandle) + Send + Sync>>,
+        request_handler: Option<
+            &Arc<
+                dyn Fn(TunnelMessage, TunnelHandle) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+            >,
+        >,
         handle: &TunnelHandle,
     ) {
         match msg {
@@ -395,9 +405,10 @@ impl TunnelClient {
             | TunnelMessage::InstanceAnnounce { .. }
             | TunnelMessage::InstanceHeartbeat { .. }
             | TunnelMessage::InstanceDeregister { .. }
-            | TunnelMessage::ExposureUpdate { .. } => {
+            | TunnelMessage::ExposureUpdate { .. }
+            | TunnelMessage::StatusUpdate { .. } => {
                 if let Some(handler) = request_handler {
-                    handler(msg, handle.clone());
+                    handler(msg, handle.clone()).await;
                 } else {
                     debug!("No request handler registered, dropping message");
                 }
@@ -408,7 +419,7 @@ impl TunnelClient {
             TunnelMessage::TunnelReady { .. } => {
                 // Forward TunnelReady to the handler so dispatcher can announce instances
                 if let Some(handler) = request_handler {
-                    handler(msg, handle.clone());
+                    handler(msg, handle.clone()).await;
                 } else {
                     debug!("No request handler registered, dropping TunnelReady");
                 }
@@ -453,10 +464,14 @@ impl TunnelClient {
 }
 
 /// Spawn a tunnel client in the background and return a handle
-pub async fn spawn_tunnel(
+pub async fn spawn_tunnel<F, Fut>(
     credential: PekoHubCredential,
-    request_handler: impl Fn(TunnelMessage, TunnelHandle) + Send + Sync + 'static,
-) -> TunnelHandle {
+    request_handler: F,
+) -> TunnelHandle
+where
+    F: Fn(TunnelMessage, TunnelHandle) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     let mut client = TunnelClient::new(credential);
     client.on_request(request_handler);
 

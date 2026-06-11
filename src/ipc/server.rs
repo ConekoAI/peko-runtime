@@ -2451,6 +2451,99 @@ impl IpcServer {
                 Self::send_packet(&socket, response, addr).await?;
             }
 
+            RequestPacket::InstanceSetStatus {
+                request_id,
+                agent_name,
+                status,
+            } => {
+                let status_enum = match status.as_str() {
+                    "online" => crate::tunnel::protocol::InstanceStatus::Online,
+                    "offline" => crate::tunnel::protocol::InstanceStatus::Offline,
+                    "busy" => crate::tunnel::protocol::InstanceStatus::Busy,
+                    "error" => crate::tunnel::protocol::InstanceStatus::Error,
+                    other => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Invalid status '{other}'. Expected: online, offline, busy, error"),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                        return Ok(());
+                    }
+                };
+
+                if let Some(dispatcher) = state.tunnel_dispatcher().await {
+                    match dispatcher.set_instance_status(&agent_name, status_enum).await {
+                        Ok(()) => {
+                            let response = ResponsePacket::Done {
+                                request_id,
+                                success: true,
+                                error: None,
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to set instance status: {e}"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    }
+                } else {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "Tunnel is not active".to_string(),
+                    };
+                    Self::send_packet(&socket, response, addr).await?;
+                }
+            }
+
+            RequestPacket::InstanceSetExposure {
+                request_id,
+                agent_name,
+                exposure,
+            } => {
+                let exposure_enum = match exposure.as_str() {
+                    "unexposed" => crate::tunnel::protocol::InstanceExposure::Unexposed,
+                    "private" => crate::tunnel::protocol::InstanceExposure::Private,
+                    "public" => crate::tunnel::protocol::InstanceExposure::Public,
+                    other => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Invalid exposure '{other}'. Expected: unexposed, private, public"),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                        return Ok(());
+                    }
+                };
+
+                if let Some(dispatcher) = state.tunnel_dispatcher().await {
+                    match dispatcher.set_instance_exposure(&agent_name, exposure_enum).await {
+                        Ok(()) => {
+                            let response = ResponsePacket::Done {
+                                request_id,
+                                success: true,
+                                error: None,
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to set instance exposure: {e}"),
+                            };
+                            Self::send_packet(&socket, response, addr).await?;
+                        }
+                    }
+                } else {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "Tunnel is not active".to_string(),
+                    };
+                    Self::send_packet(&socket, response, addr).await?;
+                }
+            }
+
             // ── Ownership and Permission (ADR-033) ──
             RequestPacket::AgentTransferOwner {
                 request_id,

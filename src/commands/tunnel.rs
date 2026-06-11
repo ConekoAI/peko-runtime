@@ -8,10 +8,22 @@ use crate::tunnel::{load_pekohub_credential, TunnelClient};
 use clap::Subcommand;
 use std::path::PathBuf;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
 /// Tunnel management subcommands
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum TunnelCommands {
+    /// Set up PekoHub tunnel credentials
+    Setup {
+        /// PekoHub URL (default: wss://pekohub.org/v1/tunnel)
+        #[arg(short, long)]
+        url: Option<String>,
+        /// API key from PekoHub (can also be set via PEKOHUB_API_KEY env var)
+        #[arg(short, long, env = "PEKOHUB_API_KEY")]
+        api_key: Option<String>,
+    },
+
     /// Start the tunnel connection to PekoHub
     Start {
         /// Path to PekoHub credential file (default: ~/.peko/pekohub.toml)
@@ -30,6 +42,95 @@ pub enum TunnelCommands {
     },
 }
 
+/// Handle tunnel setup
+async fn handle_tunnel_setup(
+    url: Option<String>,
+    api_key: Option<String>,
+    _json: bool,
+) -> anyhow::Result<()> {
+    let cred_path = crate::tunnel::PekoHubCredential::default_path();
+
+    // Check if credential already exists
+    if cred_path.exists() {
+        let existing = crate::tunnel::PekoHubCredential::from_file(&cred_path)?;
+        anyhow::bail!(
+            "PekoHub credential already exists at: {}\n\
+             Runtime ID: {}\n\
+             Use `peko tunnel start` to connect, or delete the file to reconfigure.",
+            cred_path.display(),
+            existing.runtime_id
+        );
+    }
+
+    // Generate new ed25519 keypair
+    let keypair = crate::identity::keys::KeyPair::generate();
+    let public_key_bytes = keypair.public_key_bytes();
+    let private_key_bytes = keypair.private_key_bytes();
+
+    // Create did:key from public key
+    let runtime_did = crate::runtime::identity::public_key_to_did_key(&public_key_bytes);
+
+    // Determine hub URL
+    let hub_url = url.unwrap_or_else(|| "wss://pekohub.org/v1/tunnel".to_string());
+
+    // API key is required for setup
+    let api_key = api_key.ok_or_else(|| {
+        anyhow::anyhow!(
+            "API key is required. Provide it with --api-key or set the PEKOHUB_API_KEY environment variable."
+        )
+    })?;
+
+    // Validate the API key with a lightweight HTTP ping before saving credentials
+    let http_url = hub_url
+        .replace("wss://", "https://")
+        .replace("ws://", "http://")
+        .replace("/v1/tunnel", "");
+    let validate_url = format!("{}/v1/ping", http_url);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&validate_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            println!("   API key validated successfully.");
+        }
+        Ok(r) => {
+            anyhow::bail!(
+                "API key validation failed: HTTP {}. Please check your API key and hub URL.",
+                r.status()
+            );
+        }
+        Err(e) => {
+            anyhow::bail!(
+                "Failed to validate API key: {}. Please check your network connection and hub URL.",
+                e
+            );
+        }
+    }
+
+    // Create credential
+    let credential = crate::tunnel::PekoHubCredential {
+        url: hub_url.clone(),
+        runtime_id: runtime_did.clone(),
+        private_key: BASE64.encode(private_key_bytes),
+    };
+
+    // Save credential to file
+    credential.save_to_file(&cred_path)?;
+
+    println!("✅ PekoHub tunnel configured successfully.");
+    println!("   Credential file: {}", cred_path.display());
+    println!("   Hub URL:         {}", hub_url);
+    println!("   Runtime DID:     {}", runtime_did);
+    println!();
+    println!("   Start the tunnel with: peko tunnel start");
+    println!("   Or start the daemon:   peko daemon start");
+
+    Ok(())
+}
+
 /// Handle tunnel commands
 pub async fn handle_tunnel(
     cmd: TunnelCommands,
@@ -37,6 +138,9 @@ pub async fn handle_tunnel(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
+        TunnelCommands::Setup { url, api_key } => {
+            handle_tunnel_setup(url, api_key, json).await
+        }
         TunnelCommands::Start { credential } => {
             let cred_path = credential.as_deref();
             let cred = match load_pekohub_credential(cred_path)? {
@@ -74,7 +178,7 @@ pub async fn handle_tunnel(
             }
 
             let mut client = TunnelClient::new(cred);
-            client.on_request(|msg, _handle| {
+            client.on_request(|msg, _handle| async move {
                 tracing::info!("Received tunnel message (no dispatcher): {:?}", msg);
             });
 
@@ -223,6 +327,7 @@ mod tests {
 
     #[test]
     fn test_tunnel_commands_enum() {
+        let _cmd = TunnelCommands::Setup { url: None, api_key: None };
         let _cmd = TunnelCommands::Start { credential: None };
         let _cmd = TunnelCommands::Stop;
         let _cmd = TunnelCommands::Status { json: true };

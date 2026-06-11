@@ -83,6 +83,14 @@ pub struct ExposureUpdatePayload {
     pub allowed_user_ids: Option<Vec<String>>,
 }
 
+/// Payload for `status_update` messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusUpdatePayload {
+    pub instance_id: String,
+    pub status: InstanceStatus,
+}
+
 /// Messages exchanged over the runtime↔PekoHub WebSocket tunnel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -169,6 +177,10 @@ pub enum TunnelMessage {
     /// Exposure update
     #[serde(rename = "exposure_update")]
     ExposureUpdate { payload: ExposureUpdatePayload },
+
+    /// Status update
+    #[serde(rename = "status_update")]
+    StatusUpdate { payload: StatusUpdatePayload },
 }
 
 impl TunnelMessage {
@@ -367,6 +379,31 @@ mod tests {
                 assert_eq!(payload.exposure, InstanceExposure::Public);
             }
             _ => panic!("Expected ExposureUpdate"),
+        }
+    }
+
+    #[test]
+    fn test_status_update_roundtrip() {
+        let msg = TunnelMessage::StatusUpdate {
+            payload: StatusUpdatePayload {
+                instance_id: "inst-1".to_string(),
+                status: InstanceStatus::Busy,
+            },
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        assert!(json.contains("\"instanceId\""), "Expected camelCase, got: {}", json);
+        assert!(json.contains("\"status\""), "Expected status field, got: {}", json);
+        assert!(json.contains("\"busy\""), "Expected snake_case status value, got: {}", json);
+        assert!(json.contains("\"status_update\""), "Expected snake_case tag");
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::StatusUpdate { payload } => {
+                assert_eq!(payload.instance_id, "inst-1");
+                assert_eq!(payload.status, InstanceStatus::Busy);
+            }
+            _ => panic!("Expected StatusUpdate"),
         }
     }
 }

@@ -138,6 +138,9 @@ pub struct AppState {
 
     /// Whether the tunnel is currently connected
     tunnel_connected: Arc<RwLock<bool>>,
+
+    /// Tunnel dispatcher for instance lifecycle management
+    tunnel_dispatcher: Arc<RwLock<Option<crate::tunnel::TunnelDispatcher>>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -538,6 +541,7 @@ impl AppState {
             rate_limiter,
             tunnel_cancel: Arc::new(RwLock::new(None)),
             tunnel_connected: Arc::new(RwLock::new(false)),
+            tunnel_dispatcher: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -812,11 +816,19 @@ impl AppState {
         }
 
         let dispatcher = TunnelDispatcher::new(self.clone());
-        let dispatcher_for_handler = dispatcher.clone();
+        {
+            let mut td = self.tunnel_dispatcher.write().await;
+            *td = Some(dispatcher.clone());
+        }
+
+        let dispatcher_for_handler = dispatcher;
 
         let mut client = TunnelClient::new(cred);
         client.on_request(move |msg, handle| {
-            dispatcher_for_handler.handle_message(msg, handle);
+            let dispatcher = dispatcher_for_handler.clone();
+            async move {
+                dispatcher.handle_message(msg, handle).await;
+            }
         });
 
         {
@@ -857,6 +869,14 @@ impl AppState {
         *tc = None;
         let mut connected = self.tunnel_connected.write().await;
         *connected = false;
+        let mut dispatcher = self.tunnel_dispatcher.write().await;
+        *dispatcher = None;
+    }
+
+    /// Get the tunnel dispatcher if the tunnel is active
+    pub async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
+        let dispatcher = self.tunnel_dispatcher.read().await;
+        dispatcher.clone()
     }
 }
 

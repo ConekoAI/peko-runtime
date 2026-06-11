@@ -484,6 +484,20 @@ pub enum RequestPacket {
     #[serde(rename = "tunnel_status")]
     TunnelStatus { request_id: u64 },
 
+    // ── Instance status ──
+    #[serde(rename = "instance_set_status")]
+    InstanceSetStatus {
+        request_id: u64,
+        agent_name: String,
+        status: String,
+    },
+    #[serde(rename = "instance_set_exposure")]
+    InstanceSetExposure {
+        request_id: u64,
+        agent_name: String,
+        exposure: String,
+    },
+
     // ── Auth management (ADR-034) ──
     #[serde(rename = "auth_api_key_create")]
     AuthApiKeyCreate {
@@ -615,6 +629,8 @@ impl RequestPacket {
             | Self::AuthStatus { request_id }
             | Self::TunnelStop { request_id }
             | Self::TunnelStatus { request_id }
+            | Self::InstanceSetStatus { request_id, .. }
+            | Self::InstanceSetExposure { request_id, .. }
             | Self::AgentTransferOwner { request_id, .. }
             | Self::AgentGrantPermission { request_id, .. }
             | Self::AgentRevokePermission { request_id, .. }

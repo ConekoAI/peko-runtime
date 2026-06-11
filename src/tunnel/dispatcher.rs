@@ -18,17 +18,29 @@ use crate::engine::AgenticEvent;
 
 use super::protocol::{
     ExposureUpdatePayload, InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload,
-    InstanceStatus, InstanceType, TunnelMessage,
+    InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
 };
 use super::TunnelHandle;
 
-/// Per-instance access control state (defense-in-depth: mirrors PekoHub's ACL).
+/// Per-instance state tracked by the dispatcher.
 #[derive(Debug, Clone)]
-pub struct InstanceAcl {
+pub struct InstanceState {
     /// Current exposure level
     pub exposure: InstanceExposure,
     /// Allowed user IDs (for private exposure)
     pub allowed_users: Vec<String>,
+    /// Current instance status
+    pub status: InstanceStatus,
+}
+
+impl Default for InstanceState {
+    fn default() -> Self {
+        Self {
+            exposure: InstanceExposure::Private,
+            allowed_users: Vec::new(),
+            status: InstanceStatus::Online,
+        }
+    }
 }
 
 /// Shared dispatcher state for instance lifecycle management
@@ -38,8 +50,10 @@ pub struct TunnelDispatcherState {
     pub ready: bool,
     /// Heartbeat interval from server (seconds)
     pub heartbeat_interval_secs: u32,
-    /// Local ACL cache: instance_id -> ACL (updated by exposure_update)
-    pub instance_acl: std::collections::HashMap<String, InstanceAcl>,
+    /// Local instance state cache: instance_id -> state (updated by exposure_update and status_update)
+    pub instance_state: std::collections::HashMap<String, InstanceState>,
+    /// Current tunnel handle for sending messages
+    pub tunnel_handle: Option<TunnelHandle>,
 }
 
 /// Dispatches tunnel messages to daemon services.
@@ -65,7 +79,12 @@ impl TunnelDispatcher {
     }
 
     /// Handle a tunnel message (called from the tunnel client's read loop)
-    pub fn handle_message(&self, msg: TunnelMessage, handle: TunnelHandle) {
+    pub async fn handle_message(&self, msg: TunnelMessage, handle: TunnelHandle) {
+        // Store the handle synchronously so set_instance_status can use it immediately
+        {
+            let mut state = self.state.write().await;
+            state.tunnel_handle = Some(handle.clone());
+        }
         let dispatcher = self.clone();
         tokio::spawn(async move {
             if let Err(e) = dispatcher.dispatch(msg, handle).await {
@@ -89,9 +108,9 @@ impl TunnelDispatcher {
     pub async fn mark_disconnected(&self) {
         let mut state = self.state.write().await;
         state.ready = false;
-        // Clear ACL cache to prevent stale permissions on reconnect
-        state.instance_acl.clear();
-        info!("Tunnel dispatcher disconnected, ACL cache cleared");
+        // Clear instance state cache to prevent stale data on reconnect
+        state.instance_state.clear();
+        info!("Tunnel dispatcher disconnected, instance state cache cleared");
     }
 
     /// Check if the tunnel is ready
@@ -135,13 +154,14 @@ impl TunnelDispatcher {
                 metadata: None,
             };
 
-            // Seed local ACL cache with default Private exposure
+            // Seed local instance state cache with default Online status and Private exposure
             let mut state = self.state.write().await;
-            state.instance_acl.insert(
+            state.instance_state.insert(
                 instance_id,
-                InstanceAcl {
+                InstanceState {
                     exposure: InstanceExposure::Private,
                     allowed_users: Vec::new(),
+                    status: InstanceStatus::Online,
                 },
             );
             drop(state);
@@ -179,9 +199,11 @@ impl TunnelDispatcher {
 
         let now = chrono::Utc::now().to_rfc3339();
         for agent in agents {
+            let instance_id = self.instance_id(&agent.name);
+            let status = self.get_instance_status(&agent.name).await;
             let payload = InstanceHeartbeatPayload {
-                id: self.instance_id(&agent.name),
-                status: InstanceStatus::Online,
+                id: instance_id,
+                status,
                 timestamp: now.clone(),
             };
             let _ = handle.send(TunnelMessage::InstanceHeartbeat { payload });
@@ -202,6 +224,9 @@ impl TunnelDispatcher {
             }
             TunnelMessage::ExposureUpdate { payload } => {
                 self.handle_exposure_update(payload).await?;
+            }
+            TunnelMessage::StatusUpdate { payload } => {
+                self.handle_status_update(payload).await?;
             }
             TunnelMessage::TunnelReady {
                 heartbeat_interval_secs,
@@ -415,6 +440,103 @@ impl TunnelDispatcher {
         Ok(())
     }
 
+    /// Set the status of an instance and send a status_update message to the hub.
+    pub async fn set_instance_status(&self, agent_name: &str, status: InstanceStatus) -> anyhow::Result<()> {
+        let instance_id = self.instance_id(agent_name);
+
+        // Update local state
+        {
+            let mut state = self.state.write().await;
+            if let Some(entry) = state.instance_state.get_mut(&instance_id) {
+                entry.status = status.clone();
+            } else {
+                state.instance_state.insert(
+                    instance_id.clone(),
+                    InstanceState {
+                        status: status.clone(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        // Send status update through tunnel if available
+        let handle = {
+            let state = self.state.read().await;
+            state.tunnel_handle.clone()
+        };
+        if let Some(handle) = handle {
+            let payload = StatusUpdatePayload {
+                instance_id: instance_id.clone(),
+                status: status.clone(),
+            };
+            if let Err(e) = handle.send(TunnelMessage::StatusUpdate { payload }) {
+                warn!("Failed to send status update for {}: {}", agent_name, e);
+            } else {
+                debug!("Sent status update for {}: {:?}", agent_name, status);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the current status of an instance.
+    pub async fn get_instance_status(&self, agent_name: &str) -> InstanceStatus {
+        let instance_id = self.instance_id(agent_name);
+        let state = self.state.read().await;
+        state
+            .instance_state
+            .get(&instance_id)
+            .map(|s| s.status.clone())
+            .unwrap_or(InstanceStatus::Online)
+    }
+
+    /// Set the exposure of an instance and send an exposure_update message to the hub.
+    pub async fn set_instance_exposure(
+        &self,
+        agent_name: &str,
+        exposure: super::protocol::InstanceExposure,
+    ) -> anyhow::Result<()> {
+        let instance_id = self.instance_id(agent_name);
+
+        // Update local state
+        {
+            let mut state = self.state.write().await;
+            if let Some(entry) = state.instance_state.get_mut(&instance_id) {
+                entry.exposure = exposure.clone();
+            } else {
+                state.instance_state.insert(
+                    instance_id.clone(),
+                    InstanceState {
+                        exposure: exposure.clone(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        // Send exposure update through tunnel if available
+        let handle = {
+            let state = self.state.read().await;
+            state.tunnel_handle.clone()
+        };
+        if let Some(handle) = handle {
+            use super::protocol::ExposureUpdatePayload;
+            let payload = ExposureUpdatePayload {
+                instance_id: instance_id.clone(),
+                exposure: exposure.clone(),
+                allowed_user_ids: None,
+            };
+            if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
+                warn!("Failed to send exposure update for {}: {}", agent_name, e);
+            } else {
+                debug!("Sent exposure update for {}: {:?}", agent_name, exposure);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Handle exposure update control message from PekoHub
     async fn handle_exposure_update(&self, payload: ExposureUpdatePayload) -> anyhow::Result<()> {
         info!(
@@ -422,18 +544,90 @@ impl TunnelDispatcher {
             payload.instance_id, payload.exposure
         );
 
-        // Update local ACL cache for defense-in-depth enforcement
+        // Update local instance state cache for defense-in-depth enforcement
         let mut state = self.state.write().await;
-        state.instance_acl.insert(
-            payload.instance_id.clone(),
-            InstanceAcl {
-                exposure: payload.exposure.clone(),
-                allowed_users: payload.allowed_user_ids.clone().unwrap_or_default(),
-            },
-        );
+        if let Some(entry) = state.instance_state.get_mut(&payload.instance_id) {
+            entry.exposure = payload.exposure.clone();
+            entry.allowed_users = payload.allowed_user_ids.clone().unwrap_or_default();
+        } else {
+            state.instance_state.insert(
+                payload.instance_id.clone(),
+                InstanceState {
+                    exposure: payload.exposure.clone(),
+                    allowed_users: payload.allowed_user_ids.clone().unwrap_or_default(),
+                    status: InstanceStatus::Online,
+                },
+            );
+        }
         drop(state);
 
         // Re-announce the instance to confirm the change
+        let agent_service = self.app_state.agent_mgmt_service();
+        let agents = match agent_service.list_agents(None).await {
+            Ok(agents) => agents,
+            Err(e) => {
+                warn!("Failed to list agents for exposure re-announce: {}", e);
+                return Ok(());
+            }
+        };
+
+        let handle = {
+            let state = self.state.read().await;
+            state.tunnel_handle.clone()
+        };
+
+        if let Some(handle) = handle {
+            for agent in agents {
+                let instance_id = self.instance_id(&agent.name);
+                if instance_id == payload.instance_id {
+                    let status = self.get_instance_status(&agent.name).await;
+                    let announce_payload = InstanceAnnouncePayload {
+                        id: instance_id,
+                        instance_type: InstanceType::Agent,
+                        name: agent.name.clone(),
+                        bundle_ref: None,
+                        runtime_display_name: Some(self.runtime_display_name.clone()),
+                        status,
+                        exposure: payload.exposure.clone(),
+                        allowed_users: payload.allowed_user_ids.clone(),
+                        capabilities: None,
+                        metadata: None,
+                    };
+                    if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce { payload: announce_payload }) {
+                        warn!("Failed to re-announce instance {} after exposure update: {}", agent.name, e);
+                    } else {
+                        debug!("Re-announced instance {} after exposure update", agent.name);
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle status update control message from PekoHub (hub forcing status change)
+    async fn handle_status_update(&self, payload: StatusUpdatePayload) -> anyhow::Result<()> {
+        info!(
+            "Status update for instance {}: {:?}",
+            payload.instance_id, payload.status
+        );
+
+        // Update local state cache
+        let mut state = self.state.write().await;
+        if let Some(entry) = state.instance_state.get_mut(&payload.instance_id) {
+            entry.status = payload.status.clone();
+        } else {
+            state.instance_state.insert(
+                payload.instance_id.clone(),
+                InstanceState {
+                    status: payload.status.clone(),
+                    ..Default::default()
+                },
+            );
+        }
+        drop(state);
+
         Ok(())
     }
 
@@ -450,17 +644,17 @@ impl TunnelDispatcher {
         let instance_id = self.instance_id(agent_name);
 
         let state = self.state.read().await;
-        let acl = match state.instance_acl.get(&instance_id) {
-            Some(acl) => acl.clone(),
+        let instance_state = match state.instance_state.get(&instance_id) {
+            Some(s) => s.clone(),
             None => {
-                // No ACL cached yet — agent was never announced or exposure
+                // No state cached yet — agent was never announced or exposure
                 // was never set. Default to allowing (backward compat).
                 return Ok(());
             }
         };
         drop(state);
 
-        match acl.exposure {
+        match instance_state.exposure {
             InstanceExposure::Public => Ok(()),
             InstanceExposure::Unexposed => {
                 anyhow::bail!("Agent is not exposed")
@@ -477,7 +671,7 @@ impl TunnelDispatcher {
                     anyhow::bail!("Authentication required")
                 }
 
-                if acl.allowed_users.iter().any(|u| u == user_id) {
+                if instance_state.allowed_users.iter().any(|u| u == user_id) {
                     Ok(())
                 } else {
                     anyhow::bail!("Forbidden")
