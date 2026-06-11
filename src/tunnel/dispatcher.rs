@@ -680,3 +680,198 @@ impl TunnelDispatcher {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::state::{AppState, DaemonConfigSnapshot};
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+
+    async fn create_test_app_state() -> AppState {
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path().to_path_buf();
+        let config = DaemonConfigSnapshot {
+            data_dir: data_dir.clone(),
+            config_dir: data_dir.clone(),
+            log_level: "info".to_string(),
+        };
+        AppState::with_data_dir(
+            temp_dir.path().to_path_buf(),
+            "127.0.0.1".to_string(),
+            11435,
+            config,
+            data_dir,
+        )
+        .await
+        .unwrap()
+    }
+
+    fn mock_tunnel_handle() -> (TunnelHandle, mpsc::UnboundedReceiver<TunnelMessage>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (TunnelHandle::new(tx), rx)
+    }
+
+    #[tokio::test]
+    async fn test_handle_message_stores_tunnel_handle_synchronously() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let (handle, _rx) = mock_tunnel_handle();
+
+        // Before handle_message, tunnel_handle should be None
+        {
+            let state = dispatcher.state.read().await;
+            assert!(state.tunnel_handle.is_none());
+        }
+
+        // Call handle_message and await it — the handle should be stored
+        // synchronously before the method returns
+        dispatcher
+            .handle_message(TunnelMessage::Heartbeat { seq: 1 }, handle.clone())
+            .await;
+
+        // After awaiting handle_message, the handle must be available
+        let state = dispatcher.state.read().await;
+        assert!(state.tunnel_handle.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_set_instance_status_sends_status_update() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let (handle, mut rx) = mock_tunnel_handle();
+
+        // Seed the tunnel handle
+        {
+            let mut state = dispatcher.state.write().await;
+            state.tunnel_handle = Some(handle);
+        }
+
+        dispatcher
+            .set_instance_status("test-agent", InstanceStatus::Busy)
+            .await
+            .unwrap();
+
+        // Verify a StatusUpdate message was sent
+        let msg = rx.recv().await.expect("Expected a message on the channel");
+        match msg {
+            TunnelMessage::StatusUpdate { payload } => {
+                assert_eq!(payload.status, InstanceStatus::Busy);
+                // instance_id is a UUIDv5, so just verify it's non-empty
+                assert!(!payload.instance_id.is_empty());
+            }
+            other => panic!("Expected StatusUpdate, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_instance_exposure_sends_exposure_update() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let (handle, mut rx) = mock_tunnel_handle();
+
+        // Seed the tunnel handle
+        {
+            let mut state = dispatcher.state.write().await;
+            state.tunnel_handle = Some(handle);
+        }
+
+        dispatcher
+            .set_instance_exposure("test-agent", InstanceExposure::Public)
+            .await
+            .unwrap();
+
+        // Verify an ExposureUpdate message was sent
+        let msg = rx.recv().await.expect("Expected a message on the channel");
+        match msg {
+            TunnelMessage::ExposureUpdate { payload } => {
+                assert_eq!(payload.exposure, InstanceExposure::Public);
+                assert!(!payload.instance_id.is_empty());
+            }
+            other => panic!("Expected ExposureUpdate, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_instance_status_returns_default_online_for_unknown() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+
+        let status = dispatcher.get_instance_status("unknown-agent").await;
+        assert_eq!(status, InstanceStatus::Online);
+    }
+
+    #[tokio::test]
+    async fn test_handle_exposure_update_updates_local_state() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let (handle, _rx) = mock_tunnel_handle();
+
+        // Seed the tunnel handle so re-announce can proceed (it will fail
+        // at list_agents and return Ok, but local state must still be updated)
+        {
+            let mut state = dispatcher.state.write().await;
+            state.tunnel_handle = Some(handle);
+        }
+
+        let instance_id = dispatcher.instance_id("test-agent");
+        let payload = ExposureUpdatePayload {
+            instance_id: instance_id.clone(),
+            exposure: InstanceExposure::Public,
+            allowed_user_ids: Some(vec!["user-1".to_string()]),
+        };
+
+        dispatcher.handle_exposure_update(payload).await.unwrap();
+
+        // Verify local state was updated
+        let state = dispatcher.state.read().await;
+        let entry = state
+            .instance_state
+            .get(&instance_id)
+            .expect("Instance state should exist");
+        assert_eq!(entry.exposure, InstanceExposure::Public);
+        assert_eq!(entry.allowed_users, vec!["user-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_set_instance_status_updates_local_state() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let (handle, _rx) = mock_tunnel_handle();
+
+        {
+            let mut state = dispatcher.state.write().await;
+            state.tunnel_handle = Some(handle);
+        }
+
+        dispatcher
+            .set_instance_status("my-agent", InstanceStatus::Error)
+            .await
+            .unwrap();
+
+        let status = dispatcher.get_instance_status("my-agent").await;
+        assert_eq!(status, InstanceStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn test_set_instance_exposure_updates_local_state() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let (handle, _rx) = mock_tunnel_handle();
+
+        {
+            let mut state = dispatcher.state.write().await;
+            state.tunnel_handle = Some(handle);
+        }
+
+        dispatcher
+            .set_instance_exposure("my-agent", InstanceExposure::Unexposed)
+            .await
+            .unwrap();
+
+        let instance_id = dispatcher.instance_id("my-agent");
+        let state = dispatcher.state.read().await;
+        let entry = state.instance_state.get(&instance_id).unwrap();
+        assert_eq!(entry.exposure, InstanceExposure::Unexposed);
+    }
+}

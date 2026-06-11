@@ -46,6 +46,12 @@ pub struct TunnelHandle {
 }
 
 impl TunnelHandle {
+    /// Create a new handle from a sender (test-only).
+    #[cfg(test)]
+    pub fn new(tx: mpsc::UnboundedSender<TunnelMessage>) -> Self {
+        Self { tx }
+    }
+
     /// Send a message through the tunnel
     pub fn send(&self, msg: TunnelMessage) -> anyhow::Result<()> {
         self.tx
