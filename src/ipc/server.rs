@@ -617,8 +617,17 @@ impl IpcServer {
                 if request.owner_id.is_none() {
                     request.owner_id = Some(caller.subject_id());
                 }
+                let agent_name = request.name.clone();
                 match service.create_agent(request).await {
                     Ok(result) => {
+                        // ADR-035: Announce the new instance if tunnel is connected
+                        if let Some(dispatcher) = state.tunnel_dispatcher().await {
+                            if dispatcher.is_ready().await {
+                                if let Err(e) = dispatcher.announce_single_instance(&agent_name).await {
+                                    warn!("Failed to announce new agent instance {}: {}", agent_name, e);
+                                }
+                            }
+                        }
                         let response = ResponsePacket::AgentCreated { request_id, result };
                         Self::send_packet(&socket, response, addr).await?;
                     }
@@ -639,6 +648,40 @@ impl IpcServer {
                 force,
             } => {
                 let service = state.agent_mgmt_service();
+                // ADR-033: Enforce ownership/permission check before deletion
+                let agent_info = match service.get_agent(&name, team.as_deref()).await {
+                    Ok(Some(info)) => info,
+                    Ok(None) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Agent '{}' not found", name),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: e.to_string(),
+                        };
+                        Self::send_packet(&socket, response, addr).await?;
+                        return Ok(());
+                    }
+                };
+                let resource = crate::auth::ownership::agent_resource(&name, &agent_info.config);
+                if let Err(denied) = crate::auth::ownership::check_permission(
+                    &resource,
+                    crate::auth::ownership::Permission::Delete,
+                    &caller.subject_id(),
+                ) {
+                    warn!("AgentDelete permission denied: {}", denied);
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: denied.to_string(),
+                    };
+                    Self::send_packet(&socket, response, addr).await?;
+                    return Ok(());
+                }
                 let opts = crate::common::types::agent::AgentDeleteOptions {
                     force,
                     ..Default::default()

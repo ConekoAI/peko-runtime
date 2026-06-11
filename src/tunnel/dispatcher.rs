@@ -22,6 +22,8 @@ use super::protocol::{
 };
 use super::TunnelHandle;
 
+use crate::auth::ownership::{Permission, SubjectType};
+
 /// Per-instance state tracked by the dispatcher.
 #[derive(Debug, Clone)]
 pub struct InstanceState {
@@ -128,6 +130,32 @@ impl TunnelDispatcher {
         uuid::Uuid::new_v5(&INSTANCE_ID_NAMESPACE, name.as_bytes()).to_string()
     }
 
+    /// Compute allowed user IDs from an agent's permission grants.
+    ///
+    /// Filters for `Chat` permission grants where `subject_type == User`,
+    /// returning the `subject_id` values (with `user:` prefix stripped if present).
+    fn compute_allowed_user_ids(config: &crate::types::agent::AgentConfig) -> Option<Vec<String>> {
+        let ids: Vec<String> = config
+            .permissions
+            .iter()
+            .filter(|g| {
+                g.permission.covers(&Permission::Chat) && g.subject_type == SubjectType::User
+            })
+            .map(|g| {
+                // Strip `user:` prefix if present; hub expects bare user IDs
+                g.subject_id
+                    .strip_prefix("user:")
+                    .map(String::from)
+                    .unwrap_or_else(|| g.subject_id.clone())
+            })
+            .collect();
+        if ids.is_empty() {
+            None
+        } else {
+            Some(ids)
+        }
+    }
+
     /// Send initial instance announcements for all local agents
     pub async fn announce_instances(&self, handle: &TunnelHandle) -> anyhow::Result<()> {
         let agent_service = self.app_state.agent_mgmt_service();
@@ -141,6 +169,7 @@ impl TunnelDispatcher {
 
         for agent in agents {
             let instance_id = self.instance_id(&agent.name);
+            let allowed_users = Self::compute_allowed_user_ids(&agent.config);
             let payload = InstanceAnnouncePayload {
                 id: instance_id.clone(),
                 instance_type: InstanceType::Agent,
@@ -149,7 +178,7 @@ impl TunnelDispatcher {
                 runtime_display_name: Some(self.runtime_display_name.clone()),
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_users: None,
+                allowed_users: allowed_users.clone(),
                 capabilities: None,
                 metadata: None,
             };
@@ -160,7 +189,7 @@ impl TunnelDispatcher {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_users: Vec::new(),
+                    allowed_users: allowed_users.unwrap_or_default(),
                     status: InstanceStatus::Online,
                 },
             );
@@ -171,6 +200,70 @@ impl TunnelDispatcher {
             } else {
                 debug!("Announced instance: {}", agent.name);
             }
+        }
+
+        Ok(())
+    }
+
+    /// Announce a single agent instance through the tunnel.
+    ///
+    /// Used when a new agent is created after the tunnel is already connected.
+    pub async fn announce_single_instance(&self, agent_name: &str) -> anyhow::Result<()> {
+        let handle = {
+            let state = self.state.read().await;
+            match state.tunnel_handle.clone() {
+                Some(h) => h,
+                None => {
+                    debug!("No tunnel handle available; skipping instance announce for {}", agent_name);
+                    return Ok(());
+                }
+            }
+        };
+
+        let agent_service = self.app_state.agent_mgmt_service();
+        let agent = match agent_service.get_agent(agent_name, None).await {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                warn!("Agent {} not found; cannot announce instance", agent_name);
+                return Ok(());
+            }
+            Err(e) => {
+                warn!("Failed to load agent {} for instance announce: {}", agent_name, e);
+                return Ok(());
+            }
+        };
+
+        let instance_id = self.instance_id(agent_name);
+        let allowed_users = Self::compute_allowed_user_ids(&agent.config);
+        let payload = InstanceAnnouncePayload {
+            id: instance_id.clone(),
+            instance_type: InstanceType::Agent,
+            name: agent.name.clone(),
+            bundle_ref: None,
+            runtime_display_name: Some(self.runtime_display_name.clone()),
+            status: InstanceStatus::Online,
+            exposure: InstanceExposure::Private,
+            allowed_users: allowed_users.clone(),
+            capabilities: None,
+            metadata: None,
+        };
+
+        // Seed local instance state cache
+        let mut state = self.state.write().await;
+        state.instance_state.insert(
+            instance_id,
+            InstanceState {
+                exposure: InstanceExposure::Private,
+                allowed_users: allowed_users.unwrap_or_default(),
+                status: InstanceStatus::Online,
+            },
+        );
+        drop(state);
+
+        if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce { payload }) {
+            warn!("Failed to announce instance {}: {}", agent_name, e);
+        } else {
+            debug!("Announced single instance: {}", agent_name);
         }
 
         Ok(())
@@ -520,12 +613,27 @@ impl TunnelDispatcher {
             let state = self.state.read().await;
             state.tunnel_handle.clone()
         };
+        // Resolve allowed users from agent config for private exposure
+        let allowed_user_ids = if exposure == InstanceExposure::Private {
+            let agent_service = self.app_state.agent_mgmt_service();
+            match agent_service.get_agent(agent_name, None).await {
+                Ok(Some(info)) => Self::compute_allowed_user_ids(&info.config),
+                Ok(None) => None,
+                Err(e) => {
+                    warn!("Failed to load agent config for {}: {}", agent_name, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         if let Some(handle) = handle {
             use super::protocol::ExposureUpdatePayload;
             let payload = ExposureUpdatePayload {
                 instance_id: instance_id.clone(),
                 exposure: exposure.clone(),
-                allowed_user_ids: None,
+                allowed_user_ids: allowed_user_ids.clone(),
             };
             if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
                 warn!("Failed to send exposure update for {}: {}", agent_name, e);
