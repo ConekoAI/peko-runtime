@@ -328,15 +328,17 @@ Tests that work with either LLM use whichever is set — mock-first. The referen
 
 ## 9. End-State CI
 
-The current `.github/workflows/integration.yml` runs 6 parallel jobs (lib-tests + 5 per-test-file). The end state collapses to 3:
+Three jobs in [.github/workflows/integration.yml](../../.github/workflows/integration.yml), chained `unit → integration → integration-llm`:
 
 | Job | Command | When | Needs |
 |---|---|---|---|
 | `unit` | `make test` | Every PR | — |
 | `integration` | `make test-integration` | Every PR | `unit` |
-| `integration-llm` | `make test-integration-llm` | Nightly + `[llm]` in commit msg | `integration` |
+| `integration-llm` | `make test-integration-llm` | Nightly cron, `[llm]` in commit msg, or `workflow_dispatch` | `integration` |
 
-`MINIMAX_API_KEY` lives as a repo secret. Only `integration-llm` reads it. The `integration` job runs with the secret unset — that's how we guarantee the mock-LLM-tier tests stay mock-only and don't silently leak to the real provider.
+Each integration job sibling-checks-out `pekohub` next to `peko-runtime/` so the compose file's `context: ../../pekohub` resolves, brings the stack up via `make docker-up`, then polls `http://localhost:3000/health` for up to 60s before invoking cargo (PekohubBackend has only 5s of grace).
+
+`MINIMAX_API_KEY` lives as a repo secret. Only `integration-llm` reads it. The `integration` job runs with the secret unset — that's how we guarantee the mock-LLM-tier tests stay mock-only and don't silently leak to the real provider. The Makefile recipes additionally `env -u` the *other* knob (`MINIMAX_API_KEY` in `test-integration`, `MOCK_LLM_URL` in `test-integration-llm`) as belt-and-suspenders.
 
 ---
 
