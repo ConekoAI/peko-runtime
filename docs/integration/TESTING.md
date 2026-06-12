@@ -280,7 +280,7 @@ Once Phases A–D land:
 
 ## 8. End-State Makefile
 
-This is what `make help` should print once Phase A of the migration lands. Today's Makefile has more granular per-test-file targets; those collapse into these four:
+The four canonical targets ([Makefile](../../Makefile)):
 
 ```makefile
 # Fast feedback — no Docker, no LLM
@@ -288,19 +288,28 @@ test:                  cargo test --lib
 
 # Tier 1 — PR gate: Docker + PekoHub + mock LLM
 test-integration:      docker-up && \
-                       cargo test --test '*' -- --ignored
-                       # env: PEKOHUB_URL, MOCK_LLM_URL set
-                       # env: MINIMAX_API_KEY unset
+                       env -u MINIMAX_API_KEY \
+                         PEKOHUB_URL=… MOCK_LLM_URL=… \
+                         cargo test --test pekohub_integration --test tunnel_integration \
+                                    --test tunnel_e2e --test packaging_integration \
+                                    --test registry_integration --test team_integration \
+                                    --test extension_packaging \
+                                    -- --include-ignored
 
 # Tier 2 — nightly + [llm] commit tag: adds real-LLM tests
 test-integration-llm:  docker-up && \
-                       cargo test --test '*' -- --ignored
-                       # env: PEKOHUB_URL, MINIMAX_API_KEY set
-                       # tests opt in via runtime check
+                       env -u MOCK_LLM_URL \
+                         PEKOHUB_URL=… \
+                         cargo test --test … -- --include-ignored
+                       # MINIMAX_API_KEY must be set; recipe refuses otherwise.
 
 # Everything
 test-all:              test && test-integration && test-integration-llm
 ```
+
+The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
+
+> **Why `--include-ignored`, not `--ignored`.** All 26 hub-gated tests are `#[ignore]`, but the 10 always-on pure-Rust tests in `team_integration.rs` (4) and `extension_packaging.rs` (6) are not. `cargo test … -- --ignored` would silently skip those 10. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 
