@@ -19,7 +19,8 @@
 # All integration test crates (live in tests/*.rs).
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
-                     team_integration extension_packaging
+                     team_integration extension_packaging \
+                     cli_send
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
 # Default ports exposed by docker-compose.integration.yml; CI overrides
