@@ -44,7 +44,13 @@ fn send_default_response_streams_to_stdout() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let (out, _, _) = run_with_timeout(
-        || cli.cmd().stdout(Stdio::piped()).stderr(Stdio::piped()),
+        || {
+            // Each Command method returns &mut Command, so the closure
+            // body must use let-bindings to materialise an owned value.
+            let mut c = cli.cmd();
+            c.stdout(Stdio::piped()).stderr(Stdio::piped());
+            c
+        },
         &["send", "test-agent", "Hello there", "--no-stream"],
         Duration::from_secs(20),
     )
@@ -81,7 +87,11 @@ fn send_keyword_echo_returns_marker() {
 
     // Mock recognises `Respond with: <KEYWORD>` and echoes the keyword.
     let (out, _, _) = run_with_timeout(
-        || cli.cmd().stdout(Stdio::piped()).stderr(Stdio::piped()),
+        || {
+            let mut c = cli.cmd();
+            c.stdout(Stdio::piped()).stderr(Stdio::piped());
+            c
+        },
         &[
             "send",
             "echo-agent",
