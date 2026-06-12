@@ -68,5 +68,10 @@ ENV MEILISEARCH_API_KEY=test
 
 EXPOSE 3000
 
-# The test fixture server auto-starts PGlite, creates tables, listens
-CMD ["node", "--import", "tsx", "backend/tests/fixtures/server.ts", "--port", "3000"]
+# The test fixture server auto-starts PGlite, creates tables, listens.
+# Invoke `tsx` directly rather than `node --import tsx …`: globally-
+# installed `tsx` lives at /usr/local/bin/tsx, but `node --import tsx`
+# uses Node's ESM resolver, which does NOT search globally-installed
+# modules (NODE_PATH only affects CommonJS resolution). The `tsx`
+# binary is on the default PATH so `tsx file.ts` Just Works.
+CMD ["tsx", "backend/tests/fixtures/server.ts", "--port", "3000"]
