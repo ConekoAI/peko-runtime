@@ -32,7 +32,7 @@ services:
   # ── Mock LLM Server (optional, for tunnel_e2e only) ───────────────
   mock-llm:
     build:
-      context: ../../peko-runtime/.github/docker/mock-llm
+      context: ../../.github/docker/mock-llm
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
