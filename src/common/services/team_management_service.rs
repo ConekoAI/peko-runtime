@@ -199,3 +199,147 @@ impl TeamManagementService {
         &self.resolver
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::types::membership::MembershipRole;
+
+    fn test_service() -> (tempfile::TempDir, TeamManagementService) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        let data_dir = temp_dir.path().join("data");
+        let cache_dir = temp_dir.path().join("cache");
+
+        let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
+        let team_service = TeamService::new(resolver.clone());
+        let service = TeamManagementService::new(team_service, resolver);
+        (temp_dir, service)
+    }
+
+    fn create_test_agent(service: &TeamManagementService, name: &str) {
+        let agent_dir = service.resolver().agent_dir(name);
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("config.toml"), format!("name = '{name}'\n")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_and_get_team() {
+        let (_temp, service) = test_service();
+
+        let result = service
+            .create_team("engineering", Some("Eng team"), None, Some("owner-1"))
+            .await
+            .unwrap();
+        assert_eq!(result.metadata.name, "engineering");
+        assert_eq!(result.metadata.description.as_deref(), Some("Eng team"));
+        assert_eq!(result.metadata.owner_id, "owner-1");
+
+        let team = service.get_team("engineering").await.unwrap();
+        assert!(team.is_some());
+        let team = team.unwrap();
+        assert_eq!(team.name, "engineering");
+        assert_eq!(team.agent_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_teams_sorted() {
+        let (_temp, service) = test_service();
+
+        service.create_team("alpha", None, None, None).await.unwrap();
+        service.create_team("default", None, None, None).await.unwrap();
+        service.create_team("beta", None, None, None).await.unwrap();
+
+        let teams = service.list_teams().await.unwrap();
+        assert_eq!(teams.len(), 3);
+        assert_eq!(teams[0].name, "default");
+        assert_eq!(teams[1].name, "alpha");
+        assert_eq!(teams[2].name, "beta");
+    }
+
+    #[tokio::test]
+    async fn test_join_and_leave_team() {
+        let (_temp, service) = test_service();
+
+        service.create_team("engineering", None, None, None).await.unwrap();
+        create_test_agent(&service, "alice");
+
+        let join = service
+            .join_team("engineering", "alice", MembershipRole::Admin)
+            .await
+            .unwrap();
+        assert_eq!(join.agent, "alice");
+        assert_eq!(join.role, MembershipRole::Admin);
+
+        let team = service.get_team("engineering").await.unwrap().unwrap();
+        assert_eq!(team.agent_count, 1);
+        assert!(team.members.contains(&"alice".to_string()));
+
+        let leave = service.leave_team("engineering", "alice").await.unwrap();
+        assert!(leave.was_member);
+
+        let team = service.get_team("engineering").await.unwrap().unwrap();
+        assert_eq!(team.agent_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_delete_team_removes_members_but_keeps_agents() {
+        let (_temp, service) = test_service();
+
+        service.create_team("engineering", None, None, None).await.unwrap();
+        create_test_agent(&service, "alice");
+        service
+            .join_team("engineering", "alice", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let result = service.delete_team("engineering").await.unwrap();
+        assert_eq!(result.agents_deleted, 1);
+
+        assert!(!service.team_exists("engineering"));
+        assert!(service.resolver().agent_dir("alice").exists());
+    }
+
+    #[tokio::test]
+    async fn test_move_team() {
+        let (_temp, service) = test_service();
+
+        service.create_team("engineering", None, None, None).await.unwrap();
+        create_test_agent(&service, "alice");
+        service
+            .join_team("engineering", "alice", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let result = service.move_team("engineering", "dev").await.unwrap();
+        assert_eq!(result.old_name, "engineering");
+        assert_eq!(result.new_name, "dev");
+        assert_eq!(result.agents_moved, 1);
+
+        assert!(!service.team_exists("engineering"));
+        assert!(service.team_exists("dev"));
+
+        let team = service.get_team("dev").await.unwrap().unwrap();
+        assert!(team.members.contains(&"alice".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_validate_team_name() {
+        let (_temp, service) = test_service();
+
+        assert!(service.validate_team_name("valid-team").is_ok());
+        assert!(service.validate_team_name("").is_err());
+        assert!(service.validate_team_name("-bad").is_err());
+        assert!(service.validate_team_name("bad/team").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cannot_delete_default_team() {
+        let (_temp, service) = test_service();
+
+        service.create_team("default", None, None, None).await.unwrap();
+        let result = service.delete_team("default").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cannot delete"));
+    }
+}

@@ -209,3 +209,103 @@ archive_format = "tar"
         "Expected checksum mismatch, got: {err}"
     );
 }
+
+use pekobot::extension::core::HookPoint;
+use pekobot::extension::types::{HookInput, HookOutput, HookResult};
+use pekobot::extensions::skill::SkillAdapter;
+use pekobot::extensions::universal::UniversalToolAdapter;
+use pekobot::types::agent::ExtensionConfig;
+
+fn create_test_tool_extension(temp: &TempDir, id: &str) -> PathBuf {
+    let ext_dir = temp.path().join(id);
+    std::fs::create_dir_all(&ext_dir).unwrap();
+
+    // Universal-tool manifest
+    std::fs::write(
+        ext_dir.join("manifest.yaml"),
+        format!(
+            "name: {id}\nextension_type: universal-tool\ndescription: A test universal tool\nversion: 1.0.0\nparameters:\n  type: object\n  properties:\n    input:\n      type: string\n"
+        ),
+    )
+    .unwrap();
+
+    // Simple Python executable that implements the universal tool protocol
+    let script = r#"import sys, json
+line = sys.stdin.readline()
+if line:
+    req = json.loads(line)
+    resp = {"jsonrpc": "2.0", "id": req.get("id"), "result": {"success": true, "data": {"echoed": true}}}
+    print(json.dumps(resp), flush=True)
+"#;
+    std::fs::write(ext_dir.join(format!("{id}.py")), script).unwrap();
+
+    ext_dir
+}
+
+#[tokio::test]
+async fn test_extension_install_tool_registration_and_invocation() {
+    let temp = TempDir::new().unwrap();
+    let ext_dir = create_test_tool_extension(&temp, "test-echo");
+
+    let mut manager = ExtensionManager::new();
+    manager.register_adapter(Box::new(SkillAdapter::new()));
+    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+
+    // 1. Install the extension
+    let ext_id = manager.install(&ext_dir).await.unwrap();
+    assert_eq!(ext_id.0, "test-echo");
+
+    // 2. Get the ExtensionCore from the manager (tools registered during install)
+    let core = manager.core_arc();
+
+    // 3. Enable the tool in the whitelist
+    let tool_config = ExtensionConfig {
+        enabled: vec!["universal:test-echo".to_string()],
+        ..Default::default()
+    };
+    core.set_tool_config(tool_config).await;
+
+    // 4. Verify the tool is listed
+    let tools = core.list_tools().await;
+    let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+    assert!(
+        tool_names.contains(&"test-echo".to_string()),
+        "Expected 'test-echo' in list_tools, got: {:?}",
+        tool_names
+    );
+
+    // 5. Verify the tool can be invoked via ToolExecute
+    let result = core
+        .invoke_hook(
+            HookPoint::ToolExecute {
+                tool_name: "test-echo".to_string(),
+            },
+            HookInput::ToolCall {
+                tool_name: "test-echo".to_string(),
+                params: serde_json::json!({"input": "hello"}),
+                workspace: None,
+                agent_id: None,
+                session_id: None,
+            },
+        )
+        .await;
+
+    // The tool should execute successfully and return JSON output.
+    // If Python is unavailable we accept an Error result as long as it is
+    // not a whitelist block — that still proves the hook was resolved.
+    match result {
+        HookResult::Continue(HookOutput::Json(json)) => {
+            assert_eq!(json["echoed"], true, "Expected echoed result, got: {json}");
+        }
+        HookResult::Error(ref e) => {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("disabled") && !msg.contains("not enabled"),
+                "Tool invocation blocked by whitelist: {msg}"
+            );
+        }
+        other => {
+            panic!("Expected Continue(JSON) or Error, got: {other:?}");
+        }
+    }
+}

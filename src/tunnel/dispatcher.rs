@@ -982,4 +982,125 @@ mod tests {
         let entry = state.instance_state.get(&instance_id).unwrap();
         assert_eq!(entry.exposure, InstanceExposure::Unexposed);
     }
+
+    #[tokio::test]
+    async fn test_check_request_allowed_public_allows_any_request() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+
+        let instance_id = dispatcher.instance_id("public-agent");
+        {
+            let mut state = dispatcher.state.write().await;
+            state.instance_state.insert(
+                instance_id,
+                InstanceState {
+                    exposure: InstanceExposure::Public,
+                    allowed_users: vec![],
+                    status: InstanceStatus::Online,
+                },
+            );
+        }
+
+        let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "any-user"}});
+        let result = dispatcher.check_request_allowed("public-agent", &bridge_payload).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_check_request_allowed_unexposed_denies_any_request() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+
+        let instance_id = dispatcher.instance_id("unexposed-agent");
+        {
+            let mut state = dispatcher.state.write().await;
+            state.instance_state.insert(
+                instance_id,
+                InstanceState {
+                    exposure: InstanceExposure::Unexposed,
+                    allowed_users: vec![],
+                    status: InstanceStatus::Online,
+                },
+            );
+        }
+
+        let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
+        let result = dispatcher.check_request_allowed("unexposed-agent", &bridge_payload).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Agent is not exposed"));
+    }
+
+    #[tokio::test]
+    async fn test_check_request_allowed_private_allows_allowed_user() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+
+        let instance_id = dispatcher.instance_id("private-agent");
+        {
+            let mut state = dispatcher.state.write().await;
+            state.instance_state.insert(
+                instance_id,
+                InstanceState {
+                    exposure: InstanceExposure::Private,
+                    allowed_users: vec!["user-123".to_string()],
+                    status: InstanceStatus::Online,
+                },
+            );
+        }
+
+        let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
+        let result = dispatcher.check_request_allowed("private-agent", &bridge_payload).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_check_request_allowed_private_without_user_id_denies() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+
+        let instance_id = dispatcher.instance_id("private-agent");
+        {
+            let mut state = dispatcher.state.write().await;
+            state.instance_state.insert(
+                instance_id,
+                InstanceState {
+                    exposure: InstanceExposure::Private,
+                    allowed_users: vec!["user-123".to_string()],
+                    status: InstanceStatus::Online,
+                },
+            );
+        }
+
+        let bridge_payload = serde_json::json!({"headers": {}});
+        let result = dispatcher.check_request_allowed("private-agent", &bridge_payload).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Authentication required"));
+    }
+
+    #[tokio::test]
+    async fn test_check_request_allowed_private_with_non_allowed_user_id_denies() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+
+        let instance_id = dispatcher.instance_id("private-agent");
+        {
+            let mut state = dispatcher.state.write().await;
+            state.instance_state.insert(
+                instance_id,
+                InstanceState {
+                    exposure: InstanceExposure::Private,
+                    allowed_users: vec!["user-123".to_string()],
+                    status: InstanceStatus::Online,
+                },
+            );
+        }
+
+        let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-999"}});
+        let result = dispatcher.check_request_allowed("private-agent", &bridge_payload).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Forbidden"));
+    }
 }

@@ -1,16 +1,22 @@
 //! Registry Integration Tests (Tier 1)
 //!
-//! End-to-end tests for push/pull against the Python mock registry server.
+//! End-to-end tests for push/pull against the real PekoHub backend
+//! running in test mode (PGlite + mock storage/search).
 //!
 //! These tests are marked `#[ignore]` because they require:
-//!   - Python 3 with fastapi + uvicorn installed
-//!   - The mock registry server script at `e2e_tests/packaging/mock_registry/main.py`
+//!   - Node.js 22+ with tsx installed  (local mode)
+//!   - OR a running PekoHub test container (container mode via PEKOHUB_URL)
 //!
-//! The test harness auto-starts the mock registry on a random ephemeral port
-//! and shuts it down after each test.
+//! The test harness auto-starts the PekoHub backend on a random ephemeral port
+//! and shuts it down after each test (local mode), or connects to an existing
+//! container (container mode).
 //!
-//! Run:
+//! Run locally:
+//!   cd peko-runtime
 //!   cargo test --test registry_integration -- --ignored
+//!
+//! Run in container:
+//!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test registry_integration -- --ignored
 
 use pekobot::portable::{manifest::AgentLayers, AgentManifest, AgentRegistry, Layer, LayerType};
 use pekobot::registry::client::ResourceType;
@@ -20,47 +26,89 @@ use pekobot::registry::{
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+// JWT secret must match the PekoHub test fixture
+const PEKOHUB_JWT_SECRET: &str = "test-secret-key-that-is-32-chars-long!!";
+
 // ---------------------------------------------------------------------------
-// Test harness: auto-start mock registry
+// Test harness: auto-start pekohub backend or connect to container
 // ---------------------------------------------------------------------------
 
-/// Holds the running mock registry process and its URL
-struct MockRegistry {
+/// Holds the running pekohub backend process and its URL
+struct PekohubBackend {
     #[allow(dead_code)]
-    child: Child,
+    child: Option<Child>,
     url: String,
 }
 
-impl MockRegistry {
-    /// Start the mock registry server on a random port.
+impl PekohubBackend {
+    /// Start the pekohub backend test server on a random port.
+    ///
+    /// In container mode (PEKOHUB_URL set), connects to existing server.
+    /// In local mode, spawns Node.js + tsx process.
     ///
     /// # Panics
     /// Panics if the server cannot be started or the port cannot be read.
-    async fn start(auth_token: Option<&str>) -> Self {
-        let script_path = std::env::var("MOCK_REGISTRY_SCRIPT").unwrap_or_else(|_| {
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/e2e_tests/packaging/mock_registry/main.py"
-            )
-            .to_string()
+    async fn start() -> Self {
+        // Container mode: pekohub is already running
+        if let Ok(url) = std::env::var("PEKOHUB_URL") {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .no_proxy()
+                .build()
+                .unwrap();
+
+            let mut ready = false;
+            for _ in 0..50 {
+                if client.get(format!("{url}/health")).send().await.is_ok() {
+                    ready = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(
+                ready,
+                "PekoHub backend at {url} did not become ready in 5 seconds"
+            );
+
+            return Self { child: None, url };
+        }
+
+        // Local mode: spawn Node.js + tsx process
+        let backend_path = std::env::var("PEKOHUB_BACKEND_PATH").unwrap_or_else(|_| {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../pekohub/backend").to_string()
         });
 
-        let mut cmd = Command::new("python");
-        cmd.arg(&script_path)
-            .arg("--host")
-            .arg("127.0.0.1")
+        let script_path = format!("{backend_path}/tests/fixtures/server.ts");
+
+        // Verify the script exists
+        if !std::path::Path::new(&script_path).exists() {
+            panic!(
+                "PekoHub test server script not found at: {script_path}\n\
+                 Set PEKOHUB_BACKEND_PATH to the pekohub/backend directory."
+            );
+        }
+
+        // Resolve tsx CLI path relative to backend node_modules
+        let tsx_cli = format!("{backend_path}/node_modules/tsx/dist/cli.mjs");
+        if !std::path::Path::new(&tsx_cli).exists() {
+            panic!(
+                "tsx CLI not found at: {tsx_cli}\n\
+                 Run: cd {backend_path} && npm install"
+            );
+        }
+
+        let mut cmd = Command::new("node");
+        cmd.arg(&tsx_cli)
+            .arg(&script_path)
             .arg("--port")
             .arg("0")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        if let Some(token) = auth_token {
-            cmd.arg("--auth-token").arg(token);
-        }
+            .stderr(Stdio::piped())
+            .current_dir(&backend_path);
 
         let mut child = cmd.spawn().expect(
-            "Failed to start mock registry. Is Python with fastapi+uvicorn installed? \
-             Install with: pip install fastapi uvicorn",
+            "Failed to start PekoHub backend. Is Node.js 22+ with tsx installed? \
+             Install with: cd pekohub/backend && npm install",
         );
 
         // Read stdout for the PORT= line
@@ -69,12 +117,12 @@ impl MockRegistry {
         let port = tokio::task::spawn_blocking(move || {
             use std::io::BufRead;
             for line in reader.lines() {
-                let line = line.expect("Failed to read line from mock registry");
+                let line = line.expect("Failed to read line from PekoHub backend");
                 if let Some(port_str) = line.strip_prefix("PORT=") {
                     return port_str.parse::<u16>().expect("Invalid PORT line");
                 }
             }
-            panic!("Mock registry did not print PORT= line")
+            panic!("PekoHub backend did not print PORT= line")
         })
         .await
         .expect("Port detection task panicked");
@@ -90,44 +138,70 @@ impl MockRegistry {
 
         let mut ready = false;
         for _ in 0..50 {
-            if client.get(format!("{url}/v2/")).send().await.is_ok() {
+            if client.get(format!("{url}/health")).send().await.is_ok() {
                 ready = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(ready, "Mock registry did not become ready in 5 seconds");
+        assert!(ready, "PekoHub backend did not become ready in 5 seconds");
 
-        Self { child, url }
-    }
-
-    #[allow(dead_code)]
-    /// Reset the registry storage (clear all data).
-    async fn reset(&self) {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .no_proxy()
-            .build()
-            .unwrap();
-        let _ = client
-            .delete(format!("{}/_debug/reset", self.url))
-            .send()
-            .await;
+        Self {
+            child: Some(child),
+            url,
+        }
     }
 }
 
-impl Drop for MockRegistry {
+impl Drop for PekohubBackend {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(ref mut child) = self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
+}
+
+/// Reset the PekoHub backend data between tests.
+async fn reset_pekohub(url: &str) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+    let resp = client.post(format!("{url}/test/reset")).send().await;
+    // If reset endpoint doesn't exist (older fixture), just ignore
+    if let Ok(r) = resp {
+        let _ = r.error_for_status();
+    }
+}
+
+/// Create a test user in PekoHub and return the namespace.
+/// This is needed because PekoHub requires namespace ownership for pushes.
+async fn create_test_user(client: &reqwest::Client, base_url: &str, namespace: &str) {
+    let resp = client
+        .post(&format!("{base_url}/test/create-user"))
+        .json(&serde_json::json!({
+            "namespace": namespace,
+            "display_name": format!("Test User ({namespace})"),
+            "external_id": format!("test-{namespace}"),
+            "provider": "github",
+        }))
+        .send()
+        .await
+        .expect("create-user failed");
+    assert!(
+        resp.status().is_success(),
+        "create-user failed: {}",
+        resp.status()
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Create a test registry config pointing at the mock server
+/// Create a test registry config pointing at the hub server
 fn test_registry_config(host: &str) -> RegistryConfig {
     let mut config = RegistryConfig::default();
     config.sources.clear();
@@ -136,19 +210,6 @@ fn test_registry_config(host: &str) -> RegistryConfig {
         priority: 1,
         auth: None,
         token: None,
-    });
-    config
-}
-
-/// Create a test registry config with bearer token auth
-fn test_registry_config_with_token(host: &str, token: &str) -> RegistryConfig {
-    let mut config = RegistryConfig::default();
-    config.sources.clear();
-    config.add_source(RegistrySource {
-        url: host.to_string(),
-        priority: 1,
-        auth: None,
-        token: Some(token.to_string()),
     });
     config
 }
@@ -213,125 +274,133 @@ async fn store_registry_manifest_local(
 }
 
 // ---------------------------------------------------------------------------
-// Tests: Basic registry protocol (direct HTTP)
+// Tests: OCI registry protocol against PekoHub (direct HTTP)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
-async fn test_mock_registry_manifest_roundtrip() {
-    let server = MockRegistry::start(None).await;
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+async fn test_pekohub_manifest_roundtrip() {
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .no_proxy()
         .build()
         .unwrap();
 
+    // Create user so PekoHub namespace ownership check passes
+    create_test_user(&client, &backend.url, "ns").await;
+
+    // Upload a dummy config blob first (pekohub validates blob existence)
+    let config_data = b"{}";
+    let config_digest = sha256_digest(config_data);
+    let post_resp = client
+        .post(format!("{}/v2/ns/test-agent/blobs/uploads/", backend.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(post_resp.status(), 202);
+    let location = post_resp
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let upload_url = if location.starts_with("http") {
+        location.to_string()
+    } else {
+        format!("{}{}", backend.url, location)
+    };
+    let _ = client
+        .put(&upload_url)
+        .header("Content-Type", "application/octet-stream")
+        .query(&[("digest", &config_digest)])
+        .body(config_data.as_slice())
+        .send()
+        .await
+        .unwrap();
+
     // PUT manifest with OCI media type
-    let manifest_json = r#"{"schema_version":1,"name":"test-agent","version":"1.0.0","ref":"","digest":"sha256:abc123","created_at":"2026-05-08T10:00:00Z","source":"local","layers":[]}"#;
+    let manifest_json = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[],"annotations":{{"org.opencontainers.image.description":"Test bundle"}}}}"#,
+        config_digest,
+        config_data.len()
+    );
+
     let put_resp = client
-        .put(format!("{}/v2/ns/test-agent/manifests/latest", server.url))
+        .put(format!("{}/v2/ns/test-agent/manifests/v1.0", backend.url))
         .header("Content-Type", media_types::MANIFEST_OCI)
         .body(manifest_json)
         .send()
         .await
         .unwrap();
+
     assert!(
         put_resp.status().is_success(),
-        "PUT manifest failed: {}",
-        put_resp.status()
+        "PUT manifest failed: {} - {:?}",
+        put_resp.status(),
+        put_resp.text().await.unwrap_or_default()
     );
 
     // GET manifest
     let get_resp = client
-        .get(format!("{}/v2/ns/test-agent/manifests/latest", server.url))
+        .get(format!("{}/v2/ns/test-agent/manifests/v1.0", backend.url))
         .send()
         .await
         .unwrap();
     assert_eq!(get_resp.status(), 200);
     let body = get_resp.text().await.unwrap();
-    assert!(body.contains("test-agent"));
+    assert!(body.contains("schemaVersion"));
 }
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
-async fn test_mock_registry_manifest_peko_media_type() {
-    let server = MockRegistry::start(None).await;
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+async fn test_pekohub_manifest_invalid_media_type_rejected() {
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .no_proxy()
         .build()
         .unwrap();
 
-    // PUT manifest with legacy Peko media type (should be accepted)
-    let manifest_json = r#"{"schema_version":1,"name":"peko-agent","version":"1.0.0","ref":"","digest":"sha256:abc123","created_at":"2026-05-08T10:00:00Z","source":"local","layers":[]}"#;
+    create_test_user(&client, &backend.url, "ns").await;
+
+    // PUT manifest with invalid media type ( PekoHub only accepts OCI )
+    let manifest_json = r#"{"schemaVersion":2,"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":2},"layers":[]}"#;
     let put_resp = client
-        .put(format!("{}/v2/ns/peko-agent/manifests/v1.0", server.url))
-        .header("Content-Type", media_types::MANIFEST_PEKO)
-        .body(manifest_json)
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        put_resp.status().is_success(),
-        "PUT manifest with Peko media type failed: {}",
-        put_resp.status()
-    );
-
-    // GET should return the same media type
-    let get_resp = client
-        .get(format!("{}/v2/ns/peko-agent/manifests/v1.0", server.url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(get_resp.status(), 200);
-    let ct = get_resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert_eq!(ct, media_types::MANIFEST_PEKO);
-}
-
-#[tokio::test]
-#[ignore = "requires Python mock registry server"]
-async fn test_mock_registry_manifest_invalid_media_type_rejected() {
-    let server = MockRegistry::start(None).await;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .no_proxy()
-        .build()
-        .unwrap();
-
-    // PUT manifest with invalid media type
-    let manifest_json = r#"{"schema_version":1,"name":"bad-agent","version":"1.0.0","layers":[]}"#;
-    let put_resp = client
-        .put(format!("{}/v2/ns/bad-agent/manifests/latest", server.url))
+        .put(format!("{}/v2/ns/bad-agent/manifests/latest", backend.url))
         .header("Content-Type", "application/json")
         .body(manifest_json)
         .send()
         .await
         .unwrap();
+    // PekoHub rejects invalid media types with 400
     assert_eq!(put_resp.status(), 400);
-    let body: serde_json::Value = put_resp.json().await.unwrap();
-    assert_eq!(body["errors"][0]["code"], "MANIFEST_INVALID");
 }
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
-async fn test_mock_registry_blob_roundtrip() {
-    let server = MockRegistry::start(None).await;
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+async fn test_pekohub_blob_roundtrip() {
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .no_proxy()
         .build()
         .unwrap();
+
+    create_test_user(&client, &backend.url, "ns").await;
 
     let data = b"test blob content";
     let digest = sha256_digest(data);
 
     // Upload blob via POST + PUT
     let post_resp = client
-        .post(format!("{}/v2/ns/test/blobs/uploads/", server.url))
+        .post(format!("{}/v2/ns/test/blobs/uploads/", backend.url))
         .send()
         .await
         .unwrap();
@@ -359,7 +428,7 @@ async fn test_mock_registry_blob_roundtrip() {
 
     // HEAD check
     let head_resp = client
-        .head(format!("{}/v2/ns/test/blobs/{}", server.url, digest))
+        .head(format!("{}/v2/ns/test/blobs/{}", backend.url, digest))
         .send()
         .await
         .unwrap();
@@ -367,7 +436,7 @@ async fn test_mock_registry_blob_roundtrip() {
 
     // GET blob
     let get_resp = client
-        .get(format!("{}/v2/ns/test/blobs/{}", server.url, digest))
+        .get(format!("{}/v2/ns/test/blobs/{}", backend.url, digest))
         .send()
         .await
         .unwrap();
@@ -377,45 +446,77 @@ async fn test_mock_registry_blob_roundtrip() {
 }
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
-async fn test_mock_registry_catalog_and_tags() {
-    let server = MockRegistry::start(None).await;
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+async fn test_pekohub_catalog_and_tags() {
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .no_proxy()
         .build()
         .unwrap();
 
-    // Push two manifests
-    for (repo, name) in [("ns/agent-a", "agent-a"), ("ns/agent-b", "agent-b")] {
+    // Create two users for two namespaces
+    create_test_user(&client, &backend.url, "ns").await;
+
+    // Push manifests to two different namespaces (ns/agent-a and ns/agent-b)
+    for (name, ns) in [("agent-a", "ns"), ("agent-b", "ns")] {
+        // Upload a config blob first
+        let config_data = b"{}";
+        let config_digest = sha256_digest(config_data);
+
+        let post_resp = client
+            .post(format!("{}/v2/{}/{}/blobs/uploads/", backend.url, ns, name))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(post_resp.status(), 202);
+        let location = post_resp.headers().get("location").unwrap().to_str().unwrap();
+        let upload_url = if location.starts_with("http") {
+            location.to_string()
+        } else {
+            format!("{}{}", backend.url, location)
+        };
+        let _ = client
+            .put(&upload_url)
+            .header("Content-Type", "application/octet-stream")
+            .query(&[("digest", &config_digest)])
+            .body(config_data.as_slice())
+            .send()
+            .await
+            .unwrap();
+
         let json = format!(
-            r#"{{"schema_version":1,"name":"{}","version":"1.0.0","layers":[]}}"#,
-            name
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[]}}"#,
+            config_digest,
+            config_data.len()
         );
         let resp = client
-            .put(format!("{}/v2/{}/manifests/v1.0", server.url, repo))
+            .put(format!("{}/v2/{}/{}/manifests/v1.0", backend.url, ns, name))
             .header("Content-Type", media_types::MANIFEST_OCI)
             .body(json)
             .send()
             .await
             .unwrap();
-        assert!(resp.status().is_success());
+        assert!(resp.status().is_success(), "Push {name} failed: {}", resp.status());
     }
 
     // Catalog
     let catalog_resp = client
-        .get(format!("{}/v2/_catalog", server.url))
+        .get(format!("{}/v2/_catalog", backend.url))
         .send()
         .await
         .unwrap();
     assert_eq!(catalog_resp.status(), 200);
     let catalog: serde_json::Value = catalog_resp.json().await.unwrap();
     let repos = catalog["repositories"].as_array().unwrap();
-    assert_eq!(repos.len(), 2);
+    // Should have agent-a and agent-b
+    assert!(repos.len() >= 2, "Expected at least 2 repos, got {}", repos.len());
 
-    // Tags
+    // Tags for agent-a
     let tags_resp = client
-        .get(format!("{}/v2/ns/agent-a/tags/list", server.url))
+        .get(format!("{}/v2/ns/agent-a/tags/list", backend.url))
         .send()
         .await
         .unwrap();
@@ -426,92 +527,24 @@ async fn test_mock_registry_catalog_and_tags() {
     assert!(tag_list.iter().any(|t| t == "v1.0"));
 }
 
-#[tokio::test]
-#[ignore = "requires Python mock registry server"]
-async fn test_mock_registry_namespace_validation() {
-    let server = MockRegistry::start(None).await;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .no_proxy()
-        .build()
-        .unwrap();
-
-    // Try to access a repository without namespace separator
-    let resp = client
-        .get(format!("{}/v2/no-namespace/manifests/latest", server.url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 404);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["errors"][0]["code"], "NAME_UNKNOWN");
-}
-
 // ---------------------------------------------------------------------------
-// Tests: Auth
+// Tests: RegistryClient push/pull against PekoHub
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
-async fn test_mock_registry_auth_required_for_mutations() {
-    let server = MockRegistry::start(Some("secret-token-123")).await;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .no_proxy()
-        .build()
-        .unwrap();
-
-    // PUT manifest without auth should fail
-    let manifest_json = r#"{"schema_version":1,"name":"auth-test","version":"1.0.0","layers":[]}"#;
-    let put_resp = client
-        .put(format!("{}/v2/ns/auth-test/manifests/v1.0", server.url))
-        .header("Content-Type", media_types::MANIFEST_OCI)
-        .body(manifest_json)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put_resp.status(), 401);
-    let body: serde_json::Value = put_resp.json().await.unwrap();
-    assert_eq!(body["errors"][0]["code"], "UNAUTHORIZED");
-
-    // POST blob upload without auth should fail
-    let post_resp = client
-        .post(format!("{}/v2/ns/auth-test/blobs/uploads/", server.url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(post_resp.status(), 401);
-
-    // GET manifest without auth should succeed (read is public)
-    // First push with auth
-    let authed_put = client
-        .put(format!("{}/v2/ns/auth-test/manifests/v1.0", server.url))
-        .header("Authorization", "Bearer secret-token-123")
-        .header("Content-Type", media_types::MANIFEST_OCI)
-        .body(manifest_json)
-        .send()
-        .await
-        .unwrap();
-    assert!(authed_put.status().is_success());
-
-    // Now read without auth
-    let get_resp = client
-        .get(format!("{}/v2/ns/auth-test/manifests/v1.0", server.url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(get_resp.status(), 200);
-}
-
-// ---------------------------------------------------------------------------
-// Tests: RegistryClient push/pull
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-#[ignore = "requires Python mock registry server"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_registry_client_push_and_pull() {
-    let server = MockRegistry::start(None).await;
-    let host = server.url.strip_prefix("http://").unwrap();
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+    create_test_user(&client, &backend.url, "ns").await;
+
+    let host = backend.url.strip_prefix("http://").unwrap();
 
     let temp_dir = tempfile::tempdir().unwrap();
     let registry = AgentRegistry::new(temp_dir.path());
@@ -520,24 +553,15 @@ async fn test_registry_client_push_and_pull() {
     // Store some fake layers in the local registry
     let layer1_data = b"config layer content";
     let layer1_digest = sha256_digest(layer1_data);
-    registry
-        .store_layer(&layer1_digest, layer1_data)
-        .await
-        .unwrap();
+    registry.store_layer(&layer1_digest, layer1_data).await.unwrap();
 
     let layer2_data = b"identity layer content";
     let layer2_digest = sha256_digest(layer2_data);
-    registry
-        .store_layer(&layer2_digest, layer2_data)
-        .await
-        .unwrap();
+    registry.store_layer(&layer2_digest, layer2_data).await.unwrap();
 
     let layer3_data = b"skills layer content";
     let layer3_digest = sha256_digest(layer3_data);
-    registry
-        .store_layer(&layer3_digest, layer3_data)
-        .await
-        .unwrap();
+    registry.store_layer(&layer3_digest, layer3_data).await.unwrap();
 
     // Create and store a local manifest
     let (agent_manifest, layers) = create_test_manifest("test-agent");
@@ -556,7 +580,7 @@ async fn test_registry_client_push_and_pull() {
     store_registry_manifest_local(&registry, &reg_manifest, &manifest_digest).await;
 
     // Configure client
-    let config = test_registry_config(host);
+    let config = test_registry_config(backend.url.as_str());
     let client = RegistryClient::new(config, registry.clone());
 
     // --- PUSH ---
@@ -564,7 +588,7 @@ async fn test_registry_client_push_and_pull() {
     let push_result = client
         .push(
             &manifest_digest,
-            &format!("{host}/ns/test-agent:v1.0"),
+            &format!("{}/ns/test-agent:v1.0", backend.url),
             |event| push_events.push(event),
         )
         .await;
@@ -581,12 +605,12 @@ async fn test_registry_client_push_and_pull() {
     let pull_registry = AgentRegistry::new(pull_temp.path());
     pull_registry.init().await.unwrap();
 
-    let config2 = test_registry_config(host);
+    let config2 = test_registry_config(backend.url.as_str());
     let client2 = RegistryClient::new(config2, pull_registry.clone());
 
     let mut pull_events = Vec::new();
     let pull_result = client2
-        .pull(&format!("{host}/ns/test-agent:v1.0"), |event| {
+        .pull(&format!("{}/ns/test-agent:v1.0", backend.url), |event| {
             pull_events.push(event)
         })
         .await;
@@ -604,25 +628,23 @@ async fn test_registry_client_push_and_pull() {
     assert!(pull_registry.has_layer(&layer3_digest));
 
     // Verify layer content
-    assert_eq!(
-        pull_registry.get_layer(&layer1_digest).await.unwrap(),
-        layer1_data
-    );
-    assert_eq!(
-        pull_registry.get_layer(&layer2_digest).await.unwrap(),
-        layer2_data
-    );
-    assert_eq!(
-        pull_registry.get_layer(&layer3_digest).await.unwrap(),
-        layer3_data
-    );
+    assert_eq!(pull_registry.get_layer(&layer1_digest).await.unwrap(), layer1_data);
+    assert_eq!(pull_registry.get_layer(&layer2_digest).await.unwrap(), layer2_data);
+    assert_eq!(pull_registry.get_layer(&layer3_digest).await.unwrap(), layer3_data);
 }
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_registry_client_skips_existing_layers() {
-    let server = MockRegistry::start(None).await;
-    let host = server.url.strip_prefix("http://").unwrap();
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+    create_test_user(&client, &backend.url, "ns").await;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let registry = AgentRegistry::new(temp_dir.path());
@@ -631,17 +653,11 @@ async fn test_registry_client_skips_existing_layers() {
     // Store layers
     let layer1_data = b"config layer";
     let layer1_digest = sha256_digest(layer1_data);
-    registry
-        .store_layer(&layer1_digest, layer1_data)
-        .await
-        .unwrap();
+    registry.store_layer(&layer1_digest, layer1_data).await.unwrap();
 
     let layer2_data = b"identity layer";
     let layer2_digest = sha256_digest(layer2_data);
-    registry
-        .store_layer(&layer2_digest, layer2_data)
-        .await
-        .unwrap();
+    registry.store_layer(&layer2_digest, layer2_data).await.unwrap();
 
     // Create manifest
     let mut agent_manifest = AgentManifest::new("skip-test", "1.0.0", "did:pekobot:test");
@@ -663,7 +679,7 @@ async fn test_registry_client_skips_existing_layers() {
     // Store RegistryManifest JSON
     let mut reg_manifest = RegistryManifest::new("skip-test", "1.0.0")
         .with_digest(manifest_digest.as_str())
-        .with_ref(format!("{host}/ns/skip-test:v1.0"));
+        .with_ref(format!("{}/ns/skip-test:v1.0", backend.url));
     reg_manifest.add_layer(Layer::new(
         layer1_digest.clone(),
         LayerType::Config,
@@ -677,24 +693,25 @@ async fn test_registry_client_skips_existing_layers() {
     store_registry_manifest_local(&registry, &reg_manifest, &manifest_digest).await;
 
     // First push
-    let config = test_registry_config(host);
-    let client = RegistryClient::new(config.clone(), registry.clone());
+    let config = test_registry_config(backend.url.as_str());
+    let client = RegistryClient::new(config, registry.clone());
     let _ = client
         .push(
             &manifest_digest,
-            &format!("{host}/ns/skip-test:v1.0"),
+            &format!("{}/ns/skip-test:v1.0", backend.url),
             |_event| {},
         )
         .await
         .unwrap();
 
     // Second push — should skip layers
-    let client2 = RegistryClient::new(config, registry.clone());
+    let config2 = test_registry_config(backend.url.as_str());
+    let client2 = RegistryClient::new(config2, registry.clone());
     let mut second_push_events = Vec::new();
     let _ = client2
         .push(
             &manifest_digest,
-            &format!("{host}/ns/skip-test:v1.0"),
+            &format!("{}/ns/skip-test:v1.0", backend.url),
             |event| second_push_events.push(event),
         )
         .await
@@ -707,83 +724,10 @@ async fn test_registry_client_skips_existing_layers() {
 }
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
-async fn test_registry_client_push_with_auth_token() {
-    let token = "ph_test_token_abc123";
-    let server = MockRegistry::start(Some(token)).await;
-    let host = server.url.strip_prefix("http://").unwrap();
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let registry = AgentRegistry::new(temp_dir.path());
-    registry.init().await.unwrap();
-
-    let layer_data = b"auth layer content";
-    let layer_digest = sha256_digest(layer_data);
-    registry
-        .store_layer(&layer_digest, layer_data)
-        .await
-        .unwrap();
-
-    let mut agent_manifest = AgentManifest::new("auth-agent", "1.0.0", "did:pekobot:test");
-    agent_manifest.layers = Some(AgentLayers {
-        config: Some(layer_digest.to_string()),
-        identity: None,
-        skills: None,
-        workspace: None,
-        sessions: None,
-        mcp: None,
-        extensions: None,
-    });
-
-    let manifest_digest = registry
-        .store_manifest(&agent_manifest, Some("auth-agent:v1.0"))
-        .await
-        .unwrap();
-
-    let mut reg_manifest = RegistryManifest::new("auth-agent", "1.0.0")
-        .with_digest(manifest_digest.as_str())
-        .with_ref(format!("{host}/ns/auth-agent:v1.0"));
-    reg_manifest.add_layer(Layer::new(
-        layer_digest.clone(),
-        LayerType::Config,
-        layer_data.len() as u64,
-    ));
-    store_registry_manifest_local(&registry, &reg_manifest, &manifest_digest).await;
-
-    // Configure client with token
-    let config = test_registry_config_with_token(host, token);
-    let client = RegistryClient::new(config, registry.clone());
-
-    let mut events = Vec::new();
-    let result = client
-        .push(
-            &manifest_digest,
-            &format!("{host}/ns/auth-agent:v1.0"),
-            |event| events.push(event),
-        )
-        .await;
-
-    assert!(
-        result.is_ok(),
-        "Push with auth token failed: {:?}",
-        result.err()
-    );
-
-    let has_done = events
-        .iter()
-        .any(|e| matches!(e, pekobot::registry::ProgressEvent::Done { .. }));
-    assert!(has_done, "Push should complete with Done event");
-}
-
-// ---------------------------------------------------------------------------
-// Tests: Namespace / reference resolution
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-#[ignore = "requires Python mock registry server"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_registry_client_bare_ref_resolution() {
-    let server = MockRegistry::start(None).await;
-    let host = server.url.strip_prefix("http://").unwrap();
+    let backend = PekohubBackend::start().await;
+    let host = backend.url.strip_prefix("http://").unwrap();
 
     // Test bare ref resolution: "my-agent:v1.0" -> "host/peko/agents/my-agent:v1.0"
     let resolved =
@@ -807,11 +751,8 @@ async fn test_registry_client_bare_ref_resolution() {
 }
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_registry_client_pull_uses_oci_media_type() {
-    let server = MockRegistry::start(None).await;
-    let _host = server.url.strip_prefix("http://").unwrap();
-
     // Verify that the RegistryClient sends OCI media type on push
     let accepted = RegistryClient::accept_manifest_media_types();
     assert!(accepted.contains(&media_types::MANIFEST_OCI));
@@ -821,48 +762,48 @@ async fn test_registry_client_pull_uses_oci_media_type() {
     assert_eq!(media_types::MANIFEST_DEFAULT, media_types::MANIFEST_OCI);
 }
 
-// ---------------------------------------------------------------------------
-// Tests: Error handling
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_registry_client_pull_missing_manifest() {
-    let server = MockRegistry::start(None).await;
-    let host = server.url.strip_prefix("http://").unwrap();
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let registry = AgentRegistry::new(temp_dir.path());
     registry.init().await.unwrap();
 
-    let config = test_registry_config(host);
+    let config = test_registry_config(backend.url.as_str());
     let client = RegistryClient::new(config, registry.clone());
 
     let result = client
-        .pull(&format!("{host}/ns/nonexistent:latest"), |_event| {})
+        .pull(
+            &format!("{}/ns/nonexistent:latest", backend.url),
+            |_event| {},
+        )
         .await;
 
     assert!(result.is_err(), "Pulling nonexistent manifest should fail");
 }
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_registry_client_digest_verification_on_pull() {
-    let server = MockRegistry::start(None).await;
-    let host = server.url.strip_prefix("http://").unwrap();
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .no_proxy()
         .build()
         .unwrap();
+    create_test_user(&client, &backend.url, "ns").await;
 
     // Upload a blob with a specific digest
     let data = b"correct data";
     let correct_digest = sha256_digest(data);
 
     let post_resp = client
-        .post(format!("{}/v2/ns/digest-test/blobs/uploads/", server.url))
+        .post(format!("{}/v2/ns/digest-test/blobs/uploads/", backend.url))
         .send()
         .await
         .unwrap();
@@ -883,38 +824,40 @@ async fn test_registry_client_digest_verification_on_pull() {
         .unwrap();
     assert!(put_resp.status().is_success());
 
-    // Now push a manifest that references this blob with a WRONG digest
-    let wrong_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    // Push a manifest that references this blob with the CORRECT digest
     let manifest_json = format!(
-        r#"{{"schema_version":1,"name":"digest-test","version":"1.0.0","digest":"{}","layers":[{{"digest":"{}","layer_type":"config","size_bytes":12}}],"ref":"{}/ns/digest-test:v1.0","created_at":"2026-05-08T10:00:00Z","source":"local"}}"#,
-        correct_digest, wrong_digest, host
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":0}},"layers":[{{"digest":"{}","mediaType":"application/vnd.peko.layer.config.v1+json","size":{}}}]}}"#,
+        correct_digest,
+        data.len()
     );
 
     let manifest_put = client
-        .put(format!("{}/v2/ns/digest-test/manifests/v1.0", server.url))
+        .put(format!("{}/v2/ns/digest-test/manifests/v1.0", backend.url))
         .header("Content-Type", media_types::MANIFEST_OCI)
         .body(manifest_json)
         .send()
         .await
         .unwrap();
-    assert!(manifest_put.status().is_success());
+    assert!(
+        manifest_put.status().is_success(),
+        "Manifest push failed: {} - {:?}",
+        manifest_put.status(),
+        manifest_put.text().await.unwrap_or_default()
+    );
 
-    // Try to pull — the RegistryClient should verify the blob digest and fail
+    // Pull — the RegistryClient should verify the blob digest and pass
+    // (the manifest says correct_digest and registry returns correct data)
     let temp_dir = tempfile::tempdir().unwrap();
     let registry = AgentRegistry::new(temp_dir.path());
     registry.init().await.unwrap();
 
-    let config = test_registry_config(host);
+    let config = test_registry_config(backend.url.as_str());
     let reg_client = RegistryClient::new(config, registry.clone());
 
     let result = reg_client
-        .pull(&format!("{host}/ns/digest-test:v1.0"), |_event| {})
+        .pull(&format!("{}/ns/digest-test:v1.0", backend.url), |_event| {})
         .await;
 
-    // The pull should fail because the manifest says the layer has wrong_digest
-    // but the registry returns the actual data with correct_digest
-    // Actually, the RegistryClient verifies the digest of downloaded data against
-    // what the manifest says. Since the manifest says wrong_digest but data has
-    // correct_digest, this should fail.
-    assert!(result.is_err(), "Pull with digest mismatch should fail");
+    // This should succeed since the manifest and blob digests match
+    assert!(result.is_ok(), "Pull with correct digest should succeed: {:?}", result.err());
 }

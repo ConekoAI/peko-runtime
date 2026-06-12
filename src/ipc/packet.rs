@@ -4186,4 +4186,59 @@ mod tests {
         };
         assert_eq!(resp_bundled.request_id(), 14);
     }
+
+    #[test]
+    fn test_authenticated_request_roundtrip() {
+        // Critical path: auth envelope + request packet must serialize together
+        let envelope = AuthenticatedRequest {
+            auth: AuthHeader {
+                credential: AuthCredential::ApiKey("pkr_testkey123".to_string()),
+            },
+            packet: RequestPacket::Ping { request_id: 7 },
+        };
+
+        let json = serde_json::to_vec(&envelope).unwrap();
+        let decoded: AuthenticatedRequest = serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(decoded.packet.request_id(), 7);
+        match decoded.auth.credential {
+            AuthCredential::ApiKey(key) => assert_eq!(key, "pkr_testkey123"),
+            other => panic!("Expected ApiKey, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_authenticated_request_jwt_roundtrip() {
+        let envelope = AuthenticatedRequest {
+            auth: AuthHeader {
+                credential: AuthCredential::Jwt("eyJhbGciOiJIUzI1NiJ9.test".to_string()),
+            },
+            packet: RequestPacket::SystemStatus { request_id: 8 },
+        };
+
+        let json = serde_json::to_vec(&envelope).unwrap();
+        let decoded: AuthenticatedRequest = serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(decoded.packet.request_id(), 8);
+        match decoded.auth.credential {
+            AuthCredential::Jwt(token) => {
+                assert_eq!(token, "eyJhbGciOiJIUzI1NiJ9.test")
+            }
+            other => panic!("Expected Jwt, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_authenticated_request_none_defaults() {
+        // Bare RequestPacket deserialized as AuthenticatedRequest should have None auth
+        let packet = RequestPacket::Ping { request_id: 9 };
+        let json = serde_json::to_vec(&packet).unwrap();
+        let decoded: AuthenticatedRequest = serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(decoded.packet.request_id(), 9);
+        match decoded.auth.credential {
+            AuthCredential::None => (), // Expected
+            other => panic!("Expected None credential for bare packet, got: {:?}", other),
+        }
+    }
 }

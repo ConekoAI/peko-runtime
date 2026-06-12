@@ -3,9 +3,9 @@
 //! End-to-end pipeline:
 //!   export .agent → push → pull → import → create team → export .team → import team
 //!
-//! This test is marked `#[ignore]` because it requires a registry that accepts
-//! the Peko-specific manifest format. The PekoHub backend uses strict OCI validation
-//! which does not accept Peko-format manifests.
+//! This test is marked `#[ignore]` because it requires:
+//!   - Node.js 22+ with tsx installed  (local mode)
+//!   - OR a running PekoHub test container (container mode via PEKOHUB_URL)
 //!
 //! Run:
 //!   cd peko-runtime
@@ -25,59 +25,100 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-// ── Test harness ─────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Test harness: auto-start pekohub backend or connect to container
+// ---------------------------------------------------------------------------
 
-/// Holds the running mock registry process and its URL
-struct MockRegistry {
+/// Holds the running pekohub backend process and its URL
+struct PekohubBackend {
     #[allow(dead_code)]
-    child: Child,
+    child: Option<Child>,
     url: String,
 }
 
-impl MockRegistry {
-    /// Start the mock registry server on a random port.
+impl PekohubBackend {
+    /// Start the pekohub backend test server on a random port.
+    ///
+    /// In container mode (PEKOHUB_URL set), connects to existing server.
+    /// In local mode, spawns Node.js + tsx process.
     async fn start() -> Self {
-        let script_path = std::env::var("MOCK_REGISTRY_SCRIPT").unwrap_or_else(|_| {
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/e2e_tests/packaging/mock_registry/main.py"
-            )
-            .to_string()
+        // Container mode: pekohub is already running
+        if let Ok(url) = std::env::var("PEKOHUB_URL") {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .no_proxy()
+                .build()
+                .unwrap();
+
+            let mut ready = false;
+            for _ in 0..50 {
+                if client.get(format!("{url}/health")).send().await.is_ok() {
+                    ready = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(
+                ready,
+                "PekoHub backend at {url} did not become ready in 5 seconds"
+            );
+
+            return Self { child: None, url };
+        }
+
+        // Local mode: spawn Node.js + tsx process
+        let backend_path = std::env::var("PEKOHUB_BACKEND_PATH").unwrap_or_else(|_| {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../pekohub/backend").to_string()
         });
 
-        let mut cmd = Command::new("python");
-        cmd.arg(&script_path)
-            .arg("--host")
-            .arg("127.0.0.1")
+        let script_path = format!("{backend_path}/tests/fixtures/server.ts");
+
+        if !std::path::Path::new(&script_path).exists() {
+            panic!(
+                "PekoHub test server script not found at: {script_path}\n\
+                 Set PEKOHUB_BACKEND_PATH to the pekohub/backend directory."
+            );
+        }
+
+        let tsx_cli = format!("{backend_path}/node_modules/tsx/dist/cli.mjs");
+        if !std::path::Path::new(&tsx_cli).exists() {
+            panic!(
+                "tsx CLI not found at: {tsx_cli}\n\
+                 Run: cd {backend_path} && npm install"
+            );
+        }
+
+        let mut cmd = Command::new("node");
+        cmd.arg(&tsx_cli)
+            .arg(&script_path)
             .arg("--port")
             .arg("0")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .current_dir(&backend_path);
 
         let mut child = cmd.spawn().expect(
-            "Failed to start mock registry. Is Python with fastapi+uvicorn installed? \
-             Install with: pip install fastapi uvicorn",
+            "Failed to start PekoHub backend. Is Node.js 22+ with tsx installed? \
+             Install with: cd pekohub/backend && npm install",
         );
 
-        // Read stdout for the PORT= line
         let stdout = child.stdout.take().expect("Failed to capture stdout");
         let reader = std::io::BufReader::new(stdout);
         let port = tokio::task::spawn_blocking(move || {
             use std::io::BufRead;
             for line in reader.lines() {
-                let line = line.expect("Failed to read line from mock registry");
+                let line = line.expect("Failed to read line from PekoHub backend");
                 if let Some(port_str) = line.strip_prefix("PORT=") {
                     return port_str.parse::<u16>().expect("Invalid PORT line");
                 }
             }
-            panic!("Mock registry did not print PORT= line")
+            panic!("PekoHub backend did not print PORT= line")
         })
         .await
         .expect("Port detection task panicked");
 
         let url = format!("http://127.0.0.1:{port}");
 
-        // Wait for the server to be ready
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .no_proxy()
@@ -86,23 +127,62 @@ impl MockRegistry {
 
         let mut ready = false;
         for _ in 0..50 {
-            if client.get(format!("{url}/v2/")).send().await.is_ok() {
+            if client.get(format!("{url}/health")).send().await.is_ok() {
                 ready = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(ready, "Mock registry did not become ready in 5 seconds");
+        assert!(ready, "PekoHub backend did not become ready in 5 seconds");
 
-        Self { child, url }
+        Self {
+            child: Some(child),
+            url,
+        }
     }
 }
 
-impl Drop for MockRegistry {
+impl Drop for PekohubBackend {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(ref mut child) = self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
+}
+
+/// Reset the PekoHub backend data between tests.
+async fn reset_pekohub(url: &str) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+    let resp = client.post(format!("{url}/test/reset")).send().await;
+    if let Ok(r) = resp {
+        let _ = r.error_for_status();
+    }
+}
+
+/// Create a test user in PekoHub and return the namespace.
+/// This is needed because PekoHub requires namespace ownership for pushes.
+async fn create_test_user(client: &reqwest::Client, base_url: &str, namespace: &str) {
+    let resp = client
+        .post(&format!("{base_url}/test/create-user"))
+        .json(&serde_json::json!({
+            "namespace": namespace,
+            "display_name": format!("Test User ({namespace})"),
+            "external_id": format!("test-{namespace}"),
+            "provider": "github",
+        }))
+        .send()
+        .await
+        .expect("create-user failed");
+    assert!(
+        resp.status().is_success(),
+        "create-user failed: {}",
+        resp.status()
+    );
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -207,11 +287,11 @@ async fn build_agent_package_from_dir(
 }
 
 /// Create a test registry config pointing at the hub server
-fn test_registry_config(host: &str) -> RegistryConfig {
+fn test_registry_config(url: &str) -> RegistryConfig {
     let mut config = RegistryConfig::default();
     config.sources.clear();
     config.add_source(RegistrySource {
-        url: host.to_string(),
+        url: url.to_string(),
         priority: 1,
         auth: None,
         token: None,
@@ -221,16 +301,17 @@ fn test_registry_config(host: &str) -> RegistryConfig {
 
 /// Build a RegistryManifest JSON from an AgentManifest and its layers so that
 /// RegistryClient::push() can load it from local storage.
+///
+/// The `ref_str` should be the full registry ref (e.g., "host/ns/name:tag").
 fn build_registry_manifest(
     agent_manifest: &AgentManifest,
     manifest_digest: &str,
-    host: &str,
-    tag: &str,
+    ref_str: &str,
 ) -> anyhow::Result<RegistryManifest> {
     let mut reg_manifest =
         RegistryManifest::new(&agent_manifest.agent.name, &agent_manifest.agent.version)
             .with_digest(manifest_digest)
-            .with_ref(format!("{host}/{tag}", tag = tag.replace(':', "_")));
+            .with_ref(ref_str.to_string());
 
     if let Some(layers) = &agent_manifest.layers {
         if let Some(digest) = &layers.config {
@@ -366,8 +447,20 @@ async fn store_agent_layers_in_registry(
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_full_packaging_pipeline() {
-    let registry = MockRegistry::start().await;
-    let host = registry.url.strip_prefix("http://").unwrap_or(&registry.url);
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+
+    // Create user with namespace "ns" — PekoHub requires namespace ownership for pushes
+    create_test_user(&client, &backend.url, "ns").await;
+
+    // Full registry ref with namespace (PekoHub format: {host}/{namespace}/{name}:{tag})
+    let registry_ref = format!("{}/ns/integration-agent:v1.0", backend.url);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let base_dir = temp_dir.path();
@@ -408,29 +501,20 @@ async fn test_full_packaging_pipeline() {
     // ═════════════════════════════════════════════════════════════════
     // 2. PUSH to registry
     // ═════════════════════════════════════════════════════════════════
-    let reg_manifest = build_registry_manifest(
-        &manifest,
-        manifest_digest.as_str(),
-        host,
-        "integration-agent:v1.0",
-    )
-    .unwrap();
+    let reg_manifest =
+        build_registry_manifest(&manifest, manifest_digest.as_str(), &registry_ref).unwrap();
 
     // Store the RegistryManifest JSON where push() expects it
     store_registry_manifest_local(&build_registry, &reg_manifest)
         .await
         .unwrap();
 
-    let push_config = test_registry_config(host);
+    let push_config = test_registry_config(&backend.url);
     let push_client = RegistryClient::new(push_config, build_registry.clone());
 
     let mut push_events = Vec::new();
     let push_result = push_client
-        .push(
-            &manifest_digest,
-            &format!("{host}/integration-agent:v1.0"),
-            |event| push_events.push(event),
-        )
+        .push(&manifest_digest, &registry_ref, |event| push_events.push(event))
         .await;
 
     assert!(push_result.is_ok(), "Push failed: {:?}", push_result.err());
@@ -446,14 +530,12 @@ async fn test_full_packaging_pipeline() {
     let pull_registry = AgentRegistry::new(&pull_registry_dir);
     pull_registry.init().await.unwrap();
 
-    let pull_config = test_registry_config(host);
+    let pull_config = test_registry_config(&backend.url);
     let pull_client = RegistryClient::new(pull_config, pull_registry.clone());
 
     let mut pull_events = Vec::new();
     let pull_result = pull_client
-        .pull(&format!("{host}/integration-agent:v1.0"), |event| {
-            pull_events.push(event)
-        })
+        .pull(&registry_ref, |event| pull_events.push(event))
         .await;
 
     assert!(pull_result.is_ok(), "Pull failed: {:?}", pull_result.err());
@@ -610,248 +692,5 @@ instances = 1
     assert!(
         restored_agent_dir.join("config.toml").exists(),
         "agent config.toml should be restored"
-    );
-}
-
-// ── Additional Phase 7 integration tests ─────────────────────────────
-
-/// Test that an exported .agent can be inspected and imported without registry
-#[tokio::test]
-async fn test_export_then_import_roundtrip() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let base_dir = temp_dir.path();
-
-    // Create source agent directory
-    let agent_dir = base_dir.join("roundtrip-agent");
-    create_test_agent_dir(&agent_dir).await.unwrap();
-
-    // Export using Packager
-    let package_path = base_dir.join("roundtrip-agent.agent");
-    let _manifest = build_agent_package_from_dir(&agent_dir, &package_path)
-        .await
-        .unwrap();
-
-    // Inspect
-    let info = pekobot::portable::get_package_info(&package_path)
-        .await
-        .unwrap();
-    assert_eq!(info.name, "integration-agent");
-    assert!(info.valid);
-
-    // Import
-    let import_base = base_dir.join("imported");
-    tokio::fs::create_dir_all(&import_base).await.unwrap();
-
-    let unpackager = pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
-
-    let import_result = unpackager
-        .import(ImportOptions {
-            new_name: Some("roundtrip-imported".to_string()),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(import_result.name, "roundtrip-imported");
-    assert!(import_result.config_path.exists());
-}
-
-/// Test that AgentManifest has no dead fields (clean manifest verification)
-#[tokio::test]
-async fn test_clean_manifest_has_no_capabilities_tools_mcp() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let base_dir = temp_dir.path();
-
-    let agent_dir = base_dir.join("clean-agent");
-    create_test_agent_dir(&agent_dir).await.unwrap();
-
-    let package_path = base_dir.join("clean-agent.agent");
-    let manifest = build_agent_package_from_dir(&agent_dir, &package_path)
-        .await
-        .unwrap();
-
-    // Clean manifest: these fields should not exist on AgentManifest
-    let toml_str = manifest.to_toml().unwrap();
-    assert!(
-        !toml_str.contains("capabilities"),
-        "Manifest should not contain 'capabilities'"
-    );
-    assert!(
-        !toml_str.contains("tool_sources"),
-        "Manifest should not contain 'tool_sources'"
-    );
-    assert!(
-        !toml_str.contains("\ntools ="),
-        "Manifest should not contain a top-level 'tools' field"
-    );
-    assert!(
-        !toml_str.contains("\nmcp ="),
-        "Manifest should not contain a top-level 'mcp' field"
-    );
-
-    // But it SHOULD have layers
-    assert!(
-        toml_str.contains("layers"),
-        "Manifest should contain 'layers'"
-    );
-}
-
-/// Critical path: export with `with_extensions=true` → import → embedded extensions are installed.
-#[tokio::test]
-async fn test_export_with_extensions_import_installs_extensions() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let base_dir = temp_dir.path();
-
-    // ═════════════════════════════════════════════════════════════════
-    // 1. Create a test agent directory
-    // ═════════════════════════════════════════════════════════════════
-    let agent_dir = base_dir.join("ext-agent");
-    create_test_agent_dir(&agent_dir).await.unwrap();
-
-    // ═════════════════════════════════════════════════════════════════
-    // 2. Create a fake extension package (.ext file)
-    // ═════════════════════════════════════════════════════════════════
-    let skill_md = b"---\nname: test-skill\ndescription: A test skill for integration testing\n---\n\n# Test Skill\n";
-    let skill_checksum = pekobot::portable::types::compute_digest(skill_md);
-
-    let ext_manifest_toml = format!(
-        r#"
-[format]
-version = "1.0"
-peko_version = "0.1.0"
-
-[extension]
-id = "test-skill"
-name = "Test Skill"
-extension_type = "skill"
-version = "1.0.0"
-description = "A test skill for integration testing"
-
-[packaging]
-files = ["extension/SKILL.md"]
-checksums = {{ "extension/SKILL.md" = "{skill_checksum}" }}
-compression = "gzip"
-archive_format = "tar"
-"#
-    );
-
-    let mut ext_bytes = Vec::new();
-    {
-        let enc = flate2::write::GzEncoder::new(&mut ext_bytes, flate2::Compression::default());
-        let mut tar = tar::Builder::new(enc);
-
-        let mut header = tar::Header::new_gnu();
-        header.set_path("manifest.toml").unwrap();
-        header.set_size(ext_manifest_toml.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append(&header, ext_manifest_toml.as_bytes()).unwrap();
-
-        let mut header = tar::Header::new_gnu();
-        header.set_path("extension/SKILL.md").unwrap();
-        header.set_size(skill_md.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append(&header, skill_md.as_slice()).unwrap();
-
-        tar.into_inner().unwrap();
-    }
-
-    // ═════════════════════════════════════════════════════════════════
-    // 3. Build the agent package with with_extensions=true
-    // ═════════════════════════════════════════════════════════════════
-    let config_path = agent_dir.join("config").join("agent.toml");
-    let config_toml = tokio::fs::read_to_string(&config_path).await.unwrap();
-    let config: AgentConfig = toml::from_str(&config_toml).unwrap();
-
-    let identity_dir = agent_dir.join("identity");
-    let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await.unwrap();
-    let did_doc: pekobot::identity::DIDDocument = serde_json::from_str(&did_json).unwrap();
-    let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await.unwrap();
-    let key_export: pekobot::identity::KeyPairExport = serde_json::from_slice(&keys_enc).unwrap();
-    let identity = Identity::from_did_document_and_key(did_doc, key_export).unwrap();
-
-    let skills_dir = agent_dir.join("skills");
-    let workspace_dir = agent_dir.join("workspace");
-
-    let mut embedded_extensions = std::collections::HashMap::new();
-    embedded_extensions.insert("extensions/test-skill.ext".to_string(), ext_bytes);
-
-    let packager = Packager::new(config, identity, None)
-        .with_skills_dir(&skills_dir)
-        .with_workspace_dir(&workspace_dir)
-        .with_embedded_extensions(embedded_extensions);
-
-    let package_path = base_dir.join("ext-agent.agent");
-    let export_opts = ExportOptions {
-        with_extensions: true,
-        output_path: Some(package_path.to_string_lossy().to_string()),
-        ..Default::default()
-    };
-
-    let _path = packager.export(export_opts).await.unwrap();
-
-    // ═════════════════════════════════════════════════════════════════
-    // 4. Verify the manifest includes the extension reference
-    // ═════════════════════════════════════════════════════════════════
-    let (manifest, _validation) = pekobot::portable::inspect_agent(&package_path, None)
-        .await
-        .unwrap();
-    assert!(manifest.layers.is_some());
-    let layers = manifest.layers.clone().unwrap();
-    assert!(
-        layers.extensions.is_some(),
-        "Manifest should include extensions layer digest"
-    );
-    assert!(
-        manifest
-            .packaging
-            .files
-            .contains(&"extensions/test-skill.ext".to_string()),
-        "Manifest packaging should include extension file"
-    );
-    assert!(
-        manifest
-            .packaging
-            .checksums
-            .contains_key("extensions/test-skill.ext"),
-        "Manifest packaging checksums should include extension file"
-    );
-
-    // ═════════════════════════════════════════════════════════════════
-    // 5. Import the agent
-    // ═════════════════════════════════════════════════════════════════
-    let import_base = base_dir.join("imported");
-    tokio::fs::create_dir_all(&import_base).await.unwrap();
-
-    let unpackager =
-        pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
-
-    let import_result = unpackager
-        .import(ImportOptions {
-            new_name: Some("ext-imported".to_string()),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(import_result.name, "ext-imported");
-
-    // ═════════════════════════════════════════════════════════════════
-    // 6. Verify the extension file was extracted/installed
-    // ═════════════════════════════════════════════════════════════════
-    let extensions_dir = dirs::data_dir()
-        .map(|d| d.join("peko").join("extensions"))
-        .unwrap_or_else(|| import_base.join("extensions"));
-    let installed_ext_dir = extensions_dir.join("test-skill");
-
-    assert!(
-        installed_ext_dir.exists(),
-        "Extension should be installed at {}",
-        installed_ext_dir.display()
-    );
-    assert!(
-        installed_ext_dir.join("SKILL.md").exists(),
-        "Extension SKILL.md should exist after import"
     );
 }

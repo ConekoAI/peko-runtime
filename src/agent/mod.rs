@@ -53,3 +53,6 @@ pub use types::{AgentInfo, IdentityInfo, ManagerEvent};
 
 // Context for agent execution
 pub use context::AgentContext;
+
+#[cfg(test)]
+mod tests;

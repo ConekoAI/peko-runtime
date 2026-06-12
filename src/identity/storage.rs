@@ -65,8 +65,7 @@ impl KeyStorage {
 
     /// Get the default storage path for the platform
     fn default_storage_path() -> Result<PathBuf> {
-        let data_dir = dirs::data_dir().context("Could not determine data directory")?;
-        Ok(data_dir.join("peko").join("identities"))
+        Ok(crate::common::paths::default_data_dir().join("identities"))
     }
 
     /// Generate and store a new identity

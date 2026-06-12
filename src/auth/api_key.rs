@@ -290,4 +290,47 @@ mod tests {
             "pkr_aB3dEf9G"
         );
     }
+
+    /// Critical path: full API key lifecycle — create → verify → use in CallerContext → permission check
+    #[tokio::test]
+    async fn test_api_key_e2e_lifecycle() {
+        use crate::auth::caller::CallerContext;
+        use crate::auth::permissions::{check_permission, Action, Resource};
+
+        let store = temp_store();
+
+        // 1. Create a key with Read + Write scopes
+        let (full_key, key_id) = store
+            .create_key("E2E Test Key".to_string(), vec![
+                ApiKeyScope::Read,
+                ApiKeyScope::Write,
+            ])
+            .await
+            .unwrap();
+
+        // 2. Verify via ApiKeyVerifier
+        let verifier = ApiKeyVerifier::new(store.clone());
+        let entry = verifier.verify(&full_key).await.unwrap();
+        assert_eq!(entry.id, key_id);
+        assert_eq!(entry.name, "E2E Test Key");
+
+        // 3. Build CallerContext from verified entry
+        let caller = CallerContext::from_api_key(
+            entry.id.clone(),
+            entry.scopes.clone(),
+        );
+
+        // 4. Permission checks
+        assert!(check_permission(&caller, &Resource::System, Action::Read).is_ok());
+        assert!(check_permission(&caller, &Resource::System, Action::Write).is_ok());
+        assert!(check_permission(&caller, &Resource::System, Action::Execute).is_ok());
+        assert_eq!(
+            check_permission(&caller, &Resource::System, Action::Admin).unwrap_err(),
+            crate::auth::permissions::AuthError::PermissionDenied
+        );
+
+        // 5. Revoke and verify denied
+        assert!(store.revoke_key(&key_id).await.unwrap());
+        assert!(verifier.verify(&full_key).await.is_none());
+    }
 }

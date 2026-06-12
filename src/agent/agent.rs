@@ -1136,10 +1136,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access and provider setup"]
+    #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
+        use crate::extension::core::ExtensionCore;
         use crate::session::types::{ChannelType, Peer};
         use crate::types::provider::{ProviderConfig, ProviderType};
+
+        // Initialize global ExtensionCore for the test
+        let core = Arc::new(ExtensionCore::new());
+        crate::extension::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-context".to_string(),
@@ -1163,10 +1168,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access and provider setup"]
+    #[serial_test::serial(core)]
     async fn test_agent_spawn_session() {
+        use crate::extension::core::ExtensionCore;
         use crate::session::types::Peer;
         use crate::types::provider::{ProviderConfig, ProviderType};
+
+        // Initialize global ExtensionCore for the test
+        let core = Arc::new(ExtensionCore::new());
+        crate::extension::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-spawn".to_string(),

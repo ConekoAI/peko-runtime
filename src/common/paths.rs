@@ -40,30 +40,45 @@
 
 use std::path::{Path, PathBuf};
 
+/// Environment variable override for Pekobot's home directory.
+const PEKO_HOME_ENV: &str = "PEKO_HOME";
+
 /// Get the default configuration directory
 ///
-/// Returns `~/.peko` or the current directory's `.peko` folder
-/// as a fallback if home directory is not available.
+/// Checks `PEKO_HOME` environment variable first, then falls back to
+/// `~/.peko` or the current directory's `.peko` folder.
 #[must_use]
 pub fn default_config_dir() -> PathBuf {
+    if let Ok(peko_home) = std::env::var(PEKO_HOME_ENV) {
+        return PathBuf::from(peko_home);
+    }
     dirs::home_dir().map_or_else(|| PathBuf::from(".").join(".peko"), |d| d.join(".peko"))
 }
 
 /// Get the default data directory
 ///
-/// Returns `~/.local/share/peko` on Linux,
+/// Checks `PEKO_HOME` environment variable first, then falls back to
+/// `~/.local/share/peko` on Linux,
 /// `~/Library/Application Support/peko` on macOS,
 /// or `%APPDATA%/peko` on Windows.
 /// Falls back to the config directory if `data_dir` is not available.
 pub fn default_data_dir() -> PathBuf {
+    if let Ok(peko_home) = std::env::var(PEKO_HOME_ENV) {
+        return PathBuf::from(peko_home).join("data");
+    }
     dirs::data_dir().map_or_else(default_config_dir, |d| d.join("peko"))
 }
 
 /// Get the default cache directory
 ///
-/// Falls back to `{data_dir}/cache` if `cache_dir` is not available.
+/// Checks `PEKO_HOME` environment variable first, then falls back to
+/// platform cache directory. Falls back to `{data_dir}/cache` if
+/// `cache_dir` is not available.
 #[must_use]
 pub fn default_cache_dir() -> PathBuf {
+    if let Ok(peko_home) = std::env::var(PEKO_HOME_ENV) {
+        return PathBuf::from(peko_home).join("cache");
+    }
     dirs::cache_dir().map_or_else(|| default_data_dir().join("cache"), |d| d.join("peko"))
 }
 

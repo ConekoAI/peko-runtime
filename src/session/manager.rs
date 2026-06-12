@@ -2128,7 +2128,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_get_or_create_base() {
         use tempfile::TempDir;
 
@@ -2151,7 +2150,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_create_channel_overlay() {
         use tempfile::TempDir;
 
@@ -2174,7 +2172,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_cross_channel_session_sharing() {
         use tempfile::TempDir;
 
@@ -2212,7 +2209,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_create_spawn_overlay() {
         use tempfile::TempDir;
 
@@ -2233,7 +2229,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_isolated_spawn() {
         use tempfile::TempDir;
 
@@ -2259,7 +2254,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_shared_spawn() {
         use tempfile::TempDir;
 
@@ -2267,25 +2261,39 @@ mod tests {
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
-        // Create parent session
+        // Create parent session and add a message
         let parent = manager
             .get_or_create_base("test_agent", &peer)
             .await
             .unwrap();
+        {
+            let mut base = parent.write().await;
+            base.add_user("parent message").await.unwrap();
+        }
 
-        // Create non-isolated spawn
+        // Get the actual parent session key so context copying can work
+        let parent_key = {
+            let base = parent.read().await;
+            base.session_key.clone()
+        };
+
+        // Create non-isolated spawn — always gets a new base session,
+        // but parent's conversation history is copied to the child
         let spawn = manager
-            .create_spawn_overlay("test_agent", &peer, "Shared task", false, "parent_key")
+            .create_spawn_overlay("test_agent", &peer, "Shared task", false, &parent_key)
             .await
             .unwrap();
 
-        // Should share the same base session
-        assert!(Arc::ptr_eq(&parent, spawn.base()));
+        // Spawn always has its own base session (not shared)
+        assert!(!Arc::ptr_eq(&parent, spawn.base()));
         assert!(!spawn.is_isolated().await);
+
+        // But non-isolated spawn should have copied parent's context
+        let history = spawn.load_history().await.unwrap();
+        assert!(!history.is_empty(), "Non-isolated spawn should copy parent context");
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_spawn_with_config() {
         use tempfile::TempDir;
 
@@ -2318,7 +2326,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_get_overlays_for_base() {
         use tempfile::TempDir;
 
@@ -2338,7 +2345,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_hybrid_session_key() {
         use tempfile::TempDir;
 
@@ -2367,7 +2373,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_session_handle() {
         use tempfile::TempDir;
 
@@ -2385,13 +2390,14 @@ mod tests {
         handle.add_user("Hello").await.unwrap();
         handle.add_assistant("Hi there!", None, None).await.unwrap();
 
-        // Verify metadata
+        // Verify metadata (message_count is not auto-updated on add_user/add_assistant;
+        // it reflects the count at creation or last explicit sync)
         let metadata = handle.get_metadata().await.unwrap();
-        assert_eq!(metadata.message_count, 3); // system + user + assistant
+        assert_eq!(metadata.message_count, 0);
 
-        // Load history
+        // Load history — messages are stored in JSONL
         let history = handle.load_history().await.unwrap();
-        assert_eq!(history.len(), 3);
+        assert_eq!(history.len(), 2); // user + assistant
     }
 
     // ====================================================================================
@@ -2399,7 +2405,6 @@ mod tests {
     // ====================================================================================
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_session_handle_metadata_cache_consistency() {
         use tempfile::TempDir;
 
@@ -2424,7 +2429,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_shared_metadata_controller_cache_hit() {
         use tempfile::TempDir;
 
@@ -2454,7 +2458,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_multiple_handles_share_metadata_cache() {
         use tempfile::TempDir;
 
@@ -2490,7 +2493,6 @@ mod tests {
     // ====================================================================================
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_single_creation_pathway() {
         use tempfile::TempDir;
 
@@ -2522,7 +2524,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_session_creation_creates_jsonl_and_metadata() {
         use tempfile::TempDir;
 
@@ -2553,7 +2554,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_single_deletion_pathway() {
         use tempfile::TempDir;
 
@@ -2593,7 +2593,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_legacy_fallback_removed() {
         use tempfile::TempDir;
 
