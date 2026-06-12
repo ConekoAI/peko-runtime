@@ -37,19 +37,30 @@ impl DaemonGuard {
         guard
     }
 
-    /// Poll `peko daemon status` until it exits 0 or `timeout` elapses.
+    /// Poll `peko daemon status --json` until `running: true` or `timeout` elapses.
     /// Panics if the daemon never becomes ready — surfacing a timeout here
     /// is what catches "daemon crashed on startup" in CI.
+    ///
+    /// Why --json: `peko daemon status` exits 0 in BOTH the running and
+    /// not-running branches (so checking exit code is meaningless). Parsing
+    /// the JSON's `running: true` field is the only reliable signal.
     fn wait_ready(&self, cli: &PekoCli, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
-            let status = cli
+            let output = cli
                 .cmd()
-                .args(["daemon", "status"])
-                .stdout(Stdio::null())
+                .args(["daemon", "status", "--json"])
+                .stdout(Stdio::piped())
                 .stderr(Stdio::null())
-                .status();
-            if matches!(status, Ok(s) if s.success()) {
+                .output();
+            let running = match output {
+                Ok(out) if out.status.success() => serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                    .ok()
+                    .and_then(|v| v.get("running").and_then(|r| r.as_bool()))
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if running {
                 return;
             }
             if Instant::now() >= deadline {
