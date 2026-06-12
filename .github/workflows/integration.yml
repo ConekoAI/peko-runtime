@@ -68,7 +68,7 @@ jobs:
         # peko-runtime/tests/docker/.
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/pekohub
+          repository: ConekoAI/pekohub
           path: pekohub
       - uses: docker/setup-buildx-action@v3
       - uses: dtolnay/rust-toolchain@stable
@@ -132,7 +132,7 @@ jobs:
       - name: Checkout pekohub
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/pekohub
+          repository: ConekoAI/pekohub
           path: pekohub
       - uses: docker/setup-buildx-action@v3
       - uses: dtolnay/rust-toolchain@stable

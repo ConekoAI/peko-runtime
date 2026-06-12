@@ -25,6 +25,10 @@ CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
 # Default ports exposed by docker-compose.integration.yml; CI overrides
 # these for in-container runs (e.g. PEKOHUB_URL=http://pekohub-test:3000).
+#
+# Uses `docker compose` (v2 plugin) rather than the standalone `docker-compose`
+# (v1) binary, which is not present on GitHub-hosted Linux runners and is
+# being deprecated by Docker Desktop.
 PEKOHUB_URL  ?= http://localhost:3000
 MOCK_LLM_URL ?= http://localhost:8080
 
@@ -65,10 +69,10 @@ docker-build:
 	    -f .github/docker/mock-llm/Dockerfile .github/docker/mock-llm
 
 docker-up:
-	docker-compose -f tests/docker/docker-compose.integration.yml up -d
+	docker compose -f tests/docker/docker-compose.integration.yml up -d
 
 docker-down:
-	docker-compose -f tests/docker/docker-compose.integration.yml down -v
+	docker compose -f tests/docker/docker-compose.integration.yml down -v
 
 # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ────────────────────────
 # MINIMAX_API_KEY is unset so a leaking env doesn't silently switch the
