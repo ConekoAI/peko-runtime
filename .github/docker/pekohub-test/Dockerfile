@@ -47,6 +47,7 @@ RUN pnpm install --frozen-lockfile --prod
 RUN npm install -g tsx@4.15.0
 
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
+COPY --from=builder /app/backend/src backend/src
 COPY --from=builder /app/backend/dist backend/dist
 COPY --from=builder /app/backend/drizzle backend/drizzle
 COPY --from=builder /app/backend/drizzle.config.ts backend/
