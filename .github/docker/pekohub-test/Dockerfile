@@ -36,7 +36,13 @@ RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/shared/package.json packages/shared/
 COPY backend/package.json backend/
-RUN pnpm install --frozen-lockfile --prod
+# Install all deps (not --prod) because the test fixture's runtime
+# needs things from devDependencies: @electric-sql/pglite (in-memory
+# PostgreSQL) and tsx (loaded globally above). This is a TEST
+# image, not a production pekohub-server image, so shipping the
+# full dep set is fine and simpler than selectively installing
+# specific packages.
+RUN pnpm install --frozen-lockfile
 
 # tsx is a devDependency but needed to run the fixture server TypeScript directly.
 # Use `npm install -g` rather than `pnpm add -g`: pnpm 9+ on the minimal
