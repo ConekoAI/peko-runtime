@@ -9,6 +9,7 @@
 
 #![allow(dead_code)]
 
+use std::io::Read;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
@@ -32,7 +33,7 @@ impl DaemonGuard {
             .spawn()
             .expect("spawn peko daemon start --foreground");
 
-        let guard = Self { child };
+        let mut guard = Self { child };
         guard.wait_ready(cli, Duration::from_secs(10));
         guard
     }
@@ -44,7 +45,7 @@ impl DaemonGuard {
     /// Why --json: `peko daemon status` exits 0 in BOTH the running and
     /// not-running branches (so checking exit code is meaningless). Parsing
     /// the JSON's `running: true` field is the only reliable signal.
-    fn wait_ready(&self, cli: &PekoCli, timeout: Duration) {
+    fn wait_ready(&mut self, cli: &PekoCli, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
             let output = cli
@@ -53,7 +54,7 @@ impl DaemonGuard {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .output();
-            let running = match output {
+            let running = match &output {
                 Ok(out) if out.status.success() => serde_json::from_slice::<serde_json::Value>(&out.stdout)
                     .ok()
                     .and_then(|v| v.get("running").and_then(|r| r.as_bool()))
@@ -64,10 +65,30 @@ impl DaemonGuard {
                 return;
             }
             if Instant::now() >= deadline {
+                // Drain captured child pipes so the panic message can
+                // surface what the daemon process said (or didn't say)
+                // before timing out. Common causes: data_dir not
+                // pre-created, IPC bind failure, missing env.
+                let mut stdout = String::new();
+                if let Some(p) = self.child.stdout.as_mut() {
+                    let _ = p.read_to_string(&mut stdout);
+                }
+                let mut stderr = String::new();
+                if let Some(p) = self.child.stderr.as_mut() {
+                    let _ = p.read_to_string(&mut stderr);
+                }
+                let last_status_json = match &output {
+                    Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+                    Err(_) => String::new(),
+                };
                 panic!(
-                    "peko daemon did not become ready in {:?} (sock: {})",
+                    "peko daemon did not become ready in {:?} (sock: {})\n\
+                     --- daemon stdout ---\n{stdout}\n\
+                     --- daemon stderr ---\n{stderr}\n\
+                     --- last status JSON ---\n{last_status_json}\n\
+                     --- end ---",
                     timeout,
-                    cli.daemon_sock().display()
+                    cli.daemon_sock().display(),
                 );
             }
             std::thread::sleep(Duration::from_millis(100));

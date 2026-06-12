@@ -25,10 +25,14 @@ impl PekoCli {
     /// Create a fresh isolated environment. Drop the returned value to clean up.
     pub fn new() -> Self {
         let home = TempDir::new().expect("create tempdir for PekoCli HOME");
-        // Pre-create the .peko subtree so paths.rs's create-on-demand logic
-        // doesn't race with the daemon's first bind.
-        std::fs::create_dir_all(home.path().join(".peko").join("run"))
-            .expect("create .peko/run");
+        // Pre-create the standard PEKO directory structure so the daemon
+        // can write to its cron DB, telemetry, cache, etc. without hitting
+        // "No such file or directory" on first access. Matches what
+        // `peko agent create` would set up in production.
+        for sub in [".peko", ".peko/run", ".peko/data", ".peko/cache"] {
+            std::fs::create_dir_all(home.path().join(sub))
+                .unwrap_or_else(|e| panic!("create {sub}: {e}"));
+        }
         Self { home }
     }
 
