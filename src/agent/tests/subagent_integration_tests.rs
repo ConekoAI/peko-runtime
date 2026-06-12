@@ -15,9 +15,17 @@ use crate::session::types::{Peer, SpawnCleanupPolicy};
 use crate::extension::async_exec::executor::{
     get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
+
+/// Per-test agent-name counter so each subagent integration test gets its own
+/// global async-task registry. Without this, every test shares one registry
+/// (keyed by "test_agent" in `get_or_create_registry_for_agent`) and
+/// `count_active_runs` / `list_subagents_for_parent` see stale entries from
+/// earlier tests in the same process.
+static TEST_AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Test fixture that sets up a temporary `PEKO_HOME` directory.
 ///
@@ -60,11 +68,19 @@ impl Drop for PekoHomeFixture {
 
 /// Test helper to create a test session manager and registry
 ///
+/// Returns `(session_manager, registry, agent_name)` where `agent_name` is
+/// unique per call so each test gets its own global async-task registry.
 /// Uses a temporary `PEKO_HOME` so tests don't require `~/.peko`.
 async fn create_test_components() -> (
     Arc<RwLock<SessionManager>>,
     SharedAsyncTaskRegistry,
+    String,
 ) {
+    let agent_name = format!(
+        "test_agent_{}",
+        TEST_AGENT_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+
     let fixture = PekoHomeFixture::new();
     let temp_path = fixture._temp.path().to_path_buf();
 
@@ -74,42 +90,48 @@ async fn create_test_components() -> (
         temp_path.join("cache"),
     );
     let session_manager = SessionManager::new()
-        .with_path_resolver(path_resolver, "test_agent", None)
+        .with_path_resolver(path_resolver, &agent_name, None)
         .await
         .unwrap();
     let session_manager = Arc::new(RwLock::new(session_manager));
-    let registry = get_or_create_registry_for_agent("test_agent");
+    let registry = get_or_create_registry_for_agent(&agent_name);
 
     // Leak the fixture so it lives for the duration of the test
     // (the temp dir will be cleaned up when the test process exits)
     let _ = Box::leak(Box::new(fixture));
 
-    (session_manager, registry)
+    (session_manager, registry, agent_name)
 }
 
 #[tokio::test]
 async fn test_e2e_spawn_and_complete() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     // Create a parent session context
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     // Setup executor
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -143,27 +165,33 @@ async fn test_e2e_spawn_and_complete() {
 
 #[tokio::test]
 async fn test_spawn_depth_limit() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     // Create a parent session context
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     // Create executor with max_depth = 1 (only one level allowed)
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -233,26 +261,32 @@ async fn test_spawn_depth_limit() {
 
 #[tokio::test]
 async fn test_isolated_vs_shared_session() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     // Use higher max_depth since we're spawning multiple runs
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -311,25 +345,31 @@ async fn test_isolated_vs_shared_session() {
 
 #[tokio::test]
 async fn test_result_format_in_registry() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -357,25 +397,31 @@ async fn test_result_format_in_registry() {
 
 #[tokio::test]
 async fn test_list_runs_functionality() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -435,25 +481,31 @@ async fn test_list_runs_functionality() {
 
 #[tokio::test]
 async fn test_cleanup_policy_tracking() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -508,25 +560,31 @@ async fn test_cleanup_policy_tracking() {
 
 #[tokio::test]
 async fn test_parent_child_relationship() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -556,7 +614,7 @@ async fn test_parent_child_relationship() {
 
 #[tokio::test]
 async fn test_runs_by_parent_filtering() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer1 = Peer::User("alice".to_string());
     let parent_ctx1 = {
@@ -593,7 +651,7 @@ async fn test_runs_by_parent_filtering() {
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -649,20 +707,26 @@ async fn test_runs_by_parent_filtering() {
 
 #[tokio::test]
 async fn test_concurrent_runs_counting() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     // Initially no active runs in registry
     {
@@ -675,7 +739,7 @@ async fn test_concurrent_runs_counting() {
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -714,25 +778,31 @@ async fn test_concurrent_runs_counting() {
 
 #[tokio::test]
 async fn test_executor_get_status() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -762,25 +832,31 @@ async fn test_executor_get_status() {
 
 #[tokio::test]
 async fn test_executor_get_run() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -803,25 +879,31 @@ async fn test_executor_get_run() {
 
 #[tokio::test]
 async fn test_executor_cancel() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         5,
     ));
 
@@ -851,26 +933,32 @@ async fn test_executor_cancel() {
 
 #[tokio::test]
 async fn test_max_concurrent_limit() {
-    let (session_manager, registry) = create_test_components().await;
+    let (session_manager, registry, agent_name) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let mut manager = session_manager.write().await;
+    // Scope the session-manager write lock so it's released before
+    // `spawn_and_execute`, which internally re-acquires the same write
+    // lock via `manager.spawn_session()` — holding the guard here would
+    // deadlock on the current-thread test runtime.
+    let (parent_key, resolved) = {
+        let mut manager = session_manager.write().await;
         let resolved = manager
             .route(
-            &peer,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key = resolved.context.full_session_key.clone();
+                &peer,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        (resolved.context.full_session_key.clone(), resolved)
+    };
 
     // Create executor with max_concurrent = 1
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
                 session_manager.clone(),
-        "test_agent",
+        agent_name.clone(),
         1, // Only 1 concurrent
     ));
 
