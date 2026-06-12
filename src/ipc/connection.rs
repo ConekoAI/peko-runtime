@@ -17,6 +17,7 @@
 //! - Unexpected resource consumption from background processes
 //! - System stability issues from implicit service startup
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -24,9 +25,7 @@ use tokio::net::UdpSocket;
 use tokio::net::UnixDatagram;
 use tracing::debug;
 
-#[cfg(test)]
-use super::default_pid_path;
-use super::{DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
+use super::{default_pid_path, default_socket_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
 
 /// Platform-specific socket handle
 ///
@@ -110,7 +109,7 @@ impl ConnectionHandle {
                 ));
                 let socket = UnixDatagram::bind(&tmp_path)?;
                 Ok(Self::Unix {
-                    socket,
+                    socket: Arc::new(socket),
                     path: path.clone(),
                 })
             }

@@ -14,7 +14,7 @@ use tokio::time::interval;
 use tracing::{error, info, trace, warn};
 
 use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket, HEARTBEAT_INTERVAL_SECS};
-use super::{DEFAULT_HOST, DEFAULT_PORT};
+use super::{default_socket_path, ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
 use crate::auth::config::enforce_auth_for_public_bind;
 use crate::auth::permissions::AuthError;
