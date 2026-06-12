@@ -33,14 +33,15 @@ use super::{DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
 /// On Unix, this wraps a `UnixDatagram` (reliable, file-permission auth).
 /// On Windows, this wraps a `UdpSocket` (unreliable, no auth).
 ///
-/// UDP socket is wrapped in Arc so that `try_clone()` shares the same
-/// underlying socket — this ensures responses from the daemon reach the
-/// receiver task (which uses the cloned handle).
+/// Both sockets are wrapped in Arc so that cloning the handle shares the
+/// same underlying socket — this ensures responses from the daemon reach
+/// the receiver task (which uses the cloned handle). Mirrors
+/// `ServerSocket::Unix` in server.rs.
 #[derive(Debug, Clone)]
 pub enum ConnectionHandle {
     /// Unix domain datagram socket (Unix only)
     #[cfg(unix)]
-    Unix { socket: UnixDatagram, path: PathBuf },
+    Unix { socket: Arc<UnixDatagram>, path: PathBuf },
     /// UDP socket (Windows fallback, or Unix opt-in)
     Udp {
         socket: Arc<UdpSocket>,
@@ -243,7 +244,7 @@ impl ConnectionManager {
         }
 
         Ok(ConnectionHandle::Unix {
-            socket,
+            socket: Arc::new(socket),
             path: path_buf,
         })
     }

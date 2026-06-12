@@ -162,7 +162,6 @@ pub async fn graceful_shutdown(
 pub async fn force_kill_child(child: &mut Child, pid: u32) -> Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::process::ChildExt;
         // Send SIGTERM first for graceful termination
         if let Some(id) = child.id() {
             unsafe {
