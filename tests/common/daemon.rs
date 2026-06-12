@@ -21,15 +21,22 @@ pub struct DaemonGuard {
 }
 
 impl DaemonGuard {
-    /// Spawn the daemon and wait until `peko daemon status` succeeds (max 10s).
+    /// Spawn the daemon and wait until `peko daemon status --json` reports
+    /// `running: true` (max 10s).
+    ///
+    /// Stdout is captured (for diagnostic dumps on timeout), but stderr
+    /// goes to `Stdio::null()`. Capturing stderr is a deadlock risk: if
+    /// the daemon writes more than the kernel pipe buffer (~64KB) and
+    /// nobody reads, the daemon blocks on write. Disabling the capture
+    /// drops that risk; we lose some diagnostics but the workflow's
+    /// `Dump container logs` step captures the relevant pekohub-test
+    /// / mock-llm output anyway.
     pub fn spawn(cli: &PekoCli) -> Self {
         let child = cli
             .cmd()
             .args(["daemon", "start", "--foreground"])
-            // Daemon's logs would otherwise drown the test output. Capture
-            // them so they're available via `Drop` for failure debugging.
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .expect("spawn peko daemon start --foreground");
 
@@ -39,52 +46,56 @@ impl DaemonGuard {
     }
 
     /// Poll `peko daemon status --json` until `running: true` or `timeout` elapses.
-    /// Panics if the daemon never becomes ready — surfacing a timeout here
-    /// is what catches "daemon crashed on startup" in CI.
-    ///
-    /// Why --json: `peko daemon status` exits 0 in BOTH the running and
-    /// not-running branches (so checking exit code is meaningless). Parsing
-    /// the JSON's `running: true` field is the only reliable signal.
+    /// Each poll itself is wrapped in a 2s hard timeout so a stuck peko
+    /// subprocess can't hang the whole wait_ready loop.
     fn wait_ready(&mut self, cli: &PekoCli, timeout: Duration) {
         let deadline = Instant::now() + timeout;
+        let mut last_status_json = String::new();
         loop {
-            let output = cli
-                .cmd()
-                .args(["daemon", "status", "--json"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .output();
+            // 2s budget per individual status call (a stuck peko would
+            // otherwise hang the loop until the outer 10s timeout).
+            // The closure returns an owned Command: each method on
+            // Command returns &mut Command, so the closure must use
+            // a let-binding to materialise an owned value.
+            let output = super::subprocess::run_with_timeout(
+                || {
+                    let mut c = cli.cmd();
+                    c.args(["daemon", "status", "--json"])
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null());
+                    c
+                },
+                &[],
+                Duration::from_secs(2),
+            );
+            last_status_json = match &output {
+                Ok((o, _, _)) if o.status.success() => {
+                    String::from_utf8_lossy(&o.stdout).into_owned()
+                }
+                Ok(_) | Err(_) => last_status_json,
+            };
             let running = match &output {
-                Ok(out) if out.status.success() => serde_json::from_slice::<serde_json::Value>(&out.stdout)
-                    .ok()
-                    .and_then(|v| v.get("running").and_then(|r| r.as_bool()))
-                    .unwrap_or(false),
+                Ok((o, _, _)) if o.status.success() => {
+                    serde_json::from_slice::<serde_json::Value>(&o.stdout)
+                        .ok()
+                        .and_then(|v| v.get("running").and_then(|r| r.as_bool()))
+                        .unwrap_or(false)
+                }
                 _ => false,
             };
             if running {
                 return;
             }
             if Instant::now() >= deadline {
-                // Drain captured child pipes so the panic message can
-                // surface what the daemon process said (or didn't say)
-                // before timing out. Common causes: data_dir not
-                // pre-created, IPC bind failure, missing env.
-                let mut stdout = String::new();
+                // Drain the daemon's stdout pipe so we can surface what
+                // it was saying. Stderr is null so nothing to drain.
+                let mut daemon_stdout = String::new();
                 if let Some(p) = self.child.stdout.as_mut() {
-                    let _ = p.read_to_string(&mut stdout);
+                    let _ = std::io::Read::read_to_string(p, &mut daemon_stdout);
                 }
-                let mut stderr = String::new();
-                if let Some(p) = self.child.stderr.as_mut() {
-                    let _ = p.read_to_string(&mut stderr);
-                }
-                let last_status_json = match &output {
-                    Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
-                    Err(_) => String::new(),
-                };
                 panic!(
                     "peko daemon did not become ready in {:?} (sock: {})\n\
-                     --- daemon stdout ---\n{stdout}\n\
-                     --- daemon stderr ---\n{stderr}\n\
+                     --- daemon stdout ---\n{daemon_stdout}\n\
                      --- last status JSON ---\n{last_status_json}\n\
                      --- end ---",
                     timeout,
