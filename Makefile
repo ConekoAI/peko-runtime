@@ -61,6 +61,12 @@ test-subagent:
 	cargo test --lib subagent_integration
 
 # ── Docker stack lifecycle ───────────────────────────────────────────────
+# Images are built via `docker build` (not compose), so the context
+# + dockerfile path semantics are clear and identical in local and
+# CI layouts. Compose just orchestrates the pre-built images.
+# - pekohub-test context is ../pekohub (sibling of peko-runtime).
+# - mock-llm context + dockerfile are both inside peko-runtime.
+# Both paths are relative to the Makefile's CWD, which is peko-runtime/.
 
 docker-build:
 	docker build -t peko/pekohub-test:latest \
@@ -68,7 +74,7 @@ docker-build:
 	docker build -t peko/mock-llm:latest \
 	    -f .github/docker/mock-llm/Dockerfile .github/docker/mock-llm
 
-docker-up:
+docker-up: docker-build
 	docker compose -f tests/docker/docker-compose.integration.yml up -d
 
 docker-down:

@@ -102,19 +102,18 @@ All 5 hub-dependent files share the **same dual-mode `PekohubBackend::start()` h
                                          │
         ┌────────────────────────────────┼──────────────────────────────┐
         │                                │                              │
-┌───────▼────────┐              ┌────────▼────────┐           ┌────────▼────────┐
-│ pekohub-test    │              │   mock-llm      │           │   test-runner   │
-│ ───────────     │              │   ──────────    │           │   ──────────    │
-│ Real Fastify app│              │ Python FastAPI  │           │ Rust toolchain  │
-│ + PGlite (in-mem│              │ SSE on :8080    │           │ runs cargo test │
-│   PostgreSQL)   │              │ MiniMax-compatible│           │ against the     │
-│ + Map mock S3   │              │ wire format     │           │ stack via       │
-│ + Map mock      │◄─── HTTP ───►│                 │           │ PEKOHUB_URL +   │
-│   Meilisearch   │  ws://      │                 │           │ MOCK_LLM_URL    │
-│ + ALLOW_DEV_    │  /v1/tunnel │                 │           │                 │
-│   AUTH_BYPASS   │              │                 │           │                 │
-│ + /test/* eps   │              │                 │           │                 │
-└─────────────────┘              └─────────────────┘           └─────────────────┘
+┌───────▼─────────┐           ┌───────────▼──────────┐        ┌──────────▼─────────┐
+│  pekohub-test   │           │      mock-llm        │        │  cargo on host     │
+│ ───────────     │           │   ──────────         │        │  ─────────────     │
+│ Real Fastify    │           │ Python FastAPI       │        │ Rust toolchain     │
+│   + PGlite      │           │ SSE on :8080         │        │ cargo test runs    │
+│   + Map mock S3 │◄── HTTP ─►│ MiniMax-compatible   │◄──HTTP─│ against the stack  │
+│   + Map mock    │   ws://   │   wire format        │        │ via PEKOHUB_URL +  │
+│     Meilisearch │  /v1/    │                      │        │   MOCK_LLM_URL     │
+│   + /test/* eps │  tunnel  │                      │        │ (the GitHub runner │
+│   + ALLOW_DEV_  │          │                      │        │  or the dev box)   │
+│     AUTH_BYPASS │          │                      │        │                    │
+└─────────────────┘          └──────────────────────┘        └────────────────────┘
 ```
 
 **Why "test fixture" is not a mock.** `pekohub-test` runs the *real* Fastify app from `pekohub/backend/tests/fixtures/server.ts` — real auth plugin, real tunnel manager, real OCI routes. Only the database (PGlite), storage (in-process `Map`), and search index (in-process `Map`) are swapped out. That gives us maximum confidence in runtime↔hub compatibility without dragging in PostgreSQL, MinIO, or Meilisearch containers.
@@ -135,7 +134,7 @@ make docker-up       # starts pekohub-test + mock-llm on tests/docker/
 make test-integration
 make docker-down
 ```
-Sets `PEKOHUB_URL=http://pekohub-test:3000` and `MOCK_LLM_URL=http://mock-llm:8080` inside the `test-runner` container.
+Sets `PEKOHUB_URL=http://pekohub-test:3000` and `MOCK_LLM_URL=http://mock-llm:8080` in the `make test-integration` recipe's env, which cargo inherits as the host-side process.
 
 **Local mode (dev loop without Docker):**
 ```bash

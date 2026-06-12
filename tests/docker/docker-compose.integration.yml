@@ -1,11 +1,12 @@
-version: "3.8"
-
 services:
-  # ── PekoHub Test Backend (the only service we need) ───────────────
+  # ── PekoHub Test Backend ─────────────────────────────────────────
+  # Real Fastify app from pekohub/backend, swapped to PGlite +
+  # in-process Map storage/search so the fixture has no external deps.
+  # Image is pre-built by `make docker-build` (see Makefile) — compose
+  # just runs it. Decoupling build from compose keeps path resolution
+  # simple and identical in local + CI layouts.
   pekohub-test:
-    build:
-      context: ../../pekohub
-      dockerfile: ../peko-runtime/.github/docker/pekohub-test/Dockerfile
+    image: peko/pekohub-test:latest
     ports:
       - "3000:3000"
     environment:
@@ -29,11 +30,11 @@ services:
     networks:
       - peko-test
 
-  # ── Mock LLM Server (optional, for tunnel_e2e only) ───────────────
+  # ── Mock LLM Server ──────────────────────────────────────────────
+  # For tunnel_e2e + Phase B cli_*.rs. Sends MiniMax-compatible SSE.
+  # Image is pre-built by `make docker-build`.
   mock-llm:
-    build:
-      context: ../../.github/docker/mock-llm
-      dockerfile: Dockerfile
+    image: peko/mock-llm:latest
     ports:
       - "8080:8080"
     environment:
@@ -41,28 +42,6 @@ services:
     networks:
       - peko-test
 
-  # ── Test Runner (Rust) ────────────────────────────────────────────
-  test-runner:
-    build:
-      context: ../..
-      dockerfile: peko-runtime/.github/docker/test-runner/Dockerfile
-    depends_on:
-      pekohub-test:
-        condition: service_healthy
-    environment:
-      - PEKOHUB_URL=http://pekohub-test:3000
-      - MOCK_LLM_URL=http://mock-llm:8080
-      - RUST_BACKTRACE=1
-    volumes:
-      - ../../peko-runtime:/workspace/peko-runtime
-      - cargo-cache:/usr/local/cargo/registry
-    networks:
-      - peko-test
-    command: ["cargo", "test", "--test", "pekohub_integration", "--", "--ignored"]
-
 networks:
   peko-test:
     driver: bridge
-
-volumes:
-  cargo-cache:
