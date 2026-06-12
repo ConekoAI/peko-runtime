@@ -38,8 +38,13 @@ COPY packages/shared/package.json packages/shared/
 COPY backend/package.json backend/
 RUN pnpm install --frozen-lockfile --prod
 
-# tsx is a devDependency but needed to run the fixture server TypeScript directly
-RUN pnpm add -g tsx@^4.15.0
+# tsx is a devDependency but needed to run the fixture server TypeScript directly.
+# Use `npm install -g` rather than `pnpm add -g`: pnpm 9+ on the minimal
+# Alpine image doesn't have a default global bin directory and refuses
+# to install unless PNPM_HOME is explicitly set + PATH-exported. npm
+# is always present on the node base image and always knows where
+# its global bin dir is.
+RUN npm install -g tsx@4.15.0
 
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
 COPY --from=builder /app/backend/dist backend/dist
