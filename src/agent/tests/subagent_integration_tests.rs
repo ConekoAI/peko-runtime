@@ -216,46 +216,64 @@ async fn test_spawn_depth_limit() {
     // Wait for completion so the run is in registry with its depth
     sleep(Duration::from_millis(500)).await;
 
-    // Get the child session key from first spawn
+    // Verify the first run completed at depth 1, and grab its child_session_key.
     let child_key = {
         let registry_guard = registry.read().await;
         let entry = registry_guard.get(&run_id1).unwrap();
         let view = crate::agent::subagent_types::SubagentRunView::from_entry(entry)
             .expect("Should be a subagent entry");
-        // Verify first run completed at depth 1
         assert_eq!(view.depth, 1, "First run should be at depth 1");
         view.child_session_key.clone()
     };
 
-    // The depth check works based on runs registered for a parent session.
-    // When we use child_key as parent, there are no runs registered for it yet,
-    // so parent_depth = 0, and the new run would be depth 1, which passes max_depth 1.
-    //
-    // This is a known limitation - the depth limit prevents spawning from sessions
-    // that already have spawn runs, not from spawn sessions themselves.
-    // To properly test nested depth limits, we'd need session hierarchy tracking.
-
-    // Let's spawn from child_key to show it works at depth 1
+    // Spawn from the *child* session of the first run. The depth check
+    // looks up runs by `child_session_key == parent_session_key`, so passing
+    // `child_key` as the new parent makes it match the first run (depth 1).
+    // The new run would be depth 2, exceeding max_depth=1, and must be
+    // rejected. (Earlier versions of this test asserted the opposite —
+    // that nesting succeeds — but that was a misreading of the depth
+    // tracking; the limit IS enforced via this key, not via the original
+    // parent's key.)
     let result = executor
-        .spawn_and_execute("Nested task", Some(&resolved.context), false, &child_key, config)
+        .spawn_and_execute(
+            "Nested task",
+            Some(&resolved.context),
+            false,
+            &child_key,
+            config,
+        )
         .await;
 
-    // This succeeds because no prior runs for child_key (parent_depth = 0, child_depth = 1)
     assert!(
-        result.is_ok(),
-        "Spawn from child succeeds at depth 1 (no prior runs for child)"
+        result.is_err(),
+        "Spawning from child_key of a depth-1 subagent must fail with DepthLimitExceeded"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("DepthLimitExceeded") || err.contains("depth"),
+        "Expected depth-limit error, got: {err}"
     );
 
-    // Verify the nested run is at depth 1
-    sleep(Duration::from_millis(300)).await;
-    let registry_guard = registry.read().await;
-    let nested_run_id = result.unwrap();
-    let nested_entry = registry_guard.get(&nested_run_id).unwrap();
-    let nested_view = crate::agent::subagent_types::SubagentRunView::from_entry(nested_entry)
-        .expect("Should be a subagent entry");
-    assert_eq!(
-        nested_view.depth, 1,
-        "Nested run at depth 1 (no prior runs for child_key)"
+    // And spawning from a fresh, unrelated parent must still succeed —
+    // there's no run with `child_session_key == that key`, so parent_depth
+    // stays 0 and the spawn is allowed.
+    let other_parent_key =
+        crate::session::key::derive_base_session_key(&agent_name, &Peer::User("charlie".to_string()));
+    let result = executor
+        .spawn_and_execute(
+            "Independent task",
+            Some(&resolved.context),
+            false,
+            &other_parent_key,
+            ExecutionConfig {
+                max_depth: 1,
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        result.is_ok(),
+        "Spawning from a fresh parent (no prior runs) must succeed"
     );
 }
 
@@ -616,37 +634,19 @@ async fn test_parent_child_relationship() {
 async fn test_runs_by_parent_filtering() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
+    // `route()` ignores its `_peer` argument and uses `SessionManager::self.user`
+    // (default "default") instead, so calling `route(&peer1, ...)` and
+    // `route(&peer2, ...)` produces the *same* parent key. To get two
+    // distinct parents we derive the base session key directly from the
+    // peer, which is exactly what `create_session` and the registry do.
     let peer1 = Peer::User("alice".to_string());
-    let parent_ctx1 = {
-        let mut manager = session_manager.write().await;
-        let resolved = manager
-            .route(
-                &peer1,
-                crate::session::types::ChannelType::Cli,
-                "default",
-                None,
-            )
-            .await
-            .unwrap();
-        resolved.context
-    };
-    let parent_key1 = parent_ctx1.full_session_key.clone();
-
     let peer2 = Peer::User("bob".to_string());
-    let parent_ctx2 = {
-        let mut manager = session_manager.write().await;
-        let resolved = manager
-            .route(
-                &peer2,
-                crate::session::types::ChannelType::Cli,
-                "default",
-                None,
-            )
-            .await
-            .unwrap();
-        resolved.context
-    };
-    let parent_key2 = parent_ctx2.full_session_key.clone();
+    let parent_key1 = crate::session::key::derive_base_session_key(&agent_name, &peer1);
+    let parent_key2 = crate::session::key::derive_base_session_key(&agent_name, &peer2);
+    assert_ne!(
+        parent_key1, parent_key2,
+        "test setup: peers must produce distinct parent keys"
+    );
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
@@ -660,11 +660,13 @@ async fn test_runs_by_parent_filtering() {
         ..Default::default()
     };
 
-    // Create runs for different parents
+    // Create runs for different parents. `parent_ctx` is unused inside
+    // `spawn_and_execute`, so `None` is fine — only `parent_session_key`
+    // matters for registry bookkeeping.
     let run1 = executor
         .spawn_and_execute(
             "Task 1",
-            Some(&parent_ctx1),
+            None,
             false,
             &parent_key1,
             config.clone(),
@@ -675,7 +677,7 @@ async fn test_runs_by_parent_filtering() {
     let run2 = executor
         .spawn_and_execute(
             "Task 2",
-            Some(&parent_ctx1),
+            None,
             false,
             &parent_key1,
             config.clone(),
@@ -684,7 +686,7 @@ async fn test_runs_by_parent_filtering() {
         .unwrap();
 
     let run3 = executor
-        .spawn_and_execute("Task 3", Some(&parent_ctx2), false, &parent_key2, config)
+        .spawn_and_execute("Task 3", None, false, &parent_key2, config)
         .await
         .unwrap();
 
@@ -881,54 +883,55 @@ async fn test_executor_get_run() {
 async fn test_executor_cancel() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Peer::User("alice".to_string());
-    // Scope the session-manager write lock so it's released before
-    // `spawn_and_execute`, which internally re-acquires the same write
-    // lock via `manager.spawn_session()` — holding the guard here would
-    // deadlock on the current-thread test runtime.
-    let (parent_key, resolved) = {
-        let mut manager = session_manager.write().await;
-        let resolved = manager
-            .route(
-                &peer,
-                crate::session::types::ChannelType::Cli,
-                "default",
-                None,
-            )
-            .await
-            .unwrap();
-        (resolved.context.full_session_key.clone(), resolved)
-    };
-
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
 
-    let run_id = executor
-        .spawn_and_execute(
-            "Long task",
-            Some(&resolved.context),
-            false,
-            &parent_key,
-            ExecutionConfig {
-                timeout_seconds: 3600, // Long timeout
-                ..Default::default()
+    // Cancel is racing the spawned task's completion. Without a provider,
+    // the spawned task returns its "no provider configured" placeholder
+    // immediately, so the run is already in a terminal state by the time
+    // the test calls `cancel()` — and `cancel()` is a no-op on terminal
+    // tasks. To exercise the cancel path deterministically we register a
+    // Pending entry directly and cancel it before the task body can run.
+    let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
+    {
+        let mut registry_guard = registry.write().await;
+        let entry = crate::extension::async_exec::executor::registry::AsyncTaskEntry::new(
+            run_id.clone(),
+            "agent_spawn".to_string(),
+            serde_json::json!({"task": "Long task"}),
+            "agent:test:peer:user:alice".to_string(),
+            crate::extension::async_exec::executor::types::AsyncToolConfig {
+                delivery_mode: crate::extension::async_exec::executor::types::AsyncResultDeliveryMode::QueueWhenBusy,
+                delivery_target: None,
+                timeout_secs: 3600,
+                cleanup_after_delivery: false,
+                label: None,
             },
-        )
-        .await
-        .unwrap();
+        );
+        registry_guard.register(entry);
+    }
+
+    // The task must be in Pending (not terminal) for cancel to take effect.
+    {
+        let registry_guard = registry.read().await;
+        let entry = registry_guard.get(&run_id).unwrap();
+        assert!(matches!(entry.status, crate::extension::async_exec::executor::types::AsyncTaskStatus::Pending));
+    }
 
     // Cancel the run
-    executor.cancel(&run_id).await.ok();
-
-    sleep(Duration::from_millis(100)).await;
+    executor.cancel(&run_id).await.unwrap();
 
     let registry_guard = registry.read().await;
     let entry = registry_guard.get(&run_id).unwrap();
-    assert!(matches!(entry.status, SubagentStatus::Cancelled));
+    assert!(
+        matches!(entry.status, SubagentStatus::Cancelled),
+        "Status should be Cancelled after cancel(), got: {:?}",
+        entry.status
+    );
 }
 
 #[tokio::test]

@@ -541,8 +541,26 @@ mod tests {
 
     #[test]
     fn test_path_resolver_default() {
+        // Some earlier tests (notably subagent_integration_tests) leak a
+        // temp `PEKO_HOME` via `Box::leak`-ed fixtures, so by the time this
+        // test runs the env var may already be set. Clear it for the
+        // duration of the assertion so we exercise the *default* branch
+        // (home_dir().join(".peko")).
+        let saved_peko_home = std::env::var("PEKO_HOME").ok();
+        // SAFETY: tests in the same process don't run in parallel for
+        // env-var-sensitive paths (cargo test default), and we restore the
+        // value immediately below.
+        unsafe { std::env::remove_var("PEKO_HOME") };
         let resolver = PathResolver::new();
-        assert!(resolver.config_dir().to_string_lossy().contains(".peko"));
+        let config_dir = resolver.config_dir().to_string_lossy().to_string();
+        if let Some(v) = saved_peko_home {
+            // SAFETY: same as above.
+            unsafe { std::env::set_var("PEKO_HOME", v) };
+        }
+        assert!(
+            config_dir.contains(".peko"),
+            "default config dir should contain '.peko', got: {config_dir}"
+        );
     }
 
     // ====================================================================================

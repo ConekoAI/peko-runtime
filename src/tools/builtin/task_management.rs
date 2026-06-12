@@ -286,7 +286,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_list_empty() {
-        let tool = TaskTool::global();
+        // Use a fresh isolated registry instead of `TaskTool::global()`,
+        // which would walk the global `static OnceLock` registry map that
+        // subagent_integration_tests populates and leaves behind. The test
+        // is asserting the empty-state behavior of the list action, so the
+        // fixture must start at zero — a leaked sibling registry is not
+        // a contract violation we want this test to catch.
+        let registry = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::extension::async_exec::executor::AsyncTaskRegistry::new(),
+        ));
+        let tool = TaskTool::with_registry(registry);
         let result = tool.execute(json!({"action": "list"})).await.unwrap();
         assert_eq!(result["total"], 0);
         assert_eq!(result["active"], 0);
