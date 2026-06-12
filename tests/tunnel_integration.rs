@@ -3,15 +3,15 @@
 //! End-to-end tests for the runtime↔PekoHub WebSocket tunnel.
 //!
 //! These tests are marked `#[ignore]` because they require:
-//!   - Node.js 22+ with tsx installed
-//!   - The PekoHub backend source at `../pekohub/backend`
+//!   - Node.js 22+ with tsx installed  (local mode)
+//!   - OR a running PekoHub test container (container mode via PEKOHUB_URL)
 //!
-//! The test harness auto-starts the PekoHub backend on a random ephemeral port
-//! and shuts it down after each test.
-//!
-//! Run:
+//! Run locally:
 //!   cd peko-runtime
 //!   cargo test --test tunnel_integration -- --ignored
+//!
+//! Run in container:
+//!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test tunnel_integration -- --ignored
 
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -24,8 +24,8 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use pekobot::tunnel::protocol::{
-    InstanceAnnouncePayload, InstanceHeartbeatPayload, InstanceStatus, InstanceType,
-    InstanceExposure, TunnelMessage,
+    InstanceAnnouncePayload, InstanceHeartbeatPayload, InstanceExposure, InstanceStatus,
+    InstanceType, TunnelMessage,
 };
 
 // JWT secret must match the PekoHub test fixture
@@ -61,18 +61,50 @@ fn generate_jwt(user_id: i64, namespace: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Test harness: auto-start pekohub backend
+// Test harness: auto-start pekohub backend or connect to container
 // ---------------------------------------------------------------------------
 
 struct PekohubBackend {
     #[allow(dead_code)]
-    child: Child,
+    child: Option<Child>,
     url: String,
     ws_url: String,
 }
 
 impl PekohubBackend {
     async fn start() -> Self {
+        // Container mode: pekohub is already running
+        if let Ok(url) = std::env::var("PEKOHUB_URL") {
+            let ws_url = url.replace("http://", "ws://").replace("https://", "wss://");
+            let ws_url = format!("{ws_url}/v1/tunnel");
+
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .no_proxy()
+                .build()
+                .unwrap();
+
+            let mut ready = false;
+            for _ in 0..50 {
+                if client.get(format!("{url}/health")).send().await.is_ok() {
+                    ready = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(
+                ready,
+                "PekoHub backend at {url} did not become ready in 5 seconds"
+            );
+
+            return Self {
+                child: None,
+                url,
+                ws_url,
+            };
+        }
+
+        // Local mode: spawn Node.js + tsx process
         let backend_path = std::env::var("PEKOHUB_BACKEND_PATH").unwrap_or_else(|_| {
             concat!(env!("CARGO_MANIFEST_DIR"), "/../pekohub/backend").to_string()
         });
@@ -142,14 +174,20 @@ impl PekohubBackend {
         }
         assert!(ready, "PekoHub backend did not become ready in 5 seconds");
 
-        Self { child, url, ws_url }
+        Self {
+            child: Some(child),
+            url,
+            ws_url,
+        }
     }
 }
 
 impl Drop for PekohubBackend {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(ref mut child) = self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -243,7 +281,7 @@ async fn authenticate_tunnel(
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_tunnel_handshake_and_heartbeat() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
@@ -276,7 +314,7 @@ async fn test_tunnel_handshake_and_heartbeat() {
 }
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_tunnel_rejects_invalid_signature() {
     let backend = PekohubBackend::start().await;
     let (did, _signing_key) = generate_runtime_identity();
@@ -322,7 +360,7 @@ async fn test_tunnel_rejects_invalid_signature() {
 }
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_tunnel_instance_announce_and_api_visibility() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
@@ -465,7 +503,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
 }
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_tunnel_proxied_request_response() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
@@ -520,7 +558,7 @@ async fn test_tunnel_proxied_request_response() {
 }
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_tunnel_streaming_chunks_survive() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();

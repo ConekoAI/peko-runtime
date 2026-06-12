@@ -1,25 +1,30 @@
 //! Tunnel End-to-End Integration Test (Layer 3)
 //!
-//! Full E2E test: runtime daemon → tunnel → PekoHub → HTTP proxy → chat → real LLM → SSE stream
+//! Full E2E test: runtime daemon → tunnel → PekoHub → HTTP proxy → chat → LLM → SSE stream
 //!
 //! This test requires:
-//!   - Node.js 22+ with tsx installed
-//!   - The PekoHub backend source at `../pekohub/backend`
-//!   - `MINIMAX_API_KEY` environment variable set
+//!   - Node.js 22+ with tsx installed  (local mode)
+//!   - OR a running PekoHub test container (container mode via PEKOHUB_URL)
+//!   - For real LLM: MINIMAX_API_KEY environment variable
+//!   - For mock LLM: MOCK_LLM_URL environment variable (CI mode)
 //!
 //! The test:
-//!   1. Starts PekoHub backend on a random ephemeral port
-//!   2. Creates a temporary workspace with a minimax-powered agent config
+//!   1. Starts PekoHub backend on a random ephemeral port (or connects to container)
+//!   2. Creates a temporary workspace with an agent config
 //!   3. Builds a real AppState (with real agent service)
 //!   4. Writes tunnel credentials pointing to PekoHub
 //!   5. Starts the tunnel via AppState::start_tunnel()
 //!   6. Creates a user + runtime record in PekoHub
 //!   7. Sends POST /v1/instances/:id/chat via HTTP
-//!   8. Consumes SSE and verifies real LLM response
+//!   8. Consumes SSE and verifies response
 //!
-//! Run:
+//! Run locally with real LLM:
 //!   cd peko-runtime
 //!   MINIMAX_API_KEY=sk-xxx cargo test --test tunnel_e2e -- --ignored
+//!
+//! Run in container with mock LLM:
+//!   PEKOHUB_URL=http://pekohub-test:3000 MOCK_LLM_URL=http://mock-llm:8080 \
+//!     cargo test --test tunnel_e2e -- --ignored
 
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -62,18 +67,50 @@ fn generate_jwt(user_id: i64, namespace: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Test harness: auto-start pekohub backend
+// Test harness: auto-start pekohub backend or connect to container
 // ---------------------------------------------------------------------------
 
 struct PekohubBackend {
     #[allow(dead_code)]
-    child: Child,
+    child: Option<Child>,
     url: String,
     ws_url: String,
 }
 
 impl PekohubBackend {
     async fn start() -> Self {
+        // Container mode: pekohub is already running
+        if let Ok(url) = std::env::var("PEKOHUB_URL") {
+            let ws_url = url.replace("http://", "ws://").replace("https://", "wss://");
+            let ws_url = format!("{ws_url}/v1/tunnel");
+
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .no_proxy()
+                .build()
+                .unwrap();
+
+            let mut ready = false;
+            for _ in 0..50 {
+                if client.get(format!("{url}/health")).send().await.is_ok() {
+                    ready = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(
+                ready,
+                "PekoHub backend at {url} did not become ready in 5 seconds"
+            );
+
+            return Self {
+                child: None,
+                url,
+                ws_url,
+            };
+        }
+
+        // Local mode: spawn Node.js + tsx process
         let backend_path = std::env::var("PEKOHUB_BACKEND_PATH").unwrap_or_else(|_| {
             concat!(env!("CARGO_MANIFEST_DIR"), "/../pekohub/backend").to_string()
         });
@@ -143,14 +180,20 @@ impl PekohubBackend {
         }
         assert!(ready, "PekoHub backend did not become ready in 5 seconds");
 
-        Self { child, url, ws_url }
+        Self {
+            child: Some(child),
+            url,
+            ws_url,
+        }
     }
 }
 
 impl Drop for PekohubBackend {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(ref mut child) = self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -185,7 +228,7 @@ fn sign_nonce(signing_key: &SigningKey, nonce: &str) -> String {
 // Workspace setup
 // ---------------------------------------------------------------------------
 
-/// Create a temporary workspace with a minimax-powered agent config
+/// Create a temporary workspace with an agent config
 async fn create_test_workspace(
     workspace_dir: &std::path::Path,
     agent_name: &str,
@@ -206,9 +249,19 @@ async fn create_test_workspace(
     let agent_dir = agents_dir.join(agent_name);
     tokio::fs::create_dir_all(&agent_dir).await?;
 
-    // Write agent config TOML using minimax provider
-    let api_key = std::env::var("MINIMAX_API_KEY")
-        .map_err(|_| anyhow::anyhow!("MINIMAX_API_KEY environment variable not set"))?;
+    // Determine provider: use mock LLM if MOCK_LLM_URL is set, otherwise minimax
+    let (provider_type, api_key, default_model) =
+        if let Ok(mock_llm_url) = std::env::var("MOCK_LLM_URL") {
+            (
+                "openai_compatible",
+                mock_llm_url.clone(),
+                "default",
+            )
+        } else {
+            let api_key = std::env::var("MINIMAX_API_KEY")
+                .map_err(|_| anyhow::anyhow!("MINIMAX_API_KEY or MOCK_LLM_URL environment variable not set"))?;
+            ("minimax", api_key, "MiniMax-M2.7")
+        };
 
     let config_toml = format!(
         r#"version = "1.0"
@@ -218,7 +271,7 @@ auto_accept_trusted = false
 default_timeout_seconds = 60
 
 [provider]
-provider_type = "minimax"
+provider_type = "{provider_type}"
 api_key = "{api_key}"
 default_model = "default"
 timeout_seconds = 60
@@ -226,7 +279,7 @@ max_retries = 3
 retry_delay_ms = 1000
 
 [provider.models.default]
-name = "MiniMax-M2.7"
+name = "{default_model}"
 max_tokens = 1024
 temperature = 0.7
 top_p = 1.0
@@ -254,21 +307,8 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx, PekoHub backend, and MINIMAX_API_KEY"]
-async fn test_e2e_tunnel_chat_with_real_llm() {
-    // Skip if no API key
-    let api_key = match std::env::var("MINIMAX_API_KEY") {
-        Ok(k) => k,
-        Err(_) => {
-            eprintln!("Skipping E2E test: MINIMAX_API_KEY not set");
-            return;
-        }
-    };
-    if api_key.is_empty() {
-        eprintln!("Skipping E2E test: MINIMAX_API_KEY is empty");
-        return;
-    }
-
+#[ignore = "requires PekoHub backend and LLM (MINIMAX_API_KEY or MOCK_LLM_URL)"]
+async fn test_e2e_tunnel_chat_with_llm() {
     // 1. Start PekoHub backend
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
@@ -427,7 +467,7 @@ async fn test_e2e_tunnel_chat_with_real_llm() {
         }
     }
 
-    // Verify we got a real response
+    // Verify we got a response
     assert!(
         !full_text.is_empty(),
         "Expected non-empty response from LLM. SSE body:\n{body_text}"
@@ -435,7 +475,8 @@ async fn test_e2e_tunnel_chat_with_real_llm() {
     assert!(
         full_text.to_lowercase().contains("peko")
             || full_text.to_lowercase().contains("tunnel")
-            || full_text.to_lowercase().contains("works"),
+            || full_text.to_lowercase().contains("works")
+            || full_text.to_lowercase().contains("success"),
         "Expected response to contain keywords. Got: {full_text}"
     );
 

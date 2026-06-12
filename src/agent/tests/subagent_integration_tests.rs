@@ -9,6 +9,7 @@
 
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::agent::subagent_types::SubagentStatus;
+use crate::common::paths::PathResolver;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
 use crate::extension::async_exec::executor::{
@@ -18,19 +19,75 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 
+/// Test fixture that sets up a temporary `PEKO_HOME` directory.
+///
+/// Creates a temp dir, sets the `PEKO_HOME` env var, creates the minimal
+/// directory structure (data/identities for KeyStorage), and returns the
+/// temp dir. When dropped, the temp dir is cleaned up and the original
+/// env var is restored.
+struct PekoHomeFixture {
+    _temp: tempfile::TempDir,
+    original: Option<String>,
+}
+
+impl PekoHomeFixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = temp.path().to_path_buf();
+
+        // Create minimal directory structure
+        std::fs::create_dir_all(temp_path.join("data").join("identities")).unwrap();
+        std::fs::create_dir_all(temp_path.join("cache")).unwrap();
+
+        let original = std::env::var("PEKO_HOME").ok();
+        std::env::set_var("PEKO_HOME", &temp_path);
+
+        Self {
+            _temp: temp,
+            original,
+        }
+    }
+}
+
+impl Drop for PekoHomeFixture {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(v) => std::env::set_var("PEKO_HOME", v),
+            None => std::env::remove_var("PEKO_HOME"),
+        }
+    }
+}
+
 /// Test helper to create a test session manager and registry
+///
+/// Uses a temporary `PEKO_HOME` so tests don't require `~/.peko`.
 async fn create_test_components() -> (
     Arc<RwLock<SessionManager>>,
     SharedAsyncTaskRegistry,
 ) {
-    let session_manager = Arc::new(RwLock::new(SessionManager::new()));
+    let fixture = PekoHomeFixture::new();
+    let temp_path = fixture._temp.path().to_path_buf();
+
+    let path_resolver = PathResolver::with_dirs(
+        temp_path.clone(),
+        temp_path.join("data"),
+        temp_path.join("cache"),
+    );
+    let session_manager = SessionManager::new()
+        .with_path_resolver(path_resolver, "test_agent", None)
+        .await
+        .unwrap();
+    let session_manager = Arc::new(RwLock::new(session_manager));
     let registry = get_or_create_registry_for_agent("test_agent");
+
+    // Leak the fixture so it lives for the duration of the test
+    // (the temp dir will be cleaned up when the test process exits)
+    let _ = Box::leak(Box::new(fixture));
 
     (session_manager, registry)
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_e2e_spawn_and_complete() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -85,7 +142,6 @@ async fn test_e2e_spawn_and_complete() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_spawn_depth_limit() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -176,7 +232,6 @@ async fn test_spawn_depth_limit() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_isolated_vs_shared_session() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -255,7 +310,6 @@ async fn test_isolated_vs_shared_session() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_result_format_in_registry() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -302,7 +356,6 @@ async fn test_result_format_in_registry() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_list_runs_functionality() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -381,7 +434,6 @@ async fn test_list_runs_functionality() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_cleanup_policy_tracking() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -455,7 +507,6 @@ async fn test_cleanup_policy_tracking() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_parent_child_relationship() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -504,7 +555,6 @@ async fn test_parent_child_relationship() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_runs_by_parent_filtering() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -598,7 +648,6 @@ async fn test_runs_by_parent_filtering() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_concurrent_runs_counting() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -664,7 +713,6 @@ async fn test_concurrent_runs_counting() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_executor_get_status() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -713,7 +761,6 @@ async fn test_executor_get_status() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_executor_get_run() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -755,7 +802,6 @@ async fn test_executor_get_run() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_executor_cancel() {
     let (session_manager, registry) = create_test_components().await;
 
@@ -804,7 +850,6 @@ async fn test_executor_cancel() {
 }
 
 #[tokio::test]
-#[ignore = "Requires ~/.peko agent directory setup"]
 async fn test_max_concurrent_limit() {
     let (session_manager, registry) = create_test_components().await;
 

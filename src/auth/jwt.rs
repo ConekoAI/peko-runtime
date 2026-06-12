@@ -131,7 +131,13 @@ impl JwksCache {
 
     /// Refresh the cache by fetching from the JWKS endpoint
     async fn refresh(&mut self) -> Result<(), JwtError> {
-        let response = reqwest::get(&self.url)
+        // Use a fresh client with no proxy to avoid system proxy interference
+        // (especially important in test environments)
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .map_err(|_| JwtError::KeyNotFound)?;
+        let response = client.get(&self.url).send()
             .await
             .map_err(|e| {
                 tracing::warn!("Failed to fetch JWKS from {}: {}", self.url, e);
@@ -800,28 +806,30 @@ mod tests {
     async fn run_mock_jwks_server(jwks_json: String) -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let jwks_json = Arc::new(jwks_json);
 
         tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((mut socket, _)) => {
-                        let jwks = Arc::clone(&jwks_json);
-                        tokio::spawn(async move {
-                            // Read and discard the HTTP request
-                            let mut buf = [0u8; 1024];
-                            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
-                            
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                jwks.len(),
-                                jwks
-                            );
-                            let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
-                        });
+                let (mut socket, _) = listener.accept().await.unwrap();
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+                let mut reader = tokio::io::BufReader::new(&mut socket);
+                // Read headers until empty line
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        break;
                     }
-                    Err(_) => break,
+                    if line == "\r\n" || line == "\n" {
+                        break;
+                    }
                 }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    jwks_json.len(),
+                    jwks_json
+                );
+                let _ = reader.get_mut().write_all(response.as_bytes()).await;
+                let _ = reader.get_mut().flush().await;
             }
         });
 
@@ -832,7 +840,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Mock HTTP server needs proper HTTP/1.1 keep-alive handling — core JWT validation is covered by other tests"]
     async fn test_jwks_fetch_from_endpoint() {
         use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
         use rsa::pkcs8::EncodePrivateKey;

@@ -3,13 +3,12 @@
 //! End-to-end pipeline:
 //!   export .agent → push → pull → import → create team → export .team → import team
 //!
-//! This test is marked `#[ignore]` because it requires the Python mock registry
-//! server to be running. Start it first:
+//! This test is marked `#[ignore]` because it requires a registry that accepts
+//! the Peko-specific manifest format. The PekoHub backend uses strict OCI validation
+//! which does not accept Peko-format manifests.
 //!
-//!   python e2e_tests/mock_registry/main.py --port 18765
-//!
-//! Then run:
-//!
+//! Run:
+//!   cd peko-runtime
 //!   cargo test --test packaging_integration -- --ignored
 
 use pekobot::identity::{did::DIDScope, Identity};
@@ -23,13 +22,92 @@ use pekobot::types::agent::AgentConfig;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+// ── Test harness ─────────────────────────────────────────────────────
+
+/// Holds the running mock registry process and its URL
+struct MockRegistry {
+    #[allow(dead_code)]
+    child: Child,
+    url: String,
+}
+
+impl MockRegistry {
+    /// Start the mock registry server on a random port.
+    async fn start() -> Self {
+        let script_path = std::env::var("MOCK_REGISTRY_SCRIPT").unwrap_or_else(|_| {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/e2e_tests/packaging/mock_registry/main.py"
+            )
+            .to_string()
+        });
+
+        let mut cmd = Command::new("python");
+        cmd.arg(&script_path)
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg("0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().expect(
+            "Failed to start mock registry. Is Python with fastapi+uvicorn installed? \
+             Install with: pip install fastapi uvicorn",
+        );
+
+        // Read stdout for the PORT= line
+        let stdout = child.stdout.take().expect("Failed to capture stdout");
+        let reader = std::io::BufReader::new(stdout);
+        let port = tokio::task::spawn_blocking(move || {
+            use std::io::BufRead;
+            for line in reader.lines() {
+                let line = line.expect("Failed to read line from mock registry");
+                if let Some(port_str) = line.strip_prefix("PORT=") {
+                    return port_str.parse::<u16>().expect("Invalid PORT line");
+                }
+            }
+            panic!("Mock registry did not print PORT= line")
+        })
+        .await
+        .expect("Port detection task panicked");
+
+        let url = format!("http://127.0.0.1:{port}");
+
+        // Wait for the server to be ready
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .no_proxy()
+            .build()
+            .unwrap();
+
+        let mut ready = false;
+        for _ in 0..50 {
+            if client.get(format!("{url}/v2/")).send().await.is_ok() {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(ready, "Mock registry did not become ready in 5 seconds");
+
+        Self { child, url }
+    }
+}
+
+impl Drop for MockRegistry {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /// Create a minimal agent directory structure for testing.
-///
-/// The identity directory is populated with a valid DID document and key export
-/// so that `Unpackager::import()` can reconstruct the `Identity`.
 async fn create_test_agent_dir(base: &Path) -> anyhow::Result<()> {
     // config/agent.toml
     let config_dir = base.join("config");
@@ -128,7 +206,7 @@ async fn build_agent_package_from_dir(
     Ok(manifest)
 }
 
-/// Create a test registry config pointing at the mock server
+/// Create a test registry config pointing at the hub server
 fn test_registry_config(host: &str) -> RegistryConfig {
     let mut config = RegistryConfig::default();
     config.sources.clear();
@@ -204,9 +282,6 @@ async fn store_registry_manifest_local(
 }
 
 /// Extract a `.agent` package and store its layer tarballs in the registry.
-///
-/// This reconstructs the same gzipped tarballs that `Packager::compute_layers`
-/// builds, ensuring the layer digests in the manifest match the stored data.
 async fn store_agent_layers_in_registry(
     package_path: &Path,
     registry: &AgentRegistry,
@@ -289,8 +364,11 @@ async fn store_agent_layers_in_registry(
 // ── The full integration test ────────────────────────────────────────
 
 #[tokio::test]
-#[ignore = "requires Python mock registry server on port 18765"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_full_packaging_pipeline() {
+    let registry = MockRegistry::start().await;
+    let host = registry.url.strip_prefix("http://").unwrap_or(&registry.url);
+
     let temp_dir = tempfile::tempdir().unwrap();
     let base_dir = temp_dir.path();
 
@@ -328,9 +406,8 @@ async fn test_full_packaging_pipeline() {
         .unwrap();
 
     // ═════════════════════════════════════════════════════════════════
-    // 2. PUSH to mock registry
+    // 2. PUSH to registry
     // ═════════════════════════════════════════════════════════════════
-    let host = "127.0.0.1:18765";
     let reg_manifest = build_registry_manifest(
         &manifest,
         manifest_digest.as_str(),
@@ -363,7 +440,7 @@ async fn test_full_packaging_pipeline() {
     assert!(has_done, "Push should complete with Done event");
 
     // ═════════════════════════════════════════════════════════════════
-    // 3. PULL from mock registry to a fresh local registry
+    // 3. PULL from registry to a fresh local registry
     // ═════════════════════════════════════════════════════════════════
     let pull_registry_dir = base_dir.join("pull_registry");
     let pull_registry = AgentRegistry::new(&pull_registry_dir);
@@ -524,8 +601,7 @@ instances = 1
     assert!(restored_content.contains("integration-team"));
     assert!(restored_content.contains("imported-agent"));
 
-    // Verify agent config restored (Unpackager::save_config stores as agents/{name}/config.toml)
-    // Note: identity is stored via KeyStorage (global), not in the agent directory
+    // Verify agent config restored
     let restored_agent_dir = import_team_base
         .join("teams")
         .join("imported-team")
@@ -595,7 +671,6 @@ async fn test_clean_manifest_has_no_capabilities_tools_mcp() {
         .unwrap();
 
     // Clean manifest: these fields should not exist on AgentManifest
-    // We verify by serializing to TOML and checking the output
     let toml_str = manifest.to_toml().unwrap();
     assert!(
         !toml_str.contains("capabilities"),
@@ -618,5 +693,165 @@ async fn test_clean_manifest_has_no_capabilities_tools_mcp() {
     assert!(
         toml_str.contains("layers"),
         "Manifest should contain 'layers'"
+    );
+}
+
+/// Critical path: export with `with_extensions=true` → import → embedded extensions are installed.
+#[tokio::test]
+async fn test_export_with_extensions_import_installs_extensions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_dir = temp_dir.path();
+
+    // ═════════════════════════════════════════════════════════════════
+    // 1. Create a test agent directory
+    // ═════════════════════════════════════════════════════════════════
+    let agent_dir = base_dir.join("ext-agent");
+    create_test_agent_dir(&agent_dir).await.unwrap();
+
+    // ═════════════════════════════════════════════════════════════════
+    // 2. Create a fake extension package (.ext file)
+    // ═════════════════════════════════════════════════════════════════
+    let skill_md = b"---\nname: test-skill\ndescription: A test skill for integration testing\n---\n\n# Test Skill\n";
+    let skill_checksum = pekobot::portable::types::compute_digest(skill_md);
+
+    let ext_manifest_toml = format!(
+        r#"
+[format]
+version = "1.0"
+peko_version = "0.1.0"
+
+[extension]
+id = "test-skill"
+name = "Test Skill"
+extension_type = "skill"
+version = "1.0.0"
+description = "A test skill for integration testing"
+
+[packaging]
+files = ["extension/SKILL.md"]
+checksums = {{ "extension/SKILL.md" = "{skill_checksum}" }}
+compression = "gzip"
+archive_format = "tar"
+"#
+    );
+
+    let mut ext_bytes = Vec::new();
+    {
+        let enc = flate2::write::GzEncoder::new(&mut ext_bytes, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_path("manifest.toml").unwrap();
+        header.set_size(ext_manifest_toml.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append(&header, ext_manifest_toml.as_bytes()).unwrap();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_path("extension/SKILL.md").unwrap();
+        header.set_size(skill_md.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append(&header, skill_md.as_slice()).unwrap();
+
+        tar.into_inner().unwrap();
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // 3. Build the agent package with with_extensions=true
+    // ═════════════════════════════════════════════════════════════════
+    let config_path = agent_dir.join("config").join("agent.toml");
+    let config_toml = tokio::fs::read_to_string(&config_path).await.unwrap();
+    let config: AgentConfig = toml::from_str(&config_toml).unwrap();
+
+    let identity_dir = agent_dir.join("identity");
+    let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await.unwrap();
+    let did_doc: pekobot::identity::DIDDocument = serde_json::from_str(&did_json).unwrap();
+    let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await.unwrap();
+    let key_export: pekobot::identity::KeyPairExport = serde_json::from_slice(&keys_enc).unwrap();
+    let identity = Identity::from_did_document_and_key(did_doc, key_export).unwrap();
+
+    let skills_dir = agent_dir.join("skills");
+    let workspace_dir = agent_dir.join("workspace");
+
+    let mut embedded_extensions = std::collections::HashMap::new();
+    embedded_extensions.insert("extensions/test-skill.ext".to_string(), ext_bytes);
+
+    let packager = Packager::new(config, identity, None)
+        .with_skills_dir(&skills_dir)
+        .with_workspace_dir(&workspace_dir)
+        .with_embedded_extensions(embedded_extensions);
+
+    let package_path = base_dir.join("ext-agent.agent");
+    let export_opts = ExportOptions {
+        with_extensions: true,
+        output_path: Some(package_path.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    let _path = packager.export(export_opts).await.unwrap();
+
+    // ═════════════════════════════════════════════════════════════════
+    // 4. Verify the manifest includes the extension reference
+    // ═════════════════════════════════════════════════════════════════
+    let (manifest, _validation) = pekobot::portable::inspect_agent(&package_path, None)
+        .await
+        .unwrap();
+    assert!(manifest.layers.is_some());
+    let layers = manifest.layers.clone().unwrap();
+    assert!(
+        layers.extensions.is_some(),
+        "Manifest should include extensions layer digest"
+    );
+    assert!(
+        manifest
+            .packaging
+            .files
+            .contains(&"extensions/test-skill.ext".to_string()),
+        "Manifest packaging should include extension file"
+    );
+    assert!(
+        manifest
+            .packaging
+            .checksums
+            .contains_key("extensions/test-skill.ext"),
+        "Manifest packaging checksums should include extension file"
+    );
+
+    // ═════════════════════════════════════════════════════════════════
+    // 5. Import the agent
+    // ═════════════════════════════════════════════════════════════════
+    let import_base = base_dir.join("imported");
+    tokio::fs::create_dir_all(&import_base).await.unwrap();
+
+    let unpackager =
+        pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
+
+    let import_result = unpackager
+        .import(ImportOptions {
+            new_name: Some("ext-imported".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(import_result.name, "ext-imported");
+
+    // ═════════════════════════════════════════════════════════════════
+    // 6. Verify the extension file was extracted/installed
+    // ═════════════════════════════════════════════════════════════════
+    let extensions_dir = dirs::data_dir()
+        .map(|d| d.join("peko").join("extensions"))
+        .unwrap_or_else(|| import_base.join("extensions"));
+    let installed_ext_dir = extensions_dir.join("test-skill");
+
+    assert!(
+        installed_ext_dir.exists(),
+        "Extension should be installed at {}",
+        installed_ext_dir.display()
+    );
+    assert!(
+        installed_ext_dir.join("SKILL.md").exists(),
+        "Extension SKILL.md should exist after import"
     );
 }

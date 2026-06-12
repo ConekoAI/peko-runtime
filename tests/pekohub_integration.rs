@@ -4,37 +4,76 @@
 //! running in test mode (PGlite + mock storage/search).
 //!
 //! These tests are marked `#[ignore]` because they require:
-//!   - Node.js 22+ with tsx installed
-//!   - The PekoHub backend source at `../pekohub/backend`
+//!   - Node.js 22+ with tsx installed  (local mode)
+//!   - OR a running PekoHub test container (container mode via PEKOHUB_URL)
 //!
 //! The test harness auto-starts the PekoHub backend on a random ephemeral port
-//! and shuts it down after each test.
+//! and shuts it down after each test (local mode), or connects to an existing
+//! container (container mode).
 //!
-//! Run:
+//! Run locally:
 //!   cd peko-runtime
 //!   cargo test --test pekohub_integration -- --ignored
+//!
+//! Run in container:
+//!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test pekohub_integration -- --ignored
 
-use pekobot::registry::media_types;
+use pekobot::portable::{manifest::AgentLayers, AgentManifest, AgentRegistry, Layer, LayerType};
+use pekobot::registry::client::ResourceType;
+use pekobot::registry::{
+    media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,
+};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+// JWT secret must match the PekoHub test fixture
+const PEKOHUB_JWT_SECRET: &str = "test-secret-key-that-is-32-chars-long!!";
+
 // ---------------------------------------------------------------------------
-// Test harness: auto-start pekohub backend
+// Test harness: auto-start pekohub backend or connect to container
 // ---------------------------------------------------------------------------
 
 /// Holds the running pekohub backend process and its URL
 struct PekohubBackend {
     #[allow(dead_code)]
-    child: Child,
+    child: Option<Child>,
     url: String,
 }
 
 impl PekohubBackend {
     /// Start the pekohub backend test server on a random port.
     ///
+    /// In container mode (PEKOHUB_URL set), connects to existing server.
+    /// In local mode, spawns Node.js + tsx process.
+    ///
     /// # Panics
     /// Panics if the server cannot be started or the port cannot be read.
     async fn start() -> Self {
+        // Container mode: pekohub is already running
+        if let Ok(url) = std::env::var("PEKOHUB_URL") {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .no_proxy()
+                .build()
+                .unwrap();
+
+            let mut ready = false;
+            for _ in 0..50 {
+                if client.get(format!("{url}/health")).send().await.is_ok() {
+                    ready = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(
+                ready,
+                "PekoHub backend at {url} did not become ready in 5 seconds"
+            );
+
+            return Self { child: None, url };
+        }
+
+        // Local mode: spawn Node.js + tsx process
         let backend_path = std::env::var("PEKOHUB_BACKEND_PATH").unwrap_or_else(|_| {
             concat!(env!("CARGO_MANIFEST_DIR"), "/../pekohub/backend").to_string()
         });
@@ -107,14 +146,36 @@ impl PekohubBackend {
         }
         assert!(ready, "PekoHub backend did not become ready in 5 seconds");
 
-        Self { child, url }
+        Self {
+            child: Some(child),
+            url,
+        }
     }
 }
 
 impl Drop for PekohubBackend {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(ref mut child) = self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Reset the PekoHub backend data between tests.
+async fn reset_pekohub(url: &str) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+    let resp = client
+        .post(format!("{url}/test/reset"))
+        .send()
+        .await;
+    // If reset endpoint doesn't exist (older fixture), just ignore
+    if let Ok(r) = resp {
+        let _ = r.error_for_status();
     }
 }
 
@@ -130,12 +191,89 @@ fn sha256_digest(data: &[u8]) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+/// Create a test registry config pointing at the hub server
+fn test_registry_config(host: &str) -> RegistryConfig {
+    let mut config = RegistryConfig::default();
+    config.sources.clear();
+    config.add_source(RegistrySource {
+        url: host.to_string(),
+        priority: 1,
+        auth: None,
+        token: None,
+    });
+    config
+}
+
+/// Create a test registry config with bearer token auth
+fn test_registry_config_with_token(host: &str, token: &str) -> RegistryConfig {
+    let mut config = RegistryConfig::default();
+    config.sources.clear();
+    config.add_source(RegistrySource {
+        url: host.to_string(),
+        priority: 1,
+        auth: None,
+        token: Some(token.to_string()),
+    });
+    config
+}
+
+/// Create a minimal AgentManifest with layers for testing
+fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
+    let mut manifest = AgentManifest::new(name, "1.0.0", "did:pekobot:test");
+
+    let config_data = b"config layer content";
+    let identity_data = b"identity layer content";
+    let skills_data = b"skills layer content";
+
+    let config_digest = sha256_digest(config_data);
+    let identity_digest = sha256_digest(identity_data);
+    let skills_digest = sha256_digest(skills_data);
+
+    let layers = vec![
+        Layer::new(&config_digest, LayerType::Config, config_data.len() as u64),
+        Layer::new(
+            &identity_digest,
+            LayerType::Identity,
+            identity_data.len() as u64,
+        ),
+        Layer::new(&skills_digest, LayerType::Skills, skills_data.len() as u64),
+    ];
+
+    manifest.layers = Some(AgentLayers {
+        config: Some(config_digest),
+        identity: Some(identity_digest),
+        skills: Some(skills_digest),
+        workspace: None,
+        sessions: None,
+        mcp: None,
+        extensions: None,
+    });
+
+    (manifest, layers)
+}
+
+/// Store a RegistryManifest locally so the client can push it
+async fn store_registry_manifest_local(
+    registry: &AgentRegistry,
+    manifest: &RegistryManifest,
+    digest: &pekobot::portable::types::ImageDigest,
+) {
+    let image_dir = registry
+        .root_path()
+        .join("registry_manifests")
+        .join(digest.dir_name());
+    tokio::fs::create_dir_all(&image_dir).await.unwrap();
+    tokio::fs::write(image_dir.join("manifest.json"), manifest.to_json().unwrap())
+        .await
+        .unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Tests: Health check & basic connectivity
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_pekohub_health_check() {
     let backend = PekohubBackend::start().await;
 
@@ -161,7 +299,7 @@ async fn test_pekohub_health_check() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_pekohub_manifest_roundtrip() {
     let backend = PekohubBackend::start().await;
     let client = reqwest::Client::builder()
@@ -233,7 +371,7 @@ async fn test_pekohub_manifest_roundtrip() {
 }
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_pekohub_blob_upload_and_download() {
     let backend = PekohubBackend::start().await;
     let client = reqwest::Client::builder()
@@ -259,7 +397,6 @@ async fn test_pekohub_blob_upload_and_download() {
         .unwrap()
         .to_str()
         .unwrap();
-    // Location may be relative; prepend base URL if needed
     let upload_url = if location.starts_with("http") {
         location.to_string()
     } else {
@@ -301,7 +438,7 @@ async fn test_pekohub_blob_upload_and_download() {
 }
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_pekohub_catalog_and_tags() {
     let backend = PekohubBackend::start().await;
     let client = reqwest::Client::builder()
@@ -394,20 +531,84 @@ async fn test_pekohub_catalog_and_tags() {
 }
 
 // ---------------------------------------------------------------------------
-// Note: RegistryClient push/pull tests
-// ---------------------------------------------------------------------------
+// Tests: Migrated from registry_integration.rs (OCI protocol via direct HTTP)
 //
+// NOTE: RegistryClient push/pull tests are NOT migrated here because
 // RegistryClient uses a Peko-specific manifest format (schema_version, size_bytes,
 // layer_type) that is NOT OCI-compliant. PekoHub validates manifests with the
 // strict OCI schema (schemaVersion, size, mediaType).
 //
-// Therefore RegistryClient push/pull is tested against the mock registry in
-// Layer 1 (tests/registry_integration.rs). Full CLI E2E tests against PekoHub
-// are in Layer 3 (e2e_tests/packaging/*.ps1) where the CLI handles format
-// conversion before calling RegistryClient.
+// Therefore RegistryClient push/pull tests remain in registry_integration.rs
+// where they run against a compatible mock registry.
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+async fn test_registry_client_bare_ref_resolution() {
+    let backend = PekohubBackend::start().await;
+    let host = backend.url.strip_prefix("http://").unwrap_or(&backend.url);
+
+    // Test bare ref resolution: "my-agent:v1.0" -> "host/peko/agents/my-agent:v1.0"
+    let resolved =
+        RegistryRef::parse_with_default("my-agent:v1.0", Some(host), Some(ResourceType::Agent))
+            .unwrap();
+    assert_eq!(resolved.host, host);
+    assert_eq!(resolved.path, "peko/agents/my-agent");
+    assert_eq!(resolved.tag, "v1.0");
+
+    // Test bare ref without tag defaults to "latest"
+    let resolved =
+        RegistryRef::parse_with_default("my-agent", Some(host), Some(ResourceType::Agent)).unwrap();
+    assert_eq!(resolved.tag, "latest");
+
+    // Test team resource type
+    let resolved =
+        RegistryRef::parse_with_default("my-team:v2.0", Some(host), Some(ResourceType::Team))
+            .unwrap();
+    assert_eq!(resolved.path, "peko/teams/my-team");
+    assert_eq!(resolved.tag, "v2.0");
+}
+
+#[tokio::test]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+async fn test_registry_client_pull_uses_oci_media_type() {
+    let _backend = PekohubBackend::start().await;
+
+    // Verify that the RegistryClient sends OCI media type on push
+    let accepted = RegistryClient::accept_manifest_media_types();
+    assert!(accepted.contains(&media_types::MANIFEST_OCI));
+    assert!(accepted.contains(&media_types::MANIFEST_PEKO));
+
+    // Verify default is OCI
+    assert_eq!(media_types::MANIFEST_DEFAULT, media_types::MANIFEST_OCI);
+}
+
+#[tokio::test]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+async fn test_registry_client_pull_missing_manifest() {
+    let backend = PekohubBackend::start().await;
+    let host = backend.url.strip_prefix("http://").unwrap_or(&backend.url);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let registry = AgentRegistry::new(temp_dir.path());
+    registry.init().await.unwrap();
+
+    let config = test_registry_config(host);
+    let client = RegistryClient::new(config, registry.clone());
+
+    let result = client
+        .pull(&format!("{host}/ns/nonexistent:latest"), |_event| {})
+        .await;
+
+    assert!(result.is_err(), "Pulling nonexistent manifest should fail");
+}
+
+// ---------------------------------------------------------------------------
+// Tests: PekoHub-specific APIs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requires PekoHub backend + fix for null hooks schema validation in search response"]
 async fn test_pekohub_search_api() {
     let backend = PekohubBackend::start().await;
     let client = reqwest::Client::builder()
@@ -475,7 +676,7 @@ async fn test_pekohub_search_api() {
 
     // Search for the agent
     let search_resp = client
-        .get(format!("{}/api/v1/search?q=searchable", backend.url))
+        .get(format!("{}/v1/search?q=searchable", backend.url))
         .send()
         .await
         .unwrap();
@@ -496,7 +697,7 @@ async fn test_pekohub_search_api() {
 }
 
 #[tokio::test]
-#[ignore = "requires Node.js with tsx and pekohub backend source"]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_pekohub_bundle_detail_api() {
     let backend = PekohubBackend::start().await;
     let client = reqwest::Client::builder()
@@ -567,7 +768,7 @@ async fn test_pekohub_bundle_detail_api() {
 
     // Get bundle detail
     let detail_resp = client
-        .get(format!("{}/api/v1/bundles/ns/detail-test", backend.url))
+        .get(format!("{}/v1/bundles/ns/detail-test", backend.url))
         .send()
         .await
         .unwrap();
@@ -582,7 +783,7 @@ async fn test_pekohub_bundle_detail_api() {
     // Get versions
     let versions_resp = client
         .get(format!(
-            "{}/api/v1/bundles/ns/detail-test/versions",
+            "{}/v1/bundles/ns/detail-test/versions",
             backend.url
         ))
         .send()

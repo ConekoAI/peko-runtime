@@ -1,0 +1,68 @@
+version: "3.8"
+
+services:
+  # ── PekoHub Test Backend (the only service we need) ───────────────
+  pekohub-test:
+    build:
+      context: ../../pekohub
+      dockerfile: ../peko-runtime/.github/docker/pekohub-test/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - JWT_SECRET=test-secret-key-that-is-32-chars-long!!
+      - ALLOW_DEV_AUTH_BYPASS=true
+      - GC_ENABLED=false
+      - RATE_LIMIT_MAX=1000
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - peko-test
+
+  # ── Mock LLM Server (optional, for tunnel_e2e only) ───────────────
+  mock-llm:
+    build:
+      context: ../../peko-runtime/.github/docker/mock-llm
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DEFAULT_RESPONSE=SUCCESS
+    networks:
+      - peko-test
+
+  # ── Test Runner (Rust) ────────────────────────────────────────────
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: peko-runtime/.github/docker/test-runner/Dockerfile
+    depends_on:
+      pekohub-test:
+        condition: service_healthy
+    environment:
+      - PEKOHUB_URL=http://pekohub-test:3000
+      - MOCK_LLM_URL=http://mock-llm:8080
+      - RUST_BACKTRACE=1
+    volumes:
+      - ../../peko-runtime:/workspace/peko-runtime
+      - cargo-cache:/usr/local/cargo/registry
+    networks:
+      - peko-test
+    command: ["cargo", "test", "--test", "pekohub_integration", "--", "--ignored"]
+
+networks:
+  peko-test:
+    driver: bridge
+
+volumes:
+  cargo-cache:
