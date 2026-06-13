@@ -60,12 +60,20 @@ impl Default for ProviderConfig {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderType {
     /// `OpenAI` (GPT-4, GPT-3.5)
+    ///
+    /// Explicit `#[serde(rename)]` is needed because heck's snake_case
+    /// splitter produces `open_a_i` for the adjacent-capitals `OpenAI`,
+    /// but the Display impl (and what users see in `peko agent create`,
+    /// logs, and config files) writes `openai`. Same situation for
+    /// `OpenAICompatible` below.
+    #[serde(rename = "openai")]
     OpenAI,
     /// Anthropic (Claude)
     Anthropic,
     /// Ollama (local models)
     Ollama,
     /// OpenAI-compatible API (custom endpoint)
+    #[serde(rename = "openai_compatible")]
     OpenAICompatible,
     /// Moonshot AI (Kimi models via Moonshot API)
     Moonshot,
@@ -219,5 +227,29 @@ mod tests {
         assert_eq!(ProviderType::OpenAI.to_string(), "openai");
         assert_eq!(ProviderType::Anthropic.to_string(), "anthropic");
         assert_eq!(ProviderType::Ollama.to_string(), "ollama");
+    }
+
+    /// Regression: serde's `snake_case` rename and the `Display` impl must
+    /// agree for every variant, otherwise TOML configs that match the CLI's
+    /// `peko agent create` output fail to parse. Specifically, the
+    /// adjacent-capitals `OpenAI` and `OpenAICompatible` need explicit
+    /// `#[serde(rename)]` because heck would otherwise produce
+    /// `open_a_i` / `open_a_i_compatible`.
+    #[test]
+    fn test_provider_type_display_matches_serde_rename() {
+        for v in [
+            ProviderType::OpenAI,
+            ProviderType::Anthropic,
+            ProviderType::Ollama,
+            ProviderType::OpenAICompatible,
+            ProviderType::Moonshot,
+            ProviderType::Kimi,
+            ProviderType::Minimax,
+        ] {
+            let s = v.to_string();
+            let round: ProviderType = serde_json::from_str(&format!("\"{s}\""))
+                .unwrap_or_else(|e| panic!("Display '{s}' not accepted by serde: {e}"));
+            assert_eq!(round, v, "round-trip mismatch for {s}");
+        }
     }
 }
