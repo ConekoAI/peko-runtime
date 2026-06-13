@@ -104,6 +104,17 @@ impl RegistryRef {
         default_registry: Option<&str>,
         resource_type: Option<ResourceType>,
     ) -> anyhow::Result<Self> {
+        // Strip URL scheme (http://, https://) if present. The scheme's
+        // `:` collides with the bare-ref heuristic below — a ref like
+        // `http://localhost:3000/ns/agent:v1.0` would otherwise look
+        // bare because the `:` in `http:` precedes the first `/`. Routing
+        // any scheme-prefixed ref through the full-ref path is the
+        // correct behavior: it always has a host.
+        let r#ref = r#ref
+            .strip_prefix("http://")
+            .or_else(|| r#ref.strip_prefix("https://"))
+            .unwrap_or(r#ref);
+
         // Check if this is a bare ref: has a ':' BEFORE the first '/'
         // Examples:
         //   "my-agent:v1.0"       → bare (no slash)
@@ -965,5 +976,40 @@ mod tests {
         assert!(!looks_like_host_port("host:"));
         assert!(!looks_like_host_port(":8080"));
         assert!(!looks_like_host_port("host:abc"));
+    }
+
+    /// Regression: a URL-scheme-prefixed ref like `http://host:port/ns/agent:v1.0`
+    /// must parse as a full ref (host = `host:port`, path = `ns/agent`, tag = `v1.0`).
+    /// Before the scheme-strip fix, the parser saw the `:` in `http:` as preceding
+    /// the first `/` and classified the ref as bare, then asked for a default registry.
+    #[test]
+    fn test_parse_with_url_scheme() {
+        let cases = [
+            (
+                "http://localhost:3000/ns/integration-agent:v1.0",
+                "localhost:3000",
+                "ns/integration-agent",
+                "v1.0",
+            ),
+            (
+                "https://registry.example.com:443/org/team/agent:v2.0",
+                "registry.example.com:443",
+                "org/team/agent",
+                "v2.0",
+            ),
+            (
+                "http://127.0.0.1:8080/peko/agents/foo:latest",
+                "127.0.0.1:8080",
+                "peko/agents/foo",
+                "latest",
+            ),
+        ];
+        for (input, expected_host, expected_path, expected_tag) in cases {
+            let r#ref = RegistryRef::parse(input)
+                .unwrap_or_else(|e| panic!("parse({input}) failed: {e}"));
+            assert_eq!(r#ref.host, expected_host, "host for {input}");
+            assert_eq!(r#ref.path, expected_path, "path for {input}");
+            assert_eq!(r#ref.tag, expected_tag, "tag for {input}");
+        }
     }
 }
