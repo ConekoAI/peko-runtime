@@ -237,6 +237,27 @@ fn looks_like_host_port(s: &str) -> bool {
 }
 
 impl RegistryClient {
+    /// Render a non-2xx registry response into a diagnostic string that
+    /// includes the response body. The HTTP status alone is rarely enough
+    /// to debug a `400 Bad Request` (e.g. pekohub's manifest validator
+    /// returns a JSON body that names the offending field); the body is
+    /// capped at 1 KiB to avoid dumping megabytes of stack traces on a
+    /// 500.
+    async fn format_error(op: &str, response: reqwest::Response) -> String {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .ok()
+            .map(|s| s.chars().take(1024).collect::<String>())
+            .unwrap_or_default();
+        if body.is_empty() {
+            format!("{op}: HTTP {status}")
+        } else {
+            format!("{op}: HTTP {status}: {body}")
+        }
+    }
+
     /// Create a new registry client
     pub fn new(config: RegistryConfig, registry: AgentRegistry) -> Self {
         let http = Client::builder()
@@ -433,10 +454,7 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Failed to fetch manifest: HTTP {}",
-                response.status()
-            ));
+            return Err(anyhow::anyhow!(Self::format_error("Failed to fetch manifest", response).await));
         }
 
         let json = response.text().await?;
@@ -488,10 +506,7 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Failed to fetch layer: HTTP {}",
-                response.status()
-            ));
+            return Err(anyhow::anyhow!(Self::format_error("Failed to fetch layer", response).await));
         }
 
         let data = response.bytes().await?;
@@ -555,10 +570,7 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Failed to initiate layer upload: HTTP {}",
-                response.status()
-            ));
+            return Err(anyhow::anyhow!(Self::format_error("Failed to initiate layer upload", response).await));
         }
 
         // Get upload URL from Location header
@@ -589,10 +601,7 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Failed to upload layer: HTTP {}",
-                response.status()
-            ));
+            return Err(anyhow::anyhow!(Self::format_error("Failed to upload layer", response).await));
         }
 
         progress(ProgressEvent::Pushing {
@@ -625,10 +634,7 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Failed to push manifest: HTTP {}",
-                response.status()
-            ));
+            return Err(anyhow::anyhow!(Self::format_error("Failed to push manifest", response).await));
         }
 
         Ok(())
