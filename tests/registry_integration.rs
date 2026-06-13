@@ -301,8 +301,8 @@ async fn test_pekohub_catalog_and_tags() {
     // Create two users for two namespaces
     let ns = create_test_user(&client, &backend.url, "ns").await;
 
-    // Push manifests to two different namespaces (ns/agent-a and ns/agent-b)
-    for (name, ns) in [("agent-a", "ns"), ("agent-b", "ns")] {
+    // Push manifests to two different repos within the same namespace.
+    for name in ["agent-a", "agent-b"] {
         // Upload a config blob first. Each push uses a unique config
         // payload so the resulting manifests have different digests
         // — pekohub's `digest_idx` is unique on `bundle_versions.digest`
@@ -370,7 +370,7 @@ async fn test_pekohub_catalog_and_tags() {
         .unwrap();
     assert_eq!(tags_resp.status(), 200);
     let tags: serde_json::Value = tags_resp.json().await.unwrap();
-    assert_eq!(tags["name"], "ns/agent-a");
+    assert_eq!(tags["name"], format!("{ns}/agent-a"));
     let tag_list = tags["tags"].as_array().unwrap();
     assert!(tag_list.iter().any(|t| t == "v1.0"));
 }
@@ -785,7 +785,7 @@ async fn test_registry_client_digest_verification_on_pull() {
     let reg_client = RegistryClient::new(config, registry.clone());
 
     let result = reg_client
-        .pull(&format!("{}/ns/digest-test:v1.0", backend.url), |_event| {})
+        .pull(&format!("{}/{ns}/digest-test:v1.0", backend.url), |_event| {})
         .await;
 
     // This should succeed since the manifest and blob digests match
