@@ -38,18 +38,31 @@ pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
 /// Insert a real user row into the fixture's PGlite DB via `/test/create-user`.
 /// Needed because PekoHub enforces namespace ownership on pushes.
 ///
-/// The fixture's error handler returns `{ error: error.message }` with no
-/// `message` field, so the status alone is opaque. We read the body and
-/// include it in the panic message so a future failure surfaces the
-/// actual SQL/DB error (e.g. missing column, schema mismatch) instead
-/// of just "500 Internal Server Error".
+/// The namespace is auto-suffixed with a process-wide counter so
+/// parallel tests in the same binary don't collide on the
+/// `users_external_id_key` / `users_namespace_key` unique
+/// constraints. The `namespace` argument is preserved as a prefix
+/// for readable test logs / database inspection.
+///
+/// The fixture's error handler returns `{ error: error.message }`
+/// with no `message` field, so the status alone is opaque. We
+/// read the body and include it in the panic message so a
+/// future failure surfaces the actual SQL/DB error (e.g. missing
+/// column, schema mismatch) instead of just "500 Internal Server
+/// Error".
 pub async fn create_test_user(client: &reqwest::Client, base_url: &str, namespace: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let unique = format!("{namespace}_{pid}_{seq}");
+
     let resp = client
         .post(format!("{base_url}/test/create-user"))
         .json(&serde_json::json!({
-            "namespace": namespace,
+            "namespace": unique,
             "display_name": format!("Test User ({namespace})"),
-            "external_id": format!("test-{namespace}"),
+            "external_id": format!("test-{unique}"),
             "provider": "github",
         }))
         .send()
