@@ -24,4 +24,4 @@ pub use cli::PekoCli;
 pub use crypto::{generate_runtime_identity, sign_nonce};
 pub use daemon::DaemonGuard;
 pub use harness::{reset_pekohub, PekohubBackend};
-pub use subprocess::run_with_timeout;
+pub use subprocess::{run_with_timeout, try_run_with_timeout};

@@ -5,10 +5,17 @@
 //! stderr write) hangs `Command::output()` indefinitely, which hangs
 //! the whole test job.
 //!
-//! `run_with_timeout` returns `(Output, Vec<u8>, Vec<u8>)` on normal
-//! exit so callers can inspect stdout/stderr. On timeout it drains
-//! whatever the child wrote, kills the child, and panics with the
-//! captured output so the CI log surfaces the actual block reason.
+//! Two flavours:
+//!
+//! * [`run_with_timeout`] — for test-body calls. On timeout it kills the
+//!   child and **panics** with the captured stdout/stderr so the CI log
+//!   surfaces the actual block reason. Use when a hang is a test failure.
+//!
+//! * [`try_run_with_timeout`] — for retry loops (e.g. `DaemonGuard::wait_ready`).
+//!   On timeout it returns `Err(captured_output_message)` instead of panicking
+//!   so the caller can loop again. Without this variant, a panicking poll
+//!   would unwind through the entire wait_ready loop, killing the test
+//!   after a single failed iteration.
 
 #![allow(dead_code)]
 
@@ -27,6 +34,35 @@ pub fn run_with_timeout<F>(
     make_cmd: F,
     extra_args: &[&str],
     timeout: Duration,
+) -> Result<(std::process::Output, Vec<u8>, Vec<u8>), String>
+where
+    F: FnOnce() -> Command,
+{
+    run_inner(make_cmd, extra_args, timeout, /*panic_on_timeout=*/ true)
+}
+
+/// Soft variant: returns `Err(captured_output_message)` on timeout instead
+/// of panicking. Use this in retry loops where one stuck call should not
+/// abort the entire wait.
+///
+/// Spawn failures and `try_wait` errors are returned as `Err` in both
+/// variants; only the timeout branch differs.
+pub fn try_run_with_timeout<F>(
+    make_cmd: F,
+    extra_args: &[&str],
+    timeout: Duration,
+) -> Result<(std::process::Output, Vec<u8>, Vec<u8>), String>
+where
+    F: FnOnce() -> Command,
+{
+    run_inner(make_cmd, extra_args, timeout, /*panic_on_timeout=*/ false)
+}
+
+fn run_inner<F>(
+    make_cmd: F,
+    extra_args: &[&str],
+    timeout: Duration,
+    panic_on_timeout: bool,
 ) -> Result<(std::process::Output, Vec<u8>, Vec<u8>), String>
 where
     F: FnOnce() -> Command,
@@ -74,12 +110,16 @@ where
                     }
                     let so = String::from_utf8_lossy(&stdout);
                     let se = String::from_utf8_lossy(&stderr);
-                    panic!(
+                    let msg = format!(
                         "peko command {extra_args:?} did not finish in {timeout:?}; killed.\n\
                          --- stdout ---\n{so}\n\
                          --- stderr ---\n{se}\n\
                          --- end ---"
                     );
+                    if panic_on_timeout {
+                        panic!("{msg}");
+                    }
+                    return Err(msg);
                 }
                 thread::sleep(Duration::from_millis(100));
             }

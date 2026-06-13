@@ -9,7 +9,6 @@
 
 #![allow(dead_code)]
 
-use std::io::Read;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
@@ -22,42 +21,52 @@ pub struct DaemonGuard {
 
 impl DaemonGuard {
     /// Spawn the daemon and wait until `peko daemon status --json` reports
-    /// `running: true` (max 10s).
+    /// `running: true` (max 30s).
     ///
-    /// Stdout is captured (for diagnostic dumps on timeout), but stderr
-    /// goes to `Stdio::null()`. Capturing stderr is a deadlock risk: if
-    /// the daemon writes more than the kernel pipe buffer (~64KB) and
-    /// nobody reads, the daemon blocks on write. Disabling the capture
-    /// drops that risk; we lose some diagnostics but the workflow's
-    /// `Dump container logs` step captures the relevant pekohub-test
-    /// / mock-llm output anyway.
+    /// **Both stdout AND stderr go to `Stdio::null()`.** Capturing either
+    /// in a `Stdio::piped()` is a deadlock risk: if the daemon writes
+    /// more than the kernel pipe buffer (~64KB) and nobody reads, the
+    /// daemon blocks on its next write — and from the test's
+    /// perspective the daemon "isn't ready" forever, with no stderr to
+    /// diagnose. Disabling both captures drops that risk; we lose
+    /// some diagnostics but the workflow's `Dump container logs` step
+    /// captures the relevant pekohub-test / mock-llm output anyway
+    /// (those are the services doing the real work).
     pub fn spawn(cli: &PekoCli) -> Self {
         let child = cli
             .cmd()
             .args(["daemon", "start", "--foreground"])
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn peko daemon start --foreground");
 
         let mut guard = Self { child };
-        guard.wait_ready(cli, Duration::from_secs(10));
+        guard.wait_ready(cli, Duration::from_secs(30));
         guard
     }
 
     /// Poll `peko daemon status --json` until `running: true` or `timeout` elapses.
-    /// Each poll itself is wrapped in a 2s hard timeout so a stuck peko
+    /// Each poll itself is wrapped in a 5s hard timeout so a stuck peko
     /// subprocess can't hang the whole wait_ready loop.
+    ///
+    /// Why 5s per poll (not 2s): when the daemon's Unix socket isn't bound
+    /// yet, the CLI's `ConnectionManager::try_connect()` falls through to
+    /// a UDP fallback that itself uses a hard 2s `recv` timeout (see
+    /// `src/ipc/connection.rs`). A 2s poll budget races that and kills the
+    /// child *before* it can print the "not running" JSON, so wait_ready
+    /// would never see a useful result. 5s gives the CLI room to time out
+    /// the UDP fallback and print its JSON cleanly.
+    ///
+    /// Why `try_run_with_timeout` (not `run_with_timeout`): the latter
+    /// panics on timeout, which would unwind through this entire loop
+    /// after one stuck poll. We want the loop to retry until the outer
+    /// deadline, so we use the soft variant that returns `Err`.
     fn wait_ready(&mut self, cli: &PekoCli, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         let mut last_status_json = String::new();
         loop {
-            // 2s budget per individual status call (a stuck peko would
-            // otherwise hang the loop until the outer 10s timeout).
-            // The closure returns an owned Command: each method on
-            // Command returns &mut Command, so the closure must use
-            // a let-binding to materialise an owned value.
-            let output = super::subprocess::run_with_timeout(
+            let output = super::subprocess::try_run_with_timeout(
                 || {
                     let mut c = cli.cmd();
                     c.args(["daemon", "status", "--json"])
@@ -66,7 +75,7 @@ impl DaemonGuard {
                     c
                 },
                 &[],
-                Duration::from_secs(2),
+                Duration::from_secs(5),
             );
             last_status_json = match &output {
                 Ok((o, _, _)) if o.status.success() => {
@@ -87,16 +96,10 @@ impl DaemonGuard {
                 return;
             }
             if Instant::now() >= deadline {
-                // Drain the daemon's stdout pipe so we can surface what
-                // it was saying. Stderr is null so nothing to drain.
-                let mut daemon_stdout = String::new();
-                if let Some(p) = self.child.stdout.as_mut() {
-                    let _ = std::io::Read::read_to_string(p, &mut daemon_stdout);
-                }
                 panic!(
                     "peko daemon did not become ready in {:?} (sock: {})\n\
-                     --- daemon stdout ---\n{daemon_stdout}\n\
                      --- last status JSON ---\n{last_status_json}\n\
+                     --- last poll result ---\n{output:?}\n\
                      --- end ---",
                     timeout,
                     cli.daemon_sock().display(),
