@@ -239,6 +239,30 @@ async fn test_e2e_tunnel_chat_with_llm() {
 
     let instance_id = instances[0]["id"].as_str().unwrap().to_string();
 
+    // 7.5. Mark the instance exposure as "public" so the runtime's
+    // ACL (in `src/tunnel/dispatcher.rs::check_request_allowed`)
+    // allows the chat through. The runtime's tunnel announce defaults
+    // to Private exposure; pekohub's chat proxy does not currently
+    // forward the authenticated user's id to the runtime via
+    // `x-pekohub-user-id`, so a private instance would be denied
+    // with "Authentication required". Public bypasses the ACL.
+    let exposure_resp = client
+        .patch(format!(
+            "{}/v1/instances/{instance_id}/exposure",
+            backend.url
+        ))
+        .header("Authorization", &auth_header)
+        .json(&serde_json::json!({ "exposure": "public" }))
+        .send()
+        .await
+        .expect("Failed to set instance exposure");
+    assert!(
+        exposure_resp.status().is_success(),
+        "Set exposure failed: {} - {:?}",
+        exposure_resp.status(),
+        exposure_resp.text().await.unwrap_or_default()
+    );
+
     // 8. Send chat request via HTTP and consume SSE
     let chat_resp = client
         .post(format!("{}/v1/instances/{instance_id}/chat", backend.url))
