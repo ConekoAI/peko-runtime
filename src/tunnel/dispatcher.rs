@@ -776,12 +776,21 @@ impl TunnelDispatcher {
                     .unwrap_or("");
 
                 if user_id.is_empty() {
+                    warn!(
+                        agent_name,
+                        "Private instance request denied: missing x-pekohub-user-id in bridge payload"
+                    );
                     anyhow::bail!("Authentication required")
                 }
 
                 if instance_state.allowed_users.iter().any(|u| u == user_id) {
                     Ok(())
                 } else {
+                    warn!(
+                        agent_name,
+                        user_id,
+                        "Private instance request denied: user not in allowed_users"
+                    );
                     anyhow::bail!("Forbidden")
                 }
             }
