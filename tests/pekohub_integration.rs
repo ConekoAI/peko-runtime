@@ -26,7 +26,7 @@ use pekobot::registry::{
 use std::time::Duration;
 
 mod common;
-use common::PekohubBackend;
+use common::{reset_pekohub, PekohubBackend};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -290,6 +290,11 @@ async fn test_pekohub_blob_upload_and_download() {
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_pekohub_catalog_and_tags() {
     let backend = PekohubBackend::start().await;
+    // The pekohub-test container is long-lived and shared across the
+    // whole test run, so earlier binaries/tests in the same `cargo test`
+    // invocation can leave repositories in its catalog. Reset before
+    // asserting the exact count.
+    reset_pekohub(&backend.url).await;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .no_proxy()
@@ -495,7 +500,11 @@ async fn test_pekohub_search_api() {
         .await
         .unwrap();
 
-    // Build OCI manifest with Pekohub metadata annotations
+    // Build OCI manifest with Pekohub metadata annotations.
+    // `hooks: []` is included explicitly because pekohub's zod schema
+    // for the search response requires it to be an array — if the
+    // field is omitted from the push, pekohub stores it as null and
+    // its own search endpoint 500s trying to validate the response.
     let manifest = serde_json::json!({
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -505,6 +514,7 @@ async fn test_pekohub_search_api() {
             "size": config_data.len()
         },
         "layers": [],
+        "hooks": [],
         "annotations": {
             "dev.pekohub.metadata": r#"{"bundleType":"agent","description":"A searchable test agent","author":"test"}"#,
             "org.opencontainers.image.description": "A searchable test agent"
