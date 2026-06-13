@@ -303,9 +303,14 @@ async fn test_pekohub_catalog_and_tags() {
 
     // Push manifests to two different namespaces (ns/agent-a and ns/agent-b)
     for (name, ns) in [("agent-a", "ns"), ("agent-b", "ns")] {
-        // Upload a config blob first
-        let config_data = b"{}";
-        let config_digest = sha256_digest(config_data);
+        // Upload a config blob first. Each push uses a unique config
+        // payload so the resulting manifests have different digests
+        // — pekohub's `digest_idx` is unique on `bundle_versions.digest`
+        // globally (per `backend/src/db/schema.ts:166` and the test
+        // fixture's DDL), so two manifests with the same digest
+        // collide even when pushed to different repos.
+        let config_data = format!("{{\"name\":\"{}\"}}", name);
+        let config_digest = sha256_digest(config_data.as_bytes());
 
         let post_resp = client
             .post(format!("{}/v2/{}/{}/blobs/uploads/", backend.url, ns, name))
@@ -323,7 +328,7 @@ async fn test_pekohub_catalog_and_tags() {
             .put(&upload_url)
             .header("Content-Type", "application/octet-stream")
             .query(&[("digest", &config_digest)])
-            .body(config_data.as_slice())
+            .body(config_data.clone().into_bytes())
             .send()
             .await
             .unwrap();
@@ -559,14 +564,18 @@ async fn test_registry_client_skips_existing_layers() {
         .await
         .unwrap();
 
-    // Second push — should skip layers
+    // Second push — should skip layers. We bump the tag to v1.1
+    // because pekohub's `bundle_version_idx` is unique on
+    // (bundle_id, version) — re-pushing the same tag (with the
+    // same manifest content) returns 409 "Version v1.0 already
+    // exists" before the layer-skip logic can run.
     let config2 = test_registry_config(backend.url.as_str());
     let client2 = RegistryClient::new(config2, registry.clone());
     let mut second_push_events = Vec::new();
     let _ = client2
         .push(
             &manifest_digest,
-            &format!("{}/ns/skip-test:v1.0", backend.url),
+            &format!("{}/ns/skip-test:v1.1", backend.url),
             |event| second_push_events.push(event),
         )
         .await
@@ -653,44 +662,57 @@ async fn test_registry_client_digest_verification_on_pull() {
         .unwrap();
     create_test_user(&client, &backend.url, "ns").await;
 
-    // Upload a blob with a specific digest
-    let data = b"correct data";
-    let correct_digest = sha256_digest(data);
+    // Upload two blobs: one is the config (top-level descriptor),
+    // one is the layer. The manifest below references both by their
+    // actual digests so pekohub's blob-existence check passes.
+    let config_data = b"config blob";
+    let config_digest = sha256_digest(config_data);
+    let layer_data = b"correct data";
+    let correct_digest = sha256_digest(layer_data);
 
-    let post_resp = client
-        .post(format!("{}/v2/ns/digest-test/blobs/uploads/", backend.url))
-        .send()
-        .await
-        .unwrap();
-    let upload_url = post_resp
-        .headers()
-        .get("location")
-        .unwrap()
-        .to_str()
-        .unwrap();
-    let upload_url = if upload_url.starts_with("http") {
-        upload_url.to_string()
-    } else {
-        format!("{}{}", backend.url, upload_url)
-    };
+    for (data, digest) in [
+        (config_data.to_vec(), config_digest.clone()),
+        (layer_data.to_vec(), correct_digest.clone()),
+    ] {
+        let post_resp = client
+            .post(format!("{}/v2/ns/digest-test/blobs/uploads/", backend.url))
+            .send()
+            .await
+            .unwrap();
+        let upload_url = post_resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let upload_url = if upload_url.starts_with("http") {
+            upload_url.to_string()
+        } else {
+            format!("{}{}", backend.url, upload_url)
+        };
 
-    let put_resp = client
-        .put(&upload_url)
-        .header("Content-Type", "application/octet-stream")
-        .query(&[("digest", &correct_digest)])
-        .body(data.as_slice())
-        .send()
-        .await
-        .unwrap();
-    let status = put_resp.status();
-    let body = put_resp.text().await.unwrap_or_default();
-    assert!(status.is_success(), "Blob PUT failed: {status} - {body}");
+        let put_resp = client
+            .put(&upload_url)
+            .header("Content-Type", "application/octet-stream")
+            .query(&[("digest", digest.as_str())])
+            .body(data)
+            .send()
+            .await
+            .unwrap();
+        let status = put_resp.status();
+        let body = put_resp.text().await.unwrap_or_default();
+        assert!(status.is_success(), "Blob PUT failed: {status} - {body}");
+    }
 
-    // Push a manifest that references this blob with the CORRECT digest
+    // Push a manifest that references both blobs by their actual digests.
+    // The test then pulls and verifies the runtime accepts a manifest
+    // whose digests match the stored blobs.
     let manifest_json = format!(
-        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":0}},"layers":[{{"digest":"{}","mediaType":"application/vnd.peko.layer.config.v1+json","size":{}}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"digest":"{}","mediaType":"application/vnd.peko.layer.config.v1+json","size":{}}}]}}"#,
+        config_digest,
+        config_data.len(),
         correct_digest,
-        data.len()
+        layer_data.len()
     );
 
     let manifest_put = client
