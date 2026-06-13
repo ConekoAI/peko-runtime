@@ -564,17 +564,63 @@ async fn test_registry_client_skips_existing_layers() {
         .await
         .unwrap();
 
-    // Second push — should skip layers. We bump the tag to v1.1
-    // because pekohub's `bundle_version_idx` is unique on
-    // (bundle_id, version) — re-pushing the same tag (with the
-    // same manifest content) returns 409 "Version v1.0 already
-    // exists" before the layer-skip logic can run.
+    // Second push — should skip layers. We build a NEW manifest
+    // (with a different config blob so the manifest digest
+    // differs) and push it under a new tag (v1.1). PekoHub's
+    // `digest_idx` is unique on `bundle_versions.digest` GLOBALLY
+    // (`backend/src/db/schema.ts:166`), so re-pushing the same
+    // manifest content (even at a new tag) 500s on digest_idx.
+    // The new config blob is uploaded via the same blob-upload
+    // path the first push used; the existing layer1/layer2
+    // blobs are HEAD-checked by the runtime and skipped.
+    let layer1_v2_data = b"config layer v2";
+    let layer1_v2_digest = sha256_digest(layer1_v2_data);
+    registry
+        .store_layer(&layer1_v2_digest, layer1_v2_data)
+        .await
+        .unwrap();
+
+    let mut agent_manifest_v2 = AgentManifest::new("skip-test", "1.0.1", "did:pekobot:test");
+    agent_manifest_v2.layers = Some(AgentLayers {
+        config: Some(layer1_v2_digest.to_string()),
+        identity: Some(layer2_digest.to_string()),
+        skills: None,
+        workspace: None,
+        sessions: None,
+        mcp: None,
+        extensions: None,
+    });
+    let manifest_digest_v2 = registry
+        .store_manifest(&agent_manifest_v2, Some("skip-test:v1.1"))
+        .await
+        .unwrap();
+
+    let mut reg_manifest_v2 = RegistryManifest::new("skip-test", "1.0.1")
+        .with_digest(manifest_digest_v2.as_str())
+        .with_ref(format!("{}/ns/skip-test:v1.1", backend.url));
+    reg_manifest_v2.add_layer(Layer::new(
+        layer1_v2_digest.clone(),
+        LayerType::Config,
+        layer1_v2_data.len() as u64,
+    ));
+    reg_manifest_v2.add_layer(Layer::new(
+        layer2_digest.clone(),
+        LayerType::Identity,
+        layer2_data.len() as u64,
+    ));
+    reg_manifest_v2 = reg_manifest_v2.with_config(
+        layer1_v2_digest.clone(),
+        layer1_v2_data.len() as u64,
+        None::<String>,
+    );
+    store_registry_manifest_local(&registry, &reg_manifest_v2, &manifest_digest_v2).await;
+
     let config2 = test_registry_config(backend.url.as_str());
     let client2 = RegistryClient::new(config2, registry.clone());
     let mut second_push_events = Vec::new();
     let _ = client2
         .push(
-            &manifest_digest,
+            &manifest_digest_v2,
             &format!("{}/ns/skip-test:v1.1", backend.url),
             |event| second_push_events.push(event),
         )
