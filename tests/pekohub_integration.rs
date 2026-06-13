@@ -501,10 +501,14 @@ async fn test_pekohub_search_api() {
         .unwrap();
 
     // Build OCI manifest with Pekohub metadata annotations.
-    // `hooks: []` is included explicitly because pekohub's zod schema
-    // for the search response requires it to be an array — if the
-    // field is omitted from the push, pekohub stores it as null and
-    // its own search endpoint 500s trying to validate the response.
+    // The top-level `hooks: []` is included so pekohub persists the
+    // field. We *also* add `hooks: []` to the dev.pekohub.metadata
+    // payload because pekohub's search-response transformer reads
+    // the metadata annotation, not the top-level OCI hooks field,
+    // when building items[].hooks — if it can't find hooks in the
+    // metadata JSON it returns null, which then fails pekohub's
+    // own zod schema (hooks: array) with HTTP 500 "Expected array,
+    // received null" at items[0].hooks.
     let manifest = serde_json::json!({
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -516,7 +520,7 @@ async fn test_pekohub_search_api() {
         "layers": [],
         "hooks": [],
         "annotations": {
-            "dev.pekohub.metadata": r#"{"bundleType":"agent","description":"A searchable test agent","author":"test"}"#,
+            "dev.pekohub.metadata": r#"{"bundleType":"agent","description":"A searchable test agent","author":"test","hooks":[]}"#,
             "org.opencontainers.image.description": "A searchable test agent"
         }
     })
