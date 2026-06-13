@@ -157,6 +157,15 @@ fn build_registry_manifest(
 
     if let Some(layers) = &agent_manifest.layers {
         if let Some(digest) = &layers.config {
+            // The OCI Image Manifest spec requires the top-level `config`
+            // descriptor (digest + size + mediaType) to describe the
+            // config blob. Without this, pekohub rejects the manifest
+            // with `MANIFEST_INVALID / config.digest: Invalid digest
+            // format` (because the descriptor is left at its default
+            // empty digest). The size is the byte length of the gzipped
+            // tarball we stored under that digest — see
+            // `store_agent_layers_in_registry` for the encoder.
+            reg_manifest = reg_manifest.with_config(digest.clone(), 0_u64, None::<String>);
             reg_manifest.add_layer(pekobot::portable::Layer::new(
                 digest.clone(),
                 pekobot::portable::LayerType::Config,

@@ -165,6 +165,29 @@ impl RegistryManifest {
         self
     }
 
+    /// Set the OCI config descriptor (required by the OCI Image Manifest
+    /// spec; the registry validates it and rejects manifests where
+    /// `config.digest` is empty or not in `sha256:<hex>` form).
+    ///
+    /// `digest` should be the digest of the config *blob* (not the
+    /// manifest blob) — typically the same digest you'd `add_layer`
+    /// for a `LayerType::Config` entry, but the descriptor lives in
+    /// its own top-level `config` field, not the `layers` array.
+    #[must_use]
+    pub fn with_config(
+        mut self,
+        digest: impl Into<String>,
+        size: u64,
+        media_type: Option<impl Into<String>>,
+    ) -> Self {
+        self.config.digest = digest.into();
+        self.config.size = size;
+        if let Some(mt) = media_type {
+            self.config.media_type = mt.into();
+        }
+        self
+    }
+
     /// Set the description.
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
