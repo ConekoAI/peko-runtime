@@ -42,7 +42,11 @@ pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
 /// parallel tests in the same binary don't collide on the
 /// `users_external_id_key` / `users_namespace_key` unique
 /// constraints. The `namespace` argument is preserved as a prefix
-/// for readable test logs / database inspection.
+/// for readable test logs / database inspection. The function
+/// returns the actual namespace that was inserted so the caller
+/// can use it in pekohub push URLs (which must match the user's
+/// namespace exactly — see
+/// `backend/src/routes/oci/manifests.ts:172`).
 ///
 /// The fixture's error handler returns `{ error: error.message }`
 /// with no `message` field, so the status alone is opaque. We
@@ -50,7 +54,11 @@ pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
 /// future failure surfaces the actual SQL/DB error (e.g. missing
 /// column, schema mismatch) instead of just "500 Internal Server
 /// Error".
-pub async fn create_test_user(client: &reqwest::Client, base_url: &str, namespace: &str) {
+pub async fn create_test_user(
+    client: &reqwest::Client,
+    base_url: &str,
+    namespace: &str,
+) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -74,4 +82,5 @@ pub async fn create_test_user(client: &reqwest::Client, base_url: &str, namespac
         status.is_success(),
         "create-user failed: status={status}, body={body}"
     );
+    unique
 }

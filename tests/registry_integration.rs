@@ -121,13 +121,13 @@ async fn test_pekohub_manifest_roundtrip() {
         .unwrap();
 
     // Create user so PekoHub namespace ownership check passes
-    create_test_user(&client, &backend.url, "ns").await;
+    let ns = create_test_user(&client, &backend.url, "ns").await;
 
     // Upload a dummy config blob first (pekohub validates blob existence)
     let config_data = b"{}";
     let config_digest = sha256_digest(config_data);
     let post_resp = client
-        .post(format!("{}/v2/ns/test-agent/blobs/uploads/", backend.url))
+        .post(format!("{}/v2/{ns}/test-agent/blobs/uploads/", backend.url))
         .send()
         .await
         .unwrap();
@@ -160,7 +160,7 @@ async fn test_pekohub_manifest_roundtrip() {
     );
 
     let put_resp = client
-        .put(format!("{}/v2/ns/test-agent/manifests/v1.0", backend.url))
+        .put(format!("{}/v2/{ns}/test-agent/manifests/v1.0", backend.url))
         .header("Content-Type", media_types::MANIFEST_OCI)
         .body(manifest_json)
         .send()
@@ -176,7 +176,7 @@ async fn test_pekohub_manifest_roundtrip() {
 
     // GET manifest
     let get_resp = client
-        .get(format!("{}/v2/ns/test-agent/manifests/v1.0", backend.url))
+        .get(format!("{}/v2/{ns}/test-agent/manifests/v1.0", backend.url))
         .send()
         .await
         .unwrap();
@@ -197,12 +197,12 @@ async fn test_pekohub_manifest_invalid_media_type_rejected() {
         .build()
         .unwrap();
 
-    create_test_user(&client, &backend.url, "ns").await;
+    let ns = create_test_user(&client, &backend.url, "ns").await;
 
     // PUT manifest with invalid media type ( PekoHub only accepts OCI )
     let manifest_json = r#"{"schemaVersion":2,"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":2},"layers":[]}"#;
     let put_resp = client
-        .put(format!("{}/v2/ns/bad-agent/manifests/latest", backend.url))
+        .put(format!("{}/v2/{ns}/bad-agent/manifests/latest", backend.url))
         .header("Content-Type", "application/json")
         .body(manifest_json)
         .send()
@@ -224,14 +224,14 @@ async fn test_pekohub_blob_roundtrip() {
         .build()
         .unwrap();
 
-    create_test_user(&client, &backend.url, "ns").await;
+    let ns = create_test_user(&client, &backend.url, "ns").await;
 
     let data = b"test blob content";
     let digest = sha256_digest(data);
 
     // Upload blob via POST + PUT
     let post_resp = client
-        .post(format!("{}/v2/ns/test/blobs/uploads/", backend.url))
+        .post(format!("{}/v2/{ns}/test/blobs/uploads/", backend.url))
         .send()
         .await
         .unwrap();
@@ -269,7 +269,7 @@ async fn test_pekohub_blob_roundtrip() {
 
     // HEAD check
     let head_resp = client
-        .head(format!("{}/v2/ns/test/blobs/{}", backend.url, digest))
+        .head(format!("{}/v2/{ns}/test/blobs/{}", backend.url, digest))
         .send()
         .await
         .unwrap();
@@ -277,7 +277,7 @@ async fn test_pekohub_blob_roundtrip() {
 
     // GET blob
     let get_resp = client
-        .get(format!("{}/v2/ns/test/blobs/{}", backend.url, digest))
+        .get(format!("{}/v2/{ns}/test/blobs/{}", backend.url, digest))
         .send()
         .await
         .unwrap();
@@ -299,7 +299,7 @@ async fn test_pekohub_catalog_and_tags() {
         .unwrap();
 
     // Create two users for two namespaces
-    create_test_user(&client, &backend.url, "ns").await;
+    let ns = create_test_user(&client, &backend.url, "ns").await;
 
     // Push manifests to two different namespaces (ns/agent-a and ns/agent-b)
     for (name, ns) in [("agent-a", "ns"), ("agent-b", "ns")] {
@@ -364,7 +364,7 @@ async fn test_pekohub_catalog_and_tags() {
 
     // Tags for agent-a
     let tags_resp = client
-        .get(format!("{}/v2/ns/agent-a/tags/list", backend.url))
+        .get(format!("{}/v2/{ns}/agent-a/tags/list", backend.url))
         .send()
         .await
         .unwrap();
@@ -390,7 +390,7 @@ async fn test_registry_client_push_and_pull() {
         .no_proxy()
         .build()
         .unwrap();
-    create_test_user(&client, &backend.url, "ns").await;
+    let ns = create_test_user(&client, &backend.url, "ns").await;
 
     let host = backend.url.strip_prefix("http://").unwrap();
 
@@ -498,7 +498,7 @@ async fn test_registry_client_skips_existing_layers() {
         .no_proxy()
         .build()
         .unwrap();
-    create_test_user(&client, &backend.url, "ns").await;
+    let ns = create_test_user(&client, &backend.url, "ns").await;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let registry = AgentRegistry::new(temp_dir.path());
@@ -706,7 +706,7 @@ async fn test_registry_client_digest_verification_on_pull() {
         .no_proxy()
         .build()
         .unwrap();
-    create_test_user(&client, &backend.url, "ns").await;
+    let ns = create_test_user(&client, &backend.url, "ns").await;
 
     // Upload two blobs: one is the config (top-level descriptor),
     // one is the layer. The manifest below references both by their
@@ -721,7 +721,7 @@ async fn test_registry_client_digest_verification_on_pull() {
         (layer_data.to_vec(), correct_digest.clone()),
     ] {
         let post_resp = client
-            .post(format!("{}/v2/ns/digest-test/blobs/uploads/", backend.url))
+            .post(format!("{}/v2/{ns}/digest-test/blobs/uploads/", backend.url))
             .send()
             .await
             .unwrap();
@@ -762,7 +762,7 @@ async fn test_registry_client_digest_verification_on_pull() {
     );
 
     let manifest_put = client
-        .put(format!("{}/v2/ns/digest-test/manifests/v1.0", backend.url))
+        .put(format!("{}/v2/{ns}/digest-test/manifests/v1.0", backend.url))
         .header("Content-Type", media_types::MANIFEST_OCI)
         .body(manifest_json)
         .send()

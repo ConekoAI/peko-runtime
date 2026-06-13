@@ -308,7 +308,7 @@ async fn test_full_packaging_pipeline() {
         .unwrap();
 
     // Create user with namespace "ns" — PekoHub requires namespace ownership for pushes
-    create_test_user(&client, &backend.url, "ns").await;
+    let ns = create_test_user(&client, &backend.url, "ns").await;
 
     // Full registry ref with namespace (PekoHub format: {host}/{namespace}/{name}:{tag})
     let registry_ref = format!("{}/ns/integration-agent:v1.0", backend.url);
