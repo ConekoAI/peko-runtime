@@ -33,25 +33,57 @@ enum ServerSocket {
     },
 }
 
+/// Peer address returned by `ServerSocket::recv_from` and threaded through
+/// the request handlers so they can `send_to` the response back. Unix domain
+/// datagram sockets return the sender's filesystem path; UDP returns a
+/// `std::net::SocketAddr`.
+#[derive(Debug, Clone)]
+enum PeerAddr {
+    #[cfg(unix)]
+    Unix(std::path::PathBuf),
+    Ip(std::net::SocketAddr),
+}
+
+impl PeerAddr {
+    /// True for local connections: Unix domain sockets (always local) and
+    /// UDP peers on a loopback address. `None` (no peer info) is treated
+    /// as local — the same convention the previous `Option<SocketAddr>`
+    /// path used via `addr.map_or(true, |a| a.ip().is_loopback())`.
+    fn is_local(&self) -> bool {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(_) => true,
+            Self::Ip(addr) => addr.ip().is_loopback(),
+        }
+    }
+}
+
 impl ServerSocket {
     /// Receive a packet from the socket
     ///
-    /// On Unix, `recv_from` returns the sender's path as a `SocketAddr` so
-    /// `send_response` can `send_to` it back. On UDP, the `SocketAddr` is
-    /// the peer address.
-    async fn recv_from(
-        &self,
-        buf: &mut [u8],
-    ) -> std::io::Result<(usize, Option<std::net::SocketAddr>)> {
+    /// On Unix, `recv_from` returns the sender's path as a `tokio::net::unix::SocketAddr`
+    /// (which we normalise to a `PathBuf`); on UDP, the peer's `SocketAddr`.
+    /// Either way the result is wrapped in [`PeerAddr`] so callers can
+    /// hand it back to `send_response` without losing type info.
+    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, PeerAddr)> {
         match self {
             #[cfg(unix)]
             Self::Unix { socket, .. } => {
                 let (len, addr) = socket.recv_from(buf).await?;
-                Ok((len, Some(addr)))
+                let path = addr
+                    .as_pathname()
+                    .map(|p| p.to_path_buf())
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "Unix peer without a filesystem path (anonymous socket?)",
+                        )
+                    })?;
+                Ok((len, PeerAddr::Unix(path)))
             }
             Self::Udp { socket } => {
                 let (len, addr) = socket.recv_from(buf).await?;
-                Ok((len, Some(addr)))
+                Ok((len, PeerAddr::Ip(addr)))
             }
         }
     }
@@ -62,28 +94,21 @@ impl ServerSocket {
     /// explicitly `send_to`-ed to the sender's path returned by the
     /// matching `recv_from` — `socket.send(bytes)` requires `connect()`
     /// first and would return `ENOTCONN` on a bind-only server socket.
-    async fn send_response(
-        &self,
-        bytes: &[u8],
-        addr: Option<std::net::SocketAddr>,
-    ) -> std::io::Result<()> {
-        match self {
+    async fn send_response(&self, bytes: &[u8], peer: &PeerAddr) -> std::io::Result<()> {
+        match (self, peer) {
             #[cfg(unix)]
-            Self::Unix { socket, .. } => {
-                let path = addr
-                    .and_then(|a| a.as_pathname().map(|p| p.to_path_buf()))
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "no peer path for Unix datagram response",
-                        )
-                    })?;
-                socket.send_to(bytes, &path).await?;
+            (Self::Unix { socket, .. }, PeerAddr::Unix(path)) => {
+                socket.send_to(bytes, path).await?;
             }
-            Self::Udp { socket } => {
-                if let Some(addr) = addr {
-                    socket.send_to(bytes, addr).await?;
-                }
+            (Self::Udp { socket, .. }, PeerAddr::Ip(addr)) => {
+                socket.send_to(bytes, *addr).await?;
+            }
+            #[cfg(unix)]
+            (Self::Unix { .. }, PeerAddr::Ip(_)) | (Self::Udp { .. }, PeerAddr::Unix(_)) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "peer/socket transport mismatch (Unix peer on UDP socket or vice versa)",
+                ));
             }
         }
         Ok(())
@@ -178,7 +203,7 @@ impl IpcServer {
                                     let request_id = envelope.request_id();
 
                                     // Resolve caller identity
-                                    let caller = match Self::resolve_caller(&envelope, addr, &self.app_state).await {
+                                    let caller = match Self::resolve_caller(&envelope, &addr, &self.app_state).await {
                                         Ok(caller) => caller,
                                         Err(auth_err) => {
                                             warn!("Auth failed for request {}: {}", request_id, auth_err);
@@ -186,7 +211,7 @@ impl IpcServer {
                                                 request_id,
                                                 message: format!("Authentication failed: {}", auth_err),
                                             };
-                                            let _ = Self::send_packet(&self.socket, response, addr).await;
+                                            let _ = Self::send_packet(&self.socket, response, &addr).await;
                                             continue;
                                         }
                                     };
@@ -200,7 +225,7 @@ impl IpcServer {
                                                 request_id,
                                                 message: "Rate limit exceeded. Try again later.".to_string(),
                                             };
-                                            let _ = Self::send_packet(&self.socket, response, addr).await;
+                                            let _ = Self::send_packet(&self.socket, response, &addr).await;
                                             continue;
                                         }
                                     }
@@ -209,7 +234,7 @@ impl IpcServer {
                                     let state = self.app_state.clone();
                                     let socket = self.socket.clone();
                                     tokio::spawn(async move {
-                                        if let Err(e) = Self::handle_request(envelope.packet, caller, state, socket, addr).await {
+                                        if let Err(e) = Self::handle_request(envelope.packet, caller, state, socket, &addr).await {
                                             error!("Error handling request {}: {}", request_id, e);
                                         }
                                     });
@@ -239,12 +264,12 @@ impl IpcServer {
     /// Resolve the caller identity from an authenticated request.
     async fn resolve_caller(
         envelope: &AuthenticatedRequest,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
         state: &AppState,
     ) -> Result<CallerContext, AuthError> {
         use super::packet::AuthCredential;
 
-        let is_local_connection = addr.map_or(true, |a| a.ip().is_loopback());
+        let is_local_connection = peer.is_local();
         let auth_config = state.auth_config();
 
         match &envelope.auth.credential {
@@ -300,7 +325,7 @@ impl IpcServer {
         caller: CallerContext,
         state: AppState,
         socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         // For v0.1.0, local trust is treated as owner (all actions allowed).
         // JWT users have full access.
@@ -314,13 +339,13 @@ impl IpcServer {
                     uptime_secs: uptime,
                     version: crate::VERSION.to_string(),
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             RequestPacket::Shutdown { request_id, force } => {
                 info!("Shutdown request received via IPC (force={})", force);
                 let response = ResponsePacket::ShuttingDown { request_id };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
                 state.request_shutdown(force).await;
             }
 
@@ -345,7 +370,7 @@ impl IpcServer {
                     user,
                     state,
                     socket,
-                    addr,
+                    peer,
                 )
                 .await?;
             }
@@ -365,7 +390,7 @@ impl IpcServer {
                     workspace,
                     state,
                     socket,
-                    addr,
+                    peer,
                 )
                 .await?;
             }
@@ -374,7 +399,7 @@ impl IpcServer {
                 request_id,
                 task_id,
             } => {
-                Self::handle_async_cancel(request_id, task_id, state, socket, addr).await?;
+                Self::handle_async_cancel(request_id, task_id, state, socket, peer).await?;
             }
 
             RequestPacket::CronList {
@@ -386,14 +411,14 @@ impl IpcServer {
                     Ok(scheduler) => match scheduler.list_jobs(include_disabled) {
                         Ok(jobs) => {
                             let response = ResponsePacket::CronList { request_id, jobs };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to list jobs: {e}"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     },
                     Err(e) => {
@@ -401,7 +426,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -415,14 +440,14 @@ impl IpcServer {
                                 request_id,
                                 job_id: job.id,
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to add job: {e}"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     },
                     Err(e) => {
@@ -430,7 +455,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -441,21 +466,21 @@ impl IpcServer {
                     Ok(scheduler) => match scheduler.delete_job(&job_id) {
                         Ok(true) => {
                             let response = ResponsePacket::CronRemoved { request_id, job_id };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Ok(false) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Job {job_id} not found"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to remove job: {e}"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     },
                     Err(e) => {
@@ -463,7 +488,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -481,7 +506,7 @@ impl IpcServer {
                                     request_id,
                                     message: format!("Failed to trigger job: {e}"),
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                             } else {
                                 let run_id = uuid::Uuid::new_v4().to_string();
                                 let response = ResponsePacket::CronRunStarted {
@@ -489,7 +514,7 @@ impl IpcServer {
                                     job_id,
                                     run_id,
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                             }
                         }
                         Ok(None) => {
@@ -497,14 +522,14 @@ impl IpcServer {
                                 request_id,
                                 message: format!("Job {job_id} not found"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to get job: {e}"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     },
                     Err(e) => {
@@ -512,7 +537,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -527,14 +552,14 @@ impl IpcServer {
                     Ok(scheduler) => match scheduler.get_run_history(&job_id, limit) {
                         Ok(runs) => {
                             let response = ResponsePacket::CronHistory { request_id, runs };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to get history: {e}"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     },
                     Err(e) => {
@@ -542,7 +567,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -552,28 +577,28 @@ impl IpcServer {
                 request_id,
                 extension_id,
             } => {
-                Self::handle_ext_start(request_id, extension_id, state, socket, addr).await?;
+                Self::handle_ext_start(request_id, extension_id, state, socket, peer).await?;
             }
 
             RequestPacket::ExtStop {
                 request_id,
                 extension_id,
             } => {
-                Self::handle_ext_stop(request_id, extension_id, state, socket, addr).await?;
+                Self::handle_ext_stop(request_id, extension_id, state, socket, peer).await?;
             }
 
             RequestPacket::ExtRestart {
                 request_id,
                 extension_id,
             } => {
-                Self::handle_ext_restart(request_id, extension_id, state, socket, addr).await?;
+                Self::handle_ext_restart(request_id, extension_id, state, socket, peer).await?;
             }
 
             RequestPacket::ExtStatus {
                 request_id,
                 extension_id,
             } => {
-                Self::handle_ext_status(request_id, extension_id, state, socket, addr).await?;
+                Self::handle_ext_status(request_id, extension_id, state, socket, peer).await?;
             }
 
             // ─── Agent CRUD ─────────────────────────────────────────────────
@@ -585,14 +610,14 @@ impl IpcServer {
                 match service.list_agents(team_filter.as_deref()).await {
                     Ok(agents) => {
                         let response = ResponsePacket::AgentList { request_id, agents };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -606,14 +631,14 @@ impl IpcServer {
                 match service.get_agent(&name, team.as_deref()).await {
                     Ok(agent) => {
                         let response = ResponsePacket::AgentGet { request_id, agent };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -642,14 +667,14 @@ impl IpcServer {
                             }
                         }
                         let response = ResponsePacket::AgentCreated { request_id, result };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -669,7 +694,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Agent '{}' not found", name),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                         return Ok(());
                     }
                     Err(e) => {
@@ -677,7 +702,7 @@ impl IpcServer {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                         return Ok(());
                     }
                 };
@@ -692,7 +717,7 @@ impl IpcServer {
                         request_id,
                         message: denied.to_string(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                     return Ok(());
                 }
                 let opts = crate::common::types::agent::AgentDeleteOptions {
@@ -702,14 +727,14 @@ impl IpcServer {
                 match service.delete_agent(&name, team.as_deref(), opts).await {
                     Ok(result) => {
                         let response = ResponsePacket::AgentDeleted { request_id, result };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -727,14 +752,14 @@ impl IpcServer {
                 {
                     Ok(result) => {
                         let response = ResponsePacket::AgentMoved { request_id, result };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -759,14 +784,14 @@ impl IpcServer {
                 match service.update_agent(&name, team.as_deref(), update_req).await {
                     Ok(_) => {
                         let response = ResponsePacket::AgentUpdated { request_id, name };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -792,14 +817,14 @@ impl IpcServer {
                             name: result.name,
                             output_path: result.output_path.to_string_lossy().to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -835,14 +860,14 @@ impl IpcServer {
                             name: result.name,
                             config_path: result.config_path.to_string_lossy().to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -853,14 +878,14 @@ impl IpcServer {
                 match service.list_teams().await {
                     Ok(teams) => {
                         let response = ResponsePacket::TeamList { request_id, teams };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -870,14 +895,14 @@ impl IpcServer {
                 match service.get_team(&name).await {
                     Ok(team) => {
                         let response = ResponsePacket::TeamGet { request_id, team };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -914,14 +939,14 @@ impl IpcServer {
                             }
                         }
                         let response = ResponsePacket::TeamCreated { request_id, result };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -946,14 +971,14 @@ impl IpcServer {
                             agent: result.agent,
                             team: result.team,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -972,14 +997,14 @@ impl IpcServer {
                             team: result.team,
                             was_member: result.was_member,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -993,14 +1018,14 @@ impl IpcServer {
                 match service.delete_team(&name).await {
                     Ok(result) => {
                         let response = ResponsePacket::TeamDeleted { request_id, result };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1018,14 +1043,14 @@ impl IpcServer {
                             old_name,
                             new_name,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1047,14 +1072,14 @@ impl IpcServer {
                             name: result.name,
                             output_path: result.output_path.to_string_lossy().to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1077,14 +1102,14 @@ impl IpcServer {
                             name: result.name,
                             path: result.path.to_string_lossy().to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1098,9 +1123,10 @@ impl IpcServer {
                 let service = state.session_service();
                 match agent {
                     Some(agent_name) => {
-                        let peer = crate::session::types::Peer::User("desktop".to_string());
+                        let session_peer =
+                            crate::session::types::Peer::User("desktop".to_string());
                         match service
-                            .list_sessions_with_active(&agent_name, team.as_deref(), &peer)
+                            .list_sessions_with_active(&agent_name, team.as_deref(), &session_peer)
                             .await
                         {
                             Ok((sessions, active_session)) => {
@@ -1109,14 +1135,14 @@ impl IpcServer {
                                     sessions,
                                     active_session,
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                             }
                             Err(e) => {
                                 let response = ResponsePacket::Error {
                                     request_id,
                                     message: e.to_string(),
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                             }
                         }
                     }
@@ -1125,7 +1151,7 @@ impl IpcServer {
                             request_id,
                             message: "Agent name is required for session listing".to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1135,7 +1161,7 @@ impl IpcServer {
                     request_id,
                     message: "SessionGet requires both agent name and session ID. Use the HTTP API for detailed session lookups.".to_string(),
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             RequestPacket::SessionShow {
@@ -1175,21 +1201,21 @@ impl IpcServer {
                             session: details,
                             history: history_events,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Ok(None) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Session '{session_id}' not found"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1212,14 +1238,14 @@ impl IpcServer {
                             session_id,
                             deleted,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1241,8 +1267,8 @@ impl IpcServer {
                     team.as_deref(),
                     &user,
                 );
-                let peer = crate::session::Peer::User(user);
-                match manager.switch_session(&peer, &session_id).await {
+                let session_peer = crate::session::Peer::User(user);
+                match manager.switch_session(&session_peer, &session_id).await {
                     Ok(_) => {
                         let response = ResponsePacket::SessionSwitched {
                             request_id,
@@ -1250,14 +1276,14 @@ impl IpcServer {
                             agent,
                             team: team.unwrap_or_else(|| "default".to_string()),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1290,7 +1316,7 @@ impl IpcServer {
                     request_id,
                     providers,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             RequestPacket::SystemStatus { request_id } => {
@@ -1303,7 +1329,7 @@ impl IpcServer {
                     team_count: state.team_count().await,
                     ready: state.is_ready().await,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             RequestPacket::SystemDoctor { request_id } => {
@@ -1368,7 +1394,7 @@ impl IpcServer {
                     failed,
                     warnings,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
@@ -1424,7 +1450,7 @@ impl IpcServer {
                     extensions,
                     total,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             RequestPacket::ExtensionEnable {
@@ -1521,14 +1547,14 @@ impl IpcServer {
                             id,
                             message: msg,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1626,14 +1652,14 @@ impl IpcServer {
                             id,
                             message: msg,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1668,7 +1694,7 @@ impl IpcServer {
                                     request_id,
                                     message: format!("Failed to clean cache: {e}"),
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                                 return Ok(());
                             }
                         }
@@ -1680,7 +1706,7 @@ impl IpcServer {
                     cleaned,
                     bytes_freed,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             RequestPacket::CronAddSimple {
@@ -1707,7 +1733,7 @@ impl IpcServer {
                                     request_id,
                                     message: format!("Invalid schedule: {e}"),
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                                 return Ok(());
                             }
                         };
@@ -1733,14 +1759,14 @@ impl IpcServer {
                                     request_id,
                                     job_id: job.id,
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                             }
                             Err(e) => {
                                 let response = ResponsePacket::Error {
                                     request_id,
                                     message: format!("Failed to add job: {e}"),
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                             }
                         }
                     }
@@ -1749,7 +1775,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Cron DB error: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1772,14 +1798,14 @@ impl IpcServer {
                             new_session_id: result.new_session_id,
                             parent_session_id: result.parent_session_id,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1800,7 +1826,7 @@ impl IpcServer {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                         return Ok(());
                     }
                 };
@@ -1809,7 +1835,7 @@ impl IpcServer {
                         request_id,
                         message: format!("Agent '{agent}' not found"),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                     return Ok(());
                 }
                 let mut session = match service
@@ -1822,7 +1848,7 @@ impl IpcServer {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                         return Ok(());
                     }
                 };
@@ -1840,14 +1866,14 @@ impl IpcServer {
                                     .context_window
                                     .saturating_sub(report.estimated_tokens),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: e.to_string(),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     }
                 } else {
@@ -1861,14 +1887,14 @@ impl IpcServer {
                                 tokens_before: result.entry.tokens_before,
                                 tokens_after: result.entry.tokens_after,
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: e.to_string(),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     }
                 }
@@ -1884,7 +1910,7 @@ impl IpcServer {
                                 request_id,
                                 message: format!("Failed to prepare extension for install: {e}"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                             return Ok(());
                         }
                     };
@@ -1897,14 +1923,14 @@ impl IpcServer {
                             id: id.clone(),
                             message: format!("Extension '{id}' installed successfully"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Failed to install extension: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1920,14 +1946,14 @@ impl IpcServer {
                             id: id.clone(),
                             message: format!("Extension '{id}' uninstalled"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Failed to uninstall extension: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1957,14 +1983,14 @@ impl IpcServer {
                             errors: report.errors,
                             warnings: report.warnings,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -1987,14 +2013,14 @@ impl IpcServer {
                             id,
                             info,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Extension '{id}' not found"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2016,14 +2042,14 @@ impl IpcServer {
                             id,
                             info,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("Extension '{id}' not found"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2044,14 +2070,14 @@ impl IpcServer {
                             id,
                             output,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2073,14 +2099,14 @@ impl IpcServer {
                             name,
                             count: bundle.extensions.len(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2124,7 +2150,7 @@ impl IpcServer {
                         request_id,
                         message: format!("Registry init failed: {e}"),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                     return Ok(());
                 }
 
@@ -2178,7 +2204,7 @@ impl IpcServer {
                                             version: manifest.version.clone(),
                                             digest: manifest.digest.clone(),
                                         };
-                                        Self::send_packet(&socket, response, addr).await?;
+                                        Self::send_packet(&socket, response, peer).await?;
                                     }
                                     Err(e) => {
                                         let _ = std::fs::remove_file(&temp_path);
@@ -2186,7 +2212,7 @@ impl IpcServer {
                                             request_id,
                                             message: format!("Import failed: {e}"),
                                         };
-                                        Self::send_packet(&socket, response, addr).await?;
+                                        Self::send_packet(&socket, response, peer).await?;
                                     }
                                 }
                             }
@@ -2195,7 +2221,7 @@ impl IpcServer {
                                     request_id,
                                     message: format!("Export failed: {e}"),
                                 };
-                                Self::send_packet(&socket, response, addr).await?;
+                                Self::send_packet(&socket, response, peer).await?;
                             }
                         }
                     }
@@ -2204,7 +2230,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Pull failed: {e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2213,7 +2239,7 @@ impl IpcServer {
             RequestPacket::RuntimeId { request_id } => {
                 let did = state.runtime_identity().runtime_did.clone();
                 let response = ResponsePacket::RuntimeId { request_id, did };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             RequestPacket::RuntimeInfo { request_id } => {
                 let meta = state.runtime_metadata();
@@ -2233,14 +2259,14 @@ impl IpcServer {
                         },
                     },
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             RequestPacket::RuntimeRename { request_id, .. } => {
                 let response = ResponsePacket::Error {
                     request_id,
                     message: "Runtime rename not yet implemented".to_string(),
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             RequestPacket::RuntimeList { request_id } => {
                 let registry = state.known_runtimes().read().await;
@@ -2259,7 +2285,7 @@ impl IpcServer {
                     request_id,
                     runtimes,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             RequestPacket::RuntimeRegister {
                 request_id,
@@ -2285,14 +2311,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2317,14 +2343,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2346,14 +2372,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2370,7 +2396,7 @@ impl IpcServer {
                         request_id,
                         message: "API key management requires local access".to_string(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 } else if let Some(store) = state.api_key_store() {
                     let parsed_scopes: Vec<crate::auth::types::ApiKeyScope> =
                         scopes.iter().filter_map(|s| s.parse().ok()).collect();
@@ -2381,14 +2407,14 @@ impl IpcServer {
                                 key_id,
                                 full_key,
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: e.to_string(),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     }
                 } else {
@@ -2396,7 +2422,7 @@ impl IpcServer {
                         request_id,
                         message: "API key store not initialized".to_string(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 }
             }
             RequestPacket::AuthApiKeyList { request_id } => {
@@ -2405,7 +2431,7 @@ impl IpcServer {
                         request_id,
                         message: "API key management requires local access".to_string(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 } else if let Some(store) = state.api_key_store() {
                     let keys = store.list_keys().await;
                     let summaries: Vec<super::packet::ApiKeySummary> = keys
@@ -2423,13 +2449,13 @@ impl IpcServer {
                         request_id,
                         keys: summaries,
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 } else {
                     let response = ResponsePacket::AuthApiKeyList {
                         request_id,
                         keys: Vec::new(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 }
             }
             RequestPacket::AuthApiKeyRevoke { request_id, key_id } => {
@@ -2438,26 +2464,26 @@ impl IpcServer {
                         request_id,
                         message: "API key management requires local access".to_string(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 } else if let Some(store) = state.api_key_store() {
                     match store.revoke_key(&key_id).await {
                         Ok(true) => {
                             let response = ResponsePacket::AuthApiKeyRevoked { request_id, key_id };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Ok(false) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Key '{key_id}' not found"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: e.to_string(),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     }
                 } else {
@@ -2465,7 +2491,7 @@ impl IpcServer {
                         request_id,
                         message: "API key store not initialized".to_string(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 }
             }
             RequestPacket::AuthStatus { request_id } => {
@@ -2482,7 +2508,7 @@ impl IpcServer {
                     api_key_enabled: auth_config.enable_api_key(),
                     api_key_count,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             // ── Tunnel (ADR-035) ──
@@ -2493,7 +2519,7 @@ impl IpcServer {
                     success: true,
                     error: None,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             RequestPacket::TunnelStatus { request_id } => {
                 let configured = crate::tunnel::credential::has_pekohub_credential();
@@ -2504,7 +2530,7 @@ impl IpcServer {
                     daemon_running: true,
                     connected,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
 
             RequestPacket::InstanceSetStatus {
@@ -2522,7 +2548,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Invalid status '{other}'. Expected: online, offline, busy, error"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                         return Ok(());
                     }
                 };
@@ -2535,14 +2561,14 @@ impl IpcServer {
                                 success: true,
                                 error: None,
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to set instance status: {e}"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     }
                 } else {
@@ -2550,7 +2576,7 @@ impl IpcServer {
                         request_id,
                         message: "Tunnel is not active".to_string(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 }
             }
 
@@ -2568,7 +2594,7 @@ impl IpcServer {
                             request_id,
                             message: format!("Invalid exposure '{other}'. Expected: unexposed, private, public"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                         return Ok(());
                     }
                 };
@@ -2581,14 +2607,14 @@ impl IpcServer {
                                 success: true,
                                 error: None,
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                         Err(e) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!("Failed to set instance exposure: {e}"),
                             };
-                            Self::send_packet(&socket, response, addr).await?;
+                            Self::send_packet(&socket, response, peer).await?;
                         }
                     }
                 } else {
@@ -2596,7 +2622,7 @@ impl IpcServer {
                         request_id,
                         message: "Tunnel is not active".to_string(),
                     };
-                    Self::send_packet(&socket, response, addr).await?;
+                    Self::send_packet(&socket, response, peer).await?;
                 }
             }
 
@@ -2618,14 +2644,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2655,14 +2681,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2684,14 +2710,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: e.to_string(),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2714,14 +2740,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("{e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2753,14 +2779,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("{e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2784,14 +2810,14 @@ impl IpcServer {
                             success: true,
                             error: None,
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!("{e}"),
                         };
-                        Self::send_packet(&socket, response, addr).await?;
+                        Self::send_packet(&socket, response, peer).await?;
                     }
                 }
             }
@@ -2812,7 +2838,7 @@ impl IpcServer {
         user: String,
         state: AppState,
         socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         use crate::agent::stateless_service::MessageRequest;
         use crate::engine::{AgenticEvent, LifecyclePhase};
@@ -2844,13 +2870,13 @@ impl IpcServer {
                     request_id,
                     message: format!("Failed to start agent execution: {e}"),
                 };
-                Self::send_packet(&socket, error_packet, addr).await?;
+                Self::send_packet(&socket, error_packet, peer).await?;
                 let done_packet = ResponsePacket::Done {
                     request_id,
                     success: false,
                     error: Some(e.to_string()),
                 };
-                Self::send_packet(&socket, done_packet, addr).await?;
+                Self::send_packet(&socket, done_packet, peer).await?;
                 return Ok(());
             }
         };
@@ -2876,7 +2902,7 @@ impl IpcServer {
                                             seq,
                                             chunk: text,
                                         };
-                                        Self::send_packet(&socket, packet, addr).await?;
+                                        Self::send_packet(&socket, packet, peer).await?;
                                         seq += 1;
                                     } else {
                                         // Accumulate for non-streaming mode
@@ -2891,7 +2917,7 @@ impl IpcServer {
                                             seq,
                                             chunk: text,
                                         };
-                                        Self::send_packet(&socket, packet, addr).await?;
+                                        Self::send_packet(&socket, packet, peer).await?;
                                         seq += 1;
                                     } else {
                                         non_streaming_buffer.push_str(&text);
@@ -2904,7 +2930,7 @@ impl IpcServer {
                                             seq,
                                             chunk: format!("\n[Running tool: {}]\n", name),
                                         };
-                                        Self::send_packet(&socket, packet, addr).await?;
+                                        Self::send_packet(&socket, packet, peer).await?;
                                         seq += 1;
                                     }
                                 }
@@ -2922,7 +2948,7 @@ impl IpcServer {
                                             seq,
                                             chunk: format!("\n[Tool result]: {}\n", output),
                                         };
-                                        Self::send_packet(&socket, packet, addr).await?;
+                                        Self::send_packet(&socket, packet, peer).await?;
                                     }
                                 }
                                 AgenticEvent::Lifecycle { phase: LifecyclePhase::End, .. } => {
@@ -2933,14 +2959,14 @@ impl IpcServer {
                                             seq,
                                             chunk: std::mem::take(&mut non_streaming_buffer),
                                         };
-                                        Self::send_packet(&socket, packet, addr).await?;
+                                        Self::send_packet(&socket, packet, peer).await?;
                                     }
                                     let packet = ResponsePacket::Done {
                                         request_id,
                                         success: true,
                                         error: None,
                                     };
-                                    Self::send_packet(&socket, packet, addr).await?;
+                                    Self::send_packet(&socket, packet, peer).await?;
                                     break;
                                 }
                                 AgenticEvent::Lifecycle { phase: LifecyclePhase::Error, error, .. } => {
@@ -2951,14 +2977,14 @@ impl IpcServer {
                                             seq,
                                             chunk: std::mem::take(&mut non_streaming_buffer),
                                         };
-                                        Self::send_packet(&socket, packet, addr).await?;
+                                        Self::send_packet(&socket, packet, peer).await?;
                                     }
                                     let packet = ResponsePacket::Done {
                                         request_id,
                                         success: false,
                                         error,
                                     };
-                                    Self::send_packet(&socket, packet, addr).await?;
+                                    Self::send_packet(&socket, packet, peer).await?;
                                     break;
                                 }
                                 _ => {
@@ -2974,14 +3000,14 @@ impl IpcServer {
                                     seq,
                                     chunk: std::mem::take(&mut non_streaming_buffer),
                                 };
-                                Self::send_packet(&socket, packet, addr).await?;
+                                Self::send_packet(&socket, packet, peer).await?;
                             }
                             let packet = ResponsePacket::Done {
                                 request_id,
                                 success: true,
                                 error: None,
                             };
-                            Self::send_packet(&socket, packet, addr).await?;
+                            Self::send_packet(&socket, packet, peer).await?;
                             break;
                         }
                     }
@@ -2989,7 +3015,7 @@ impl IpcServer {
 
                 _ = heartbeat.tick() => {
                     let packet = ResponsePacket::Heartbeat { request_id };
-                    Self::send_packet(&socket, packet, addr).await?;
+                    Self::send_packet(&socket, packet, peer).await?;
                 }
             }
         }
@@ -3006,7 +3032,7 @@ impl IpcServer {
         workspace: std::path::PathBuf,
         state: AppState,
         socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         use crate::extension::async_exec::executor::{AsyncTaskId, AsyncToolConfig};
 
@@ -3042,7 +3068,7 @@ impl IpcServer {
             request_id,
             receipt,
         };
-        Self::send_packet(&socket, response, addr).await?;
+        Self::send_packet(&socket, response, peer).await?;
 
         Ok(())
     }
@@ -3053,7 +3079,7 @@ impl IpcServer {
         task_id: String,
         state: AppState,
         socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let executor = state.async_task_executor.clone();
         let cancelled = executor.cancel(&task_id).await.unwrap_or(false);
@@ -3067,7 +3093,7 @@ impl IpcServer {
                 Some(format!("Task {} not found or already completed", task_id))
             },
         };
-        Self::send_packet(&socket, response, addr).await?;
+        Self::send_packet(&socket, response, peer).await?;
 
         Ok(())
     }
@@ -3078,7 +3104,7 @@ impl IpcServer {
         extension_id: String,
         state: AppState,
         socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let registry = state.runtime_starter_registry().clone();
         let ctx = state.starter_context();
@@ -3089,14 +3115,14 @@ impl IpcServer {
                     request_id,
                     extension_id,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             Err(e) => {
                 let response = ResponsePacket::Error {
                     request_id,
                     message: e.to_string(),
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
         }
 
@@ -3109,7 +3135,7 @@ impl IpcServer {
         extension_id: String,
         state: AppState,
         socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let registry = state.runtime_starter_registry().clone();
         let ctx = state.starter_context();
@@ -3120,14 +3146,14 @@ impl IpcServer {
                     request_id,
                     extension_id,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             Err(e) => {
                 let response = ResponsePacket::Error {
                     request_id,
                     message: e.to_string(),
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
         }
 
@@ -3140,7 +3166,7 @@ impl IpcServer {
         extension_id: String,
         state: AppState,
         socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let registry = state.runtime_starter_registry().clone();
         let ctx = state.starter_context();
@@ -3151,14 +3177,14 @@ impl IpcServer {
                     request_id,
                     extension_id,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             Err(e) => {
                 let response = ResponsePacket::Error {
                     request_id,
                     message: e.to_string(),
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
         }
 
@@ -3171,7 +3197,7 @@ impl IpcServer {
         extension_id: String,
         state: AppState,
         socket: ServerSocket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let manager = state.background_runtime_manager().clone();
 
@@ -3190,7 +3216,7 @@ impl IpcServer {
                     restart_count,
                     last_error,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
             None => {
                 let response = ResponsePacket::ExtStatus {
@@ -3200,7 +3226,7 @@ impl IpcServer {
                     restart_count: 0,
                     last_error: None,
                 };
-                Self::send_packet(&socket, response, addr).await?;
+                Self::send_packet(&socket, response, peer).await?;
             }
         }
 
@@ -3211,11 +3237,11 @@ impl IpcServer {
     async fn send_packet(
         socket: &ServerSocket,
         packet: ResponsePacket,
-        addr: Option<std::net::SocketAddr>,
+        peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let bytes = packet.to_bytes()?;
         trace!("Sending response: {:?} ({} bytes)", packet, bytes.len());
-        socket.send_response(&bytes, addr).await?;
+        socket.send_response(&bytes, peer).await?;
         Ok(())
     }
 }
