@@ -35,6 +35,10 @@ enum ServerSocket {
 
 impl ServerSocket {
     /// Receive a packet from the socket
+    ///
+    /// On Unix, `recv_from` returns the sender's path as a `SocketAddr` so
+    /// `send_response` can `send_to` it back. On UDP, the `SocketAddr` is
+    /// the peer address.
     async fn recv_from(
         &self,
         buf: &mut [u8],
@@ -42,8 +46,8 @@ impl ServerSocket {
         match self {
             #[cfg(unix)]
             Self::Unix { socket, .. } => {
-                let len = socket.recv(buf).await?;
-                Ok((len, None))
+                let (len, addr) = socket.recv_from(buf).await?;
+                Ok((len, Some(addr)))
             }
             Self::Udp { socket } => {
                 let (len, addr) = socket.recv_from(buf).await?;
@@ -53,6 +57,11 @@ impl ServerSocket {
     }
 
     /// Send a response back to the client
+    ///
+    /// Unix datagram sockets are connectionless, so the response must be
+    /// explicitly `send_to`-ed to the sender's path returned by the
+    /// matching `recv_from` — `socket.send(bytes)` requires `connect()`
+    /// first and would return `ENOTCONN` on a bind-only server socket.
     async fn send_response(
         &self,
         bytes: &[u8],
@@ -61,11 +70,15 @@ impl ServerSocket {
         match self {
             #[cfg(unix)]
             Self::Unix { socket, .. } => {
-                // For Unix datagram, the socket is connected to the peer
-                // when we receive from them (we use recv_from/send_to semantics).
-                // Actually UnixDatagram doesn't have recv_from/send_to in tokio.
-                // We use the connected peer approach: after recv, we can send back.
-                socket.send(bytes).await?;
+                let path = addr
+                    .and_then(|a| a.as_pathname().map(|p| p.to_path_buf()))
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "no peer path for Unix datagram response",
+                        )
+                    })?;
+                socket.send_to(bytes, &path).await?;
             }
             Self::Udp { socket } => {
                 if let Some(addr) = addr {

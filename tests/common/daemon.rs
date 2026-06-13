@@ -47,16 +47,15 @@ impl DaemonGuard {
     }
 
     /// Poll `peko daemon status --json` until `running: true` or `timeout` elapses.
-    /// Each poll itself is wrapped in a 5s hard timeout so a stuck peko
+    /// Each poll itself is wrapped in a 6s hard timeout so a stuck peko
     /// subprocess can't hang the whole wait_ready loop.
     ///
-    /// Why 5s per poll (not 2s): when the daemon's Unix socket isn't bound
-    /// yet, the CLI's `ConnectionManager::try_connect()` falls through to
-    /// a UDP fallback that itself uses a hard 2s `recv` timeout (see
-    /// `src/ipc/connection.rs`). A 2s poll budget races that and kills the
-    /// child *before* it can print the "not running" JSON, so wait_ready
-    /// would never see a useful result. 5s gives the CLI room to time out
-    /// the UDP fallback and print its JSON cleanly.
+    /// Why 6s per poll (not 2s, not 5s): the CLI's `ConnectionManager::try_connect`
+    /// ([src/ipc/connection.rs](src/ipc/connection.rs)) tries Unix-default first
+    /// (2s recv timeout), then UDP-default (another 2s recv timeout), before
+    /// giving up and printing the "not running" JSON. So a single status call
+    /// can take ~4s when the daemon is still binding its socket. A 6s budget
+    /// fits that worst case with a little headroom for the JSON to flush.
     ///
     /// Why `try_run_with_timeout` (not `run_with_timeout`): the latter
     /// panics on timeout, which would unwind through this entire loop
@@ -75,7 +74,7 @@ impl DaemonGuard {
                     c
                 },
                 &[],
-                Duration::from_secs(5),
+                Duration::from_secs(6),
             );
             last_status_json = match &output {
                 Ok((o, _, _)) if o.status.success() => {
