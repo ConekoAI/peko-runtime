@@ -42,6 +42,7 @@ use common::{generate_jwt, generate_runtime_identity, PekohubBackend};
 async fn create_test_workspace(
     workspace_dir: &std::path::Path,
     agent_name: &str,
+    chat_user_id: &str,
 ) -> anyhow::Result<()> {
     let config_dir = workspace_dir.join("config");
     let data_dir = workspace_dir.join("data");
@@ -104,6 +105,18 @@ cli = true
 
 [prompt]
 system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
+
+# Grant the test user Chat permission so the runtime's private-
+# instance ACL (peko-runtime/src/tunnel/dispatcher.rs::
+# check_request_allowed) lets the request through. Without this,
+# `allowed_users` is computed as empty and the chat is rejected
+# with "Forbidden".
+[[permissions]]
+subject_id = "{chat_user_id}"
+subject_type = "user"
+permission = "chat"
+granted_at = "2026-01-01T00:00:00Z"
+granted_by = "system"
 "#
     );
 
@@ -123,16 +136,44 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
 
-    // 2. Create temporary workspace with agent config
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .no_proxy()
+        .build()
+        .unwrap();
+
+    // 2. Create user FIRST so we can put their id into the agent
+    //    config's permissions grant — the runtime's
+    //    `compute_allowed_user_ids` reads from `config.permissions`,
+    //    and without a matching grant the private-instance ACL
+    //    rejects the chat with "Forbidden".
+    let user_resp = client
+        .post(format!("{}/test/create-user", backend.url))
+        .json(&serde_json::json!({
+            "external_id": "e2e-test-user",
+            "provider": "github",
+            "namespace": "e2etestuser",
+            "display_name": "E2E Test User",
+            "email": "e2e@test.com"
+        }))
+        .send()
+        .await
+        .expect("Failed to create test user");
+    assert!(user_resp.status().is_success(), "Test user creation failed");
+    let user_body: serde_json::Value = user_resp.json().await.unwrap();
+    let user_id = user_body["id"].as_i64().expect("No user id") as i32;
+    let chat_user_id = user_id.to_string();
+
+    // 3. Create temporary workspace with agent config
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let workspace_path = temp_dir.path();
     let agent_name = "e2e-test-agent";
 
-    create_test_workspace(workspace_path, agent_name)
+    create_test_workspace(workspace_path, agent_name, &chat_user_id)
         .await
         .expect("Failed to create test workspace");
 
-    // 3. Build AppState with real services
+    // 4. Build AppState with real services
     let config = DaemonConfigSnapshot {
         data_dir: workspace_path.join("data"),
         config_dir: workspace_path.join("config"),
@@ -149,29 +190,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     .await
     .expect("Failed to build AppState");
 
-    // 4. Create user + runtime record in PekoHub BEFORE starting tunnel
-    //    so that owner resolution works when instances are announced
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .no_proxy()
-        .build()
-        .unwrap();
-
-    let user_resp = client
-        .post(format!("{}/test/create-user", backend.url))
-        .json(&serde_json::json!({
-            "external_id": "e2e-test-user",
-            "provider": "github",
-            "namespace": "e2etestuser",
-            "display_name": "E2E Test User",
-            "email": "e2e@test.com"
-        }))
-        .send()
-        .await
-        .expect("Failed to create test user");
-    assert!(user_resp.status().is_success(), "Test user creation failed");
-    let user_body: serde_json::Value = user_resp.json().await.unwrap();
-    let user_id = user_body["id"].as_i64().expect("No user id") as i32;
+    // 5. Create runtime record (with owner_id = the user we created above)
 
     // Insert runtime record for owner resolution
     let runtime_resp = client
