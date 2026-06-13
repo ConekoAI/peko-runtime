@@ -255,6 +255,7 @@ async fn test_pekohub_blob_roundtrip() {
 
     let put_resp = client
         .put(&upload_url)
+        .header("Content-Type", "application/octet-stream")
         .query(&[("digest", digest.clone())])
         .body(data.as_slice())
         .send()
@@ -339,7 +340,9 @@ async fn test_pekohub_catalog_and_tags() {
             .send()
             .await
             .unwrap();
-        assert!(resp.status().is_success(), "Push {name} failed: {}", resp.status());
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        assert!(status.is_success(), "Push {name} failed: {status} - {body}");
     }
 
     // Catalog
@@ -536,6 +539,12 @@ async fn test_registry_client_skips_existing_layers() {
         LayerType::Identity,
         layer2_data.len() as u64,
     ));
+    // PekoHub rejects empty config.digest as "Invalid digest format".
+    // layer1 is the config blob (see `agent_manifest.layers.config`
+    // assignment above) — populate the top-level OCI config
+    // descriptor from it.
+    reg_manifest = reg_manifest
+        .with_config(layer1_digest.clone(), layer1_data.len() as u64, None::<String>);
     store_registry_manifest_local(&registry, &reg_manifest, &manifest_digest).await;
 
     // First push
@@ -667,12 +676,15 @@ async fn test_registry_client_digest_verification_on_pull() {
 
     let put_resp = client
         .put(&upload_url)
+        .header("Content-Type", "application/octet-stream")
         .query(&[("digest", &correct_digest)])
         .body(data.as_slice())
         .send()
         .await
         .unwrap();
-    assert!(put_resp.status().is_success());
+    let status = put_resp.status();
+    let body = put_resp.text().await.unwrap_or_default();
+    assert!(status.is_success(), "Blob PUT failed: {status} - {body}");
 
     // Push a manifest that references this blob with the CORRECT digest
     let manifest_json = format!(
