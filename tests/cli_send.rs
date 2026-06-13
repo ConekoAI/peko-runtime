@@ -63,13 +63,17 @@ fn send_default_response_streams_to_stdout() {
         "peko send exited non-zero (status={:?})\nstdout: {stdout}\nstderr: {stderr}",
         out.status
     );
-    // Mock's default response is "Peko tunnel works!". The CLI may add
-    // formatting (e.g. the agent name as a header), so match a substring.
+    // The CI mock LLM is configured with `DEFAULT_RESPONSE=SUCCESS` in
+    // tests/docker/docker-compose.integration.yml — every prompt that
+    // doesn't match a keyword/tool-call/template returns that exact
+    // string. The spec's "Peko tunnel works!" default is the upstream
+    // mock fallback (used by `tunnel_e2e`), but the cli_send tests run
+    // against the CI override. Assert against the configured value so
+    // this test stays in sync with docker-compose.
     assert!(
-        stdout.to_lowercase().contains("peko")
-            || stdout.to_lowercase().contains("tunnel")
-            || stdout.to_lowercase().contains("works"),
-        "stdout did not contain the mock default response\nstdout: {stdout}\nstderr: {stderr}"
+        stdout.contains("SUCCESS"),
+        "stdout did not contain the mock's configured default response 'SUCCESS'\n\
+         stdout: {stdout}\nstderr: {stderr}"
     );
 }
 
