@@ -41,7 +41,7 @@ auto_accept_trusted = false
 default_timeout_seconds = 300
 
 [provider]
-provider_type = "open_a_i"
+provider_type = "openai"
 api_key = "sk-test"
 default_model = "gpt-4"
 timeout_seconds = 60
