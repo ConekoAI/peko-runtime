@@ -500,15 +500,11 @@ async fn test_pekohub_search_api() {
         .await
         .unwrap();
 
-    // Build OCI manifest with Pekohub metadata annotations.
-    // The top-level `hooks: []` is included so pekohub persists the
-    // field. We *also* add `hooks: []` to the dev.pekohub.metadata
-    // payload because pekohub's search-response transformer reads
-    // the metadata annotation, not the top-level OCI hooks field,
-    // when building items[].hooks — if it can't find hooks in the
-    // metadata JSON it returns null, which then fails pekohub's
-    // own zod schema (hooks: array) with HTTP 500 "Expected array,
-    // received null" at items[0].hooks.
+    // Build OCI manifest with Pekohub metadata annotations. We don't
+    // include a `hooks` field anywhere — pekohub's `nullishToUndefined`
+    // schema helper (pekohub issue 001) coerces a null `hooks` to
+    // undefined in the search response, so the response no longer
+    // 500s on this field being absent.
     let manifest = serde_json::json!({
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -518,9 +514,8 @@ async fn test_pekohub_search_api() {
             "size": config_data.len()
         },
         "layers": [],
-        "hooks": [],
         "annotations": {
-            "dev.pekohub.metadata": r#"{"bundleType":"agent","description":"A searchable test agent","author":"test","hooks":[]}"#,
+            "dev.pekohub.metadata": r#"{"bundleType":"agent","description":"A searchable test agent","author":"test"}"#,
             "org.opencontainers.image.description": "A searchable test agent"
         }
     })

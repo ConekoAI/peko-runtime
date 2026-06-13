@@ -236,13 +236,22 @@ async fn test_pekohub_blob_roundtrip() {
         .await
         .unwrap();
     assert_eq!(post_resp.status(), 202);
-    let upload_url = post_resp
+    // PekoHub's blob upload Location header is sometimes relative
+    // (e.g. "/v2/.../blobs/uploads/<uuid>"). reqwest refuses a
+    // relative URL without a base, so resolve it against the
+    // backend URL before passing to .put() (matches what
+    // test_pekohub_catalog_and_tags already does).
+    let location = post_resp
         .headers()
         .get("location")
         .unwrap()
         .to_str()
-        .unwrap()
-        .to_string();
+        .unwrap();
+    let upload_url = if location.starts_with("http") {
+        location.to_string()
+    } else {
+        format!("{}{}", backend.url, location)
+    };
 
     let put_resp = client
         .put(&upload_url)
@@ -408,6 +417,12 @@ async fn test_registry_client_push_and_pull() {
     for layer in &layers {
         reg_manifest.add_layer(layer.clone());
     }
+    // PekoHub validates the top-level OCI `config` descriptor and
+    // rejects empty digests as `Invalid digest format`. The config
+    // blob was stored locally as `layer1` above — populate the
+    // descriptor from it.
+    reg_manifest = reg_manifest
+        .with_config(layer1_digest.clone(), layer1_data.len() as u64, None::<String>);
     store_registry_manifest_local(&registry, &reg_manifest, &manifest_digest).await;
 
     // Configure client
@@ -643,8 +658,12 @@ async fn test_registry_client_digest_verification_on_pull() {
         .get("location")
         .unwrap()
         .to_str()
-        .unwrap()
-        .to_string();
+        .unwrap();
+    let upload_url = if upload_url.starts_with("http") {
+        upload_url.to_string()
+    } else {
+        format!("{}{}", backend.url, upload_url)
+    };
 
     let put_resp = client
         .put(&upload_url)

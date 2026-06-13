@@ -37,6 +37,12 @@ pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
 
 /// Insert a real user row into the fixture's PGlite DB via `/test/create-user`.
 /// Needed because PekoHub enforces namespace ownership on pushes.
+///
+/// The fixture's error handler returns `{ error: error.message }` with no
+/// `message` field, so the status alone is opaque. We read the body and
+/// include it in the panic message so a future failure surfaces the
+/// actual SQL/DB error (e.g. missing column, schema mismatch) instead
+/// of just "500 Internal Server Error".
 pub async fn create_test_user(client: &reqwest::Client, base_url: &str, namespace: &str) {
     let resp = client
         .post(format!("{base_url}/test/create-user"))
@@ -48,10 +54,11 @@ pub async fn create_test_user(client: &reqwest::Client, base_url: &str, namespac
         }))
         .send()
         .await
-        .expect("create-user failed");
+        .expect("create-user transport failed");
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
     assert!(
-        resp.status().is_success(),
-        "create-user failed: {}",
-        resp.status()
+        status.is_success(),
+        "create-user failed: status={status}, body={body}"
     );
 }
