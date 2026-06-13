@@ -80,8 +80,8 @@ pub struct Unpackager {
     package_path: std::path::PathBuf,
     /// Base directory for imported agents
     base_dir: std::path::PathBuf,
-    /// Team name for workspace/sessions placement
-    team: String,
+    /// Team name for workspace/sessions placement (None for standalone imports)
+    team: Option<String>,
 }
 
 impl Unpackager {
@@ -92,7 +92,7 @@ impl Unpackager {
             base_dir: dirs::config_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("peko"),
-            team: "default".to_string(),
+            team: None,
         }
     }
 
@@ -104,7 +104,7 @@ impl Unpackager {
 
     /// Set team name for workspace/sessions placement
     pub fn with_team(mut self, team: impl Into<String>) -> Self {
-        self.team = team.into();
+        self.team = Some(team.into());
         self
     }
 
@@ -527,13 +527,13 @@ impl Unpackager {
                 d.join("peko")
                     .join("workspaces")
                     .join(agent_name)
-                    .join(&self.team)
+                    .join(self.team.as_deref().unwrap_or("default"))
             })
             .unwrap_or_else(|| {
                 self.base_dir
                     .join("workspaces")
                     .join(agent_name)
-                    .join(&self.team)
+                    .join(self.team.as_deref().unwrap_or("default"))
             });
 
         tokio::fs::create_dir_all(&workspace_dir).await?;
@@ -566,13 +566,13 @@ impl Unpackager {
                 d.join("peko")
                     .join("sessions")
                     .join(agent_name)
-                    .join(&self.team)
+                    .join(self.team.as_deref().unwrap_or("default"))
             })
             .unwrap_or_else(|| {
                 self.base_dir
                     .join("sessions")
                     .join(agent_name)
-                    .join(&self.team)
+                    .join(self.team.as_deref().unwrap_or("default"))
             });
 
         tokio::fs::create_dir_all(&sessions_dir).await?;
@@ -671,7 +671,22 @@ impl Unpackager {
         config: &AgentConfig,
         name: &str,
     ) -> anyhow::Result<std::path::PathBuf> {
-        let agent_dir = self.base_dir.join("agents").join(name);
+        // Nest the agent under its team directory when this unpackager was
+        // constructed via `with_team(...)` (the team import path).
+        // Standalone agent imports leave `self.team = None` and continue
+        // to use the flat `agents/<name>/` layout, matching the pre-team
+        // behaviour. Without this, a team import would write the agent
+        // config next to unrelated agents instead of under the team the
+        // manifest claims it belongs to.
+        let agent_dir = if let Some(team) = self.team.as_deref() {
+            self.base_dir
+                .join("teams")
+                .join(team)
+                .join("agents")
+                .join(name)
+        } else {
+            self.base_dir.join("agents").join(name)
+        };
         tokio::fs::create_dir_all(&agent_dir).await?;
 
         let config_path = agent_dir.join("config.toml");
