@@ -61,18 +61,23 @@ async fn create_test_workspace(
     tokio::fs::create_dir_all(&agent_dir).await?;
 
     // Determine provider: use mock LLM if MOCK_LLM_URL is set, otherwise minimax
-    let (provider_type, api_key, default_model) =
+    let (provider_type, api_key, default_model, base_url) =
         if let Ok(mock_llm_url) = std::env::var("MOCK_LLM_URL") {
             (
                 "openai_compatible",
-                mock_llm_url.clone(),
+                "dummy-key-for-mock-llm".to_string(),
                 "default",
+                Some(mock_llm_url),
             )
         } else {
             let api_key = std::env::var("MINIMAX_API_KEY")
                 .map_err(|_| anyhow::anyhow!("MINIMAX_API_KEY or MOCK_LLM_URL environment variable not set"))?;
-            ("minimax", api_key, "MiniMax-M2.7")
+            ("minimax", api_key, "MiniMax-M2.7", None)
         };
+
+    let base_url_line = base_url
+        .map(|url| format!("base_url = \"{}\"\n", url))
+        .unwrap_or_default();
 
     let config_toml = format!(
         r#"version = "1.0"
@@ -88,7 +93,7 @@ default_model = "default"
 timeout_seconds = 60
 max_retries = 3
 retry_delay_ms = 1000
-
+{base_url_line}
 [provider.models.default]
 name = "{default_model}"
 max_tokens = 1024
