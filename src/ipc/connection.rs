@@ -91,25 +91,26 @@ impl ConnectionHandle {
         }
     }
 
-    /// Clone the handle (creates a new socket bound to ephemeral port/path)
+    /// Clone the handle (shares the same underlying socket)
     ///
     /// # Errors
     /// Returns error if socket creation fails
     pub async fn try_clone(&self) -> anyhow::Result<Self> {
         match self {
             #[cfg(unix)]
-            Self::Unix { path, .. } => {
-                // Use a unique temp file per clone to avoid races and leaks.
-                // Include a random suffix so concurrent clones don't collide.
-                let rnd: u32 = std::process::id().wrapping_add(rand::random());
-                let tmp_path = std::env::temp_dir().join(format!(
-                    "PEKO_cli_{}_{}.sock",
-                    std::process::id(),
-                    rnd
-                ));
-                let socket = UnixDatagram::bind(&tmp_path)?;
+            Self::Unix { socket, path } => {
+                // CRITICAL: share the same underlying `Arc<UnixDatagram>`,
+                // not a freshly-bound temp socket. The daemon learns the
+                // CLI's reply path from the first `recv_from` on the
+                // request it receives, and `send_to`s responses back to
+                // *that* path. If we bound a new path here, the receiver
+                // task spawned by `spawn_receiver` would sit on a socket
+                // the daemon has no idea exists, and `peko send` would
+                // hang forever waiting for response packets.
+                //
+                // Mirrors the UDP branch below: one socket, many handles.
                 Ok(Self::Unix {
-                    socket: Arc::new(socket),
+                    socket: Arc::clone(socket),
                     path: path.clone(),
                 })
             }
