@@ -227,7 +227,7 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/send/` | `tests/cli_send.rs` | mock-LLM | ✅ Migrated (7 tests) |
 | `e2e_tests/session/` | `tests/cli_session.rs` | mock-LLM | ✅ Migrated (9 tests) |
 | `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mixed | ✅ Migrated (14 tests: 6 offline, 8 mock-LLM) |
-| `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ✅ Migrated (16 tests) |
+| `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ✅ Migrated (18 tests; of which 2 are agent-tool multi-turn via §3 Sequence — see coverage gap below) |
 | `e2e_tests/extensions/` | `tests/cli_extensions.rs` | mock-LLM (tool-call sequence, §3 Sequence) | ⏳ Pending |
 | `e2e_tests/compaction/` | `tests/cli_compaction.rs` | mock-LLM (multi-turn sequence) | ⏳ Pending |
 | `e2e_tests/a2a/`, `e2e_tests/subagent/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_subagent.rs`, `tests/cli_tools.rs` | mock-LLM (tool-call decisions via Sequence) | ⏳ Pending |
