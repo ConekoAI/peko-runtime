@@ -25,6 +25,7 @@
 
 mod common;
 use common::{write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -106,6 +107,7 @@ fn send_once(cli: &PekoCli, args: &[&str]) -> (String, String, std::process::Exi
 /// 1st / 2nd / 3rd LLM call gets the i-th element of the list.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn mock_llm_script_list_returns_ith_element_per_call() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
@@ -150,6 +152,7 @@ async fn mock_llm_script_list_returns_ith_element_per_call() {
 /// doesn't crash.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn mock_llm_script_list_clamps_to_last_element_after_exhaustion() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
@@ -193,6 +196,7 @@ async fn mock_llm_script_list_clamps_to_last_element_after_exhaustion() {
 /// tool_call, the second returning text.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL"]
+#[serial]
 async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
@@ -237,10 +241,17 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
         body1.contains("\"cron\""),
         "call 1 did not include tool name 'cron' in its stream\n{body1}",
     );
-    assert!(
-        body1.contains(tool_args),
-        "call 1 did not include the scripted tool arguments\n{body1}",
-    );
+    // The tool-call chunk is emitted as a JSON string value, so the
+    // inner quotes of `tool_args` are escaped to `\"` when the mock
+    // serializes the SSE chunk. Assert on values inside the args
+    // (a key, a value, and the timestamp) so the check is robust to
+    // JSON escaping.
+    for needle in ["sub_command", "2099-01-01T00:00:00Z", "agent_id"] {
+        assert!(
+            body1.contains(needle),
+            "call 1 stream missing expected args substring {needle:?}\n{body1}",
+        );
+    }
 
     // Call 2: expect the text sentinel. Send the same needle again
     // so the per-substring counter advances to element 1.
@@ -267,6 +278,7 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
 /// the same string forever — same as the pre-sequence behavior).
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL"]
+#[serial]
 async fn mock_llm_script_string_value_unchanged_single_shot() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
@@ -309,6 +321,7 @@ async fn mock_llm_script_string_value_unchanged_single_shot() {
 /// starts from element 0 again (NOT element N).
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL"]
+#[serial]
 async fn mock_test_configure_resets_sequence_counter() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
@@ -354,6 +367,7 @@ async fn mock_test_configure_resets_sequence_counter() {
 /// `a` does not advance the counter for `b`.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL"]
+#[serial]
 async fn mock_llm_script_counters_are_per_substring() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
