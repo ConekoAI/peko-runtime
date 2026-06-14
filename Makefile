@@ -15,7 +15,7 @@
         test-lib test-subagent \
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
-        test-cli-subagent test-cli-tools \
+        test-cli-subagent test-cli-tools test-cli-compaction \
         test-mock-llm-sequence \
         ci
 
@@ -24,7 +24,7 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
-                     cli_tools \
+                     cli_tools cli_compaction \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -55,7 +55,7 @@ help:
 	@echo "    test-pekohub / test-tunnel / test-tunnel-e2e"
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
-	@echo "    test-cli-subagent / test-cli-tools"
+	@echo "    test-cli-subagent / test-cli-tools / test-cli-compaction"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -179,6 +179,17 @@ test-cli-subagent: docker-up
 test-cli-tools: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_tools -- --include-ignored
+
+# `peko session compact` slice. `peko session compact` is
+# truncation-based (see src/compaction/cli.rs:75), so the compaction
+# itself doesn't need a real LLM — only the multi-turn setup phase
+# does, and that's scripted via mock-LLM tool_call sequences. All
+# `#[serial]`. See docs/integration/TESTING.md §7 for the deferred
+# `compaction_auto.ps1` (auto-compaction uses the LLM to generate the
+# summary text — real-LLM tier).
+test-cli-compaction: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_compaction -- --include-ignored
 
 # Mock LLM sequence feature (Phase C, see docs/integration/TESTING.md §3).
 # Exercises the per-substring counter in the list-value branch of

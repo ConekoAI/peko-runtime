@@ -290,7 +290,36 @@ pub async fn handle_session(
                     tokens_after,
                     ..
                 } => {
-                    if json {
+                    if json && dry_run {
+                        // JSON dry-run: surface the same DryRunReport
+                        // fields the text path computes, plus a
+                        // `dry_run: true` marker so callers can tell
+                        // it apart from a real compact response.
+                        let report = crate::compaction::cli::DryRunReport {
+                            estimated_tokens: tokens_saved,
+                            context_window: tokens_before,
+                            percent: if tokens_before > 0 {
+                                (tokens_saved as f64 / tokens_before as f64 * 100.0) as usize
+                            } else {
+                                0
+                            },
+                            message_count: messages_compacted,
+                            messages_to_compact: messages_compacted,
+                        };
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "success": true,
+                                "dry_run": true,
+                                "session_id": resolved,
+                                "estimated_tokens": report.estimated_tokens,
+                                "context_window": report.context_window,
+                                "percent": report.percent,
+                                "message_count": report.message_count,
+                                "messages_to_compact": report.messages_to_compact,
+                            })
+                        );
+                    } else if json {
                         println!(
                             "{}",
                             serde_json::json!({

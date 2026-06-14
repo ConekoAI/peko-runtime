@@ -86,19 +86,20 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_cron.rs](../../tests/cli_cron.rs) | 18 | 18 | PekoHub + mock LLM (2 are agent-tool multi-turn, §3 Sequence) | Y |
 | [cli_subagent.rs](../../tests/cli_subagent.rs) | 7 | 7 | PekoHub + mock LLM (all multi-turn, §3 Sequence, `#[serial]`) | Y |
 | [cli_tools.rs](../../tests/cli_tools.rs) | 6 | 6 | PekoHub + mock LLM (single-turn, §3 Sequence, `#[serial]`) | Y |
+| [cli_compaction.rs](../../tests/cli_compaction.rs) | 1 | 1 | PekoHub + mock LLM (smoke test for `--dry-run --json` shape; full 6-test migration deferred — see coverage gap) | Y |
 | [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) | 6 | 6 | mock LLM (sequence feature, §3) | Y |
 
-**Totals:** 87 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 103 in `tests/`.
+**Totals:** 88 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 104 in `tests/`.
 
-The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 6 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs), [cli_subagent.rs](../../tests/cli_subagent.rs), [cli_tools.rs](../../tests/cli_tools.rs)) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
+The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 7 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs), [cli_subagent.rs](../../tests/cli_subagent.rs), [cli_tools.rs](../../tests/cli_tools.rs), [cli_compaction.rs](../../tests/cli_compaction.rs) — note: `cli_compaction.rs` is a smoke test for the `--dry-run --json` CLI fix; the 6 main compaction migration scenarios are deferred, see §7 coverage gap) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
 > **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L466) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
 
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 103 tests across 14 files in `tests/`.
-- E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7. The Phase B legs that have landed (`send/`, `session/`, `agent/`, `team/`, `config/`, `cron/`, `subagent/`, `tools/built-in/`) move the PS scripts into a "redundant" state but keep them on disk until Phase E finalizes the cleanup.
+- Integration: 104 tests across 15 files in `tests/`.
+- E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7. The Phase B legs that have landed (`send/`, `session/`, `agent/`, `team/`, `config/`, `cron/`, `subagent/`, `tools/built-in/`) move the PS scripts into a "redundant" state but keep them on disk until Phase E finalizes the cleanup. The `compaction/` migration landed a smoke test only; the bulk of the 6 PS scripts there are still pending.
 
 ---
 
@@ -231,7 +232,7 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mixed | ✅ Migrated (14 tests: 6 offline, 8 mock-LLM) |
 | `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ✅ Migrated (18 tests; of which 2 are agent-tool multi-turn via §3 Sequence — see coverage gap below) |
 | `e2e_tests/extensions/` | `tests/cli_extensions.rs` | mock-LLM (tool-call sequence, §3 Sequence) | ⏳ Pending |
-| `e2e_tests/compaction/` | `tests/cli_compaction.rs` | mock-LLM (multi-turn sequence) | ⏳ Pending |
+| `e2e_tests/compaction/{cli,extension}` | `tests/cli_compaction.rs` | mock-LLM (smoke test for `--dry-run --json` shape; multi-turn setup deferred) | 🟡 Partial (1 test landed — smoke for the CLI fix; the 6 PS scenarios + extension deferred to follow-up PR — see coverage gap below) |
 | `e2e_tests/a2a/` | `tests/cli_a2a.rs` | mock-LLM (tool-call decisions via Sequence) | ⏳ Pending |
 | `e2e_tests/tools/built-in/` | `tests/cli_tools.rs` | mock-LLM (single tool_call per test, §3 Sequence) | ✅ Migrated (6 tests, one per built-in tool: glob, grep, read_file, write_file, str_replace_file, shell. See coverage gap below for the 4 top-level PS scripts deferred.) |
 | `e2e_tests/subagent/` | `tests/cli_subagent.rs` | mock-LLM (tool-call decisions via Sequence) | ✅ Migrated (7 tests covering parent-side blocking path, isolated mode, labeled mode, inline-result, 2-level nesting, depth-limit smoke, shared/isolated context; `subagent_async.ps1` + `subagent_status_list.ps1` deferred — see coverage gap below) |
@@ -285,6 +286,31 @@ The child-side file write assertions are real end-to-end reads: the test creates
 These four scripts stay in `e2e_tests/tools/` until those features are wired enough to mock. The 6 `built-in/*.ps1` files that this PR migrates stay in place (now redundant with `tests/cli_tools.rs`) and will be deleted in Phase E, consistent with how the `cron/`, `subagent/`, `agent/`, etc. migrations handled their now-redundant PS scripts.
 
 **A non-obvious gotcha this migration (independently) re-confirmed:** the same per-agent `[extensions] enabled` whitelist gotcha from `cli_subagent.rs` applies to the 6 built-in tools. `write_builtin_agent` in `tests/cli_tools.rs` lists BOTH the bare tool names (`"shell"`, `"read_file"`, `"write_file"`, `"glob"`, `"grep"`, `"str_replace_file"`) AND the canonical `builtin:tool:…` IDs. Without both forms, the per-agent init drops the tool or the dispatcher marks it disabled, and the parent's `tool_call` returns `"Error: Tool 'write_file' is currently disabled..."`.
+
+#### Phase B coverage gap — `e2e_tests/compaction/{cli,extension}.ps1` (smoke test landed; full migration deferred) and `compaction_auto.ps1` (deferred, real-LLM tier)
+
+**Status:** Partial. `tests/cli_compaction.rs` ships 1 test that exercises the `--dry-run --json` CLI fix:
+
+| Rust test | Maps to PS sub-test | What it asserts |
+|---|---|---|
+| `cli_compact_dry_run_json_reports_metadata` | `compaction_cli.ps1` T1 (smoke) | `peko session compact --dry-run --json` returns `success: true`, `dry_run: true`, and includes the `DryRunReport` fields (`estimated_tokens`, `context_window`, `percent`, `message_count`, `messages_to_compact`) |
+
+**The CLI fix this PR ships.** `compaction_cli.ps1` T1 used `peko session compact --dry-run --json` and asserted on `dry_run: true` plus the `DryRunReport` fields in the JSON. Pre-fix, [src/commands/session.rs:262-356](../../pekobot/peko-runtime/src/commands/session.rs#L262-L356) routed `--dry-run --json` into the text-render path and emitted no JSON at all, so the PS test was broken against the current code. The fix adds a `serde_json::json!({...})` dry-run branch that surfaces the same `DryRunReport` fields the text path uses, plus the standard `success` / `session_id` keys. ~25 lines net in `src/commands/session.rs`. Real fix, makes the existing PS test valid, also useful for humans and scripts that want a JSON dry-run report.
+
+**What is deferred to a follow-up PR (the 6 PS sub-tests of `compaction_cli.ps1` + `compaction_extension.ps1`):**
+
+| PS sub-test | Why deferred |
+|---|---|
+| `compaction_cli.ps1` T1 (full) — `message_count >= 6`, `messages_to_compact >= 1` | The smoke test in this PR proves the JSON shape. Driving 6+ messages into the session through the agent loop is the hard part — the mock LLM's `_extract_user_message` keys on the *first* user message (not the latest), so a per-turn unique needle clamps to the last element of the first turn's list. The helper uses one shared needle and a flat `[tc_1, sent_1, tc_2, sent_2, …]` sequence, but populating the agent's active session with the messages and verifying the compactor's `load_context_fast` returns the count needs further investigation into `src/session/unified.rs::from_entries` (which counts `UserMessage` / `AssistantMessage` from `NormalizedEntry`). The diagnostic JSONL in the prior PR iteration shows 18+ messages present; the compactor just reports 0. |
+| `compaction_cli.ps1` T2 — actual compact + JSONL compaction event | Depends on the multi-turn setup working (T1 full). |
+| `compaction_cli.ps1` T3 — context cache update | Depends on T2. |
+| `compaction_cli.ps1` T4 — session usable after compact | Depends on the multi-turn setup working. |
+| `compaction_cli.ps1` T5 — custom instruction in summary | Depends on T2. |
+| `compaction_cli.ps1` T6 — multi-compaction incremental numbers | Depends on T2. |
+| `compaction_extension.ps1` T1+T3 — extension with `session.compaction` hook installed | Mostly independent of the session population issue, but was deferred together to land the smoke test in one focused PR. |
+| `compaction_auto.ps1` (all 6 sub-tests) | Auto-compaction uses the LLM to GENERATE the summary text (`src/compaction/mod.rs:462` — `compactor.compact(&messages, &provider)`). The mock can emit canned summary text, but auto-compaction is an internal agent-loop trigger that requires multi-turn real LLM use to actually reach the threshold. Real-LLM tier. |
+
+The auto-compactor's threshold-detection logic is unit-tested at the in-process layer (see `src/compaction/integration_tests.rs`); the missing CI coverage is the end-to-end agent-loop threshold trigger, which is intrinsically real-LLM tier. All 4 PS scripts in `compaction/{cli,extension,all,extensions/}` stay in place until Phase E, consistent with the other migrations.
 
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
@@ -341,6 +367,7 @@ test-integration:      docker-up && \
                                     --test cli_send --test cli_session --test cli_basics \
                                     --test cli_cron --test cli_subagent \
                                     --test cli_tools \
+                                    --test cli_compaction \
                                     --test mock_llm_sequence \
                                     -- --include-ignored
 
@@ -355,9 +382,9 @@ test-integration-llm:  docker-up && \
 test-all:              test && test-integration && test-integration-llm
 ```
 
-The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-cli-tools`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
+The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-cli-tools`, `test-cli-compaction`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
 
-> **Why `--include-ignored`, not `--ignored`.** All 87 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 88 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 
