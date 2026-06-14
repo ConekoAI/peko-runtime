@@ -16,6 +16,13 @@
 //! - Ambiguity about where to start the daemon (local vs remote)
 //! - Unexpected resource consumption from background processes
 //! - System stability issues from implicit service startup
+//!
+//! Discovery ladder (ADR-021 + ADR-038):
+//!   1. `PEKO_DAEMON_SOCK` env var → Unix socket (Unix only)
+//!   2. `PEKO_DAEMON_ADDR` env var → UDP address
+//!   3. `PEKO_DAEMON_PIPE` env var → Windows named pipe (Windows only)
+//!   4. Default Unix socket / default named pipe (per platform)
+//!   5. Default UDP — the universal last-resort safety net
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,26 +32,47 @@ use tokio::net::UdpSocket;
 use tokio::net::UnixDatagram;
 use tracing::debug;
 
-use super::{default_pid_path, default_socket_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
+use super::{
+    default_pipe_name, default_pid_path, default_socket_path, DAEMON_ADDR_ENV, DAEMON_PIPE_ENV,
+    DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT,
+};
 
 /// Platform-specific socket handle
 ///
 /// On Unix, this wraps a `UnixDatagram` (reliable, file-permission auth).
-/// On Windows, this wraps a `UdpSocket` (unreliable, no auth).
+/// On Windows, this wraps a `NamedPipeClient` (reliable, kernel-enforced
+/// DACL auth per ADR-038) or a `UdpSocket` (unreliable, no auth — the
+/// universal last-resort fallback).
 ///
-/// Both sockets are wrapped in Arc so that cloning the handle shares the
-/// same underlying socket — this ensures responses from the daemon reach
-/// the receiver task (which uses the cloned handle). Mirrors
-/// `ServerSocket::Unix` in server.rs.
+/// Unix/UDP sockets are wrapped in `Arc` so that cloning the handle
+/// shares the same underlying socket — this ensures responses from the
+/// daemon reach the receiver task (which uses the cloned handle).
+/// Windows named-pipe clients are wrapped in `Arc<Mutex<…>>` because
+/// each `try_clone` would otherwise open a new connection (the kernel
+/// doesn't support sharing a single pipe handle), but the receiver
+/// task needs to read from the same connection the sender wrote to. The
+/// mutex is uncontended in practice because the call pattern is
+/// sequential send-then-receive.
+///
+/// Mirrors the server-side `ServerSocket` enum in `server.rs`.
 #[derive(Debug, Clone)]
 pub enum ConnectionHandle {
     /// Unix domain datagram socket (Unix only)
     #[cfg(unix)]
-    Unix { socket: Arc<UnixDatagram>, path: PathBuf },
+    Unix {
+        socket: Arc<UnixDatagram>,
+        path: PathBuf,
+    },
     /// UDP socket (Windows fallback, or Unix opt-in)
     Udp {
         socket: Arc<UdpSocket>,
         addr: String,
+    },
+    /// Windows named-pipe client (ADR-038).
+    #[cfg(windows)]
+    NamedPipe {
+        client: Arc<tokio::sync::Mutex<tokio::net::windows::named_pipe::NamedPipeClient>>,
+        name: String,
     },
 }
 
@@ -62,6 +90,12 @@ impl ConnectionHandle {
             Self::Udp { socket, addr } => {
                 socket.send_to(bytes, addr).await?;
             }
+            #[cfg(windows)]
+            Self::NamedPipe { client, .. } => {
+                use tokio::io::AsyncWriteExt;
+                let mut g = client.lock().await;
+                g.write_all(bytes).await?;
+            }
         }
         Ok(())
     }
@@ -75,6 +109,12 @@ impl ConnectionHandle {
             #[cfg(unix)]
             Self::Unix { socket, .. } => socket.recv(buf).await?,
             Self::Udp { socket, .. } => socket.recv(buf).await?,
+            #[cfg(windows)]
+            Self::NamedPipe { client, .. } => {
+                use tokio::io::AsyncReadExt;
+                let mut g = client.lock().await;
+                g.read(buf).await?
+            }
         };
         Ok(len)
     }
@@ -123,6 +163,17 @@ impl ConnectionHandle {
                     addr: addr.clone(),
                 })
             }
+            #[cfg(windows)]
+            Self::NamedPipe { client, name } => {
+                // Share the same underlying `NamedPipeClient` via `Arc`
+                // clone. The mutex serialises send/recv — uncontended in
+                // practice because the existing `PacketStream` pattern
+                // is sequential send-then-receive.
+                Ok(Self::NamedPipe {
+                    client: Arc::clone(client),
+                    name: name.clone(),
+                })
+            }
         }
     }
 }
@@ -167,9 +218,11 @@ impl ConnectionManager {
         // 1. Try env var Unix socket
         if let Ok(sock_path) = std::env::var(DAEMON_SOCK_ENV) {
             debug!("Trying Unix socket from env: {}", sock_path);
+            #[cfg(unix)]
             if let Ok(handle) = Self::connect_unix_with_timeout(&sock_path, ping_timeout).await {
                 return Ok(handle);
             }
+            // On non-Unix, fall through (the env var is silently ignored).
         }
 
         // 2. Try env var UDP address
@@ -180,19 +233,43 @@ impl ConnectionManager {
             }
         }
 
-        // 3. Try default Unix socket (Unix only)
+        // 3. Try env var Windows named pipe (ADR-038)
+        #[cfg(windows)]
+        {
+            if let Ok(name) = std::env::var(DAEMON_PIPE_ENV) {
+                debug!("Trying Windows named pipe from env: {}", name);
+                if let Ok(handle) =
+                    Self::connect_pipe_with_timeout(name.clone(), ping_timeout).await
+                {
+                    return Ok(handle);
+                }
+            }
+        }
+
+        // 4. Try default Unix socket (Unix) or default pipe (Windows)
         #[cfg(unix)]
         {
             let default_sock = default_socket_path();
             debug!("Trying default Unix socket: {}", default_sock.display());
-            if let Ok(handle) =
-                Self::connect_unix_with_timeout(&default_sock.to_string_lossy(), ping_timeout).await
+            if let Ok(handle) = Self::connect_unix_with_timeout(
+                &default_sock.to_string_lossy(),
+                ping_timeout,
+            )
+            .await
             {
                 return Ok(handle);
             }
         }
+        #[cfg(windows)]
+        {
+            let default_pipe = default_pipe_name();
+            debug!("Trying default Windows named pipe: {}", default_pipe);
+            if let Ok(handle) = Self::connect_pipe_with_timeout(default_pipe, ping_timeout).await {
+                return Ok(handle);
+            }
+        }
 
-        // 4. Try default UDP
+        // 5. Try default UDP — the universal last-resort safety net
         let default_addr = format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT);
         debug!("Trying default UDP: {}", default_addr);
         if let Ok(handle) = Self::connect_udp_with_timeout(&default_addr, ping_timeout).await {
@@ -249,6 +326,70 @@ impl ConnectionManager {
         })
     }
 
+    /// Connect to a Windows named pipe (ADR-038) and round-trip a Ping.
+    ///
+    /// Mirrors `connect_unix_with_timeout` and `connect_udp_with_timeout`
+    /// in shape. Tokio's `ClientOptions::open` is synchronous (it calls
+    /// `CreateFileW`), so we wrap the whole open-and-ping in
+    /// `spawn_blocking` to keep the async runtime non-blocked, then
+    /// apply a timeout.
+    #[cfg(windows)]
+    async fn connect_pipe_with_timeout(
+        name: String,
+        timeout: Duration,
+    ) -> anyhow::Result<ConnectionHandle> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let name_for_blocking = name.clone();
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<NamedPipeHandle> {
+            let client = tokio::net::windows::named_pipe::ClientOptions::new()
+                .open(&name_for_blocking)?;
+            Ok(NamedPipeHandle { client, name: name_for_blocking })
+        });
+
+        let mut handle = match tokio::time::timeout(timeout, join).await {
+            Ok(Ok(Ok(h))) => h,
+            Ok(Ok(Err(e))) => {
+                anyhow::bail!("Named pipe connect error ({name}): {e}");
+            }
+            Ok(Err(join_err)) => {
+                anyhow::bail!("Named pipe connect task panicked: {join_err}");
+            }
+            Err(_) => {
+                anyhow::bail!("Named pipe connect timeout: {name}");
+            }
+        };
+
+        // Test connectivity with a Ping. We hold `handle.client` outside
+        // the Mutex for the duration of the write+read; the receiver
+        // task only starts after this function returns and the handle
+        // is wrapped in the Mutex, so there is no contention.
+        let ping = super::packet::RequestPacket::Ping { request_id: 0 };
+        let ping_bytes = ping.to_bytes()?;
+        handle
+            .client
+            .write_all(&ping_bytes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Named pipe write error: {e}"))?;
+
+        let mut buf = vec![0u8; 65536];
+        let len = tokio::time::timeout(timeout, handle.client.read(&mut buf))
+            .await
+            .map_err(|_| anyhow::anyhow!("Named pipe read timeout"))?
+            .map_err(|e| anyhow::anyhow!("Named pipe read error: {e}"))?;
+
+        let response = super::packet::ResponsePacket::from_bytes(&buf[..len])?;
+        match response {
+            super::packet::ResponsePacket::Pong { .. } => {}
+            _ => anyhow::bail!("Unexpected response to ping: {:?}", response),
+        }
+
+        Ok(ConnectionHandle::NamedPipe {
+            client: Arc::new(tokio::sync::Mutex::new(handle.client)),
+            name: handle.name,
+        })
+    }
+
     async fn connect_udp_with_timeout(
         addr: &str,
         timeout: Duration,
@@ -280,6 +421,19 @@ impl ConnectionManager {
         })
     }
 }
+
+/// Local helper struct used by `connect_pipe_with_timeout` to shuttle the
+/// freshly-opened `NamedPipeClient` and its name out of the blocking
+/// `spawn_blocking` closure. On non-Windows builds the struct is unused
+/// and the type alias resolves to a unit stub.
+#[cfg(windows)]
+struct NamedPipeHandle {
+    client: tokio::net::windows::named_pipe::NamedPipeClient,
+    name: String,
+}
+
+#[cfg(not(windows))]
+struct NamedPipeHandle {}
 
 /// Stub for non-Unix platforms
 #[cfg(not(unix))]
