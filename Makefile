@@ -15,6 +15,7 @@
         test-lib test-subagent \
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
+        test-cli-subagent \
         test-mock-llm-sequence \
         ci
 
@@ -22,7 +23,7 @@
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
-                     cli_send cli_session cli_basics cli_cron \
+                     cli_send cli_session cli_basics cli_cron cli_subagent \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -53,6 +54,7 @@ help:
 	@echo "    test-pekohub / test-tunnel / test-tunnel-e2e"
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
+	@echo "    test-cli-subagent"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -158,6 +160,14 @@ test-cli-basics: docker-up
 test-cli-cron: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_cron -- --include-ignored
+
+# `peko subagent` / `agent_spawn` slice. Uses plain `DaemonGuard::spawn`
+# (no `--interval`) — subagent tests don't poll. All multi-turn tests
+# in this file are `#[serial]` because they share the mock LLM's
+# per-substring counter (see docs/integration/TESTING.md §3 Sequence).
+test-cli-subagent: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_subagent -- --include-ignored
 
 # Mock LLM sequence feature (Phase C, see docs/integration/TESTING.md §3).
 # Exercises the per-substring counter in the list-value branch of
