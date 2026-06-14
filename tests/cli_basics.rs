@@ -249,9 +249,9 @@ fn config_path_shows_directories() {
     let (out, err, status) = run(&cli, &["config", "path"]);
     assert_ok(&out, &err, &status);
 
-    let peko_dir = cli.peko_dir().to_string_lossy();
+    let peko_dir = cli.peko_dir().to_string_lossy().into_owned();
     assert!(
-        out.contains(&*peko_dir) || out.contains("config"),
+        out.contains(&peko_dir) || out.contains("config"),
         "config path should mention config directories: {out}"
     );
 }
