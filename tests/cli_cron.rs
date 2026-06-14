@@ -661,11 +661,11 @@ fn cron_announce_writes_file_on_run() {
     remove_jobs_with_prefix(&cli, "e2e-cron-announce-");
 
     // Announcements land at `<data_dir>/announcements/<job_id>_<ts>.json`.
-    // `PekoCli` sets `PEKO_HOME=peko_dir` so the daemon's `default_data_dir`
-    // resolves to the same `peko_dir` (see `default_data_dir` in
-    // `src/common/paths.rs:65`). Announcements therefore live directly
-    // under `<peko_dir>/announcements/`, not `<peko_dir>/data/announcements/`.
-    let announce_dir = cli.peko_dir().join("announcements");
+    // `PekoCli` sets `PEKO_HOME=peko_dir`, but `default_data_dir()` (in
+    // `src/common/paths.rs:65`) appends `/data` to PEKO_HOME, so the
+    // daemon's `data_dir` resolves to `<peko_dir>/data`, not `<peko_dir>`.
+    // Announcements therefore live at `<peko_dir>/data/announcements/`.
+    let announce_dir = cli.peko_dir().join("data").join("announcements");
     // Clean any leftovers from a prior failed run.
     if announce_dir.exists() {
         let _ = std::fs::remove_dir_all(&announce_dir);
