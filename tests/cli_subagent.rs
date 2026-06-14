@@ -94,16 +94,18 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
-/// Workspace path the child subagent's `write_file` resolves to.
-/// The subagent executor inherits the parent's `PathResolver` (keyed
-/// on the parent agent's name), so any file the child writes with a
-/// relative path lands here.
-fn workspace_dir(cli: &PekoCli, agent_name: &str) -> PathBuf {
-    cli.peko_dir()
-        .join("data")
-        .join("workspaces")
-        .join(agent_name)
-        .join("personal")
+/// Workspace directory the child subagent's `write_file` resolves
+/// relative paths against. The daemon's `ToolRuntime::register_builtins`
+/// (at `src/runtime/tool_runtime.rs:158-162`) sets every built-in
+/// tool's `workspace_dir` to `path_resolver.agent_workspace(".", None)
+/// .parent()`, which resolves to `{data_dir}/workspaces` — NOT the
+/// per-agent personal subdir. So the child writes the file with the
+/// relative path `{file_name}` and it lands directly in
+/// `<peko_dir>/data/workspaces/`, not under a per-agent subdir. The
+/// `_agent_name` parameter is kept for symmetry / readability of the
+/// call sites and to make this constraint explicit at the call site.
+fn workspace_dir(cli: &PekoCli, _agent_name: &str) -> PathBuf {
+    cli.peko_dir().join("data").join("workspaces")
 }
 
 /// Write a mock-LLM-pointed agent that has the tools the subagent
