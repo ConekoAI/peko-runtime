@@ -30,7 +30,8 @@
 //! Windows side of the story.
 
 mod common;
-use common::{PekoCli, run_with_timeout};
+use common::{configure_mock, PekoCli, run_with_timeout};
+use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -180,6 +181,65 @@ fn remove_jobs_with_prefix(cli: &PekoCli, prefix: &str) {
             );
         }
     }
+}
+
+/// Write a mock-LLM-pointed agent with the `cron` tool enabled.
+///
+/// `write_mock_agent` (in `tests/common/agent.rs`) writes an agent
+/// with `[extensions] enabled = []`, which the agent's `init_builtins_async`
+/// uses as an EXCLUSIVE whitelist — the daemon's `register_builtins`
+/// enables every built-in tool by default, but the agent's whitelist
+/// override turns the cron tool OFF for the agent, so any tool_call
+/// the LLM emits for "cron" gets rejected by the runtime's tool
+/// dispatcher. The agent-tool tests below need the cron tool ON, so
+/// this helper writes a config that includes its canonical ID
+/// (`builtin:tool:cron` — see `ToolRuntime::register_builtins`).
+fn write_cron_agent(
+    home: &std::path::Path,
+    name: &str,
+    mock_llm_url: &str,
+) -> std::io::Result<()> {
+    use std::path::Path;
+    let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
+    std::fs::create_dir_all(&agent_dir)?;
+    let base_url = mock_llm_url.trim_end_matches('/');
+    let config_toml = format!(
+        r#"version = "1.0"
+name = "{name}"
+description = "Agent-tool cron test agent"
+auto_accept_trusted = false
+default_timeout_seconds = 60
+
+[provider]
+provider_type = "openai_compatible"
+api_key = "mock-llm-test-key"
+base_url = "{base_url}"
+default_model = "default"
+timeout_seconds = 60
+max_retries = 3
+retry_delay_ms = 1000
+
+[provider.models.default]
+name = "default"
+max_tokens = 1024
+temperature = 0.7
+top_p = 1.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[extensions]
+enabled = ["builtin:tool:cron"]
+
+[channels]
+cli = true
+
+[prompt]
+system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
+"#
+    );
+    std::fs::write(agent_dir.join("config.toml"), config_toml)?;
+    std::fs::write(agent_dir.join("SYSTEM.md"), "")?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -790,5 +850,196 @@ fn cron_remove_idempotent_on_missing_job() {
             || combined.to_lowercase().contains("no such")
             || combined.to_lowercase().contains("does not exist"),
         "removing a missing job should report not-found, got stdout={out} stderr={err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Agent-tool flows (mock-LLM tier, multi-turn sequence)
+//
+// Mirrors e2e_tests/cron/cron_agent_tool.ps1 — the script that was deferred
+// from commit 3506ea5 because the mock could only emit tool calls with
+// empty args. The §3 *Sequence* feature in mock_llm_server.py unblocks this:
+// a test can now script `MOCK_LLM_SCRIPT = {"needle": [tool_call, ..., text]}`
+// where the tool_call arguments carry the structured `cron` args the
+// runtime's CronTool dispatcher needs.
+//
+// Flow (per test):
+//   1. Spawn the cron daemon (CronDaemonGuard).
+//   2. Write a mock-LLM-pointed agent with the cron tool enabled
+//      (write_cron_agent). The default `write_mock_agent` has
+//      `[extensions] enabled = []`, which the agent treats as an
+//      EXCLUSIVE whitelist — the daemon's `register_builtins` enables
+//      cron by default, but the agent's empty whitelist overrides that
+//      and disables it. The agent-tool tests need the cron tool ON.
+//   3. Configure the mock to script the agent's tool-call dialog.
+//   4. `peko send <agent> "..." --no-stream` triggers the agent loop.
+//      Each LLM call returns the next element of the sequence; the runtime
+//      dispatches each tool_call to the cron tool, which talks to the
+//      daemon via IPC. The agent loop finalizes when the LLM emits text.
+//   5. Assert on daemon state via `peko cron list --json`.
+//
+// The substring needle is unique per test (and per PS-original-job-label)
+// so the per-substring counter doesn't race with the other agent-tool
+// test in this file. The `/_test/configure` call at the start of each
+// test also clears the counter map so any leakage from a prior test
+// can't bleed in.
+// ---------------------------------------------------------------------------
+
+/// Agent uses the `cron` tool to schedule a job and confirm via `list`.
+/// Mirrors `cron_agent_tool.ps1` TEST 1+2 (TEST 3 — wait 3:30 for
+/// execution — is too slow for CI, so it's intentionally not migrated).
+#[tokio::test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
+#[serial]
+async fn cron_agent_tool_schedules_and_lists_job() {
+    if skip_if_no_mock().is_none() {
+        return;
+    }
+    let mock_url = std::env::var("MOCK_LLM_URL").expect("MOCK_LLM_URL set");
+
+    // Unique-per-test needle keeps the per-substring counter isolated
+    // from the other agent-tool test in this file. Job label mirrors
+    // the original PS so the assertion reads the same.
+    let needle = "cron-tool-flow-sched-1";
+    let job_label = "agent-scheduled-test";
+    let agent_name = "cron_tool_agent_sched";
+
+    // Far-future time so the job never fires during the test; the
+    // runtime's CronTool only validates RFC3339, not the date itself.
+    let at_time = "2099-01-01T00:00:00Z";
+    let task = "write AGENT_CRON_SUCCESS marker (no-op for mock test)";
+
+    let script = serde_json::json!({
+        needle: [
+            { "tool_call": { "name": "cron", "arguments":
+                format!(
+                    r#"{{"sub_command":"at","time":"{at_time}","label":"{job_label}","task":"{task}","agent_id":"{agent_name}"}}"#
+                )
+            } },
+            { "tool_call": { "name": "cron", "arguments":
+                r#"{"sub_command":"list"}"#
+            } },
+            "TOOL_SUCCESS",
+        ]
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
+    let cli = PekoCli::new();
+    write_cron_agent(cli.home(), agent_name, &mock_url).expect("write cron agent");
+    let _daemon = CronDaemonGuard::spawn(&cli);
+    remove_jobs_with_prefix(&cli, job_label);
+
+    // The agent receives a prompt that names the needle so the mock's
+    // substring matcher picks the script entry on every LLM call (the
+    // mock extracts the FIRST user message, which is this prompt and
+    // doesn't change between tool-result turns).
+    let prompt = format!(
+        "You have access to the cron tool. Schedule a one-time job (sub_command: \"at\") \
+         using label \"{job_label}\", task \"{task}\", agent_id \"{agent_name}\", time \"{at_time}\". \
+         Then call cron list to verify. Respond with TOOL_SUCCESS if you see the job, \
+         else TOOL_FAILED. ({needle})"
+    );
+    let (out, err, status) = run(
+        &cli,
+        &["send", agent_name, &prompt, "--no-stream"],
+        Duration::from_secs(30),
+    );
+    assert_ok(&out, &err, &status);
+    assert!(
+        out.contains("TOOL_SUCCESS"),
+        "agent did not report success after scheduling: stdout={out} stderr={err}"
+    );
+
+    // Daemon-side verification: the cron job should exist in the
+    // daemon's cron DB with the label the agent set. The agent's tool
+    // dispatch path goes through CronTool -> DaemonClient -> daemon IPC
+    // -> cron.json, so this is the full chain.
+    let jobs = list_jobs_json(&cli);
+    let scheduled = jobs
+        .iter()
+        .find(|j| j.get("name").and_then(|n| n.as_str()) == Some(job_label));
+    assert!(
+        scheduled.is_some(),
+        "expected daemon cron DB to contain a job named {job_label:?}, got jobs={jobs:?}\n\
+         (agent stdout: {out})\n\
+         (agent stderr: {err})"
+    );
+}
+
+/// Agent uses the `cron` tool to schedule a job and then cancel it
+/// via `cancel_label` (which doesn't need a pre-known job_id). Mirrors
+/// `cron_agent_tool.ps1` TEST 4.
+///
+/// Uses `cancel_label` instead of `job_id` in the script because the
+/// mock doesn't know the daemon-assigned `job_id` ahead of time; the
+/// runtime's `CronTool::handle_cancel` looks the id up by label when
+/// given `cancel_label`.
+#[tokio::test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
+#[serial]
+async fn cron_agent_tool_schedules_and_cancels_job() {
+    if skip_if_no_mock().is_none() {
+        return;
+    }
+    let mock_url = std::env::var("MOCK_LLM_URL").expect("MOCK_LLM_URL set");
+
+    let needle = "cron-tool-flow-cancel-2";
+    let job_label = "to-cancel-test";
+    let agent_name = "cron_tool_agent_cancel";
+    let at_time = "2099-01-01T00:00:00Z";
+    let task = "echo hello";
+
+    let script = serde_json::json!({
+        needle: [
+            { "tool_call": { "name": "cron", "arguments":
+                format!(
+                    r#"{{"sub_command":"at","time":"{at_time}","label":"{job_label}","task":"{task}","agent_id":"{agent_name}"}}"#
+                )
+            } },
+            { "tool_call": { "name": "cron", "arguments":
+                r#"{"sub_command":"list"}"#
+            } },
+            { "tool_call": { "name": "cron", "arguments":
+                format!(r#"{{"sub_command":"cancel","cancel_label":"{job_label}"}}"#)
+            } },
+            "CANCEL_SUCCESS",
+        ]
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
+    let cli = PekoCli::new();
+    write_cron_agent(cli.home(), agent_name, &mock_url).expect("write cron agent");
+    let _daemon = CronDaemonGuard::spawn(&cli);
+    remove_jobs_with_prefix(&cli, job_label);
+
+    let prompt = format!(
+        "Schedule a cron job (sub_command \"at\") with label \"{job_label}\", task \"{task}\", \
+         agent_id \"{agent_name}\", time \"{at_time}\". Then list, then cancel by label \
+         \"{job_label}\". Then list again to confirm it's gone. Respond CANCEL_SUCCESS if the \
+         job was removed, CANCEL_FAILED otherwise. ({needle})"
+    );
+    let (out, err, status) = run(
+        &cli,
+        &["send", agent_name, &prompt, "--no-stream"],
+        Duration::from_secs(30),
+    );
+    assert_ok(&out, &err, &status);
+    assert!(
+        out.contains("CANCEL_SUCCESS"),
+        "agent did not report cancel success: stdout={out} stderr={err}"
+    );
+
+    // Daemon-side verification: the job should be gone.
+    let jobs = list_jobs_json(&cli);
+    let still_there = jobs
+        .iter()
+        .find(|j| j.get("name").and_then(|n| n.as_str()) == Some(job_label));
+    assert!(
+        still_there.is_none(),
+        "expected {job_label:?} to be cancelled, but daemon cron DB still has it: {jobs:?}\n\
+         (agent stdout: {out})\n\
+         (agent stderr: {err})"
     );
 }

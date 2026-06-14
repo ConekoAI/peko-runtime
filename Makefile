@@ -90,8 +90,9 @@ docker-down:
 # dual-mode tests to the real provider.
 #
 # --include-ignored runs BOTH the hub-gated #[ignore] tests AND the
-# always-on pure-Rust tests in team_integration / extension_packaging.
-# Plain --ignored would skip those 10 always-on tests entirely.
+# always-on pure-Rust tests in team_integration / extension_packaging
+# (10) plus the 6 offline CLI tests in cli_basics.
+# Plain --ignored would skip those 16 always-on tests entirely.
 
 test-integration: docker-up
 	@env -u MINIMAX_API_KEY \
@@ -100,7 +101,7 @@ test-integration: docker-up
 	    cargo test $(CARGO_TEST_FLAGS) -- --include-ignored
 
 # ── Tier 2: nightly + [llm] commit tag — adds real-LLM tests ─────────────
-# MOCK_LLM_URL is unset so the dual-mode rule at tunnel_e2e.rs:254-261
+# MOCK_LLM_URL is unset so the dual-mode rule at tunnel_e2e.rs:63-76
 # falls through to the real provider.
 
 test-integration-llm: docker-up

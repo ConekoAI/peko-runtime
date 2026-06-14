@@ -16,6 +16,7 @@ pub mod cli;
 pub mod crypto;
 pub mod daemon;
 pub mod harness;
+pub mod mock_configure;
 pub mod subprocess;
 
 pub use agent::write_mock_agent;
@@ -24,4 +25,5 @@ pub use cli::PekoCli;
 pub use crypto::{generate_runtime_identity, sign_nonce};
 pub use daemon::DaemonGuard;
 pub use harness::{reset_pekohub, PekohubBackend};
+pub use mock_configure::configure_mock;
 pub use subprocess::{run_with_timeout, try_run_with_timeout};

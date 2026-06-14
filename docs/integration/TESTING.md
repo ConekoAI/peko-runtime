@@ -83,19 +83,19 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_send.rs](../../tests/cli_send.rs) | 7 | 7 | PekoHub + mock LLM | Y |
 | [cli_session.rs](../../tests/cli_session.rs) | 9 | 9 | PekoHub + mock LLM | Y |
 | [cli_basics.rs](../../tests/cli_basics.rs) | 14 | 8 | Mixed (6 offline, 8 need PekoHub + mock LLM) | Partial |
-| [cli_cron.rs](../../tests/cli_cron.rs) | 16 | 16 | PekoHub + mock LLM | Y |
+| [cli_cron.rs](../../tests/cli_cron.rs) | 18 | 18 | PekoHub + mock LLM (2 are agent-tool multi-turn, §3 Sequence) | Y |
 | [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) | 6 | 6 | mock LLM (sequence feature, §3) | Y |
 
-**Totals:** 72 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 88 in `tests/`.
+**Totals:** 74 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 90 in `tests/`.
 
-The 7 hub-dependent files share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The `cli_*` tests spawn the `peko` daemon as a subprocess against the same stack. `mock_llm_sequence.rs` does not need PekoHub — it talks to the mock directly, plus the peko daemon for the three-call flow — but ships in the same docker-up workflow for the dev-loop convenience.
+The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 4 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs)) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
 > **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L466) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
 
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 88 tests across 12 files in `tests/`.
+- Integration: 90 tests across 12 files in `tests/`.
 - E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
 
 ---
@@ -235,20 +235,13 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 
 #### Phase B coverage gap — `e2e_tests/cron/cron_agent_tool.ps1`
 
-**Status:** 🟢 Unblocked. The blocking mock change (sequence-of-responses, see §3 *Sequence*) has landed. Migration can now proceed as a `mock-LLM` test.
+**Status:** ✅ Migrated to `tests/cli_cron.rs` as 2 new mock-LLM-tier tests (`cron_agent_tool_schedules_and_lists_job`, `cron_agent_tool_schedules_and_cancels_job`). PS TEST 3 (wait 3:30 for execution) is intentionally not migrated — too slow for CI; the scheduling and cancellation sides are what exercise the agent-tool chain, and execution itself is covered by the daemon-CRUD tests in the same file.
 
-**What the PS script covers:** the agent uses its built-in `cron` tool (sub-commands `at` / `list` / `cancel`) to self-schedule, self-list, and self-cancel jobs. The test verifies that the resulting job is visible to the daemon and that an agent-cancelled job disappears from `peko cron list`.
+**What the migrated tests cover:** the agent uses its built-in `cron` tool (sub-commands `at` / `list` / `cancel`) to self-schedule, self-list, and self-cancel jobs. The schedule test verifies the resulting job is visible to the daemon (`peko cron list` shows it); the cancel test verifies an agent-cancelled job disappears from `peko cron list`.
 
-**Why it didn't land with the rest of `cli_cron.rs`:** the test is fundamentally an agent-tool-flow, not a daemon-CRUD flow. The agent has to:
+**How the mock drives the multi-turn dialog:** §3 *Sequence* lets a `MOCK_LLM_SCRIPT` list value carry one response per LLM call. The schedule test scripts 3 elements: `tool_call(cron, at, ...)` → `tool_call(cron, list)` → text `TOOL_SUCCESS`. The cancel test scripts 4: `at` → `list` → `cancel` (using `cancel_label` so the mock doesn't need a pre-known `job_id`) → text `CANCEL_SUCCESS`. Each turn's tool_call's `function.arguments` is a JSON-encoded string with the structured `cron` args the runtime's `CronTool` dispatcher needs (`sub_command`, `time`, `label`, `task`, `agent_id` for `at`; `sub_command: "cancel"`, `cancel_label: "..."` for cancel).
 
-1. Receive a user prompt asking it to schedule a job
-2. Decide on its own to call the `cron` tool with a specific `sub_command`, `at` / `list` / `cancel` argument shape, and the right `agent_id`
-3. Receive the tool result and reason about whether the call succeeded
-4. Report a sentinel keyword (`TOOL_SUCCESS` / `LIST_SUCCESS` / `CANCEL_SUCCESS`)
-
-That was a multi-turn LLM decision that the mock-LLM tier could not drive while the `Call tool: <name>` keyword only emitted a tool call with **empty** args (no `sub_command` / `at` / `agent_id` payload). With the §3 *Sequence* feature, a test can now script the full dialog as a `MOCK_LLM_SCRIPT` list whose elements are `tool_call` dicts (carrying the structured `cron` arguments) and text sentinels in turn order.
-
-**Where to add it:** alongside the other mock-LLM-tier slices in the Phase B table — most naturally `tests/cli_a2a.rs` (agent uses its tool surface) or a new `tests/cli_cron_tool.rs` if we want to keep the cron flows co-located. Use the §3 *Sequence* feature to script each turn's response; reference for the mock-side syntax is [tests/mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) (`mock_llm_script_list_supports_mixed_text_and_tool_call`).
+**Reference for the mock-side syntax:** [tests/mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) (`mock_llm_script_list_supports_mixed_text_and_tool_call`); the helper that POSTs to `/_test/configure` lives in [tests/common/mock_configure.rs](../../tests/common/mock_configure.rs).
 
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
@@ -319,7 +312,7 @@ test-all:              test && test-integration && test-integration-llm
 
 The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
 
-> **Why `--include-ignored`, not `--ignored`.** All 72 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 74 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 
