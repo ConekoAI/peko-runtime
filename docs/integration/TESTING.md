@@ -84,10 +84,10 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_session.rs](../../tests/cli_session.rs) | 9 | 9 | PekoHub + mock LLM | Y |
 | [cli_basics.rs](../../tests/cli_basics.rs) | 14 | 8 | Mixed (6 offline, 8 need PekoHub + mock LLM) | Partial |
 | [cli_cron.rs](../../tests/cli_cron.rs) | 18 | 18 | PekoHub + mock LLM (2 are agent-tool multi-turn, §3 Sequence) | Y |
-| [cli_subagent.rs](../../tests/cli_subagent.rs) | 7 | 7 | PekoHub + mock LLM (all multi-turn, §3 Sequence, `#[serial]`) | Y |
+| [cli_subagent.rs](../../tests/cli_subagent.rs) | 3 | 3 | PekoHub + mock LLM (smoke tests, §3 Sequence, `#[serial]`) | Y |
 | [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) | 6 | 6 | mock LLM (sequence feature, §3) | Y |
 
-**Totals:** 81 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 97 in `tests/`.
+**Totals:** 77 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 93 in `tests/`.
 
 The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 4 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs)) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
@@ -96,7 +96,7 @@ The 5 files that exercise the hub directly — [packaging_integration.rs](../../
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 97 tests across 13 files in `tests/`.
+- Integration: 93 tests across 13 files in `tests/`.
 - E2E PowerShell scripts in `e2e_tests/`: 67 total (54 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
 
 ---
@@ -232,7 +232,7 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/extensions/` | `tests/cli_extensions.rs` | mock-LLM (tool-call sequence, §3 Sequence) | ⏳ Pending |
 | `e2e_tests/compaction/` | `tests/cli_compaction.rs` | mock-LLM (multi-turn sequence) | ⏳ Pending |
 | `e2e_tests/a2a/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_tools.rs` | mock-LLM (tool-call decisions via Sequence) | ⏳ Pending |
-| `e2e_tests/subagent/` | `tests/cli_subagent.rs` | mock-LLM (tool-call decisions via Sequence) | ✅ Migrated (7 tests; `subagent_async.ps1` + `subagent_status_list.ps1` deferred — see coverage gap below) |
+| `e2e_tests/subagent/` | `tests/cli_subagent.rs` | mock-LLM (tool-call decisions via Sequence) | ✅ Migrated (3 smoke tests covering parent-side blocking path; deeper child-side assertions deferred — see coverage gap below) |
 | `e2e_tests/providers/` | `tests/cli_providers.rs` | real-LLM (gated by `MINIMAX_API_KEY` / `KIMI_API_KEY`) | ⏳ Pending |
 
 #### Phase B coverage gap — `e2e_tests/cron/cron_agent_tool.ps1`
@@ -245,17 +245,13 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 
 **Reference for the mock-side syntax:** [tests/mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) (`mock_llm_script_list_supports_mixed_text_and_tool_call`); the helper that POSTs to `/_test/configure` lives in [tests/common/mock_configure.rs](../../tests/common/mock_configure.rs).
 
-#### Phase B coverage gap — `e2e_tests/subagent/subagent_async.ps1` and `subagent_status_list.ps1`
+#### Phase B coverage gap — `e2e_tests/subagent/*.ps1` (deeper scenarios)
 
-**Status:** Partial migration. `subagent_blocking.ps1` (T1, T2, T4), `subagent_nesting.ps1` (T1, T2), and `subagent_isolation.ps1` (T1, T2) migrated to `tests/cli_subagent.rs` as 7 mock-LLM-tier tests. `subagent_async.ps1` and `subagent_status_list.ps1` are **deferred** because both depend on the in-process `AsyncTaskRegistry` (in `src/extension/async_exec/executor/`), which is built per-daemon and is not currently addressable from a Rust integration test that goes through the `peko` CLI.
+**Status:** Partial migration. `tests/cli_subagent.rs` ships 3 smoke tests that exercise the parent-side `agent_spawn` blocking path end-to-end through the peko daemon: a baseline parent, an `isolated: true` parent, and a labeled parent. All three assert only on the parent's `peko send --no-stream` stdout containing the expected sentinel — the proof that the blocking tool call completed.
 
-**What is deferred:**
-- `subagent_async.ps1`: T1 (async-receipt shape), T2 (task-file polling), T3 (`_timeout` enforcement), T4 (concurrent `_async` spawns). T1 and T3 are unit-testable in principle — the receipt shape and the timeout path are both `agent_spawn.rs::execute_spawn_async` paths already covered by `subagent_integration_tests` in `src/agent/tests/`. T2 and T4 require the registry to be populated BEFORE the `task` tool looks up the `task_id`, which a unit test can do directly via `with_registry` but a black-box `peko send` test cannot.
-- `subagent_status_list.ps1`: all four T's. `action=status` and `action=cancel` need a pre-known `task_id`; the mock can emit a `tool_call(task, action=status, task_id=…)` only if the test knows what `task_id` the runtime will mint (it is `format!("run_{}", uuid::Uuid::new_v4().simple())` per `src/agent/subagent_executor.rs:247`). `action=list` is testable in principle but adds no coverage beyond what the unit tests already provide.
+**What is deferred (to a follow-up PR):** the deeper child-side assertions from `subagent_blocking.ps1`, `subagent_nesting.ps1`, and `subagent_isolation.ps1` — specifically: the child actually writing a file that the test reads back, the 2-level nesting chain writing a file via the grandchild, the depth-limit code path, and the shared-vs-isolated context assertions. Initial CI attempts chasing these (commits `3aede39` → `e1fc807` in this PR) revealed two real complications: (1) the daemon's `ToolRuntime::with_workspace_and_core` resolves `workspace_dir` to `std::env::current_dir()` (the daemon's cwd, which in `cargo test` is the peko-runtime crate root) — so the child's `write_file` lands in the peko-runtime working tree, not in any per-agent subdir; and (2) the test would have to assert that the runtime's tool dispatch actually invoked `write_file`, which requires either daemon stderr capture (the existing `DaemonGuard::spawn` discards it) or in-process assertions on the global `ExtensionCore`. Both are doable but each is its own scope.
 
-**What is in scope for a future PR (PR-3 candidate):** add a test-only `peko subagent list --json` (or `peko task list --json`) CLI subcommand that reads the in-process `AsyncTaskRegistry` and dumps it as JSON, then write `cli_subagent.rs` tests that drive the parent's mock to emit a `task` tool_call and assert on the CLI output. Same shape as the `peko cron list --json` round-trip in `cli_cron.rs`.
-
-**What the migrated 7 tests cover:** the `agent_spawn` tool's blocking path end-to-end through the daemon. Blocking `write_file` and `read_file` subagents (blocking T1, T2, T4), the `isolated: true` flag (blocking T2 + isolation T2), a 2-level nesting chain (nesting T1), the multi-level dispatch plumbing (nesting T2), and shared-context vs. isolated-context for subagents (isolation T1, T2). All seven verify the parent's `peko send --no-stream` stdout contains the expected sentinel AND (where applicable) that the file written by the subagent (or grandchild) lands in the parent's personal workspace. The `MOCK_LLM_SCRIPT` uses the §3 *Sequence* feature with per-test unique substrings, so the per-substring counter never races with neighbouring tests.
+**What is also deferred:** `subagent_async.ps1` (4 sub-tests) and `subagent_status_list.ps1` (4 sub-tests) require driving the `task` tool (status/list/cancel) and `agent_spawn` in `_async: true` mode. Both need to look up `task_id` in the in-process `AsyncTaskRegistry` (in `src/extension/async_exec/executor/`), which is built per-daemon and is not currently addressable from a Rust integration test that goes through the `peko` CLI. PR-3 path: add a test-only `peko subagent list --json` (or `peko task list --json`) CLI subcommand that reads the in-process `AsyncTaskRegistry` and dumps it as JSON, then write `cli_subagent.rs` tests that drive the parent's mock to emit a `task` tool_call and assert on the CLI output. Same shape as the `peko cron list --json` round-trip in `cli_cron.rs`.
 
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
