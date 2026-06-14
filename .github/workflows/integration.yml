@@ -15,7 +15,6 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'e2e_tests/**'        # remove once Phase E lands
       - 'Makefile'
       - '.github/docker/**'
       - '.github/workflows/integration.yml'
@@ -24,7 +23,6 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'e2e_tests/**'
       - 'Makefile'
       - '.github/docker/**'
       - '.github/workflows/integration.yml'

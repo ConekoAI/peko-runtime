@@ -52,10 +52,10 @@ The `extensions/` directory contains tests for the unified Extension Architectur
 
 | Test | Description |
 |------|-------------|
-| `skill_extension_test.ps1` | Skill lifecycle via `pekobot ext` |
-| `mcp_extension_test.ps1` | MCP server management |
-| `universal_tool_extension_test.ps1` | Universal tool management |
-| `image_extension_test.ps1` | Extension packaging in images |
+| `extensions/skill/python/test.ps1` | Skill lifecycle via `pekobot ext` |
+| `extensions/mcp/python/*/test.ps1` | MCP server management |
+| `extensions/universal/python/*/test.ps1` | Universal tool management |
+| `extensions/gateway/http_basics/test.ps1` | Gateway extension HTTP basics |
 
 ## Legacy Tests
 

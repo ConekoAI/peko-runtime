@@ -138,7 +138,7 @@ src/
 ## Testing Approach
 
 - **Unit tests** are co-located in `#[cfg(test)]` modules within source files.
-- **Integration tests** live in `tests/` and `e2e_tests/`.
+- **Integration tests** live in `tests/`; the legacy `e2e_tests/` PowerShell scripts are being dismantled per `docs/integration/TESTING.md` §7.
 - **Benchmarks** live in `benches/`.
 - Tests cover critical paths: extension lifecycle, agent lifecycle, provider operations, session operations, tool operations.
 - The project targets 80%+ test coverage.
