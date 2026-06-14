@@ -33,9 +33,11 @@ use tokio::net::UnixDatagram;
 use tracing::debug;
 
 use super::{
-    default_pipe_name, default_pid_path, default_socket_path, DAEMON_ADDR_ENV, DAEMON_PIPE_ENV,
-    DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT,
+    default_pid_path, default_socket_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST,
+    DEFAULT_PORT,
 };
+#[cfg(windows)]
+use super::{default_pipe_name, DAEMON_PIPE_ENV};
 
 /// Platform-specific socket handle
 ///

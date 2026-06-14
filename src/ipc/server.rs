@@ -31,9 +31,9 @@ use tracing::{error, info, trace, warn};
 
 use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket, HEARTBEAT_INTERVAL_SECS};
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
+use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 #[cfg(windows)]
-use super::response_sink::sink_for_pipe;
-use super::{default_pipe_name, ensure_run_dir, DAEMON_PIPE_ENV, DEFAULT_HOST, DEFAULT_PORT};
+use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
 use crate::auth::caller::CallerContext;
 #[cfg(not(windows))]
 use crate::auth::config::enforce_auth_for_public_bind;
