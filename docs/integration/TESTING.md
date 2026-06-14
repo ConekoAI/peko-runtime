@@ -229,6 +229,25 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/a2a/`, `e2e_tests/subagent/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_subagent.rs`, `tests/cli_tools.rs` | real-LLM (tool-call decisions) | ⏳ Pending |
 | `e2e_tests/providers/` | `tests/cli_providers.rs` | real-LLM (gated by `MINIMAX_API_KEY` / `KIMI_API_KEY`) | ⏳ Pending |
 
+#### Phase B coverage gap — `e2e_tests/cron/cron_agent_tool.ps1`
+
+**Status:** ⚠️ Not yet migrated. Deferred from the cron slice landed in commit `3506ea5`.
+
+**What the PS script covers:** the agent uses its built-in `cron` tool (sub-commands `at` / `list` / `cancel`) to self-schedule, self-list, and self-cancel jobs. The test verifies that the resulting job is visible to the daemon and that an agent-cancelled job disappears from `peko cron list`.
+
+**Why it didn't land with the rest of `cli_cron.rs`:** the test is fundamentally an agent-tool-flow, not a daemon-CRUD flow. The agent has to:
+
+1. Receive a user prompt asking it to schedule a job
+2. Decide on its own to call the `cron` tool with a specific `sub_command`, `at` / `list` / `cancel` argument shape, and the right `agent_id`
+3. Receive the tool result and reason about whether the call succeeded
+4. Report a sentinel keyword (`TOOL_SUCCESS` / `LIST_SUCCESS` / `CANCEL_SUCCESS`)
+
+That's a multi-turn LLM decision that the mock-LLM tier cannot drive today. The mock's `Call tool: <name>` keyword echos a tool call with **empty** args, which doesn't supply the `sub_command` / `at` / `agent_id` payload the runtime's `cron` tool requires. So this test is structurally `real-LLM`-tier work.
+
+**Where to add it:** alongside the other real-LLM-tier slices in the Phase B table — most naturally `tests/cli_a2a.rs` (agent uses its tool surface) or a new `tests/cli_cron_tool.rs` if we want to keep the cron flows co-located. The test needs a real `MINIMAX_API_KEY` (or a significantly more capable mock that emits structured tool-call arguments on demand) to drive the multi-turn flow.
+
+**Mocks change needed before this can be mock-tier:** extend [.github/docker/mock-llm/mock_llm_server.py](../../.github/docker/mock-llm/mock_llm_server.py) so its `MOCK_LLM_SCRIPT` map can seed a *sequence* of responses (one per LLM call) instead of a single response per `prompt_substring` match. With that, a test could script: "first turn → tool_call(cron, at, …); second turn → text(TOOL_SUCCESS)". Until that's done, this test stays in the real-LLM tier.
+
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
 [.github/docker/mock-llm/mock_llm_server.py](../../.github/docker/mock-llm/mock_llm_server.py) supports:

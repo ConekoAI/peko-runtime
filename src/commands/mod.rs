@@ -217,25 +217,39 @@ pub struct GlobalPaths {
 
 impl GlobalPaths {
     /// Build paths from CLI arguments
+    ///
+    /// Path resolution order (highest to lowest precedence):
+    ///   1. Explicit `--config-dir` / `--data-dir` / `--cache-dir` CLI args
+    ///   2. The `PEKO_HOME` env var (delegated to `default_config_dir` /
+    ///      `default_data_dir` so this matches what the rest of the codebase
+    ///      — and external tools like the daemon's IPC layer — expect)
+    ///   3. The XDG defaults (`~/.peko` for config, `~/.local/share/peko`
+    ///      for data on Linux)
+    ///
+    /// Before this was fixed, the fallback was `dirs::home_dir()` directly,
+    /// which silently bypassed `PEKO_HOME` and made the daemon's
+    /// `data_dir` (used for `cron.json`, `announcements/`, agent state)
+    /// resolve to the host default even when callers set `PEKO_HOME` to
+    /// isolate the daemon in a tempdir. Caught by `tests/cli_cron.rs`'s
+    /// `cron_announce_writes_file_on_run` (announcement file was being
+    /// written to the host's `~/.local/share/peko/announcements/`, not
+    /// the test tempdir).
     #[must_use]
     pub fn from_cli(cli: &Cli) -> Self {
         let config_dir = cli
             .config_dir
             .clone()
-            .or_else(|| dirs::home_dir().map(|d| d.join(".peko")))
-            .unwrap_or_else(|| PathBuf::from(".").join(".peko"));
+            .unwrap_or_else(crate::common::paths::default_config_dir);
 
         let data_dir = cli
             .data_dir
             .clone()
-            .or_else(|| dirs::data_dir().map(|d| d.join("peko")))
-            .unwrap_or_else(|| config_dir.clone());
+            .unwrap_or_else(crate::common::paths::default_data_dir);
 
         let cache_dir = cli
             .cache_dir
             .clone()
-            .or_else(|| dirs::cache_dir().map(|d| d.join("peko")))
-            .unwrap_or_else(|| data_dir.join("cache"));
+            .unwrap_or_else(crate::common::paths::default_cache_dir);
 
         // Ensure directories exist
         let _ = std::fs::create_dir_all(&config_dir);
