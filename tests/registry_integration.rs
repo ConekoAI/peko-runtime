@@ -27,6 +27,7 @@ use std::time::Duration;
 
 mod common;
 use common::{create_test_user, reset_pekohub, PekohubBackend};
+use serial_test::serial;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -110,6 +111,7 @@ async fn store_registry_manifest_local(
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_pekohub_manifest_roundtrip() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
@@ -187,6 +189,7 @@ async fn test_pekohub_manifest_roundtrip() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_pekohub_manifest_invalid_media_type_rejected() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
@@ -214,6 +217,7 @@ async fn test_pekohub_manifest_invalid_media_type_rejected() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_pekohub_blob_roundtrip() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
@@ -288,6 +292,7 @@ async fn test_pekohub_blob_roundtrip() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_pekohub_catalog_and_tags() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
@@ -381,6 +386,7 @@ async fn test_pekohub_catalog_and_tags() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_registry_client_push_and_pull() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
@@ -489,6 +495,7 @@ async fn test_registry_client_push_and_pull() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_registry_client_skips_existing_layers() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
@@ -635,6 +642,7 @@ async fn test_registry_client_skips_existing_layers() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_registry_client_bare_ref_resolution() {
     let backend = PekohubBackend::start().await;
     let host = backend.url.strip_prefix("http://").unwrap();
@@ -674,6 +682,7 @@ async fn test_registry_client_pull_uses_oci_media_type() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_registry_client_pull_missing_manifest() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
@@ -697,6 +706,7 @@ async fn test_registry_client_pull_missing_manifest() {
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_registry_client_digest_verification_on_pull() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
