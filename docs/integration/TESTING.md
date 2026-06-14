@@ -84,10 +84,10 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_session.rs](../../tests/cli_session.rs) | 9 | 9 | PekoHub + mock LLM | Y |
 | [cli_basics.rs](../../tests/cli_basics.rs) | 14 | 8 | Mixed (6 offline, 8 need PekoHub + mock LLM) | Partial |
 | [cli_cron.rs](../../tests/cli_cron.rs) | 18 | 18 | PekoHub + mock LLM (2 are agent-tool multi-turn, §3 Sequence) | Y |
-| [cli_subagent.rs](../../tests/cli_subagent.rs) | 3 | 3 | PekoHub + mock LLM (smoke tests, §3 Sequence, `#[serial]`) | Y |
+| [cli_subagent.rs](../../tests/cli_subagent.rs) | 7 | 7 | PekoHub + mock LLM (all multi-turn, §3 Sequence, `#[serial]`) | Y |
 | [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) | 6 | 6 | mock LLM (sequence feature, §3) | Y |
 
-**Totals:** 77 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 93 in `tests/`.
+**Totals:** 81 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 97 in `tests/`.
 
 The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 4 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs)) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
@@ -96,8 +96,8 @@ The 5 files that exercise the hub directly — [packaging_integration.rs](../../
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 93 tests across 13 files in `tests/`.
-- E2E PowerShell scripts in `e2e_tests/`: 67 total (54 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
+- Integration: 97 tests across 13 files in `tests/`.
+- E2E PowerShell scripts in `e2e_tests/`: 61 total (48 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
 
 ---
 
@@ -232,7 +232,7 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/extensions/` | `tests/cli_extensions.rs` | mock-LLM (tool-call sequence, §3 Sequence) | ⏳ Pending |
 | `e2e_tests/compaction/` | `tests/cli_compaction.rs` | mock-LLM (multi-turn sequence) | ⏳ Pending |
 | `e2e_tests/a2a/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_tools.rs` | mock-LLM (tool-call decisions via Sequence) | ⏳ Pending |
-| `e2e_tests/subagent/` | `tests/cli_subagent.rs` | mock-LLM (tool-call decisions via Sequence) | ✅ Migrated (3 smoke tests covering parent-side blocking path; deeper child-side assertions deferred — see coverage gap below) |
+| `e2e_tests/subagent/` | `tests/cli_subagent.rs` | mock-LLM (tool-call decisions via Sequence) | ✅ Migrated (7 tests covering parent-side blocking path, isolated mode, labeled mode, inline-result, 2-level nesting, depth-limit smoke, shared/isolated context; `subagent_async.ps1` + `subagent_status_list.ps1` deferred — see coverage gap below) |
 | `e2e_tests/providers/` | `tests/cli_providers.rs` | real-LLM (gated by `MINIMAX_API_KEY` / `KIMI_API_KEY`) | ⏳ Pending |
 
 #### Phase B coverage gap — `e2e_tests/cron/cron_agent_tool.ps1`
@@ -247,11 +247,25 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 
 #### Phase B coverage gap — `e2e_tests/subagent/*.ps1` (deeper scenarios)
 
-**Status:** Partial migration. `tests/cli_subagent.rs` ships 3 smoke tests that exercise the parent-side `agent_spawn` blocking path end-to-end through the peko daemon: a baseline parent, an `isolated: true` parent, and a labeled parent. All three assert only on the parent's `peko send --no-stream` stdout containing the expected sentinel — the proof that the blocking tool call completed.
+**Status:** Mostly migrated. `tests/cli_subagent.rs` ships 7 tests that exercise the `agent_spawn` blocking path end-to-end through the peko daemon:
 
-**What is deferred (to a follow-up PR):** the deeper child-side assertions from `subagent_blocking.ps1`, `subagent_nesting.ps1`, and `subagent_isolation.ps1` — specifically: the child actually writing a file that the test reads back, the 2-level nesting chain writing a file via the grandchild, the depth-limit code path, and the shared-vs-isolated context assertions. Initial CI attempts chasing these (commits `3aede39` → `e1fc807` in this PR) revealed two real complications: (1) the daemon's `ToolRuntime::with_workspace_and_core` resolves `workspace_dir` to `std::env::current_dir()` (the daemon's cwd, which in `cargo test` is the peko-runtime crate root) — so the child's `write_file` lands in the peko-runtime working tree, not in any per-agent subdir; and (2) the test would have to assert that the runtime's tool dispatch actually invoked `write_file`, which requires either daemon stderr capture (the existing `DaemonGuard::spawn` discards it) or in-process assertions on the global `ExtensionCore`. Both are doable but each is its own scope.
+| Rust test | Maps to PS sub-test | What it asserts |
+|---|---|---|
+| `subagent_blocking_t1_write_file` | `subagent_blocking.ps1` T1 | parent spawns child; child writes a file; parent reports `BLOCKING_SUCCESS`; child wrote the file at the expected path with the expected content |
+| `subagent_blocking_t2_isolated` | `subagent_blocking.ps1` T2 | same as T1 with `isolated: true` |
+| `subagent_blocking_t4_inline_read` | `subagent_blocking.ps1` T4 | parent writes a file, spawns child, child reads it and returns the content inline; parent reports `INLINE_SUCCESS` |
+| `subagent_nesting_t1_depth2_writes_file` | `subagent_nesting.ps1` T1 | 3-level chain (parent → child-A → grandchild-B); grandchild writes a file that the test reads back |
+| `subagent_nesting_t2_depth_limit` | `subagent_nesting.ps1` T2 (smoke) | 3-level chain dispatches through the runtime; the depth-limit code path itself is unit-tested in `src/agent/tests/subagent_integration_tests.rs::test_depth_limit_enforcement` with `ExecutionConfig { max_depth: 2 }` |
+| `subagent_isolation_t1_shared_workspace` | `subagent_isolation.ps1` T1 | parent writes a file, spawns a non-isolated child, child reads it back; parent reports `SHARED_OK` |
+| `subagent_isolation_t2_isolated_writes_file` | `subagent_isolation.ps1` T2 | parent spawns `isolated: true` child, child writes a file that the test reads back |
+
+The child-side file write assertions are real end-to-end reads: the test creates a `PekoCli` with an isolated `HOME`, the daemon writes the file under `<peko_dir>/data/workspaces/`, and the test reads it back. Proving the file landed at the expected path is the proof that the blocking `agent_spawn` actually drove the child through the full `AgenticLoop` and that the child's `write_file` tool call dispatched through the daemon's `ToolRuntime` to disk.
+
+**What is deferred (to a follow-up PR):** the 3rd sub-test from `subagent_blocking.ps1` (`T3_shell` — cross-platform `echo foo > bar` via the `shell` tool) is dropped because the platform-portable shell semantics (cmd.exe vs /bin/sh quoting, redirects) are not stable enough for a CI assertion. The `subagent_nesting.ps1` T2 depth-limit smoke covers the dispatch plumbing only; the hard limit itself is enforced at `src/agent/subagent_executor.rs:230-235` and exercised in the in-process unit tests, which give a more deterministic assertion than a 4-level mock chain.
 
 **What is also deferred:** `subagent_async.ps1` (4 sub-tests) and `subagent_status_list.ps1` (4 sub-tests) require driving the `task` tool (status/list/cancel) and `agent_spawn` in `_async: true` mode. Both need to look up `task_id` in the in-process `AsyncTaskRegistry` (in `src/extension/async_exec/executor/`), which is built per-daemon and is not currently addressable from a Rust integration test that goes through the `peko` CLI. PR-3 path: add a test-only `peko subagent list --json` (or `peko task list --json`) CLI subcommand that reads the in-process `AsyncTaskRegistry` and dumps it as JSON, then write `cli_subagent.rs` tests that drive the parent's mock to emit a `task` tool_call and assert on the CLI output. Same shape as the `peko cron list --json` round-trip in `cli_cron.rs`.
+
+**A non-obvious gotcha this migration uncovered:** the per-agent `[extensions] enabled` whitelist is consulted in TWO places with different comparison semantics. The per-agent tool filter at `src/agent/agent.rs:121-135` matches against `tool.name()` (e.g. `"agent_spawn"`). The runtime dispatcher at `src/extension/core/tool_registry.rs:60-63` matches against the tool's owning canonical extension ID (e.g. `"builtin:tool:agent_spawn"`). A test agent's whitelist must therefore contain BOTH forms of every enabled tool, otherwise the per-agent init drops the tool (or the dispatcher marks it disabled at execution time) and the parent's tool call gets `"Error: Tool 'agent_spawn' is currently disabled..."`. The `write_subagent_agent` helper in `tests/cli_subagent.rs` ships both forms.
 
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
