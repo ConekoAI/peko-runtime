@@ -42,7 +42,7 @@ So when you write a new test, ask two questions: *Does it need network/the hub?*
 | Asserting plumbing — token routing, streaming chunk shape, error mapping | Provider-specific behavior — smoke-testing `minimax`, `kimi`, etc. |
 | Anything where the prompt fully determines the expected response | Anything where "would the model actually do X here?" is the question |
 
-The mock LLM is a deterministic SSE server at [.github/docker/mock-llm/mock_llm_server.py](../../.github/docker/mock-llm/mock_llm_server.py). Each streamed chunk carries both the MiniMax `messages[].content` and the OpenAI `delta.content` shapes, so the same response parses correctly under either the `minimax` or `openai_compatible` provider adapter — tests just set `MOCK_LLM_URL` (mock) or `MINIMAX_API_KEY` (real). The reference implementation of dual-mode selection is [tunnel_e2e.rs:254-261](../../tests/tunnel_e2e.rs#L254-L261).
+The mock LLM is a deterministic SSE server at [.github/docker/mock-llm/mock_llm_server.py](../../.github/docker/mock-llm/mock_llm_server.py). Each streamed chunk carries both the MiniMax `messages[].content` and the OpenAI `delta.content` shapes, so the same response parses correctly under either the `minimax` or `openai_compatible` provider adapter — tests just set `MOCK_LLM_URL` (mock) or `MINIMAX_API_KEY` (real). The reference implementation of dual-mode selection is [tunnel_e2e.rs:63-76](../../tests/tunnel_e2e.rs#L63-L76).
 
 **Response selection** (first match wins):
 
@@ -77,18 +77,21 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) | 1 | 1 | PekoHub + LLM (mock or real) | Y |
 | [team_integration.rs](../../tests/team_integration.rs) | 4 | 0 | None (pure Rust) | N/A |
 | [extension_packaging.rs](../../tests/extension_packaging.rs) | 6 | 0 | None (pure Rust) | N/A |
+| [cli_send.rs](../../tests/cli_send.rs) | 7 | 7 | PekoHub + mock LLM | Y |
+| [cli_session.rs](../../tests/cli_session.rs) | 9 | 9 | PekoHub + mock LLM | Y |
+| [cli_basics.rs](../../tests/cli_basics.rs) | 14 | 8 | Mixed (6 offline, 8 need PekoHub + mock LLM) | Partial |
 
-**Totals:** 26 hub-gated tests (all `#[ignore]`, un-ignored by `--ignored`) + 10 always-on pure-Rust tests = 36 in `tests/`.
+**Totals:** 50 hub-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 66 in `tests/`.
 
-All 5 hub-dependent files share the **same dual-mode `PekohubBackend::start()` harness**: read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`).
+The 7 hub-dependent files share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The `cli_*` tests spawn the `peko` daemon as a subprocess against the same stack.
 
-> **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L610) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
+> **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L466) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
 
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 36 tests across 7 files in `tests/`.
-- E2E PowerShell scripts in `e2e_tests/`: 91 total (78 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
+- Integration: 66 tests across 10 files in `tests/`.
+- E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
 
 ---
 
@@ -170,12 +173,12 @@ The fixture server runs with `ALLOW_DEV_AUTH_BYPASS=true`, but tests still exerc
 └──────────────┘                           └──────────────┘
 ```
 
-Reference JWT helper (lives in [tunnel_e2e.rs](../../tests/tunnel_e2e.rs)):
+Reference JWT helper (lives in [tests/common/auth.rs](../../tests/common/auth.rs), re-exported as `common::generate_jwt`):
 
 ```rust
-const PEKOHUB_JWT_SECRET: &str = "test-secret-key-that-is-32-chars-long!!";
+pub const PEKOHUB_JWT_SECRET: &str = "test-secret-key-that-is-32-chars-long!!";
 
-fn generate_jwt(user_id: i64, namespace: &str) -> String {
+pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
     use jsonwebtoken::{encode, EncodingKey, Header};
     #[derive(serde::Serialize)]
     struct Claims { sub: String, namespace: String, iat: u64 }
@@ -204,39 +207,21 @@ Why no full OAuth flow is needed:
 
 ## 7. Migration Roadmap: `e2e_tests/` → `tests/`
 
-`peko-runtime/e2e_tests/` holds 66 PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock and a non-existent top-level runner. The end-goal is to dismantle the folder. This roadmap is the spec for the follow-up PRs — none of it is done in this doc-consolidation PR.
+`peko-runtime/e2e_tests/` still holds 60 live PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock. The end-goal is to dismantle the folder. Phases A and the cli_send / cli_session / cli_basics legs of Phase B have already landed.
 
-### Phase A — Delete redundant (one PR)
+### Phase A — Delete redundant (✅ landed)
 
-Scripts whose coverage already exists in Rust integration tests, plus the orphaned helpers and fixtures that fall out with them:
-
-| PowerShell script(s) | Disposition | Reason |
-|---|---|---|
-| `packaging/registry_push_pull.ps1`, `registry_layer_dedup.ps1`, `team_registry_dedup.ps1`, `team_registry_snapshot.ps1`, `agent_registry_lifecycle.ps1`, `agent_snapshot_memory.ps1`, `cross_platform_agent_share.ps1` | Delete | Covered by `tests/registry_integration.rs` (10) + `tests/pekohub_integration.rs` (9) |
-| `packaging/team_export_import.ps1`, `team_full_lifecycle.ps1`, `team_snapshot_with_sessions.ps1`, `team_subteam_hierarchy.ps1`, `team_with_extensions.ps1` | Delete | Covered by `tests/team_integration.rs` (4) — the 4 unnamed `team_*.ps1` cover the same export/import/sessions/hierarchy/extensions surface |
-| `packaging/agent_build_export_import.ps1` | Delete | Covered by `tests/packaging_integration.rs` (1) |
-| `packaging/extension_bundle_registry.ps1` | Delete | Covered by `tests/extension_packaging.rs` (6) |
-| `packaging/pekohub_contract_test.ps1` | Delete | Covered by `tests/pekohub_integration.rs` (9) |
-| `packaging/debug_team.ps1` | Delete | One-off debug dump, no header, no asserts |
-| `packaging/test_all.ps1` | Delete | Top-level packaging runner — end-state has no runner script |
-| `packaging/RegistryTestHelpers.ps1` | Delete | Helper module; all 4 dependents (`pekohub_contract_test`, `registry_layer_dedup`, `registry_push_pull`, and itself) are being deleted in this PR |
-| `packaging/*.agent` (7 files: `agent-a`, `agent-b`, `cross-agent`, `lifecycle-agent`, `memory-agent`, `my-agent`, `registry-test-agent`) | Delete | Fixture files used only by the scripts being deleted |
-
-Also delete: `e2e_tests/cron.db` (committed SQLite artifact), and the stale `e2e_tests/README.md` references to `run_all_tests.ps1` and `mock_registry/`.
-
-> Dead Makefile + workflow references that should land in the same PR:
-> - [Makefile:67-75](../../Makefile#L67-L75) `test-full-e2e` target points at a nonexistent `integration-tests/` dir.
-> - [.github/workflows/integration.yml:216-241](../../.github/workflows/integration.yml#L216-L241) `full-e2e` job runs `./run_e2e_tests.sh` in the same nonexistent dir on the nightly schedule — silently failing today.
+`e2e_tests/packaging/` (and its helpers, runner, and 7 fixture `.agent` files) was deleted. Its coverage now lives in `tests/registry_integration.rs`, `tests/pekohub_integration.rs`, `tests/packaging_integration.rs`, `tests/team_integration.rs`, and `tests/extension_packaging.rs`. The redundant agent fixture files were rehomed to the peko-runtime root for use by other tests; the redundant `e2e_tests/cron.db` and stale README references to `run_all_tests.ps1` and `mock_registry/` were also removed. The dead `test-full-e2e` Makefile target and the `full-e2e` GitHub workflow job (both pointing at a nonexistent `integration-tests/` dir) were removed at the same time.
 
 ### Phase B — Migrate CLI flows to Rust (3–5 PRs)
 
-Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `tests/cli_<area>.rs` file using the `PekohubBackend` harness for hub-touching flows and the mock LLM for deterministic chat:
+Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `tests/cli_<area>.rs` file using the `PekohubBackend` harness for hub-touching flows and the mock LLM for deterministic chat. Tests that drive the `peko` daemon as a subprocess live under [tests/common/subprocess.rs](../../tests/common/subprocess.rs) and [tests/common/cli.rs](../../tests/common/cli.rs).
 
 | PowerShell dir | New Rust test file | Tier | Status |
 |---|---|---|---|
-| `e2e_tests/send/` | `tests/cli_send.rs` | mock-LLM | ✅ Migrated (8 tests) |
-| `e2e_tests/session/` | `tests/cli_session.rs` | mock-LLM | ✅ Migrated (8 tests) |
-| `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mock-LLM | ✅ Migrated (12 tests, offline) |
+| `e2e_tests/send/` | `tests/cli_send.rs` | mock-LLM | ✅ Migrated (7 tests) |
+| `e2e_tests/session/` | `tests/cli_session.rs` | mock-LLM | ✅ Migrated (9 tests) |
+| `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mixed | ✅ Migrated (14 tests: 6 offline, 8 mock-LLM) |
 | `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ⏳ Pending |
 | `e2e_tests/extensions/` | `tests/cli_extensions.rs` | real-LLM (tool calls) | ⏳ Pending |
 | `e2e_tests/compaction/` | `tests/cli_compaction.rs` | real-LLM (reasoning) | ⏳ Pending |
@@ -252,7 +237,7 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 - **Tool-call responses** — `Call tool: <name>` in the prompt returns a streamed `tool_calls` array for `<name>` with empty JSON args.
 - **`MOCK_LLM_SCRIPT` env** — JSON map of prompt-substring → response (string or `{tool_call: {name, arguments}}`), so tests can seed complex scripted dialogs without modifying the mock.
 
-Full spec lives in §3 above. This unblocks moving ~30 LLM-required PowerShell tests into the mock-LLM tier rather than the real-LLM tier.
+Full spec lives in §3 above. This unblocked moving the LLM-required PowerShell tests in `e2e_tests/send/`, `e2e_tests/session/`, and the chat-dependent half of `e2e_tests/agent/` into the mock-LLM tier rather than the real-LLM tier — 24 tests have already been migrated (see Phase B).
 
 ### Phase D — Phase-7 user-journey scenarios (S1–S5)
 
@@ -293,6 +278,7 @@ test-integration:      docker-up && \
                                     --test tunnel_e2e --test packaging_integration \
                                     --test registry_integration --test team_integration \
                                     --test extension_packaging \
+                                    --test cli_send --test cli_session --test cli_basics \
                                     -- --include-ignored
 
 # Tier 2 — nightly + [llm] commit tag: adds real-LLM tests
@@ -306,9 +292,9 @@ test-integration-llm:  docker-up && \
 test-all:              test && test-integration && test-integration-llm
 ```
 
-The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
+The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
 
-> **Why `--include-ignored`, not `--ignored`.** All 26 hub-gated tests are `#[ignore]`, but the 10 always-on pure-Rust tests in `team_integration.rs` (4) and `extension_packaging.rs` (6) are not. `cargo test … -- --ignored` would silently skip those 10. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 50 hub-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 
@@ -321,7 +307,7 @@ async fn test_thing_that_needs_real_model() {
 }
 ```
 
-Tests that work with either LLM use whichever is set — mock-first. The reference is the dual-mode logic in [tunnel_e2e.rs:254-261](../../tests/tunnel_e2e.rs#L254-L261).
+Tests that work with either LLM use whichever is set — mock-first. The reference is the dual-mode logic in [tunnel_e2e.rs:63-76](../../tests/tunnel_e2e.rs#L63-L76).
 
 ---
 
