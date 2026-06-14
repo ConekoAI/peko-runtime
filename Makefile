@@ -14,13 +14,14 @@
         docker-build docker-up docker-down \
         test-lib test-subagent \
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
+        test-cli-send test-cli-session test-cli-basics \
         ci
 
 # All integration test crates (live in tests/*.rs).
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
-                     cli_send
+                     cli_send cli_session cli_basics
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
 # Default ports exposed by docker-compose.integration.yml; CI overrides
@@ -49,6 +50,7 @@ help:
 	@echo "  Granular slices of test-integration (one file at a time):"
 	@echo "    test-pekohub / test-tunnel / test-tunnel-e2e"
 	@echo "    test-packaging / test-registry / test-subagent"
+	@echo "    test-cli-send / test-cli-session / test-cli-basics"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
 
@@ -132,6 +134,20 @@ test-packaging: docker-up
 test-registry: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test registry_integration -- --ignored
+
+# ── Phase B CLI tests (mock-LLM tier) ──────────────────────────────────────
+
+test-cli-send: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_send -- --ignored
+
+test-cli-session: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_session -- --ignored
+
+test-cli-basics:
+	@env -u MINIMAX_API_KEY \
+	    cargo test --test cli_basics
 
 # ── CI entry ─────────────────────────────────────────────────────────────
 

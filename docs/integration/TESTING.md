@@ -232,16 +232,16 @@ Also delete: `e2e_tests/cron.db` (committed SQLite artifact), and the stale `e2e
 
 Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `tests/cli_<area>.rs` file using the `PekohubBackend` harness for hub-touching flows and the mock LLM for deterministic chat:
 
-| PowerShell dir | New Rust test file | Tier |
-|---|---|---|
-| `e2e_tests/send/` | `tests/cli_send.rs` | mock-LLM |
-| `e2e_tests/session/` | `tests/cli_session.rs` | mock-LLM |
-| `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM |
-| `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mock-LLM |
-| `e2e_tests/extensions/` | `tests/cli_extensions.rs` | real-LLM (tool calls) |
-| `e2e_tests/compaction/` | `tests/cli_compaction.rs` | real-LLM (reasoning) |
-| `e2e_tests/a2a/`, `e2e_tests/subagent/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_subagent.rs`, `tests/cli_tools.rs` | real-LLM (tool-call decisions) |
-| `e2e_tests/providers/` | `tests/cli_providers.rs` | real-LLM (gated by `MINIMAX_API_KEY` / `KIMI_API_KEY`) |
+| PowerShell dir | New Rust test file | Tier | Status |
+|---|---|---|---|
+| `e2e_tests/send/` | `tests/cli_send.rs` | mock-LLM | ✅ Migrated (8 tests) |
+| `e2e_tests/session/` | `tests/cli_session.rs` | mock-LLM | ✅ Migrated (8 tests) |
+| `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mock-LLM | ✅ Migrated (12 tests, offline) |
+| `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ⏳ Pending |
+| `e2e_tests/extensions/` | `tests/cli_extensions.rs` | real-LLM (tool calls) | ⏳ Pending |
+| `e2e_tests/compaction/` | `tests/cli_compaction.rs` | real-LLM (reasoning) | ⏳ Pending |
+| `e2e_tests/a2a/`, `e2e_tests/subagent/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_subagent.rs`, `tests/cli_tools.rs` | real-LLM (tool-call decisions) | ⏳ Pending |
+| `e2e_tests/providers/` | `tests/cli_providers.rs` | real-LLM (gated by `MINIMAX_API_KEY` / `KIMI_API_KEY`) | ⏳ Pending |
 
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 

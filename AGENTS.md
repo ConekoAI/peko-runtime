@@ -139,6 +139,10 @@ src/
 
 - **Unit tests** are co-located in `#[cfg(test)]` modules within source files.
 - **Integration tests** live in `tests/`; the legacy `e2e_tests/` PowerShell scripts are being dismantled per `docs/integration/TESTING.md` §7.
+- **New CLI integration tests** (Phase B migration):
+  - `tests/cli_send.rs` — `peko send` with mock LLM (8 tests: default response, keyword echo, --file, --stdin, --new, --session, error cases)
+  - `tests/cli_session.rs` — `peko session` with mock LLM (8 tests: list, show, branch, switch, remove, user isolation)
+  - `tests/cli_basics.rs` — Offline agent/team/config commands (12 tests: create/list/show/remove/move, config get/set/path/defaults)
 - **Benchmarks** live in `benches/`.
 - Tests cover critical paths: extension lifecycle, agent lifecycle, provider operations, session operations, tool operations.
 - The project targets 80%+ test coverage.
