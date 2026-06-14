@@ -108,6 +108,40 @@ fn workspace_dir(cli: &PekoCli, _agent_name: &str) -> PathBuf {
     cli.peko_dir().join("data").join("workspaces")
 }
 
+/// Walk `<peko_dir>/data/` recursively and return a human-readable
+/// listing of all files found. Used in failure messages to figure
+/// out where the child's `write_file` actually landed when the
+/// expected path is empty.
+fn dump_data_dir(cli: &PekoCli) -> String {
+    fn walk(p: &std::path::Path, depth: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        let indent = "  ".repeat(depth);
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return out;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let meta = entry.metadata().ok();
+            let suffix = if meta.as_ref().map(|m| m.is_dir()).unwrap_or(false) {
+                "/"
+            } else {
+                ""
+            };
+            out.push(format!("{indent}{name}{suffix}"));
+            if meta.as_ref().map(|m| m.is_dir()).unwrap_or(false) {
+                out.extend(walk(&path, depth + 1));
+            }
+        }
+        out
+    }
+    let data_dir = cli.peko_dir().join("data");
+    if !data_dir.exists() {
+        return format!("(data dir does not exist: {})", data_dir.display());
+    }
+    walk(&data_dir, 0).join("\n")
+}
+
 /// Write a mock-LLM-pointed agent that has the tools the subagent
 /// migration needs enabled: `agent_spawn`, `task`, `write_file`,
 /// `read_file`, and `shell`.
@@ -256,7 +290,11 @@ async fn subagent_blocking_t1_write_file() {
     // The child wrote a file into the parent's personal workspace.
     let path = workspace_dir(&cli, agent_name).join(file_name);
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}")
+        panic!(
+            "child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}\n\
+             --- contents of <peko_dir>/data/ ---\n{}\n--- end ---",
+            dump_data_dir(&cli),
+        )
     });
     assert_eq!(
         actual, file_content,
@@ -329,7 +367,11 @@ async fn subagent_blocking_t2_isolated() {
 
     let path = workspace_dir(&cli, agent_name).join(file_name);
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}")
+        panic!(
+            "child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}\n\
+             --- contents of <peko_dir>/data/ ---\n{}\n--- end ---",
+            dump_data_dir(&cli),
+        )
     });
     assert_eq!(actual, file_content);
 }
@@ -501,7 +543,11 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     // PathResolver is keyed on the parent agent's name).
     let path = workspace_dir(&cli, agent_name).join(file_name);
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("grandchild file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}")
+        panic!(
+            "grandchild file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}\n\
+             --- contents of <peko_dir>/data/ ---\n{}\n--- end ---",
+            dump_data_dir(&cli),
+        )
     });
     assert_eq!(actual, file_content);
 }
@@ -761,7 +807,11 @@ async fn subagent_isolation_t2_isolated_writes_file() {
 
     let path = workspace_dir(&cli, agent_name).join(file_name);
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}")
+        panic!(
+            "child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}\n\
+             --- contents of <peko_dir>/data/ ---\n{}\n--- end ---",
+            dump_data_dir(&cli),
+        )
     });
     assert_eq!(actual, file_content);
 }
