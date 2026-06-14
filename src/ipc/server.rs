@@ -1124,7 +1124,7 @@ impl IpcServer {
                 match agent {
                     Some(agent_name) => {
                         let session_peer =
-                            crate::session::types::Peer::User("desktop".to_string());
+                            crate::session::types::Peer::User("default".to_string());
                         match service
                             .list_sessions_with_active(&agent_name, team.as_deref(), &session_peer)
                             .await

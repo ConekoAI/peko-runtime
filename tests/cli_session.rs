@@ -389,7 +389,7 @@ fn session_remove_deletes_session() {
     // Remove the session
     let (_, _, status) = run(
         &cli,
-        &["session", "remove", "remove-agent", &session_id],
+        &["session", "remove", "remove-agent", &session_id, "--force"],
     );
     assert!(status.success(), "remove session should succeed");
 
