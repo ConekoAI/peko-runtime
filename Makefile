@@ -15,7 +15,7 @@
         test-lib test-subagent \
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
-        test-cli-subagent \
+        test-cli-subagent test-cli-tools \
         test-mock-llm-sequence \
         ci
 
@@ -24,6 +24,7 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
+                     cli_tools \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -54,7 +55,7 @@ help:
 	@echo "    test-pekohub / test-tunnel / test-tunnel-e2e"
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
-	@echo "    test-cli-subagent"
+	@echo "    test-cli-subagent / test-cli-tools"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -168,6 +169,16 @@ test-cli-cron: docker-up
 test-cli-subagent: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_subagent -- --include-ignored
+
+# Built-in tools (shell / read_file / write_file / glob / grep /
+# str_replace_file) slice. All single-turn tests, all `#[serial]`
+# because they share the mock LLM's per-substring counter. Replaces
+# the mockable subset of `e2e_tests/tools/built-in/*.ps1`. See
+# docs/integration/TESTING.md §7 for the deferred list
+# (tool_async / tool_timeout / tool_update_mid_session).
+test-cli-tools: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_tools -- --include-ignored
 
 # Mock LLM sequence feature (Phase C, see docs/integration/TESTING.md §3).
 # Exercises the per-substring counter in the list-value branch of

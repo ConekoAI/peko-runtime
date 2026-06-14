@@ -85,19 +85,20 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_basics.rs](../../tests/cli_basics.rs) | 14 | 8 | Mixed (6 offline, 8 need PekoHub + mock LLM) | Partial |
 | [cli_cron.rs](../../tests/cli_cron.rs) | 18 | 18 | PekoHub + mock LLM (2 are agent-tool multi-turn, §3 Sequence) | Y |
 | [cli_subagent.rs](../../tests/cli_subagent.rs) | 7 | 7 | PekoHub + mock LLM (all multi-turn, §3 Sequence, `#[serial]`) | Y |
+| [cli_tools.rs](../../tests/cli_tools.rs) | 6 | 6 | PekoHub + mock LLM (single-turn, §3 Sequence, `#[serial]`) | Y |
 | [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) | 6 | 6 | mock LLM (sequence feature, §3) | Y |
 
-**Totals:** 81 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 97 in `tests/`.
+**Totals:** 87 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 103 in `tests/`.
 
-The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 4 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs)) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
+The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 6 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs), [cli_subagent.rs](../../tests/cli_subagent.rs), [cli_tools.rs](../../tests/cli_tools.rs)) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
 > **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L466) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
 
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 97 tests across 13 files in `tests/`.
-- E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
+- Integration: 103 tests across 14 files in `tests/`.
+- E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7. The Phase B legs that have landed (`send/`, `session/`, `agent/`, `team/`, `config/`, `cron/`, `subagent/`, `tools/built-in/`) move the PS scripts into a "redundant" state but keep them on disk until Phase E finalizes the cleanup.
 
 ---
 
@@ -231,7 +232,8 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ✅ Migrated (18 tests; of which 2 are agent-tool multi-turn via §3 Sequence — see coverage gap below) |
 | `e2e_tests/extensions/` | `tests/cli_extensions.rs` | mock-LLM (tool-call sequence, §3 Sequence) | ⏳ Pending |
 | `e2e_tests/compaction/` | `tests/cli_compaction.rs` | mock-LLM (multi-turn sequence) | ⏳ Pending |
-| `e2e_tests/a2a/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_tools.rs` | mock-LLM (tool-call decisions via Sequence) | ⏳ Pending |
+| `e2e_tests/a2a/` | `tests/cli_a2a.rs` | mock-LLM (tool-call decisions via Sequence) | ⏳ Pending |
+| `e2e_tests/tools/built-in/` | `tests/cli_tools.rs` | mock-LLM (single tool_call per test, §3 Sequence) | ✅ Migrated (6 tests, one per built-in tool: glob, grep, read_file, write_file, str_replace_file, shell. See coverage gap below for the 4 top-level PS scripts deferred.) |
 | `e2e_tests/subagent/` | `tests/cli_subagent.rs` | mock-LLM (tool-call decisions via Sequence) | ✅ Migrated (7 tests covering parent-side blocking path, isolated mode, labeled mode, inline-result, 2-level nesting, depth-limit smoke, shared/isolated context; `subagent_async.ps1` + `subagent_status_list.ps1` deferred — see coverage gap below) |
 | `e2e_tests/providers/` | `tests/cli_providers.rs` | real-LLM (gated by `MINIMAX_API_KEY` / `KIMI_API_KEY`) | ⏳ Pending |
 
@@ -266,6 +268,23 @@ The child-side file write assertions are real end-to-end reads: the test creates
 **What is also deferred:** `subagent_async.ps1` (4 sub-tests) and `subagent_status_list.ps1` (4 sub-tests) require driving the `task` tool (status/list/cancel) and `agent_spawn` in `_async: true` mode. Both need to look up `task_id` in the in-process `AsyncTaskRegistry` (in `src/extension/async_exec/executor/`), which is built per-daemon and is not currently addressable from a Rust integration test that goes through the `peko` CLI. PR-3 path: add a test-only `peko subagent list --json` (or `peko task list --json`) CLI subcommand that reads the in-process `AsyncTaskRegistry` and dumps it as JSON, then write `cli_subagent.rs` tests that drive the parent's mock to emit a `task` tool_call and assert on the CLI output. Same shape as the `peko cron list --json` round-trip in `cli_cron.rs`.
 
 **A non-obvious gotcha this migration uncovered:** the per-agent `[extensions] enabled` whitelist is consulted in TWO places with different comparison semantics. The per-agent tool filter at `src/agent/agent.rs:121-135` matches against `tool.name()` (e.g. `"agent_spawn"`). The runtime dispatcher at `src/extension/core/tool_registry.rs:60-63` matches against the tool's owning canonical extension ID (e.g. `"builtin:tool:agent_spawn"`). A test agent's whitelist must therefore contain BOTH forms of every enabled tool, otherwise the per-agent init drops the tool (or the dispatcher marks it disabled at execution time) and the parent's tool call gets `"Error: Tool 'agent_spawn' is currently disabled..."`. The `write_subagent_agent` helper in `tests/cli_subagent.rs` ships both forms.
+
+#### Phase B coverage gap — `e2e_tests/tools/*.ps1` (top-level scripts deferred)
+
+**Status:** Partially migrated. `tests/cli_tools.rs` ships 6 tests that exercise the 6 built-in tools (`shell`, `read_file`, `write_file`, `glob`, `grep`, `str_replace_file`) end-to-end through the peko daemon. Each test scripts one `tool_call(<tool>, …)` via the mock LLM, asserts the tool dispatched, and (for `write_file` / `str_replace_file`) verifies the file-side effect on disk. The per-tool `Tool` impls are unit-tested in `src/tools/builtin/fs/*.rs` and `src/tools/builtin/shell.rs`; the CLI integration concern is that the tool call wires through the agent loop and the dispatcher. The 2–3 sub-tests per PS script (e.g. `glob` T1 `*.py`, T2 `*.rs`, T3 `**/*.rs`) collapse to a single representative case per tool in the Rust file because the shape is identical and the per-tool filtering is unit-tested separately.
+
+**What is deferred (the 4 top-level PS scripts):**
+
+| PS script | Sub-tests | Why deferred |
+|---|---|---|
+| `tool_all.ps1` | (meta-runner) | Replaced by `cargo test --test cli_tools`. |
+| `tool_async.ps1` | 7 sub-tests | Exercises `_async: true` plumbing against the in-process `AsyncTaskRegistry` (`src/extension/async_exec/executor/executor.rs:43-76`). The PS file itself documents many sub-tests as `"EXPECTED FAIL (feature may be stubbed)"` — the framework-level async support is not yet fully wired. |
+| `tool_timeout.ps1` | 1 test | Depends on the LLM reasoning about `_timeout: 3` semantics (the LLM has to choose to pass `_timeout: 3` to the `shell` tool). Real-LLM tier. |
+| `tool_update_mid_session.ps1` | 4 sub-tests | Tests ADR-019 mid-session `peko ext enable/disable --target` (the system-prompt / provider-tool-schema / dispatcher-allowed-set triad). The daemon-side enable/disable is a config-level test; the LLM-side reasoning is real-LLM tier. Better as a dedicated ADR-019 PR that exercises the mid-session plumbing directly without the LLM reasoning loop. |
+
+These four scripts stay in `e2e_tests/tools/` until those features are wired enough to mock. The 6 `built-in/*.ps1` files that this PR migrates stay in place (now redundant with `tests/cli_tools.rs`) and will be deleted in Phase E, consistent with how the `cron/`, `subagent/`, `agent/`, etc. migrations handled their now-redundant PS scripts.
+
+**A non-obvious gotcha this migration (independently) re-confirmed:** the same per-agent `[extensions] enabled` whitelist gotcha from `cli_subagent.rs` applies to the 6 built-in tools. `write_builtin_agent` in `tests/cli_tools.rs` lists BOTH the bare tool names (`"shell"`, `"read_file"`, `"write_file"`, `"glob"`, `"grep"`, `"str_replace_file"`) AND the canonical `builtin:tool:…` IDs. Without both forms, the per-agent init drops the tool or the dispatcher marks it disabled, and the parent's `tool_call` returns `"Error: Tool 'write_file' is currently disabled..."`.
 
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
@@ -321,6 +340,7 @@ test-integration:      docker-up && \
                                     --test extension_packaging \
                                     --test cli_send --test cli_session --test cli_basics \
                                     --test cli_cron --test cli_subagent \
+                                    --test cli_tools \
                                     --test mock_llm_sequence \
                                     -- --include-ignored
 
@@ -335,9 +355,9 @@ test-integration-llm:  docker-up && \
 test-all:              test && test-integration && test-integration-llm
 ```
 
-The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
+The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-cli-tools`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
 
-> **Why `--include-ignored`, not `--ignored`.** All 81 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 87 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 
