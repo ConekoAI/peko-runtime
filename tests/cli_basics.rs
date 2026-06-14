@@ -140,15 +140,14 @@ fn agent_move_renames_agent() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "old-name", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Create agent
+    // Create agent (daemon will write the config)
     let (_, _, status) = run(
         &cli,
         &["agent", "create", "old-name", "--provider", "openai_compatible"],
     );
-    assert!(status.success());
+    assert!(status.success(), "agent create should succeed");
 
     // Move/rename — verify the command succeeds
     let (out, err, status) = run(&cli, &["agent", "move", "old-name", "new-name"]);
