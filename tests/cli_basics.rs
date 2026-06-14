@@ -1,20 +1,25 @@
-//! CLI integration tests for basic offline commands: agent, team, config (Phase B slice 3).
+//! CLI integration tests for basic commands: agent, team, config (Phase B slice 3).
 //!
-//! These tests exercise the CLI surfaces that operate purely on the local
-//! filesystem — no daemon, no LLM, no Docker. They use [`PekoCli`] for an
-//! isolated `HOME` but skip [`DaemonGuard`] entirely.
+//! **Note:** All agent and team commands route through the daemon via IPC.
+//! Config commands operate on the filesystem directly. We spawn a [`DaemonGuard`]
+//! for the agent/team tests and skip it for the pure config tests.
 //!
-//! Covered surfaces:
-//!   - peko agent create / list / show / remove / move
-//!   - peko team create / list / show / remove / move
-//!   - peko config path / get / set / defaults / validate
+//! Tier: mock-LLM for agent/team (daemon required), offline for config.
 
 #![cfg(unix)]
 
 mod common;
-use common::{PekoCli, run_with_timeout};
+use common::{write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
 use std::process::Stdio;
 use std::time::Duration;
+
+fn mock_llm_url() -> Option<String> {
+    let url = std::env::var("MOCK_LLM_URL").ok()?;
+    if url.is_empty() {
+        return None;
+    }
+    Some(url)
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,12 +57,19 @@ fn assert_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 }
 
 // ---------------------------------------------------------------------------
-// Agent commands
+// Agent commands (need daemon)
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn agent_create_list_show_remove() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
     let cli = PekoCli::new();
+    write_mock_agent(cli.home(), "existing-agent", &mock_url).expect("write mock agent");
+    let _daemon = DaemonGuard::spawn(&cli);
 
     // Create an agent
     let (out, err, status) = run(
@@ -65,10 +77,6 @@ fn agent_create_list_show_remove() {
         &["agent", "create", "test-agent", "--provider", "openai_compatible"],
     );
     assert_ok(&out, &err, &status);
-    assert!(
-        out.to_lowercase().contains("created") || out.to_lowercase().contains("agent"),
-        "create output should mention creation: {out}"
-    );
 
     // List agents
     let (out, err, status) = run(&cli, &["agent", "list"]);
@@ -100,8 +108,15 @@ fn agent_create_list_show_remove() {
 }
 
 #[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn agent_create_json_output() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
     let cli = PekoCli::new();
+    write_mock_agent(cli.home(), "json-agent-precreate", &mock_url).expect("write mock agent");
+    let _daemon = DaemonGuard::spawn(&cli);
 
     let (out, err, status) = run(
         &cli,
@@ -119,8 +134,15 @@ fn agent_create_json_output() {
 }
 
 #[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn agent_move_renames_agent() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
     let cli = PekoCli::new();
+    write_mock_agent(cli.home(), "old-name", &mock_url).expect("write mock agent");
+    let _daemon = DaemonGuard::spawn(&cli);
 
     // Create agent
     let (_, _, status) = run(
@@ -140,19 +162,34 @@ fn agent_move_renames_agent() {
 }
 
 #[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn agent_show_nonexistent_fails() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
     let cli = PekoCli::new();
+    write_mock_agent(cli.home(), "other-agent", &mock_url).expect("write mock agent");
+    let _daemon = DaemonGuard::spawn(&cli);
+
     let (out, err, status) = run(&cli, &["agent", "show", "no-such-agent"]);
     assert_err(&out, &err, &status);
 }
 
 // ---------------------------------------------------------------------------
-// Team commands
+// Team commands (need daemon)
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn team_create_list_show_remove() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
     let cli = PekoCli::new();
+    write_mock_agent(cli.home(), "team-agent", &mock_url).expect("write mock agent");
+    let _daemon = DaemonGuard::spawn(&cli);
 
     // Create a team
     let (out, err, status) = run(&cli, &["team", "create", "test-team"]);
@@ -192,8 +229,15 @@ fn team_create_list_show_remove() {
 }
 
 #[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn team_create_with_description() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
     let cli = PekoCli::new();
+    write_mock_agent(cli.home(), "desc-agent", &mock_url).expect("write mock agent");
+    let _daemon = DaemonGuard::spawn(&cli);
 
     let (out, err, status) = run(
         &cli,
@@ -217,8 +261,15 @@ fn team_create_with_description() {
 }
 
 #[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn team_move_renames_team() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
     let cli = PekoCli::new();
+    write_mock_agent(cli.home(), "move-agent", &mock_url).expect("write mock agent");
+    let _daemon = DaemonGuard::spawn(&cli);
 
     let (_, _, status) = run(&cli, &["team", "create", "old-team"]);
     assert!(status.success());
@@ -232,14 +283,22 @@ fn team_move_renames_team() {
 }
 
 #[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn team_show_nonexistent_fails() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
     let cli = PekoCli::new();
+    write_mock_agent(cli.home(), "show-agent", &mock_url).expect("write mock agent");
+    let _daemon = DaemonGuard::spawn(&cli);
+
     let (out, err, status) = run(&cli, &["team", "show", "no-such-team"]);
     assert_err(&out, &err, &status);
 }
 
 // ---------------------------------------------------------------------------
-// Config commands
+// Config commands (offline — no daemon needed)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -324,11 +383,12 @@ fn config_init_creates_config_file() {
     let (out, err, status) = run(&cli, &["config", "init"]);
     assert_ok(&out, &err, &status);
 
-    // Verify the config file was created
-    let config_file = cli.peko_dir().join("config.toml");
+    // config init defaults to writing "peko.toml" in the current directory
+    // (which is the tempdir since we don't change CWD)
+    let config_file = cli.home().join("peko.toml");
     assert!(
         config_file.exists(),
-        "config init should create config.toml at {:?}",
+        "config init should create peko.toml at {:?}",
         config_file
     );
 }

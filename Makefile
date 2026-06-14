@@ -145,9 +145,9 @@ test-cli-session: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_session -- --ignored
 
-test-cli-basics:
-	@env -u MINIMAX_API_KEY \
-	    cargo test --test cli_basics
+test-cli-basics: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_basics -- --include-ignored
 
 # ── CI entry ─────────────────────────────────────────────────────────────
 
