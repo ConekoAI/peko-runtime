@@ -94,18 +94,36 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
+/// RAII guard: deletes the file at `path` on `Drop`. Used to keep the
+/// `peko-runtime/` crate root clean between tests — every test that
+/// asserts on a `write_file` writes a file into the daemon's cwd
+/// (which is the crate root) and we don't want it to leak.
+struct FileGuard(PathBuf);
+impl Drop for FileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Workspace directory the child subagent's `write_file` resolves
-/// relative paths against. The daemon's `ToolRuntime::register_builtins`
-/// (at `src/runtime/tool_runtime.rs:158-162`) sets every built-in
-/// tool's `workspace_dir` to `path_resolver.agent_workspace(".", None)
-/// .parent()`, which resolves to `{data_dir}/workspaces` — NOT the
-/// per-agent personal subdir. So the child writes the file with the
-/// relative path `{file_name}` and it lands directly in
-/// `<peko_dir>/data/workspaces/`, not under a per-agent subdir. The
-/// `_agent_name` parameter is kept for symmetry / readability of the
-/// call sites and to make this constraint explicit at the call site.
-fn workspace_dir(cli: &PekoCli, _agent_name: &str) -> PathBuf {
-    cli.peko_dir().join("data").join("workspaces")
+/// relative paths against. The daemon's `AppState::new` calls
+/// `ToolRuntime::with_workspace_and_core(path_resolver,
+/// std::env::current_dir(), ...)` (see `src/daemon/state.rs:409-413`),
+/// which sets every built-in tool's `workspace_dir` to the daemon's
+/// process cwd. In a `cargo test` run, the daemon is spawned as a
+/// child of `cargo test`, so its cwd is whatever `cargo test`'s cwd
+/// is — the `peko-runtime/` crate root. So the child writes the
+/// file with the relative path `{file_name}` and it lands at
+/// `<peko-runtime>/{file_name}`. The `cli` and `_agent_name`
+/// parameters are kept (with underscores) for symmetry with the
+/// call sites and to make the constraint explicit there.
+///
+/// **Cleanup:** every test that asserts on a written file MUST also
+/// delete the file from the crate root after the assertion (and on
+/// early-return paths), or it'll leak into the working tree and
+/// potentially collide with the next test run.
+fn workspace_dir(_cli: &PekoCli, _agent_name: &str) -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Walk `<peko_dir>/data/` recursively and return a human-readable
@@ -289,6 +307,7 @@ async fn subagent_blocking_t1_write_file() {
 
     // The child wrote a file into the parent's personal workspace.
     let path = workspace_dir(&cli, agent_name).join(file_name);
+    let _cleanup = FileGuard(path.clone());
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}\n\
@@ -366,6 +385,7 @@ async fn subagent_blocking_t2_isolated() {
     );
 
     let path = workspace_dir(&cli, agent_name).join(file_name);
+    let _cleanup = FileGuard(path.clone());
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}\n\
@@ -542,6 +562,7 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     // The grandchild wrote the file (the parent's workspace, since the
     // PathResolver is keyed on the parent agent's name).
     let path = workspace_dir(&cli, agent_name).join(file_name);
+    let _cleanup = FileGuard(path.clone());
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "grandchild file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}\n\
@@ -806,6 +827,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
     );
 
     let path = workspace_dir(&cli, agent_name).join(file_name);
+    let _cleanup = FileGuard(path.clone());
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "child file not written at {path:?}: {e}\nstdout: {out}\nstderr: {err}\n\
