@@ -5,8 +5,9 @@
 //! for the agent/team tests and skip it for the pure config tests.
 //!
 //! Tier: mock-LLM for agent/team (daemon required), offline for config.
-
-#![cfg(unix)]
+//!
+//! (Was `#![cfg(unix)]`; dropped with the Windows named-pipe transport
+//!  landing — see ADR-038.)
 
 mod common;
 use common::{write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};

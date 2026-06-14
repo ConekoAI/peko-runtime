@@ -22,10 +22,12 @@
 //! `MOCK_LLM_URL` at any mock instance). Tests early-return if unset
 //! so `cargo test` still passes on a bare checkout.
 //!
-//! Unix-only (`#[cfg(unix)]`) — the daemon's IPC server is Unix-only
-//! (`src/ipc/server.rs`).
-
-#![cfg(unix)]
+//! The daemon's IPC server binds a Unix domain socket on Unix and a
+//! Windows named pipe on Windows (ADR-038). This file used to be
+//! `#![cfg(unix)]`; the gate was dropped when the Windows transport
+//! landed so the same tests run on both platforms. See
+//! `docs/architecture/adr/ADR-038-named-pipes-on-windows.md` for the
+//! Windows side of the story.
 
 mod common;
 use common::{PekoCli, run_with_timeout};
@@ -94,7 +96,7 @@ impl CronDaemonGuard {
                 panic!(
                     "peko daemon did not become ready in {timeout:?} (sock: {})\n\
                      --- last status JSON ---\n{last_status_json}\n--- end ---",
-                    cli.daemon_sock().display(),
+                    cli.daemon_endpoint(),
                 );
             }
             std::thread::sleep(Duration::from_millis(100));

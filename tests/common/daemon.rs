@@ -96,12 +96,12 @@ impl DaemonGuard {
             }
             if Instant::now() >= deadline {
                 panic!(
-                    "peko daemon did not become ready in {:?} (sock: {})\n\
+                    "peko daemon did not become ready in {:?} (endpoint: {})\n\
                      --- last status JSON ---\n{last_status_json}\n\
                      --- last poll result ---\n{output:?}\n\
                      --- end ---",
                     timeout,
-                    cli.daemon_sock().display(),
+                    cli.daemon_endpoint(),
                 );
             }
             std::thread::sleep(Duration::from_millis(100));

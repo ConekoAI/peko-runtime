@@ -10,8 +10,9 @@
 //!
 //! All tests use the mock LLM for deterministic chat responses and the
 //! standard PekoCli + DaemonGuard harness.
-
-#![cfg(unix)]
+//!
+//! (Was `#![cfg(unix)]`; dropped with the Windows named-pipe transport
+//!  landing — see ADR-038.)
 
 mod common;
 use common::{write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};

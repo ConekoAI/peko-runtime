@@ -8,14 +8,16 @@
 //!      so a stuck subprocess panics in 20s with captured output instead
 //!      of hanging the test job.
 //!
-//! The daemon's IPC server is Unix-only (`#[cfg(unix)]` in `src/ipc/server.rs`),
-//! so this entire file is cfg-gated. CI Linux runs these; Windows skips.
+//! The daemon's IPC server binds a Unix domain socket on Unix and a
+//! Windows named pipe on Windows (ADR-038). This file used to be
+//! `#![cfg(unix)]`; the gate was dropped when the Windows transport
+//! landed so the same tests run on both platforms. See
+//! `docs/architecture/adr/ADR-038-named-pipes-on-windows.md` for the
+//! Windows side of the story.
 //!
 //! Requires `MOCK_LLM_URL` to be set (CI sets it via docker-compose; locally
 //! either run `make docker-up` or point `MOCK_LLM_URL` at any mock instance).
 //! Tests early-return if unset so `cargo test` still passes on a bare checkout.
-
-#![cfg(unix)]
 
 mod common;
 use common::{write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
