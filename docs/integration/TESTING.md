@@ -47,11 +47,14 @@ The mock LLM is a deterministic SSE server at [.github/docker/mock-llm/mock_llm_
 **Response selection** (first match wins):
 
 1. **`MOCK_LLM_SCRIPT` env** — JSON object `{prompt_substring: response}`. Each value is either a string (echoed as text) or `{"tool_call": {"name": "...", "arguments": "<json-string>"}}`. Lets a test seed scripted dialogs without modifying the mock.
+   - **Sequence** — if a value is a *list* of response specs (strings, `tool_call` dicts, or a mix), the i-th time the substring matches returns the i-th element. After the list is exhausted, the last element is returned for every subsequent match, so a test scripting N turns doesn't crash on a stray N+1 call. Counters are **per-substring** (keyed by the `prompt_substring` key), so two dialogs keyed on different substrings don't interfere. Reset by POSTing to `/_test/configure` with a new `MOCK_LLM_SCRIPT` body (see below). This is the feature that moves multi-turn LLM decisions (tool-call → result → reasoning → keyword) into the mock tier. Reference: [tests/mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs).
 2. **Keyword echo** — `Respond with: <KEYWORD>` (uppercase + underscores + digits) in the prompt returns `<KEYWORD>`. This is the convention every migrated PowerShell test already uses (`SUCCESS`, `ASYNC_SUCCESS`, `TASK_LIST_OK`, etc.).
 3. **Tool call** — `Call tool: <name>` (lowercase identifier) in the prompt emits a streamed tool call for `<name>` with empty JSON args.
 4. **Default** — `DEFAULT_RESPONSE` env (falls back to `"Peko tunnel works!"`, which is what the long-standing `tunnel_e2e` assertion expects).
 
-Routes served: `POST /v1/text/chatcompletion_v2` (MiniMax path used by `tunnel_e2e`), `POST /v1/chat/completions` and `POST /chat/completions` (OpenAI paths), `GET /health`.
+**Test-only `/_test/configure` endpoint.** POST a JSON body whose keys mirror the env vars (e.g. `{"MOCK_LLM_SCRIPT": "{\"turn\":[\"r1\",\"r2\"]}"}`) and the server swaps the env var in place and clears the per-substring counter map. This is how `tests/mock_llm_sequence.rs` and other future sequence-driven tests get a deterministic baseline without restarting the container.
+
+Routes served: `POST /v1/text/chatcompletion_v2` (MiniMax path used by `tunnel_e2e`), `POST /v1/chat/completions` and `POST /chat/completions` (OpenAI paths), `POST /_test/configure` (test-only), `GET /health`.
 
 ---
 
@@ -81,17 +84,18 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_session.rs](../../tests/cli_session.rs) | 9 | 9 | PekoHub + mock LLM | Y |
 | [cli_basics.rs](../../tests/cli_basics.rs) | 14 | 8 | Mixed (6 offline, 8 need PekoHub + mock LLM) | Partial |
 | [cli_cron.rs](../../tests/cli_cron.rs) | 16 | 16 | PekoHub + mock LLM | Y |
+| [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) | 6 | 6 | mock LLM (sequence feature, §3) | Y |
 
-**Totals:** 66 hub-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 82 in `tests/`.
+**Totals:** 72 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 88 in `tests/`.
 
-The 7 hub-dependent files share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The `cli_*` tests spawn the `peko` daemon as a subprocess against the same stack.
+The 7 hub-dependent files share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The `cli_*` tests spawn the `peko` daemon as a subprocess against the same stack. `mock_llm_sequence.rs` does not need PekoHub — it talks to the mock directly, plus the peko daemon for the three-call flow — but ships in the same docker-up workflow for the dev-loop convenience.
 
 > **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L466) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
 
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 82 tests across 11 files in `tests/`.
+- Integration: 88 tests across 12 files in `tests/`.
 - E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
 
 ---
@@ -224,14 +228,14 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/session/` | `tests/cli_session.rs` | mock-LLM | ✅ Migrated (9 tests) |
 | `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mixed | ✅ Migrated (14 tests: 6 offline, 8 mock-LLM) |
 | `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ✅ Migrated (16 tests) |
-| `e2e_tests/extensions/` | `tests/cli_extensions.rs` | real-LLM (tool calls) | ⏳ Pending |
-| `e2e_tests/compaction/` | `tests/cli_compaction.rs` | real-LLM (reasoning) | ⏳ Pending |
-| `e2e_tests/a2a/`, `e2e_tests/subagent/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_subagent.rs`, `tests/cli_tools.rs` | real-LLM (tool-call decisions) | ⏳ Pending |
+| `e2e_tests/extensions/` | `tests/cli_extensions.rs` | mock-LLM (tool-call sequence, §3 Sequence) | ⏳ Pending |
+| `e2e_tests/compaction/` | `tests/cli_compaction.rs` | mock-LLM (multi-turn sequence) | ⏳ Pending |
+| `e2e_tests/a2a/`, `e2e_tests/subagent/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_subagent.rs`, `tests/cli_tools.rs` | mock-LLM (tool-call decisions via Sequence) | ⏳ Pending |
 | `e2e_tests/providers/` | `tests/cli_providers.rs` | real-LLM (gated by `MINIMAX_API_KEY` / `KIMI_API_KEY`) | ⏳ Pending |
 
 #### Phase B coverage gap — `e2e_tests/cron/cron_agent_tool.ps1`
 
-**Status:** ⚠️ Not yet migrated. Deferred from the cron slice landed in commit `3506ea5`.
+**Status:** 🟢 Unblocked. The blocking mock change (sequence-of-responses, see §3 *Sequence*) has landed. Migration can now proceed as a `mock-LLM` test.
 
 **What the PS script covers:** the agent uses its built-in `cron` tool (sub-commands `at` / `list` / `cancel`) to self-schedule, self-list, and self-cancel jobs. The test verifies that the resulting job is visible to the daemon and that an agent-cancelled job disappears from `peko cron list`.
 
@@ -242,11 +246,9 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 3. Receive the tool result and reason about whether the call succeeded
 4. Report a sentinel keyword (`TOOL_SUCCESS` / `LIST_SUCCESS` / `CANCEL_SUCCESS`)
 
-That's a multi-turn LLM decision that the mock-LLM tier cannot drive today. The mock's `Call tool: <name>` keyword echos a tool call with **empty** args, which doesn't supply the `sub_command` / `at` / `agent_id` payload the runtime's `cron` tool requires. So this test is structurally `real-LLM`-tier work.
+That was a multi-turn LLM decision that the mock-LLM tier could not drive while the `Call tool: <name>` keyword only emitted a tool call with **empty** args (no `sub_command` / `at` / `agent_id` payload). With the §3 *Sequence* feature, a test can now script the full dialog as a `MOCK_LLM_SCRIPT` list whose elements are `tool_call` dicts (carrying the structured `cron` arguments) and text sentinels in turn order.
 
-**Where to add it:** alongside the other real-LLM-tier slices in the Phase B table — most naturally `tests/cli_a2a.rs` (agent uses its tool surface) or a new `tests/cli_cron_tool.rs` if we want to keep the cron flows co-located. The test needs a real `MINIMAX_API_KEY` (or a significantly more capable mock that emits structured tool-call arguments on demand) to drive the multi-turn flow.
-
-**Mocks change needed before this can be mock-tier:** extend [.github/docker/mock-llm/mock_llm_server.py](../../.github/docker/mock-llm/mock_llm_server.py) so its `MOCK_LLM_SCRIPT` map can seed a *sequence* of responses (one per LLM call) instead of a single response per `prompt_substring` match. With that, a test could script: "first turn → tool_call(cron, at, …); second turn → text(TOOL_SUCCESS)". Until that's done, this test stays in the real-LLM tier.
+**Where to add it:** alongside the other mock-LLM-tier slices in the Phase B table — most naturally `tests/cli_a2a.rs` (agent uses its tool surface) or a new `tests/cli_cron_tool.rs` if we want to keep the cron flows co-located. Use the §3 *Sequence* feature to script each turn's response; reference for the mock-side syntax is [tests/mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) (`mock_llm_script_list_supports_mixed_text_and_tool_call`).
 
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
@@ -256,8 +258,10 @@ That's a multi-turn LLM decision that the mock-LLM tier cannot drive today. The 
 - **Keyword echo** — `Respond with: <KEYWORD>` in the prompt returns `<KEYWORD>`. Matches the convention the PowerShell scripts already use (`SUCCESS`, `FAIL`, `MEMORY_SUCCESS`).
 - **Tool-call responses** — `Call tool: <name>` in the prompt returns a streamed `tool_calls` array for `<name>` with empty JSON args.
 - **`MOCK_LLM_SCRIPT` env** — JSON map of prompt-substring → response (string or `{tool_call: {name, arguments}}`), so tests can seed complex scripted dialogs without modifying the mock.
+  - **Sequence (list value)** — a value may be a *list* of response specs; the i-th time the substring matches returns the i-th element, then clamps to the last element. Per-substring counter, reset by `POST /_test/configure`. This is the feature that lets multi-turn tests (tool-call → result → keyword) stay in the mock tier. Spec in §3 above; reference test in [tests/mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs).
+- **`POST /_test/configure`** — test-only endpoint to swap `MOCK_LLM_SCRIPT` / `DEFAULT_RESPONSE` and clear the per-substring counters without restarting the container.
 
-Full spec lives in §3 above. This unblocked moving the LLM-required PowerShell tests in `e2e_tests/send/`, `e2e_tests/session/`, and the chat-dependent half of `e2e_tests/agent/` into the mock-LLM tier rather than the real-LLM tier — 24 tests have already been migrated (see Phase B).
+Full spec lives in §3 above. The string and tool-call forms unblocked moving the LLM-required PowerShell tests in `e2e_tests/send/`, `e2e_tests/session/`, and the chat-dependent half of `e2e_tests/agent/` into the mock-LLM tier rather than the real-LLM tier — 24 tests have already been migrated (see Phase B). The Sequence form unblocked the remaining mock-tier migrations (`cron_agent_tool.ps1` plus the `cli_extensions` / `cli_a2a` / `cli_subagent` / `cli_tools` / `cli_compaction` slices in Phase B) — see the row flips in the Phase B table above.
 
 ### Phase D — Phase-7 user-journey scenarios (S1–S5)
 
@@ -299,7 +303,7 @@ test-integration:      docker-up && \
                                     --test registry_integration --test team_integration \
                                     --test extension_packaging \
                                     --test cli_send --test cli_session --test cli_basics \
-                                    --test cli_cron \
+                                    --test cli_cron --test mock_llm_sequence \
                                     -- --include-ignored
 
 # Tier 2 — nightly + [llm] commit tag: adds real-LLM tests
@@ -313,9 +317,9 @@ test-integration-llm:  docker-up && \
 test-all:              test && test-integration && test-integration-llm
 ```
 
-The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
+The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
 
-> **Why `--include-ignored`, not `--ignored`.** All 66 hub-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 72 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 

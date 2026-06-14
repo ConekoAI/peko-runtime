@@ -9,8 +9,16 @@ either the `minimax` or the `openai_compatible` provider adapter.
 Response selection (first match wins):
 
   1. `MOCK_LLM_SCRIPT` env, a JSON object {prompt_substring -> response_spec}.
-     Each value is either a string (echoed as plain text) or an object
-     `{"tool_call": {"name": ..., "arguments": "<json-string>"}}`.
+     Each value is either:
+       * a string (echoed as plain text), or
+       * an object `{"tool_call": {"name": ..., "arguments": "<json-string>"}}`, or
+       * a list of either of the above — the i-th time the substring matches
+         returns the i-th element; after the list is exhausted, the last
+         element is returned for every subsequent match (so a test scripting
+         N turns doesn't crash on a stray N+1 call).
+     Sequence counters are PER-SUBSTRING and live module-level; reset them
+     by POSTing to `/_test/configure` (which also rewrites the env var so a
+     test can swap in a fresh script without restarting the container).
   2. Keyword echo: if the user prompt matches `Respond with[: ]+<KEYWORD>`,
      return `<KEYWORD>`. This is the convention all migrated PowerShell tests
      use (e.g., `SUCCESS`, `ASYNC_SUCCESS`, `TASK_LIST_OK`).
@@ -24,6 +32,7 @@ Routes:
   POST /v1/text/chatcompletion_v2   (MiniMax path used by tunnel_e2e)
   POST /v1/chat/completions         (OpenAI path; same handler)
   POST /chat/completions            (OpenAI path with /v1 stripped)
+  POST /_test/configure             (test-only; set MOCK_LLM_SCRIPT + reset counters)
   GET  /health
 """
 
@@ -49,6 +58,11 @@ TOOL_CALL_RE = re.compile(r"Call tool[:\s]+([a-z_][a-z0-9_]*)")
 
 # Per-call counter for synthetic tool-call ids — module-level state is fine for tests.
 _tool_call_seq = 0
+
+# Per-substring sequence counter for `MOCK_LLM_SCRIPT` list values.
+# Keyed by the prompt-substring key in MOCK_LLM_SCRIPT. Incremented on every
+# match; reset (along with MOCK_LLM_SCRIPT itself) by POST /_test/configure.
+_sequence_counters: dict[str, int] = {}
 
 
 def _load_script() -> dict:
@@ -81,6 +95,21 @@ def _resolve_response(user_message: str):
     script = _load_script()
     for substring, response in script.items():
         if substring and substring in user_message:
+            # List value: scripted multi-turn dialog. The i-th time this
+            # substring matches, return the i-th element. After the list
+            # is exhausted, clamp to the last element so a stray N+1 call
+            # doesn't crash a test that scripted N turns. Counters are
+            # per-substring so two parallel dialogs keyed on different
+            # substrings don't interfere.
+            if isinstance(response, list):
+                if not response:
+                    # Empty list — degenerate case; fall through to default.
+                    break
+                idx = _sequence_counters.get(substring, 0)
+                if idx >= len(response):
+                    idx = len(response) - 1
+                _sequence_counters[substring] = idx + 1
+                return response[idx]
             return response
 
     keyword_match = KEYWORD_RE.search(user_message)
@@ -227,6 +256,31 @@ async def chat_completion_openai_v1(request: Request):
 async def chat_completion_openai(request: Request):
     """OpenAI-compatible chat completion endpoint (no prefix)."""
     return await _handle_chat(request)
+
+
+@app.post("/_test/configure")
+async def test_configure(request: Request):
+    """Test-only endpoint: rewrite MOCK_LLM_SCRIPT / DEFAULT_RESPONSE and
+    reset all per-substring sequence counters.
+
+    Body is a JSON object whose keys mirror the env vars this server reads:
+        {
+          "MOCK_LLM_SCRIPT":   "{\"turn\":[\"r1\",\"r2\",\"r3\"]}",
+          "DEFAULT_RESPONSE":  "..."
+        }
+    Missing keys are left untouched. After applying, the per-substring
+    sequence counter map is cleared so the next call sees the fresh
+    script's first element. Lets a test set up a multi-turn dialog and
+    reset cleanly between cases without restarting the container.
+    """
+    body = await request.json()
+    if not isinstance(body, dict):
+        return {"status": "error", "reason": "body must be a JSON object"}, 400
+    for key in ("MOCK_LLM_SCRIPT", "DEFAULT_RESPONSE"):
+        if key in body:
+            os.environ[key] = str(body[key])
+    _sequence_counters.clear()
+    return {"status": "ok", "counters_reset": True}
 
 
 @app.get("/health")
