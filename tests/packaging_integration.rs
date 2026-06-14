@@ -26,6 +26,7 @@ use std::time::Duration;
 
 mod common;
 use common::{create_test_user, reset_pekohub, PekohubBackend};
+use serial_test::serial;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -297,6 +298,7 @@ async fn store_agent_layers_in_registry(
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
 async fn test_full_packaging_pipeline() {
     let backend = PekohubBackend::start().await;
     reset_pekohub(&backend.url).await;
