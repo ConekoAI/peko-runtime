@@ -80,8 +80,9 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_send.rs](../../tests/cli_send.rs) | 7 | 7 | PekoHub + mock LLM | Y |
 | [cli_session.rs](../../tests/cli_session.rs) | 9 | 9 | PekoHub + mock LLM | Y |
 | [cli_basics.rs](../../tests/cli_basics.rs) | 14 | 8 | Mixed (6 offline, 8 need PekoHub + mock LLM) | Partial |
+| [cli_cron.rs](../../tests/cli_cron.rs) | 16 | 16 | PekoHub + mock LLM | Y |
 
-**Totals:** 50 hub-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 66 in `tests/`.
+**Totals:** 66 hub-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 82 in `tests/`.
 
 The 7 hub-dependent files share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The `cli_*` tests spawn the `peko` daemon as a subprocess against the same stack.
 
@@ -90,7 +91,7 @@ The 7 hub-dependent files share the **same dual-mode `PekohubBackend::start()` h
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 66 tests across 10 files in `tests/`.
+- Integration: 82 tests across 11 files in `tests/`.
 - E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
 
 ---
@@ -207,7 +208,7 @@ Why no full OAuth flow is needed:
 
 ## 7. Migration Roadmap: `e2e_tests/` → `tests/`
 
-`peko-runtime/e2e_tests/` still holds 60 live PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock. The end-goal is to dismantle the folder. Phases A and the cli_send / cli_session / cli_basics legs of Phase B have already landed.
+`peko-runtime/e2e_tests/` still holds 60 live PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock. The end-goal is to dismantle the folder. Phases A and the cli_send / cli_session / cli_basics / cli_cron legs of Phase B have already landed.
 
 ### Phase A — Delete redundant (✅ landed)
 
@@ -222,7 +223,7 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/send/` | `tests/cli_send.rs` | mock-LLM | ✅ Migrated (7 tests) |
 | `e2e_tests/session/` | `tests/cli_session.rs` | mock-LLM | ✅ Migrated (9 tests) |
 | `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mixed | ✅ Migrated (14 tests: 6 offline, 8 mock-LLM) |
-| `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ⏳ Pending |
+| `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ✅ Migrated (16 tests) |
 | `e2e_tests/extensions/` | `tests/cli_extensions.rs` | real-LLM (tool calls) | ⏳ Pending |
 | `e2e_tests/compaction/` | `tests/cli_compaction.rs` | real-LLM (reasoning) | ⏳ Pending |
 | `e2e_tests/a2a/`, `e2e_tests/subagent/`, `e2e_tests/tools/` | `tests/cli_a2a.rs`, `tests/cli_subagent.rs`, `tests/cli_tools.rs` | real-LLM (tool-call decisions) | ⏳ Pending |
@@ -279,6 +280,7 @@ test-integration:      docker-up && \
                                     --test registry_integration --test team_integration \
                                     --test extension_packaging \
                                     --test cli_send --test cli_session --test cli_basics \
+                                    --test cli_cron \
                                     -- --include-ignored
 
 # Tier 2 — nightly + [llm] commit tag: adds real-LLM tests
@@ -292,9 +294,9 @@ test-integration-llm:  docker-up && \
 test-all:              test && test-integration && test-integration-llm
 ```
 
-The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
+The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
 
-> **Why `--include-ignored`, not `--ignored`.** All 50 hub-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 66 hub-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 

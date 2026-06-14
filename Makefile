@@ -14,14 +14,14 @@
         docker-build docker-up docker-down \
         test-lib test-subagent \
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
-        test-cli-send test-cli-session test-cli-basics \
+        test-cli-send test-cli-session test-cli-basics test-cli-cron \
         ci
 
 # All integration test crates (live in tests/*.rs).
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
-                     cli_send cli_session cli_basics
+                     cli_send cli_session cli_basics cli_cron
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
 # Default ports exposed by docker-compose.integration.yml; CI overrides
@@ -50,7 +50,7 @@ help:
 	@echo "  Granular slices of test-integration (one file at a time):"
 	@echo "    test-pekohub / test-tunnel / test-tunnel-e2e"
 	@echo "    test-packaging / test-registry / test-subagent"
-	@echo "    test-cli-send / test-cli-session / test-cli-basics"
+	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
 
@@ -148,6 +148,12 @@ test-cli-session: docker-up
 test-cli-basics: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_basics -- --include-ignored
+
+# `peko cron` slice. Uses --interval 1 in the test harness so the poll
+# cycle is fast enough to wait for jobs to fire under 30s/test.
+test-cli-cron: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_cron -- --include-ignored
 
 # ── CI entry ─────────────────────────────────────────────────────────────
 
