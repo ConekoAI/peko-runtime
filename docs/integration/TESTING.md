@@ -97,7 +97,7 @@ The 5 files that exercise the hub directly — [packaging_integration.rs](../../
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
 - Integration: 97 tests across 13 files in `tests/`.
-- E2E PowerShell scripts in `e2e_tests/`: 61 total (48 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
+- E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7.
 
 ---
 
@@ -213,7 +213,7 @@ Why no full OAuth flow is needed:
 
 ## 7. Migration Roadmap: `e2e_tests/` → `tests/`
 
-`peko-runtime/e2e_tests/` still holds 60 live PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock. The end-goal is to dismantle the folder. Phases A and the cli_send / cli_session / cli_basics / cli_cron legs of Phase B have already landed.
+`peko-runtime/e2e_tests/` still holds 60 live PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock. The end-goal is to dismantle the folder. Phases A and the cli_send / cli_session / cli_basics / cli_cron / cli_subagent legs of Phase B have already landed.
 
 ### Phase A — Delete redundant (✅ landed)
 
@@ -320,7 +320,8 @@ test-integration:      docker-up && \
                                     --test registry_integration --test team_integration \
                                     --test extension_packaging \
                                     --test cli_send --test cli_session --test cli_basics \
-                                    --test cli_cron --test mock_llm_sequence \
+                                    --test cli_cron --test cli_subagent \
+                                    --test mock_llm_sequence \
                                     -- --include-ignored
 
 # Tier 2 — nightly + [llm] commit tag: adds real-LLM tests
@@ -336,7 +337,7 @@ test-all:              test && test-integration && test-integration-llm
 
 The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
 
-> **Why `--include-ignored`, not `--ignored`.** All 74 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 81 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 
