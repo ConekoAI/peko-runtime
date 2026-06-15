@@ -31,6 +31,7 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      s1_local_agent_with_extensions \
                      s2_extension_registry_roundtrip \
                      s3_agent_registry_roundtrip \
+                     s4_publish_running_agent_with_permission \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
