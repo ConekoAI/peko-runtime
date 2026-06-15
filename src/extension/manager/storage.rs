@@ -128,6 +128,23 @@ impl ExtensionStorage {
 
         let target_dir = storage_dir.join(&extension_id.0);
 
+        // Preserve the existing `.source` file across the
+        // delete-and-recopy — `peko ext pull` writes `.source`
+        // first (so `peko agent export`'s extension-ref resolver
+        // can see it), then IPC-installs the .ext, which calls
+        // `copy_to_storage` here. Without preserving, the
+        // install would erase the .source that pull just wrote,
+        // and the agent export would silently skip the ext
+        // (manifest.source = None → no ExtensionRef emitted).
+        // Phase D3 flow 5b is the first end-to-end test that
+        // exercised this code path and surfaced the regression.
+        let preserved_source = if target_dir.exists() {
+            let p = target_dir.join(".source");
+            std::fs::read_to_string(&p).ok()
+        } else {
+            None
+        };
+
         if target_dir.exists() {
             // On Windows, a previous process may still hold a handle to the directory.
             // Try removing; if it fails, try renaming to a unique temp name first.
@@ -166,6 +183,12 @@ impl ExtensionStorage {
             copy_dir_recursive(source, &target_dir).with_context(|| {
                 format!("Failed to copy extension from {source:?} to {target_dir:?}")
             })?;
+        }
+
+        // Restore the preserved `.source` (see comment above).
+        if let Some(contents) = preserved_source {
+            let p = target_dir.join(".source");
+            let _ = std::fs::write(&p, contents);
         }
 
         Ok(target_dir)
