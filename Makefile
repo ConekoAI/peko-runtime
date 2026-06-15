@@ -16,7 +16,7 @@
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
         test-cli-subagent test-cli-tools test-cli-compaction \
-        test-cli-providers \
+        test-cli-extensions test-cli-providers test-cli-a2a \
         test-mock-llm-sequence \
         ci
 
@@ -26,6 +26,7 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      team_integration extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
                      cli_tools cli_compaction cli_extensions cli_providers \
+                     cli_a2a \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -57,7 +58,9 @@ help:
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
 	@echo "    test-cli-subagent / test-cli-tools / test-cli-compaction"
+	@echo "    test-cli-extensions"
 	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY / KIMI_API_KEY)"
+	@echo "    test-cli-a2a (real-LLM tier — needs MINIMAX_API_KEY; 2-LLM-call flows)"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -225,6 +228,17 @@ test-cli-providers: docker-up
 	@env -u MOCK_LLM_URL PEKOHUB_URL=$(PEKOHUB_URL) \
 	    MINIMAX_API_KEY=$(MINIMAX_API_KEY) KIMI_API_KEY=$(KIMI_API_KEY) \
 	    cargo test --test cli_providers -- --include-ignored
+
+# `peko send` with the `a2a_send` built-in tool (agent-to-agent
+# messaging). Real-LLM tier — each test is a 2-LLM-call flow
+# (delegator → a2a_send → worker). Tests early-return if
+# `MINIMAX_API_KEY` is unset, so a bare `cargo test` still passes.
+# Total wall clock is ~3-5 min for all 13 tests. See
+# docs/integration/TESTING.md §7 for the a2a migration context.
+test-cli-a2a: docker-up
+	@env -u MOCK_LLM_URL PEKOHUB_URL=$(PEKOHUB_URL) \
+	    MINIMAX_API_KEY=$(MINIMAX_API_KEY) \
+	    cargo test --test cli_a2a -- --include-ignored
 
 # ── CI entry ─────────────────────────────────────────────────────────────
 
