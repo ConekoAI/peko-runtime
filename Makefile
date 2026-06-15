@@ -30,6 +30,7 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      cli_a2a \
                      s1_local_agent_with_extensions \
                      s2_extension_registry_roundtrip \
+                     s3_agent_registry_roundtrip \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -268,16 +269,20 @@ test-scenarios-s2: docker-up
 	    cargo test --test s2_extension_registry_roundtrip -- --include-ignored
 
 # D3: Agent registry round-trip with auto-pulled extensions (flow 5).
-# D4: Publish running agent behind tunnel with permission (flow 6).
-# These targets land in their respective PRs.
-test-scenarios-s2: docker-up
-	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test s2_extension_registry_roundtrip -- --include-ignored
-
+# 4 tests, all `#[ignore]` for the PekoHub + mock LLM + daemon stack.
+# Author's agent declares `extensions = [calculator-skill]` in its
+# on-disk manifest; collaborator's `peko agent pull` auto-pulls the
+# declared ext via `ensure_extensions_for_agent` (see
+# `src/commands/agent/handlers.rs:1020-1027`). One test fabricates a
+# bad ext `.source` to assert the contract that an ext-pull failure
+# is captured in `extensions.failed` but does not block the agent
+# import.
 test-scenarios-s3: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test s3_agent_registry_roundtrip -- --include-ignored
 
+# D4: Publish running agent behind tunnel with permission (flow 6).
+# Lands in D4's PR.
 test-scenarios-s4: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test s4_publish_running_agent_with_permission -- --include-ignored

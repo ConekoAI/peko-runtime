@@ -146,3 +146,7 @@ path = "tests/scenarios/s1_local_agent_with_extensions.rs"
 [[test]]
 name = "s2_extension_registry_roundtrip"
 path = "tests/scenarios/s2_extension_registry_roundtrip.rs"
+
+[[test]]
+name = "s3_agent_registry_roundtrip"
+path = "tests/scenarios/s3_agent_registry_roundtrip.rs"
