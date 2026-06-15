@@ -134,3 +134,11 @@ rsa = "0.9"
 [[bin]]
 name = "peko"
 path = "src/main.rs"
+
+# Integration tests under tests/scenarios/ are nested in a subdir
+# (cargo's auto-discovery only picks up tests/*.rs directly). Each
+# scenario file needs an explicit [[test]] entry — D1 lands first,
+# D2-D4 add their own entries in their respective PRs.
+[[test]]
+name = "s1_local_agent_with_extensions"
+path = "tests/scenarios/s1_local_agent_with_extensions.rs"

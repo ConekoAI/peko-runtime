@@ -17,16 +17,18 @@
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
         test-cli-subagent test-cli-tools test-cli-compaction \
         test-cli-extensions test-cli-providers test-cli-a2a \
+        test-scenarios-s1 test-scenarios-s2 test-scenarios-s3 test-scenarios-s4 \
         test-mock-llm-sequence \
         ci
 
-# All integration test crates (live in tests/*.rs).
+# All integration test crates (live in tests/*.rs and tests/scenarios/*.rs).
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
                      cli_tools cli_compaction cli_extensions cli_providers \
                      cli_a2a \
+                     s1_local_agent_with_extensions \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -61,6 +63,8 @@ help:
 	@echo "    test-cli-extensions"
 	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY / KIMI_API_KEY)"
 	@echo "    test-cli-a2a (real-LLM tier — needs MINIMAX_API_KEY; 2-LLM-call flows)"
+	@echo "    test-scenarios-s1 (Phase D — local agent + ext lifecycle, mock-LLM)"
+	@echo "    test-scenarios-s2 / s3 / s4 (Phase D — registry/tunnel scenarios, mock-LLM)"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -239,6 +243,36 @@ test-cli-a2a: docker-up
 	@env -u MOCK_LLM_URL PEKOHUB_URL=$(PEKOHUB_URL) \
 	    MINIMAX_API_KEY=$(MINIMAX_API_KEY) \
 	    cargo test --test cli_a2a -- --include-ignored
+
+# ── Phase D — user-journey scenarios (mock-LLM tier) ──────────────────────
+# The D1-D4 scenarios live under tests/scenarios/. Each `sN_*.rs` file
+# is its own integration test binary (registered via [[test]] entries
+# in Cargo.toml — cargo's auto-discovery only finds tests/*.rs directly,
+# not nested subdirs). The mock LLM provides the chat payload; what
+# we test is the runtime↔registry↔tunnel↔PekoHub-relay orchestration
+# plumbing, not LLM decision-making.
+
+# D1: Local agent + extension lifecycle (flow 1+2). 6 tests, all
+# `#[ignore]` for the daemon requirement. No PekoHub dependency.
+test-scenarios-s1: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test s1_local_agent_with_extensions -- --include-ignored
+
+# D2: Extension registry round-trip (flow 3+4, author → pekohub → collab).
+# D3: Agent registry round-trip with auto-pulled extensions (flow 5).
+# D4: Publish running agent behind tunnel with permission (flow 6).
+# These targets land in their respective PRs.
+test-scenarios-s2: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test s2_extension_registry_roundtrip -- --include-ignored
+
+test-scenarios-s3: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test s3_agent_registry_roundtrip -- --include-ignored
+
+test-scenarios-s4: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test s4_publish_running_agent_with_permission -- --include-ignored
 
 # ── CI entry ─────────────────────────────────────────────────────────────
 
