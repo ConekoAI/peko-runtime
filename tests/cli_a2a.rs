@@ -238,20 +238,30 @@ fn worker_session_history(cli: &PekoCli, worker: &str) -> Option<(String, serde_
     Some((session_id, history))
 }
 
-/// Pre-create the worker's per-agent workspace dir and write a
-/// sentinel file into it. The `a2a_send` tool's worker side calls
-/// `read_file` on this file, so the test can prove the worker got
-/// the message and read it.
-fn write_sentinel_file(cli: &PekoCli, worker: &str, file_name: &str, content: &str) {
-    // Worker workspace path: <peko_dir>/data/workspaces/default/<worker>
-    // (matches the PS scripts' $env:APPDATA/peko/workspaces/default/$worker).
-    let workspace = cli
-        .peko_dir()
-        .join("data")
-        .join("workspaces")
-        .join("default")
-        .join(worker);
-    std::fs::create_dir_all(&workspace).expect("create worker workspace");
+/// Pre-create the daemon's tool workspace dir and write a sentinel
+/// file into it. The `a2a_send` tool's worker side calls `read_file`
+/// on this file, so the test can prove the worker got the message
+/// and read it.
+///
+/// **Important: the daemon's `read_file` resolves relative paths
+/// against the SHARED workspaces root, not the per-agent subdir.**
+/// See [`tests/cli_tools.rs:108-115`](tests/cli_tools.rs#L108-L115) for
+/// the full explanation — `ToolRuntime::register_builtins` sets the
+/// per-tool `workspace_dir` to `path_resolver.agent_workspace(".",
+/// None).parent()`, which resolves to `<peko_dir>/data/workspaces`
+/// (the shared root, with no agent name in the path). The PS scripts
+/// write to `$env:APPDATA/peko/workspaces/default/$worker/...` (per-
+/// agent subdir) which is a different path — but the worker's
+/// `read_file("test_a2a.txt")` resolves to the SHARED root and
+/// fails to find the file there. The PS scripts "pass" via the
+/// structural fallback (worker session was created → a2a_send
+/// dispatched). For Rust tests we want a real read, so we write
+/// to the shared root. Each test uses a unique `file_name`
+/// (containing the test name as a needle) so cross-test collisions
+/// don't occur.
+fn write_sentinel_file(cli: &PekoCli, _worker: &str, file_name: &str, content: &str) {
+    let workspace = cli.peko_dir().join("data").join("workspaces");
+    std::fs::create_dir_all(&workspace).expect("create workspaces root");
     std::fs::write(workspace.join(file_name), content).expect("write sentinel file");
 }
 

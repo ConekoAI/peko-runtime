@@ -392,6 +392,8 @@ The 2 PS scripts stay in `e2e_tests/providers/` until Phase E cleanup; they are 
 
 The 3 PS scripts stay in `e2e_tests/a2a/` until Phase E cleanup; they are now redundant with `tests/cli_a2a.rs`.
 
+**A non-obvious gotcha this migration uncovered (and worked around):** the daemon's `read_file` tool resolves relative paths against `<peko_dir>/data/workspaces/` (the **shared** workspaces root), not the per-agent subdir. The PS scripts write sentinel files to `$env:APPDATA/peko/workspaces/default/$worker/test_a2a.txt` (per-agent subdir) and rely on the lenient structural fallback ("the worker session was created, so a2a_send dispatched") — the actual `read_file` call in the PS scripts was *failing* (file not found at the resolved path) and the worker was responding with "I don't have access to the file". The Rust tests bake the sentinel into the **shared** workspaces root instead, so the worker's `read_file` actually finds the file. See [`tests/cli_tools.rs:108-115`](../../tests/cli_tools.rs#L108-L115) for the workspace-resolution explanation. Each test uses a unique file name (e.g. `test_a2a.txt` for the blocking test, `test_async.txt` for the async test) so cross-test collisions don't occur.
+
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
 [.github/docker/mock-llm/mock_llm_server.py](../../.github/docker/mock-llm/mock_llm_server.py) supports:
