@@ -139,46 +139,16 @@ async fn mint_api_key(
 /// Needed because the JWT `sub` claim is the user_id (per the
 /// pekohub auth plugin at
 /// [pekohub/backend/src/plugins/auth.ts:122](../../pekohub/backend/src/plugins/auth.ts#L122)
-/// which resolves `decoded.sub` to a `users.id` lookup). The
-/// existing `create_test_user` returns only the namespace; the
-/// namespace is the OCI ref path, not the JWT subject. Splitting
-/// the helper avoids breaking the existing 3 callers in
-/// `cli_a2a.rs` / `tunnel_e2e.rs` / `registry_integration.rs`
-/// that only need the namespace.
+/// which resolves `decoded.sub` to a `users.id` lookup). This is
+/// just a thin wrapper over `common::create_test_user` (which
+/// returns `(id, namespace)`) — the namespace is the OCI ref
+/// path, and the id is the JWT subject.
 async fn create_test_user_with_id(
     client: &reqwest::Client,
     base_url: &str,
     namespace: &str,
 ) -> (i64, String) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let unique = format!("{namespace}_{pid}_{seq}");
-
-    let resp = client
-        .post(format!("{base_url}/test/create-user"))
-        .json(&serde_json::json!({
-            "namespace": unique,
-            "display_name": format!("Test User ({namespace})"),
-            "external_id": format!("test-{unique}"),
-            "provider": "github",
-        }))
-        .send()
-        .await
-        .expect("create-user transport failed");
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    assert!(
-        status.is_success(),
-        "create-user failed: status={status}, body={body}"
-    );
-    let v: serde_json::Value = serde_json::from_str(&body)
-        .unwrap_or_else(|e| panic!("create-user response not JSON: {e}; body={body}"));
-    let id = v["id"]
-        .as_i64()
-        .unwrap_or_else(|| panic!("create-user response missing `id`: {body}"));
-    (id, unique)
+    common::create_test_user(client, base_url, namespace).await
 }
 
 /// Drive `peko login --api-key <key> --registry <url>` on the given
@@ -597,7 +567,7 @@ async fn ext_push_without_login_fails() {
         .no_proxy()
         .build()
         .unwrap();
-    let author_ns = create_test_user(&client, &backend.url, "s2_author").await;
+    let (_id, author_ns) = create_test_user(&client, &backend.url, "s2_author").await;
 
     // A PekoCli that has never seen `peko login`. We don't need it
     // to be the same user as the test_user above — the "no login"

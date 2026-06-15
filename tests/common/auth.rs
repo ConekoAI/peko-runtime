@@ -42,10 +42,14 @@ pub fn generate_jwt(user_id: i64, namespace: &str) -> String {
 /// parallel tests in the same binary don't collide on the
 /// `users_external_id_key` / `users_namespace_key` unique
 /// constraints. The `namespace` argument is preserved as a prefix
-/// for readable test logs / database inspection. The function
-/// returns the actual namespace that was inserted so the caller
-/// can use it in pekohub push URLs (which must match the user's
-/// namespace exactly — see
+/// for readable test logs / database inspection.
+///
+/// Returns `(id, namespace)` — the database-assigned numeric id
+/// (so the caller can mint a JWT with `sub == id` for the pekohub
+/// auth plugin's user lookup at
+/// `pekohub/backend/src/plugins/auth.ts:122`) and the actual
+/// namespace that was inserted (callers need it verbatim for
+/// pekohub push URLs — see
 /// `backend/src/routes/oci/manifests.ts:172`).
 ///
 /// The fixture's error handler returns `{ error: error.message }`
@@ -58,7 +62,7 @@ pub async fn create_test_user(
     client: &reqwest::Client,
     base_url: &str,
     namespace: &str,
-) -> String {
+) -> (i64, String) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -82,5 +86,10 @@ pub async fn create_test_user(
         status.is_success(),
         "create-user failed: status={status}, body={body}"
     );
-    unique
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("create-user response not JSON: {e}; body={body}"));
+    let id = v["id"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("create-user response missing `id`: {body}"));
+    (id, unique)
 }

@@ -123,7 +123,7 @@ async fn test_pekohub_manifest_roundtrip() {
         .unwrap();
 
     // Create user so PekoHub namespace ownership check passes
-    let ns = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
 
     // Upload a dummy config blob first (pekohub validates blob existence)
     let config_data = b"{}";
@@ -200,7 +200,7 @@ async fn test_pekohub_manifest_invalid_media_type_rejected() {
         .build()
         .unwrap();
 
-    let ns = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
 
     // PUT manifest with invalid media type ( PekoHub only accepts OCI )
     let manifest_json = r#"{"schemaVersion":2,"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":2},"layers":[]}"#;
@@ -228,7 +228,7 @@ async fn test_pekohub_blob_roundtrip() {
         .build()
         .unwrap();
 
-    let ns = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
 
     let data = b"test blob content";
     let digest = sha256_digest(data);
@@ -304,7 +304,7 @@ async fn test_pekohub_catalog_and_tags() {
         .unwrap();
 
     // Create two users for two namespaces
-    let ns = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
 
     // Push manifests to two different repos within the same namespace.
     for name in ["agent-a", "agent-b"] {
@@ -396,7 +396,7 @@ async fn test_registry_client_push_and_pull() {
         .no_proxy()
         .build()
         .unwrap();
-    let ns = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
 
     let host = backend.url.strip_prefix("http://").unwrap();
 
@@ -505,7 +505,7 @@ async fn test_registry_client_skips_existing_layers() {
         .no_proxy()
         .build()
         .unwrap();
-    let ns = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let registry = AgentRegistry::new(temp_dir.path());
@@ -716,7 +716,7 @@ async fn test_registry_client_digest_verification_on_pull() {
         .no_proxy()
         .build()
         .unwrap();
-    let ns = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
 
     // Upload two blobs: one is the config (top-level descriptor),
     // one is the layer. The manifest below references both by their
