@@ -4,7 +4,7 @@
 //! Wire format follows OCI Image Manifest v1.1 spec for interoperability.
 //! The canonical on-disk format remains TOML (`AgentManifest`).
 
-use crate::portable::types::Layer;
+use crate::portable::types::{ExtensionRef, Layer};
 use serde::{Deserialize, Serialize};
 
 /// OCI Image Manifest media type
@@ -103,6 +103,17 @@ pub struct RegistryManifest {
     /// Required MCP servers (JSON array string)
     #[serde(skip)]
     pub required_mcp_servers: Option<String>,
+    /// Extension dependencies declared by the agent (auto-pulled on
+    /// `peko agent pull`). Stored as a JSON string in annotations
+    /// for OCI compatibility; restored to a `Vec<ExtensionRef>` on
+    /// deserialize.
+    ///
+    /// Without this round-trip the runtime silently drops the
+    /// agent's `extensions` list at the registry push/pull boundary
+    /// — Phase D3 scenario 5b/5c/5d is the first end-to-end test
+    /// that exercises this code path and surfaces the regression.
+    #[serde(skip)]
+    pub extensions: Vec<ExtensionRef>,
 }
 
 fn default_kind() -> String {
@@ -141,6 +152,7 @@ impl RegistryManifest {
             compatibility: None,
             model_providers: None,
             required_mcp_servers: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -386,6 +398,34 @@ impl RegistryManifest {
             );
         }
 
+        // Extension dependencies (Phase D3 round-trip). Emitted as
+        // a JSON string (a serialized array of {id, registry_ref}
+        // objects) — pekohub's manifest validator expects
+        // `dev.pekohub.*` annotations to be strings, not arrays
+        // (the `annotations` map is deserialized into a
+        // `Record<string, string>` on the backend). Empty arrays
+        // are omitted — empty agent has no declared exts and we
+        // don't want to bloat the wire format.
+        if !self.extensions.is_empty() {
+            let arr: Vec<serde_json::Value> = self
+                .extensions
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "id": e.id,
+                        "registry_ref": e.registry_ref,
+                    })
+                })
+                .collect();
+            // Serializing a `Vec<{id, registry_ref}>` cannot fail —
+            // the values are plain `String` — so unwrap is safe.
+            let s = serde_json::to_string(&arr).expect("serialize extensions");
+            map.insert(
+                "dev.pekohub.extensions".to_string(),
+                serde_json::Value::String(s),
+            );
+        }
+
         if map.is_empty() {
             None
         } else {
@@ -467,6 +507,39 @@ impl RegistryManifest {
                 .and_then(|v| v.as_str())
             {
                 self.required_mcp_servers = Some(v.to_string());
+            }
+
+            // Restore extension dependencies (Phase D3 round-trip).
+            // The annotation may be a JSON string (legacy writes)
+            // or a JSON array (this implementation). Tolerate both.
+            if let Some(v) = map.get("dev.pekohub.extensions") {
+                if let Some(arr) = v.as_array() {
+                    self.extensions = arr
+                        .iter()
+                        .filter_map(|item| {
+                            let id = item.get("id")?.as_str()?.to_string();
+                            let registry_ref =
+                                item.get("registry_ref")?.as_str()?.to_string();
+                            Some(ExtensionRef { id, registry_ref })
+                        })
+                        .collect();
+                } else if let Some(s) = v.as_str() {
+                    // Legacy / hand-written format: parse the JSON
+                    // string and pull the same fields.
+                    if let Ok(parsed) =
+                        serde_json::from_str::<Vec<serde_json::Value>>(s)
+                    {
+                        self.extensions = parsed
+                            .iter()
+                            .filter_map(|item| {
+                                let id = item.get("id")?.as_str()?.to_string();
+                                let registry_ref =
+                                    item.get("registry_ref")?.as_str()?.to_string();
+                                Some(ExtensionRef { id, registry_ref })
+                            })
+                            .collect();
+                    }
+                }
             }
         }
     }
