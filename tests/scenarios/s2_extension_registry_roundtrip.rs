@@ -52,6 +52,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 use common::{create_test_user, reset_pekohub, PekoCli, PekohubBackend};
+use serial_test::serial;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -234,6 +235,7 @@ fn install_local_skill_copy(cli: &PekoCli) {
 /// (one config layer for the .ext payload).
 #[tokio::test]
 #[ignore = "requires PEKOHUB_URL + MOCK_LLM_URL + peko daemon"]
+#[serial]
 async fn ext_push_succeeds_with_pekohub_test() {
     let Some((_hub_url, mock_url)) = hub_and_llm_urls() else {
         eprintln!("PEKOHUB_URL or MOCK_LLM_URL not set; skipping");
@@ -285,7 +287,16 @@ async fn ext_push_succeeds_with_pekohub_test() {
         .unwrap_or_else(|e| panic!("push --json did not emit JSON: {e}; stdout={out}"));
     assert_eq!(v["success"], serde_json::json!(true), "push JSON: {v}");
     assert_eq!(v["extension_id"], "calculator-skill", "push JSON: {v}");
-    assert_eq!(v["registry_ref"], pushed_ref, "push JSON: {v}");
+    // The runtime's `RegistryRef::full_ref()` strips the URL scheme
+    // (see `src/registry/client.rs:107-114` — the bare `host:port`
+    // form is what `full_ref` emits). Compare against the
+    // scheme-stripped version of our input ref.
+    let host_only = backend.url
+        .strip_prefix("http://")
+        .or_else(|| backend.url.strip_prefix("https://"))
+        .unwrap_or(&backend.url);
+    let expected_ref = format!("{host_only}/{author_ns}/calculator-skill:v1.0");
+    assert_eq!(v["registry_ref"], expected_ref, "push JSON: {v}");
     assert_eq!(
         v["manifest"]["layers"],
         serde_json::json!(1),
@@ -312,6 +323,7 @@ async fn ext_push_succeeds_with_pekohub_test() {
 /// `peko send` echoes the mock-LLM keyword.
 #[tokio::test]
 #[ignore = "requires PEKOHUB_URL + MOCK_LLM_URL + peko daemon"]
+#[serial]
 async fn ext_pull_round_trip_two_clis() {
     let Some((_hub_url, mock_url)) = hub_and_llm_urls() else {
         eprintln!("PEKOHUB_URL or MOCK_LLM_URL not set; skipping");
@@ -452,6 +464,7 @@ async fn ext_pull_round_trip_two_clis() {
 /// we assert the array is present and the pull is a success.
 #[tokio::test]
 #[ignore = "requires PEKOHUB_URL + MOCK_LLM_URL + peko daemon"]
+#[serial]
 async fn ext_pull_auto_resolves_dependencies() {
     let Some((_hub_url, _mock_url)) = hub_and_llm_urls() else {
         eprintln!("PEKOHUB_URL or MOCK_LLM_URL not set; skipping");
