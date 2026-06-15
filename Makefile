@@ -16,6 +16,7 @@
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
         test-cli-subagent test-cli-tools test-cli-compaction \
+        test-cli-extensions \
         test-mock-llm-sequence \
         ci
 
@@ -24,7 +25,7 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
-                     cli_tools cli_compaction \
+                     cli_tools cli_compaction cli_extensions \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -56,6 +57,7 @@ help:
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
 	@echo "    test-cli-subagent / test-cli-tools / test-cli-compaction"
+	@echo "    test-cli-extensions"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -190,6 +192,18 @@ test-cli-tools: docker-up
 test-cli-compaction: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_compaction -- --include-ignored
+
+# `peko ext install/list/info/enable/disable/uninstall` slice. All
+# `#[ignore]` (daemon required) but NOT `#[serial]` — none of these
+# tests drive the mock LLM. Replaces the L1 (lifecycle-only) subset
+# of `e2e_tests/extensions/*.ps1`; the L2 (start/stop/status) and
+# L3 (LLM-driven tool execution) tests stay deferred to a follow-up
+# because they require Python and/or Node runtimes in the test
+# environment. See docs/integration/TESTING.md §7 for the
+# extensions migration context.
+test-cli-extensions: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_extensions -- --include-ignored
 
 # Mock LLM sequence feature (Phase C, see docs/integration/TESTING.md §3).
 # Exercises the per-substring counter in the list-value branch of

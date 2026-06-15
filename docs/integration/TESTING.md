@@ -87,11 +87,12 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_subagent.rs](../../tests/cli_subagent.rs) | 7 | 7 | PekoHub + mock LLM (all multi-turn, §3 Sequence, `#[serial]`) | Y |
 | [cli_tools.rs](../../tests/cli_tools.rs) | 6 | 6 | PekoHub + mock LLM (single-turn, §3 Sequence, `#[serial]`) | Y |
 | [cli_compaction.rs](../../tests/cli_compaction.rs) | 8 | 8 | PekoHub + mock LLM (multi-turn setup + `--dry-run --json` shape; T1 smoke + T1 multi + T2 actual + T3 cache + T4 usable + T5 custom-instruction + T6 incremental + extension hook, all `#[serial]`) | Y |
+| [cli_extensions.rs](../../tests/cli_extensions.rs) | 10 | 10 | PekoHub + mock LLM (L1 install/list/info/enable/disable/uninstall lifecycle, NOT `#[serial]` — no LLM use) | Y |
 | [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) | 6 | 6 | mock LLM (sequence feature, §3) | Y |
 
-**Totals:** 95 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 111 in `tests/`.
+**Totals:** 105 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 121 in `tests/`.
 
-The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 7 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs), [cli_subagent.rs](../../tests/cli_subagent.rs), [cli_tools.rs](../../tests/cli_tools.rs), [cli_compaction.rs](../../tests/cli_compaction.rs) — note: `cli_compaction.rs` covers the full 6 PS scenarios + the extension test, see §7) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
+The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 8 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs), [cli_subagent.rs](../../tests/cli_subagent.rs), [cli_tools.rs](../../tests/cli_tools.rs), [cli_compaction.rs](../../tests/cli_compaction.rs), [cli_extensions.rs](../../tests/cli_extensions.rs) — note: `cli_compaction.rs` covers the full 6 PS scenarios + the extension test, and `cli_extensions.rs` covers the L1 install/list/info/enable/disable/uninstall surface, see §7) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
 > **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L466) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
 
@@ -99,7 +100,7 @@ The 5 files that exercise the hub directly — [packaging_integration.rs](../../
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
 - Integration: 111 tests across 15 files in `tests/`.
-- E2E PowerShell scripts in `e2e_tests/`: 73 total (60 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7. The Phase B legs that have landed (`send/`, `session/`, `agent/`, `team/`, `config/`, `cron/`, `subagent/`, `tools/built-in/`, `compaction/{cli,extension}`) move the PS scripts into a "redundant" state but keep them on disk until Phase E finalizes the cleanup. Only `compaction_auto.ps1` (real-LLM tier) and `compaction_all.ps1` (the meta-runner) are still pending.
+- E2E PowerShell scripts in `e2e_tests/`: 64 total (51 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7. The Phase B legs that have landed (`send/`, `session/`, `agent/`, `team/`, `config/`, `cron/`, `subagent/`, `tools/built-in/`, `compaction/{cli,extension}`, `extensions/`) move the PS scripts into a "redundant" state but keep them on disk until Phase E finalizes the cleanup. Only `compaction_auto.ps1` (real-LLM tier) and `compaction_all.ps1` (the meta-runner) are still pending.
 
 ---
 
@@ -215,7 +216,7 @@ Why no full OAuth flow is needed:
 
 ## 7. Migration Roadmap: `e2e_tests/` → `tests/`
 
-`peko-runtime/e2e_tests/` still holds 60 live PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock. The end-goal is to dismantle the folder. Phases A and the cli_send / cli_session / cli_basics / cli_cron / cli_subagent legs of Phase B have already landed.
+`peko-runtime/e2e_tests/` still holds 51 live PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock. The end-goal is to dismantle the folder. Phases A and the cli_send / cli_session / cli_basics / cli_cron / cli_subagent / cli_extensions legs of Phase B have already landed.
 
 ### Phase A — Delete redundant (✅ landed)
 
@@ -231,7 +232,7 @@ Scripts that exercise CLI surfaces with no Rust equivalent. Each becomes one `te
 | `e2e_tests/session/` | `tests/cli_session.rs` | mock-LLM | ✅ Migrated (9 tests) |
 | `e2e_tests/agent/`, `e2e_tests/team/`, `e2e_tests/config/` | `tests/cli_basics.rs` | mixed | ✅ Migrated (14 tests: 6 offline, 8 mock-LLM) |
 | `e2e_tests/cron/` | `tests/cli_cron.rs` | mock-LLM | ✅ Migrated (18 tests; of which 2 are agent-tool multi-turn via §3 Sequence — see coverage gap below) |
-| `e2e_tests/extensions/` | `tests/cli_extensions.rs` | mock-LLM (tool-call sequence, §3 Sequence) | ⏳ Pending |
+| `e2e_tests/extensions/` | `tests/cli_extensions.rs` | mock-LLM (L1 install/list/info/enable/disable/uninstall lifecycle, NOT `#[serial]` — no LLM use) | ✅ Migrated (10 tests; L2+L3 deferred to follow-up — see coverage gap below) |
 | `e2e_tests/compaction/{cli,extension}` | `tests/cli_compaction.rs` | mock-LLM (multi-turn setup + `--dry-run --json`; T1 smoke + T1 multi [Issue 030 regression] + T2 actual + T3 cache + T4 usable + T5 custom-instruction + T6 incremental + extension hook, all `#[serial]`) | ✅ Migrated (8 tests; `compaction_auto.ps1` and `compaction_all.ps1` still pending — see coverage gap below) |
 | `e2e_tests/a2a/` | `tests/cli_a2a.rs` | mock-LLM (tool-call decisions via Sequence) | ⏳ Pending |
 | `e2e_tests/tools/built-in/` | `tests/cli_tools.rs` | mock-LLM (single tool_call per test, §3 Sequence) | ✅ Migrated (6 tests, one per built-in tool: glob, grep, read_file, write_file, str_replace_file, shell. See coverage gap below for the 4 top-level PS scripts deferred.) |
@@ -312,6 +313,37 @@ These four scripts stay in `e2e_tests/tools/` until those features are wired eno
 
 The auto-compactor's threshold-detection logic is unit-tested at the in-process layer (see `src/compaction/integration_tests.rs`); the missing CI coverage is the end-to-end agent-loop threshold trigger, which is intrinsically real-LLM tier. `compaction_auto.ps1` and the meta-runner `compaction_all.ps1` stay in place until Phase E, consistent with the other migrations.
 
+#### Phase B coverage gap — `e2e_tests/extensions/*.ps1` (L1 migrated, L2+L3 deferred)
+
+**Status:** L1 migrated (10 tests). `tests/cli_extensions.rs` now ships the lifecycle-only coverage of the 9 PS scripts. The remaining L2 and L3 sub-tests stay deferred until Python and/or Node runtimes are guaranteed in the test environment.
+
+| Rust test | Maps to PS sub-test | What it asserts |
+|---|---|---|
+| `ext_install_skill_tier1_detect` | `skill/python/test.ps1` T1+T2 | `peko ext install <calculator-skill-dir>` (no `--type`) succeeds via Tier 1 `SKILL.md` detection; `peko ext list` shows the skill; `peko ext info` reports `type: skill` |
+| `ext_install_mcp_standard_tier1_server_json` | `mcp/python/standard/test.ps1` T1+T2 | `peko ext install <standard-echo-dir>` (NO `--type`, NO `manifest.yaml`) succeeds via Tier 1 `server.json` detection; `peko ext info` reports `type: mcp` |
+| `ext_install_mcp_manifest_reserved_params` | `mcp/python/params_injection/test.ps1` T1 | Tier 2 install of an MCP server; the on-disk install preserves the manifest's `reserved_parameters` block (`agent_id`/`session_id` with `source: runtime`) verbatim |
+| `ext_install_universal_python_multi_file_copies_subdirs` | `universal/python/multi_file/test.ps1` T3+T4 | Recursive copy works: the install dir contains `manifest.yaml`, the top-level `.py`, AND `utils/__init__.py`, `utils/calculator.py`, `utils/validators.py`, `utils/formatter.py` |
+| `ext_install_universal_python_simple_manifest_roundtrip` | `universal/python/simple/test.ps1` T2 | Tier 2 install of a single-file Python tool; on-disk manifest preserves `extension_type: universal-tool` and `parameters:` |
+| `ext_install_universal_python_reserved_params_manifest` | `universal/python/reserved_params/test.ps1` T2 | On-disk manifest preserves `reserved_parameters: { session_id, agent_id }` with `source: "runtime"` and `field: "..."` subkeys |
+| `ext_install_universal_node_manifest_parsed` | `universal/node/custom.ps1` T1 | Tier 2 install of a Node.js tool; `peko ext info` reports `type: universal-tool`. **Does NOT exec the Node tool — L3 tier.** |
+| `ext_install_gateway_manifest_parsed` | `gateway/http_basics/test.ps1` T1 | Tier 2 install of a gateway; `peko ext info` reports `type: gateway`. **Does NOT start the Node gateway — L2/L3 tier.** |
+| `ext_install_uninstall_roundtrip` | Cross-cutting (all 9 PS scripts) | Install → list shows it → uninstall → list no longer shows it → info returns non-zero exit; on-disk install dir is also gone |
+| `ext_enable_for_agent_modifies_whitelist` | Cross-cutting (6 of 9 PS scripts) | `peko ext enable calculator_simple --target <agent>` writes the canonical ID into the agent's `config.toml` at `[extensions] enabled`; `peko ext disable` removes it |
+
+**The three structural facts this migration documents** (production behavior is correct as-is; the tests assert on the actual production behavior, not on the PS scripts' `--type` flag values):
+
+1. **`--type` flag is ignored at the CLI level.** [`src/commands/ext.rs:363`](../../pekobot/peko-runtime/src/commands/ext.rs#L363) destructures `r#type: _`. Tier 2 detection from `manifest.yaml` is the production path; `--type` is the user's escape hatch when the manifest is missing or wrong. Tests assert on the *detected* type (from `peko ext info`), not the flag value.
+2. **Tier 1 `SKILL.md` detection requires the install path to be the skill subdirectory itself.** The detector at [`src/extension/manager/mod.rs:215-256`](../../pekobot/peko-runtime/src/extension/manager/mod.rs#L215-L256) checks `path.join("SKILL.md").exists()` — so `peko ext install <parent>/calculator-skill/` works, but `peko ext install <parent>/` does NOT. The tests mirror the PS scripts' `install` invocation.
+3. **The SKILL.md `name:` frontmatter field becomes the extension ID.** [`src/extensions/skill/adapter.rs:108-130`](../../pekobot/peko-runtime/src/extensions/skill/adapter.rs#L108-L130). The calculator-skill fixture has `name: calculator-skill` so install creates an extension with ID `calculator-skill`.
+
+**What is still deferred (L2 + L3, follow-up PRs):**
+
+L2 — background runtime start/stop/status/restart (5 PS sub-tests across gateway + MCP). Blocked on the **runtime dependency**: MCP needs Python, gateway needs Node, the docker-compose stack only guarantees Python. Plan: add `PEKO_TEST_PYTHON` / `PEKO_TEST_NODE` env vars to the `test-integration` Makefile recipes (same shape as `MOCK_LLM_URL`); tests early-return if the runtime is not on `PATH`.
+
+L3 — `peko send` tool execution via mock LLM (12+ PS sub-tests across mcp, universal-python, universal-node, skill, reserved-params-async). Blocked on the **runtime dependency** PLUS the LLM-driven multi-turn dialog (each sub-test scripts an N-turn `tool_call` → `tool_call` → `text <SENTINEL>` dialog in `MOCK_LLM_SCRIPT`). The `AsyncTaskRegistry` access from tests (for `reserved_params` async tests) needs a `peko ext status --json` test-only CLI subcommand that reads the in-process registry — same shape as the `peko subagent list --json` test-only CLI needed for `subagent_async.ps1`. The same subcommand can serve both.
+
+The 9 PS scripts stay in `e2e_tests/extensions/` until Phase E cleanup lands; the on-disk fixtures (`calculator-skill/SKILL.md`, `mcp_server.py`, `multi_file_calc/utils/`, `gateway.js`, `string_tool.js`, `identity_tool.js`, `slow_calculator.py`, `calculator_simple.py`) are reused by the Rust tests.
+
 ### Phase C — Mock-LLM enhancement (✅ landed; unblocks Phase B mock-tier work)
 
 [.github/docker/mock-llm/mock_llm_server.py](../../.github/docker/mock-llm/mock_llm_server.py) supports:
@@ -368,6 +400,7 @@ test-integration:      docker-up && \
                                     --test cli_cron --test cli_subagent \
                                     --test cli_tools \
                                     --test cli_compaction \
+                                    --test cli_extensions \
                                     --test mock_llm_sequence \
                                     -- --include-ignored
 
@@ -382,9 +415,9 @@ test-integration-llm:  docker-up && \
 test-all:              test && test-integration && test-integration-llm
 ```
 
-The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-cli-tools`, `test-cli-compaction`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
+The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-cli-tools`, `test-cli-compaction`, `test-cli-extensions`, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella.
 
-> **Why `--include-ignored`, not `--ignored`.** All 88 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 105 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 
