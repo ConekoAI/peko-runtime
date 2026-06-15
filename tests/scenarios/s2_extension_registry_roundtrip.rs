@@ -365,11 +365,12 @@ async fn ext_pull_round_trip_two_clis() {
     peko_login(&collab, &collab_key, &backend.url);
 
     // `peko ext pull` writes a temp .ext and records the source in
-    // the local manager's source map, but does NOT copy the files
-    // into the extension storage dir — that happens on the next
-    // `peko ext install <ref>`. The `peko ext pull <ref> && peko
-    // ext install <ref>` sequence is the documented install-from-registry
-    // path.
+    // the local manager's source map, but then installs via IPC —
+    // the install half calls `DaemonClient::connect()` (see
+    // `src/commands/ext.rs:594`), so the collab daemon must be
+    // running BEFORE the pull. Spawn it here, before the pull.
+    let _daemon = common::DaemonGuard::spawn(&collab);
+
     let (out, err, status) = run(
         &collab,
         &["--json", "ext", "pull", &pushed_ref],
@@ -400,7 +401,9 @@ async fn ext_pull_round_trip_two_clis() {
     common::write_mock_agent(collab.home(), collab_agent, &mock_url)
         .expect("write collab mock agent");
 
-    let _daemon = common::DaemonGuard::spawn(&collab);
+    // Collab daemon was already spawned above (before the pull).
+    // The install / enable / list / chat calls all go through the
+    // same daemon, which is still alive for the rest of the test.
     install_local_skill_copy(&collab);
 
     // Enable on the collab agent.
@@ -540,6 +543,11 @@ Use the calculator.
     // ── Collaborator: pull the wrapper, no calculator installed ──
     let collab = PekoCli::new();
     peko_login(&collab, &collab_key, &backend.url);
+
+    // `peko ext pull` installs via IPC after the OCI fetch — the
+    // daemon must be running first (src/commands/ext.rs:594).
+    let _daemon = common::DaemonGuard::spawn(&collab);
+
     let (out, err, status) = run(
         &collab,
         &["--json", "ext", "pull", &wrapper_ref],
