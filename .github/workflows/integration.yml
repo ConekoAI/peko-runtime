@@ -162,6 +162,7 @@ jobs:
         # fall through to the real provider.
         env:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
         run: make test-integration-llm
       - name: Dump container logs on failure
         if: failure()

@@ -16,7 +16,7 @@
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
         test-cli-subagent test-cli-tools test-cli-compaction \
-        test-cli-extensions \
+        test-cli-providers \
         test-mock-llm-sequence \
         ci
 
@@ -25,7 +25,7 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
-                     cli_tools cli_compaction cli_extensions \
+                     cli_tools cli_compaction cli_extensions cli_providers \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -57,7 +57,7 @@ help:
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
 	@echo "    test-cli-subagent / test-cli-tools / test-cli-compaction"
-	@echo "    test-cli-extensions"
+	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY / KIMI_API_KEY)"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -213,6 +213,18 @@ test-cli-extensions: docker-up
 test-mock-llm-sequence: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test mock_llm_sequence -- --include-ignored
+
+# `peko send` against a real LLM provider (minimax, kimi). Real-LLM
+# tier — each test early-returns if its env var is unset, so a bare
+# `cargo test` still passes. The GitHub Actions `Integration (real
+# LLM)` job fires on nightly cron / `[llm]` commit tag / manual
+# dispatch, with `MINIMAX_API_KEY` and `KIMI_API_KEY` passed as
+# `secrets.*` env. See docs/integration/TESTING.md §7 for the
+# providers migration context.
+test-cli-providers: docker-up
+	@env -u MOCK_LLM_URL PEKOHUB_URL=$(PEKOHUB_URL) \
+	    MINIMAX_API_KEY=$(MINIMAX_API_KEY) KIMI_API_KEY=$(KIMI_API_KEY) \
+	    cargo test --test cli_providers -- --include-ignored
 
 # ── CI entry ─────────────────────────────────────────────────────────────
 
