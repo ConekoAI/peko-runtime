@@ -1102,6 +1102,15 @@ async fn agent_to_registry_manifest(
         manifest = manifest.with_description(desc.clone());
     }
 
+    // Carry the agent's declared extension dependencies through
+    // the registry round-trip (Phase D3 — flow 5b/5c/5d). Without
+    // this, the collab's `peko agent pull` sees an empty extensions
+    // list and never auto-pulls them. The list is round-tripped via
+    // the `dev.pekohub.extensions` annotation on the registry
+    // manifest (see `RegistryManifest::build_annotations` /
+    // `apply_annotations`).
+    manifest.extensions = agent_manifest.extensions.clone();
+
     if let Some(layers) = &agent_manifest.layers {
         if let Some(digest) = &layers.config {
             let size = layer_size(registry, digest).await?;
@@ -1184,6 +1193,14 @@ fn registry_to_agent_manifest(registry_manifest: &RegistryManifest) -> AgentMani
         }
     }
     agent_manifest.layers = Some(layers);
+
+    // Restore the agent's declared extension dependencies from the
+    // registry manifest's `dev.pekohub.extensions` annotation
+    // (see `RegistryManifest::apply_annotations`). Without this
+    // the collab's `ensure_extensions_for_agent` sees an empty
+    // list and never auto-pulls them. Phase D3 — flow 5b/5c/5d.
+    agent_manifest.extensions = registry_manifest.extensions.clone();
+
     agent_manifest
 }
 
