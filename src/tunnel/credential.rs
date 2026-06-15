@@ -58,11 +58,27 @@ impl PekoHubCredential {
     }
 
     /// Get the default credential file path
+    ///
+    /// Path: `{config_dir}/pekohub.toml` where `{config_dir}` is the
+    /// `PEKO_HOME` env var (if set) or `~/.peko` (see
+    /// [`crate::common::paths::default_config_dir`]).
+    ///
+    /// **Why not `dirs::home_dir().join(".peko")`.** `dirs 5.0.1`'s
+    /// `home_dir()` on Windows is hard-coded to return the
+    /// `FOLDERID_Profile` path, ignoring both `HOME` and
+    /// `USERPROFILE` env overrides. That made the runtime's tunnel
+    /// startup always look for `pekohub.toml` at
+    /// `C:\Users\<user>\.peko\pekohub.toml` regardless of the
+    /// `PEKO_HOME` (or per-CLI HOME) the rest of the daemon and CLI
+    /// respected — breaking isolated test environments that set
+    /// `PEKO_HOME=<tempdir>`. The fix routes through
+    /// `default_config_dir()` which respects `PEKO_HOME`. Phase D4's
+    /// `permit_owner_can_chat` test is the first end-to-end test
+    /// that drove the daemon→tunnel path with `PEKO_HOME` set, and
+    /// it surfaced the regression.
     #[must_use]
     pub fn default_path() -> PathBuf {
-        dirs::home_dir()
-            .map(|d| d.join(".peko").join("pekohub.toml"))
-            .unwrap_or_else(|| PathBuf::from(".peko").join("pekohub.toml"))
+        crate::common::paths::default_config_dir().join("pekohub.toml")
     }
 }
 
