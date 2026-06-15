@@ -350,7 +350,7 @@ impl Unpackager {
         files: &HashMap<String, Vec<u8>>,
         _manifest: &AgentManifest,
         new_name: &str,
-        _identity: &Identity,
+        identity: &Identity,
     ) -> anyhow::Result<AgentConfig> {
         let config_bytes = files
             .get("config/agent.toml")
@@ -358,8 +358,22 @@ impl Unpackager {
         let config_str = std::str::from_utf8(config_bytes)?;
         let mut config: AgentConfig = toml::from_str(config_str)?;
 
-        // Update runtime-specific fields
+        // Update runtime-specific fields. The `host_runtime_id`
+        // and `owner_id` are derived from the .agent file's
+        // `identity/did.json`, but `import_agent` runs with
+        // `rotate_keys: true` (see agent_service.rs:782) which
+        // generates a fresh DID locally and stores its key in
+        // this daemon's `KeyStorage`. Without rebinding these
+        // two fields to the new identity's DID, the chat path
+        // would try to sign with the AUTHOR's key — which the
+        // collab doesn't have — and the chat silently returns
+        // empty (the `peko send --no-stream` path swallows the
+        // missing-key error). Phase D3 flow 5 is the first
+        // end-to-end test that exercises this code path and
+        // surfaces the regression.
         config.name = new_name.to_string();
+        config.host_runtime_id = identity.did.clone();
+        config.owner_id = format!("local:{}", identity.did);
 
         // Note: Memory import is no longer supported as core memory has been deprecated.
         // The config.memory field no longer exists in AgentConfig.
