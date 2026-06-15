@@ -936,14 +936,23 @@ async fn handle_ext_push(
     registry.init().await?;
     registry.store_layer(&layer_digest, &data).await?;
 
-    // Build RegistryManifest with kind="extension", single layer
+    // Build RegistryManifest with kind="extension", single layer.
+    // The OCI top-level `config` descriptor must point to a real
+    // sha256:<hex> blob, otherwise pekohub rejects the push with
+    // 400 "Invalid digest format" (see
+    // `pekohub/backend/src/routes/oci/manifests.ts:172` and the
+    // `bundle_versions.config_digest` NOT NULL constraint). For
+    // extensions the .ext payload itself serves as the config
+    // blob — point the descriptor at the same digest/size as the
+    // layer below.
     let mut manifest =
         RegistryManifest::new(ext.manifest.name.clone(), ext.manifest.version.clone())
             .with_kind("extension")
             .with_ref(registry_ref)
             .with_bundle_type("extension")
             .with_extension_type(&ext.extension_type)
-            .with_description(&ext.manifest.description);
+            .with_description(&ext.manifest.description)
+            .with_config(layer_digest.clone(), data.len() as u64, None::<String>);
     manifest.add_layer(Layer::new(
         layer_digest.clone(),
         LayerType::Config,
