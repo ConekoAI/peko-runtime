@@ -29,6 +29,7 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      cli_tools cli_compaction cli_extensions cli_providers \
                      cli_a2a \
                      s1_local_agent_with_extensions \
+                     s2_extension_registry_roundtrip \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -259,6 +260,13 @@ test-scenarios-s1: docker-up
 	    cargo test --test s1_local_agent_with_extensions -- --include-ignored
 
 # D2: Extension registry round-trip (flow 3+4, author → pekohub → collab).
+# 4 tests, all `#[ignore]` for the PekoHub + mock LLM + daemon stack.
+# Author and collaborator are two `PekoCli` instances on the same
+# pekohub-test backend; API keys are minted via POST /v1/auth/api-keys.
+test-scenarios-s2: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test s2_extension_registry_roundtrip -- --include-ignored
+
 # D3: Agent registry round-trip with auto-pulled extensions (flow 5).
 # D4: Publish running agent behind tunnel with permission (flow 6).
 # These targets land in their respective PRs.
