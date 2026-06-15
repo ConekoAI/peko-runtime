@@ -787,9 +787,18 @@ impl AgentService {
             team: None, // New layout: no team
         };
 
-        // Create unpackager with agents root as base directory
-        let agents_root = self.resolver.agents_root_dir();
-        let unpackager = portable::Unpackager::new(file_path).with_base_dir(&agents_root);
+        // Create unpackager with the config dir as base directory.
+        //
+        // The unpackager joins `agents/<name>` onto its `base_dir`
+        // (see `src/portable/unpackager.rs:680-689` for the standalone
+        // agent path) — so `base_dir` must be the config dir, not the
+        // `agents/` root. Passing `agents_root` here would produce a
+        // `agents/agents/<name>` path and the agent would never show
+        // up in `peko agent list` (which scans `<config>/agents/`).
+        // Phase D3 flow 5 is the first end-to-end test that exercised
+        // this code path and surfaced the regression.
+        let config_dir = self.resolver.agents_root_dir().parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.resolver.agents_root_dir());
+        let unpackager = portable::Unpackager::new(file_path).with_base_dir(&config_dir);
 
         // Import the package
         let result = unpackager
