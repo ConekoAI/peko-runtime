@@ -25,6 +25,32 @@ async fn ipc_request(
     client.request_response(packet).await
 }
 
+/// Build the JSON object emitted by `peko session compact --dry-run --json`.
+///
+/// Extracted from the match arm so the wire format is unit-testable
+/// without needing a daemon. Field names are part of the public CLI
+/// contract and any rename here is a breaking change for callers that
+/// parse this JSON.
+fn render_dry_run_json(
+    session_id: &str,
+    estimated_tokens: usize,
+    context_window: usize,
+    percent: usize,
+    message_count: usize,
+    messages_to_compact: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "dry_run": true,
+        "session_id": session_id,
+        "estimated_tokens": estimated_tokens,
+        "context_window": context_window,
+        "percent": percent,
+        "message_count": message_count,
+        "messages_to_compact": messages_to_compact,
+    })
+}
+
 /// Session management subcommands
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
@@ -283,6 +309,44 @@ pub async fn handle_session(
             };
             let response = ipc_request(packet).await?;
             match response {
+                // Dry-run: the daemon sends a dedicated response that
+                // carries the full DryRunReport fields. We don't reuse
+                // SessionCompacted here because that variant's
+                // `messages_compacted` means "messages folded into the
+                // summary", which is meaningless for a no-op preview.
+                crate::ipc::ResponsePacket::SessionCompactDryRun {
+                    session_id: dry_session_id,
+                    estimated_tokens,
+                    context_window,
+                    percent,
+                    message_count,
+                    messages_to_compact,
+                    ..
+                } => {
+                    if json {
+                        println!(
+                            "{}",
+                            render_dry_run_json(
+                                &dry_session_id,
+                                estimated_tokens,
+                                context_window,
+                                percent,
+                                message_count,
+                                messages_to_compact,
+                            )
+                        );
+                    } else {
+                        let report = crate::compaction::cli::DryRunReport {
+                            estimated_tokens,
+                            context_window,
+                            percent,
+                            message_count,
+                            messages_to_compact,
+                        };
+                        render_compact_dry_run(&dry_session_id, &report);
+                    }
+                    Ok(())
+                }
                 crate::ipc::ResponsePacket::SessionCompacted {
                     messages_compacted,
                     tokens_saved,
@@ -290,36 +354,7 @@ pub async fn handle_session(
                     tokens_after,
                     ..
                 } => {
-                    if json && dry_run {
-                        // JSON dry-run: surface the same DryRunReport
-                        // fields the text path computes, plus a
-                        // `dry_run: true` marker so callers can tell
-                        // it apart from a real compact response.
-                        let report = crate::compaction::cli::DryRunReport {
-                            estimated_tokens: tokens_saved,
-                            context_window: tokens_before,
-                            percent: if tokens_before > 0 {
-                                (tokens_saved as f64 / tokens_before as f64 * 100.0) as usize
-                            } else {
-                                0
-                            },
-                            message_count: messages_compacted,
-                            messages_to_compact: messages_compacted,
-                        };
-                        println!(
-                            "{}",
-                            serde_json::json!({
-                                "success": true,
-                                "dry_run": true,
-                                "session_id": resolved,
-                                "estimated_tokens": report.estimated_tokens,
-                                "context_window": report.context_window,
-                                "percent": report.percent,
-                                "message_count": report.message_count,
-                                "messages_to_compact": report.messages_to_compact,
-                            })
-                        );
-                    } else if json {
+                    if json {
                         println!(
                             "{}",
                             serde_json::json!({
@@ -331,19 +366,6 @@ pub async fn handle_session(
                                 "tokens_saved": tokens_saved,
                             })
                         );
-                    } else if dry_run {
-                        let report = crate::compaction::cli::DryRunReport {
-                            estimated_tokens: tokens_saved,
-                            context_window: tokens_before,
-                            percent: if tokens_before > 0 {
-                                (tokens_saved as f64 / tokens_before as f64 * 100.0) as usize
-                            } else {
-                                0
-                            },
-                            message_count: messages_compacted,
-                            messages_to_compact: messages_compacted,
-                        };
-                        render_compact_dry_run(&resolved, &report);
                     } else {
                         render_compact_success(
                             &resolved,
@@ -515,5 +537,57 @@ mod tests {
             }
             _ => panic!("Expected Compact variant"),
         }
+    }
+
+    // Regression for issue 030: `message_count` and
+    // `messages_to_compact` must come from a dedicated dry-run
+    // response, not be overloaded from the real-compaction
+    // `messages_compacted` field (which means "messages folded into
+    // the summary" and is meaningless for a no-op preview).
+
+    #[test]
+    fn test_render_dry_run_json_preserves_message_counts() {
+        let json = render_dry_run_json(
+            "sess-abc",
+            /* estimated_tokens */ 622,
+            /* context_window  */ 128_000,
+            /* percent         */ 0,
+            /* message_count   */ 12,
+            /* messages_to_compact */ 10,
+        );
+        assert_eq!(json["success"], serde_json::Value::Bool(true));
+        assert_eq!(json["dry_run"], serde_json::Value::Bool(true));
+        assert_eq!(json["session_id"], "sess-abc");
+        assert_eq!(json["estimated_tokens"], 622);
+        assert_eq!(json["context_window"], 128_000);
+        assert_eq!(json["percent"], 0);
+        assert_eq!(json["message_count"], 12);
+        assert_eq!(json["messages_to_compact"], 10);
+    }
+
+    #[test]
+    fn test_render_dry_run_json_separates_message_count_from_messages_to_compact() {
+        // When there's only a system message + one user/assistant
+        // pair, message_count = 3 but messages_to_compact = 1
+        // (kept = 2, compacted = len() - 2). The two fields are
+        // semantically distinct and must round-trip independently.
+        let json = render_dry_run_json("s", 0, 128_000, 0, 3, 1);
+        assert_ne!(
+            json["message_count"], json["messages_to_compact"],
+            "message_count and messages_to_compact must remain distinct fields",
+        );
+    }
+
+    #[test]
+    fn test_dry_run_json_no_messages_compacted_field() {
+        // The pre-fix bug over-emitted the real-compaction field name
+        // `messages_compacted`. The dry-run JSON shape must not
+        // contain it; callers parsing dry-run output should not see a
+        // field that means "messages folded into the summary".
+        let json = render_dry_run_json("s", 0, 128_000, 0, 0, 0);
+        assert!(
+            json.get("messages_compacted").is_none(),
+            "dry-run JSON must not emit the real-compaction `messages_compacted` field",
+        );
     }
 }

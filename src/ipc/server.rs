@@ -2218,15 +2218,14 @@ impl IpcServer {
                 if dry_run {
                     match compactor.dry_run(&session, instruction).await {
                         Ok(report) => {
-                            let response = ResponsePacket::SessionCompacted {
+                            let response = ResponsePacket::SessionCompactDryRun {
                                 request_id,
                                 session_id: session_id.clone(),
-                                messages_compacted: 0,
-                                tokens_saved: report.estimated_tokens,
-                                tokens_before: report.context_window,
-                                tokens_after: report
-                                    .context_window
-                                    .saturating_sub(report.estimated_tokens),
+                                estimated_tokens: report.estimated_tokens,
+                                context_window: report.context_window,
+                                percent: report.percent,
+                                message_count: report.message_count,
+                                messages_to_compact: report.messages_to_compact,
                             };
                             Self::send_sink(sink, response).await?;
                         }

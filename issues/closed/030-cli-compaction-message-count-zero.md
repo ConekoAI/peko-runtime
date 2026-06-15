@@ -1,11 +1,69 @@
 # Issue 030: `peko session compact --dry-run --json` Reports `message_count: 0` Despite Populated JSONL
 
-**Status:** Open
+**Status:** ✅ **Closed / Resolved**
 **Priority:** P2
 **Area:** Session / Compaction / CLI Integration Testing
-**Related:** `src/session/unified.rs`, `src/session/jsonl.rs`, `src/compaction/cli.rs`, `src/commands/session.rs`
+**Related:** `src/session/unified.rs`, `src/session/jsonl.rs`, `src/compaction/cli.rs`, `src/commands/session.rs`, `src/ipc/packet.rs`, `src/ipc/server.rs`
 **Blocks:** the 5 deferred tests in `tests/cli_compaction.rs` (T1-full, T2, T3, T4, T5, T6 + extension) which would migrate the 6 sub-tests of `e2e_tests/compaction_cli.ps1` + `e2e_tests/compaction_extension.ps1` to Rust.
 **Origin:** Discovered during `be34a2e` ("feat(session): add --dry-run --json + cli_compaction smoke test"). The CLI fix in that commit landed; the 5 deeper scenarios were deferred pending this issue.
+**Resolved:** 2026-06-15
+
+---
+
+## 0. Resolution
+
+### 0.1 Root Cause (Re-investigated)
+
+The issue's own "Suggested Investigation Path" was a red herring. The bug is **not** in the `load_normalized → normalize_event → from_entries` pipeline; that path was correctly producing a non-empty `Vec<LlmMessage>`.
+
+The smoking gun: the example output reports `estimated_tokens: 622`. If `load_context_fast` had returned an empty `Vec`, `Compactor::estimate_tokens` would have returned 0. The messages were reaching the compactor; they were getting lost on the way out.
+
+The actual bug was a wire-format overload across two layers:
+
+1. **Daemon (root cause)** — [`src/ipc/server.rs:2224`](../../pekobot/peko-runtime/src/ipc/server.rs#L2224) (pre-fix) hard-coded `messages_compacted: 0` in the `SessionCompacted` response for the dry-run path, throwing away `report.message_count` and `report.messages_to_compact`:
+   ```rust
+   let response = ResponsePacket::SessionCompacted {
+       …
+       messages_compacted: 0,                    // hard-coded — bug
+       tokens_saved: report.estimated_tokens,    // forwarded
+       tokens_before: report.context_window,     // forwarded
+       tokens_after: report.context_window.saturating_sub(report.estimated_tokens),
+   };
+   ```
+
+2. **CLI (compound bug)** — [`src/commands/session.rs:306-307`](../../pekobot/peko-runtime/src/commands/session.rs#L306-L307) (pre-fix) reused the same `messages_compacted` field for **both** `message_count` and `messages_to_compact` in the JSON output:
+   ```rust
+   message_count: messages_compacted,        // always 0 for dry-run
+   messages_to_compact: messages_compacted,  // always 0 for dry-run
+   ```
+
+`SessionCompacted.messages_compacted` semantically means "messages folded into the summary" — a value only meaningful *after* real compaction. Reusing it for the dry-run response is a category error, and the CLI's reuse of that single field for two output fields doubled the visible damage.
+
+### 0.2 Decision
+
+**Introduce a dedicated `ResponsePacket::SessionCompactDryRun` variant** carrying the full `DryRunReport` fields, rather than overloading `SessionCompacted`. This separates the two concerns at the wire-format layer so the entire class of bug is impossible to repeat.
+
+### 0.3 What Changed
+
+| File | Change |
+|---|---|
+| [`src/ipc/packet.rs`](../../pekobot/peko-runtime/src/ipc/packet.rs) | New `ResponsePacket::SessionCompactDryRun` variant + registered in `request_id()` exhaustive match + new `test_session_compact_dry_run_response_roundtrip` |
+| [`src/ipc/server.rs:2218-2240`](../../pekobot/peko-runtime/src/ipc/server.rs#L2218-L2240) | Send `SessionCompactDryRun` for dry-run, forwarding all 5 `DryRunReport` fields directly |
+| [`src/commands/session.rs:30-49`](../../pekobot/peko-runtime/src/commands/session.rs#L30-L49) | New `render_dry_run_json` helper extracted from the match arm for testability |
+| [`src/commands/session.rs:286-323`](../../pekobot/peko-runtime/src/commands/session.rs#L286-L323) | Match the new variant; render JSON via the helper; drop the synthetic `DryRunReport` reconstruction that was overloading `messages_compacted` |
+| [`src/commands/session.rs:577-660`](../../pekobot/peko-runtime/src/commands/session.rs#L577-L660) | 3 new unit tests: field-name contract, distinct `message_count` vs `messages_to_compact`, no leakage of `messages_compacted` into the dry-run JSON |
+| [`tests/cli_compaction.rs:244-360`](../../pekobot/peko-runtime/tests/cli_compaction.rs#L244-L360) | New `cli_compact_dry_run_json_reports_message_counts_after_multi_turn` integration test (6-turn setup, asserts `message_count >= 6` and `messages_to_compact >= 1`; gated on `MOCK_LLM_URL` like the existing smoke test) |
+
+### 0.4 Why This Is Future-Proof
+
+- **No more category error.** The dry-run wire format and the real-compaction wire format are siblings, not aliases. Adding fields to `DryRunReport` (e.g., `oldest_message_age`, `compaction_estimate_eur`) can be added to the new variant without touching `SessionCompacted`.
+- **Backward compatible.** Existing real-compaction callers that parse `SessionCompacted` see no change. Existing dry-run JSON consumers see *additional correct values* for `message_count` and `messages_to_compact` (which were `0` and meaningless pre-fix).
+- **Testable without a daemon.** The new `render_dry_run_json` helper is unit-testable in isolation; the field-name contract is enforced by `test_render_dry_run_json_preserves_message_counts`, `test_render_dry_run_json_separates_message_count_from_messages_to_compact`, and `test_dry_run_json_no_messages_compacted_field`.
+
+### 0.5 Out of Scope (Per Original Issue)
+
+- The 5 deferred PS1-T2..T6 + extension tests from the original issue are still deferred; the 6-turn integration test in this fix is the foundation for that follow-up PR (5-line restore from `be34a2e~1`).
+- `e2e_tests/compaction/{cli,extension}.ps1` cleanup (Phase E) is untouched.
 
 ---
 

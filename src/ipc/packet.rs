@@ -1044,6 +1044,24 @@ pub enum ResponsePacket {
         tokens_after: usize,
     },
 
+    /// Dry-run preview of a compaction (no JSONL mutation).
+    ///
+    /// Carries the full [`crate::compaction::cli::DryRunReport`] fields
+    /// directly so the wire format is not overloaded with the real
+    /// `SessionCompacted` response (whose `messages_compacted` means
+    /// "messages folded into the summary", not "messages in the
+    /// session").
+    #[serde(rename = "session_compact_dry_run")]
+    SessionCompactDryRun {
+        request_id: u64,
+        session_id: String,
+        estimated_tokens: usize,
+        context_window: usize,
+        percent: usize,
+        message_count: usize,
+        messages_to_compact: usize,
+    },
+
     /// Extension installed response
     #[serde(rename = "extension_installed")]
     ExtensionInstalled {
@@ -1318,6 +1336,7 @@ impl ResponsePacket {
             | Self::CronAddedSimple { request_id, .. }
             | Self::SessionBranched { request_id, .. }
             | Self::SessionCompacted { request_id, .. }
+            | Self::SessionCompactDryRun { request_id, .. }
             | Self::ExtensionInstalled { request_id, .. }
             | Self::ExtensionUninstalled { request_id, .. }
             | Self::AgentExported { request_id, .. }
@@ -3007,6 +3026,41 @@ mod tests {
                 assert_eq!(tokens_saved, 500);
                 assert_eq!(tokens_before, 2000);
                 assert_eq!(tokens_after, 1500);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_compact_dry_run_response_roundtrip() {
+        let resp = ResponsePacket::SessionCompactDryRun {
+            request_id: 2301,
+            session_id: "sess-dry".to_string(),
+            estimated_tokens: 622,
+            context_window: 128_000,
+            percent: 0,
+            message_count: 12,
+            messages_to_compact: 10,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::SessionCompactDryRun {
+                request_id,
+                session_id,
+                estimated_tokens,
+                context_window,
+                percent,
+                message_count,
+                messages_to_compact,
+            } => {
+                assert_eq!(request_id, 2301);
+                assert_eq!(session_id, "sess-dry");
+                assert_eq!(estimated_tokens, 622);
+                assert_eq!(context_window, 128_000);
+                assert_eq!(percent, 0);
+                assert_eq!(message_count, 12);
+                assert_eq!(messages_to_compact, 10);
             }
             _ => panic!("Wrong variant"),
         }

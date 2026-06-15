@@ -240,3 +240,115 @@ async fn cli_compact_dry_run_json_reports_metadata() {
         );
     }
 }
+
+/// Regression for issue 030: with multiple `peko send` rounds, the
+/// `message_count` and `messages_to_compact` fields in
+/// `peko session compact --dry-run --json` must reflect the actual
+/// session contents. Pre-fix, both were hard-coded to 0 because the
+/// daemon's dry-run response overloaded the real-compaction
+/// `messages_compacted` field (which is meaningless for a no-op
+/// preview) and the CLI re-mapped it to both output fields.
+///
+/// The test does 6 mock-LLM-driven `peko send` rounds. Each round
+/// produces a user prompt, an assistant tool_call, a tool result,
+/// and an assistant text sentinel — so the JSONL accumulates 24+
+/// `message.v2` events across 6 user + 6 assistant text + 6
+/// assistant tool_call + 6 tool_result events. After 6 rounds, the
+/// dry-run must report `message_count >= 6` (one user + one
+/// assistant text per round, conservatively) and
+/// `messages_to_compact >= 1`.
+///
+/// The mock's per-substring counter advances on every LLM call, so
+/// the flat `[tc_1, sent_1, tc_2, sent_2, …]` script drives all 12
+/// LLM calls in order.
+#[tokio::test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
+async fn cli_compact_dry_run_json_reports_message_counts_after_multi_turn() {
+    if mock_llm_url().is_none() {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    }
+    let mock_url = mock_llm_url().unwrap();
+    let agent_name = "cli_compact_dry_run_multi";
+    let needle = "cli-compact-dryjson-multi-q3x1";
+    const N_TURNS: usize = 6;
+
+    // 12-element script: for each of 6 turns, the LLM is called
+    // twice (once for the initial tool_call, once after the tool
+    // dispatch for the post-tool text sentinel). The mock's
+    // per-substring counter advances on every LLM call, so a flat
+    // [tc_1, sent_1, tc_2, sent_2, …] drives all 12 calls in
+    // order. Each tool_call writes a unique file so the workspace
+    // is mutated predictably.
+    let mut entries = Vec::with_capacity(N_TURNS * 2);
+    for i in 0..N_TURNS {
+        let path = format!("compaction_setup_t{i:02}.txt");
+        let content = format!("COMPACTION_SETUP_T{i:02}_CONTENT");
+        entries.push(serde_json::json!({
+            "tool_call": {
+                "name": "write_file",
+                "arguments": serde_json::json!({
+                    "path": path,
+                    "content": content,
+                })
+                .to_string(),
+            }
+        }));
+        entries.push(serde_json::json!({ "text": format!("SETUP_T{i:02}_DONE") }));
+    }
+    let script = serde_json::json!({ needle: entries }).to_string();
+    configure_mock(&mock_url, &script).await;
+
+    let cli = PekoCli::new();
+    write_compaction_agent(cli.home(), agent_name, &mock_url)
+        .expect("write compaction agent");
+    let _daemon = DaemonGuard::spawn(&cli);
+
+    for i in 0..N_TURNS {
+        let prompt = format!(
+            "Use your write_file tool to create 'compaction_setup_t{i:02}.txt' \
+             with content 'COMPACTION_SETUP_T{i:02}_CONTENT' and include the \
+             needle '{needle}' in your reply.",
+        );
+        let (out, err, status) = run(
+            &cli,
+            &["send", agent_name, &prompt, "--no-stream"],
+            Duration::from_secs(30),
+        );
+        assert_ok(&out, &err, &status);
+        assert!(
+            out.contains(&format!("SETUP_T{i:02}_DONE")),
+            "turn {i} did not return the post-tool sentinel; stdout: {out}\nstderr: {err}",
+        );
+    }
+
+    // Run dry-run JSON and assert the field values, not just presence.
+    let (out, err, status) = run(
+        &cli,
+        &["session", "compact", agent_name, "--dry-run", "--json"],
+        Duration::from_secs(15),
+    );
+    assert_ok(&out, &err, &status);
+    let parsed: serde_json::Value = serde_json::from_str(&out)
+        .unwrap_or_else(|e| panic!("dry-run --json parse error: {e}\nstdout: {out}"));
+
+    assert_eq!(parsed["success"], serde_json::Value::Bool(true));
+    assert_eq!(parsed["dry_run"], serde_json::Value::Bool(true));
+
+    // Issue 030: these were both 0 pre-fix. After 6 turns, both
+    // fields must reflect the populated session.
+    let message_count = parsed["message_count"].as_u64().expect("message_count u64");
+    let messages_to_compact = parsed["messages_to_compact"]
+        .as_u64()
+        .expect("messages_to_compact u64");
+    assert!(
+        message_count >= N_TURNS as u64,
+        "message_count should be >= {N_TURNS} after {N_TURNS} turns, got {message_count} \
+         (full output: {out})",
+    );
+    assert!(
+        messages_to_compact >= 1,
+        "messages_to_compact should be >= 1, got {messages_to_compact} (full output: {out})",
+    );
+}
