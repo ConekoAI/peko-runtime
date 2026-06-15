@@ -135,6 +135,52 @@ async fn mint_api_key(
         .to_string()
 }
 
+/// Create a test user AND return its database-assigned numeric id.
+/// Needed because the JWT `sub` claim is the user_id (per the
+/// pekohub auth plugin at
+/// [pekohub/backend/src/plugins/auth.ts:122](../../pekohub/backend/src/plugins/auth.ts#L122)
+/// which resolves `decoded.sub` to a `users.id` lookup). The
+/// existing `create_test_user` returns only the namespace; the
+/// namespace is the OCI ref path, not the JWT subject. Splitting
+/// the helper avoids breaking the existing 3 callers in
+/// `cli_a2a.rs` / `tunnel_e2e.rs` / `registry_integration.rs`
+/// that only need the namespace.
+async fn create_test_user_with_id(
+    client: &reqwest::Client,
+    base_url: &str,
+    namespace: &str,
+) -> (i64, String) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let unique = format!("{namespace}_{pid}_{seq}");
+
+    let resp = client
+        .post(format!("{base_url}/test/create-user"))
+        .json(&serde_json::json!({
+            "namespace": unique,
+            "display_name": format!("Test User ({namespace})"),
+            "external_id": format!("test-{unique}"),
+            "provider": "github",
+        }))
+        .send()
+        .await
+        .expect("create-user transport failed");
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "create-user failed: status={status}, body={body}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("create-user response not JSON: {e}; body={body}"));
+    let id = v["id"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("create-user response missing `id`: {body}"));
+    (id, unique)
+}
+
 /// Drive `peko login --api-key <key> --registry <url>` on the given
 /// PekoCli instance. After this call the API key is persisted at
 /// `<HOME>/.peko/credentials.json` and the runtime's
@@ -232,8 +278,8 @@ async fn ext_push_succeeds_with_pekohub_test() {
         .no_proxy()
         .build()
         .unwrap();
-    let author_ns = create_test_user(&client, &backend.url, "s2_author").await;
-    let author_jwt = common::generate_jwt(0, &author_ns);
+    let (author_id, author_ns) = create_test_user_with_id(&client, &backend.url, "s2_author").await;
+    let author_jwt = common::generate_jwt(author_id, &author_ns);
     let author_key = mint_api_key(&client, &backend.url, &author_jwt, "s2-author-key").await;
 
     // Author side: log in to pekohub, install the skill, push.
@@ -310,11 +356,11 @@ async fn ext_pull_round_trip_two_clis() {
         .no_proxy()
         .build()
         .unwrap();
-    let author_ns = create_test_user(&client, &backend.url, "s2_author").await;
-    let author_jwt = common::generate_jwt(0, &author_ns);
+    let (author_id, author_ns) = create_test_user_with_id(&client, &backend.url, "s2_author").await;
+    let author_jwt = common::generate_jwt(author_id, &author_ns);
     let author_key = mint_api_key(&client, &backend.url, &author_jwt, "s2-author-key").await;
-    let collab_ns = create_test_user(&client, &backend.url, "s2_collab").await;
-    let collab_jwt = common::generate_jwt(0, &collab_ns);
+    let (collab_id, collab_ns) = create_test_user_with_id(&client, &backend.url, "s2_collab").await;
+    let collab_jwt = common::generate_jwt(collab_id, &collab_ns);
     let collab_key = mint_api_key(&client, &backend.url, &collab_jwt, "s2-collab-key").await;
 
     // ── Author side: install + push ──
@@ -450,11 +496,11 @@ async fn ext_pull_auto_resolves_dependencies() {
         .no_proxy()
         .build()
         .unwrap();
-    let author_ns = create_test_user(&client, &backend.url, "s2_author").await;
-    let author_jwt = common::generate_jwt(0, &author_ns);
+    let (author_id, author_ns) = create_test_user_with_id(&client, &backend.url, "s2_author").await;
+    let author_jwt = common::generate_jwt(author_id, &author_ns);
     let author_key = mint_api_key(&client, &backend.url, &author_jwt, "s2-author-key").await;
-    let collab_ns = create_test_user(&client, &backend.url, "s2_collab").await;
-    let collab_jwt = common::generate_jwt(0, &collab_ns);
+    let (collab_id, collab_ns) = create_test_user_with_id(&client, &backend.url, "s2_collab").await;
+    let collab_jwt = common::generate_jwt(collab_id, &collab_ns);
     let collab_key = mint_api_key(&client, &backend.url, &collab_jwt, "s2-collab-key").await;
 
     // ── Author: push calculator-skill ──
