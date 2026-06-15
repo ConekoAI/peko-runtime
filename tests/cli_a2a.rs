@@ -4,27 +4,27 @@
 //! Coverage mirrors the `e2e_tests/a2a/*.ps1` PowerShell scripts that
 //! previously exercised this surface outside CI:
 //!
-//! | PS sub-test                                          | Rust test                                       |
-//! |------------------------------------------------------|-------------------------------------------------|
-//! | `a2a_blocking.ps1` T1 (tool availability)            | `a2a_blocking_t1_tool_available`                |
-//! | `a2a_blocking.ps1` T2 (blocking execution)          | `a2a_blocking_t2_blocking_execution`           |
-//! | `a2a_blocking.ps1` T3 (session resumption)          | `a2a_blocking_t3_session_resumption`           |
-//! | `a2a_blocking.ps1` T4 (caller annotation)           | `a2a_blocking_t4_caller_annotation`            |
-//! | `a2a_async.ps1` T1 (async receipt)                  | `a2a_async_t1_async_receipt`                    |
-//! | `a2a_async.ps1` T2 (task file written)              | `a2a_async_t2_task_file_written`                |
-//! | `a2a_async.ps1` T3 (async completion)               | `a2a_async_t3_async_completion`                 |
-//! | `a2a_async.ps1` T4 (caller annotation in async)     | `a2a_async_t4_caller_annotation`               |
-//! | `a2a_isolation.ps1` T1 (caller A session)            | `a2a_isolation_t1_caller_a_session`             |
-//! | `a2a_isolation.ps1` T2 (caller B session)            | `a2a_isolation_t2_caller_b_session`             |
-//! | `a2a_isolation.ps1` T3 (peer_id isolation)          | `a2a_isolation_t3_peer_id_isolation`            |
-//! | `a2a_isolation.ps1` T4 (caller A resumes)           | `a2a_isolation_t4_caller_a_resumes`             |
-//! | `a2a_isolation.ps1` T5 (message counts)             | `a2a_isolation_t5_message_counts`               |
+//! | PS sub-test                                       | Rust test                                       |
+//! |---------------------------------------------------|-------------------------------------------------|
+//! | `a2a_blocking.ps1` T1 (tool availability)         | `a2a_blocking_t1_tool_available`                |
+//! | `a2a_blocking.ps1` T2 (blocking execution)       | `a2a_blocking_t2_blocking_execution`           |
+//! | `a2a_blocking.ps1` T3 (session resumption)       | `a2a_blocking_t3_session_resumption`           |
+//! | `a2a_blocking.ps1` T4 (caller annotation)        | `a2a_blocking_t4_caller_annotation`            |
+//! | `a2a_isolation.ps1` T1 (caller A session)         | `a2a_isolation_t1_caller_a_session`             |
+//! | `a2a_isolation.ps1` T2 (caller B session)         | `a2a_isolation_t2_caller_b_session`             |
+//! | `a2a_isolation.ps1` T3 (peer_id isolation)       | `a2a_isolation_t3_peer_id_isolation`            |
+//! | `a2a_isolation.ps1` T4 (caller A resumes)        | `a2a_isolation_t4_caller_a_resumes`             |
+//! | `a2a_isolation.ps1` T5 (message counts)          | `a2a_isolation_t5_message_counts`               |
 //!
 //! `a2a_all.ps1` is the meta-runner; not migrated.
+//! `a2a_async.ps1` is deferred — the `a2a_send` tool's parameter
+//! schema at [`src/tools/builtin/messaging/a2a_send.rs:148-171`](src/tools/builtin/messaging/a2a_send.rs#L148-L171)
+//! does not expose `_async`, so the LLM cannot drive the async path.
+//! The async migration is a follow-up when the schema is fixed.
 //!
 //! ## Tier: real-LLM (2-LLM-call flows)
 //!
-//! All 13 tests early-return if `MINIMAX_API_KEY` is unset, so a
+//! All 9 tests early-return if `MINIMAX_API_KEY` is unset, so a
 //! bare `cargo test` on a checkout without real-LLM credentials
 //! still passes. Each test drives a real LLM call to drive the
 //! `a2a_send` tool, and most tests drive a second real LLM call
@@ -77,36 +77,6 @@ fn minimax_api_key() -> Option<String> {
         return None;
     }
     Some(k)
-}
-
-/// Skip with a documented "feature not wired" reason.
-///
-/// The 4 a2a_async sub-tests (`a2a_async_t1` through `a2a_async_t4`)
-/// exercise `_async: true` semantics on the `a2a_send` tool, but the
-/// tool's parameter schema at
-/// [`src/tools/builtin/messaging/a2a_send.rs:148-171`](src/tools/builtin/messaging/a2a_send.rs#L148-L171)
-/// does NOT expose `_async` (or `_timeout`) as a parameter — only
-/// `target_agent` and `message` are listed. The framework-level
-/// `AsyncExecutionRouter` is supposed to intercept `_async: true` at
-/// dispatch time, but with the parameter omitted from the schema the
-/// LLM never sends it. The real LLM in CI runs (and locally)
-/// correctly observed: "the a2a_send tool schema does not include
-/// an `_async` parameter — it operates synchronously by default".
-///
-/// The PS scripts' a2a_async.ps1 was therefore aspirational; its
-/// "PASS" verdict was the structural fallback ("the worker
-/// session was created, so a2a_send dispatched"). The Rust tests
-/// are honest: the async path isn't testable until the schema is
-/// fixed, so we early-return and document the gap. Tracked in the
-/// `Phase B coverage gap — e2e_tests/a2a/*.ps1` section in
-/// `docs/integration/TESTING.md`.
-fn a2a_async_not_wired() -> bool {
-    eprintln!(
-        "SKIP: a2a_send tool does not expose _async in its parameter schema \
-         (see a2a_send.rs:148-171). The 4 a2a_async sub-tests are deferred \
-         until the async path is wired. Tracked in TESTING.md §7."
-    );
-    true
 }
 
 /// Run a `peko …` command and return (stdout, stderr, status).
@@ -533,7 +503,7 @@ async fn a2a_blocking_t4_caller_annotation() {
     let (out, err, status) = run(
         &cli,
         &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&out, &err, &status);
 
@@ -589,311 +559,6 @@ async fn a2a_blocking_t4_caller_annotation() {
 }
 
 // ---------------------------------------------------------------------------
-// a2a_async.ps1
-// ---------------------------------------------------------------------------
-
-/// `a2a_async.ps1` T1: async A2A send with `_async: true` returns a
-/// receipt immediately (without blocking on the worker).
-///
-/// **DEFERRED** — see [`a2a_async_not_wired`]. The `a2a_send`
-/// tool's schema doesn't expose `_async`, so the LLM can't drive
-/// the async path.
-#[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
-async fn a2a_async_t1_async_receipt() {
-    if a2a_async_not_wired() {
-        return;
-    }
-    let Some(api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
-        return;
-    };
-
-    let cli = PekoCli::new();
-    let delegator = "a2a_async_t1_delegator";
-    let worker = "a2a_async_t1_worker";
-    write_a2a_agent(
-        cli.home(),
-        delegator,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write delegator");
-    write_a2a_agent(
-        cli.home(),
-        worker,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &["read_file"],
-    )
-    .expect("write worker");
-    write_sentinel_file(&cli, worker, "test_async.txt", "A2A_ASYNC_SECRET_99");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let prompt = format!(
-        "Use the a2a_send tool with _async=true to send this message to \
-         agent '{worker}': Read the file test_async.txt and report its \
-         exact contents. The tool should return a JSON receipt immediately \
-         containing a task_file path and a task_id. Read the receipt \
-         carefully. If you received a receipt with task_file and task_id, \
-         reply exactly ASYNC_RECEIPT_OK. If you did not get a receipt, \
-         reply exactly ASYNC_RECEIPT_FAIL. (needle=a2a_async_t1)"
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(60),
-    );
-    assert_ok(&out, &err, &status);
-    let llm_receipt = out.contains("ASYNC_RECEIPT_OK");
-    let has_receipt_substring = out.contains("task_id") || out.contains("task_file");
-    assert!(
-        llm_receipt || has_receipt_substring,
-        "async receipt not visible: llm-said-receipt={llm_receipt} \
-         has-task_id-or-file={has_receipt_substring}; stdout={out:?} stderr={err:?}",
-    );
-}
-
-/// `a2a_async.ps1` T2: a task file is written for polling. Inspect
-/// `<peko_dir>/data/async_tasks/` for the most-recently-modified
-/// `*.json` and verify its `tool_name` is `a2a_send`.
-///
-/// **DEFERRED** — see [`a2a_async_not_wired`].
-#[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
-async fn a2a_async_t2_task_file_written() {
-    if a2a_async_not_wired() {
-        return;
-    }
-    let Some(api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
-        return;
-    };
-
-    let cli = PekoCli::new();
-    let delegator = "a2a_async_t2_delegator";
-    let worker = "a2a_async_t2_worker";
-    write_a2a_agent(
-        cli.home(),
-        delegator,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write delegator");
-    write_a2a_agent(
-        cli.home(),
-        worker,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &["read_file"],
-    )
-    .expect("write worker");
-    write_sentinel_file(&cli, worker, "test_async.txt", "A2A_ASYNC_SECRET_99");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let prompt = format!(
-        "Use a2a_send with _async=true to send this message to agent \
-         '{worker}': Read the file test_async.txt. The tool will return a \
-         receipt. Reply with the receipt's task_id if you got one. \
-         (needle=a2a_async_t2)"
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(60),
-    );
-    assert_ok(&out, &err, &status);
-
-    // The async_tasks dir is at <peko_dir>/data/async_tasks.
-    let async_dir = cli.peko_dir().join("data").join("async_tasks");
-    let latest = std::fs::read_dir(&async_dir).ok().and_then(|rd| {
-        let mut entries: Vec<_> = rd
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-            .collect();
-        entries.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
-        entries.pop()
-    });
-    let latest = match latest {
-        Some(e) => e,
-        None => panic!(
-            "no task files in {async_dir:?} after async a2a_send; \
-             stdout={out:?} stderr={err:?}"
-        ),
-    };
-    let content = std::fs::read_to_string(latest.path()).expect("read task file");
-    let json: serde_json::Value = serde_json::from_str(&content).expect("task file is valid JSON");
-    let tool_name = json.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
-    assert_eq!(
-        tool_name, "a2a_send",
-        "latest task file {latest:?} has tool_name={tool_name:?}, expected a2a_send; \
-         full content: {content}",
-    );
-}
-
-/// `a2a_async.ps1` T3: async task eventually completes. Poll the
-/// worker session count for up to 30s; assert it increases.
-///
-/// **DEFERRED** — see [`a2a_async_not_wired`].
-#[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
-async fn a2a_async_t3_async_completion() {
-    if a2a_async_not_wired() {
-        return;
-    }
-    let Some(api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
-        return;
-    };
-
-    let cli = PekoCli::new();
-    let delegator = "a2a_async_t3_delegator";
-    let worker = "a2a_async_t3_worker";
-    write_a2a_agent(
-        cli.home(),
-        delegator,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write delegator");
-    write_a2a_agent(
-        cli.home(),
-        worker,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &["read_file"],
-    )
-    .expect("write worker");
-    write_sentinel_file(&cli, worker, "test_async.txt", "A2A_ASYNC_SECRET_99");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let before = worker_session_count(&cli, worker);
-
-    let prompt = format!(
-        "Use a2a_send with _async=true to send this message to agent \
-         '{worker}': Read the file test_async.txt. The task will run in \
-         the background; you'll get a receipt immediately. Reply with the \
-         task_id from the receipt. (needle=a2a_async_t3)"
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(60),
-    );
-    assert_ok(&out, &err, &status);
-
-    // Poll for up to 30s.
-    let mut after = before;
-    for _ in 0..15 {
-        std::thread::sleep(Duration::from_secs(2));
-        after = worker_session_count(&cli, worker);
-        if after > before {
-            break;
-        }
-    }
-    assert!(
-        after > before,
-        "async task did not complete in 30s: before={before} after={after}; \
-         stdout={out:?} stderr={err:?}",
-    );
-}
-
-/// `a2a_async.ps1` T4: caller annotation in async target session.
-/// Same assertion as `a2a_blocking_t4_caller_annotation` but for the
-/// async flow. Pass criteria: worker session history contains
-/// `[Message from agent: <delegator>]`.
-///
-/// **DEFERRED** — see [`a2a_async_not_wired`].
-#[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
-async fn a2a_async_t4_caller_annotation() {
-    if a2a_async_not_wired() {
-        return;
-    }
-    let Some(api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
-        return;
-    };
-
-    let cli = PekoCli::new();
-    let delegator = "a2a_async_t4_delegator";
-    let worker = "a2a_async_t4_worker";
-    write_a2a_agent(
-        cli.home(),
-        delegator,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write delegator");
-    write_a2a_agent(
-        cli.home(),
-        worker,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &["read_file"],
-    )
-    .expect("write worker");
-    write_sentinel_file(&cli, worker, "test_async.txt", "A2A_ASYNC_SECRET_99");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let prompt = format!(
-        "Use a2a_send with _async=true to send this message to agent \
-         '{worker}': Read the file test_async.txt. Reply with the receipt. \
-         (needle=a2a_async_t4)"
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(60),
-    );
-    assert_ok(&out, &err, &status);
-
-    // Wait briefly for the async task to complete + write history.
-    for _ in 0..15 {
-        if worker_session_count(&cli, worker) > 0 {
-            break;
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
-
-    let (delegator_name, history) = match worker_session_history(&cli, worker) {
-        Some(pair) => pair,
-        None => panic!("no worker session after async a2a_send; stdout={out:?} stderr={err:?}"),
-    };
-    let expected_marker = format!("[Message from agent: {delegator}]");
-    let history_arr = history
-        .get("history")
-        .and_then(|h| h.as_array())
-        .expect("history is an array");
-    let found = history_arr.iter().any(|entry| {
-        entry
-            .get("Message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-            .map(|s| s.contains(&expected_marker))
-            .unwrap_or(false)
-    });
-    assert!(
-        found,
-        "caller annotation {expected_marker:?} not found in worker session \
-         history (session_id={delegator_name}, {} entries)",
-        history_arr.len(),
-    );
-}
-
-// ---------------------------------------------------------------------------
 // a2a_isolation.ps1
 // ---------------------------------------------------------------------------
 
@@ -939,7 +604,7 @@ async fn a2a_isolation_t1_caller_a_session() {
     let (out, err, status) = run(
         &cli,
         &["send", caller_a, &prompt, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&out, &err, &status);
 
@@ -1017,7 +682,7 @@ async fn a2a_isolation_t2_caller_b_session() {
     let (out_a, err_a, status_a) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&out_a, &err_a, &status_a);
 
@@ -1031,7 +696,7 @@ async fn a2a_isolation_t2_caller_b_session() {
     let (out_b, err_b, status_b) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&out_b, &err_b, &status_b);
 
@@ -1102,7 +767,7 @@ async fn a2a_isolation_t3_peer_id_isolation() {
     let (_, err_a, status_a) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&prompt_a, &err_a, &status_a);
 
@@ -1115,7 +780,7 @@ async fn a2a_isolation_t3_peer_id_isolation() {
     let (out_b, err_b, status_b) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&out_b, &err_b, &status_b);
 
@@ -1215,7 +880,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
     let (out_a1, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a1, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&prompt_a1.as_str(), &err, &status);
 
@@ -1229,7 +894,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
     let (out_b, err, status) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&prompt_b.as_str(), &err, &status);
 
@@ -1262,7 +927,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
     let (out_a2, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a2, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&prompt_a2.as_str(), &err, &status);
 
@@ -1365,7 +1030,7 @@ async fn a2a_isolation_t5_message_counts() {
     let (out_a, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&prompt_a.as_str(), &err, &status);
 
@@ -1379,7 +1044,7 @@ async fn a2a_isolation_t5_message_counts() {
     let (out_b, err, status) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&prompt_b.as_str(), &err, &status);
 
@@ -1393,7 +1058,7 @@ async fn a2a_isolation_t5_message_counts() {
     let (out_a2, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a2, "--no-stream"],
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert_ok(&prompt_a2.as_str(), &err, &status);
 
