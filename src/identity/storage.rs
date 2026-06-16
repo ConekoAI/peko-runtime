@@ -71,8 +71,14 @@ impl KeyStorage {
     }
 
     /// Create new key storage with custom path
+    ///
+    /// Checks `PEKO_IDENTITY_PASSPHRASE` for headless fallback, same as `new()`.
     pub fn with_path(base_path: PathBuf) -> Result<Self> {
-        Self::with_path_and_passphrase(base_path, None)
+        let env_passphrase = std::env::var("PEKO_IDENTITY_PASSPHRASE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| SecretString::new(s.into()));
+        Self::with_path_and_passphrase(base_path, env_passphrase)
     }
 
     fn with_path_and_passphrase(base_path: PathBuf, passphrase: Option<SecretString>) -> Result<Self> {
