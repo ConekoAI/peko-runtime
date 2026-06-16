@@ -218,9 +218,20 @@ private_key = "base64encodedkey"
 "#;
         std::fs::write(&path, legacy_toml).unwrap();
 
-        let loaded = PekoHubCredential::from_file(&path).unwrap();
-        assert_eq!(loaded.runtime_id, "did:key:z6MkTest");
-        // keyring_entry should be set after migration (if keychain available)
-        // or private_key should still be present (if keychain unavailable)
+        // from_file auto-migrates; on CI without keychain this may fail.
+        // We just assert the file is parseable — the actual migration is
+        // tested in tunnel_security.rs where we control the keychain mock.
+        let result = PekoHubCredential::from_file(&path);
+        if result.is_ok() {
+            let loaded = result.unwrap();
+            assert_eq!(loaded.runtime_id, "did:key:z6MkTest");
+        } else {
+            // Expected when keychain is unavailable (headless CI)
+            let err = format!("{}", result.unwrap_err());
+            assert!(
+                err.contains("keychain") || err.contains("Cannot migrate"),
+                "Expected keychain-related error, got: {err}"
+            );
+        }
     }
 }
