@@ -99,11 +99,15 @@ fn ext_install_dir(cli: &PekoCli, ext_id: &str) -> PathBuf {
 /// `cargo test` runs with `CARGO_MANIFEST_DIR` pointing at the `peko-runtime/`
 /// crate root, regardless of the current working directory, so this is
 /// stable across platforms and CI runners.
+///
+/// Note: commit 0b363ae moved the PS1 e2e_tests tree to `e2e_tests_archive/`,
+/// but the extension fixtures (manifests, source files, scripts) still
+/// live there and are referenced by these tests, so we look them up there.
 fn fixture_dir(relative: &str) -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR is set by cargo for integration tests");
     PathBuf::from(manifest_dir)
-        .join("e2e_tests")
+        .join("e2e_tests_archive")
         .join("extensions")
         .join(relative)
 }
