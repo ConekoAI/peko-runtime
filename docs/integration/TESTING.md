@@ -106,7 +106,7 @@ The 5 files that exercise the hub directly — [packaging_integration.rs](../../
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
 - Integration: 143 tests across 21 files in `tests/`.
-- E2E PowerShell scripts in `e2e_tests/`: 58 total (45 live + 13 already under `_archive/`); outside CI, to be dismantled — see §7. The Phase B legs that have landed (`send/`, `session/`, `agent/`, `team/`, `config/`, `cron/`, `subagent/`, `tools/built-in/`, `compaction/{cli,extension}`, `extensions/`, `providers/`, `a2a/`) move the PS scripts into a "redundant" state but keep them on disk until Phase E finalizes the cleanup. Only `compaction_auto.ps1` (real-LLM tier), `compaction_all.ps1` (the meta-runner), and `a2a_async.ps1` (deferred — async not wired in production) are still pending.
+- E2E PowerShell scripts in `e2e_tests/`: 9 deferred scripts + 7 L2/L3 extension fixtures (see §7 Phase E for the list). The 41 redundant scripts and the legacy `_archive/` folder were deleted in Phase E.
 
 ---
 
@@ -222,7 +222,26 @@ Why no full OAuth flow is needed:
 
 ## 7. Migration Roadmap: `e2e_tests/` → `tests/`
 
-`peko-runtime/e2e_tests/` still holds 45 live PowerShell scripts that live outside CI, overlap heavily with `tests/*.rs`, and still reference a deleted Python mock. The end-goal is to dismantle the folder. Phases A and the cli_send / cli_session / cli_basics / cli_cron / cli_subagent / cli_extensions / cli_providers legs of Phase B have already landed; cli_a2a partially landed (9 tests, async deferred).
+The PS migration is now substantially complete. After **Phase E** lands, `e2e_tests/` holds only the 9 deferred scripts (3 meta-runners + 6 PS files that exercise features not yet wired in the Rust integration harness) and the 7 L2/L3 extension fixtures (under `e2e_tests/extensions/{mcp,skill,universal,gateway}/`). The 60 redundant scripts and the legacy `_archive/` folder were deleted.
+
+### Phase E — Final PS cleanup (✅ landed)
+
+41 PS scripts + 3 stale READMEs + the `_archive/` folder + 8 now-empty subdirectories were deleted. The remaining 9 PS scripts are the deferred ones the Phase B legs explicitly left in place:
+
+| Script | Why it stays |
+|---|---|
+| `e2e_tests/a2a/a2a_async.ps1` | `_async` is not yet exposed in the `a2a_send` tool schema. |
+| `e2e_tests/compaction/compaction_auto.ps1` | Real-LLM tier (auto-compactor needs the LLM to generate the summary text). |
+| `e2e_tests/compaction/compaction_all.ps1` | Meta-runner for `compaction_auto.ps1`. |
+| `e2e_tests/subagent/subagent_async.ps1` | Same `_async` gap as `a2a_async.ps1`. |
+| `e2e_tests/subagent/subagent_status_list.ps1` | Needs a `peko subagent list --json` CLI subcommand that dumps the in-process `AsyncTaskRegistry`. |
+| `e2e_tests/tools/tool_all.ps1` | Meta-runner for the 3 below. |
+| `e2e_tests/tools/tool_async.ps1` | Same `_async` gap. |
+| `e2e_tests/tools/tool_timeout.ps1` | Depends on the LLM reasoning about `_timeout`. Real-LLM tier. |
+| `e2e_tests/tools/tool_update_mid_session.ps1` | Tests ADR-019 mid-session enable/disable — a dedicated PR will add a daemon-level test that doesn't require LLM reasoning. |
+| `e2e_tests/reset.ps1` | Manual helper (stops the daemon, nukes `~/.peko`, rebuilds and restarts). Not a test, kept for local dev. |
+
+Plus the 7 extension L2/L3 fixture files (kept because the deferred PS scripts in `e2e_tests/extensions/{mcp,skill,universal,gateway}/` reference them) and the `e2e_tests/compaction/extensions/custom_compactor/manifest.yaml` Rust fixture (referenced from `tests/cli_compaction.rs::cli_compact_with_compaction_extension_installed`).
 
 ### Phase A — Delete redundant (✅ landed)
 

@@ -184,10 +184,12 @@ test-cli-subagent: docker-up
 
 # Built-in tools (shell / read_file / write_file / glob / grep /
 # str_replace_file) slice. All single-turn tests, all `#[serial]`
-# because they share the mock LLM's per-substring counter. Replaces
-# the mockable subset of `e2e_tests/tools/built-in/*.ps1`. See
-# docs/integration/TESTING.md §7 for the deferred list
-# (tool_async / tool_timeout / tool_update_mid_session).
+# because they share the mock LLM's per-substring counter. The
+# 6 `e2e_tests/tools/built-in/*.ps1` scripts that this slice
+# replaced were deleted in Phase E (see
+# docs/integration/TESTING.md §7). The 4 deferred
+# `e2e_tests/tools/tool_{async,timeout,update_mid_session,all}.ps1`
+# scripts stay in place — see TESTING.md for the deferred list.
 test-cli-tools: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_tools -- --include-ignored
@@ -196,21 +198,24 @@ test-cli-tools: docker-up
 # truncation-based (see src/compaction/cli.rs:75), so the compaction
 # itself doesn't need a real LLM — only the multi-turn setup phase
 # does, and that's scripted via mock-LLM tool_call sequences. All
-# `#[serial]`. See docs/integration/TESTING.md §7 for the deferred
-# `compaction_auto.ps1` (auto-compaction uses the LLM to generate the
-# summary text — real-LLM tier).
+# `#[serial]`. The 2 PS scripts that this slice replaced
+# (`compaction_cli.ps1` and `compaction_extension.ps1`) were
+# deleted in Phase E. The deferred `compaction_auto.ps1` and
+# `compaction_all.ps1` (meta-runner) stay in place — see
+# docs/integration/TESTING.md §7.
 test-cli-compaction: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_compaction -- --include-ignored
 
 # `peko ext install/list/info/enable/disable/uninstall` slice. All
 # `#[ignore]` (daemon required) but NOT `#[serial]` — none of these
-# tests drive the mock LLM. Replaces the L1 (lifecycle-only) subset
-# of `e2e_tests/extensions/*.ps1`; the L2 (start/stop/status) and
-# L3 (LLM-driven tool execution) tests stay deferred to a follow-up
-# because they require Python and/or Node runtimes in the test
-# environment. See docs/integration/TESTING.md §7 for the
-# extensions migration context.
+# tests drive the mock LLM. The L1 (lifecycle-only) PS scripts
+# that this slice replaced were deleted in Phase E. The L2
+# (start/stop/status) and L3 (LLM-driven tool execution) scripts
+# stay in `e2e_tests/extensions/{mcp,skill,universal,gateway}/` —
+# they need Python and/or Node runtimes in the test environment.
+# See docs/integration/TESTING.md §7 for the extensions migration
+# context.
 test-cli-extensions: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_extensions -- --include-ignored
