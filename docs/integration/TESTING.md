@@ -96,17 +96,17 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [scenarios/s3_agent_registry_roundtrip.rs](../../tests/scenarios/s3_agent_registry_roundtrip.rs) | 4 | 4 | mock LLM (Phase D slice 3: author `peko agent push` (carrying ext refs) → pekohub → collab `peko agent pull` → ext auto-pulled → chat; 4 round-trip scenarios incl. no-ext baseline, auto-pull, already-present, and bad-ext graceful failure) | Y |
 | [scenarios/s4_publish_running_agent_with_permission.rs](../../tests/scenarios/s4_publish_running_agent_with_permission.rs) | 3 | 3 | mock LLM (Phase D slice 4: owner runs agent behind tunnel → owner's chat → 200; pre-seeded permitted user → 200; ungranted user → 403; no `Authorization` header → 401; 3 ACL scenarios against pekohub's `canChat` at `pekohub/backend/src/services/instances.ts:339-345`) | Y |
 
-**Totals:** 127 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 143 in `tests/`.
+**Totals:** 133 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 149 in `tests/`.
 
 The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 10 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs), [cli_subagent.rs](../../tests/cli_subagent.rs), [cli_tools.rs](../../tests/cli_tools.rs), [cli_compaction.rs](../../tests/cli_compaction.rs), [cli_extensions.rs](../../tests/cli_extensions.rs), [cli_providers.rs](../../tests/cli_providers.rs), [cli_a2a.rs](../../tests/cli_a2a.rs) — note: `cli_compaction.rs` covers the full 6 PS scenarios + the extension test, `cli_extensions.rs` covers the L1 install/list/info/enable/disable/uninstall surface, `cli_providers.rs` covers the real-LLM minimax + kimi smoke flows, and `cli_a2a.rs` covers the real-LLM `a2a_send` blocking + async + isolation flows, see §7) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
-> **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L466) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
+> **Known issue:** [pekohub_integration::test_pekohub_search_api](../../tests/pekohub_integration.rs#L475) is double-blocked: needs PekoHub *and* has a null-hooks schema validation bug in the search response. Tracked, not blocked on this doc.
 
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 143 tests across 21 files in `tests/`.
-- E2E PowerShell scripts in `e2e_tests/`: 9 deferred scripts + 7 L2/L3 extension fixtures (see §7 Phase E for the list). The 41 redundant scripts and the legacy `_archive/` folder were deleted in Phase E.
+- Integration: 149 tests across 22 files in `tests/`.
+- E2E PowerShell scripts in `e2e_tests/`: 9 deferred scripts + 9 L2/L3 extension fixtures (see §7 Phase E for the list). The 41 redundant scripts and the legacy `_archive/` folder were deleted in Phase E.
 
 ---
 
@@ -222,7 +222,7 @@ Why no full OAuth flow is needed:
 
 ## 7. Migration Roadmap: `e2e_tests/` → `tests/`
 
-The PS migration is now substantially complete. After **Phase E** lands, `e2e_tests/` holds only the 9 deferred scripts (3 meta-runners + 6 PS files that exercise features not yet wired in the Rust integration harness) and the 7 L2/L3 extension fixtures (under `e2e_tests/extensions/{mcp,skill,universal,gateway}/`). The 60 redundant scripts and the legacy `_archive/` folder were deleted.
+The PS migration is now substantially complete. **Phase E** has landed (see below). `e2e_tests/` now holds only the 9 deferred scripts (3 meta-runners + 6 PS files that exercise features not yet wired in the Rust integration harness) and the 9 L2/L3 extension fixtures (under `e2e_tests/extensions/{mcp,skill,universal,gateway}/`). The 41 redundant scripts + 3 stale READMEs + the legacy `_archive/` folder + 8 now-empty subdirectories were deleted.
 
 ### Phase E — Final PS cleanup (✅ landed)
 
@@ -241,7 +241,7 @@ The PS migration is now substantially complete. After **Phase E** lands, `e2e_te
 | `e2e_tests/tools/tool_update_mid_session.ps1` | Tests ADR-019 mid-session enable/disable — a dedicated PR will add a daemon-level test that doesn't require LLM reasoning. |
 | `e2e_tests/reset.ps1` | Manual helper (stops the daemon, nukes `~/.peko`, rebuilds and restarts). Not a test, kept for local dev. |
 
-Plus the 7 extension L2/L3 fixture files (kept because the deferred PS scripts in `e2e_tests/extensions/{mcp,skill,universal,gateway}/` reference them) and the `e2e_tests/compaction/extensions/custom_compactor/manifest.yaml` Rust fixture (referenced from `tests/cli_compaction.rs::cli_compact_with_compaction_extension_installed`).
+Plus the 9 extension L2/L3 fixture files (kept because the deferred PS scripts in `e2e_tests/extensions/{mcp,skill,universal,gateway}/` reference them) and the `e2e_tests/compaction/extensions/custom_compactor/manifest.yaml` Rust fixture (referenced from `tests/cli_compaction.rs::cli_compact_with_compaction_extension_installed`).
 
 ### Phase A — Delete redundant (✅ landed)
 
@@ -309,7 +309,7 @@ The child-side file write assertions are real end-to-end reads: the test creates
 | `tool_timeout.ps1` | 1 test | Depends on the LLM reasoning about `_timeout: 3` semantics (the LLM has to choose to pass `_timeout: 3` to the `shell` tool). Real-LLM tier. |
 | `tool_update_mid_session.ps1` | 4 sub-tests | Tests ADR-019 mid-session `peko ext enable/disable --target` (the system-prompt / provider-tool-schema / dispatcher-allowed-set triad). The daemon-side enable/disable is a config-level test; the LLM-side reasoning is real-LLM tier. Better as a dedicated ADR-019 PR that exercises the mid-session plumbing directly without the LLM reasoning loop. |
 
-These four scripts stay in `e2e_tests/tools/` until those features are wired enough to mock. The 6 `built-in/*.ps1` files that this PR migrates stay in place (now redundant with `tests/cli_tools.rs`) and will be deleted in Phase E, consistent with how the `cron/`, `subagent/`, `agent/`, etc. migrations handled their now-redundant PS scripts.
+These four scripts stay in `e2e_tests/tools/` until those features are wired enough to mock. The 6 `built-in/*.ps1` files that this PR migrates were redundant with `tests/cli_tools.rs` and **were deleted in Phase E**, consistent with how the `cron/`, `subagent/`, `agent/`, etc. migrations handled their now-redundant PS scripts.
 
 **A non-obvious gotcha this migration (independently) re-confirmed:** the same per-agent `[extensions] enabled` whitelist gotcha from `cli_subagent.rs` applies to the 6 built-in tools. `write_builtin_agent` in `tests/cli_tools.rs` lists BOTH the bare tool names (`"shell"`, `"read_file"`, `"write_file"`, `"glob"`, `"grep"`, `"str_replace_file"`) AND the canonical `builtin:tool:…` IDs. Without both forms, the per-agent init drops the tool or the dispatcher marks it disabled, and the parent's `tool_call` returns `"Error: Tool 'write_file' is currently disabled..."`.
 
@@ -336,7 +336,7 @@ These four scripts stay in `e2e_tests/tools/` until those features are wired eno
 |---|---|
 | `compaction_auto.ps1` (all 6 sub-tests) | Auto-compaction uses the LLM to GENERATE the summary text (`src/compaction/mod.rs:462` — `compactor.compact(&messages, &provider)`). The mock can emit canned summary text, but auto-compaction is an internal agent-loop trigger that requires multi-turn real LLM use to actually reach the threshold. Real-LLM tier. |
 
-The auto-compactor's threshold-detection logic is unit-tested at the in-process layer (see `src/compaction/integration_tests.rs`); the missing CI coverage is the end-to-end agent-loop threshold trigger, which is intrinsically real-LLM tier. `compaction_auto.ps1` and the meta-runner `compaction_all.ps1` stay in place until Phase E, consistent with the other migrations.
+The auto-compactor's threshold-detection logic is unit-tested at the in-process layer (see `src/compaction/integration_tests.rs`); the missing CI coverage is the end-to-end agent-loop threshold trigger, which is intrinsically real-LLM tier. `compaction_auto.ps1` and the meta-runner `compaction_all.ps1` **stayed in place after Phase E** (real-LLM tier + its meta-runner); see the Phase E section at line 227.
 
 #### Phase B coverage gap — `e2e_tests/extensions/*.ps1` (L1 migrated, L2+L3 deferred)
 
@@ -367,7 +367,7 @@ L2 — background runtime start/stop/status/restart (5 PS sub-tests across gatew
 
 L3 — `peko send` tool execution via mock LLM (12+ PS sub-tests across mcp, universal-python, universal-node, skill, reserved-params-async). Blocked on the **runtime dependency** PLUS the LLM-driven multi-turn dialog (each sub-test scripts an N-turn `tool_call` → `tool_call` → `text <SENTINEL>` dialog in `MOCK_LLM_SCRIPT`). The `AsyncTaskRegistry` access from tests (for `reserved_params` async tests) needs a `peko ext status --json` test-only CLI subcommand that reads the in-process registry — same shape as the `peko subagent list --json` test-only CLI needed for `subagent_async.ps1`. The same subcommand can serve both.
 
-The 9 PS scripts stay in `e2e_tests/extensions/` until Phase E cleanup lands; the on-disk fixtures (`calculator-skill/SKILL.md`, `mcp_server.py`, `multi_file_calc/utils/`, `gateway.js`, `string_tool.js`, `identity_tool.js`, `slow_calculator.py`, `calculator_simple.py`) are reused by the Rust tests.
+The 9 PS scripts (now 9 fixture files under `e2e_tests/extensions/{mcp,skill,universal,gateway}/`) **stayed in place after Phase E** because they exercise L2/L3 features (start/stop/status, LLM-driven tool execution) that need Python and/or Node runtimes; the on-disk fixtures (`calculator-skill/SKILL.md`, `mcp_server.py`, `multi_file_calc/utils/`, `gateway.js`, `string_tool.js`, `identity_tool.js`, `slow_calculator.py`, `calculator_simple.py`) are reused by the Rust tests.
 
 #### Phase B coverage gap — `e2e_tests/providers/*.ps1` (migrated, real-LLM tier)
 
@@ -385,7 +385,7 @@ The 9 PS scripts stay in `e2e_tests/extensions/` until Phase E cleanup lands; th
 
 **CI plumbing:** the providers tests run under the `Integration (real LLM)` job in [.github/workflows/integration.yml](../../.github/workflows/integration.yml), which fires on nightly cron (`0 2 * * *`), manual `workflow_dispatch`, or commit messages containing `[llm]`. The workflow passes both `MINIMAX_API_KEY` and `KIMI_API_KEY` as `secrets.*` env, and the Makefile recipe unsets `MOCK_LLM_URL` so the dual-mode rule at [tunnel_e2e.rs:63-76](../../tests/tunnel_e2e.rs#L63-L76) (and our own `kimi_api_key()` / `minimax_api_key()` env checks) falls through to the real provider.
 
-The 2 PS scripts stay in `e2e_tests/providers/` until Phase E cleanup; they are now redundant with `tests/cli_providers.rs`.
+The 2 PS scripts (`e2e_tests/providers/kimi.ps1` and `minimax.ps1`) **were deleted in Phase E** — they were redundant with `tests/cli_providers.rs` (2 tests: `cli_providers_minimax_smoke` + `cli_providers_kimi_smoke`). The `e2e_tests/providers/` directory was removed entirely.
 
 #### Phase B coverage gap — `e2e_tests/a2a/*.ps1` (migrated, real-LLM tier, 2-LLM-call flows)
 
@@ -411,7 +411,7 @@ The 2 PS scripts stay in `e2e_tests/providers/` until Phase E cleanup; they are 
 
 **Why direct config.toml writes:** same as `cli_providers.rs` — `PekoCli::cmd()` removes `MINIMAX_API_KEY` from the daemon's env to safeguard mock-tier tests, so the tests bake the `api_key` into each agent's `config.toml` directly rather than going through the `peko auth set` + `peko agent create --provider minimax` flow.
 
-The 3 PS scripts stay in `e2e_tests/a2a/` until Phase E cleanup. `a2a_blocking.ps1` and `a2a_isolation.ps1` are now redundant with `tests/cli_a2a.rs`; `a2a_async.ps1` stays until the async path is wired.
+The 3 PS scripts that were originally here: 2 (`a2a_blocking.ps1` and `a2a_isolation.ps1`) **were deleted in Phase E** as redundant with `tests/cli_a2a.rs` (4 blocking + 5 isolation tests). The 3rd, `a2a_async.ps1`, **stayed in place after Phase E** because the async path is not yet wired in production (`a2a_send` tool schema doesn't expose `_async`). The `a2a_all.ps1` meta-runner was also deleted (no longer useful with 2 of its 3 children gone).
 
 **A non-obvious gotcha this migration uncovered (and worked around):** the daemon's `read_file` tool resolves relative paths against `<peko_dir>/data/workspaces/` (the **shared** workspaces root), not the per-agent subdir. The PS scripts write sentinel files to `$env:APPDATA/peko/workspaces/default/$worker/test_a2a.txt` (per-agent subdir) and rely on the lenient structural fallback ("the worker session was created, so a2a_send dispatched") — the actual `read_file` call in the PS scripts was *failing* (file not found at the resolved path) and the worker was responding with "I don't have access to the file". The Rust tests bake the sentinel into the **shared** workspaces root instead, so the worker's `read_file` actually finds the file. See [`tests/cli_tools.rs:108-115`](../../tests/cli_tools.rs#L108-L115) for the workspace-resolution explanation. Each test uses a unique file name (e.g. `test_a2a.txt` for the blocking test) so cross-test collisions don't occur.
 
@@ -492,12 +492,13 @@ triggers an `exposure_update`.
 > `tests/scenarios/` and are picked up by the same
 > `cargo test --test '*' -- --include-ignored` glob.
 
-### Phase E — Archive the folder
+### Phase E — Archive the folder (✅ superseded — see line 227)
 
-Once Phases A–D land:
-- Move any remaining one-off scripts into `e2e_tests/_archive/` (which already exists for legacy CAP tests), or delete outright.
-- Remove `e2e_tests/` from the path filters in `.github/workflows/integration.yml`.
-- Delete `e2e_tests/README.md` and the top-level `reset.ps1`.
+The original Phase E plan (the "Once Phases A–D land" bullets below) was the design doc for what Phase E would do. **Phase E has already landed** — see the Phase E section at line 227 above for the actual scope (41 PS scripts + 3 stale READMEs + the `_archive/` folder + 8 now-empty subdirectories were deleted; 9 deferred scripts + 9 L2/L3 extension fixtures + `reset.ps1` + the custom_compactor Rust fixture were kept). The bullets below are kept for historical context only.
+
+- ~~Move any remaining one-off scripts into `e2e_tests/_archive/` (which already exists for legacy CAP tests), or delete outright.~~ `_archive/` itself was deleted in Phase E.
+- ~~Remove `e2e_tests/` from the path filters in `.github/workflows/integration.yml`.~~ CI never referenced `e2e_tests/`; the workflow filters are scoped to `tests/`.
+- ~~Delete `e2e_tests/README.md` and the top-level `reset.ps1`.~~ `e2e_tests/README.md` was deleted; `reset.ps1` was kept (it's a manual helper, not a test).
 
 ---
 
@@ -527,6 +528,7 @@ test-integration:      docker-up && \
                                     --test s1_local_agent_with_extensions \
                                     --test s2_extension_registry_roundtrip \
                                     --test s3_agent_registry_roundtrip \
+                                    --test s4_publish_running_agent_with_permission \
                                     --test mock_llm_sequence \
                                     -- --include-ignored
 
@@ -543,7 +545,7 @@ test-all:              test && test-integration && test-integration-llm
 
 The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-cli-tools`, `test-cli-compaction`, `test-cli-extensions`, `test-cli-providers`, `test-cli-a2a`, `test-scenarios-s1` + `-s2` + `-s3` + `-s4` from §7 Phase D, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella. `test-cli-a2a` is a real-LLM tier slice (needs `MINIMAX_API_KEY`). The four `test-scenarios-sN` targets are mock-LLM tier.
 
-> **Why `--include-ignored`, not `--ignored`.** All 127 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 133 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 

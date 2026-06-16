@@ -67,7 +67,7 @@ Merge `src/image/` into `src/portable/`, creating a **single `.agent` format** t
 
 ### Neutral
 
-- **Mock registry is Python**: The test fixture is a FastAPI server in `e2e_tests/packaging/mock_registry/main.py`, not a Rust in-memory server. This is acceptable because it's test-only infrastructure.
+- **Mock registry is Python**: The test fixture ~~was~~ a FastAPI server in `e2e_tests/packaging/mock_registry/main.py`, not a Rust in-memory server. *(The mock_registry folder was deleted in Phase A; the Rust integration tests in `tests/pekohub_integration.rs` + `tests/registry_integration.rs` exercise the real pekohub fixture server in `pekohub/backend/tests/fixtures/server.ts` instead.)*
 
 ---
 
@@ -288,11 +288,14 @@ The registry protocol uses **JSON** as the manifest wire format (`RegistryManife
 
 ### Mock Registry Server
 
-A Python-based FastAPI mock registry server is provided for integration testing:
+A Python-based FastAPI mock registry server ~~was~~ provided for integration testing:
 
 ```bash
-python e2e_tests/packaging/mock_registry/main.py --port 18765
+# No longer present — the mock_registry folder was deleted in Phase A.
+# python e2e_tests/packaging/mock_registry/main.py --port 18765
 ```
+
+The Rust integration tests now exercise the real pekohub fixture server at `pekohub/backend/tests/fixtures/server.ts` instead, via the dual-mode `PekohubBackend::start()` harness in `tests/common/harness.rs`.
 
 ---
 

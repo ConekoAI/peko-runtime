@@ -78,7 +78,7 @@ The `e2e_tests/` directory contains PowerShell-based end-to-end tests covering:
 | ~~`agent build` CLI command~~ | ❌ **Removed per ADR-027** — replaced by `agent create` + `agent export` | N/A |
 | ~~No `run` CLI command~~ | ❌ Deferred to Phase 2 — no clear consumer for `peko agent run` | P2 |
 | ~~No `pull`/`push` CLI commands~~ | ✅ `peko agent push`/`pull` implemented with registry client | P0 |
-| ~~No mock registry server for testing~~ | ✅ Python FastAPI mock server at `e2e_tests/packaging/mock_registry/main.py` | P0 |
+| ~~No mock registry server for testing~~ | ✅ Python FastAPI mock server at `e2e_tests/packaging/mock_registry/main.py` *(folder deleted in Phase A; the real pekohub fixture server at `pekohub/backend/tests/fixtures/server.ts` is now used by `tests/pekohub_integration.rs` + `tests/registry_integration.rs`)* | P0 |
 | Base image inheritance declared but not resolved at build time | ❌ Deferred to Phase 2 — `base` field stays ignored | P2 |
 | ~~Team packages have no checksums or validation~~ | ✅ SHA-256 checksums computed on export, validated on import | P0 |
 | ~~No extension `.ext` package format~~ | ✅ `peko ext export <id> -o <file.ext>` creates valid `.ext` | P0 |
@@ -133,7 +133,7 @@ Unify the two existing packaging systems (`.agent` tar.gz in `src/portable/` and
 - [x] **PKG-015**: Pull MUST resolve tags, download layers, verify digests, and cache in `~/.peko/registry/`.
 - [x] **PKG-016**: Push MUST authenticate via bearer or basic auth, upload layers, and tag the manifest.
 - [x] **PKG-017**: Registry references MUST follow the format `host/path/to/image:tag`.
-- [x] **PKG-018**: A mock registry server MUST exist for testing registry client operations. *(Python FastAPI server at `e2e_tests/packaging/mock_registry/main.py`)*
+- [x] **PKG-018**: A mock registry server MUST exist for testing registry client operations. *(Originally a Python FastAPI server at `e2e_tests/packaging/mock_registry/main.py`; deleted in Phase A. The real pekohub fixture server at `pekohub/backend/tests/fixtures/server.ts` is now used by the Rust integration tests.)*
 
 ### 3.3 P1 — Should Have
 - [x] **PKG-019**: Build SHOULD print layer sizes, total size, and compression ratio. *(Implemented via `BuildProgress` callback with human-readable and `--json` output.)*

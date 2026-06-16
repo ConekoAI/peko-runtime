@@ -106,7 +106,7 @@ Unified packaging layer with content-addressable storage, registry push/pull, an
   - `TeamPackager` / `TeamUnpackager` — Export/import `.team` packages with SHA-256 checksums
   - `ExtensionPackager` / `ExtensionUnpackager` — Export/install `.ext` packages
 - **Registry client** — OCI-inspired HTTP push/pull with layer existence checks (HEAD)
-- **Mock registry server** — FastAPI-based mock for integration testing (`e2e_tests/mock_registry/`)
+- **Mock registry server** — FastAPI-based mock for integration testing ~~(`e2e_tests/mock_registry/`)~~ *(was `e2e_tests/packaging/mock_registry/main.py`; both deleted in Phase A. The Rust integration tests now exercise the real pekohub fixture server at `pekohub/backend/tests/fixtures/server.ts`.)*
 - **CLI commands**
   - `pekobot agent build <path> -t <tag>` — Build `.agent` from directory
   - `pekobot agent push <tag>` — Push to registry
