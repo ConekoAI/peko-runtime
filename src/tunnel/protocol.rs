@@ -107,6 +107,25 @@ pub enum TunnelMessage {
         signature: String,
     },
 
+    /// Server-issued nonce challenge after `RuntimeHello` is accepted
+    /// (pekohub issue #1). Runtime must sign and return via
+    /// `TunnelChallengeAck`. Replay protection is the server's job
+    /// (in-memory nonce store).
+    #[serde(rename = "tunnel_challenge", rename_all = "camelCase")]
+    TunnelChallenge {
+        /// Server-generated base64url nonce.
+        nonce: String,
+    },
+
+    /// Signed response to a `TunnelChallenge`.
+    #[serde(rename = "tunnel_challenge_ack", rename_all = "camelCase")]
+    TunnelChallengeAck {
+        /// The nonce from the matching `TunnelChallenge` (base64url).
+        nonce: String,
+        /// Ed25519 signature of `nonce` using the runtime's private key.
+        signature: String,
+    },
+
     /// Tunnel ready acknowledgement from PekoHub
     #[serde(rename = "tunnel_ready", rename_all = "camelCase")]
     TunnelReady {
@@ -226,6 +245,52 @@ mod tests {
                 assert_eq!(signature, "sig");
             }
             _ => panic!("Expected RuntimeHello"),
+        }
+    }
+
+    #[test]
+    fn test_tunnel_challenge_roundtrip() {
+        let msg = TunnelMessage::TunnelChallenge {
+            nonce: "cmFuZG9tLW5vbmNlLTMyYg".to_string(),
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        assert!(
+            json.contains("\"tunnel_challenge\""),
+            "Expected tunnel_challenge tag, got: {}",
+            json
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::TunnelChallenge { nonce } => {
+                assert_eq!(nonce, "cmFuZG9tLW5vbmNlLTMyYg");
+            }
+            _ => panic!("Expected TunnelChallenge"),
+        }
+    }
+
+    #[test]
+    fn test_tunnel_challenge_ack_roundtrip() {
+        let msg = TunnelMessage::TunnelChallengeAck {
+            nonce: "nonce-xyz".to_string(),
+            signature: "sig-abc".to_string(),
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        assert!(
+            json.contains("\"tunnel_challenge_ack\""),
+            "Expected tunnel_challenge_ack tag, got: {}",
+            json
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::TunnelChallengeAck { nonce, signature } => {
+                assert_eq!(nonce, "nonce-xyz");
+                assert_eq!(signature, "sig-abc");
+            }
+            _ => panic!("Expected TunnelChallengeAck"),
         }
     }
 

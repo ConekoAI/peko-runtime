@@ -188,30 +188,59 @@ impl TunnelClient {
             .map_err(TunnelError::WebSocket)?;
         debug!("Sent RuntimeHello");
 
-        // 2. Wait for TunnelReady
+        // 2. Wait for TunnelChallenge. PekoHub (issue #1) issues a
+        //    server-generated nonce after verifying the hello
+        //    signature + allowlist membership; we sign it and reply.
+        let challenge_msg = timeout(Duration::from_secs(10), read.next())
+            .await
+            .map_err(|_| TunnelError::AuthFailed("Timeout waiting for TunnelChallenge".to_string()))?
+            .ok_or(TunnelError::Closed)?
+            .map_err(TunnelError::WebSocket)?;
+
+        let challenge_nonce = match decode_tunnel_message(challenge_msg)? {
+            TunnelMessage::TunnelChallenge { nonce } => {
+                debug!("Received TunnelChallenge");
+                nonce
+            }
+            TunnelMessage::Disconnect { reason } => {
+                return Err(TunnelError::AuthFailed(format!(
+                    "PekoHub rejected connection: {reason}"
+                )));
+            }
+            other => {
+                return Err(TunnelError::AuthFailed(format!(
+                    "Expected TunnelChallenge, got: {:?}",
+                    other
+                )));
+            }
+        };
+
+        // 3. Sign the challenge nonce and send the ack. We use the
+        //    base64url nonce string as the signed payload — exactly
+        //    what the server verifies (server's verifyDidKeySignature
+        //    is text-mode over the same bytes).
+        let challenge_signature = self.sign_challenge(&challenge_nonce)?;
+        let ack = TunnelMessage::TunnelChallengeAck {
+            nonce: challenge_nonce,
+            signature: challenge_signature,
+        };
+        let ack_bytes = ack
+            .to_bytes()
+            .map_err(|e| TunnelError::AuthFailed(format!("Failed to serialize ack: {e}")))?;
+        write
+            .send(Message::Binary(ack_bytes))
+            .await
+            .map_err(TunnelError::WebSocket)?;
+        debug!("Sent TunnelChallengeAck");
+
+        // 4. Wait for TunnelReady
         let ready_msg = timeout(Duration::from_secs(10), read.next())
             .await
             .map_err(|_| TunnelError::AuthFailed("Timeout waiting for TunnelReady".to_string()))?
             .ok_or(TunnelError::Closed)?
             .map_err(TunnelError::WebSocket)?;
 
-        let ready = match ready_msg {
-            Message::Binary(bytes) => TunnelMessage::from_bytes(&bytes)
-                .map_err(|e| TunnelError::InvalidMessage(e.to_string()))?,
-            Message::Text(text) => TunnelMessage::from_bytes(text.as_bytes())
-                .map_err(|e| TunnelError::InvalidMessage(e.to_string()))?,
-            Message::Close(frame) => {
-                return Err(TunnelError::AuthFailed(format!(
-                    "Connection closed before auth: {:?}",
-                    frame
-                )));
-            }
-            _ => {
-                return Err(TunnelError::AuthFailed(
-                    "Unexpected message type during auth".to_string(),
-                ));
-            }
-        };
+        let ready = decode_tunnel_message(ready_msg)?;
 
         let heartbeat_interval = match ready {
             TunnelMessage::TunnelReady {
@@ -419,7 +448,9 @@ impl TunnelClient {
                     debug!("No request handler registered, dropping message");
                 }
             }
-            TunnelMessage::RuntimeHello { .. } => {
+            TunnelMessage::RuntimeHello { .. }
+            | TunnelMessage::TunnelChallenge { .. }
+            | TunnelMessage::TunnelChallengeAck { .. } => {
                 warn!("Unexpected control message received after auth");
             }
             TunnelMessage::TunnelReady { .. } => {
@@ -463,6 +494,27 @@ impl TunnelClient {
         })
     }
 
+    /// Sign a server-issued challenge nonce and return the base64
+    /// signature. The nonce is signed as its UTF-8 byte string,
+    /// matching how the server verifies it (text-mode
+    /// `verifyDidKeySignature(did, nonce, signature)`).
+    fn sign_challenge(&self, nonce: &str) -> Result<String, TunnelError> {
+        let private_key_bytes = BASE64
+            .decode(&self.credential.private_key)
+            .map_err(|e| TunnelError::AuthFailed(format!("Invalid private key: {e}")))?;
+        if private_key_bytes.len() != 32 {
+            return Err(TunnelError::AuthFailed(
+                "Private key must be 32 bytes".to_string(),
+            ));
+        }
+        let mut sk_array = [0u8; 32];
+        sk_array.copy_from_slice(&private_key_bytes);
+        let signing_key = SigningKey::from_bytes(&sk_array);
+
+        let signature = signing_key.sign(nonce.as_bytes());
+        Ok(BASE64.encode(signature.to_bytes()))
+    }
+
     /// Check if the tunnel is currently connected and authenticated
     pub async fn is_ready(&self) -> bool {
         self.state.read().await.ready
@@ -487,6 +539,27 @@ where
     tokio::spawn(client.run());
 
     handle
+}
+
+/// Decode a single WebSocket message into a `TunnelMessage`.
+///
+/// The tunnel carries messages as either `Binary` (JSON bytes) or
+/// `Text` frames; both are accepted for forward-compatibility.
+fn decode_tunnel_message(msg: Message) -> Result<TunnelMessage, TunnelError> {
+    match msg {
+        Message::Binary(bytes) => TunnelMessage::from_bytes(&bytes)
+            .map_err(|e| TunnelError::InvalidMessage(e.to_string())),
+        Message::Text(text) => TunnelMessage::from_bytes(text.as_bytes())
+            .map_err(|e| TunnelError::InvalidMessage(e.to_string())),
+        Message::Close(frame) => Err(TunnelError::AuthFailed(format!(
+            "Connection closed during auth: {:?}",
+            frame
+        ))),
+        other => Err(TunnelError::AuthFailed(format!(
+            "Unexpected message type during auth: {:?}",
+            other
+        ))),
+    }
 }
 
 #[cfg(test)]

@@ -110,6 +110,55 @@ async fn handle_tunnel_setup(
         }
     }
 
+    // Register this runtime's DID with PekoHub's allowlist before we
+    // save the credential. PekoHub's tunnel handshake (issue #1) now
+    // requires a row in the `runtimes` table or it will close the
+    // WebSocket with 1008. Registration is idempotent (`upsert`) so
+    // re-running setup is safe.
+    let register_url = format!("{}/v1/runtimes/register", http_url);
+    let register_resp = client
+        .post(&register_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&serde_json::json!({
+            "runtime_did": runtime_did,
+            "display_name": "peko-runtime",
+        }))
+        .send()
+        .await;
+    match register_resp {
+        Ok(r) if r.status().is_success() => {
+            println!("   Runtime registered with PekoHub allowlist.");
+        }
+        Ok(r) => {
+            // 4xx is fatal — PekoHub explicitly rejected the registration
+            // (e.g. API key lacks the right scope, or runtime DID is
+            // already owned by another user). 5xx is treated as a soft
+            // warning so setup still succeeds and the operator can
+            // retry registration manually.
+            if r.status().is_client_error() {
+                let status = r.status();
+                let body = r.text().await.unwrap_or_default();
+                anyhow::bail!(
+                    "PekoHub rejected runtime registration: HTTP {status}. {body}"
+                );
+            } else {
+                eprintln!(
+                    "   ⚠️  Runtime registration failed: HTTP {}. The credential was saved; \
+                     re-run `peko tunnel setup` once PekoHub is reachable to complete registration.",
+                    r.status()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "   ⚠️  Could not reach PekoHub to register the runtime: {}. \
+                 The credential was saved; re-run `peko tunnel setup` once PekoHub is reachable \
+                 to complete registration.",
+                e
+            );
+        }
+    }
+
     // Create credential
     let credential = crate::tunnel::PekoHubCredential {
         url: hub_url.clone(),
