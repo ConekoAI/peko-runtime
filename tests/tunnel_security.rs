@@ -1,46 +1,24 @@
 //! Tunnel Security Integration Tests (Issue #4)
 //!
-//! Tests that verify:
-//!   (a) `peko tunnel start` works with only a keychain entry (no on-disk identity dir)
-//!   (b) Deleting the on-disk identity dir does not break the tunnel
-//!   (c) An attacker reading `~/.peko/identity/` and `~/.peko/pekohub.toml` cannot recover the private key
+//! Tests that verify the local credential and identity storage layers:
+//!   (a) `pekohub.toml` never contains a raw private_key field
+//!   (b) Legacy credential files are parsed gracefully (migration may or may not
+//!       succeed depending on keychain availability)
+//!   (c) Identity files use keychain storage when available, or encrypted-file
+//!       fallback when `with_passphrase()` is used
+//!   (d) An attacker reading `~/.peko/identity/` and `~/.peko/pekohub.toml`
+//!       cannot recover the private key without the OS keychain or passphrase
 //!
 //! These tests do NOT require a PekoHub backend; they test the local credential
-//! and identity storage layers only.
+//! and identity storage layers only. They do NOT test the actual tunnel start
+//! flow (that is covered by higher-level acceptance tests).
 
-use std::path::Path;
-
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use ed25519_dalek::SigningKey;
-use rand::RngCore;
 use secrecy::SecretString;
 
 use pekobot::identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
 use pekobot::identity::storage::KeyStorage;
 use pekobot::identity::{DIDScope, Identity};
 use pekobot::tunnel::PekoHubCredential;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Generate a fresh runtime identity: returns `(did:key:…, signing_key)`.
-fn generate_runtime_identity() -> (String, SigningKey) {
-    let mut rng = rand::thread_rng();
-    let mut secret = [0u8; 32];
-    rng.fill_bytes(&mut secret);
-    let signing_key = SigningKey::from_bytes(&secret);
-    let public_key = signing_key.verifying_key();
-
-    let multicodec = [0xed, 0x01];
-    let mut prefixed = Vec::with_capacity(2 + 32);
-    prefixed.extend_from_slice(&multicodec);
-    prefixed.extend_from_slice(public_key.as_bytes());
-    let encoded = bs58::encode(&prefixed).into_string();
-    let did = format!("did:key:z{encoded}");
-
-    (did, signing_key)
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -80,8 +58,9 @@ private_key = "dGVzdC1rZXk="
 "#;
     std::fs::write(&path, legacy_toml).unwrap();
 
-    // Load should parse the legacy format (migration may or may not succeed
-    // depending on keychain availability, but parsing must not panic)
+    // Load should always parse the legacy format successfully.
+    // Migration may or may not succeed depending on keychain availability,
+    // but parsing must not panic.
     let loaded = PekoHubCredential::from_file(&path);
     assert!(
         loaded.is_ok(),
@@ -90,6 +69,22 @@ private_key = "dGVzdC1rZXk="
     );
     let cred = loaded.unwrap();
     assert_eq!(cred.runtime_id, "did:key:z6MkTest");
+
+    // If keychain is available, the private key should have been migrated
+    // into the keychain and the on-disk private_key field should be cleared.
+    // If keychain is unavailable, the private_key remains in memory from parsing.
+    let keychain_available = cred.keyring_entry.is_some();
+    if keychain_available {
+        assert!(
+            cred.private_key.is_none(),
+            "When keychain is available, private_key should be migrated to keychain"
+        );
+    } else {
+        assert!(
+            cred.private_key.is_some(),
+            "When keychain is unavailable, private_key should still be present"
+        );
+    }
 }
 
 #[test]
@@ -192,6 +187,22 @@ fn test_legacy_identity_auto_migration() {
         !json.contains("private_key"),
         "Migrated identity file must not contain plaintext private_key"
     );
+}
+
+#[test]
+fn test_headless_store_without_passphrase_fails() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage = KeyStorage::with_path(temp_dir.path().to_path_buf()).unwrap();
+    let result = storage.generate_identity(DIDScope::Local, Some("test"));
+    // If keychain is unavailable, this should fail with a clear error
+    if result.is_err() {
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("keychain") || err.contains("passphrase"),
+            "Expected keychain/passphrase error, got: {err}"
+        );
+    }
+    // If keychain IS available (local dev), the test passes trivially
 }
 
 #[test]

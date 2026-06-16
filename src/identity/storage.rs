@@ -10,9 +10,7 @@
 //! on first load.
 
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use rand::RngCore;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::fs;
 #[cfg(unix)]
@@ -65,11 +63,19 @@ impl KeyStorage {
     /// Create new key storage with default path
     pub fn new() -> Result<Self> {
         let base_path = Self::default_storage_path()?;
-        Self::with_path(base_path)
+        let env_passphrase = std::env::var("PEKO_IDENTITY_PASSPHRASE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| SecretString::new(s.into()));
+        Self::with_path_and_passphrase(base_path, env_passphrase)
     }
 
     /// Create new key storage with custom path
     pub fn with_path(base_path: PathBuf) -> Result<Self> {
+        Self::with_path_and_passphrase(base_path, None)
+    }
+
+    fn with_path_and_passphrase(base_path: PathBuf, passphrase: Option<SecretString>) -> Result<Self> {
         fs::create_dir_all(&base_path)
             .with_context(|| format!("Failed to create storage directory: {base_path:?}"))?;
 
@@ -81,46 +87,11 @@ impl KeyStorage {
                 .with_context(|| "Failed to set directory permissions")?;
         }
 
-        // If a sidecar passphrase was previously generated for this directory,
-        // load it so encrypted identities can be read back.
-        let sidecar_passphrase = Self::read_sidecar_passphrase(&base_path);
-
         info!("Key storage initialized at: {:?}", base_path);
         Ok(Self {
             base_path,
-            test_passphrase: sidecar_passphrase,
+            test_passphrase: passphrase,
         })
-    }
-
-    /// Read a previously-generated sidecar passphrase from the storage directory.
-    fn read_sidecar_passphrase(base_path: &Path) -> Option<SecretString> {
-        let sidecar = base_path.join(".peko_identity_passphrase");
-        match fs::read_to_string(&sidecar) {
-            Ok(p) if !p.is_empty() => Some(SecretString::new(p.into())),
-            _ => None,
-        }
-    }
-
-    /// Generate a random passphrase, write it to a sidecar file, and return it.
-    fn generate_sidecar_passphrase(&self) -> Result<SecretString> {
-        let mut random_bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut random_bytes);
-        let passphrase = SecretString::new(
-            BASE64.encode(&random_bytes).into()
-        );
-
-        let sidecar = self.base_path.join(".peko_identity_passphrase");
-        fs::write(&sidecar, passphrase.expose_secret())
-            .with_context(|| format!("Failed to write sidecar passphrase: {sidecar:?}"))?;
-
-        #[cfg(unix)]
-        {
-            let permissions = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&sidecar, permissions)
-                .with_context(|| "Failed to set sidecar file permissions")?;
-        }
-
-        Ok(passphrase)
     }
 
     /// Create new key storage with a passphrase for fallback encryption.
@@ -175,13 +146,10 @@ impl KeyStorage {
                 .store_key(&identity.did, &export.private_key)
                 .context("Failed to store key in OS keychain")?
         } else {
-            // Headless environment: generate a random passphrase, store in sidecar,
-            // and encrypt the key with it. This is self-contained and works on CI.
-            let passphrase = self.generate_sidecar_passphrase()
-                .context("Failed to generate sidecar passphrase for headless fallback")?;
-            let enc_path = self.encrypted_key_path(&identity.did);
-            EncryptedKeyStorage::store_key(&enc_path, &export.private_key, &passphrase)
-                .context("Failed to store key in encrypted file (headless fallback)")?
+            anyhow::bail!(
+                "OS keychain is unavailable and no passphrase was provided. \
+                 Set PEKO_IDENTITY_PASSPHRASE or use KeyStorage::with_passphrase() for headless environments."
+            );
         };
 
         let stored = StoredIdentity {
@@ -226,7 +194,7 @@ impl KeyStorage {
 
         // Try modern format first
         if let Ok(stored) = serde_json::from_str::<StoredIdentity>(&json) {
-            return self.load_from_stored(stored, did, &file_path);
+            return self.load_from_stored(stored, did);
         }
 
         // Fall back to legacy format and auto-migrate
@@ -246,7 +214,6 @@ impl KeyStorage {
         &self,
         stored: StoredIdentity,
         did: &str,
-        file_path: &Path,
     ) -> Result<Identity> {
         let private_key_b64 = match &stored.key_storage {
             KeyStorageRef::Keychain { service, account } => {
@@ -262,18 +229,12 @@ impl KeyStorage {
             }
             KeyStorageRef::EncryptedFile { file_name } => {
                 let enc_path = self.base_path.join(file_name);
-                let passphrase = if let Some(ref p) = self.test_passphrase {
-                    p.clone()
-                } else {
-                    // Try to read the sidecar passphrase generated by a previous store()
-                    let sidecar = self.base_path.join(".peko_identity_passphrase");
-                    let p = fs::read_to_string(&sidecar)
-                        .with_context(|| format!("Encrypted identity {did} requires a passphrase. \
-                         No sidecar passphrase found at {sidecar:?}. \
-                         Provide one via PEKO_IDENTITY_PASSPHRASE or use KeyStorage::with_passphrase()."))?;
-                    SecretString::new(p.into())
-                };
-                EncryptedKeyStorage::retrieve_key(&enc_path, &passphrase)
+                let passphrase = self.test_passphrase.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "Encrypted identity {did} requires a passphrase. \
+                         Set PEKO_IDENTITY_PASSPHRASE or use KeyStorage::with_passphrase()."
+                    ))?;
+                EncryptedKeyStorage::retrieve_key(&enc_path, passphrase)
                     .with_context(|| format!("Failed to decrypt key for {did}"))?
             }
             KeyStorageRef::Plaintext => {
@@ -289,15 +250,11 @@ impl KeyStorage {
 
         let document = serde_json::from_value(stored.document)?;
 
-        let mut identity = Identity {
+        let identity = Identity {
             did: stored.did,
             document,
             keypair: Some(keypair),
         };
-
-        // Update last used time
-        identity.document.updated = chrono::Utc::now().to_rfc3339();
-        self.store(&identity)?;
 
         debug!("Loaded identity: {}", identity.did);
         Ok(identity)
@@ -333,7 +290,8 @@ impl KeyStorage {
             last_used: chrono::Utc::now().to_rfc3339(),
         };
 
-        // 3. Best-effort secure overwrite of the old plaintext file
+        // 3. Best-effort overwrite of the old plaintext file (not a cryptographic wipe;
+        // wear-leveling, filesystem journals, and copy-on-write may leave traces).
         if let Ok(metadata) = fs::metadata(file_path) {
             let len = metadata.len() as usize;
             let zeros = vec![0u8; len];
@@ -414,11 +372,15 @@ impl KeyStorage {
                 match stored.key_storage {
                     KeyStorageRef::Keychain { service, account } => {
                         let keychain = KeychainStorage::with_service(service);
-                        let _ = keychain.delete_key(&account);
+                        if let Err(e) = keychain.delete_key(&account) {
+                            warn!("Failed to delete keychain entry for {account}: {e}");
+                        }
                     }
                     KeyStorageRef::EncryptedFile { file_name } => {
                         let enc_path = self.base_path.join(file_name);
-                        let _ = fs::remove_file(&enc_path);
+                        if let Err(e) = fs::remove_file(&enc_path) {
+                            warn!("Failed to delete encrypted key file {enc_path:?}: {e}");
+                        }
                     }
                     KeyStorageRef::Plaintext => {}
                 }

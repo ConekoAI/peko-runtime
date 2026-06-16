@@ -95,18 +95,15 @@ impl PekoHubCredential {
                 .store_key(&entry, &private_key)
                 .with_context(|| "Failed to store migrated key in OS keychain")?;
             info!("Migrated private key to OS keychain for {}", self.runtime_id);
+            self.keyring_entry = Some(entry);
+            self.private_key = None;
+            self.save_to_file(path)
+                .with_context(|| "Failed to rewrite credential file after migration")?;
         } else {
-            anyhow::bail!(
-                "Cannot migrate legacy credential: OS keychain is unavailable. \
-                 Please run `peko tunnel setup` again or ensure a keychain service is running."
-            );
+            // Keychain unavailable — put the private_key back and skip migration
+            warn!("OS keychain unavailable — skipping legacy credential migration for {}", self.runtime_id);
+            self.private_key = Some(private_key);
         }
-
-        self.keyring_entry = Some(entry);
-
-        // Rewrite the file without the raw key
-        self.save_to_file(path)
-            .with_context(|| "Failed to rewrite credential file after migration")?;
 
         Ok(())
     }
@@ -207,7 +204,6 @@ mod tests {
 
     #[test]
     fn test_legacy_credential_deserialization() {
-        // Verify that a legacy TOML with private_key can still be parsed
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("pekohub.toml");
 
@@ -218,20 +214,9 @@ private_key = "base64encodedkey"
 "#;
         std::fs::write(&path, legacy_toml).unwrap();
 
-        // from_file auto-migrates; on CI without keychain this may fail.
-        // We just assert the file is parseable — the actual migration is
-        // tested in tunnel_security.rs where we control the keychain mock.
-        let result = PekoHubCredential::from_file(&path);
-        if result.is_ok() {
-            let loaded = result.unwrap();
-            assert_eq!(loaded.runtime_id, "did:key:z6MkTest");
-        } else {
-            // Expected when keychain is unavailable (headless CI)
-            let err = format!("{}", result.unwrap_err());
-            assert!(
-                err.contains("keychain") || err.contains("Cannot migrate"),
-                "Expected keychain-related error, got: {err}"
-            );
-        }
+        let loaded = PekoHubCredential::from_file(&path).unwrap();
+        assert_eq!(loaded.runtime_id, "did:key:z6MkTest");
+        // private_key should still be present if keychain unavailable,
+        // or None if migration succeeded. Either is valid.
     }
 }
