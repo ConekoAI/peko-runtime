@@ -999,11 +999,13 @@ async fn cli_compact_with_compaction_extension_installed() {
 
     // Install the custom compactor extension from the on-disk
     // test fixture. The manifest lives at
-    // `e2e_tests/compaction/extensions/custom_compactor/manifest.yaml`
+    // `e2e_tests_archive/compaction/extensions/custom_compactor/manifest.yaml`
     // — `peko ext install` takes the directory path.
+    // (Note: previously `e2e_tests/...`; commit 0b363ae archived the
+    //  PS1 e2e_tests tree under `e2e_tests_archive/`.)
     let ext_dir = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/e2e_tests/compaction/extensions/custom_compactor"
+        "/e2e_tests_archive/compaction/extensions/custom_compactor"
     );
     let (out, err, status) = run(
         &cli,
