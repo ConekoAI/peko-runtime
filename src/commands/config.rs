@@ -148,13 +148,23 @@ pub async fn handle_config(
         ConfigCommands::Path => {
             let config_file = paths.config_dir.join("config.toml");
             if json {
-                println!(
-                    "{{\"config_dir\": \"{}\", \"data_dir\": \"{}\", \"cache_dir\": \"{}\", \"config_file\": \"{}\"}}",
-                    paths.config_dir.display(),
-                    paths.data_dir.display(),
-                    paths.cache_dir.display(),
-                    config_file.display(),
-                );
+                // Build a JSON value and use `serde_json::to_string` so
+                // path separators (Windows backslashes) and any other
+                // non-JSON-safe characters are correctly escaped. The
+                // previous implementation formatted paths directly into
+                // a JSON string template via `display()`, which on
+                // Windows emitted raw `\` bytes that are not valid
+                // JSON (e.g. `{"config_dir": "C:\Users\..."}` is a
+                // parse error at column 20). Surfaced by
+                // `tests/cli_basics.rs::config_path_json_output` and
+                // `Phase E` audit.
+                let value = serde_json::json!({
+                    "config_dir": paths.config_dir.to_string_lossy(),
+                    "data_dir": paths.data_dir.to_string_lossy(),
+                    "cache_dir": paths.cache_dir.to_string_lossy(),
+                    "config_file": config_file.to_string_lossy(),
+                });
+                println!("{}", serde_json::to_string(&value)?);
             } else {
                 println!("📁 Configuration Paths:");
                 println!("  Config dir: {}", paths.config_dir.display());
