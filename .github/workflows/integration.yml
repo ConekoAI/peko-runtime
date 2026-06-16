@@ -32,6 +32,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  PEKO_IDENTITY_PASSPHRASE: ci-test-passphrase-do-not-use-in-production
 
 jobs:
   # ── Tier 0: Unit tests (no Docker, no LLM) ──────────────────────────────

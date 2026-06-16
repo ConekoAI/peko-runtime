@@ -470,9 +470,13 @@ impl TunnelClient {
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = BASE64.encode(&nonce_bytes);
 
+        let private_key_b64 = self.credential
+            .resolve_private_key()
+            .map_err(|e| TunnelError::AuthFailed(format!("Failed to resolve private key: {e}")))?;
+
         // Decode private key
         let private_key_bytes = BASE64
-            .decode(&self.credential.private_key)
+            .decode(&private_key_b64)
             .map_err(|e| TunnelError::AuthFailed(format!("Invalid private key: {e}")))?;
         if private_key_bytes.len() != 32 {
             return Err(TunnelError::AuthFailed(
@@ -499,8 +503,12 @@ impl TunnelClient {
     /// matching how the server verifies it (text-mode
     /// `verifyDidKeySignature(did, nonce, signature)`).
     fn sign_challenge(&self, nonce: &str) -> Result<String, TunnelError> {
+        let private_key_b64 = self.credential
+            .resolve_private_key()
+            .map_err(|e| TunnelError::AuthFailed(format!("Failed to resolve private key: {e}")))?;
+
         let private_key_bytes = BASE64
-            .decode(&self.credential.private_key)
+            .decode(&private_key_b64)
             .map_err(|e| TunnelError::AuthFailed(format!("Invalid private key: {e}")))?;
         if private_key_bytes.len() != 32 {
             return Err(TunnelError::AuthFailed(
@@ -584,7 +592,8 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            private_key: BASE64.encode(&[0u8; 32]),
+            keyring_entry: None,
+            private_key: Some(BASE64.encode(&[0u8; 32])),
         };
         let client = TunnelClient::new(cred);
         assert!(!client.is_ready().await);

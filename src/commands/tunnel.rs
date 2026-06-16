@@ -3,6 +3,7 @@
 //! Provides CLI commands to start, stop, and check the status of the
 //! PekoHub tunnel connection.
 
+use anyhow::Context;
 use crate::commands::GlobalPaths;
 use crate::tunnel::{load_pekohub_credential, TunnelClient};
 use clap::Subcommand;
@@ -159,11 +160,26 @@ async fn handle_tunnel_setup(
         }
     }
 
-    // Create credential
+    // Store the private key in the OS keychain
+    let keychain = crate::identity::keychain::KeychainStorage::new();
+    if keychain.is_available() {
+        keychain
+            .store_key(&runtime_did, &BASE64.encode(private_key_bytes))
+            .context("Failed to store private key in OS keychain")?;
+        println!("   Private key stored securely in OS keychain.");
+    } else {
+        anyhow::bail!(
+            "OS keychain is unavailable. Cannot store the private key securely. \
+             Please ensure a keychain service is running (e.g., gnome-keyring on Linux)."
+        );
+    }
+
+    // Create credential (no raw private_key)
     let credential = crate::tunnel::PekoHubCredential {
         url: hub_url.clone(),
         runtime_id: runtime_did.clone(),
-        private_key: BASE64.encode(private_key_bytes),
+        keyring_entry: Some(runtime_did.clone()),
+        private_key: None,
     };
 
     // Save credential to file
