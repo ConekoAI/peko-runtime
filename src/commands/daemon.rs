@@ -43,6 +43,13 @@ pub enum DaemonCommands {
         /// Polling interval in seconds
         #[arg(short, long, default_value = "15")]
         interval: u64,
+        /// Maximum number of consecutive PekoHub tunnel reconnect attempts
+        /// before reporting degraded state. With default exponential
+        /// backoff (1/2/4/.../60s), 50 attempts ≈ 28 minutes of retries.
+        /// Set to a very large value (e.g. 4294967295) to disable the cap
+        /// and retry forever. See issue #8.
+        #[arg(long, default_value = "50")]
+        max_reconnect_attempts: u32,
     },
 
     /// Stop the daemon
@@ -64,6 +71,10 @@ pub enum DaemonCommands {
         /// Polling interval in seconds
         #[arg(short, long, default_value = "15")]
         interval: u64,
+        /// Maximum number of consecutive PekoHub tunnel reconnect attempts
+        /// before reporting degraded state (passed through to `start`).
+        #[arg(long, default_value = "50")]
+        max_reconnect_attempts: u32,
     },
 
     /// Trigger immediate cron check
@@ -82,6 +93,7 @@ pub async fn handle_daemon(
         DaemonCommands::Start {
             foreground,
             interval,
+            max_reconnect_attempts,
         } => {
             if service.is_daemon_running().await? {
                 println!("⚠️  Daemon is already running");
@@ -95,6 +107,7 @@ pub async fn handle_daemon(
                 data_dir: paths.data_dir.clone(),
                 enable_isolated_execution: true,
                 maintenance_interval: std::time::Duration::from_secs(3600),
+                max_reconnect_attempts,
             };
 
             if foreground {
@@ -112,7 +125,10 @@ pub async fn handle_daemon(
                 println!("   Data dir: {}", config.data_dir.display());
                 println!();
 
-                match service.spawn_daemon(interval).await {
+                match service
+                    .spawn_daemon_with(interval, max_reconnect_attempts)
+                    .await
+                {
                     Ok(_) => {
                         println!("✅ Daemon started successfully");
                         println!("   Check status: peko daemon status");
@@ -150,7 +166,10 @@ pub async fn handle_daemon(
             }
         }
         DaemonCommands::Status { json } => show_daemon_status(&service, json).await,
-        DaemonCommands::Restart { interval } => {
+        DaemonCommands::Restart {
+            interval,
+            max_reconnect_attempts,
+        } => {
             println!("🔄 Restarting daemon...");
 
             if service.is_daemon_running().await? {
@@ -162,7 +181,10 @@ pub async fn handle_daemon(
                 }
             }
 
-            match service.spawn_daemon(interval).await {
+            match service
+                .spawn_daemon_with(interval, max_reconnect_attempts)
+                .await
+            {
                 Ok(_) => {
                     println!("✅ Daemon restarted");
                     Ok(())
@@ -192,7 +214,7 @@ async fn show_daemon_status(service: &DaemonProcessService, json: bool) -> anyho
 
     if status.responding {
         if json {
-            let output = serde_json::json!({
+            let mut output = serde_json::json!({
                 "running": true,
                 "status": "ok",
                 "version": status.version,
@@ -200,6 +222,14 @@ async fn show_daemon_status(service: &DaemonProcessService, json: bool) -> anyho
                 "pid": status.pid.unwrap_or(0),
                 "ready": true,
             });
+            if let Some(t) = &status.tunnel {
+                output["tunnel"] = serde_json::json!({
+                    "state": t.state,
+                    "reconnect_attempts": t.reconnect_attempts,
+                    "last_error": t.last_error,
+                    "degraded": t.degraded,
+                });
+            }
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
             println!("📊 Daemon Status:");
@@ -212,6 +242,21 @@ async fn show_daemon_status(service: &DaemonProcessService, json: bool) -> anyho
             }
             if let Some(pid) = status.pid {
                 println!("  PID: {pid}");
+            }
+            if let Some(t) = &status.tunnel {
+                let emoji = match t.state.as_str() {
+                    "connected" => "✅",
+                    "disabled" => "➖",
+                    "degraded" => "⚠️ ",
+                    _ => "❌",
+                };
+                println!(
+                    "  Tunnel: {} {} (attempts: {})",
+                    emoji, t.state, t.reconnect_attempts
+                );
+                if let Some(err) = &t.last_error {
+                    println!("    Last error: {err}");
+                }
             }
         }
         return Ok(());
@@ -255,10 +300,14 @@ mod tests {
         let _cmd = DaemonCommands::Start {
             foreground: true,
             interval: 15,
+            max_reconnect_attempts: 50,
         };
         let _cmd = DaemonCommands::Stop { force: false };
         let _cmd = DaemonCommands::Status { json: true };
-        let _cmd = DaemonCommands::Restart { interval: 30 };
+        let _cmd = DaemonCommands::Restart {
+            interval: 30,
+            max_reconnect_attempts: 50,
+        };
         let _cmd = DaemonCommands::Check;
     }
 }

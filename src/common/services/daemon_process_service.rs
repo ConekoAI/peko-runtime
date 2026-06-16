@@ -37,6 +37,22 @@ pub struct DaemonStatus {
     pub ready: bool,
     /// Error message if the daemon is not responding but process exists
     pub error: Option<String>,
+    /// Tunnel health snapshot (issue #8). `None` if the daemon is not
+    /// responding to IPC.
+    pub tunnel: Option<TunnelStatusInfo>,
+}
+
+/// Tunnel health snapshot exposed in `peko daemon status --json` (issue #8).
+#[derive(Debug, Clone)]
+pub struct TunnelStatusInfo {
+    /// One of "disabled" | "connected" | "disconnected" | "degraded".
+    pub state: String,
+    /// Consecutive failed reconnect attempts (0 for connected/disabled).
+    pub reconnect_attempts: u32,
+    /// Last error message, if any.
+    pub last_error: Option<String>,
+    /// Whether the daemon is currently in degraded state.
+    pub degraded: bool,
 }
 
 /// Service for managing the daemon process lifecycle
@@ -133,17 +149,23 @@ impl DaemonProcessService {
     pub async fn get_daemon_status(&self) -> anyhow::Result<DaemonStatus> {
         let pid = self.read_pid();
 
-        // Try IPC first
+        // Try IPC first — issue #8: query the rich Status packet so we
+        // can include tunnel health (state, reconnect attempts, last_error)
+        // in the `peko daemon status --json` output.
         match ConnectionManager::try_connect().await {
             Ok(conn) => {
-                let ping = RequestPacket::Ping { request_id: 0 };
+                let ping = RequestPacket::Status { request_id: 0 };
                 if let Ok(bytes) = ping.to_bytes() {
                     if conn.send(&bytes).await.is_ok() {
                         let mut buf = vec![0u8; 65536];
                         if let Ok(len) = conn.recv_timeout(&mut buf, Duration::from_secs(2)).await {
-                            if let Ok(ResponsePacket::Pong {
+                            if let Ok(ResponsePacket::Status {
                                 uptime_secs,
                                 version,
+                                tunnel_state,
+                                tunnel_reconnect_attempts,
+                                tunnel_last_error,
+                                degraded,
                                 ..
                             }) = ResponsePacket::from_bytes(&buf[..len])
                             {
@@ -155,6 +177,12 @@ impl DaemonProcessService {
                                     pid,
                                     ready: true,
                                     error: None,
+                                    tunnel: Some(TunnelStatusInfo {
+                                        state: tunnel_state,
+                                        reconnect_attempts: tunnel_reconnect_attempts,
+                                        last_error: tunnel_last_error,
+                                        degraded,
+                                    }),
                                 });
                             }
                         }
@@ -175,6 +203,7 @@ impl DaemonProcessService {
                     pid: Some(pid),
                     ready: false,
                     error: Some(format!("daemon not responding (process {pid} exists)")),
+                    tunnel: None,
                 });
             }
         }
@@ -187,6 +216,7 @@ impl DaemonProcessService {
             pid: None,
             ready: false,
             error: None,
+            tunnel: None,
         })
     }
 
@@ -203,6 +233,17 @@ impl DaemonProcessService {
     /// Returns error if the daemon fails to spawn or does not become ready
     /// within the timeout.
     pub async fn spawn_daemon(&self, interval_secs: u64) -> anyhow::Result<Child> {
+        // Backwards-compatible wrapper: defaults to the runtime default cap.
+        self.spawn_daemon_with(interval_secs, crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS)
+            .await
+    }
+
+    /// Spawn the daemon with a configurable reconnect-attempt cap (issue #8).
+    pub async fn spawn_daemon_with(
+        &self,
+        interval_secs: u64,
+        max_reconnect_attempts: u32,
+    ) -> anyhow::Result<Child> {
         let exe_path = std::env::current_exe()?;
         let config_dir = self.resolver.config_dir().to_path_buf();
         let data_dir = self.resolver.data_dir().to_path_buf();
@@ -213,6 +254,8 @@ impl DaemonProcessService {
             .arg("--foreground")
             .arg("--interval")
             .arg(interval_secs.to_string())
+            .arg("--max-reconnect-attempts")
+            .arg(max_reconnect_attempts.to_string())
             .env("PEKO_CONFIG_DIR", &config_dir)
             .env("PEKO_DATA_DIR", &data_dir)
             .stdout(std::process::Stdio::null())
@@ -435,6 +478,7 @@ mod tests {
             pid: None,
             ready: false,
             error: None,
+            tunnel: None,
         };
         assert!(!status.responding);
         assert!(!status.process_exists);
@@ -448,6 +492,12 @@ mod tests {
             pid: Some(1234),
             ready: true,
             error: None,
+            tunnel: Some(TunnelStatusInfo {
+                state: "connected".to_string(),
+                reconnect_attempts: 0,
+                last_error: None,
+                degraded: false,
+            }),
         };
         assert!(status2.responding);
         assert!(status2.process_exists);

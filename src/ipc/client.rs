@@ -373,6 +373,18 @@ impl DaemonClient {
         }
     }
 
+    /// Comprehensive daemon status (issue #8). Returns uptime, version,
+    /// and tunnel health snapshot.
+    pub async fn status(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::Status { request_id };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Status stream closed unexpectedly"),
+        }
+    }
+
     // ── Auth management (ADR-034) ──
 
     /// Create an API key

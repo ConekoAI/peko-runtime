@@ -141,6 +141,22 @@ pub struct AppState {
 
     /// Tunnel dispatcher for instance lifecycle management
     tunnel_dispatcher: Arc<RwLock<Option<crate::tunnel::TunnelDispatcher>>>,
+
+    /// Number of consecutive tunnel reconnect attempts since last success.
+    /// Reset to 0 on each successful connection; used by `tunnel_health()`
+    /// to surface the `disconnected` state with a non-zero attempt count.
+    tunnel_attempts: Arc<RwLock<u32>>,
+
+    /// Last tunnel error message (set on each failed attempt; cleared on
+    /// successful connect). Surfaced via `tunnel_health()` and ultimately
+    /// `peko daemon status --json` (issue #8).
+    tunnel_last_error: Arc<RwLock<Option<String>>>,
+
+    /// Whether the tunnel client has hit its reconnect-attempt cap and
+    /// stopped retrying. Distinct from the daemon-wide `degraded` flag
+    /// (which can be set by extension failures etc.). Surfaced via
+    /// `TunnelHealth::Degraded` (issue #8).
+    tunnel_degraded: Arc<RwLock<bool>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -542,6 +558,9 @@ impl AppState {
             tunnel_cancel: Arc::new(RwLock::new(None)),
             tunnel_connected: Arc::new(RwLock::new(false)),
             tunnel_dispatcher: Arc::new(RwLock::new(None)),
+            tunnel_attempts: Arc::new(RwLock::new(0)),
+            tunnel_last_error: Arc::new(RwLock::new(None)),
+            tunnel_degraded: Arc::new(RwLock::new(false)),
         })
     }
 
@@ -797,10 +816,18 @@ impl AppState {
         self.lifecycle.active_count().await
     }
 
-    /// Start the PekoHub tunnel as a background task
+    /// Start the PekoHub tunnel as a background task.
     ///
-    /// Returns true if the tunnel was started, false if no credentials exist
-    pub async fn start_tunnel(&self) -> anyhow::Result<bool> {
+    /// `max_reconnect_attempts` caps how many consecutive reconnect attempts
+    /// the tunnel client will make before giving up and reporting degraded
+    /// state (issue #8). Use `crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS`
+    /// for the default.
+    ///
+    /// Returns true if the tunnel was started, false if no credentials exist.
+    pub async fn start_tunnel(
+        &self,
+        max_reconnect_attempts: u32,
+    ) -> anyhow::Result<bool> {
         use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
         use tracing::info;
 
@@ -823,7 +850,7 @@ impl AppState {
 
         let dispatcher_for_handler = dispatcher;
 
-        let mut client = TunnelClient::new(cred);
+        let mut client = TunnelClient::new_with(cred, max_reconnect_attempts);
         client.on_request(move |msg, handle| {
             let dispatcher = dispatcher_for_handler.clone();
             async move {
@@ -836,12 +863,79 @@ impl AppState {
             *connected = true;
         }
 
-        let connected_flag = self.tunnel_connected.clone();
+        // Clone the shared flags once each: one set is moved into the on_status
+        // closure, the other set is moved into the background spawn below.
+        let connected_for_cb = self.tunnel_connected.clone();
+        let attempts_for_cb = self.tunnel_attempts.clone();
+        let last_error_for_cb = self.tunnel_last_error.clone();
+        let degraded_for_cb = self.tunnel_degraded.clone();
+        let connected_for_task = self.tunnel_connected.clone();
+        let state_for_callback = self.clone();
+        client.on_status(move |update| {
+            let state = state_for_callback.clone();
+            let connected_flag = connected_for_cb.clone();
+            let attempts_flag = attempts_for_cb.clone();
+            let last_error_flag = last_error_for_cb.clone();
+            let degraded_flag = degraded_for_cb.clone();
+            async move {
+                use crate::tunnel::TunnelStatusUpdate;
+                match update {
+                    TunnelStatusUpdate::Connected => {
+                        if let Ok(mut g) = connected_flag.try_write() {
+                            *g = true;
+                        }
+                        if let Ok(mut g) = attempts_flag.try_write() {
+                            *g = 0;
+                        }
+                        if let Ok(mut g) = last_error_flag.try_write() {
+                            *g = None;
+                        }
+                        if let Ok(mut g) = degraded_flag.try_write() {
+                            *g = false;
+                        }
+                        state.mark_healthy().await;
+                    }
+                    TunnelStatusUpdate::Disconnected {
+                        attempts,
+                        last_error,
+                    } => {
+                        if let Ok(mut g) = connected_flag.try_write() {
+                            *g = false;
+                        }
+                        if let Ok(mut g) = attempts_flag.try_write() {
+                            *g = attempts;
+                        }
+                        if let Ok(mut g) = last_error_flag.try_write() {
+                            *g = Some(last_error);
+                        }
+                    }
+                    TunnelStatusUpdate::Degraded {
+                        attempts,
+                        last_error,
+                    } => {
+                        if let Ok(mut g) = connected_flag.try_write() {
+                            *g = false;
+                        }
+                        if let Ok(mut g) = attempts_flag.try_write() {
+                            *g = attempts;
+                        }
+                        if let Ok(mut g) = last_error_flag.try_write() {
+                            *g = Some(last_error);
+                        }
+                        if let Ok(mut g) = degraded_flag.try_write() {
+                            *g = true;
+                        }
+                        state.mark_degraded().await;
+                    }
+                }
+            }
+        });
+
         tokio::spawn(async move {
             info!("Starting PekoHub tunnel in background");
             client.run_cancellable(cancel).await;
             info!("PekoHub tunnel stopped");
-            let mut connected = connected_flag.write().await;
+            let mut connected = connected_for_task.write().await;
             *connected = false;
         });
 
@@ -871,12 +965,115 @@ impl AppState {
         *connected = false;
         let mut dispatcher = self.tunnel_dispatcher.write().await;
         *dispatcher = None;
+        // Clear degraded state — if the operator explicitly stopped the
+        // tunnel, the daemon is no longer "degraded", it's just "disabled".
+        let mut attempts = self.tunnel_attempts.write().await;
+        *attempts = 0;
+        let mut last_error = self.tunnel_last_error.write().await;
+        *last_error = None;
+        let mut degraded = self.tunnel_degraded.write().await;
+        *degraded = false;
+        self.mark_healthy().await;
     }
 
     /// Get the tunnel dispatcher if the tunnel is active
     pub async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {
         let dispatcher = self.tunnel_dispatcher.read().await;
         dispatcher.clone()
+    }
+
+    /// Get the running count of consecutive failed reconnect attempts.
+    /// Reset to 0 on each successful connect.
+    pub async fn tunnel_attempts(&self) -> u32 {
+        *self.tunnel_attempts.read().await
+    }
+
+    /// Get the last tunnel error message, if any.
+    pub async fn tunnel_last_error(&self) -> Option<String> {
+        self.tunnel_last_error.read().await.clone()
+    }
+
+    /// Compute a high-level `TunnelHealth` snapshot used by
+    /// `peko daemon status --json` (issue #8).
+    ///
+    /// Priority order (most-severe first):
+    /// 1. `Connected` — tunnel is up
+    /// 2. `Degraded`   — reconnect-attempt cap was hit; client stopped
+    /// 3. `Disconnected` — at least one connect attempt has failed
+    /// 4. `Disabled`    — never started (no credential / no attempts)
+    pub async fn tunnel_health(&self) -> TunnelHealth {
+        let connected = *self.tunnel_connected.read().await;
+        let attempts = *self.tunnel_attempts.read().await;
+        let last_error = self.tunnel_last_error.read().await.clone();
+        let tunnel_degraded = *self.tunnel_degraded.read().await;
+
+        if connected {
+            return TunnelHealth::Connected;
+        }
+        if tunnel_degraded {
+            return TunnelHealth::Degraded {
+                attempts,
+                last_error: last_error.unwrap_or_else(|| "reconnect cap exhausted".to_string()),
+            };
+        }
+        if attempts > 0 {
+            return TunnelHealth::Disconnected { attempts, last_error };
+        }
+        TunnelHealth::Disabled
+    }
+}
+
+/// High-level snapshot of PekoHub tunnel health, surfaced via
+/// `peko daemon status --json` (issue #8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TunnelHealth {
+    /// No PekoHub credentials on disk; tunnel is intentionally off.
+    Disabled,
+    /// WebSocket tunnel is established and authenticated.
+    Connected,
+    /// Tunnel is configured and started, but the latest connect attempt
+    /// failed; the client is still retrying (attempts < cap).
+    Disconnected {
+        attempts: u32,
+        last_error: Option<String>,
+    },
+    /// The reconnect-attempt cap was hit; the tunnel client has stopped
+    /// retrying. Operator must restart with `peko tunnel start` to retry.
+    Degraded {
+        attempts: u32,
+        last_error: String,
+    },
+}
+
+impl TunnelHealth {
+    /// String discriminator used in JSON output (`tunnel.state`).
+    #[must_use]
+    pub fn state_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Connected => "connected",
+            Self::Disconnected { .. } => "disconnected",
+            Self::Degraded { .. } => "degraded",
+        }
+    }
+
+    /// Reconnect attempt count (0 for `Disabled`/`Connected`).
+    #[must_use]
+    pub fn reconnect_attempts(&self) -> u32 {
+        match self {
+            Self::Disabled | Self::Connected => 0,
+            Self::Disconnected { attempts, .. } | Self::Degraded { attempts, .. } => *attempts,
+        }
+    }
+
+    /// Last tunnel error string (None for `Disabled`/`Connected`).
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Disabled | Self::Connected => None,
+            Self::Disconnected { last_error, .. } => last_error.as_deref(),
+            Self::Degraded { last_error, .. } => Some(last_error.as_str()),
+        }
     }
 }
 
@@ -1074,5 +1271,89 @@ mod tests {
             "Prompt doesn't mention shell"
         );
         assert!(prompt_text.contains("grep"), "Prompt doesn't mention grep");
+    }
+
+    // ── Issue #8: tunnel health surface tests ─────────────────────
+
+    #[tokio::test]
+    async fn test_tunnel_health_disabled_when_no_credential() {
+        // With no PekoHub credential on disk and the daemon never told to
+        // start the tunnel, `tunnel_health()` should report `Disabled`.
+        let state = create_test_state().await;
+        let health = state.tunnel_health().await;
+        assert_eq!(health, TunnelHealth::Disabled);
+        assert_eq!(health.state_str(), "disabled");
+        assert_eq!(health.reconnect_attempts(), 0);
+        assert_eq!(health.last_error(), None);
+    }
+
+    #[tokio::test]
+    async fn test_tunnel_health_degraded_after_cap() {
+        // Simulate the tunnel client hitting the reconnect cap without
+        // spinning up a real WebSocket: directly set the tracking fields
+        // (including `tunnel_degraded`) and verify `tunnel_health()`.
+        let state = create_test_state().await;
+
+        *state.tunnel_attempts.write().await = 50;
+        *state.tunnel_last_error.write().await =
+            Some("tunnel reconnect cap reached".to_string());
+        *state.tunnel_degraded.write().await = true;
+
+        let health = state.tunnel_health().await;
+        match &health {
+            TunnelHealth::Degraded {
+                attempts,
+                last_error,
+            } => {
+                assert_eq!(*attempts, 50);
+                assert!(last_error.contains("cap"));
+            }
+            other => panic!("expected Degraded, got {other:?}"),
+        }
+        assert_eq!(health.state_str(), "degraded");
+        assert_eq!(health.reconnect_attempts(), 50);
+    }
+
+    #[tokio::test]
+    async fn test_tunnel_health_disconnected_transient() {
+        // When the daemon is not degraded but we've recorded a failed
+        // attempt, `tunnel_health()` reports Disconnected (transient
+        // retry state, attempts < cap).
+        let state = create_test_state().await;
+        *state.tunnel_attempts.write().await = 3;
+        *state.tunnel_last_error.write().await =
+            Some("connection refused".to_string());
+
+        let health = state.tunnel_health().await;
+        match &health {
+            TunnelHealth::Disconnected {
+                attempts,
+                last_error,
+            } => {
+                assert_eq!(*attempts, 3);
+                assert_eq!(last_error.as_deref(), Some("connection refused"));
+            }
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        assert_eq!(health.state_str(), "disconnected");
+        assert_eq!(health.reconnect_attempts(), 3);
+        assert_eq!(health.last_error(), Some("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn test_stop_tunnel_clears_degraded_and_errors() {
+        // After `stop_tunnel()` the daemon should no longer be degraded
+        // (operator explicitly disabled it), and attempts/last_error
+        // should be reset so `tunnel_health()` reports Disabled.
+        let state = create_test_state().await;
+        state.mark_degraded().await;
+        *state.tunnel_attempts.write().await = 50;
+        *state.tunnel_last_error.write().await = Some("boom".to_string());
+
+        state.stop_tunnel().await;
+
+        assert!(!state.is_degraded().await);
+        assert_eq!(state.tunnel_attempts().await, 0);
+        assert_eq!(state.tunnel_last_error().await, None);
     }
 }

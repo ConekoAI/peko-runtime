@@ -10,7 +10,7 @@ pub mod dispatcher;
 pub mod protocol;
 
 pub use backoff::ExponentialBackoff;
-pub use client::{TunnelClient, TunnelHandle};
+pub use client::{TunnelClient, TunnelHandle, TunnelStatusUpdate, DEFAULT_MAX_RECONNECT_ATTEMPTS};
 pub use credential::{load_pekohub_credential, PekoHubCredential};
 pub use dispatcher::TunnelDispatcher;
 pub use protocol::TunnelMessage;

@@ -40,6 +40,10 @@ pub struct DaemonConfig {
     pub enable_isolated_execution: bool,
     /// Session maintenance interval (0 to disable)
     pub maintenance_interval: Duration,
+    /// Maximum number of consecutive PekoHub tunnel reconnect attempts
+    /// before the tunnel client stops retrying and reports degraded state.
+    /// Issue #8: defaults to 50 (~28 minutes with exponential backoff).
+    pub max_reconnect_attempts: u32,
 }
 
 impl Default for DaemonConfig {
@@ -55,6 +59,7 @@ impl Default for DaemonConfig {
             data_dir,
             enable_isolated_execution: true,
             maintenance_interval: Duration::from_secs(3600), // 1 hour default
+            max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
         }
     }
 }
@@ -208,8 +213,11 @@ impl Daemon {
         info!("✅ Daemon ready to accept requests");
 
         // Start PekoHub tunnel if credentials exist (ADR-035)
-        match app_state.start_tunnel().await {
-            Ok(true) => info!("🌐 PekoHub tunnel started in background"),
+        match app_state.start_tunnel(self.config.max_reconnect_attempts).await {
+            Ok(true) => info!(
+                "🌐 PekoHub tunnel started in background (max_reconnect_attempts={})",
+                self.config.max_reconnect_attempts
+            ),
             Ok(false) => info!("📡 No PekoHub credentials found; tunnel not started"),
             Err(e) => warn!("Failed to start PekoHub tunnel: {}", e),
         }
@@ -394,6 +402,7 @@ mod tests {
             data_dir: tmp.path().join("data"),
             enable_isolated_execution: false,
             maintenance_interval: Duration::from_secs(60),
+            max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
         };
 
         let daemon = Daemon::new(config).unwrap();
