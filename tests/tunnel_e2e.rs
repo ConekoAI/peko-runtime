@@ -224,7 +224,8 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let cred = pekobot::tunnel::PekoHubCredential {
         url: backend.ws_url.clone(),
         runtime_id: did.clone(),
-        private_key: BASE64.encode(signing_key.to_bytes()),
+        keyring_entry: None,
+        private_key: Some(BASE64.encode(signing_key.to_bytes())),
     };
     cred.save_to_file(&cred_path).expect("Failed to save credentials");
 

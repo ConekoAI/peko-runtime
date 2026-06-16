@@ -251,7 +251,8 @@ fn write_pekohub_credential(
     let cred = pekobot::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
-        private_key: BASE64.encode(signing_key.to_bytes()),
+        keyring_entry: None,
+        private_key: Some(BASE64.encode(signing_key.to_bytes())),
     };
     let path = cli.peko_dir().join("pekohub.toml");
     cred.save_to_file(&path).expect("save pekohub.toml");
