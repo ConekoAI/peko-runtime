@@ -30,7 +30,70 @@ use pekobot::tunnel::protocol::{
 mod common;
 use common::{generate_jwt, generate_runtime_identity, sign_nonce, PekohubBackend};
 
+/// Pre-seed a `runtimes` row so PekoHub's allowlist (issue #1)
+/// admits the handshake. The test backend's `/test/create-user`
+/// requires `owner_id`, so we create a throwaway user with a
+/// unique namespace and then point the runtime at it. Idempotent
+/// — re-running with the same DID returns success on the second
+/// call (the create-runtime endpoint is plain INSERT, so we
+/// ignore non-2xx here, which is fine for tests).
+async fn seed_runtime_for_test(backend_url: &str, did: &str) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+
+    // Create a throwaway user
+    let user_namespace = format!(
+        "tunnelseed-{}",
+        did.trim_start_matches("did:key:z").chars().take(12).collect::<String>()
+    );
+    let user_resp = client
+        .post(format!("{}/test/create-user", backend_url))
+        .json(&serde_json::json!({
+            "external_id": format!("seed-{did}"),
+            "provider": "github",
+            "namespace": user_namespace,
+            "display_name": "Tunnel Seed User",
+            "email": "seed@test.com"
+        }))
+        .send()
+        .await
+        .expect("Failed to create seed user");
+    assert!(user_resp.status().is_success(), "Seed user creation failed");
+    let user_body: serde_json::Value = user_resp.json().await.unwrap();
+    let user_id = user_body["id"].as_i64().expect("No user id") as i32;
+
+    // Pre-seed the runtime. The endpoint is a plain INSERT so a
+    // re-seed returns 500; we treat that as success.
+    let resp = client
+        .post(format!("{}/test/create-runtime", backend_url))
+        .json(&serde_json::json!({
+            "runtime_did": did,
+            "owner_id": user_id,
+            "display_name": "Seeded Test Runtime"
+        }))
+        .send()
+        .await
+        .expect("Failed to call create-runtime");
+    let status = resp.status();
+    if !status.is_success() && status.as_u16() != 500 {
+        panic!("create-runtime failed unexpectedly: {status}");
+    }
+}
+
 /// Authenticate a tunnel connection and return the WebSocket split.
+///
+/// Drives the full 3-step handshake (pekohub issue #1):
+///   1. send `RuntimeHello` with a runtime-picked nonce
+///   2. read the server-issued `TunnelChallenge` and reply with a
+///      signed `TunnelChallengeAck`
+///   3. read the server's `TunnelReady`
+///
+/// NOTE: callers MUST have already inserted a `runtimes` row for the
+/// given DID (via `/test/create-runtime`) — the server-side allowlist
+/// closes the socket with 1008 if the runtime is unknown.
 async fn authenticate_tunnel(
     ws_url: &str,
     did: &str,
@@ -49,6 +112,7 @@ async fn authenticate_tunnel(
         .expect("Failed to connect to tunnel endpoint");
     let (mut write, mut read) = ws_stream.split();
 
+    // 1. RuntimeHello
     let mut nonce_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = BASE64.encode(&nonce_bytes);
@@ -64,6 +128,37 @@ async fn authenticate_tunnel(
         .await
         .expect("Failed to send RuntimeHello");
 
+    // 2. Wait for the server's challenge
+    let challenge_msg = timeout(Duration::from_secs(5), read.next())
+        .await
+        .expect("Timeout waiting for TunnelChallenge")
+        .expect("WebSocket closed before TunnelChallenge")
+        .expect("WebSocket error");
+    let challenge_nonce = match challenge_msg {
+        Message::Binary(bytes) => TunnelMessage::from_bytes(&bytes).unwrap(),
+        Message::Text(text) => TunnelMessage::from_bytes(text.as_bytes()).unwrap(),
+        other => panic!("Expected Binary or Text for challenge, got: {:?}", other),
+    };
+    let challenge_nonce = match challenge_nonce {
+        TunnelMessage::TunnelChallenge { nonce } => nonce,
+        TunnelMessage::Disconnect { reason } => {
+            panic!("Tunnel rejected connection: {reason}");
+        }
+        other => panic!("Expected TunnelChallenge, got: {:?}", other),
+    };
+
+    // 3. Sign the challenge nonce and send the ack
+    let challenge_signature = sign_nonce(signing_key, &challenge_nonce);
+    let ack = TunnelMessage::TunnelChallengeAck {
+        nonce: challenge_nonce,
+        signature: challenge_signature,
+    };
+    write
+        .send(Message::Binary(ack.to_bytes().unwrap()))
+        .await
+        .expect("Failed to send TunnelChallengeAck");
+
+    // 4. Wait for TunnelReady
     let ready_msg = timeout(Duration::from_secs(5), read.next())
         .await
         .expect("Timeout waiting for TunnelReady")
@@ -98,6 +193,7 @@ async fn authenticate_tunnel(
 async fn test_tunnel_handshake_and_heartbeat() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
+    seed_runtime_for_test(&backend.url, &did).await;
 
     let (mut write, mut read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
 
@@ -320,6 +416,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
 async fn test_tunnel_proxied_request_response() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
+    seed_runtime_for_test(&backend.url, &did).await;
 
     let (mut write, mut read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
 
@@ -375,6 +472,7 @@ async fn test_tunnel_proxied_request_response() {
 async fn test_tunnel_streaming_chunks_survive() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
+    seed_runtime_for_test(&backend.url, &did).await;
 
     let (mut write, mut read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
 
