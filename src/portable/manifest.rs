@@ -203,7 +203,20 @@ impl AgentManifest {
     pub fn add_file(&mut self, path: impl Into<String>, data: &[u8]) {
         let path = path.into();
         let checksum = Self::compute_checksum(data);
-        self.packaging.files.push(path.clone());
+        // Maintain `packaging.files` in sorted order on every insert.
+        // This is required for signature determinism (issue #14):
+        // the packager signs the manifest, then [`crate::portable::registry::AgentRegistry::export_package`]
+        // re-serializes the manifest after a registry round-trip and
+        // it sorts the file list — if the original bytes were in
+        // insertion order, the re-serialized bytes would differ and
+        // signature verification would fail. Keeping the list sorted
+        // at all times makes both paths produce identical bytes.
+        let pos = self
+            .packaging
+            .files
+            .binary_search(&path)
+            .unwrap_or_else(|e| e);
+        self.packaging.files.insert(pos, path.clone());
         // BTreeMap insert — see [`PackagingMetadata::checksums`] for
         // why we need sorted keys (signature determinism).
         self.packaging.checksums.insert(path, checksum);

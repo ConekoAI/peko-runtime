@@ -40,15 +40,34 @@ per-author trust assumption would be silently broken — the headline
   though the unpackager returns a `SignatureError` directly for richer
   error reasons rather than going through `ValidationError`.
 
-**Surfaces a real determinism bug:** `packaging.checksums` was
-`HashMap<String, String>`. HashMap iteration order is randomized per
-instance, so the packager and a round-tripped manifest could serialize
-the checksums table in different orders, producing different bytes
-for the same manifest and breaking signature verification spuriously.
-Both `AgentManifest::PackagingMetadata` and
-`TeamPackagingMetadata` are now `BTreeMap<String, String>` (sorted by
-key) so the canonical signed bytes are stable across the serde
-round-trip. On-disk wire format is unchanged.
+**Surfaces two related determinism bugs** (both real, both caught
+by the new tests; both fixed in the same change so the signature
+gate is actually usable end-to-end):
+
+- `packaging.checksums` was `HashMap<String, String>`. HashMap
+  iteration order is randomized per instance, so the packager and
+  a round-tripped manifest could serialize the checksums table in
+  different orders, producing different bytes for the same manifest
+  and breaking signature verification spuriously. Both
+  `AgentManifest::PackagingMetadata` and `TeamPackagingMetadata`
+  are now `BTreeMap<String, String>` (sorted by key) so the
+  canonical signed bytes are stable across the serde round-trip.
+  On-disk wire format is unchanged.
+
+- `packaging.files` (a `Vec<String>`) was being appended to in
+  insertion order by `AgentManifest::add_file` (called by
+  `Packager::export_identity`, `export_config`, `export_skills`,
+  `export_workspace`, `export_sessions`). On the round-trip through
+  the registry, `AgentRegistry::export_package` re-builds the file
+  list from the layer storage and `.sort()`s it. The two paths
+  produced different bytes — the packager's signed bytes had the
+  file list in insertion order, the registry's re-serialized bytes
+  had it sorted — and signature verification failed after any
+  push→pull cycle. `add_file` now keeps `packaging.files` sorted
+  at all times via `binary_search` + `insert`, so both paths
+  produce identical bytes. New regression test
+  `manifest_round_trip_produces_identical_bytes` exercises the
+  full serde round-trip and asserts byte equality.
 
 - New tests in `tests/cli_agent_signature.rs` (7 tests, all passing):
   - green: signed manifest imports successfully

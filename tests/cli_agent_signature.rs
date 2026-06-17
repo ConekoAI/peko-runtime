@@ -374,6 +374,58 @@ async fn allow_unsigned_permits_unsigned_import() {
 }
 
 #[test]
+fn manifest_round_trip_produces_identical_bytes() {
+    // Issue #14 surfaced a real determinism bug: the packager signs
+    // `packaging.files` in insertion order, but
+    // `AgentRegistry::export_package` rebuilds the manifest on pull
+    // and sorts the file list. If the two sides disagree on the
+    // field order, the signed bytes from the original export do
+    // not match the re-serialized bytes on import, and signature
+    // verification fails spuriously. This test exercises the
+    // serde round-trip that both the packager (sign-then-write) and
+    // the registry (load-then-rebuild-then-write) perform, and
+    // asserts the bytes are byte-identical.
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) =
+        build_file_contents(&signer, &did_doc);
+    let manifest_bytes = build_signed_manifest_pinned(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
+
+    // Round-trip: parse the signed manifest back from TOML, then
+    // re-serialize. This is what the registry does on
+    // `get_manifest_by_tag` followed by `manifest.to_toml()` in
+    // `export_package`.
+    let parsed: AgentManifest = AgentManifest::from_toml(
+        std::str::from_utf8(&manifest_bytes).expect("manifest utf-8"),
+    )
+    .expect("parse signed manifest");
+    let roundtripped = parsed.to_toml().expect("re-serialize");
+
+    // Strip the manifest.toml trailing newline the TOML writer
+    // may or may not emit, then compare. The signature is over
+    // the canonical reconstruction (which always has a trailing
+    // newline), so we normalize.
+    let normalize = |mut b: Vec<u8>| -> Vec<u8> {
+        while b.last() == Some(&b'\n') {
+            b.pop();
+        }
+        b.push(b'\n');
+        b
+    };
+    assert_eq!(
+        normalize(manifest_bytes.clone()),
+        normalize(roundtripped.into_bytes()),
+        "signed manifest must round-trip byte-identically through serde"
+    );
+}
+
+#[test]
 fn manifest_signing_is_byte_stable() {
     // Regression guard: if `toml::to_string_pretty` ever stops being
     // deterministic in a way that affects our reconstructed signing
