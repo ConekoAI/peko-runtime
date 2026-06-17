@@ -1196,9 +1196,14 @@ impl IpcServer {
                 file_path,
                 name,
                 team: _team,
+                allow_unsigned,
             } => {
                 let service = state.agent_mgmt_service();
-                let opts = crate::common::types::agent::AgentImportOptions { name, force: false };
+                let opts = crate::common::types::agent::AgentImportOptions {
+                    name,
+                    force: false,
+                    allow_unsigned,
+                };
                 match service
                     .import_agent(std::path::Path::new(&file_path), opts)
                     .await
@@ -2553,6 +2558,10 @@ impl IpcServer {
                                 let import_opts = crate::common::types::agent::AgentImportOptions {
                                     name: None,
                                     force,
+                                    // Registry pull path does not surface the
+                                    // unsigned opt-in to the CLI; default to
+                                    // false (secure by default).
+                                    allow_unsigned: false,
                                 };
 
                                 match service.import_agent(&temp_path, import_opts).await {

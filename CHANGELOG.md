@@ -4,6 +4,61 @@ All notable changes to Pekobot.
 
 ## [Unreleased]
 
+### Fixed (issue #14) — manifest signature verification on import
+
+**`.agent` signature is now verified on unpack.** The packager has always
+signed the manifest with the agent's ed25519 DID key on write
+(`Packager::sign_manifest` at `src/portable/packager.rs:492`), but the
+unpackager never called any verify function on read. A tampered `.agent`
+from a registry or mirror would import successfully and the runtime's
+per-author trust assumption would be silently broken — the headline
+"secure portable agent" claim was false. This change closes the gap.
+
+- New `src/portable/signature.rs` module with
+  `verify_manifest_signature(manifest_bytes, did_doc_bytes, allow_unsigned)`.
+  Verifies the ed25519 signature in `signatures.manifest` against the
+  public key embedded in the package's `identity/did.json`, using the
+  same canonical byte reconstruction the packager signs
+  (manifest with `signatures.manifest = ""` and `signatures.algorithm = "ed25519"`,
+  re-serialized via `to_toml`).
+- `Unpackager::import_from_files` now calls signature verification
+  *unconditionally* — before `validate_package` — and returns the
+  stable error code `[signature_verification_failed]` (with the
+  `SignatureError` reason in the message) on failure.
+- `--force` no longer bypasses signature verification. Signature is a
+  security guarantee, not a format check, and was previously lumped in
+  with `validation.is_valid()` under the same `--force` umbrella.
+- New `--allow-unsigned-agent` opt-in flag (default `false`) on
+  `peko agent import` and `peko agent pull` for users pulling from a
+  source they don't fully trust. An *unsigned* package is permitted
+  only with this flag; a *badly signed* package is always rejected.
+  The flag is `allow_unsigned: bool` on `ImportOptions` /
+  `TeamImportOptions` / `AgentImportOptions` and is also threaded
+  through the daemon IPC `RequestPacket::AgentImport { allow_unsigned }`.
+- The `InvalidSignature` and `DidResolutionFailed` variants in
+  `src/portable/validation.rs` are no longer dead code paths conceptually,
+  though the unpackager returns a `SignatureError` directly for richer
+  error reasons rather than going through `ValidationError`.
+
+**Surfaces a real determinism bug:** `packaging.checksums` was
+`HashMap<String, String>`. HashMap iteration order is randomized per
+instance, so the packager and a round-tripped manifest could serialize
+the checksums table in different orders, producing different bytes
+for the same manifest and breaking signature verification spuriously.
+Both `AgentManifest::PackagingMetadata` and
+`TeamPackagingMetadata` are now `BTreeMap<String, String>` (sorted by
+key) so the canonical signed bytes are stable across the serde
+round-trip. On-disk wire format is unchanged.
+
+- New tests in `tests/cli_agent_signature.rs` (7 tests, all passing):
+  - green: signed manifest imports successfully
+  - red: tampered manifest byte fails with `signature_verification_failed`
+  - red: stripped signature fails (no silent fallback to "unsigned")
+  - red: wrong-key signature fails (signed by A, DID doc claims B's key)
+  - red: `--force` does NOT bypass signature
+  - green: `--allow-unsigned-agent` permits unsigned import
+  - byte-stability regression guard pinning `created_at`
+
 ### Fixed (issue #8)
 
 **Tunnel reconnect cap and degraded-state surfacing.** Previously, when

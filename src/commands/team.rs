@@ -1484,6 +1484,9 @@ async fn import_agent_from_files(
         skip_validation: false,
         force: true,
         team: Some(team_name.to_string()),
+        // Reconstructed agents from a team import do not surface the
+        // unsigned opt-in; default to false (secure by default).
+        allow_unsigned: false,
     };
 
     let result = unpackager.import_from_files(files, agent_opts).await?;

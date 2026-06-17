@@ -424,6 +424,12 @@ pub enum RequestPacket {
         file_path: String,
         name: Option<String>,
         team: Option<String>,
+        /// Allow importing an unsigned `.agent` package (issue #14).
+        /// Defaults to `false` on the wire for backward compatibility —
+        /// existing CLI clients that pre-date the flag won't accidentally
+        /// opt in.
+        #[serde(default)]
+        allow_unsigned: bool,
     },
 
     /// Export a team
@@ -3181,6 +3187,7 @@ mod tests {
             file_path: "/tmp/export.zip".to_string(),
             name: Some("renamed-agent".to_string()),
             team: Some("default".to_string()),
+            allow_unsigned: true,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3190,11 +3197,13 @@ mod tests {
                 file_path,
                 name,
                 team,
+                allow_unsigned,
             } => {
                 assert_eq!(request_id, 1201);
                 assert_eq!(file_path, "/tmp/export.zip");
                 assert_eq!(name, Some("renamed-agent".to_string()));
                 assert_eq!(team, Some("default".to_string()));
+                assert!(allow_unsigned);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3263,6 +3272,7 @@ mod tests {
             file_path: "/tmp/x.zip".to_string(),
             name: None,
             team: None,
+            allow_unsigned: false,
         };
         assert_eq!(req_import.request_id(), 2);
     }

@@ -221,6 +221,10 @@ async fn test_team_import_with_checksum_validation() {
         import_mcp: false,
         rotate_keys: false,
         force: false,
+        // Issue #14: signature verification is now enforced. Packages
+        // built by the canonical TeamPackager are signed (one per
+        // agent), so this stays at the secure default.
+        allow_unsigned: false,
     };
 
     let result = import_team_with_base_dir(&package_path, &import_base, import_options)

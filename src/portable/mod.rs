@@ -48,6 +48,7 @@ pub mod crypto;
 pub mod manifest;
 pub mod packager;
 pub mod registry;
+pub mod signature;
 pub mod team_layer_builder;
 pub mod team_layer_reconstructor;
 pub mod team_packager;

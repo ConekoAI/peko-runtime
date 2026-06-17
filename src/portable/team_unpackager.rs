@@ -24,6 +24,9 @@ pub struct TeamImportOptions {
     pub rotate_keys: bool,
     /// Force import even if team exists
     pub force: bool,
+    /// Allow importing unsigned agent packages (issue #14).
+    /// See [`crate::portable::ImportOptions::allow_unsigned`].
+    pub allow_unsigned: bool,
 }
 
 impl Default for TeamImportOptions {
@@ -35,6 +38,7 @@ impl Default for TeamImportOptions {
             import_mcp: true,
             rotate_keys: true,
             force: false,
+            allow_unsigned: false,
         }
     }
 }
@@ -285,6 +289,7 @@ impl TeamUnpackager {
             skip_validation: false,
             force: options.force,
             team: Some(team_name.to_string()),
+            allow_unsigned: options.allow_unsigned,
         };
 
         let result = unpackager

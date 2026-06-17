@@ -667,6 +667,9 @@ impl TeamService {
             import_mcp: true,
             rotate_keys,
             force: true,
+            // `peko team import` does not surface the unsigned opt-in
+            // to the CLI; default to false (secure by default).
+            allow_unsigned: false,
         };
 
         let config_dir = self.resolver.config_dir();

@@ -257,6 +257,7 @@ pub async fn handle_agent_import(
     file_path: String,
     name: Option<String>,
     team: Option<String>,
+    allow_unsigned_agent: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
     let packet = crate::ipc::RequestPacket::AgentImport {
@@ -264,6 +265,7 @@ pub async fn handle_agent_import(
         file_path: file_path.clone(),
         name,
         team,
+        allow_unsigned: allow_unsigned_agent,
     };
     let response = client.request_response(packet).await?;
 
@@ -851,6 +853,7 @@ pub async fn handle_agent_pull(
     force: bool,
     json: bool,
     cli_registry: Option<&str>,
+    allow_unsigned_agent: bool,
 ) -> anyhow::Result<()> {
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
@@ -1011,6 +1014,7 @@ pub async fn handle_agent_pull(
     let import_opts = AgentImportOptions {
         name: None, // Use manifest name from package
         force,
+        allow_unsigned: allow_unsigned_agent,
     };
     let result = service.import_agent(&temp_path, import_opts).await?;
 

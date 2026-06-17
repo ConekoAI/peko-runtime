@@ -289,9 +289,12 @@ impl AgentRegistry {
             }
         }
 
-        // Update manifest packaging metadata with actual files and checksums
+        // Update manifest packaging metadata with actual files and checksums.
+        // The map must be a BTreeMap for signature determinism (issue #14)
+        // — see [`PackagingMetadata::checksums`].
         let mut packaging_files = Vec::new();
-        let mut packaging_checksums = HashMap::new();
+        let mut packaging_checksums: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         for (path, content) in &files {
             packaging_files.push(path.clone());
             packaging_checksums.insert(path.clone(), AgentManifest::compute_checksum(content));

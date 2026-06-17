@@ -785,6 +785,7 @@ impl AgentService {
             skip_validation: false,
             force: opts.force,
             team: None, // New layout: no team
+            allow_unsigned: opts.allow_unsigned,
         };
 
         // Create unpackager with the config dir as base directory.

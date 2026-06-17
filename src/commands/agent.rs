@@ -114,6 +114,12 @@ pub enum AgentCommands {
         /// Target team for imported agent
         #[arg(short, long)]
         team: Option<String>,
+        /// Allow importing an unsigned `.agent` package (issue #14).
+        /// When set, packages with no signature are imported with a
+        /// warning. A package with an *invalid* signature is still
+        /// rejected.
+        #[arg(long)]
+        allow_unsigned_agent: bool,
     },
 
     /// Inspect .agent package without importing
@@ -149,6 +155,10 @@ pub enum AgentCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Allow importing an unsigned `.agent` package (issue #14).
+        /// Has no effect when `--output` is set (download only).
+        #[arg(long)]
+        allow_unsigned_agent: bool,
     },
 
     /// Manage agent configuration
@@ -261,8 +271,13 @@ pub async fn handle_agent(
             include_sessions,
             with_extensions,
         } => handlers::handle_agent_export(paths, name, team, output, include_sessions, with_extensions).await,
-        AgentCommands::Import { file, name, team } => {
-            handlers::handle_agent_import(paths, file, name, team).await
+        AgentCommands::Import {
+            file,
+            name,
+            team,
+            allow_unsigned_agent,
+        } => {
+            handlers::handle_agent_import(paths, file, name, team, allow_unsigned_agent).await
         }
         AgentCommands::Inspect { file } => handlers::handle_agent_inspect(file, json).await,
         AgentCommands::Push {
@@ -279,6 +294,7 @@ pub async fn handle_agent(
             team,
             force,
             json,
+            allow_unsigned_agent,
         } => {
             handlers::handle_agent_pull(
                 paths,
@@ -288,6 +304,7 @@ pub async fn handle_agent(
                 force,
                 json,
                 cli_registry,
+                allow_unsigned_agent,
             )
             .await
         }
