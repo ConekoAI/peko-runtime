@@ -88,6 +88,7 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [cli_tools.rs](../../tests/cli_tools.rs) | 6 | 6 | PekoHub + mock LLM (single-turn, §3 Sequence, `#[serial]`) | Y |
 | [cli_compaction.rs](../../tests/cli_compaction.rs) | 8 | 8 | PekoHub + mock LLM (multi-turn setup + `--dry-run --json` shape; T1 smoke + T1 multi + T2 actual + T3 cache + T4 usable + T5 custom-instruction + T6 incremental + extension hook, all `#[serial]`) | Y |
 | [cli_extensions.rs](../../tests/cli_extensions.rs) | 10 | 10 | PekoHub + mock LLM (L1 install/list/info/enable/disable/uninstall lifecycle, NOT `#[serial]` — no LLM use) | Y |
+| [cli_extensions_l3.rs](../../tests/cli_extensions_l3.rs) | 2 | 2 | mock LLM + Python (`MOCK_LLM_URL` + `PEKO_TEST_PYTHON=1`; L3 LLM-driven tool dispatch for MCP + universal — closes [#15](https://github.com/ConekoAI/peko-runtime/issues/15); `#[serial]`) | Y |
 | [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) | 6 | 6 | mock LLM (sequence feature, §3) | Y |
 | [cli_providers.rs](../../tests/cli_providers.rs) | 2 | 2 | real LLM (minimax + kimi smoke; needs `MINIMAX_API_KEY` / `KIMI_API_KEY`; tests early-return when unset so mock tier still passes) | Y |
 | [cli_a2a.rs](../../tests/cli_a2a.rs) | 9 | 9 | real LLM (`a2a_send` blocking + isolation flows; needs `MINIMAX_API_KEY`; 2-LLM-call flows; tests early-return when unset so mock tier still passes) | Y |
@@ -96,7 +97,7 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [scenarios/s3_agent_registry_roundtrip.rs](../../tests/scenarios/s3_agent_registry_roundtrip.rs) | 4 | 4 | mock LLM (Phase D slice 3: author `peko agent push` (carrying ext refs) → pekohub → collab `peko agent pull` → ext auto-pulled → chat; 4 round-trip scenarios incl. no-ext baseline, auto-pull, already-present, and bad-ext graceful failure) | Y |
 | [scenarios/s4_publish_running_agent_with_permission.rs](../../tests/scenarios/s4_publish_running_agent_with_permission.rs) | 3 | 3 | mock LLM (Phase D slice 4: owner runs agent behind tunnel → owner's chat → 200; pre-seeded permitted user → 200; ungranted user → 403; no `Authorization` header → 401; 3 ACL scenarios against pekohub's `canChat` at `pekohub/backend/src/services/instances.ts:339-345`) | Y |
 
-**Totals:** 133 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 149 in `tests/`.
+**Totals:** 135 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 151 in `tests/`.
 
 The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 10 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs), [cli_subagent.rs](../../tests/cli_subagent.rs), [cli_tools.rs](../../tests/cli_tools.rs), [cli_compaction.rs](../../tests/cli_compaction.rs), [cli_extensions.rs](../../tests/cli_extensions.rs), [cli_providers.rs](../../tests/cli_providers.rs), [cli_a2a.rs](../../tests/cli_a2a.rs) — note: `cli_compaction.rs` covers the full 6 PS scenarios + the extension test, `cli_extensions.rs` covers the L1 install/list/info/enable/disable/uninstall surface, `cli_providers.rs` covers the real-LLM minimax + kimi smoke flows, and `cli_a2a.rs` covers the real-LLM `a2a_send` blocking + async + isolation flows, see §7) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
@@ -367,7 +368,51 @@ L2 — background runtime start/stop/status/restart (5 PS sub-tests across gatew
 
 L3 — `peko send` tool execution via mock LLM (12+ PS sub-tests across mcp, universal-python, universal-node, skill, reserved-params-async). Blocked on the **runtime dependency** PLUS the LLM-driven multi-turn dialog (each sub-test scripts an N-turn `tool_call` → `tool_call` → `text <SENTINEL>` dialog in `MOCK_LLM_SCRIPT`). The `AsyncTaskRegistry` access from tests (for `reserved_params` async tests) needs a `peko ext status --json` test-only CLI subcommand that reads the in-process registry — same shape as the `peko subagent list --json` test-only CLI needed for `subagent_async.ps1`. The same subcommand can serve both.
 
+**L3 partial delivery (issue #15):** [`tests/cli_extensions_l3.rs`](../../tests/cli_extensions_l3.rs) ships 2 of the L3 sub-tests in this deferred bucket — the highest-impact ones for the "install an MCP server / universal tool, the LLM uses it" product claim:
+
+| Rust test | Maps to PS sub-test | What it asserts |
+|---|---|---|
+| `ext_mcp_standard_echo_roundtrip` | `mcp/python/standard/test.ps1` (L3 part) | Install the Tier-1 `standard-echo` MCP server from `e2e_tests_archive/extensions/mcp/python/standard/`, script a 2-turn `tool_call(mcp:standard-echo:echo, …) → text("ECHO_DONE …")` dialog via `MOCK_LLM_SCRIPT`, run `peko send`, assert the LLM's final text contains both the sentinel AND the echoed message (the second assertion can only pass if the runtime actually dispatched the call to the MCP adapter and fed the result back to the LLM) |
+| `ext_universal_calculator_simple_roundtrip` | `universal/python/simple/test.ps1` (L3 part) | Install `calculator_simple` from `e2e_tests_archive/extensions/universal/python/simple/`, script a 2-turn `tool_call(calculator_simple, 7+13) → text("CALC_DONE …")` dialog, run `peko send`, assert the LLM's final text contains the deterministic sum `20` returned by the python tool |
+
+Both tests are gated on `MOCK_LLM_URL` (mock LLM container) and `PEKO_TEST_PYTHON=1` (Python runtime for the fixtures), `#[ignore] #[serial]`. The `PEKO_TEST_PYTHON=1` env var follows the same early-return shape as `MOCK_LLM_URL` — see the L3 contract in §3.5 below.
+
+**L3 still deferred (follow-up PRs):** universal-node, skill adapter (`calculator-skill` / `SKILL.md`), `reserved_params_async` flows, multi-tool-turn dialogs (e.g. `mcp → text → mcp`). The same `PEKO_TEST_PYTHON=1` / `PEKO_TEST_NODE=1` gating convention extends to those.
+
 The 9 PS scripts (now 9 fixture files under `e2e_tests/extensions/{mcp,skill,universal,gateway}/`) **stayed in place after Phase E** because they exercise L2/L3 features (start/stop/status, LLM-driven tool execution) that need Python and/or Node runtimes; the on-disk fixtures (`calculator-skill/SKILL.md`, `mcp_server.py`, `multi_file_calc/utils/`, `gateway.js`, `string_tool.js`, `identity_tool.js`, `slow_calculator.py`, `calculator_simple.py`) are reused by the Rust tests.
+
+#### §3.5 L3 test contract (LLM-driven tool execution)
+
+L3 tests assert the runtime's headline product claim: an LLM can call an installed extension (MCP / universal / built-in), the runtime dispatches the call, and the result is fed back to the LLM. The L3 path is:
+
+```
+LLM (mock) → agentic_loop (src/engine/agentic_loop.rs:421-602)
+            → invoke_hook(ToolExecute) (src/extension/core/registry.rs:185-205)
+            → adapter handler (McpToolExecuteHandler / UniversalToolExecuteHandler / builtin)
+            → extension process (MCP server / python tool / builtin)
+            → tool result back through async_router
+            → tool message in session
+            → next LLM turn
+```
+
+The test shape is:
+
+1. **Gate on `MOCK_LLM_URL`** — same early-return as every `cli_*.rs` test.
+2. **Gate on `PEKO_TEST_PYTHON=1`** if the fixture is Python. The convention is parallel to `MOCK_LLM_URL`: when unset (or set to anything other than `"1"`), the test prints a `eprintln!("PEKO_TEST_PYTHON not set; skipping")` and returns. This lets `cargo test` pass on runners without Python on `PATH` while still running the test under the docker-compose integration stack (which sets both `MOCK_LLM_URL` and `PEKO_TEST_PYTHON=1`).
+3. **Script a multi-turn `MOCK_LLM_SCRIPT`** (see §3) where the first turn is a `tool_call` and the second is a text sentinel. Per-substring counters are global state across test binaries, hence `#[serial]`.
+4. **`peko ext install` the fixture** from `e2e_tests_archive/extensions/<…>/`.
+5. **Write the agent's `[extensions] enabled` list with the canonical owner IDs** — NOT the bare tool names. The dispatcher at `src/extension/core/tool_registry.rs:56-68` looks up the tool's owning `extension_id` and matches that against the whitelist; using the wrong ID (e.g. `calculator_simple` instead of `universal:calculator_simple`) silently blocks the call with `"Tool 'X' is currently disabled..."`. The canonical IDs are:
+
+   | Extension | Canonical owner id (for `[extensions] enabled`) | MOCK_LLM_SCRIPT `tool_call.name` |
+   |---|---|---|
+   | MCP server (e.g. `standard-echo` with tool `echo`) | `{server_name}` — e.g. `standard-echo` | `mcp:{server_name}:{tool_name}` — e.g. `mcp:standard-echo:echo` |
+   | Universal tool (e.g. `calculator_simple`) | `universal:{tool_name}` — e.g. `universal:calculator_simple` | `{tool_name}` — e.g. `calculator_simple` |
+   | Built-in tool (e.g. `read_file`) | both `{tool_name}` AND `builtin:tool:{tool_name}` (per [`cli_tools.rs:147-210`](../../tests/cli_tools.rs#L147-L210)) | `{tool_name}` |
+
+6. **Run `peko send <agent> "<prompt>" --no-stream`** with a prompt that instructs the LLM to call the specific tool, then emit the sentinel.
+7. **Assert the LLM's final stdout contains both the sentinel AND a deterministic token that proves the tool was actually dispatched** (e.g. the echoed message, the arithmetic result). The second assertion is the load-bearing one — it can only be in the LLM's final text if the result was fed back.
+
+Reference implementation: [`tests/cli_extensions_l3.rs`](../../tests/cli_extensions_l3.rs).
 
 #### Phase B coverage gap — `e2e_tests/providers/*.ps1` (migrated, real-LLM tier)
 
