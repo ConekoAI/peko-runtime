@@ -373,6 +373,136 @@ async fn allow_unsigned_permits_unsigned_import() {
     let _v: ValidationResult = result.validation;
 }
 
+#[tokio::test]
+async fn full_registry_round_trip_preserves_signed_bytes() {
+    // Issue #14: end-to-end test that exercises the actual
+    // registry push→pull→export_package→import flow and asserts
+    // the bytes the unpackager verifies against are byte-identical
+    // to the bytes the packager signed. This is the real CI
+    // failure surface (s3_agent_registry_roundtrip).
+    use pekobot::portable::registry::AgentRegistry;
+
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) =
+        build_file_contents(&signer, &did_doc);
+
+    // Push the .agent file into a fresh AgentRegistry. This is
+    // what `peko agent push --file <file>` does.
+    let registry_dir = TempDir::new().expect("registry dir");
+    let registry = AgentRegistry::new(registry_dir.path());
+    registry.init().await.expect("registry init");
+
+    // Build a layer tarball per layer the manifest references,
+    // mirroring `load_agent_file_into_registry` in
+    // `src/commands/agent/handlers.rs:772`.
+    fn build_layer_tarball(
+        layer_files: &std::collections::BTreeMap<String, Vec<u8>>,
+    ) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            for (path, content) in layer_files {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append(&header, content.as_slice()).unwrap();
+            }
+            tar.finish().unwrap();
+        }
+        buf
+    }
+    use pekobot::portable::types::compute_digest;
+    let mut config_files = std::collections::BTreeMap::new();
+    config_files.insert("agent.toml".to_string(), config_bytes.clone());
+    let config_tar = build_layer_tarball(&config_files);
+    let config_digest = compute_digest(&config_tar);
+
+    let mut identity_files = std::collections::BTreeMap::new();
+    identity_files.insert("did.json".to_string(), did_json.clone());
+    identity_files.insert("keys.enc".to_string(), keys_bytes.clone());
+    let identity_tar = build_layer_tarball(&identity_files);
+    let identity_digest = compute_digest(&identity_tar);
+
+    // Build a manifest whose `packaging.files` lists the actual
+    // files (with their checksums) and whose `layers` points at
+    // the digests we just computed. This is what
+    // `Packager::export` produces.
+    let mut manifest = AgentManifest::new("sig-test", "1.0.0", &did);
+    manifest.agent.description = Some("signature-test-fixture".to_string());
+    manifest.add_file("identity/did.json", &did_json);
+    manifest.add_file("config/agent.toml", &config_bytes);
+    manifest.add_file("identity/keys.enc", &keys_bytes);
+    use pekobot::portable::manifest::AgentLayers;
+    manifest.layers = Some(AgentLayers {
+        config: Some(config_digest.clone()),
+        identity: Some(identity_digest.clone()),
+        ..Default::default()
+    });
+
+    // Sign the manifest.
+    let manifest_for_signing = AgentManifest {
+        signatures: pekobot::portable::manifest::Signatures {
+            manifest: String::new(),
+            algorithm: "ed25519".to_string(),
+        },
+        ..manifest.clone()
+    };
+    let signed_bytes = manifest_for_signing.to_toml().unwrap().into_bytes();
+    let signature = signer.sign(&signed_bytes);
+    use base64::Engine;
+    manifest.signatures.manifest =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    manifest.signatures.algorithm = "ed25519".to_string();
+    let _original_manifest_bytes = manifest.to_toml().unwrap().into_bytes();
+
+    registry.store_layer(&config_digest, &config_tar).await.expect("store config");
+    registry.store_layer(&identity_digest, &identity_tar).await.expect("store identity");
+    registry
+        .store_manifest(&manifest, Some("sig-test:v1"))
+        .await
+        .expect("store manifest");
+
+    // Now export — this is the path `peko agent pull` takes to
+    // materialize a .agent file from the registry.
+    let export_dir = TempDir::new().expect("export dir");
+    let export_path = export_dir.path().join("round-tripped.agent");
+    registry
+        .export_package("sig-test:v1", &export_path)
+        .await
+        .expect("export_package");
+
+    // Read the exported manifest.toml and verify.
+    let file = std::fs::File::open(&export_path).expect("open");
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let mut exported_bytes = None;
+    for entry in archive.entries().expect("entries") {
+        let mut entry = entry.expect("entry");
+        let path = entry.path().expect("path").to_string_lossy().to_string();
+        if path == "manifest.toml" {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).expect("read");
+            exported_bytes = Some(buf);
+            break;
+        }
+    }
+    let exported_bytes = exported_bytes.expect("manifest.toml in archive");
+
+    // The unpackager's verifier reconstructs the canonical signed
+    // bytes from the exported manifest. Both must match the
+    // signed bytes from the original.
+    let status = pekobot::portable::signature::verify_manifest_signature(
+        &exported_bytes,
+        &did_json,
+        false,
+    )
+    .expect("exported signature must verify");
+    assert_eq!(status, pekobot::portable::signature::SignatureStatus::Verified);
+}
+
 #[test]
 fn manifest_round_trip_produces_identical_bytes() {
     // Issue #14 surfaced a real determinism bug: the packager signs

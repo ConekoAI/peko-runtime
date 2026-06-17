@@ -1198,12 +1198,11 @@ async fn agent_to_registry_manifest(
 
 /// Convert a `RegistryManifest` to an `AgentManifest`.
 ///
-/// Looks up the `Config` layer in the local registry (the config
-/// blob is also listed as a layer in the OCI manifest, see
-/// `agent_to_registry_manifest`) and uses the embedded
-/// `agent_manifest_toml` field as the canonical AgentManifest.
-/// This preserves every signed field — `created_at`, `did`,
-/// `peko_version`, packaging.files, packaging.checksums, the
+/// Looks up the OCI config blob (referenced by
+/// `manifest.config.digest`) in the local registry and uses the
+/// embedded `agent_manifest_toml` field as the canonical
+/// AgentManifest. This preserves every signed field — `created_at`,
+/// `did`, `peko_version`, packaging.files, packaging.checksums, the
 /// signature itself — which a fresh `AgentManifest::new()` would
 /// otherwise reset (issue #14).
 ///
@@ -1214,16 +1213,13 @@ fn registry_to_agent_manifest(
     registry_manifest: &RegistryManifest,
     registry: &AgentRegistry,
 ) -> AgentManifest {
-    // Try to recover the full original manifest from the config
-    // blob. The config layer digest matches `manifest.config.digest`
-    // (the OCI top-level `config` field) AND the digest of the
-    // `Config`-typed layer we added in `agent_to_registry_manifest`.
-    let config_layer = registry_manifest
-        .layers
-        .iter()
-        .find(|l| matches!(l.layer_type, LayerType::Config));
-    if let Some(layer) = config_layer {
-        if let Ok(bytes) = std::fs::read(registry.layer_path(&layer.digest)) {
+    // The OCI config blob is referenced by `manifest.config.digest`
+    // (the OCI top-level `config` field) — NOT listed in
+    // `manifest.layers` (it's a metadata blob, not a layer
+    // tarball, and `export_package` would fail to gunzip it).
+    if !registry_manifest.config.digest.is_empty() {
+        let config_path = registry.layer_path(&registry_manifest.config.digest);
+        if let Ok(bytes) = std::fs::read(&config_path) {
             if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                 if let Some(toml_str) = json.get("agent_manifest_toml").and_then(|v| v.as_str()) {
                     if let Ok(manifest) = AgentManifest::from_toml(toml_str) {
