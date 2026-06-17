@@ -2,6 +2,32 @@
 
 All notable changes to Pekobot.
 
+## [Unreleased]
+
+### Fixed (issue #8)
+
+**Tunnel reconnect cap and degraded-state surfacing.** Previously, when
+PekoHub was permanently unreachable (DNS, network, decommissioned), the
+runtime's tunnel client retried forever, producing unbounded log spam and
+no operator signal that the relay was down.
+
+- `TunnelClient` now caps consecutive reconnect attempts via
+  `max_reconnect_attempts` (default `50`, ≈ 28 min with default backoff).
+  After the cap, the client stops retrying and emits a one-shot
+  `TunnelStatusUpdate::Degraded` callback.
+- New `TunnelStatusUpdate` enum (`Connected` / `Disconnected` / `Degraded`)
+  wired into `AppState::start_tunnel`, which now takes a
+  `max_reconnect_attempts` parameter and tracks per-attempt state
+  (`tunnel_attempts`, `tunnel_last_error`, `tunnel_degraded`).
+- New `AppState::tunnel_health() -> TunnelHealth` enum with four states
+  (`disabled` / `connected` / `disconnected` / `degraded`).
+- New `peko daemon start --max-reconnect-attempts <N>` CLI flag (default 50).
+  Pass `4294967295` (u32::MAX) to effectively disable the cap.
+- New IPC `RequestPacket::Status` / `ResponsePacket::Status` packet
+  returning tunnel health. `peko daemon status --json` now emits
+  `tunnel: { state, reconnect_attempts, last_error, degraded }`.
+  `stop_tunnel()` clears the degraded flag and per-attempt state.
+
 ## [1.0.0-rc1] - Phase 1 Completion - 2026-05-14
 
 Phase 1 of the Pekobot runtime is complete. All P0 success criteria for the agent runtime, unified packaging, registry integration, and CLI have been implemented and verified.

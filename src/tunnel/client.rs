@@ -101,21 +101,71 @@ struct TunnelState {
     heartbeat_interval_secs: u32,
 }
 
+/// Default maximum reconnect attempts before giving up and signalling degraded state.
+/// With default exponential backoff (1/2/4/.../60s), 50 attempts ≈ 28 minutes of retries.
+pub const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 50;
+
+/// Health/status update emitted by the tunnel client after each connection
+/// attempt. The owner (`AppState`) consumes these to keep its view of
+/// tunnel health in sync, and ultimately to surface `peko daemon status`.
+///
+/// Issue #8: prior to this, the tunnel client had no way to tell the rest
+/// of the daemon that it had failed repeatedly, so `deamon status` could
+/// always report "connected" even after PekoHub went away.
+#[derive(Debug, Clone)]
+pub enum TunnelStatusUpdate {
+    /// A connection was just established successfully.
+    Connected,
+    /// A connection attempt just failed; the client will keep retrying.
+    /// `attempts` is the running count of consecutive failures.
+    /// `last_error` is the error string from the latest attempt.
+    Disconnected {
+        attempts: u32,
+        last_error: String,
+    },
+    /// The reconnect-attempt cap was hit. The client has stopped retrying.
+    /// `attempts` equals the cap; `last_error` is the final error.
+    /// After this, `peko daemon status --json` reports `tunnel.state == "degraded"`.
+    Degraded {
+        attempts: u32,
+        last_error: String,
+    },
+}
+
 /// Tunnel client that maintains a persistent WebSocket connection to PekoHub.
 pub struct TunnelClient {
     hub_url: String,
     credential: PekoHubCredential,
     backoff: ExponentialBackoff,
     state: Arc<RwLock<TunnelState>>,
+    /// Maximum number of consecutive reconnect attempts before giving up
+    /// (issue #8: avoids infinite retry loop when PekoHub is permanently down).
+    max_reconnect_attempts: u32,
     /// Optional callback for handling proxied requests
     request_handler:
         Option<Arc<dyn Fn(TunnelMessage, TunnelHandle) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
+    /// Optional callback for receiving per-iteration status updates
+    /// (`Connected` / `Disconnected` / `Degraded`). Used by `AppState::start_tunnel`
+    /// to keep the daemon's view of tunnel health in sync and to mark the
+    /// daemon as degraded when the reconnect cap is hit (issue #8).
+    on_status:
+        Option<Arc<dyn Fn(TunnelStatusUpdate) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
 }
 
 impl TunnelClient {
-    /// Create a new tunnel client
+    /// Create a new tunnel client with the default reconnect cap.
     #[must_use]
     pub fn new(credential: PekoHubCredential) -> Self {
+        Self::new_with_options(credential, DEFAULT_MAX_RECONNECT_ATTEMPTS)
+    }
+
+    /// Create a new tunnel client with a custom reconnect-attempt cap.
+    #[must_use]
+    pub fn new_with(credential: PekoHubCredential, max_reconnect_attempts: u32) -> Self {
+        Self::new_with_options(credential, max_reconnect_attempts)
+    }
+
+    fn new_with_options(credential: PekoHubCredential, max_reconnect_attempts: u32) -> Self {
         let hub_url = credential.url.clone();
         Self {
             hub_url,
@@ -128,7 +178,9 @@ impl TunnelClient {
                 ready: false,
                 heartbeat_interval_secs: 30,
             })),
+            max_reconnect_attempts,
             request_handler: None,
+            on_status: None,
         }
     }
 
@@ -141,17 +193,74 @@ impl TunnelClient {
         self.request_handler = Some(Arc::new(move |msg, handle| Box::pin(handler(msg, handle))));
     }
 
-    /// Run the tunnel client loop (reconnects forever until cancelled)
+    /// Set a callback for receiving per-iteration status updates
+    /// (connected / disconnected / degraded). Used by `AppState` to keep
+    /// the daemon's view of tunnel health in sync, and to mark the daemon
+    /// as degraded once the reconnect-attempt cap is hit (issue #8).
+    pub fn on_status<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(TunnelStatusUpdate) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.on_status = Some(Arc::new(move |update| Box::pin(handler(update))));
+    }
+
+    /// Get the configured reconnect-attempt cap.
+    #[must_use]
+    pub fn max_reconnect_attempts(&self) -> u32 {
+        self.max_reconnect_attempts
+    }
+
+    /// Run the tunnel client loop until the reconnect-attempt cap is hit
+    /// (or forever, if `max_reconnect_attempts` is `u32::MAX`).
+    ///
+    /// Issue #8: previously this looped unbounded, producing infinite log
+    /// spam and no operator signal when PekoHub was permanently down.
+    /// Now each consecutive failure is counted; once the cap is reached,
+    /// the `on_degraded` callback fires once with the attempt count and
+    /// last error, and `run()` returns.
     pub async fn run(mut self) {
+        let mut consecutive_failures: u32 = 0;
         loop {
             match self.connect_and_serve().await {
                 Ok(()) => {
                     self.backoff.reset();
+                    consecutive_failures = 0;
                     info!("Tunnel connection closed gracefully");
+                    if let Some(cb) = self.on_status.as_ref() {
+                        cb(TunnelStatusUpdate::Connected).await;
+                    }
                 }
                 Err(e) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let err_msg = e.to_string();
+                    if consecutive_failures >= self.max_reconnect_attempts {
+                        error!(
+                            "tunnel reconnect cap reached after {} attempts (last error: {}); \
+                             entering degraded state",
+                            consecutive_failures, err_msg
+                        );
+                        if let Some(cb) = self.on_status.as_ref() {
+                            cb(TunnelStatusUpdate::Degraded {
+                                attempts: consecutive_failures,
+                                last_error: err_msg.clone(),
+                            })
+                            .await;
+                        }
+                        return;
+                    }
                     let delay = self.backoff.next();
-                    warn!("tunnel disconnected: {}, retrying in {:?}", e, delay);
+                    warn!(
+                        "tunnel disconnected (attempt {}/{}): {}, retrying in {:?}",
+                        consecutive_failures, self.max_reconnect_attempts, err_msg, delay
+                    );
+                    if let Some(cb) = self.on_status.as_ref() {
+                        cb(TunnelStatusUpdate::Disconnected {
+                            attempts: consecutive_failures,
+                            last_error: err_msg.clone(),
+                        })
+                        .await;
+                    }
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -597,5 +706,74 @@ mod tests {
         };
         let client = TunnelClient::new(cred);
         assert!(!client.is_ready().await);
+        assert_eq!(client.max_reconnect_attempts(), DEFAULT_MAX_RECONNECT_ATTEMPTS);
+    }
+
+    /// Issue #8: when the tunnel cannot reach PekoHub, `run()` must stop
+    /// retrying after `max_reconnect_attempts` failures and emit a
+    /// `Degraded` status update (not loop forever spamming logs).
+    #[tokio::test]
+    async fn test_run_caps_reconnect_attempts_and_emits_degraded() {
+        // Point at a closed port so every connect attempt fails fast.
+        // We don't need to wait for the full backoff window because
+        // `run()` returns immediately once the cap is hit (no final sleep).
+        let cred = PekoHubCredential {
+            url: "ws://127.0.0.1:1/v1/tunnel".to_string(),
+            runtime_id: "did:key:z6MkTest".to_string(),
+            keyring_entry: None,
+            private_key: Some(BASE64.encode(&[0u8; 32])),
+        };
+        let mut client = TunnelClient::new_with(cred, 2);
+
+        let captured: std::sync::Arc<tokio::sync::Mutex<Vec<TunnelStatusUpdate>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let captured_for_cb = captured.clone();
+        client.on_status(move |update| {
+            let captured = captured_for_cb.clone();
+            async move {
+                captured.lock().await.push(update);
+            }
+        });
+
+        // Bound the test runtime in case of regression.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.run(),
+        )
+        .await;
+        assert!(result.is_ok(), "run() did not return within 10s — cap not enforced");
+
+        let updates = captured.lock().await.clone();
+        // First failure: Disconnected{attempts:1}. Second failure hits the
+        // cap and emits Degraded{attempts:2}.
+        assert!(
+            updates.iter().any(|u| matches!(
+                u,
+                TunnelStatusUpdate::Degraded { attempts: 2, .. }
+            )),
+            "expected Degraded{{attempts:2,..}} in {:?}",
+            updates
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|u| matches!(u, TunnelStatusUpdate::Disconnected { attempts: 1, .. })),
+            "expected at least one Disconnected{{attempts:1,..}} in {:?}",
+            updates
+        );
+    }
+
+    /// Issue #8: `new_with` honors a small cap so an integration test
+    /// can verify degraded surfacing end-to-end without 28-minute waits.
+    #[tokio::test]
+    async fn test_new_with_custom_cap() {
+        let cred = PekoHubCredential {
+            url: "wss://example.com/v1/tunnel".to_string(),
+            runtime_id: "did:key:z6MkTest".to_string(),
+            keyring_entry: None,
+            private_key: Some(BASE64.encode(&[0u8; 32])),
+        };
+        let client = TunnelClient::new_with(cred, 7);
+        assert_eq!(client.max_reconnect_attempts(), 7);
     }
 }

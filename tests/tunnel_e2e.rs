@@ -234,9 +234,10 @@ async fn test_e2e_tunnel_chat_with_llm() {
         let _ = std::fs::remove_file(&p);
     });
 
-    // 6. Start tunnel
+    // 6. Start tunnel (issue #8: cap reconnect attempts at 5 for this test
+    // so a misbehaving server surfaces fast)
     let tunnel_started: bool = app_state
-        .start_tunnel()
+        .start_tunnel(5)
         .await
         .expect("Failed to start tunnel");
     assert!(tunnel_started, "Tunnel should have started (credentials exist)");

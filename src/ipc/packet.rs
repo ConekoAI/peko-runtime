@@ -484,6 +484,11 @@ pub enum RequestPacket {
     #[serde(rename = "tunnel_status")]
     TunnelStatus { request_id: u64 },
 
+    /// Comprehensive daemon status (issue #8). Returns uptime, version, and
+    /// tunnel health snapshot. Used by `peko daemon status --json`.
+    #[serde(rename = "status")]
+    Status { request_id: u64 },
+
     // ── Instance status ──
     #[serde(rename = "instance_set_status")]
     InstanceSetStatus {
@@ -629,6 +634,7 @@ impl RequestPacket {
             | Self::AuthStatus { request_id }
             | Self::TunnelStop { request_id }
             | Self::TunnelStatus { request_id }
+            | Self::Status { request_id }
             | Self::InstanceSetStatus { request_id, .. }
             | Self::InstanceSetExposure { request_id, .. }
             | Self::AgentTransferOwner { request_id, .. }
@@ -1142,6 +1148,19 @@ pub enum ResponsePacket {
         connected: bool,
     },
 
+    /// Comprehensive daemon status payload (issue #8). Includes tunnel
+    /// health snapshot suitable for `peko daemon status --json`.
+    #[serde(rename = "status")]
+    Status {
+        request_id: u64,
+        uptime_secs: u64,
+        version: String,
+        tunnel_state: String,
+        tunnel_reconnect_attempts: u32,
+        tunnel_last_error: Option<String>,
+        degraded: bool,
+    },
+
     // ── Auth management (ADR-034) ──
     #[serde(rename = "auth_api_key_created")]
     AuthApiKeyCreated {
@@ -1353,7 +1372,8 @@ impl ResponsePacket {
             | Self::AuthApiKeyList { request_id, .. }
             | Self::AuthApiKeyRevoked { request_id, .. }
             | Self::AuthStatus { request_id, .. }
-            | Self::TunnelStatus { request_id, .. } => *request_id,
+            | Self::TunnelStatus { request_id, .. }
+            | Self::Status { request_id, .. } => *request_id,
         }
     }
 

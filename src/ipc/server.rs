@@ -2912,6 +2912,22 @@ impl IpcServer {
                 Self::send_sink(sink, response).await?;
             }
 
+            RequestPacket::Status { request_id } => {
+                // Issue #8: comprehensive status including tunnel health.
+                let health = state.tunnel_health().await;
+                let degraded = state.is_degraded().await;
+                let response = ResponsePacket::Status {
+                    request_id,
+                    uptime_secs: state.uptime_seconds(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    tunnel_state: health.state_str().to_string(),
+                    tunnel_reconnect_attempts: health.reconnect_attempts(),
+                    tunnel_last_error: health.last_error().map(str::to_string),
+                    degraded,
+                };
+                Self::send_sink(sink, response).await?;
+            }
+
             RequestPacket::InstanceSetStatus {
                 request_id,
                 agent_name,
