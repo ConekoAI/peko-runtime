@@ -123,7 +123,7 @@ pub struct PackagingMetadata {
 }
 
 /// Digital signatures section
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signatures {
     /// Manifest signature (signed by agent's DID key)
     pub manifest: String,

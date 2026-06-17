@@ -1115,6 +1115,16 @@ async fn agent_to_registry_manifest(
     // `apply_annotations`).
     manifest.extensions = agent_manifest.extensions.clone();
 
+    // Carry the agent's manifest signature (issue #14). Without
+    // this, the unpackager's `verify_manifest_signature` would
+    // always see `signatures.manifest == ""` after a
+    // `push → pull → import` cycle and fail with
+    // `signature_verification_failed`. The signature is carried via
+    // the `dev.pekohub.signatures` annotation.
+    if !agent_manifest.signatures.manifest.is_empty() {
+        manifest.signatures = Some(agent_manifest.signatures.clone());
+    }
+
     if let Some(layers) = &agent_manifest.layers {
         if let Some(digest) = &layers.config {
             let size = layer_size(registry, digest).await?;
@@ -1204,6 +1214,18 @@ fn registry_to_agent_manifest(registry_manifest: &RegistryManifest) -> AgentMani
     // the collab's `ensure_extensions_for_agent` sees an empty
     // list and never auto-pulls them. Phase D3 — flow 5b/5c/5d.
     agent_manifest.extensions = registry_manifest.extensions.clone();
+
+    // Restore the manifest signature (issue #14) from the
+    // `dev.pekohub.signatures` annotation. Without this the
+    // unpackager's `verify_manifest_signature` would always see
+    // `signatures.manifest == ""` after a pull and fail with
+    // `signature_verification_failed`, even though the original
+    // author signed the package. Empty-signature manifests stay
+    // empty-signature (the unpackager rejects them unless
+    // `--allow-unsigned-agent` is set).
+    if let Some(sig) = registry_manifest.signatures.clone() {
+        agent_manifest.signatures = sig;
+    }
 
     agent_manifest
 }
