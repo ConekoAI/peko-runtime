@@ -316,6 +316,30 @@ impl RegistryClient {
                 })?;
         }
 
+        // Pull the OCI config blob (issue #14). The config blob is
+        // NOT listed in `manifest.layers` — the OCI spec puts it
+        // in its own top-level `config` field, and `export_package`
+        // treats it as a JSON metadata blob, not a gzipped tarball.
+        // We pull it explicitly so the pull-side reconstruct path
+        // can recover the full original AgentManifest from the
+        // `agent_manifest_toml` field embedded in the config.
+        if !manifest.config.digest.is_empty()
+            && !self.registry.has_layer(&manifest.config.digest)
+        {
+            self.pull_config_blob(&reg_ref, source, &auth, &manifest.config, &mut progress)
+                .await
+                .map_err(|e| {
+                    progress(ProgressEvent::Error {
+                        code: "config_pull_failed".to_string(),
+                        message: format!(
+                            "Failed to pull config blob {}: {}",
+                            manifest.config.digest, e
+                        ),
+                    });
+                    e
+                })?;
+        }
+
         // Store the manifest locally
         self.store_manifest_locally(&manifest).await?;
 
@@ -466,6 +490,65 @@ impl RegistryClient {
             .to_string();
 
         Ok(manifest)
+    }
+
+    /// Pull the OCI config blob (issue #14). The config blob is
+    /// referenced by `manifest.config.digest` per the OCI spec, but
+    /// it's NOT a layer — it's a JSON metadata blob that carries
+    /// the full original `AgentManifest` (see
+    /// `agent_to_registry_manifest`). We fetch it explicitly so
+    /// the pull-side reconstruct path can read it.
+    async fn pull_config_blob<F>(
+        &self,
+        reg_ref: &RegistryRef,
+        source: &RegistrySource,
+        auth: &ResolvedAuth,
+        config: &crate::registry::manifest::ConfigDescriptor,
+        progress: &mut F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        progress(ProgressEvent::Pulling {
+            layer: config.digest.clone(),
+            bytes_received: Some(0),
+            bytes_total: Some(config.size),
+        });
+
+        let base_url = Self::registry_url(source);
+        let url = format!("{base_url}/v2/{}/blobs/{}", reg_ref.path, config.digest);
+        let req = self.http.get(&url);
+        let req = auth.apply(req);
+
+        let response = req.send().await?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(Self::format_error("Failed to fetch config blob", response).await));
+        }
+
+        let data = response.bytes().await?;
+
+        // Verify digest
+        progress(ProgressEvent::Verifying {
+            layer: config.digest.clone(),
+        });
+        let computed_digest = ImageDigest::from_bytes(&data);
+        if computed_digest.as_str() != config.digest {
+            return Err(anyhow::anyhow!(
+                "Config blob digest mismatch: expected {}, got {}",
+                config.digest,
+                computed_digest.as_str()
+            ));
+        }
+
+        // Store via the same layer path so the local registry's
+        // `layer_path(digest)` lookup finds it.
+        self.registry.store_layer(&config.digest, &data).await?;
+
+        progress(ProgressEvent::Extracting {
+            layer: config.digest.clone(),
+        });
+
+        Ok(())
     }
 
     /// Pull a single layer from registry

@@ -1188,27 +1188,6 @@ async fn agent_to_registry_manifest(
         size: config_json.len() as u64,
     };
 
-    // Also add the config blob as a `Config` layer in the OCI
-    // manifest. The existing pull path iterates `manifest.layers`
-    // and pulls each one as a blob — the OCI spec also has a
-    // `config` field that points to a blob, but pekohub (and the
-    // local registry) only treats `layers` as the data plane. By
-    // listing the config blob as a `Config`-typed layer, the
-    // existing pull machinery fetches and stores it for us, and
-    // the reconstruct path can read it via the layer storage.
-    // The OCI spec is satisfied because the same digest also
-    // appears in the top-level `config` field.
-    //
-    // (See [issue #14 follow-up] for the background: the original
-    //  config blob was never pulled, so the agent manifest was
-    //  reconstructed from scratch on pull and lost every signed
-    //  field except name/version/did.)
-    manifest.add_layer(Layer::new(
-        config_digest.as_str().to_string(),
-        LayerType::Config,
-        config_json.len() as u64,
-    ));
-
     // Compute digest from JSON representation
     let json = manifest.to_json()?;
     let digest = ImageDigest::from_bytes(json.as_bytes());
