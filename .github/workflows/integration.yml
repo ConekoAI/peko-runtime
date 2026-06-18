@@ -88,15 +88,6 @@ unit-windows:
           shared-key: peko-runtime-rust
       - name: Run unit tests
         run: cargo test --lib
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .
-          shared-key: peko-runtime-rust
-      - name: Run unit tests
-        run: cargo test --lib
 
   # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ───────────────────────
   integration:
