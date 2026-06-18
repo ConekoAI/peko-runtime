@@ -61,7 +61,7 @@ jobs:
       - name: Run unit tests
         run: cargo test --lib
 
-unit-windows:
+  unit-windows:
     name: Unit Tests (windows-latest)
     runs-on: windows-latest
     # Windows unit tests are gated — they only run when:
