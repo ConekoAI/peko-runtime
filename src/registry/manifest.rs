@@ -4,6 +4,7 @@
 //! Wire format follows OCI Image Manifest v1.1 spec for interoperability.
 //! The canonical on-disk format remains TOML (`AgentManifest`).
 
+use crate::portable::manifest::Signatures;
 use crate::portable::types::{ExtensionRef, Layer};
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +115,18 @@ pub struct RegistryManifest {
     /// that exercises this code path and surfaces the regression.
     #[serde(skip)]
     pub extensions: Vec<ExtensionRef>,
+
+    /// Manifest signature carried from `AgentManifest::signatures`
+    /// (issue #14). Stored as a JSON string in the
+    /// `dev.pekohub.signatures` annotation for OCI compatibility;
+    /// restored on deserialize. Without this round-trip the
+    /// runtime's per-author trust assumption is silently broken:
+    /// the unpackager's `verify_manifest_signature` would always
+    /// see `signatures.manifest == ""` and fail with
+    /// `signature_verification_failed` after any
+    /// `push → pull → import` cycle.
+    #[serde(skip)]
+    pub signatures: Option<Signatures>,
 }
 
 fn default_kind() -> String {
@@ -153,6 +166,7 @@ impl RegistryManifest {
             model_providers: None,
             required_mcp_servers: None,
             extensions: Vec::new(),
+            signatures: None,
         }
     }
 
@@ -426,6 +440,22 @@ impl RegistryManifest {
             );
         }
 
+        // Manifest signature (issue #14). Carried through the
+        // push→pull boundary as a JSON string in
+        // `dev.pekohub.signatures`. Omitted when absent — agents
+        // produced before the gate (or with `--allow-unsigned-agent`)
+        // have no signature and we don't want to bloat the wire
+        // format with an empty marker.
+        if let Some(sig) = &self.signatures {
+            if !sig.manifest.is_empty() {
+                let s = serde_json::to_string(sig).expect("serialize signatures");
+                map.insert(
+                    "dev.pekohub.signatures".to_string(),
+                    serde_json::Value::String(s),
+                );
+            }
+        }
+
         if map.is_empty() {
             None
         } else {
@@ -538,6 +568,20 @@ impl RegistryManifest {
                                 Some(ExtensionRef { id, registry_ref })
                             })
                             .collect();
+                    }
+                }
+            }
+
+            // Restore manifest signature (issue #14). The annotation
+            // is always a JSON string. Missing or malformed entries
+            // are silently dropped — `signatures` is `Option`, and
+            // the unpackager's verifier treats a missing signature
+            // the same as an empty one (hard fail unless
+            // `--allow-unsigned-agent` is set).
+            if let Some(v) = map.get("dev.pekohub.signatures") {
+                if let Some(s) = v.as_str() {
+                    if let Ok(parsed) = serde_json::from_str::<Signatures>(s) {
+                        self.signatures = Some(parsed);
                     }
                 }
             }
@@ -677,6 +721,60 @@ mod tests {
         assert_eq!(restored.tags, Some("[\"ai\", \"research\"]".to_string()));
         assert_eq!(restored.layers.len(), 1);
         assert_eq!(restored.layers[0].digest, "sha256:layer1");
+    }
+
+    #[test]
+    fn test_signatures_roundtrip() {
+        // Issue #14: the manifest signature must survive a
+        // push→pull cycle through the OCI layer. `build_annotations`
+        // emits it as a JSON string in `dev.pekohub.signatures`;
+        // `apply_annotations` restores it back to the field.
+        let sig = Signatures {
+            manifest: "abc123def456".to_string(),
+            algorithm: "ed25519".to_string(),
+        };
+        let mut manifest = RegistryManifest::new("test-agent", "1.0.0");
+        manifest.signatures = Some(sig.clone());
+
+        let json = manifest.to_json().expect("to_json");
+        assert!(
+            json.contains("dev.pekohub.signatures"),
+            "expected dev.pekohub.signatures annotation in serialized JSON, got: {json}"
+        );
+
+        let restored = RegistryManifest::from_json(&json).expect("from_json");
+        assert_eq!(
+            restored.signatures,
+            Some(sig),
+            "signature must round-trip through OCI annotations"
+        );
+    }
+
+    #[test]
+    fn test_signatures_absent_when_empty() {
+        // An agent whose manifest has no signature (or one with
+        // `signatures.manifest == ""`) must not emit the
+        // annotation — saves wire bytes and matches the
+        // "missing" semantic for the unpackager.
+        let manifest = RegistryManifest::new("test-agent", "1.0.0");
+        // signatures is None by default
+        let json = manifest.to_json().expect("to_json");
+        assert!(
+            !json.contains("dev.pekohub.signatures"),
+            "empty signature should not be emitted"
+        );
+
+        // And an empty-string signature should also be omitted.
+        let mut manifest = RegistryManifest::new("test-agent", "1.0.0");
+        manifest.signatures = Some(Signatures {
+            manifest: String::new(),
+            algorithm: "ed25519".to_string(),
+        });
+        let json = manifest.to_json().expect("to_json");
+        assert!(
+            !json.contains("dev.pekohub.signatures"),
+            "empty-string signature should not be emitted"
+        );
     }
 
     #[test]

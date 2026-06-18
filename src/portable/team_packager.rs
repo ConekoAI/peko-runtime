@@ -224,10 +224,11 @@ impl TeamPackager {
             all_files.insert("team/team.toml".to_string(), team_toml_content);
         }
 
-        // Build packaging metadata with checksums
+        // Build packaging metadata with checksums. BTreeMap keeps
+        // iteration order stable across the serde round-trip (issue #14).
         let mut packaging = TeamPackagingMetadata {
             files: Vec::new(),
-            checksums: HashMap::new(),
+            checksums: std::collections::BTreeMap::new(),
             compression: "gzip".to_string(),
             archive_format: "tar".to_string(),
         };
@@ -368,8 +369,12 @@ pub struct TeamManifest {
 pub struct TeamPackagingMetadata {
     /// List of files in the package (relative paths)
     pub files: Vec<String>,
-    /// Checksums for each file (path -> "sha256:...")
-    pub checksums: HashMap<String, String>,
+    /// Checksums for each file (path -> "sha256:...").
+    ///
+    /// `BTreeMap` is required for signature determinism (issue #14).
+    /// See [`crate::portable::manifest::PackagingMetadata::checksums`]
+    /// for the same reasoning.
+    pub checksums: std::collections::BTreeMap<String, String>,
     /// Compression format
     pub compression: String,
     /// Archive format

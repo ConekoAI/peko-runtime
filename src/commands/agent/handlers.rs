@@ -257,6 +257,7 @@ pub async fn handle_agent_import(
     file_path: String,
     name: Option<String>,
     team: Option<String>,
+    allow_unsigned_agent: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
     let packet = crate::ipc::RequestPacket::AgentImport {
@@ -264,6 +265,7 @@ pub async fn handle_agent_import(
         file_path: file_path.clone(),
         name,
         team,
+        allow_unsigned: allow_unsigned_agent,
     };
     let response = client.request_response(packet).await?;
 
@@ -851,6 +853,7 @@ pub async fn handle_agent_pull(
     force: bool,
     json: bool,
     cli_registry: Option<&str>,
+    allow_unsigned_agent: bool,
 ) -> anyhow::Result<()> {
     let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
     agent_registry.init().await?;
@@ -871,7 +874,7 @@ pub async fn handle_agent_pull(
         let manifest = client.pull(&resolved_ref, |_| {}).await?;
 
         // Store in AgentRegistry format as well
-        let agent_manifest = registry_to_agent_manifest(&manifest);
+        let agent_manifest = registry_to_agent_manifest(&manifest, &agent_registry);
         let tag = format!("{}:{}", manifest.name, reg_ref.tag);
         agent_registry
             .store_manifest(&agent_manifest, Some(&tag))
@@ -895,7 +898,7 @@ pub async fn handle_agent_pull(
         let manifest = client.pull(&resolved_ref, |_| {}).await?;
 
         // Store in AgentRegistry format as well
-        let agent_manifest = registry_to_agent_manifest(&manifest);
+        let agent_manifest = registry_to_agent_manifest(&manifest, &agent_registry);
         let tag = format!("{}:{}", manifest.name, reg_ref.tag);
         agent_registry
             .store_manifest(&agent_manifest, Some(&tag))
@@ -963,7 +966,7 @@ pub async fn handle_agent_pull(
             .await?;
 
         // Store in AgentRegistry format as well
-        let agent_manifest = registry_to_agent_manifest(&manifest);
+        let agent_manifest = registry_to_agent_manifest(&manifest, &agent_registry);
         let tag = format!("{}:{}", manifest.name, reg_ref.tag);
         agent_registry
             .store_manifest(&agent_manifest, Some(&tag))
@@ -1011,6 +1014,7 @@ pub async fn handle_agent_pull(
     let import_opts = AgentImportOptions {
         name: None, // Use manifest name from package
         force,
+        allow_unsigned: allow_unsigned_agent,
     };
     let result = service.import_agent(&temp_path, import_opts).await?;
 
@@ -1111,6 +1115,16 @@ async fn agent_to_registry_manifest(
     // `apply_annotations`).
     manifest.extensions = agent_manifest.extensions.clone();
 
+    // Carry the agent's manifest signature (issue #14). Without
+    // this, the unpackager's `verify_manifest_signature` would
+    // always see `signatures.manifest == ""` after a
+    // `push → pull → import` cycle and fail with
+    // `signature_verification_failed`. The signature is carried via
+    // the `dev.pekohub.signatures` annotation.
+    if !agent_manifest.signatures.manifest.is_empty() {
+        manifest.signatures = Some(agent_manifest.signatures.clone());
+    }
+
     if let Some(layers) = &agent_manifest.layers {
         if let Some(digest) = &layers.config {
             let size = layer_size(registry, digest).await?;
@@ -1142,11 +1156,27 @@ async fn agent_to_registry_manifest(
         }
     }
 
-    // Create a config blob (required by OCI spec) from agent metadata
+    // Create a config blob (required by OCI spec) from agent metadata.
+    //
+    // The blob carries the full original `AgentManifest` serialized
+    // to TOML — issue #14. The packager signs bytes that include
+    // every field of the manifest (created_at, did, peko_version,
+    // packaging.files, packaging.checksums, signatures field
+    // zeroed, …). The previous OCI config blob only carried
+    // `{name, version, kind}` and the pull path reconstructed the
+    // rest from scratch, producing a manifest with a fresh
+    // `created_at`, `did = "did:peko:pulled"`, and the current
+    // runtime's `peko_version` — none of which matched the bytes
+    // the author signed, so signature verification always failed
+    // after a `push → pull → import` cycle. Embedding the full
+    // TOML in the config blob closes that gap: the pull path can
+    // recover the exact signed manifest.
+    let agent_manifest_toml = agent_manifest.to_toml()?;
     let config_json = serde_json::to_string(&serde_json::json!({
         "name": agent_manifest.agent.name,
         "version": agent_manifest.agent.version,
         "kind": "agent",
+        "agent_manifest_toml": agent_manifest_toml,
     }))?;
     let config_digest = ImageDigest::from_bytes(config_json.as_bytes());
     registry
@@ -1166,8 +1196,43 @@ async fn agent_to_registry_manifest(
     Ok(manifest)
 }
 
-/// Convert a `RegistryManifest` to an `AgentManifest`
-fn registry_to_agent_manifest(registry_manifest: &RegistryManifest) -> AgentManifest {
+/// Convert a `RegistryManifest` to an `AgentManifest`.
+///
+/// Looks up the OCI config blob (referenced by
+/// `manifest.config.digest`) in the local registry and uses the
+/// embedded `agent_manifest_toml` field as the canonical
+/// AgentManifest. This preserves every signed field — `created_at`,
+/// `did`, `peko_version`, packaging.files, packaging.checksums, the
+/// signature itself — which a fresh `AgentManifest::new()` would
+/// otherwise reset (issue #14).
+///
+/// Falls back to the legacy reconstruction path when the config
+/// blob is missing or doesn't contain a `agent_manifest_toml`
+/// field (e.g. older packages written before the change).
+fn registry_to_agent_manifest(
+    registry_manifest: &RegistryManifest,
+    registry: &AgentRegistry,
+) -> AgentManifest {
+    // The OCI config blob is referenced by `manifest.config.digest`
+    // (the OCI top-level `config` field) — NOT listed in
+    // `manifest.layers` (it's a metadata blob, not a layer
+    // tarball, and `export_package` would fail to gunzip it).
+    if !registry_manifest.config.digest.is_empty() {
+        let config_path = registry.layer_path(&registry_manifest.config.digest);
+        if let Ok(bytes) = std::fs::read(&config_path) {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(toml_str) = json.get("agent_manifest_toml").and_then(|v| v.as_str()) {
+                    if let Ok(manifest) = AgentManifest::from_toml(toml_str) {
+                        return manifest;
+                    }
+                }
+            }
+        }
+    }
+
+    // Legacy fallback: reconstruct from RegistryManifest fields.
+    // This path is reached only for packages written before
+    // `agent_manifest_toml` was added to the config blob.
     let mut agent_manifest = AgentManifest::new(
         &registry_manifest.name,
         &registry_manifest.version,
@@ -1200,6 +1265,18 @@ fn registry_to_agent_manifest(registry_manifest: &RegistryManifest) -> AgentMani
     // the collab's `ensure_extensions_for_agent` sees an empty
     // list and never auto-pulls them. Phase D3 — flow 5b/5c/5d.
     agent_manifest.extensions = registry_manifest.extensions.clone();
+
+    // Restore the manifest signature (issue #14) from the
+    // `dev.pekohub.signatures` annotation. Without this the
+    // unpackager's `verify_manifest_signature` would always see
+    // `signatures.manifest == ""` after a pull and fail with
+    // `signature_verification_failed`, even though the original
+    // author signed the package. Empty-signature manifests stay
+    // empty-signature (the unpackager rejects them unless
+    // `--allow-unsigned-agent` is set).
+    if let Some(sig) = registry_manifest.signatures.clone() {
+        agent_manifest.signatures = sig;
+    }
 
     agent_manifest
 }

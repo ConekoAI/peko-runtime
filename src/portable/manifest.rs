@@ -4,7 +4,7 @@
 
 use crate::portable::types::ExtensionRef;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Content-addressable layer digests for .agent packages
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -107,8 +107,15 @@ pub struct IdentityConfig {
 pub struct PackagingMetadata {
     /// List of files in the package (relative paths)
     pub files: Vec<String>,
-    /// Checksums for each file (path -> "sha256:...")
-    pub checksums: HashMap<String, String>,
+    /// Checksums for each file (path -> "sha256:...").
+    ///
+    /// `BTreeMap` is required for signature determinism (issue #14).
+    /// `HashMap` iteration order is randomized per-instance; if the
+    /// packager and verifier serialize this map in different orders,
+    /// the manifest bytes they each produce will not match and the
+    /// signature check will fail spuriously. `BTreeMap` sorts by key
+    /// and is stable across the serde round-trip.
+    pub checksums: BTreeMap<String, String>,
     /// Compression format
     pub compression: String,
     /// Archive format
@@ -116,7 +123,7 @@ pub struct PackagingMetadata {
 }
 
 /// Digital signatures section
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signatures {
     /// Manifest signature (signed by agent's DID key)
     pub manifest: String,
@@ -154,7 +161,7 @@ impl AgentManifest {
             extensions: Vec::new(),
             packaging: PackagingMetadata {
                 files: Vec::new(),
-                checksums: HashMap::new(),
+                checksums: BTreeMap::new(),
                 compression: "gzip".to_string(),
                 archive_format: "tar".to_string(),
             },
@@ -196,7 +203,22 @@ impl AgentManifest {
     pub fn add_file(&mut self, path: impl Into<String>, data: &[u8]) {
         let path = path.into();
         let checksum = Self::compute_checksum(data);
-        self.packaging.files.push(path.clone());
+        // Maintain `packaging.files` in sorted order on every insert.
+        // This is required for signature determinism (issue #14):
+        // the packager signs the manifest, then [`crate::portable::registry::AgentRegistry::export_package`]
+        // re-serializes the manifest after a registry round-trip and
+        // it sorts the file list — if the original bytes were in
+        // insertion order, the re-serialized bytes would differ and
+        // signature verification would fail. Keeping the list sorted
+        // at all times makes both paths produce identical bytes.
+        let pos = self
+            .packaging
+            .files
+            .binary_search(&path)
+            .unwrap_or_else(|e| e);
+        self.packaging.files.insert(pos, path.clone());
+        // BTreeMap insert — see [`PackagingMetadata::checksums`] for
+        // why we need sorted keys (signature determinism).
         self.packaging.checksums.insert(path, checksum);
     }
 

@@ -7,6 +7,7 @@ use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::portable::{
     crypto::{decrypt_with_passphrase, deserialize_encrypted},
     manifest::AgentManifest,
+    signature::{self, SignatureStatus},
     validation::{validate_package, ValidationResult},
 };
 use crate::session::key::derive_base_session_key;
@@ -36,6 +37,13 @@ pub struct ImportOptions {
     pub force: bool,
     /// Team name for workspace/sessions placement
     pub team: Option<String>,
+    /// Allow importing an unsigned `.agent` package (issue #14).
+    ///
+    /// Default: `false`. When `false`, any package whose
+    /// `signatures.manifest` is empty fails the import with
+    /// `signature_verification_failed`. This is a security check and is
+    /// *not* affected by `force` or `skip_validation`.
+    pub allow_unsigned: bool,
 }
 
 impl Default for ImportOptions {
@@ -50,6 +58,7 @@ impl Default for ImportOptions {
             skip_validation: false,
             force: false,
             team: None,
+            allow_unsigned: false,
         }
     }
 }
@@ -151,8 +160,53 @@ impl Unpackager {
         files: HashMap<String, Vec<u8>>,
         options: ImportOptions,
     ) -> anyhow::Result<ImportResult> {
-        // Parse manifest
-        let manifest = self.parse_manifest(&files)?;
+        // Parse manifest. We keep the raw bytes around because the
+        // signature verification path needs them: parsing and
+        // re-serializing would lose any byte-level changes an attacker
+        // introduced in transit, and the signature is over the exact
+        // bytes the packager wrote.
+        let manifest_bytes = files
+            .get("manifest.toml")
+            .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml"))?
+            .clone();
+        let manifest_str = std::str::from_utf8(&manifest_bytes)?;
+        let manifest = AgentManifest::from_toml(manifest_str)?;
+
+        // ── Signature check (issue #14) ──────────────────────────────
+        // Signature verification is a security guarantee. It runs
+        // unconditionally — `force` and `skip_validation` do NOT
+        // bypass it. A user who genuinely wants to pull from a source
+        // they don't fully trust can pass `--allow-unsigned-agent`
+        // (mapped to `allow_unsigned`); that opts in to importing an
+        // *unsigned* package only. A *badly signed* package is always
+        // rejected.
+        let did_doc_bytes = files
+            .get("identity/did.json")
+            .ok_or_else(|| anyhow::anyhow!("Missing identity/did.json"))?
+            .clone();
+        match signature::verify_manifest_signature(
+            &manifest_bytes,
+            &did_doc_bytes,
+            options.allow_unsigned,
+        ) {
+            Ok(SignatureStatus::Verified) => {
+                tracing::debug!(
+                    "manifest signature verified for agent '{}'",
+                    manifest.agent.name
+                );
+            }
+            Ok(SignatureStatus::AllowedUnsigned) => {
+                // Already logged inside verify_manifest_signature.
+            }
+            Err(e) => {
+                // Stable CLI error code: signature_verification_failed
+                // (issue #14 acceptance criteria). The human reason is
+                // in `e`.
+                return Err(anyhow::anyhow!(
+                    "[signature_verification_failed] Manifest signature check failed: {e}"
+                ));
+            }
+        }
 
         // Validate unless skipped
         let validation = if options.skip_validation {

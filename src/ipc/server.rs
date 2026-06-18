@@ -1196,9 +1196,14 @@ impl IpcServer {
                 file_path,
                 name,
                 team: _team,
+                allow_unsigned,
             } => {
                 let service = state.agent_mgmt_service();
-                let opts = crate::common::types::agent::AgentImportOptions { name, force: false };
+                let opts = crate::common::types::agent::AgentImportOptions {
+                    name,
+                    force: false,
+                    allow_unsigned,
+                };
                 match service
                     .import_agent(std::path::Path::new(&file_path), opts)
                     .await
@@ -1225,9 +1230,19 @@ impl IpcServer {
                         Self::send_sink(sink, response).await?;
                     }
                     Err(e) => {
+                        // Use Debug formatting so the full anyhow
+                        // error chain (top-level `context()` wrapper
+                        // plus the underlying cause) is preserved
+                        // across the IPC boundary. With
+                        // `e.to_string()` (Display) anyhow shows only
+                        // the topmost context, which leaves callers
+                        // — and the integration tests — with an
+                        // opaque "Failed to import agent package"
+                        // and no indication of the actual cause
+                        // (e.g. `signature_verification_failed`).
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: e.to_string(),
+                            message: format!("{e:?}"),
                         };
                         Self::send_sink(sink, response).await?;
                     }
@@ -2553,6 +2568,10 @@ impl IpcServer {
                                 let import_opts = crate::common::types::agent::AgentImportOptions {
                                     name: None,
                                     force,
+                                    // Registry pull path does not surface the
+                                    // unsigned opt-in to the CLI; default to
+                                    // false (secure by default).
+                                    allow_unsigned: false,
                                 };
 
                                 match service.import_agent(&temp_path, import_opts).await {

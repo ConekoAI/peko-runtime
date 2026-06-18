@@ -785,6 +785,7 @@ impl AgentService {
             skip_validation: false,
             force: opts.force,
             team: None, // New layout: no team
+            allow_unsigned: opts.allow_unsigned,
         };
 
         // Create unpackager with the config dir as base directory.
@@ -801,10 +802,18 @@ impl AgentService {
         let unpackager = portable::Unpackager::new(file_path).with_base_dir(&config_dir);
 
         // Import the package
-        let result = unpackager
-            .import(import_opts)
-            .await
-            .context("Failed to import agent package")?;
+        let result = match unpackager.import(import_opts).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Surface the full error chain to the daemon's stderr
+                // — the IPC Error response only carries the top-level
+                // message, which is just the wrapper. Operators need
+                // the underlying cause (e.g. "signature_verification_failed")
+                // to diagnose a failed import.
+                tracing::error!(error = ?e, "agent package import failed");
+                return Err(e).context("Failed to import agent package");
+            }
+        };
 
         // Initialize empty memberships file
         let memberships = AgentMemberships::new();

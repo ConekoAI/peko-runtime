@@ -420,6 +420,11 @@ async fn test_full_packaging_pipeline() {
         force: false,
         passphrase: None,
         team: None,
+        // Issue #14: signature verification is now enforced on import.
+        // The integration pipeline produces packages via the canonical
+        // Packager, which signs the manifest, so verification passes
+        // without an opt-in.
+        allow_unsigned: false,
     };
 
     let import_result = unpackager.import(import_options).await.unwrap();
@@ -514,6 +519,10 @@ instances = 1
         import_mcp: false,
         rotate_keys: false,
         force: false,
+        // Issue #14: signature verification is now enforced. Packages
+        // built by the canonical Packager are signed, so this stays
+        // at the secure default.
+        allow_unsigned: false,
     };
 
     let team_import_result =
