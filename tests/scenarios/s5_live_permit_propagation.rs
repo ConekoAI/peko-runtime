@@ -98,7 +98,7 @@ description = "s5 live permit propagation agent"
 auto_accept_trusted = false
 default_timeout_seconds = 60
 host_runtime_id = "{runtime_did}"
-owner = {{ kind = "user", id = "local" }}
+owner_id = "local"
 
 [provider]
 provider_type = "openai_compatible"

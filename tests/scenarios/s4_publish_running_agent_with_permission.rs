@@ -197,7 +197,7 @@ description = "D4 publish-with-permission agent"
 auto_accept_trusted = false
 default_timeout_seconds = 60
 host_runtime_id = "{owner_did}"
-owner = {{ kind = "user", id = "{owner_did}" }}
+owner_id = "{owner_did}"
 
 [provider]
 provider_type = "openai_compatible"

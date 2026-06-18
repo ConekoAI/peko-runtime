@@ -48,7 +48,7 @@ pub struct AgentConfig {
     /// Legacy owner-id string (ADR-033, pre-039). The service layer
     /// folds this into `owner` if `owner` is still the default
     /// `Principal::User("")`. New configs should set `owner` only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub owner_id: Option<String>,
     /// Explicit permission grants on this agent (ADR-033)
     #[serde(default)]
