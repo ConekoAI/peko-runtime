@@ -511,17 +511,18 @@ pub async fn handle_team(
             subject,
             permission,
         } => {
-            let subject_type = if subject == "public" {
-                crate::auth::ownership::SubjectType::Public
+            let principal = if subject == "public" {
+                crate::auth::principal::Principal::Public
             } else {
-                crate::auth::ownership::SubjectType::User
+                crate::auth::principal::Principal::User(subject.clone())
             };
             let permission = parse_team_permission(&permission)?;
             let packet = crate::ipc::RequestPacket::TeamGrantPermission {
                 request_id: 1,
                 team: name.clone(),
-                subject_id: subject.clone(),
-                subject_type,
+                subject: Some(principal),
+                subject_id: None,
+                subject_type: None,
                 permission,
             };
             let response = ipc_request(packet).await?;
@@ -549,11 +550,18 @@ pub async fn handle_team(
             subject,
             permission,
         } => {
+            let principal = if subject == "public" {
+                crate::auth::principal::Principal::Public
+            } else {
+                crate::auth::principal::Principal::User(subject.clone())
+            };
             let permission = parse_team_permission(&permission)?;
             let packet = crate::ipc::RequestPacket::TeamRevokePermission {
                 request_id: 1,
                 team: name.clone(),
-                subject_id: subject.clone(),
+                subject: Some(principal),
+                subject_id: None,
+                subject_type: None,
                 permission,
             };
             let response = ipc_request(packet).await?;

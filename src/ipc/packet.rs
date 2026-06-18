@@ -523,7 +523,12 @@ pub enum RequestPacket {
     #[serde(rename = "auth_status")]
     AuthStatus { request_id: u64 },
 
-    // ── Ownership and Permission (ADR-033) ──
+    // ── Ownership and Permission (ADR-033, ADR-039) ──
+    //
+    // Grant/revoke packets carry a single `subject: Principal` (ADR-039).
+    // The legacy `(subject_id, subject_type)` pair is accepted on the
+    // wire for one release — see `RequestPacket::resolved_subject` and
+    // issue #25. New CLIs emit `subject` only.
     #[serde(rename = "agent_transfer_owner")]
     AgentTransferOwner {
         request_id: u64,
@@ -534,15 +539,30 @@ pub enum RequestPacket {
     AgentGrantPermission {
         request_id: u64,
         agent: String,
-        subject_id: String,
-        subject_type: crate::auth::ownership::SubjectType,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject: Option<crate::auth::principal::Principal>,
+        /// Legacy ADR-033 wire field. Accepted when `subject` is `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_id: Option<String>,
+        /// Legacy ADR-033 wire field. See `subject_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_type: Option<crate::auth::ownership::SubjectType>,
         permission: crate::auth::ownership::Permission,
     },
     #[serde(rename = "agent_revoke_permission")]
     AgentRevokePermission {
         request_id: u64,
         agent: String,
-        subject_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject: Option<crate::auth::principal::Principal>,
+        /// Legacy ADR-033 wire field. Accepted when `subject` is `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_id: Option<String>,
+        /// Legacy ADR-033 wire field. See `subject_id`. The Revoke
+        /// packets never carried this pre-#25, but we accept it now so
+        /// a hypothetical mixed-shape client can't accidentally drop it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_type: Option<crate::auth::ownership::SubjectType>,
         permission: crate::auth::ownership::Permission,
     },
     #[serde(rename = "team_transfer_owner")]
@@ -555,15 +575,29 @@ pub enum RequestPacket {
     TeamGrantPermission {
         request_id: u64,
         team: String,
-        subject_id: String,
-        subject_type: crate::auth::ownership::SubjectType,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject: Option<crate::auth::principal::Principal>,
+        /// Legacy ADR-033 wire field. Accepted when `subject` is `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_id: Option<String>,
+        /// Legacy ADR-033 wire field. See `subject_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_type: Option<crate::auth::ownership::SubjectType>,
         permission: crate::auth::ownership::Permission,
     },
     #[serde(rename = "team_revoke_permission")]
     TeamRevokePermission {
         request_id: u64,
         team: String,
-        subject_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject: Option<crate::auth::principal::Principal>,
+        /// Legacy ADR-033 wire field. Accepted when `subject` is `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_id: Option<String>,
+        /// Legacy ADR-033 wire field. See `subject_id`. See the note on
+        /// `AgentRevokePermission::subject_type`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_type: Option<crate::auth::ownership::SubjectType>,
         permission: crate::auth::ownership::Permission,
     },
 }
@@ -650,6 +684,139 @@ impl RequestPacket {
             | Self::TeamGrantPermission { request_id, .. }
             | Self::TeamRevokePermission { request_id, .. } => *request_id,
         }
+    }
+
+    /// Resolve the effective `Principal` subject for a grant/revoke
+    /// packet (issue #25, ADR-039).
+    ///
+    /// Returns the canonical `Principal` for this packet. Resolution
+    /// rules:
+    ///
+    /// * `subject: Some(p)` → `p` (canonical wins; if the legacy pair
+    ///   is also set, it is ignored with a `debug!` log).
+    /// * `subject: None`, `subject_id: Some(id)` → reconstruct via
+    ///   `principal_from_wire(id, subject_type)`. If `subject_type` is
+    ///   `None`, it defaults to `SubjectType::User` (mirrors the
+    ///   pre-#25 string-form helper). Emits a `warn!` *once per
+    ///   process per variant-kind* so operators can monitor legacy
+    ///   CLI traffic during the deprecation window.
+    /// * Both `subject` and `subject_id` are `None` → returns an
+    ///   error. The handler must surface this as a
+    ///   `ResponsePacket::Error`.
+    ///
+    /// Only the four grant/revoke variants carry a subject. For any
+    /// other variant this method returns `Ok(Principal::User(""))` so
+    /// callers can use the same match arm — but in practice the server
+    /// only calls this inside the grant/revoke arms.
+    ///
+    /// # Errors
+    /// Returns `Err(Error::msg("missing subject: ..."))` when both
+    /// `subject` and `subject_id` are absent.
+    pub fn resolved_subject(&self) -> anyhow::Result<crate::auth::principal::Principal> {
+        use crate::auth::ownership::SubjectType;
+        use crate::auth::principal::Principal;
+
+        // Variant-kind tag for the once-per-process warning.
+        #[derive(Copy, Clone, Debug)]
+        enum LegacyKind {
+            AgentGrant,
+            AgentRevoke,
+            TeamGrant,
+            TeamRevoke,
+        }
+
+        // Static Once array, indexed by LegacyKind. Order must match
+        // the enum variants (add new kinds to the END).
+        static LEGACY_ONCE: [std::sync::Once; 4] = [
+            std::sync::Once::new(),
+            std::sync::Once::new(),
+            std::sync::Once::new(),
+            std::sync::Once::new(),
+        ];
+
+        let (canonical, legacy_id, legacy_kind) = match self {
+            Self::AgentGrantPermission {
+                subject,
+                subject_id,
+                ..
+            } => (subject.as_ref(), subject_id.as_deref(), LegacyKind::AgentGrant),
+            Self::AgentRevokePermission {
+                subject,
+                subject_id,
+                ..
+            } => (subject.as_ref(), subject_id.as_deref(), LegacyKind::AgentRevoke),
+            Self::TeamGrantPermission {
+                subject,
+                subject_id,
+                ..
+            } => (subject.as_ref(), subject_id.as_deref(), LegacyKind::TeamGrant),
+            Self::TeamRevokePermission {
+                subject,
+                subject_id,
+                ..
+            } => (subject.as_ref(), subject_id.as_deref(), LegacyKind::TeamRevoke),
+            // Non-grant/revoke packets have no subject. Return the
+            // default sentinel so the caller doesn't have to special-case.
+            _ => return Ok(Principal::User(String::new())),
+        };
+
+        // Canonical path: new wire shape wins.
+        if let Some(p) = canonical {
+            if legacy_id.is_some() {
+                tracing::debug!(
+                    "IPC packet carries both `subject` and legacy `subject_id`; \
+                     canonical wins, legacy fields ignored"
+                );
+            }
+            return Ok(p.clone());
+        }
+
+        // Legacy path: rebuild via principal_from_wire, defaulting the
+        // kind to User when absent (matches pre-#25 behavior).
+        let Some(id) = legacy_id else {
+            anyhow::bail!(
+                "missing subject: set `subject` (ADR-039) or `subject_id` + \
+                 `subject_type` (ADR-033, legacy)"
+            );
+        };
+
+        // subject_type comes from the variant when present. We use the
+        // `match self` again here to fetch it cleanly (avoids
+        // duplicating the field-extraction logic).
+        let subject_type = match self {
+            Self::AgentGrantPermission { subject_type, .. }
+            | Self::TeamGrantPermission { subject_type, .. } => subject_type.clone(),
+            Self::AgentRevokePermission { subject_type, .. }
+            | Self::TeamRevokePermission { subject_type, .. } => subject_type.clone(),
+            _ => unreachable!("non-grant/revoke variant cannot reach here"),
+        };
+
+        let kind_label = match legacy_kind {
+            LegacyKind::AgentGrant => "agent_grant_permission",
+            LegacyKind::AgentRevoke => "agent_revoke_permission",
+            LegacyKind::TeamGrant => "team_grant_permission",
+            LegacyKind::TeamRevoke => "team_revoke_permission",
+        };
+        let idx = match legacy_kind {
+            LegacyKind::AgentGrant => 0,
+            LegacyKind::AgentRevoke => 1,
+            LegacyKind::TeamGrant => 2,
+            LegacyKind::TeamRevoke => 3,
+        };
+        let id_for_log = id.to_string();
+        LEGACY_ONCE[idx].call_once(|| {
+            tracing::warn!(
+                kind = kind_label,
+                subject_id = %id_for_log,
+                "IPC grant/revoke packet uses the legacy ADR-033 wire shape \
+                 (`subject_id` + `subject_type`); this is deprecated and will \
+                 be removed in the next release. Update the CLI to emit \
+                 `subject: {{kind, id}}` (ADR-039)."
+            );
+        });
+
+        let st = subject_type.unwrap_or(SubjectType::User);
+        Ok(crate::auth::ownership::principal_from_wire(id, st))
     }
 
     /// Serialize to JSON bytes
@@ -4328,5 +4495,152 @@ mod tests {
             AuthCredential::None => (), // Expected
             other => panic!("Expected None credential for bare packet, got: {:?}", other),
         }
+    }
+
+    // -- issue #25: `RequestPacket::resolved_subject` --
+
+    fn grant_pkt(
+        subject: Option<crate::auth::principal::Principal>,
+        subject_id: Option<String>,
+        subject_type: Option<crate::auth::ownership::SubjectType>,
+    ) -> RequestPacket {
+        RequestPacket::AgentGrantPermission {
+            request_id: 1,
+            agent: "a".into(),
+            subject,
+            subject_id,
+            subject_type,
+            permission: crate::auth::ownership::Permission::Chat,
+        }
+    }
+
+    #[test]
+    fn test_resolved_subject_canonical_shape() {
+        // New-shape grant: returns the canonical `Principal`, ignoring
+        // any (hypothetical) legacy fields on the same packet.
+        let pkt = grant_pkt(
+            Some(crate::auth::principal::Principal::Agent("helper".into())),
+            None,
+            None,
+        );
+        assert_eq!(
+            pkt.resolved_subject().unwrap(),
+            crate::auth::principal::Principal::Agent("helper".into())
+        );
+    }
+
+    #[test]
+    fn test_resolved_subject_legacy_pair() {
+        // Legacy grant (only `subject_id` + `subject_type`): rebuilt
+        // via `principal_from_wire`.
+        let pkt = grant_pkt(
+            None,
+            Some("helper".into()),
+            Some(crate::auth::ownership::SubjectType::Agent),
+        );
+        assert_eq!(
+            pkt.resolved_subject().unwrap(),
+            crate::auth::principal::Principal::Agent("helper".into())
+        );
+    }
+
+    #[test]
+    fn test_resolved_subject_legacy_subject_id_only_defaults_to_user() {
+        // Legacy grant with only `subject_id`, no `subject_type` —
+        // defaults to `SubjectType::User` (matches pre-#25 behavior
+        // and the legacy `principal_from_string_with_default_user`).
+        let pkt = grant_pkt(None, Some("legacy-user".into()), None);
+        assert_eq!(
+            pkt.resolved_subject().unwrap(),
+            crate::auth::principal::Principal::User("legacy-user".into())
+        );
+    }
+
+    #[test]
+    fn test_resolved_subject_missing_subject_errors() {
+        let pkt = grant_pkt(None, None, None);
+        let err = pkt.resolved_subject().expect_err("must error");
+        assert!(err.to_string().contains("missing subject"));
+    }
+
+    #[test]
+    fn test_resolved_subject_team_and_public_variants() {
+        // Team grant.
+        let pkt = RequestPacket::TeamGrantPermission {
+            request_id: 1,
+            team: "t".into(),
+            subject: Some(crate::auth::principal::Principal::Team("eng".into())),
+            subject_id: None,
+            subject_type: None,
+            permission: crate::auth::ownership::Permission::Chat,
+        };
+        assert_eq!(
+            pkt.resolved_subject().unwrap(),
+            crate::auth::principal::Principal::Team("eng".into())
+        );
+
+        // Public revoke via legacy sentinel.
+        let pkt = RequestPacket::AgentRevokePermission {
+            request_id: 1,
+            agent: "a".into(),
+            subject: None,
+            subject_id: Some("public".into()),
+            subject_type: None,
+            permission: crate::auth::ownership::Permission::Chat,
+        };
+        // Bare "public" with default User kind → Principal::User("public").
+        assert_eq!(
+            pkt.resolved_subject().unwrap(),
+            crate::auth::principal::Principal::User("public".into())
+        );
+
+        // Public revoke via canonical Public.
+        let pkt = RequestPacket::AgentRevokePermission {
+            request_id: 1,
+            agent: "a".into(),
+            subject: Some(crate::auth::principal::Principal::Public),
+            subject_id: None,
+            subject_type: None,
+            permission: crate::auth::ownership::Permission::Chat,
+        };
+        assert_eq!(
+            pkt.resolved_subject().unwrap(),
+            crate::auth::principal::Principal::Public
+        );
+    }
+
+    #[test]
+    fn test_resolved_subject_non_grant_revoke_returns_sentinel() {
+        // Any non-grant/revoke variant must not panic — returns a
+        // sentinel `Principal::User("")` that the caller can ignore.
+        let pkt = RequestPacket::Ping { request_id: 1 };
+        assert_eq!(
+            pkt.resolved_subject().unwrap(),
+            crate::auth::principal::Principal::User(String::new())
+        );
+    }
+
+    #[test]
+    fn test_grant_serialization_omits_legacy_fields_when_none() {
+        // `skip_serializing_if = "Option::is_none"` must keep the
+        // legacy fields out of the wire when the new shape is used.
+        let pkt = grant_pkt(
+            Some(crate::auth::principal::Principal::Agent("helper".into())),
+            None,
+            None,
+        );
+        let json = serde_json::to_string(&pkt).unwrap();
+        assert!(
+            !json.contains("subject_id"),
+            "new-shape serialization should omit `subject_id`, got: {json}"
+        );
+        assert!(
+            !json.contains("subject_type"),
+            "new-shape serialization should omit `subject_type`, got: {json}"
+        );
+        assert!(
+            json.contains("\"subject\""),
+            "new-shape serialization must carry `subject`, got: {json}"
+        );
     }
 }

@@ -4,6 +4,73 @@ All notable changes to Pekobot.
 
 ## [Unreleased]
 
+### Fixed (issue #25) — Collapse IPC `(subject_id, subject_type)` into `subject: Principal`
+
+The IPC `RequestPacket` variants for grant/revoke
+(`agent_grant_permission`, `agent_revoke_permission`,
+`team_grant_permission`, `team_revoke_permission`) now carry a single
+`subject: Principal` field (ADR-039). The legacy two-field shape
+(`subject_id: String` + `subject_type: SubjectType`) is accepted on
+the wire for one release, with a `warn!` logged once per process per
+variant-kind on the legacy path so operators can monitor the
+deprecation window. New CLIs only emit `subject`.
+
+**Why this matters**: pre-#25, the `AgentRevokePermission` /
+`TeamRevokePermission` packets carried only `subject_id: String` with
+no `subject_type`. The server handler hardcoded
+`principal_from_string_with_default_user(&subject_id)`, which always
+returned `Principal::User(...)`. Since on-disk `PermissionGrant`
+stores `subject: Principal` with the proper kind
+(e.g. `Principal::Agent("helper")` for an Agent-issued grant), and
+the service-layer revoke matches via `g.subject == *subject`,
+**revoking any Agent / Team / Public grant via the IPC layer was a
+silent no-op** — pinned by three regression tests in
+`tests/principal_back_compat.rs`. The fix closes this hole by
+collapsing the wire to the canonical `Principal` and routing both
+shapes through a single `RequestPacket::resolved_subject()` helper.
+
+- New `RequestPacket::resolved_subject()` helper in
+  [`src/ipc/packet.rs`](src/ipc/packet.rs) collapses the canonical
+  `subject: Principal` and the legacy `(subject_id, subject_type)`
+  pair into a single `Result<Principal, Error>`. Returns an explicit
+  `Error` (surfaced as `ResponsePacket::Error` with message
+  "missing subject: ...") when neither field is set — strictly
+  better than the previous silent no-op.
+- All four grant/revoke IPC variants now carry the new `subject`
+  field; legacy fields are kept as `Option<...>` with
+  `#[serde(default, skip_serializing_if = "Option::is_none")]` so new
+  CLI wire bytes stay clean (no `subject_id`/`subject_type` keys
+  emitted).
+- Server handlers in [`src/ipc/server.rs`](src/ipc/server.rs) no
+  longer call `principal_from_string_with_default_user` or
+  `principal_from_wire` directly — they call
+  `RequestPacket::resolved_subject()` and surface `Err` as
+  `ResponsePacket::Error`.
+- CLI handlers in
+  [`src/commands/agent/handlers.rs`](src/commands/agent/handlers.rs)
+  and [`src/commands/team.rs`](src/commands/team.rs) emit the new
+  `subject: Some(principal)` shape. CLI UX is unchanged
+  (still `--subject <string>` with `"public"` sentinel); the
+  `--subject-kind` flag is a follow-up.
+- `SubjectType` and `principal_from_wire` are marked
+  `#[deprecated]`. Both are still exported for the deprecation
+  window and will be removed in the next release after the warning
+  logs show no legacy traffic.
+- New `tests/scenarios/s6_revoke_principal_collapse_e2e.rs`
+  exercises the bug repro end-to-end: an Agent-issued grant +
+  revoke via IPC removes the on-disk grant; same for Team grants;
+  the legacy wire shape still works; missing-subject returns a
+  clean error.
+- The three `test_revoke_string_form_*` regression tests in
+  [`tests/principal_back_compat.rs`](tests/principal_back_compat.rs)
+  are rewritten from "pin the limitation" to "pin the fix": they
+  now assert that the new wire resolution correctly matches
+  Agent / Team / Public grants and removes them, and that the
+  cross-kind guard still holds. Two new tests
+  (`test_resolved_subject_missing_subject_errors` and
+  `test_resolved_subject_legacy_wire_shape_serde_round_trip`) cover
+  the error path and the JSON round-trip.
+
 ### Fixed (issue #16) — `peko agent permit` / `pevoke` propagate to PekoHub within ~1s
 
 `peko agent permit <agent> <user> chat` and `peko agent revoke <agent>

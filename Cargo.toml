@@ -158,6 +158,10 @@ path = "tests/scenarios/s4_publish_running_agent_with_permission.rs"
 [[test]]
 name = "s5_live_permit_propagation"
 path = "tests/scenarios/s5_live_permit_propagation.rs"
+
+[[test]]
+name = "s6_revoke_principal_collapse_e2e"
+path = "tests/scenarios/s6_revoke_principal_collapse_e2e.rs"
 [[test]]
 name = "tunnel_security"
 path = "tests/tunnel_security.rs"
