@@ -860,6 +860,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt001_basic_agentic_loop() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale (Windows-headless
+        // keyring panics inside `Agent::new_for_test` → `KeyStorage::with_path`).
+        crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -921,6 +925,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt002_streaming_output() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale.
+        crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -970,6 +977,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt003_timeout_config_propagation() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale.
+        crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1003,6 +1013,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt004_graceful_error_handling() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale.
+        crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1056,6 +1069,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt005_session_persistence() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale.
+        crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1104,6 +1120,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt006_max_iterations_enforced() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale.
+        crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1151,6 +1170,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_rt006_default_max_iterations_is_10() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale.
+        crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
@@ -1174,6 +1196,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_tool_call_iteration() {
+        // Force the encrypted-file identity fallback — see
+        // `crate::identity::init_test_env` for the rationale.
+        crate::identity::init_test_env();
         ensure_global_core();
         let temp_dir = TempDir::new().unwrap();
         let (provider, mock) = mock_provider();
