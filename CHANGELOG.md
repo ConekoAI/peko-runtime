@@ -4,6 +4,53 @@ All notable changes to Pekobot.
 
 ## [Unreleased]
 
+### Fixed (issue #16) — `peko agent permit` / `pevoke` propagate to PekoHub within ~1s
+
+`peko agent permit <agent> <user> chat` and `peko agent revoke <agent>
+<user> chat` now push a fresh `exposure_update` to PekoHub immediately,
+instead of silently waiting for the daemon to restart (or for the
+agent to be re-created / the tunnel to reconnect). Previously the
+grant was persisted to `~/.peko/agents/<name>/config.toml`, but
+PekoHub's `canChat` ACL — and the runtime's defense-in-depth
+`instance_state.allowed_users` cache — both read from the last
+`instance_announce`, so a granted user was denied (or a revoked user
+could keep chatting) until the daemon restarted. The revoke path
+was the more dangerous half: a *security* failure disguised as a
+feature.
+
+- New `TunnelDispatcher::refresh_instance_allowed_users(agent_name)`
+  in `src/tunnel/dispatcher.rs` re-derives `allowed_user_ids` from
+  the live `AgentConfig.permissions` and sends an `exposure_update`
+  to PekoHub, but only if the agent's current exposure is `Private`
+  (Public/Unexposed don't carry an `allowed_users` list, and we must
+  not silently flip the exposure as a side effect of a permit call).
+  No-op if the agent has no cached `instance_state` (tunnel not
+  connected) or no live tunnel handle — the next `announce_instances`
+  after `TunnelReady` will pick up the latest config.
+- `AgentGrantPermission` and `AgentRevokePermission` IPC handlers
+  in `src/ipc/server.rs` call `refresh_instance_allowed_users`
+  after a successful local config write. The call is best-effort
+  and never fails the permit itself; a tunnel outage produces a
+  `warn!` log and the next `TunnelReady` round-trip carries the
+  new `allowed_users`.
+- `TunnelDispatcher::set_instance_exposure` was refactored to
+  delegate its tunnel-send step to a new private
+  `send_exposure_update` helper, which `refresh_instance_allowed_users`
+  also calls — the local state mutation stays in
+  `set_instance_exposure` only.
+- New `tests/scenarios/s5_live_permit_propagation.rs` regression
+  test: starts the daemon, asserts a non-owner user is denied
+  (empty `allowedUsers`), runs `peko agent permit` via subprocess,
+  asserts the user is allowed within ~1s, runs `peko agent revoke`
+  and asserts denial within ~1s, then re-permits and asserts
+  re-allowance — all without restarting the daemon. PekoHub's
+  `instance.allowedUsers` is also asserted to contain the grantee.
+- `peko agent permit --help` and `peko agent revoke --help` help
+  text now state the propagation behaviour explicitly.
+- The "known production gap" note in
+  `tests/scenarios/s4_publish_running_agent_with_permission.rs:68-82`
+  is removed and replaced with a pointer to s5 + the issue.
+
 ### Fixed (issue #14) — manifest signature verification on import
 
 **`.agent` signature is now verified on unpack.** The packager has always

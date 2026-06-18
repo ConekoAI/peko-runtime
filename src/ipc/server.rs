@@ -3090,6 +3090,22 @@ impl IpcServer {
                     .await
                 {
                     Ok(()) => {
+                        // Propagate the new `allowed_users` to PekoHub and
+                        // refresh the runtime's defense-in-depth cache
+                        // (issue #16). Best-effort: a tunnel outage does
+                        // not fail the permit — the next `announce_instances`
+                        // after `TunnelReady` will pick up the latest config.
+                        if let Some(dispatcher) = state.tunnel_dispatcher().await {
+                            if let Err(e) =
+                                dispatcher.refresh_instance_allowed_users(&agent).await
+                            {
+                                warn!(
+                                    agent = %agent,
+                                    "Failed to refresh allowed_users after grant: {e}"
+                                );
+                            }
+                        }
+
                         let response = ResponsePacket::Done {
                             request_id,
                             success: true,
@@ -3119,6 +3135,21 @@ impl IpcServer {
                     .await
                 {
                     Ok(()) => {
+                        // Symmetric to AgentGrantPermission — propagate the
+                        // updated `allowed_users` to PekoHub so the revoked
+                        // user loses access within ~1s, no daemon restart
+                        // (issue #16). Best-effort; see note above.
+                        if let Some(dispatcher) = state.tunnel_dispatcher().await {
+                            if let Err(e) =
+                                dispatcher.refresh_instance_allowed_users(&agent).await
+                            {
+                                warn!(
+                                    agent = %agent,
+                                    "Failed to refresh allowed_users after revoke: {e}"
+                                );
+                            }
+                        }
+
                         let response = ResponsePacket::Done {
                             request_id,
                             success: true,

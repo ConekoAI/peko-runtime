@@ -65,21 +65,18 @@
 //!    discover the instance via `GET /v1/instances?runtime_id=<did>`
 //!    and look it up by runtime_id (one instance per runtime, since
 //!    the test only creates one agent).
-//! 5. **`peko agent permit` writes to `config.permissions` but does
-//!    NOT trigger an `exposure_update` on the open tunnel.** The
-//!    `AgentGrantPermission` IPC handler
-//!    ([`src/ipc/server.rs:3037-3073`](../src/ipc/server.rs#L3037-L3073))
-//!    calls `service.grant_agent_permission` which only persists to
-//!    disk; it does not call `dispatcher.set_instance_exposure` (which
-//!    is what the public `InstanceSetExposure` path at
-//!    `server.rs:2962-2999` uses to push an `exposure_update` to
-//!    pekohub). So granting a new user via the CLI does NOT make them
-//!    visible to pekohub's `canChat` ACL — only the FIRST announce's
-//!    `allowedUsers` payload is honored. **D4 test 2 therefore
-//!    pre-seeds the agent config with the granted user** so the first
-//!    `instance_announce` already includes the grant. This is a
-//!    known production gap (D4 will surface a follow-up issue to
-//!    wire `grant_agent_permission` to `set_instance_exposure`).
+//! 5. **`peko agent permit` propagates to PekoHub within ~1s.** As of
+//!    the fix for [issue #16](https://github.com/ConekoAI/peko-runtime/issues/16),
+//!    the `AgentGrantPermission` and `AgentRevokePermission` IPC
+//!    handlers call
+//!    [`TunnelDispatcher::refresh_instance_allowed_users`](../src/tunnel/dispatcher.rs)
+//!    after the local config write, which sends an `exposure_update`
+//!    to PekoHub with `allowed_user_ids` re-derived from the new
+//!    `AgentConfig.permissions`. PekoHub's `canChat` ACL (and the
+//!    runtime's defense-in-depth cache) refreshes from that. The
+//!    D4 test still pre-seeds the config before daemon start, but
+//!    the live `permit`/`revoke` path is now covered by
+//!    `tests/scenarios/s5_*.rs` (regression for #16).
 //!
 //! ## What the test asserts
 //!
