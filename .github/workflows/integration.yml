@@ -59,8 +59,10 @@ jobs:
       matrix.os != 'windows-latest'
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
-      || contains(github.event.pull_request.title, '[windows]')
-      || contains(coalesce(github.event.pull_request.body, ''), '[windows]')
+      || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.title, '[windows]'))
+      || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.body, '[windows]'))
       || contains(github.event.head_commit.message, '[windows]')
       || contains(github.ref_name, '[windows]')
     steps:
