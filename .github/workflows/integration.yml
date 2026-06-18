@@ -48,29 +48,46 @@ jobs:
   # the latter doesn't expand `~/.cargo/...` on Windows runners. Calls
   # `cargo test --lib` directly because Windows runner images don't
   # ship GNU make.
-  unit:
-    name: Unit Tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Linux always runs.
-        os: [ubuntu-latest]
-        include:
-          # Windows runs only when [windows] is in the commit message
-          # or branch name (or on nightly schedule / manual trigger).
-          # The `gated: false` flag is referenced in the job-level
-          # `if:` below — `matrix.os` is NOT available there, so we
-          # can't filter on it directly. See docs/ci/windows-gating.md
-          # for the rationale.
-          - os: windows-latest
-            gated: true
+  unit-linux:
+    name: Unit Tests (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          shared-key: peko-runtime-rust
+      - name: Run unit tests
+        run: cargo test --lib
+
+unit-windows:
+    name: Unit Tests (windows-latest)
+    runs-on: windows-latest
+    # Windows unit tests are gated — they only run when:
+    # - the PR title or commit message contains [windows]
+    # - the branch name contains [windows] or starts with windows/
+    # - on the nightly schedule
+    # - via manual workflow_dispatch
+    # Linux unit tests above always run; this gate keeps CI cheap
+    # for routine PRs while still catching Windows regressions when
+    # someone explicitly asks for it. The Windows job takes ~5
+    # minutes on cold cache and was the dominant CI cost driver.
     if: >-
-      matrix.gated != true
-      || github.event_name == 'schedule'
+      github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
       || contains(github.event.head_commit.message, '[windows]')
       || contains(github.ref_name, '[windows]')
+      || startsWith(github.ref_name, 'windows/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          shared-key: peko-runtime-rust
+      - name: Run unit tests
+        run: cargo test --lib
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -85,7 +102,7 @@ jobs:
   integration:
     name: Integration (mock LLM)
     runs-on: ubuntu-latest
-    needs: unit
+    needs: unit-linux
     steps:
       - name: Checkout peko-runtime
         uses: actions/checkout@v4
