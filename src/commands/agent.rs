@@ -174,7 +174,8 @@ pub enum AgentCommands {
         to: String,
     },
 
-    /// Grant a permission on an agent
+    /// Grant a permission on an agent. Propagates to PekoHub within ~1s when
+    /// the tunnel is connected (no daemon restart required).
     Permit {
         /// Agent name
         name: String,
@@ -186,7 +187,9 @@ pub enum AgentCommands {
         permission: String,
     },
 
-    /// Revoke a permission from an agent
+    /// Revoke a permission from an agent. The change propagates to PekoHub
+    /// within ~1s when the tunnel is connected — the revoked subject loses
+    /// access immediately, no daemon restart required.
     Revoke {
         /// Agent name
         name: String,

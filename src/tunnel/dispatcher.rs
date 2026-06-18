@@ -608,12 +608,65 @@ impl TunnelDispatcher {
             }
         }
 
-        // Send exposure update through tunnel if available
-        let handle = {
+        self.send_exposure_update(agent_name, exposure).await
+    }
+
+    /// Re-push the current exposure for an instance to PekoHub with an
+    /// `allowed_user_ids` list freshly derived from the on-disk agent
+    /// config. Used by the permit/revoke IPC paths (issue #16) so that
+    /// PekoHub's `canChat` ACL and the runtime's defense-in-depth
+    /// `instance_state.allowed_users` cache are kept in sync with the
+    /// local `AgentConfig.permissions` without requiring a daemon
+    /// restart or a new `instance_announce`.
+    ///
+    /// No-ops if:
+    /// - the agent has no cached `instance_state` (tunnel not yet
+    ///   connected, or instance never announced). The next
+    ///   `announce_instances` after `TunnelReady` will pick up the
+    ///   latest config.
+    /// - the current exposure is not `Private` (Public/Unexposed
+    ///   agents don't carry an `allowed_users` list, and we must not
+    ///   silently flip the exposure as a side effect of a permit
+    ///   call).
+    /// - there is no live tunnel handle.
+    pub async fn refresh_instance_allowed_users(&self, agent_name: &str) -> anyhow::Result<()> {
+        let instance_id = self.instance_id(agent_name);
+        let exposure = {
             let state = self.state.read().await;
-            state.tunnel_handle.clone()
+            state.instance_state.get(&instance_id).map(|s| s.exposure.clone())
         };
-        // Resolve allowed users from agent config for private exposure
+        let exposure = match exposure {
+            Some(e) if e == InstanceExposure::Private => e,
+            Some(e) => {
+                debug!(
+                    "Skipping allowed_users refresh for {}: exposure is {:?}, not Private",
+                    agent_name, e
+                );
+                return Ok(());
+            }
+            None => {
+                debug!(
+                    "Skipping allowed_users refresh for {}: no cached instance state \
+                     (tunnel not yet connected or instance not announced)",
+                    agent_name
+                );
+                return Ok(());
+            }
+        };
+        self.send_exposure_update(agent_name, exposure).await
+    }
+
+    /// Build and send an `ExposureUpdate` for the given agent, with
+    /// `allowed_user_ids` re-derived from the live `AgentConfig`.
+    /// The caller is responsible for ensuring the agent's current
+    /// exposure is meaningful (i.e. `Private`) and that local
+    /// `instance_state` reflects the desired exposure before invoking.
+    async fn send_exposure_update(
+        &self,
+        agent_name: &str,
+        exposure: InstanceExposure,
+    ) -> anyhow::Result<()> {
+        let instance_id = self.instance_id(agent_name);
         let allowed_user_ids = if exposure == InstanceExposure::Private {
             let agent_service = self.app_state.agent_mgmt_service();
             match agent_service.get_agent(agent_name, None).await {
@@ -628,8 +681,12 @@ impl TunnelDispatcher {
             None
         };
 
+        let handle = {
+            let state = self.state.read().await;
+            state.tunnel_handle.clone()
+        };
+
         if let Some(handle) = handle {
-            use super::protocol::ExposureUpdatePayload;
             let payload = ExposureUpdatePayload {
                 instance_id: instance_id.clone(),
                 exposure: exposure.clone(),
@@ -637,9 +694,15 @@ impl TunnelDispatcher {
             };
             if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
                 warn!("Failed to send exposure update for {}: {}", agent_name, e);
+                return Err(e.into());
             } else {
                 debug!("Sent exposure update for {}: {:?}", agent_name, exposure);
             }
+        } else {
+            debug!(
+                "No tunnel handle, exposure update for {} is dropped (will be re-announced on next TunnelReady)",
+                agent_name
+            );
         }
 
         Ok(())
