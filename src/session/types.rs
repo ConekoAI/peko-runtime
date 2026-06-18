@@ -318,10 +318,13 @@ mod tests {
 
     #[test]
     fn test_serialization() {
-        // `Peer` is now an alias for `Principal`, which uses
-        // `#[serde(tag = "kind", content = "id")]` — the canonical
-        // `{kind, id}` shape (ADR-039). The on-disk session key format
-        // is unchanged; this is purely the in-memory serde shape.
+        // CHANGED IN ADR-039: `Peer` is now a type alias for
+        // `Principal`, which uses `#[serde(tag = "kind", content = "id")]`.
+        // The in-memory JSON shape changed from the pre-039 default
+        // (external tagging) `{"User":"alice"}` to the canonical
+        // `{"kind":"user","id":"alice"}`. The on-disk session key
+        // format is unchanged (string-keyed, not JSON-tagged), so this
+        // only affects in-memory serde round-trips.
         let peer = Peer::User("alice".to_string());
         let json = serde_json::to_string(&peer).unwrap();
         assert_eq!(json, r#"{"kind":"user","id":"alice"}"#);

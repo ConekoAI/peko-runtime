@@ -1737,10 +1737,17 @@ impl SessionManager {
 
         // Parse the base key to get agent and peer
         if let Some(parsed) = crate::session::key::parse_session_key_v2(&base_key) {
+            // The wildcard arm aligns with the v1 defaults at
+            // `manager.rs:1046, 1049, 1052` (which default to
+            // `Peer::User("default")` for unknown peer types). This
+            // is the documented ADR-039 behavior change; see the
+            // regression test
+            // `test_wildcard_peer_type_resolves_to_user_peer` in
+            // `tests/principal_back_compat.rs`.
             let peer = match parsed.peer_type.as_str() {
                 "agent" => Peer::Agent(parsed.peer_id),
                 "user" => Peer::User(parsed.peer_id),
-                _ => Peer::Agent(parsed.peer_id),
+                _ => Peer::User(parsed.peer_id),
             };
 
             // Remove the base session

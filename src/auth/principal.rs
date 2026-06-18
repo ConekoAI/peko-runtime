@@ -27,10 +27,10 @@ use serde::{Deserialize, Serialize};
 /// See `Principal::is_session_peer`.
 ///
 /// Wire format: `{ "kind": "user" | "agent" | "team" | "public", "id": "..." }`
-/// via `#[serde(tag = "kind", content = "id")]`. For the legacy
-/// `owner_id = "string"` form, see `deserialize_owner_principal` and
-/// the two-field `owner` + `owner_id` shim on `AgentConfig` /
-/// `TeamMetadata`.
+/// via `#[serde(tag = "kind", content = "id")]`. The legacy
+/// `owner_id = "string"` form is handled by the two-field
+/// `owner` + `owner_id` shim on `AgentConfig` / `TeamMetadata` (see
+/// ADR-039).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "lowercase")]
 pub enum Principal {
@@ -226,82 +226,25 @@ pub fn principal_from_string(s: &str, default_kind: SubjectKind) -> Principal {
 /// Tries `Principal::from_str` first; on failure, treats the string as
 /// a `Principal::User` id. An empty string always resolves to
 /// `Principal::User("")` (the legacy "no owner" sentinel).
+///
+/// **Asymmetric prefix handling (intentional, but worth flagging):**
+/// - `"user:alice"` → `Principal::User("alice")` (the `user:` prefix is
+///   stripped as a legacy normalization)
+/// - `"agent:helper"` / `"team:eng"` / `"public"` → resolved via
+///   `Principal::from_str` (prefix-agnostic — the full string is the
+///   kind:id pair)
+/// - bare `"alice"` → `Principal::User("alice")` (the legacy fallback
+///   when the string has no `:` separator)
+///
+/// This means a typo like `owner_id = "use:alice"` silently becomes
+/// `Principal::User("use:alice")` rather than being normalized. That
+/// matches the pre-ADR-039 behavior (the legacy `subject_id` field was
+/// always treated as a user identifier), so the asymmetry is
+/// backward-compatible. New configs should set `owner = { kind, id }`
+/// explicitly.
 #[must_use]
 pub fn principal_from_string_with_default_user(s: &str) -> Principal {
     principal_from_string(s, SubjectKind::User)
-}
-
-/// Serde helper: deserialize a `Principal` from a value that may be
-/// either a string (legacy `owner_id = "..."`, default kind `User`) or
-/// a struct with `kind` + `id` fields (the new `owner = { kind, id }`
-/// form). Used by both `AgentConfig::owner` and `TeamMetadata::owner`.
-pub fn deserialize_owner_principal<'de, D>(de: D) -> Result<Principal, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{Deserialize, Error, Visitor};
-    use std::fmt;
-
-    #[derive(serde::Deserialize, Debug)]
-    struct TaggedRepr {
-        kind: String,
-        id: Option<String>,
-    }
-
-    struct OwnerVisitor;
-
-    impl<'de> Visitor<'de> for OwnerVisitor {
-        type Value = Principal;
-
-        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a principal string or { kind, id } struct")
-        }
-
-        fn visit_str<E: Error>(self, s: &str) -> Result<Self::Value, E> {
-            eprintln!("[SHIM] visit_str: {s:?}");
-            principal_from_legacy_string(s).map_err(E::custom)
-        }
-
-        fn visit_string<E: Error>(self, s: String) -> Result<Self::Value, E> {
-            self.visit_str(&s)
-        }
-
-        fn visit_borrowed_str<E: Error>(self, s: &'de str) -> Result<Self::Value, E> {
-            self.visit_str(s)
-        }
-
-        fn visit_map<A: serde::de::MapAccess<'de>>(
-            self,
-            map: A,
-        ) -> Result<Self::Value, A::Error> {
-            eprintln!("[SHIM] visit_map called");
-            let r = TaggedRepr::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-            eprintln!("[SHIM] visit_map parsed: {r:?}");
-            principal_from_tagged(r.kind, r.id.unwrap_or_default()).map_err(A::Error::custom)
-        }
-    }
-
-    de.deserialize_any(OwnerVisitor)
-}
-
-fn principal_from_legacy_string(s: &str) -> Result<Principal, String> {
-    if s.is_empty() {
-        Ok(Principal::User(String::new()))
-    } else if let Some(rest) = s.strip_prefix("user:") {
-        Ok(Principal::User(rest.to_string()))
-    } else {
-        Ok(Principal::User(s.to_string()))
-    }
-}
-
-fn principal_from_tagged(kind: String, id: String) -> Result<Principal, String> {
-    match kind.as_str() {
-        "user" => Ok(Principal::User(id)),
-        "agent" => Ok(Principal::Agent(id)),
-        "team" => Ok(Principal::Team(id)),
-        "public" => Ok(Principal::Public),
-        other => Err(format!("unknown owner kind '{other}'")),
-    }
 }
 
 #[cfg(test)]
