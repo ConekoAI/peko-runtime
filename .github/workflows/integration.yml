@@ -36,20 +36,27 @@ env:
 
 jobs:
   # ── Tier 0: Unit tests (no Docker, no LLM) ──────────────────────────────
+  # Matrix runs on Linux AND Windows so a Windows-local regression can't
+  # sneak past CI again. Uses `Swatinem/rust-cache@v2` instead of
+  # `actions/cache@v4` because the latter doesn't expand `~/.cargo/...`
+  # on Windows runners. Calls `cargo test --lib` directly because Windows
+  # runner images don't ship GNU make.
   unit:
-    name: Unit Tests
-    runs-on: ubuntu-latest
+    name: Unit Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: make test
+          workspaces: .
+          shared-key: peko-runtime-rust
+      - name: Run unit tests
+        run: cargo test --lib
 
   # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ───────────────────────
   integration:
