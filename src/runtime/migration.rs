@@ -6,7 +6,15 @@
 use anyhow::Result;
 use tracing::{info, warn};
 
+use crate::auth::principal::Principal;
 use crate::common::paths::PathResolver;
+
+/// True if the `Principal` is the legacy "no owner" sentinel
+/// (`Principal::User("")`). Used to decide whether to backfill the
+/// local runtime's owner.
+fn is_owner_empty_user(owner: &Principal) -> bool {
+    matches!(owner, Principal::User(s) if s.is_empty())
+}
 
 /// Migrate legacy agents and teams to include `host_runtime_id` and `owner_id`.
 ///
@@ -167,8 +175,10 @@ async fn migrate_adr033(resolver: &PathResolver, runtime_id: &str) -> Result<()>
                                 toml::from_str::<crate::types::agent::AgentConfig>(&content)
                             {
                                 let mut changed = false;
-                                if config.owner_id.is_empty() {
-                                    config.owner_id = local_owner.clone();
+                                if is_owner_empty_user(&config.owner) {
+                                    config.owner = crate::auth::principal::Principal::User(
+                                        local_owner.clone(),
+                                    );
                                     changed = true;
                                 }
                                 if changed {
@@ -231,8 +241,9 @@ async fn migrate_adr033(resolver: &PathResolver, runtime_id: &str) -> Result<()>
                                 toml::from_str::<crate::common::types::team::TeamMetadata>(&content)
                             {
                                 let mut changed = false;
-                                if meta.owner_id.is_empty() {
-                                    meta.owner_id = local_owner.clone();
+                                if is_owner_empty_user(&meta.owner) {
+                                    meta.owner =
+                                        crate::auth::principal::Principal::User(local_owner.clone());
                                     changed = true;
                                 }
                                 if changed {

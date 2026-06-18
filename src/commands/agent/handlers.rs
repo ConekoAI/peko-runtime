@@ -475,30 +475,33 @@ pub async fn handle_agent_permissions(
                     .iter()
                     .map(|g| {
                         serde_json::json!({
-                            "subject_id": g.subject_id,
-                            "subject_type": g.subject_type,
+                            "subject": g.subject.to_string(),
                             "permission": g.permission,
                             "granted_at": g.granted_at,
-                            "granted_by": g.granted_by,
+                            "granted_by": g.granted_by.to_string(),
                         })
                     })
                     .collect();
                 println!(
-                    "{{\"agent\": \"{name}\", \"owner_id\": \"{}\", \"permissions\": {}}}",
-                    agent.config.owner_id,
+                    "{{\"agent\": \"{name}\", \"owner\": \"{}\", \"permissions\": {}}}",
+                    agent.config.owner,
                     serde_json::to_string(&grants)?
                 );
             } else {
                 println!("📦 Agent: {}", name);
-                println!("   Owner: {}", agent.config.owner_id);
+                println!("   Owner: {}", agent.config.owner);
                 if agent.config.permissions.is_empty() {
                     println!("   Permissions: none");
                 } else {
                     println!("   Permissions:");
                     for g in &agent.config.permissions {
                         println!(
-                            "     - {} ({:?}): {:?} (by {} at {})",
-                            g.subject_id, g.subject_type, g.permission, g.granted_by, g.granted_at
+                            "     - {} ({}): {:?} (by {} at {})",
+                            g.subject,
+                            g.subject.kind(),
+                            g.permission,
+                            g.granted_by,
+                            g.granted_at
                         );
                     }
                 }

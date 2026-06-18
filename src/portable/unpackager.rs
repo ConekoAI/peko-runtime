@@ -427,7 +427,14 @@ impl Unpackager {
         // surfaces the regression.
         config.name = new_name.to_string();
         config.host_runtime_id = identity.did.clone();
-        config.owner_id = format!("local:{}", identity.did);
+        // Owner is the bare `"local"` string to match what
+        // `CallerContext::subject()` returns for an `Identity::Local`
+        // caller — otherwise `check_permission` would never match
+        // (cross-kind guard via `Principal` equality). The runtime DID
+        // is still recorded in `host_runtime_id` above for audit
+        // purposes. (ADR-039 follow-up; this was a pre-existing
+        // mismatch surfaced by the audit pass.)
+        config.owner = crate::auth::principal::Principal::User("local".to_string());
 
         // Note: Memory import is no longer supported as core memory has been deprecated.
         // The config.memory field no longer exists in AgentConfig.

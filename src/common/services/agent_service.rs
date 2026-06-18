@@ -480,13 +480,14 @@ impl AgentService {
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
         // Build config with workspace set
+        let owner_principal = request.owner();
         let mut config = build_default_agent_config(name, &request.provider, request.model);
         config.workspace = Some(workspace_dir.clone());
         if let Some(ref host_id) = request.host_runtime_id {
             config.host_runtime_id = host_id.clone();
         }
-        if let Some(ref owner_id) = request.owner_id {
-            config.owner_id = owner_id.clone();
+        if let Some(owner) = owner_principal {
+            config.owner = owner;
         }
         let toml = toml::to_string_pretty(&config)?;
 
@@ -850,7 +851,7 @@ impl AgentService {
         &self,
         name: &str,
         new_owner_id: &str,
-        caller_subject: &str,
+        caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);
@@ -862,11 +863,11 @@ impl AgentService {
         let mut config: AgentConfig = toml::from_str(&content)?;
 
         // Only current owner can transfer
-        if config.owner_id != caller_subject {
+        if &config.owner != caller {
             anyhow::bail!("Permission denied: only the owner can transfer ownership");
         }
 
-        config.owner_id = new_owner_id.to_string();
+        config.owner = crate::auth::principal::principal_from_string_with_default_user(new_owner_id);
         let updated = toml::to_string_pretty(&config)?;
         tokio::fs::write(&config_path, updated).await?;
         Ok(())
@@ -877,7 +878,7 @@ impl AgentService {
         &self,
         name: &str,
         grant: crate::auth::ownership::PermissionGrant,
-        caller_subject: &str,
+        caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);
@@ -889,15 +890,15 @@ impl AgentService {
         let mut config: AgentConfig = toml::from_str(&content)?;
 
         // Only owner can grant permissions
-        if config.owner_id != caller_subject {
+        if &config.owner != caller {
             anyhow::bail!("Permission denied: only the owner can grant permissions");
         }
 
         // Remove existing grant for same subject+permission
+        let grant_disc = std::mem::discriminant(&grant.permission);
         config.permissions.retain(|g| {
-            !(g.subject_id == grant.subject_id
-                && std::mem::discriminant(&g.permission)
-                    == std::mem::discriminant(&grant.permission))
+            !(g.subject == grant.subject
+                && std::mem::discriminant(&g.permission) == grant_disc)
         });
         config.permissions.push(grant);
 
@@ -910,9 +911,9 @@ impl AgentService {
     pub async fn revoke_agent_permission(
         &self,
         name: &str,
-        subject_id: &str,
+        subject: &crate::auth::principal::Principal,
         permission: &crate::auth::ownership::Permission,
-        caller_subject: &str,
+        caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);
@@ -924,13 +925,13 @@ impl AgentService {
         let mut config: AgentConfig = toml::from_str(&content)?;
 
         // Only owner can revoke permissions
-        if config.owner_id != caller_subject {
+        if &config.owner != caller {
             anyhow::bail!("Permission denied: only the owner can revoke permissions");
         }
 
+        let perm_disc = std::mem::discriminant(permission);
         config.permissions.retain(|g| {
-            !(g.subject_id == subject_id
-                && std::mem::discriminant(&g.permission) == std::mem::discriminant(permission))
+            !(g.subject == *subject && std::mem::discriminant(&g.permission) == perm_disc)
         });
 
         let updated = toml::to_string_pretty(&config)?;

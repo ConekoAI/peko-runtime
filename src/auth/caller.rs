@@ -1,5 +1,6 @@
 //! Caller context — resolved identity for every incoming request
 
+use super::principal::Principal;
 use super::types::ApiKeyScope;
 
 /// Resolved identity of the caller
@@ -90,7 +91,7 @@ impl CallerContext {
 
     /// Get the subject ID for ownership/permission checks (ADR-033).
     ///
-    /// - Local → `local:{runtime_did}` (must be provided by caller)
+    /// - Local → `local` (bare token; matches the legacy wire shape)
     /// - User → `user:{sub}`
     /// - ApiKey → `apikey:{key_id}`
     #[must_use]
@@ -99,6 +100,20 @@ impl CallerContext {
             Identity::Local => "local".to_string(),
             Identity::User(sub) => format!("user:{sub}"),
             Identity::ApiKey(key_id) => format!("apikey:{key_id}"),
+        }
+    }
+
+    /// Get the caller's `Principal` projection (ADR-039).
+    ///
+    /// For all three `Identity` variants the legacy `subject_id()`
+    /// shape maps to a `Principal::User` value, preserving the wire
+    /// format that has always been used for owner/grant comparisons.
+    #[must_use]
+    pub fn subject(&self) -> Principal {
+        match &self.identity {
+            Identity::Local => Principal::User("local".to_string()),
+            Identity::User(sub) => Principal::User(format!("user:{sub}")),
+            Identity::ApiKey(key_id) => Principal::User(format!("apikey:{key_id}")),
         }
     }
 

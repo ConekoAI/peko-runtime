@@ -1072,7 +1072,7 @@ impl IpcServer {
                 if let Err(denied) = crate::auth::ownership::check_permission(
                     &resource,
                     crate::auth::ownership::Permission::Delete,
-                    &caller.subject_id(),
+                    &caller.subject(),
                 ) {
                     warn!("AgentDelete permission denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1292,13 +1292,13 @@ impl IpcServer {
             } => {
                 let service = state.team_service();
                 let host_runtime_id = state.runtime_identity().runtime_did.clone();
-                let owner_id = caller.subject_id();
+                let owner = caller.subject();
                 match service
                     .create_team(
                         &name,
                         description.as_deref(),
                         Some(&host_runtime_id),
-                        Some(&owner_id),
+                        Some(&owner),
                     )
                     .await
                 {
@@ -3047,9 +3047,9 @@ impl IpcServer {
                 new_owner_id,
             } => {
                 let service = state.agent_mgmt_service();
-                let caller_subject = caller.subject_id();
+                let caller_principal = caller.subject();
                 match service
-                    .transfer_agent_owner(&agent, &new_owner_id, &caller_subject)
+                    .transfer_agent_owner(&agent, &new_owner_id, &caller_principal)
                     .await
                 {
                     Ok(()) => {
@@ -3077,16 +3077,18 @@ impl IpcServer {
                 permission,
             } => {
                 let service = state.agent_mgmt_service();
-                let caller_subject = caller.subject_id();
+                let caller_principal = caller.subject();
                 let grant = crate::auth::ownership::PermissionGrant {
-                    subject_id,
-                    subject_type,
+                    subject: crate::auth::ownership::principal_from_wire(
+                        &subject_id,
+                        subject_type.clone(),
+                    ),
                     permission,
                     granted_at: chrono::Utc::now().to_rfc3339(),
-                    granted_by: caller_subject.clone(),
+                    granted_by: caller_principal.clone(),
                 };
                 match service
-                    .grant_agent_permission(&agent, grant, &caller_subject)
+                    .grant_agent_permission(&agent, grant, &caller_principal)
                     .await
                 {
                     Ok(()) => {
@@ -3129,9 +3131,19 @@ impl IpcServer {
                 permission,
             } => {
                 let service = state.agent_mgmt_service();
-                let caller_subject = caller.subject_id();
+                let caller_principal = caller.subject();
+                // The wire packet only carries `subject_id`. The legacy
+                // default kind is `User`; ADR-039's `SubjectType::Agent`
+                // is brand new and isn't part of this packet yet.
+                let subject_principal =
+                    crate::auth::principal::principal_from_string_with_default_user(&subject_id);
                 match service
-                    .revoke_agent_permission(&agent, &subject_id, &permission, &caller_subject)
+                    .revoke_agent_permission(
+                        &agent,
+                        &subject_principal,
+                        &permission,
+                        &caller_principal,
+                    )
                     .await
                 {
                     Ok(()) => {
@@ -3174,9 +3186,9 @@ impl IpcServer {
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
-                let caller_subject = caller.subject_id();
+                let caller_principal = caller.subject();
                 match service
-                    .transfer_team_owner(&team, &new_owner_id, &caller_subject)
+                    .transfer_team_owner(&team, &new_owner_id, &caller_principal)
                     .await
                 {
                     Ok(()) => {
@@ -3206,16 +3218,18 @@ impl IpcServer {
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
-                let caller_subject = caller.subject_id();
+                let caller_principal = caller.subject();
                 let grant = crate::auth::ownership::PermissionGrant {
-                    subject_id,
-                    subject_type,
+                    subject: crate::auth::ownership::principal_from_wire(
+                        &subject_id,
+                        subject_type.clone(),
+                    ),
                     permission,
                     granted_at: chrono::Utc::now().to_rfc3339(),
-                    granted_by: caller_subject.clone(),
+                    granted_by: caller_principal.clone(),
                 };
                 match service
-                    .grant_team_permission(&team, grant, &caller_subject)
+                    .grant_team_permission(&team, grant, &caller_principal)
                     .await
                 {
                     Ok(()) => {
@@ -3244,9 +3258,18 @@ impl IpcServer {
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
-                let caller_subject = caller.subject_id();
+                let caller_principal = caller.subject();
+                // The wire packet only carries `subject_id`. See
+                // `AgentRevokePermission` above for the rationale.
+                let subject_principal =
+                    crate::auth::principal::principal_from_string_with_default_user(&subject_id);
                 match service
-                    .revoke_team_permission(&team, &subject_id, &permission, &caller_subject)
+                    .revoke_team_permission(
+                        &team,
+                        &subject_principal,
+                        &permission,
+                        &caller_principal,
+                    )
                     .await
                 {
                     Ok(()) => {

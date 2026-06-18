@@ -3,6 +3,7 @@
 //! These types represent agent entities and are used by both
 //! CLI commands and API routes for consistent agent data representation.
 
+use crate::auth::principal::Principal;
 use crate::types::agent::AgentConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -95,6 +96,19 @@ impl AgentCreateRequest {
     pub fn with_host_runtime_id(mut self, host_runtime_id: impl Into<String>) -> Self {
         self.host_runtime_id = Some(host_runtime_id.into());
         self
+    }
+
+    /// Resolve the `owner_id` wire string to a `Principal` (ADR-039).
+    ///
+    /// Tries `Principal::from_str` first; on failure, treats the string
+    /// as a `Principal::User` (the legacy default kind). An empty or
+    /// missing value resolves to `Principal::User("")` (the legacy
+    /// "no owner" sentinel).
+    #[must_use]
+    pub fn owner(&self) -> Option<Principal> {
+        self.owner_id
+            .as_deref()
+            .map(crate::auth::principal::principal_from_string_with_default_user)
     }
 }
 

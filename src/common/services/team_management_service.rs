@@ -66,10 +66,10 @@ impl TeamManagementService {
         name: &str,
         description: Option<&str>,
         host_runtime_id: Option<&str>,
-        owner_id: Option<&str>,
+        owner: Option<&crate::auth::principal::Principal>,
     ) -> Result<TeamCreationResult> {
         self.config_service
-            .create_team(name, description, host_runtime_id, owner_id)
+            .create_team(name, description, host_runtime_id, owner)
             .await
     }
 
@@ -225,15 +225,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_get_team() {
+        use crate::auth::principal::Principal;
         let (_temp, service) = test_service();
 
+        let owner = Principal::User("owner-1".into());
         let result = service
-            .create_team("engineering", Some("Eng team"), None, Some("owner-1"))
+            .create_team("engineering", Some("Eng team"), None, Some(&owner))
             .await
             .unwrap();
         assert_eq!(result.metadata.name, "engineering");
         assert_eq!(result.metadata.description.as_deref(), Some("Eng team"));
-        assert_eq!(result.metadata.owner_id, "owner-1");
+        assert_eq!(result.metadata.owner, Principal::User("owner-1".into()));
 
         let team = service.get_team("engineering").await.unwrap();
         assert!(team.is_some());
