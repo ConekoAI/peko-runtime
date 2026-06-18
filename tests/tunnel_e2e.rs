@@ -117,11 +117,10 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 # `allowed_users` is computed as empty and the chat is rejected
 # with "Forbidden".
 [[permissions]]
-subject_id = "{chat_user_id}"
-subject_type = "user"
+subject = {{ kind = "user", id = "{chat_user_id}" }}
 permission = "chat"
 granted_at = "2026-01-01T00:00:00Z"
-granted_by = "system"
+granted_by = {{ kind = "user", id = "system" }}
 "#
     );
 

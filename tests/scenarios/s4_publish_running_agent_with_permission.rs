@@ -170,8 +170,10 @@ fn write_agent_with_perm(
 
     // The `[[permissions]]` block is at the top level of the agent
     // config; the runtime's `AgentConfig::permissions` deserializer
-    // reads it directly. See
-    // [`src/types/agent.rs`](../src/types/agent.rs) for the schema.
+    // reads it directly. After ADR-039, `subject` and `granted_by`
+    // are `Principal` (kind/id structs). See
+    // [`src/auth/principal.rs`](../src/auth/principal.rs) for the
+    // schema.
     let perm_block = match permitted_user_id {
         Some(uid) => format!(
             r#"
@@ -180,11 +182,10 @@ fn write_agent_with_perm(
 # `allowedUsers`. Format mirrors
 # [`tests/tunnel_e2e.rs:114-125`](../tunnel_e2e.rs#L114-L125).
 [[permissions]]
-subject_id = "{uid}"
-subject_type = "user"
+subject = {{ kind = "user", id = "{uid}" }}
 permission = "chat"
 granted_at = "2026-01-01T00:00:00Z"
-granted_by = "system"
+granted_by = {{ kind = "user", id = "system" }}
 "#
         ),
         None => String::new(),
