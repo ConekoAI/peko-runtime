@@ -54,9 +54,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Linux always runs.
+        os: [ubuntu-latest]
+        include:
+          # Windows runs only when [windows] is in the commit message
+          # or branch name (or on nightly schedule / manual trigger).
+          # The `gated: false` flag is referenced in the job-level
+          # `if:` below — `matrix.os` is NOT available there, so we
+          # can't filter on it directly. See docs/ci/windows-gating.md
+          # for the rationale.
+          - os: windows-latest
+            gated: true
     if: >-
-      matrix.os != 'windows-latest'
+      matrix.gated != true
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
       || contains(github.event.head_commit.message, '[windows]')
