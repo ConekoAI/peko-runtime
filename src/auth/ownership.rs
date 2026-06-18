@@ -46,8 +46,15 @@ impl Permission {
 /// Type tag for a subject in a permission grant. Used on the IPC wire.
 ///
 /// After ADR-039, the in-memory representation is a full `Principal`;
-/// `SubjectType` is kept for back-compat with the IPC `RequestPacket`
-/// shape, which still carries `(subject_id, subject_type)`.
+/// `SubjectType` is kept for back-compat with the legacy IPC
+/// `RequestPacket` shape (issue #25). New CLIs emit a single
+/// `subject: Principal` and never touch this enum. Remove in the next
+/// release after the deprecation warning logs show no legacy traffic.
+#[deprecated(
+    since = "TBD",
+    note = "Use `crate::auth::principal::Principal` directly. SubjectType is \
+            wire-only and will be removed in the next release."
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectType {
@@ -75,6 +82,16 @@ impl SubjectType {
 }
 
 /// Build a `Principal` from a `(subject_id, subject_type)` IPC pair.
+///
+/// This is the wire-side bridge used by the legacy
+/// `RequestPacket::resolved_subject` (issue #25). New CLIs should
+/// emit a single `subject: Principal` directly; this helper will be
+/// removed in the next release.
+#[deprecated(
+    since = "TBD",
+    note = "Use `Principal` directly. Kept for one release of back-compat \
+            with the legacy `(subject_id, subject_type)` IPC wire shape."
+)]
 #[must_use]
 pub fn principal_from_wire(subject_id: &str, subject_type: SubjectType) -> Principal {
     match subject_type {

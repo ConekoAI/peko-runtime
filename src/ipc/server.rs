@@ -693,6 +693,47 @@ impl IpcServer {
         // JWT users have full access.
         // API key scopes are checked at resolution time.
         // Future: enforce per-resource ACLs here.
+
+        // Pre-resolve the `subject` for grant/revoke variants (issue
+        // #25). The match below consumes `request` so we can't call
+        // `&request.resolved_subject()` from inside the arms — compute
+        // it here while `request` is still accessible. The borrow
+        // released by the time the match starts (NLL).
+        let pre_resolved_subject: Option<anyhow::Result<crate::auth::principal::Principal>> =
+            match &request {
+                RequestPacket::AgentGrantPermission { .. }
+                | RequestPacket::AgentRevokePermission { .. }
+                | RequestPacket::TeamGrantPermission { .. }
+                | RequestPacket::TeamRevokePermission { .. } => Some(request.resolved_subject()),
+                _ => None,
+            };
+
+        /// Take the pre-resolved subject for a grant/revoke arm.
+        /// Sends a `ResponsePacket::Error` and returns `Err(())` on
+        /// resolution failure (caller should `return Ok(())`); returns
+        /// `Ok(principal)` on success. Defined inside `handle_request`
+        /// to avoid threading `sink` through a free-function signature.
+        async fn take_resolved_subject(
+            pre_resolved: Option<&anyhow::Result<crate::auth::principal::Principal>>,
+            request_id: u64,
+            sink: &dyn crate::ipc::response_sink::ResponseSink,
+        ) -> Result<crate::auth::principal::Principal, ()> {
+            let Some(result) = pre_resolved else {
+                unreachable!("take_resolved_subject called for a non-grant/revoke variant")
+            };
+            match result {
+                Ok(p) => Ok(p.clone()),
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("{e}"),
+                    };
+                    let _ = IpcServer::send_sink(sink, response).await;
+                    Err(())
+                }
+            }
+        }
+
         match request {
             RequestPacket::Ping { request_id } => {
                 let uptime = state.uptime_seconds();
@@ -3072,17 +3113,23 @@ impl IpcServer {
             RequestPacket::AgentGrantPermission {
                 request_id,
                 agent,
-                subject_id,
-                subject_type,
                 permission,
+                ..
             } => {
+                let subject = match take_resolved_subject(
+                    pre_resolved_subject.as_ref(),
+                    request_id,
+                    sink,
+                )
+                .await
+                {
+                    Ok(s) => s,
+                    Err(()) => return Ok(()),
+                };
                 let service = state.agent_mgmt_service();
                 let caller_principal = caller.subject();
                 let grant = crate::auth::ownership::PermissionGrant {
-                    subject: crate::auth::ownership::principal_from_wire(
-                        &subject_id,
-                        subject_type.clone(),
-                    ),
+                    subject,
                     permission,
                     granted_at: chrono::Utc::now().to_rfc3339(),
                     granted_by: caller_principal.clone(),
@@ -3127,23 +3174,23 @@ impl IpcServer {
             RequestPacket::AgentRevokePermission {
                 request_id,
                 agent,
-                subject_id,
                 permission,
+                ..
             } => {
+                let subject = match take_resolved_subject(
+                    pre_resolved_subject.as_ref(),
+                    request_id,
+                    sink,
+                )
+                .await
+                {
+                    Ok(s) => s,
+                    Err(()) => return Ok(()),
+                };
                 let service = state.agent_mgmt_service();
                 let caller_principal = caller.subject();
-                // The wire packet only carries `subject_id`. The legacy
-                // default kind is `User`; ADR-039's `SubjectType::Agent`
-                // is brand new and isn't part of this packet yet.
-                let subject_principal =
-                    crate::auth::principal::principal_from_string_with_default_user(&subject_id);
                 match service
-                    .revoke_agent_permission(
-                        &agent,
-                        &subject_principal,
-                        &permission,
-                        &caller_principal,
-                    )
+                    .revoke_agent_permission(&agent, &subject, &permission, &caller_principal)
                     .await
                 {
                     Ok(()) => {
@@ -3211,19 +3258,25 @@ impl IpcServer {
             RequestPacket::TeamGrantPermission {
                 request_id,
                 team,
-                subject_id,
-                subject_type,
                 permission,
+                ..
             } => {
+                let subject = match take_resolved_subject(
+                    pre_resolved_subject.as_ref(),
+                    request_id,
+                    sink,
+                )
+                .await
+                {
+                    Ok(s) => s,
+                    Err(()) => return Ok(()),
+                };
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
                 let caller_principal = caller.subject();
                 let grant = crate::auth::ownership::PermissionGrant {
-                    subject: crate::auth::ownership::principal_from_wire(
-                        &subject_id,
-                        subject_type.clone(),
-                    ),
+                    subject,
                     permission,
                     granted_at: chrono::Utc::now().to_rfc3339(),
                     granted_by: caller_principal.clone(),
@@ -3252,24 +3305,25 @@ impl IpcServer {
             RequestPacket::TeamRevokePermission {
                 request_id,
                 team,
-                subject_id,
                 permission,
+                ..
             } => {
+                let subject = match take_resolved_subject(
+                    pre_resolved_subject.as_ref(),
+                    request_id,
+                    sink,
+                )
+                .await
+                {
+                    Ok(s) => s,
+                    Err(()) => return Ok(()),
+                };
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
                 let caller_principal = caller.subject();
-                // The wire packet only carries `subject_id`. See
-                // `AgentRevokePermission` above for the rationale.
-                let subject_principal =
-                    crate::auth::principal::principal_from_string_with_default_user(&subject_id);
                 match service
-                    .revoke_team_permission(
-                        &team,
-                        &subject_principal,
-                        &permission,
-                        &caller_principal,
-                    )
+                    .revoke_team_permission(&team, &subject, &permission, &caller_principal)
                     .await
                 {
                     Ok(()) => {
