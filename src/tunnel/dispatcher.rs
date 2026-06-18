@@ -22,7 +22,7 @@ use super::protocol::{
 };
 use super::TunnelHandle;
 
-use crate::auth::ownership::{Permission, SubjectType};
+use crate::auth::ownership::Permission;
 
 /// Per-instance state tracked by the dispatcher.
 #[derive(Debug, Clone)]
@@ -132,21 +132,33 @@ impl TunnelDispatcher {
 
     /// Compute allowed user IDs from an agent's permission grants.
     ///
-    /// Filters for `Chat` permission grants where `subject_type == User`,
-    /// returning the `subject_id` values (with `user:` prefix stripped if present).
+    /// Filters for `Chat` permission grants where `subject` is a `User`
+    /// principal, returning the bare user id (with `user:` prefix
+    /// stripped if present). Non-User subjects (Agent/Team/Public) are
+    /// filtered out — they cannot be expressed as a hub user_id.
+    ///
+    /// TODO(#16): re-derive from `Principal::User` and surface
+    /// `Principal::Agent` subjects to the hub once PekoHub accepts the
+    /// agent principal (post #11).
     fn compute_allowed_user_ids(config: &crate::types::agent::AgentConfig) -> Option<Vec<String>> {
+        use crate::auth::principal::{Principal, SubjectKind};
         let ids: Vec<String> = config
             .permissions
             .iter()
             .filter(|g| {
-                g.permission.covers(&Permission::Chat) && g.subject_type == SubjectType::User
+                g.permission.covers(&Permission::Chat)
+                    && g.subject.kind() == SubjectKind::User
             })
-            .map(|g| {
-                // Strip `user:` prefix if present; hub expects bare user IDs
-                g.subject_id
-                    .strip_prefix("user:")
-                    .map(String::from)
-                    .unwrap_or_else(|| g.subject_id.clone())
+            .filter_map(|g| match &g.subject {
+                Principal::User(id) => {
+                    // Strip `user:` prefix if present; hub expects bare user IDs
+                    Some(
+                        id.strip_prefix("user:")
+                            .map(String::from)
+                            .unwrap_or_else(|| id.clone()),
+                    )
+                }
+                _ => None,
             })
             .collect();
         if ids.is_empty() {

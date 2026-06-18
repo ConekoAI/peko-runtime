@@ -252,14 +252,30 @@ pub fn cli_session_key(agent: &str) -> String {
 
 /// Derive a base session key from agent and peer
 /// Format: agent:{agent}:peer:{type}:{id}
+///
+/// After ADR-039, `Peer` is an alias for `Principal`. The key format
+/// is **byte-stable** for `Principal::User` and `Principal::Agent` —
+/// these are the only valid session peers (`Principal::is_session_peer`).
+/// For `Principal::Team` and `Principal::Public`, the function falls
+/// back to `peer:user:default` and logs a warning, so a stray non-peer
+/// principal never produces an orphan key. This is the documented
+/// behavior, not a bug.
 #[must_use]
 pub fn derive_base_session_key(agent: &str, peer: &super::Peer) -> String {
+    use crate::auth::principal::Principal;
     match peer {
-        super::Peer::User(id) => {
+        Principal::User(id) => {
             format!("agent:{}:peer:user:{}", agent, sanitize_key_component(id))
         }
-        super::Peer::Agent(id) => {
+        Principal::Agent(id) => {
             format!("agent:{}:peer:agent:{}", agent, sanitize_key_component(id))
+        }
+        Principal::Team(_) | Principal::Public => {
+            tracing::warn!(
+                "derive_base_session_key called with non-peer Principal {peer}; \
+                 falling back to peer:user:default (ADR-039)"
+            );
+            format!("agent:{}:peer:user:default", agent)
         }
     }
 }

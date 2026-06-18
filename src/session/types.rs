@@ -1,64 +1,28 @@
 //! Core types for session overlay architecture
 //!
 //! This module provides the foundational types for the hybrid session model:
-//! - Peer: User or Agent identity for session ownership
+//! - Peer: alias for `crate::auth::principal::Principal` (ADR-039)
 //! - `ChannelType`: Communication channel variants
 //! - `OverlayType`: Classification of overlay kinds
 
+use crate::auth::principal::Principal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Peer identity for session ownership
+/// Peer identity for session ownership.
 ///
-/// Sessions are owned by either a user or an agent. This determines
-/// access patterns and context sharing behavior.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Peer {
-    /// Human user with a unique identifier
-    User(String),
-    /// Another agent with a unique identifier
-    Agent(String),
-}
+/// After ADR-039, `Peer` is a thin alias for `Principal`. The
+/// `User`/`Agent` variants are preserved (via re-export) so the
+/// ~25 existing call sites (`Peer::User("alice")`) keep compiling.
+///
+/// For new code, prefer using `Principal` directly.
+pub type Peer = Principal;
 
-impl Peer {
-    /// Get the peer's ID string
-    #[must_use]
-    pub fn id(&self) -> &str {
-        match self {
-            Peer::User(id) | Peer::Agent(id) => id,
-        }
-    }
+pub use crate::auth::principal::Principal::{Agent as PeerAgent, User as PeerUser};
 
-    /// Get the peer type as a string
-    #[must_use]
-    pub fn peer_type(&self) -> &'static str {
-        match self {
-            Peer::User(_) => "user",
-            Peer::Agent(_) => "agent",
-        }
-    }
-
-    /// Check if this peer is a user
-    #[must_use]
-    pub fn is_user(&self) -> bool {
-        matches!(self, Peer::User(_))
-    }
-
-    /// Check if this peer is an agent
-    #[must_use]
-    pub fn is_agent(&self) -> bool {
-        matches!(self, Peer::Agent(_))
-    }
-}
-
-impl fmt::Display for Peer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Peer::User(id) => write!(f, "user:{id}"),
-            Peer::Agent(id) => write!(f, "agent:{id}"),
-        }
-    }
-}
+// `Peer::id()`, `Peer::peer_type()`, `Peer::is_user()`, `Peer::is_agent()`
+// are inherent methods on `Principal`; the type alias makes them
+// reachable via the `Peer` name. Nothing else to do here.
 
 /// Communication channel types
 ///
@@ -354,9 +318,13 @@ mod tests {
 
     #[test]
     fn test_serialization() {
+        // `Peer` is now an alias for `Principal`, which uses
+        // `#[serde(tag = "kind", content = "id")]` — the canonical
+        // `{kind, id}` shape (ADR-039). The on-disk session key format
+        // is unchanged; this is purely the in-memory serde shape.
         let peer = Peer::User("alice".to_string());
         let json = serde_json::to_string(&peer).unwrap();
-        assert_eq!(json, r#"{"User":"alice"}"#);
+        assert_eq!(json, r#"{"kind":"user","id":"alice"}"#);
 
         let peer2: Peer = serde_json::from_str(&json).unwrap();
         assert_eq!(peer, peer2);

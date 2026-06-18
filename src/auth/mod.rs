@@ -11,6 +11,7 @@ pub mod config;
 pub mod jwt;
 pub mod ownership;
 pub mod permissions;
+pub mod principal;
 pub mod rate_limit;
 pub mod types;
 
@@ -23,5 +24,6 @@ pub use ownership::{
     PermissionDenied, PermissionGrant, Resource as OwnedResource, SubjectType,
 };
 pub use permissions::{check_permission, Action, AuthError, Resource};
+pub use principal::{Principal, PrincipalParseError, SubjectKind};
 pub use rate_limit::{RateLimitEntry, RateLimiter};
 pub use types::{ApiKeyEntry, ApiKeyScope, PekohubConfig, PekohubCredential};

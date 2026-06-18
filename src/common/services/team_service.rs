@@ -52,7 +52,7 @@ impl TeamService {
         name: &str,
         description: Option<&str>,
         host_runtime_id: Option<&str>,
-        owner_id: Option<&str>,
+        owner: Option<&crate::auth::principal::Principal>,
     ) -> Result<TeamCreationResult> {
         // Validate team name
         if let Err(e) = validate_team_name(name) {
@@ -75,7 +75,10 @@ impl TeamService {
             description: description.map(String::from),
             created_at: chrono::Utc::now().to_rfc3339(),
             host_runtime_id: host_runtime_id.unwrap_or("").to_string(),
-            owner_id: owner_id.unwrap_or("").to_string(),
+            owner: owner
+                .cloned()
+                .unwrap_or_else(|| crate::auth::principal::Principal::User(String::new())),
+            owner_id: None,
             permissions: Vec::new(),
         };
 
@@ -478,7 +481,7 @@ impl TeamService {
         &self,
         name: &str,
         new_owner_id: &str,
-        caller_subject: &str,
+        caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let team_dir = self.resolver.team_dir(name);
         if !team_dir.exists() {
@@ -489,11 +492,11 @@ impl TeamService {
         let content = tokio::fs::read_to_string(&meta_path).await?;
         let mut meta: crate::common::types::team::TeamMetadata = toml::from_str(&content)?;
 
-        if meta.owner_id != caller_subject {
+        if &meta.owner != caller {
             anyhow::bail!("Permission denied: only the owner can transfer ownership");
         }
 
-        meta.owner_id = new_owner_id.to_string();
+        meta.owner = crate::auth::principal::principal_from_string_with_default_user(new_owner_id);
         let updated = toml::to_string_pretty(&meta)?;
         tokio::fs::write(&meta_path, updated).await?;
         Ok(())
@@ -504,7 +507,7 @@ impl TeamService {
         &self,
         name: &str,
         grant: crate::auth::ownership::PermissionGrant,
-        caller_subject: &str,
+        caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let team_dir = self.resolver.team_dir(name);
         if !team_dir.exists() {
@@ -515,14 +518,14 @@ impl TeamService {
         let content = tokio::fs::read_to_string(&meta_path).await?;
         let mut meta: crate::common::types::team::TeamMetadata = toml::from_str(&content)?;
 
-        if meta.owner_id != caller_subject {
+        if &meta.owner != caller {
             anyhow::bail!("Permission denied: only the owner can grant permissions");
         }
 
+        let grant_disc = std::mem::discriminant(&grant.permission);
         meta.permissions.retain(|g| {
-            !(g.subject_id == grant.subject_id
-                && std::mem::discriminant(&g.permission)
-                    == std::mem::discriminant(&grant.permission))
+            !(g.subject == grant.subject
+                && std::mem::discriminant(&g.permission) == grant_disc)
         });
         meta.permissions.push(grant);
 
@@ -535,9 +538,9 @@ impl TeamService {
     pub async fn revoke_team_permission(
         &self,
         name: &str,
-        subject_id: &str,
+        subject: &crate::auth::principal::Principal,
         permission: &crate::auth::ownership::Permission,
-        caller_subject: &str,
+        caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let team_dir = self.resolver.team_dir(name);
         if !team_dir.exists() {
@@ -548,13 +551,13 @@ impl TeamService {
         let content = tokio::fs::read_to_string(&meta_path).await?;
         let mut meta: crate::common::types::team::TeamMetadata = toml::from_str(&content)?;
 
-        if meta.owner_id != caller_subject {
+        if &meta.owner != caller {
             anyhow::bail!("Permission denied: only the owner can revoke permissions");
         }
 
+        let perm_disc = std::mem::discriminant(permission);
         meta.permissions.retain(|g| {
-            !(g.subject_id == subject_id
-                && std::mem::discriminant(&g.permission) == std::mem::discriminant(permission))
+            !(g.subject == *subject && std::mem::discriminant(&g.permission) == perm_disc)
         });
 
         let updated = toml::to_string_pretty(&meta)?;
@@ -732,7 +735,8 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         description: None,
         created_at,
         host_runtime_id: "".to_string(),
-        owner_id: "".to_string(),
+        owner: crate::auth::principal::Principal::User(String::new()),
+        owner_id: None,
         permissions: Vec::new(),
     }
 }

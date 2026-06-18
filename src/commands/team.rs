@@ -594,31 +594,30 @@ pub async fn handle_team(
                             .iter()
                             .map(|g| {
                                 serde_json::json!({
-                                    "subject_id": g.subject_id,
-                                    "subject_type": g.subject_type,
+                                    "subject": g.subject.to_string(),
                                     "permission": g.permission,
                                     "granted_at": g.granted_at,
-                                    "granted_by": g.granted_by,
+                                    "granted_by": g.granted_by.to_string(),
                                 })
                             })
                             .collect();
                         println!(
-                            "{{\"team\": \"{name}\", \"owner_id\": \"{}\", \"permissions\": {}}}",
-                            team_info.metadata.owner_id,
+                            "{{\"team\": \"{name}\", \"owner\": \"{}\", \"permissions\": {}}}",
+                            team_info.metadata.owner,
                             serde_json::to_string(&grants).unwrap_or_default()
                         );
                     } else {
                         println!("📁 Team: {}", name);
-                        println!("   Owner: {}", team_info.metadata.owner_id);
+                        println!("   Owner: {}", team_info.metadata.owner);
                         if team_info.metadata.permissions.is_empty() {
                             println!("   Permissions: none");
                         } else {
                             println!("   Permissions:");
                             for g in &team_info.metadata.permissions {
                                 println!(
-                                    "     - {} ({:?}): {:?} (by {} at {})",
-                                    g.subject_id,
-                                    g.subject_type,
+                                    "     - {} ({}): {:?} (by {} at {})",
+                                    g.subject,
+                                    g.subject.kind(),
                                     g.permission,
                                     g.granted_by,
                                     g.granted_at

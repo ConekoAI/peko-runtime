@@ -427,7 +427,8 @@ impl Unpackager {
         // surfaces the regression.
         config.name = new_name.to_string();
         config.host_runtime_id = identity.did.clone();
-        config.owner_id = format!("local:{}", identity.did);
+        config.owner =
+            crate::auth::principal::Principal::User(format!("local:{}", identity.did));
 
         // Note: Memory import is no longer supported as core memory has been deprecated.
         // The config.memory field no longer exists in AgentConfig.
