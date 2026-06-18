@@ -51,7 +51,7 @@ impl Permission {
 /// `subject: Principal` and never touch this enum. Remove in the next
 /// release after the deprecation warning logs show no legacy traffic.
 #[deprecated(
-    since = "0.x.0",
+    since = "TBD",
     note = "Use `crate::auth::principal::Principal` directly. SubjectType is \
             wire-only and will be removed in the next release."
 )]
@@ -88,7 +88,7 @@ impl SubjectType {
 /// emit a single `subject: Principal` directly; this helper will be
 /// removed in the next release.
 #[deprecated(
-    since = "0.x.0",
+    since = "TBD",
     note = "Use `Principal` directly. Kept for one release of back-compat \
             with the legacy `(subject_id, subject_type)` IPC wire shape."
 )]

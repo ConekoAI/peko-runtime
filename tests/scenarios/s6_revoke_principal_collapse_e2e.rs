@@ -42,6 +42,12 @@
 //!
 //! [issue-25]: https://github.com/ConekoAI/peko-runtime/issues/25
 
+// `SubjectType` is `#[deprecated]` as of #25 (kept for one release
+// of back-compat). The legacy-wire-shape test below constructs packets
+// with `subject_type: Some(SubjectType::User)` — silence the warnings
+// inside this test module.
+#![allow(deprecated)]
+
 #[path = "../common/mod.rs"]
 mod common;
 use common::{DaemonGuard, PekoCli};

@@ -694,12 +694,16 @@ impl RequestPacket {
     ///
     /// * `subject: Some(p)` → `p` (canonical wins; if the legacy pair
     ///   is also set, it is ignored with a `debug!` log).
-    /// * `subject: None`, `subject_id: Some(id)` → reconstruct via
-    ///   `principal_from_wire(id, subject_type)`. If `subject_type` is
-    ///   `None`, it defaults to `SubjectType::User` (mirrors the
-    ///   pre-#25 string-form helper). Emits a `warn!` *once per
-    ///   process per variant-kind* so operators can monitor legacy
-    ///   CLI traffic during the deprecation window.
+    /// * `subject: None`, `subject_id: Some(id)` → rebuild from the
+    ///   legacy pair. If `subject_type` is `None`, it defaults to
+    ///   `SubjectType::User` (mirrors the pre-#25 string-form helper).
+    ///   Special case: if `subject_id == "public"`, default to
+    ///   `SubjectType::Public` so a legacy `(subject_id="public",
+    ///   subject_type=User)` packet can revoke a `Principal::Public`
+    ///   grant — without this, the cross-kind guard silently rejects
+    ///   the revoke. Emits a `warn!` *once per process per
+    ///   variant-kind* so operators can monitor legacy CLI traffic
+    ///   during the deprecation window.
     /// * Both `subject` and `subject_id` are `None` → returns an
     ///   error. The handler must surface this as a
     ///   `ResponsePacket::Error`.
@@ -710,51 +714,92 @@ impl RequestPacket {
     /// only calls this inside the grant/revoke arms.
     ///
     /// # Errors
-    /// Returns `Err(Error::msg("missing subject: ..."))` when both
+    /// Returns `Err` with a "missing subject: ..." message when both
     /// `subject` and `subject_id` are absent.
     pub fn resolved_subject(&self) -> anyhow::Result<crate::auth::principal::Principal> {
         use crate::auth::ownership::SubjectType;
         use crate::auth::principal::Principal;
 
-        // Variant-kind tag for the once-per-process warning.
-        #[derive(Copy, Clone, Debug)]
-        enum LegacyKind {
-            AgentGrant,
-            AgentRevoke,
-            TeamGrant,
-            TeamRevoke,
+        // Inline the legacy (id, kind) → Principal conversion here so
+        // production code does NOT call the deprecated
+        // `principal_from_wire` helper. The deprecated function stays
+        // exported for the deprecation window (tests + any downstream
+        // users), but is no longer in our internal call graph.
+        fn principal_from_id_and_kind(
+            id: &str,
+            kind: SubjectType,
+        ) -> Principal {
+            match kind {
+                SubjectType::User => Principal::User(id.to_string()),
+                SubjectType::Agent => Principal::Agent(id.to_string()),
+                SubjectType::Team => Principal::Team(id.to_string()),
+                SubjectType::Public => Principal::Public,
+            }
         }
 
-        // Static Once array, indexed by LegacyKind. Order must match
-        // the enum variants (add new kinds to the END).
-        static LEGACY_ONCE: [std::sync::Once; 4] = [
-            std::sync::Once::new(),
-            std::sync::Once::new(),
-            std::sync::Once::new(),
-            std::sync::Once::new(),
-        ];
+        // One `Once` per variant-kind. The compiler enforces the
+        // mapping (each variant matches its own static); no fragile
+        // array-index arithmetic.
+        static ONCE_AGENT_GRANT: std::sync::Once = std::sync::Once::new();
+        static ONCE_AGENT_REVOKE: std::sync::Once = std::sync::Once::new();
+        static ONCE_TEAM_GRANT: std::sync::Once = std::sync::Once::new();
+        static ONCE_TEAM_REVOKE: std::sync::Once = std::sync::Once::new();
 
-        let (canonical, legacy_id, legacy_kind) = match self {
+        let (canonical, legacy_id, legacy_subject_type, once, kind_label): (
+            Option<&Principal>,
+            Option<&str>,
+            Option<SubjectType>,
+            &std::sync::Once,
+            &'static str,
+        ) = match self {
             Self::AgentGrantPermission {
                 subject,
                 subject_id,
+                subject_type,
                 ..
-            } => (subject.as_ref(), subject_id.as_deref(), LegacyKind::AgentGrant),
+            } => (
+                subject.as_ref(),
+                subject_id.as_deref(),
+                subject_type.clone(),
+                &ONCE_AGENT_GRANT,
+                "agent_grant_permission",
+            ),
             Self::AgentRevokePermission {
                 subject,
                 subject_id,
+                subject_type,
                 ..
-            } => (subject.as_ref(), subject_id.as_deref(), LegacyKind::AgentRevoke),
+            } => (
+                subject.as_ref(),
+                subject_id.as_deref(),
+                subject_type.clone(),
+                &ONCE_AGENT_REVOKE,
+                "agent_revoke_permission",
+            ),
             Self::TeamGrantPermission {
                 subject,
                 subject_id,
+                subject_type,
                 ..
-            } => (subject.as_ref(), subject_id.as_deref(), LegacyKind::TeamGrant),
+            } => (
+                subject.as_ref(),
+                subject_id.as_deref(),
+                subject_type.clone(),
+                &ONCE_TEAM_GRANT,
+                "team_grant_permission",
+            ),
             Self::TeamRevokePermission {
                 subject,
                 subject_id,
+                subject_type,
                 ..
-            } => (subject.as_ref(), subject_id.as_deref(), LegacyKind::TeamRevoke),
+            } => (
+                subject.as_ref(),
+                subject_id.as_deref(),
+                subject_type.clone(),
+                &ONCE_TEAM_REVOKE,
+                "team_revoke_permission",
+            ),
             // Non-grant/revoke packets have no subject. Return the
             // default sentinel so the caller doesn't have to special-case.
             _ => return Ok(Principal::User(String::new())),
@@ -771,8 +816,9 @@ impl RequestPacket {
             return Ok(p.clone());
         }
 
-        // Legacy path: rebuild via principal_from_wire, defaulting the
-        // kind to User when absent (matches pre-#25 behavior).
+        // Legacy path: rebuild from the pair. If `subject_type` is
+        // absent, default it. The `"public"` sentinel defaults to
+        // `Public` so a legacy revoke of a Public grant can succeed.
         let Some(id) = legacy_id else {
             anyhow::bail!(
                 "missing subject: set `subject` (ADR-039) or `subject_id` + \
@@ -780,31 +826,16 @@ impl RequestPacket {
             );
         };
 
-        // subject_type comes from the variant when present. We use the
-        // `match self` again here to fetch it cleanly (avoids
-        // duplicating the field-extraction logic).
-        let subject_type = match self {
-            Self::AgentGrantPermission { subject_type, .. }
-            | Self::TeamGrantPermission { subject_type, .. } => subject_type.clone(),
-            Self::AgentRevokePermission { subject_type, .. }
-            | Self::TeamRevokePermission { subject_type, .. } => subject_type.clone(),
-            _ => unreachable!("non-grant/revoke variant cannot reach here"),
-        };
+        let kind = legacy_subject_type.unwrap_or_else(|| {
+            if id == "public" {
+                SubjectType::Public
+            } else {
+                SubjectType::User
+            }
+        });
 
-        let kind_label = match legacy_kind {
-            LegacyKind::AgentGrant => "agent_grant_permission",
-            LegacyKind::AgentRevoke => "agent_revoke_permission",
-            LegacyKind::TeamGrant => "team_grant_permission",
-            LegacyKind::TeamRevoke => "team_revoke_permission",
-        };
-        let idx = match legacy_kind {
-            LegacyKind::AgentGrant => 0,
-            LegacyKind::AgentRevoke => 1,
-            LegacyKind::TeamGrant => 2,
-            LegacyKind::TeamRevoke => 3,
-        };
         let id_for_log = id.to_string();
-        LEGACY_ONCE[idx].call_once(|| {
+        once.call_once(|| {
             tracing::warn!(
                 kind = kind_label,
                 subject_id = %id_for_log,
@@ -815,8 +846,7 @@ impl RequestPacket {
             );
         });
 
-        let st = subject_type.unwrap_or(SubjectType::User);
-        Ok(crate::auth::ownership::principal_from_wire(id, st))
+        Ok(principal_from_id_and_kind(id, kind))
     }
 
     /// Serialize to JSON bytes
@@ -4579,7 +4609,12 @@ mod tests {
             crate::auth::principal::Principal::Team("eng".into())
         );
 
-        // Public revoke via legacy sentinel.
+        // Public revoke via legacy sentinel. When `subject_id` is
+        // the `"public"` sentinel and `subject_type` is absent, the
+        // resolver defaults the kind to `Public` (not `User`) so a
+        // legacy revoke of a `Principal::Public` grant can succeed.
+        // Without this default the cross-kind guard would silently
+        // reject `(subject_id="public", subject_type=User)`.
         let pkt = RequestPacket::AgentRevokePermission {
             request_id: 1,
             agent: "a".into(),
@@ -4588,10 +4623,9 @@ mod tests {
             subject_type: None,
             permission: crate::auth::ownership::Permission::Chat,
         };
-        // Bare "public" with default User kind → Principal::User("public").
         assert_eq!(
             pkt.resolved_subject().unwrap(),
-            crate::auth::principal::Principal::User("public".into())
+            crate::auth::principal::Principal::Public
         );
 
         // Public revoke via canonical Public.

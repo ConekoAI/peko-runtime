@@ -708,6 +708,32 @@ impl IpcServer {
                 _ => None,
             };
 
+        /// Take the pre-resolved subject for a grant/revoke arm.
+        /// Sends a `ResponsePacket::Error` and returns `Err(())` on
+        /// resolution failure (caller should `return Ok(())`); returns
+        /// `Ok(principal)` on success. Defined inside `handle_request`
+        /// to avoid threading `sink` through a free-function signature.
+        async fn take_resolved_subject(
+            pre_resolved: Option<&anyhow::Result<crate::auth::principal::Principal>>,
+            request_id: u64,
+            sink: &dyn crate::ipc::response_sink::ResponseSink,
+        ) -> Result<crate::auth::principal::Principal, ()> {
+            let Some(result) = pre_resolved else {
+                unreachable!("take_resolved_subject called for a non-grant/revoke variant")
+            };
+            match result {
+                Ok(p) => Ok(p.clone()),
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("{e}"),
+                    };
+                    let _ = IpcServer::send_sink(sink, response).await;
+                    Err(())
+                }
+            }
+        }
+
         match request {
             RequestPacket::Ping { request_id } => {
                 let uptime = state.uptime_seconds();
@@ -3090,19 +3116,15 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match pre_resolved_subject
-                    .as_ref()
-                    .expect("pre-resolved for grant/revoke variant")
+                let subject = match take_resolved_subject(
+                    pre_resolved_subject.as_ref(),
+                    request_id,
+                    sink,
+                )
+                .await
                 {
-                    Ok(s) => s.clone(),
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("{e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        return Ok(());
-                    }
+                    Ok(s) => s,
+                    Err(()) => return Ok(()),
                 };
                 let service = state.agent_mgmt_service();
                 let caller_principal = caller.subject();
@@ -3155,19 +3177,15 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match pre_resolved_subject
-                    .as_ref()
-                    .expect("pre-resolved for grant/revoke variant")
+                let subject = match take_resolved_subject(
+                    pre_resolved_subject.as_ref(),
+                    request_id,
+                    sink,
+                )
+                .await
                 {
-                    Ok(s) => s.clone(),
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("{e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        return Ok(());
-                    }
+                    Ok(s) => s,
+                    Err(()) => return Ok(()),
                 };
                 let service = state.agent_mgmt_service();
                 let caller_principal = caller.subject();
@@ -3243,19 +3261,15 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match pre_resolved_subject
-                    .as_ref()
-                    .expect("pre-resolved for grant/revoke variant")
+                let subject = match take_resolved_subject(
+                    pre_resolved_subject.as_ref(),
+                    request_id,
+                    sink,
+                )
+                .await
                 {
-                    Ok(s) => s.clone(),
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("{e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        return Ok(());
-                    }
+                    Ok(s) => s,
+                    Err(()) => return Ok(()),
                 };
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
@@ -3294,19 +3308,15 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match pre_resolved_subject
-                    .as_ref()
-                    .expect("pre-resolved for grant/revoke variant")
+                let subject = match take_resolved_subject(
+                    pre_resolved_subject.as_ref(),
+                    request_id,
+                    sink,
+                )
+                .await
                 {
-                    Ok(s) => s.clone(),
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("{e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        return Ok(());
-                    }
+                    Ok(s) => s,
+                    Err(()) => return Ok(()),
                 };
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),

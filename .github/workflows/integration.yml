@@ -36,11 +36,18 @@ env:
 
 jobs:
   # ── Tier 0: Unit tests (no Docker, no LLM) ──────────────────────────────
-  # Matrix runs on Linux AND Windows so a Windows-local regression can't
-  # sneak past CI again. Uses `Swatinem/rust-cache@v2` instead of
-  # `actions/cache@v4` because the latter doesn't expand `~/.cargo/...`
-  # on Windows runners. Calls `cargo test --lib` directly because Windows
-  # runner images don't ship GNU make.
+  # Linux unit tests run on every PR (fast, ~3 min). Windows unit tests
+  # run ONLY when the keyword `[windows]` is in the PR title, PR body,
+  # commit message, or branch name (or on the nightly schedule /
+  # manual `workflow_dispatch`). This keeps CI cheap for routine PRs
+  # while still catching Windows-specific regressions when someone
+  # explicitly asks for it. The `unit (windows-latest)` job takes ~5
+  # minutes on cold cache and is the dominant cost driver.
+  #
+  # Uses `Swatinem/rust-cache@v2` instead of `actions/cache@v4` because
+  # the latter doesn't expand `~/.cargo/...` on Windows runners. Calls
+  # `cargo test --lib` directly because Windows runner images don't
+  # ship GNU make.
   unit:
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -48,6 +55,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+    if: >-
+      matrix.os != 'windows-latest'
+      || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || contains(github.event.pull_request.title, '[windows]')
+      || contains(coalesce(github.event.pull_request.body, ''), '[windows]')
+      || contains(github.event.head_commit.message, '[windows]')
+      || contains(github.ref_name, '[windows]')
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

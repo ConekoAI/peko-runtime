@@ -10,6 +10,14 @@
 //! The on-disk AgentConfig TOML round-trip is covered by the unit tests
 //! inside `src/auth/principal.rs` and the in-tree agent fixtures.
 
+// Tests in this file exercise BOTH wire shapes:
+// - The legacy `(subject_id, subject_type)` shape (ADR-033, pre-#25).
+// - The canonical `subject: Principal` shape (ADR-039, post-#25).
+// `SubjectType` is `#[deprecated]` as of #25 (it stays exported for
+// one release of back-compat) — silence the warnings inside the test
+// module that explicitly constructs the legacy wire path.
+#![allow(deprecated)]
+
 use pekobot::auth::ownership::SubjectType;
 use pekobot::auth::principal::{Principal, principal_from_string_with_default_user};
 use pekobot::ipc::packet::RequestPacket;
