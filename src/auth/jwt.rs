@@ -56,26 +56,26 @@ struct JwtClaims {
 
 /// JWKS response structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct JwksResponse {
-    keys: Vec<JwkEntry>,
+pub struct JwksResponse {
+    pub keys: Vec<JwkEntry>,
 }
 
 /// Individual JWK entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct JwkEntry {
-    kty: String,
+pub struct JwkEntry {
+    pub kty: String,
     #[serde(default)]
-    kid: Option<String>,
+    pub kid: Option<String>,
     #[serde(default)]
-    n: Option<String>,
+    pub n: Option<String>,
     #[serde(default)]
-    e: Option<String>,
+    pub e: Option<String>,
     #[serde(default)]
-    x: Option<String>,
+    pub x: Option<String>,
     #[serde(default)]
-    crv: Option<String>,
+    pub crv: Option<String>,
     #[serde(flatten)]
-    extra: HashMap<String, serde_json::Value>,
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Cached JWKS with TTL
@@ -224,9 +224,12 @@ impl JwtValidator {
         }
     }
 
-    /// Create a validator with a pre-populated JWKS (for testing)
+    /// Create a validator with a pre-populated JWKS. Crate-visible
+    /// (not public) so integration tests in sibling modules can wire
+    /// a real `JwtValidator` against a static JWKS without standing up
+    /// a mock HTTP server. See `tunnel::dispatcher::tests` for usage.
     #[cfg(test)]
-    fn with_jwks(
+    pub(crate) fn with_jwks(
         trusted_issuers: Vec<String>,
         runtime_did: String,
         jwks: JwksResponse,

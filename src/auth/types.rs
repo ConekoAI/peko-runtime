@@ -73,9 +73,12 @@ impl Default for ApiKeysFile {
 
 /// Pekohub configuration stored on disk
 ///
-/// Defined for forward compatibility. Not used in v0.1.0 because
-/// pekohub JWT validation is disabled until signature verification
-/// is implemented.
+/// Defined for forward compatibility. Used by the tunnel dispatcher
+/// when `enable_pekohub_jwt` is true (issue #17): the dispatcher reads
+/// `Authorization: Bearer <jwt>` from the bridge payload, validates
+/// against the runtime DID as audience and the configured trusted
+/// issuers, and uses the validated `sub` claim as the caller's
+/// identity.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PekohubConfig {

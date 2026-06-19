@@ -43,14 +43,26 @@ pub struct ExecutionRequest {
     pub context: Option<ExecutionContext>,
     /// Optional timeout override (defaults to service default)
     pub timeout_secs: Option<u64>,
-    /// User identifier for session isolation (defaults to "default")
+    /// Resolved caller identity for session isolation.
+    ///
+    /// Empty by default — production callers **must** set this explicitly
+    /// via [`ExecutionRequest::with_user`] before handing the request to
+    /// the agentic loop. The legacy literal `"default"` was removed
+    /// (issue #17) so that no production path can ever attribute a
+    /// request to a placeholder user. Tests that don't care about
+    /// per-user attribution can leave this empty.
     pub user: String,
     /// Caller agent name for A2A messaging (optional)
     pub caller_agent: Option<String>,
 }
 
 impl ExecutionRequest {
-    /// Create a simple execution request
+    /// Create a simple execution request.
+    ///
+    /// `user` defaults to the empty string. Production code paths set
+    /// this explicitly via [`ExecutionRequest::with_user`] so the
+    /// agentic loop and audit log see a real, resolved caller. Tests
+    /// can leave it empty.
     pub fn new(
         agent_name: impl Into<String>,
         session_id: impl Into<String>,
@@ -62,7 +74,7 @@ impl ExecutionRequest {
             message: message.into(),
             context: None,
             timeout_secs: None,
-            user: "default".to_string(),
+            user: String::new(),
             caller_agent: None,
         }
     }
@@ -123,14 +135,26 @@ pub struct MessageRequest {
     pub new_session: bool,
     /// Timeout in seconds (optional)
     pub timeout_secs: Option<u64>,
-    /// User identifier for session isolation (defaults to "default")
+    /// Resolved caller identity for session isolation.
+    ///
+    /// Empty by default — production callers **must** set this explicitly
+    /// via [`MessageRequest::with_user`] before handing the request to
+    /// the agentic loop. The legacy literal `"default"` was removed
+    /// (issue #17) so that no production path can ever attribute a
+    /// request to a placeholder user. Tests that don't care about
+    /// per-user attribution can leave this empty.
     pub user: String,
     /// Caller agent name for A2A messaging (optional)
     pub caller_agent: Option<String>,
 }
 
 impl MessageRequest {
-    /// Create a new message request
+    /// Create a new message request.
+    ///
+    /// `user` defaults to the empty string. Production code paths
+    /// (tunnel dispatcher, IPC server, CLI frontends) all override this
+    /// via [`MessageRequest::with_user`] so the agentic loop and audit
+    /// log see a real, resolved caller. Tests can leave it empty.
     pub fn new(agent_name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             agent_name: agent_name.into(),
@@ -139,7 +163,7 @@ impl MessageRequest {
             session_id: None,
             new_session: false,
             timeout_secs: None,
-            user: "default".to_string(),
+            user: String::new(),
             caller_agent: None,
         }
     }
@@ -916,12 +940,13 @@ impl StatelessAgentService {
             // Execute and collect result
             // Issue #17: thread the resolved caller identity into the
             // agentic loop so every tool call carries the caller through
-            // to `HookInput::ToolCall`. The local-CLI placeholders
-            // (`"default"`, `"anonymous"`) map to `None` so downstream
+            // to `HookInput::ToolCall`. The empty placeholder
+            // (`MessageRequest::user` default) and the dispatcher's
+            // `"anonymous"` fallback both map to `None` so downstream
             // per-user permission checks (issue #17 follow-up) don't
-            // mis-attribute local invocations to a fake user.
+            // mis-attribute local / unverified invocations to a fake user.
             let caller_id = match request.user.as_str() {
-                "default" | "anonymous" | "" => None,
+                "" | "anonymous" => None,
                 other => Some(other.to_string()),
             };
             let _result = agent
