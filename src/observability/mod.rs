@@ -57,16 +57,22 @@ impl Observability {
         agent_did: Option<&str>,
         details: serde_json::Value,
     ) -> Result<()> {
-        let mut audit = self.audit.write().await;
-        audit
-            .log(AuditEvent {
-                timestamp: chrono::Utc::now(),
-                component: self.component.clone(),
-                event_type: event_type.to_string(),
-                agent_did: agent_did.map(std::string::ToString::to_string),
-                details,
-                severity: AuditSeverity::Info,
-            })
+        self.log_audit(event_type, agent_did, None, details, AuditSeverity::Info)
+            .await
+    }
+
+    /// Log an audit event tagged with the resolved caller identity
+    /// (issue #17). Prefer this over `audit` on any event that flows
+    /// through a request path so the audit trail is attributable to a
+    /// real user.
+    pub async fn audit_with_caller(
+        &self,
+        caller_id: Option<&str>,
+        event_type: &str,
+        agent_did: Option<&str>,
+        details: serde_json::Value,
+    ) -> Result<()> {
+        self.log_audit(event_type, agent_did, caller_id, details, AuditSeverity::Info)
             .await
     }
 
@@ -77,6 +83,19 @@ impl Observability {
         agent_did: Option<&str>,
         details: serde_json::Value,
     ) -> Result<()> {
+        self.log_audit(event_type, agent_did, None, details, AuditSeverity::Security)
+            .await
+    }
+
+    /// Internal: log a fully-specified audit event.
+    async fn log_audit(
+        &self,
+        event_type: &str,
+        agent_did: Option<&str>,
+        caller_id: Option<&str>,
+        details: serde_json::Value,
+        severity: AuditSeverity,
+    ) -> Result<()> {
         let mut audit = self.audit.write().await;
         audit
             .log(AuditEvent {
@@ -84,8 +103,9 @@ impl Observability {
                 component: self.component.clone(),
                 event_type: event_type.to_string(),
                 agent_did: agent_did.map(std::string::ToString::to_string),
+                caller_id: caller_id.map(std::string::ToString::to_string),
                 details,
-                severity: AuditSeverity::Security,
+                severity,
             })
             .await
     }
@@ -138,5 +158,52 @@ impl HealthStatus {
     #[must_use]
     pub fn is_healthy(&self) -> bool {
         matches!(self, HealthStatus::Healthy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `audit_with_caller` must stamp the resolved caller identity on the
+    /// emitted event so the audit trail is attributable to a real user
+    /// (issue #17 acceptance criteria).
+    #[tokio::test]
+    async fn audit_with_caller_records_caller_id() {
+        let obs = Observability::new("tunnel");
+        obs.audit_with_caller(
+            Some("user-42"),
+            "tunnel_proxied_request",
+            Some("agent-a"),
+            serde_json::json!({"request_id": "req-1"}),
+        )
+        .await
+        .unwrap();
+
+        let entries = obs.get_audit_log(10).await;
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.caller_id.as_deref(), Some("user-42"));
+        assert_eq!(e.event_type, "tunnel_proxied_request");
+        assert_eq!(e.agent_did.as_deref(), Some("agent-a"));
+        assert_eq!(e.details["request_id"], "req-1");
+    }
+
+    /// `audit` (no caller) must leave `caller_id` unset — backward
+    /// compatibility for legacy call sites that haven't been migrated yet.
+    #[tokio::test]
+    async fn audit_without_caller_leaves_caller_id_unset() {
+        let obs = Observability::new("tunnel");
+        obs.audit(
+            "agent_spawn",
+            Some("agent-a"),
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+
+        let entries = obs.get_audit_log(10).await;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].caller_id.is_none());
     }
 }

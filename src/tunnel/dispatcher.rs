@@ -24,6 +24,28 @@ use super::TunnelHandle;
 
 use crate::auth::ownership::Permission;
 
+/// Resolve the calling user from a PekoHub-proxied bridge payload (issue #17).
+///
+/// PekoHub sets `x-pekohub-user-id` on every proxied request (the JWT-derived
+/// sub). This function is the single source of truth for deriving the
+/// `MessageRequest::user` value from the bridge payload, so the
+/// `check_request_allowed` ACL check and the downstream `with_user` call
+/// never disagree.
+///
+/// Returns `"anonymous"` when the header is absent or empty (e.g. an instance
+/// with no per-instance ACL configured) — never the literal `"web"` that the
+/// dispatcher used to hard-code (issue #17).
+pub(crate) fn resolve_bridge_caller(bridge_payload: &serde_json::Value) -> String {
+    bridge_payload
+        .get("headers")
+        .and_then(|h| h.get("x-pekohub-user-id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
 /// Per-instance state tracked by the dispatcher.
 #[derive(Debug, Clone)]
 pub struct InstanceState {
@@ -399,9 +421,36 @@ impl TunnelDispatcher {
                 .await;
         }
 
+        // Resolve the calling user from the PekoHub-proxied headers.
+        // PekoHub sets `x-pekohub-user-id` on every proxied request (the
+        // JWT-derived sub). The same header is also read above by
+        // `check_request_allowed` for the per-instance ACL — we now reuse
+        // it as the canonical caller identity for downstream attribution
+        // (issue #17). Falls back to `"anonymous"` only when the header is
+        // absent (e.g. an instance with no per-instance ACL configured).
+        let caller_user = resolve_bridge_caller(&bridge_payload);
+
+        // Audit: record the proxied request with the resolved caller so the
+        // event stream is attributable to a real user, not the literal
+        // `"web"` placeholder that this dispatcher used to stamp on every
+        // request (issue #17).
+        self.app_state
+            .observability()
+            .audit_with_caller(
+                Some(&caller_user),
+                "tunnel_proxied_request",
+                Some(&agent_name),
+                serde_json::json!({
+                    "request_id": &request_id,
+                    "caller": &caller_user,
+                }),
+            )
+            .await
+            .ok();
+
         // Build message request
         let request = MessageRequest::new(agent_name.clone(), message)
-            .with_user("web")
+            .with_user(caller_user)
             .with_new_session(false);
 
         // Execute via stateless agent service with streaming
@@ -902,6 +951,59 @@ mod tests {
     fn mock_tunnel_handle() -> (TunnelHandle, mpsc::UnboundedReceiver<TunnelMessage>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (TunnelHandle::new(tx), rx)
+    }
+
+    // ─── Issue #17: caller resolution from bridge payload ──────────────────
+
+    /// PekoHub sets `x-pekohub-user-id` on every proxied request. The
+    /// dispatcher must use that value as the `MessageRequest::user` so
+    /// downstream attribution (audit log, tool hooks) sees the real
+    /// pekohub user, not the literal `"web"` placeholder.
+    #[test]
+    fn resolve_bridge_caller_extracts_user_from_headers() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": "user-42"},
+        });
+        assert_eq!(resolve_bridge_caller(&payload), "user-42");
+    }
+
+    /// Missing header → `"anonymous"` (not `"web"`, not the empty
+    /// string). Downstream code treats `"anonymous"` as "no real user
+    /// asserted", so per-user permission checks stay conservative.
+    #[test]
+    fn resolve_bridge_caller_falls_back_to_anonymous_when_header_missing() {
+        let payload = serde_json::json!({"body": {"message": "hi"}});
+        assert_eq!(resolve_bridge_caller(&payload), "anonymous");
+    }
+
+    /// Empty string header → `"anonymous"`. Defends against PekoHub
+    /// bugs that emit `x-pekohub-user-id:` (empty value).
+    #[test]
+    fn resolve_bridge_caller_falls_back_to_anonymous_when_header_empty() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": ""},
+        });
+        assert_eq!(resolve_bridge_caller(&payload), "anonymous");
+    }
+
+    /// Whitespace-only header → `"anonymous"`. Catches header values
+    /// that look populated to a JSON parse but are semantically empty.
+    #[test]
+    fn resolve_bridge_caller_falls_back_to_anonymous_when_header_whitespace() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": "   "},
+        });
+        assert_eq!(resolve_bridge_caller(&payload), "anonymous");
+    }
+
+    /// Non-string header (e.g. number) → `"anonymous"`. Catches PekoHub
+    /// sending a typed value the runtime can't attribute.
+    #[test]
+    fn resolve_bridge_caller_falls_back_to_anonymous_when_header_not_string() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": 12345},
+        });
+        assert_eq!(resolve_bridge_caller(&payload), "anonymous");
     }
 
     #[tokio::test]

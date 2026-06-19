@@ -550,11 +550,19 @@ impl Agent {
     /// Execute with streaming support using the provided session.
     ///
     /// Directly creates an `AgenticLoop` with live streaming delivery mode.
+    ///
+    /// `caller_id` is the resolved caller identity for the request
+    /// (pekohub sub, API key id, or `None` for local CLI invocations) —
+    /// propagated to every `HookInput::ToolCall` so per-user permission
+    /// checks and audit logging can attribute tool calls to a real user
+    /// (issue #17).
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_streaming_with_session<F>(
         &self,
         prompt: &str,
         session: std::sync::Arc<tokio::sync::RwLock<crate::session::Session>>,
         history: Option<Vec<crate::types::message::LlmMessage>>,
+        caller_id: Option<String>,
         on_event: F,
     ) -> Result<crate::engine::AgenticResult>
     where
@@ -584,7 +592,8 @@ impl Agent {
             provider,
             self.extension_core(),
         )
-        .await;
+        .await
+        .with_caller_id(caller_id);
 
         let streaming_config = crate::engine::OrchestratorConfig::live();
 

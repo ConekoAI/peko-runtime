@@ -173,6 +173,7 @@ impl ExtensionAsyncAdapter {
                     workspace: self.workspace.clone(),
                     agent_id: None,
                     session_id: None,
+                    caller_id: None,
                 },
             )
             .await;
@@ -233,6 +234,7 @@ impl ExtensionAsyncAdapter {
                                 workspace,
                                 agent_id: None,
                                 session_id: None,
+                                caller_id: None,
                             },
                         )
                         .await;

@@ -914,8 +914,24 @@ impl StatelessAgentService {
             };
 
             // Execute and collect result
+            // Issue #17: thread the resolved caller identity into the
+            // agentic loop so every tool call carries the caller through
+            // to `HookInput::ToolCall`. The local-CLI placeholders
+            // (`"default"`, `"anonymous"`) map to `None` so downstream
+            // per-user permission checks (issue #17 follow-up) don't
+            // mis-attribute local invocations to a fake user.
+            let caller_id = match request.user.as_str() {
+                "default" | "anonymous" | "" => None,
+                other => Some(other.to_string()),
+            };
             let _result = agent
-                .execute_streaming_with_session(&prompt, session, Some(history.clone()), on_event)
+                .execute_streaming_with_session(
+                    &prompt,
+                    session,
+                    Some(history.clone()),
+                    caller_id,
+                    on_event,
+                )
                 .await;
 
             // Invoke ChannelOutput hook — extensions may process or log the result

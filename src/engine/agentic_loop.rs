@@ -56,6 +56,11 @@ pub struct AgenticLoop {
     system_prompt: String,
     /// Extension core for skill loading and tool registration.
     extension_core: Arc<crate::extension::ExtensionCore>,
+    /// Resolved caller identity (pekohub sub, API key id, or `None` for
+    /// local CLI invocations). Propagated to `HookInput::ToolCall::caller_id`
+    /// on every tool invocation so downstream permission checks and audit
+    /// logging can attribute the call to a real user — see issue #17.
+    caller_id: Option<String>,
 }
 
 impl AgenticLoop {
@@ -78,7 +83,18 @@ impl AgenticLoop {
             max_iterations: 10,
             system_prompt,
             extension_core,
+            caller_id: None,
         }
+    }
+
+    /// Set the resolved caller identity for this loop (issue #17).
+    /// Local CLI invocations leave this as `None`; tunneled requests
+    /// set it to the pekohub user sub so every tool call inside the
+    /// loop carries attribution.
+    #[must_use]
+    pub fn with_caller_id(mut self, caller_id: Option<String>) -> Self {
+        self.caller_id = caller_id;
+        self
     }
 
     /// Set maximum iterations
@@ -608,6 +624,7 @@ impl AgenticLoop {
                             self.agent.config.workspace.as_ref(),
                             &session,
                             &run_id,
+                            self.caller_id.as_deref(),
                             &on_event,
                         )
                         .await?;

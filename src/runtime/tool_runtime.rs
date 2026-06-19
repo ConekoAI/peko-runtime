@@ -30,12 +30,13 @@ pub async fn execute_tool_via_core(
     params: serde_json::Value,
     workspace: Option<String>,
 ) -> Result<(String, serde_json::Value, bool)> {
-    execute_tool_via_core_with_context(core, tool_name, params, workspace, None, None).await
+    execute_tool_via_core_with_context(core, tool_name, params, workspace, None, None, None).await
 }
 
-/// Execute a tool via ExtensionCore with agent and session context.
+/// Execute a tool via ExtensionCore with agent, session, and caller context.
 ///
-/// This variant passes agent_id and session_id for reserved parameter injection.
+/// This variant passes agent_id, session_id (for reserved parameter injection)
+/// and caller_id (for per-user permission checks and audit logging — issue #17).
 pub async fn execute_tool_via_core_with_context(
     core: &ExtensionCore,
     tool_name: &str,
@@ -43,6 +44,7 @@ pub async fn execute_tool_via_core_with_context(
     workspace: Option<String>,
     agent_id: Option<String>,
     session_id: Option<String>,
+    caller_id: Option<String>,
 ) -> Result<(String, serde_json::Value, bool)> {
     let point = HookPoint::ToolExecute {
         tool_name: tool_name.to_string(),
@@ -53,6 +55,7 @@ pub async fn execute_tool_via_core_with_context(
         workspace,
         agent_id,
         session_id,
+        caller_id,
     };
 
     let result = core.invoke_hook(point, input).await;

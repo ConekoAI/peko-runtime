@@ -4,6 +4,55 @@ All notable changes to Pekobot.
 
 ## [Unreleased]
 
+### Fixed (issue #17) — Plumb hub-attested user identity through the tunnel path
+
+Pre-#17, the tunnel dispatcher hard-coded the user attribution to the
+literal string `"web"` and `MessageRequest::new` defaulted to
+`"default"` — so the audit trail, the rate limiter, and (eventually)
+per-user tool permissions all operated on a placeholder. With this
+change, every proxied request carries the resolved pekohub user
+identity from end to end:
+
+- **Dispatcher** — `x-pekohub-user-id` is read from the bridge payload
+  (the same header the per-instance ACL check at
+  `src/tunnel/dispatcher.rs` already used) and is now the
+  `MessageRequest::user` value. Extracted into a small
+  `resolve_bridge_caller()` helper with 5 focused unit tests
+  (missing / empty / whitespace / non-string / happy path).
+- **Hook layer** — `HookInput::ToolCall` gains a `caller_id: Option<String>`
+  field, plumbed through `execute_tool_via_core_with_context` →
+  `ToolExecutor::execute` → `HookInput::ToolCall` so every tool
+  invocation inside the agentic loop carries the resolved caller.
+- **Agentic loop** — `AgenticLoop` carries a `caller_id`, set via
+  `with_caller_id()` by `Agent::execute_streaming_with_session`. The
+  caller is `Some(user)` for real pekohub users, `None` for local CLI
+  invocations (the literal `"default"` / `"anonymous"` placeholders
+  map to `None` so downstream per-user permission checks stay
+  conservative).
+- **Audit log** — `AuditEvent` gains a `caller_id: Option<String>` field
+  (serialized with `skip_serializing_if = "Option::is_none"` to keep
+  legacy events compact). New `Observability::audit_with_caller()`
+  helper stamps the resolved caller on every audit event that flows
+  through the request path. The tunnel dispatcher now emits a
+  `tunnel_proxied_request` audit event tagged with the caller on every
+  proxied request.
+
+**Why this matters**: unblocks per-user rate limiting
+([`src/auth/rate_limit.rs`](src/auth/rate_limit.rs) is already keyed
+off `CallerContext`), per-user session scoping
+([`src/session/key.rs:97`](src/session/key.rs#L97) keys by `sender_id`),
+per-user extension permissions
+([`src/extension/core/registry.rs:194-202`](src/extension/core/registry.rs#L194)),
+and any future PekoHub→runtime feature that needs to know *which*
+user is asking. Acceptance criterion: the literal strings `"default"`
+and `"web"` no longer appear in any production path for user
+attribution (CLI default-user fallbacks in tests are fine).
+
+**Out of scope** (deferred to follow-ups): wiring the existing
+[`JwtValidator`](src/auth/jwt.rs) into the dispatcher for signed
+identity verification; the `peko agent permit --user <sub>` CLI for
+per-user grants (issue #16); the teams/org model (#11).
+
 ### Fixed (issue #25) — Collapse IPC `(subject_id, subject_type)` into `subject: Principal`
 
 The IPC `RequestPacket` variants for grant/revoke
