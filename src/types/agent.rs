@@ -53,6 +53,22 @@ pub struct AgentConfig {
     /// Explicit permission grants on this agent (ADR-033)
     #[serde(default)]
     pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
+    /// Per-agent stable identifier (DID) — issue #28.
+    ///
+    /// Persisted from the agent's `Identity` (generated and stored under
+    /// `KeyStorage` at `peko_home/identities/` on first agent start).
+    /// Two agents with the same `name` on different runtimes will have
+    /// different `agent_did` values because the keypair is generated
+    /// independently per `peko_home` root.
+    ///
+    /// **Wire contract:** `Principal::Agent(agent_did)` is used on the
+    /// tunnel/audit/permission IPC paths so cross-runtime references
+    /// (a2a_send, `PermissionGrant.subject`, PekoHub instance row) are
+    /// unambiguous. When `None` (legacy agents predating #28), callers
+    /// fall back to `Principal::Agent(name)` within a single runtime —
+    /// see `Principal::agent_wire_id` for the canonical resolution.
+    #[serde(default)]
+    pub agent_did: Option<String>,
 }
 
 impl AgentConfig {
@@ -68,6 +84,20 @@ impl AgentConfig {
             }
         }
         self.owner.clone()
+    }
+
+    /// Wire-side identifier for this agent (issue #28).
+    ///
+    /// Returns the agent's `agent_did` if it has been backfilled into
+    /// the config (post-#28), otherwise the local `name` as a
+    /// within-runtime fallback. **Within a single runtime, the two are
+    /// interchangeable on the wire**; cross-runtime references (a2a_send,
+    /// `PermissionGrant.subject`, PekoHub instance row) require a live
+    /// `agent_did` — the runtime-local fallback is forgeable across
+    /// runtimes by design.
+    #[must_use]
+    pub fn wire_agent_id(&self) -> &str {
+        self.agent_did.as_deref().unwrap_or(&self.name)
     }
 }
 
@@ -121,6 +151,8 @@ impl Default for AgentConfig {
             owner: default_owner(),
             owner_id: None,
             permissions: Vec::new(),
+            // Issue #28: back-filled on first `Agent::new()`.
+            agent_did: None,
         }
     }
 }
@@ -399,6 +431,51 @@ mod tests {
         assert_eq!(config.name, "unnamed-agent");
         assert_eq!(config.default_timeout_seconds, 300);
         assert!(!config.auto_accept_trusted);
+        // Issue #28: `agent_did` is `None` by default — back-filled on
+        // first `Agent::new()` and persisted into config.toml.
+        assert!(config.agent_did.is_none());
+    }
+
+    /// Issue #28: `wire_agent_id` must return the DID when present
+    /// (cross-runtime wire) and the local name as a fallback
+    /// (single-runtime back-compat). The TOML round-trip is also
+    /// verified so on-disk configs survive across restarts.
+    #[test]
+    fn test_wire_agent_id_prefers_did_over_name() {
+        let mut config = AgentConfig::default();
+        config.name = "helper".to_string();
+        config.agent_did = Some("did:peko:local:abc123".to_string());
+        assert_eq!(config.wire_agent_id(), "did:peko:local:abc123");
+    }
+
+    #[test]
+    fn test_wire_agent_id_falls_back_to_name_when_did_missing() {
+        let mut config = AgentConfig::default();
+        config.name = "helper".to_string();
+        config.agent_did = None;
+        assert_eq!(config.wire_agent_id(), "helper");
+    }
+
+    #[test]
+    fn test_agent_did_toml_round_trip() {
+        // An empty `agent_did` round-trips as `None` (legacy config).
+        let legacy = AgentConfig {
+            name: "legacy-agent".to_string(),
+            ..Default::default()
+        };
+        let toml = toml::to_string_pretty(&legacy).expect("serialize legacy");
+        let parsed: AgentConfig = toml::from_str(&toml).expect("parse legacy");
+        assert!(parsed.agent_did.is_none());
+        assert_eq!(parsed.name, "legacy-agent");
+
+        // A populated `agent_did` round-trips verbatim.
+        let mut modern = AgentConfig::default();
+        modern.name = "modern-agent".to_string();
+        modern.agent_did = Some("did:peko:local:deadbeef".to_string());
+        let toml = toml::to_string_pretty(&modern).expect("serialize modern");
+        let parsed: AgentConfig = toml::from_str(&toml).expect("parse modern");
+        assert_eq!(parsed.agent_did.as_deref(), Some("did:peko:local:deadbeef"));
+        assert_eq!(parsed.name, "modern-agent");
     }
 
     #[test]

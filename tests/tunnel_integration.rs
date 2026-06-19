@@ -329,6 +329,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             id: instance_id.clone(),
             instance_type: InstanceType::Agent,
             name: "test-agent".to_string(),
+            agent_did: None,
             bundle_ref: None,
             runtime_display_name: Some("Test Runtime".to_string()),
             status: InstanceStatus::Online,

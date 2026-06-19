@@ -43,6 +43,14 @@ pub struct InstanceAnnouncePayload {
     #[serde(rename = "type")]
     pub instance_type: InstanceType,
     pub name: String,
+    /// Stable per-agent identifier (DID) — issue #28.
+    ///
+    /// Populated from `AgentConfig.agent_did` when the agent has been
+    /// started at least once (the runtime backfills the DID on
+    /// `Agent::new`). Absent for legacy agents predating #28; PekoHub
+    /// treats those by falling back to the local `name` for one release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_did: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundle_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -234,12 +242,23 @@ mod tests {
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
         // Verify camelCase on the wire
-        assert!(json.contains("\"runtimeId\""), "Expected camelCase runtimeId, got: {}", json);
-        assert!(json.contains("\"runtime_hello\""), "Expected snake_case tag");
+        assert!(
+            json.contains("\"runtimeId\""),
+            "Expected camelCase runtimeId, got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"runtime_hello\""),
+            "Expected snake_case tag"
+        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
-            TunnelMessage::RuntimeHello { runtime_id, nonce, signature } => {
+            TunnelMessage::RuntimeHello {
+                runtime_id,
+                nonce,
+                signature,
+            } => {
                 assert_eq!(runtime_id, "did:key:z6Mk");
                 assert_eq!(nonce, "abc123");
                 assert_eq!(signature, "sig");
@@ -301,11 +320,17 @@ mod tests {
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
-        assert!(json.contains("\"heartbeatIntervalSecs\""), "Expected camelCase, got: {}", json);
+        assert!(
+            json.contains("\"heartbeatIntervalSecs\""),
+            "Expected camelCase, got: {}",
+            json
+        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
-            TunnelMessage::TunnelReady { heartbeat_interval_secs } => {
+            TunnelMessage::TunnelReady {
+                heartbeat_interval_secs,
+            } => {
                 assert_eq!(heartbeat_interval_secs, 30);
             }
             _ => panic!("Expected TunnelReady"),
@@ -324,6 +349,7 @@ mod tests {
                 id: "inst-1".to_string(),
                 instance_type: InstanceType::Agent,
                 name: "test-agent".to_string(),
+                agent_did: Some("did:peko:local:abc123".to_string()),
                 bundle_ref: Some("ref".to_string()),
                 runtime_display_name: Some("Test".to_string()),
                 status: InstanceStatus::Online,
@@ -335,9 +361,21 @@ mod tests {
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
-        assert!(json.contains("\"runtimeDisplayName\""), "Expected camelCase, got: {}", json);
-        assert!(json.contains("\"bundleRef\""), "Expected camelCase, got: {}", json);
-        assert!(json.contains("\"allowedUsers\""), "Expected camelCase, got: {}", json);
+        assert!(
+            json.contains("\"runtimeDisplayName\""),
+            "Expected camelCase, got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"bundleRef\""),
+            "Expected camelCase, got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"allowedUsers\""),
+            "Expected camelCase, got: {}",
+            json
+        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
@@ -356,6 +394,7 @@ mod tests {
                 id: "inst-2".to_string(),
                 instance_type: InstanceType::Agent,
                 name: "minimal".to_string(),
+                agent_did: None,
                 bundle_ref: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
@@ -375,6 +414,74 @@ mod tests {
             }
             _ => panic!("Expected InstanceAnnounce"),
         }
+    }
+
+    /// Issue #28: `InstanceAnnouncePayload.agent_did` must
+    /// (a) round-trip when present, and
+    /// (b) be omitted from the serialized wire form when `None`
+    ///     (legacy agents, back-compat with pre-#28 PekoHub).
+    #[test]
+    fn test_instance_announce_agent_did_roundtrip() {
+        let msg = TunnelMessage::InstanceAnnounce {
+            payload: InstanceAnnouncePayload {
+                id: "inst-3".to_string(),
+                instance_type: InstanceType::Agent,
+                name: "helper".to_string(),
+                agent_did: Some("did:peko:local:abc123".to_string()),
+                bundle_ref: None,
+                runtime_display_name: None,
+                status: InstanceStatus::Online,
+                exposure: InstanceExposure::Private,
+                allowed_users: None,
+                capabilities: None,
+                metadata: None,
+            },
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        // The DID serializes to camelCase on the wire.
+        assert!(
+            json.contains("\"agentDid\":\"did:peko:local:abc123\""),
+            "agent_did must serialize as `agentDid` on the wire (camelCase), got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::InstanceAnnounce { payload } => {
+                assert_eq!(payload.agent_did.as_deref(), Some("did:peko:local:abc123"));
+            }
+            _ => panic!("Expected InstanceAnnounce"),
+        }
+    }
+
+    #[test]
+    fn test_instance_announce_omits_agent_did_when_none() {
+        // Legacy agent (no DID yet) — the field must be omitted so
+        // pre-#28 PekoHub doesn't reject the payload with "unknown
+        // field" (camelCase is the wire format; PekoHub uses serde
+        // with `deny_unknown_fields` disabled in practice but the
+        // skip annotation keeps the contract explicit).
+        let msg = TunnelMessage::InstanceAnnounce {
+            payload: InstanceAnnouncePayload {
+                id: "inst-4".to_string(),
+                instance_type: InstanceType::Agent,
+                name: "legacy-helper".to_string(),
+                agent_did: None,
+                bundle_ref: None,
+                runtime_display_name: None,
+                status: InstanceStatus::Online,
+                exposure: InstanceExposure::Private,
+                allowed_users: None,
+                capabilities: None,
+                metadata: None,
+            },
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        assert!(
+            !json.contains("agentDid"),
+            "agent_did must be omitted from the wire when None (back-compat); got: {json}"
+        );
     }
 
     #[test]
@@ -410,11 +517,19 @@ mod tests {
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
-        assert!(json.contains("\"requestId\""), "Expected camelCase, got: {}", json);
+        assert!(
+            json.contains("\"requestId\""),
+            "Expected camelCase, got: {}",
+            json
+        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
-            TunnelMessage::ProxiedRequest { request_id, agent, payload } => {
+            TunnelMessage::ProxiedRequest {
+                request_id,
+                agent,
+                payload,
+            } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(agent, "agent-1");
                 assert_eq!(payload, vec![1, 2, 3]);
@@ -434,8 +549,16 @@ mod tests {
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
-        assert!(json.contains("\"instanceId\""), "Expected camelCase, got: {}", json);
-        assert!(json.contains("\"allowedUserIds\""), "Expected camelCase, got: {}", json);
+        assert!(
+            json.contains("\"instanceId\""),
+            "Expected camelCase, got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"allowedUserIds\""),
+            "Expected camelCase, got: {}",
+            json
+        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
@@ -457,10 +580,25 @@ mod tests {
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
-        assert!(json.contains("\"instanceId\""), "Expected camelCase, got: {}", json);
-        assert!(json.contains("\"status\""), "Expected status field, got: {}", json);
-        assert!(json.contains("\"busy\""), "Expected snake_case status value, got: {}", json);
-        assert!(json.contains("\"status_update\""), "Expected snake_case tag");
+        assert!(
+            json.contains("\"instanceId\""),
+            "Expected camelCase, got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"status\""),
+            "Expected status field, got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"busy\""),
+            "Expected snake_case status value, got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"status_update\""),
+            "Expected snake_case tag"
+        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {

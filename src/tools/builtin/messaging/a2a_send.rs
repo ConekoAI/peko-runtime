@@ -76,6 +76,13 @@ pub struct A2aSendTool {
     agent_service: Arc<StatelessAgentService>,
     /// Optional caller agent name for annotation
     caller_agent: Option<String>,
+    /// Optional caller agent DID (issue #28). When set, this is what
+    /// gets projected to `Principal::Agent(...)` on the wire so the
+    /// receiving agent's session is keyed by a stable, runtime-independent
+    /// identifier. Falls back to `caller_agent` (the local name) when
+    /// unset — this is the legacy behavior and is fine for single-runtime
+    /// use but ambiguous across runtimes.
+    caller_agent_did: Option<String>,
 }
 
 impl A2aSendTool {
@@ -85,6 +92,7 @@ impl A2aSendTool {
         Self {
             agent_service,
             caller_agent: None,
+            caller_agent_did: None,
         }
     }
 
@@ -92,6 +100,19 @@ impl A2aSendTool {
     #[must_use]
     pub fn with_caller(mut self, caller: impl Into<String>) -> Self {
         self.caller_agent = Some(caller.into());
+        self
+    }
+
+    /// Set the caller agent DID (issue #28). Prefer this over
+    /// `with_caller` when registering the tool: the DID is what flows
+    /// through to `Principal::Agent` on the wire, the name is just for
+    /// the human-readable annotation. `caller` is also set as a
+    /// back-compat fallback for the (rare) case where the DID is missing
+    /// — see `build_request` for the resolution order.
+    #[must_use]
+    pub fn with_caller_did(mut self, caller: impl Into<String>, did: impl Into<String>) -> Self {
+        self.caller_agent = Some(caller.into());
+        self.caller_agent_did = Some(did.into());
         self
     }
 
@@ -131,12 +152,25 @@ impl A2aSendTool {
         // builder). Refuse rather than fall back to a fake user.
         let caller_agent = validate_caller_agent(self.caller_agent.as_deref())?;
 
+        // Issue #28: prefer the caller DID for the wire-side
+        // `Principal::Agent` so cross-runtime references stay
+        // unambiguous. Fall back to the caller name (legacy) when no
+        // DID is set — fine within a single runtime, ambiguous across
+        // runtimes by design. The `caller_agent` annotation is always
+        // the human-readable name regardless of which one is used.
+        let wire_caller_id = self
+            .caller_agent_did
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .unwrap_or(caller_agent);
+
         let request = build_a2a_request(
             &args.target_agent,
             args.message,
             args.session_id,
             args.team,
             caller_agent,
+            wire_caller_id,
         );
         Ok(request)
     }
@@ -170,6 +204,11 @@ pub(crate) fn validate_caller_agent(caller: Option<&str>) -> Result<&str> {
 /// `caller_agent` must be non-empty; the caller (`A2aSendTool::build_request`)
 /// has already validated this.
 ///
+/// `wire_caller_id` is the value projected into `Principal::Agent` on
+/// the wire — typically the agent's DID (issue #28) but can be the name
+/// as a legacy fallback. `caller_agent` is preserved verbatim on
+/// `MessageRequest::caller_agent` for the human-readable annotation.
+///
 /// **Issue #24 review concern #1:** `user` is left as the empty string
 /// for a2a_send (not populated with `caller_agent`). This forces every
 /// downstream code path that still reads `MessageRequest::user` to
@@ -183,8 +222,9 @@ fn build_a2a_request(
     session_id: Option<String>,
     team: Option<String>,
     caller_agent: &str,
+    wire_caller_id: &str,
 ) -> MessageRequest {
-    let caller_principal = Principal::Agent(caller_agent.to_string());
+    let caller_principal = Principal::Agent(wire_caller_id.to_string());
     // The `user` field is INTENTIONALLY left as the empty string for
     // a2a_send (issue #24 review #1). Any reader of
     // `MessageRequest::user` for a2a-originated calls must migrate to
@@ -267,8 +307,8 @@ Send a message to another agent and receive its response. This is the primary me
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
-        let args: A2aSendArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow!("Invalid arguments: {e}"))?;
+        let args: A2aSendArgs =
+            serde_json::from_value(params).map_err(|e| anyhow!("Invalid arguments: {e}"))?;
 
         // Issue #24: build the request with the principal-aware path
         // (no more user-masquerade). Any caller misconfiguration is
@@ -396,16 +436,14 @@ mod tests {
     #[test]
     fn test_validate_caller_agent_rejects_missing_and_empty() {
         // Missing caller → error.
-        let err = validate_caller_agent(None)
-            .expect_err("missing caller must be rejected");
+        let err = validate_caller_agent(None).expect_err("missing caller must be rejected");
         assert!(
             err.to_string().contains("caller_agent is not set"),
             "error must mention caller_agent; got: {err}"
         );
 
         // Empty caller → error (same message — they're both "no caller").
-        let err = validate_caller_agent(Some(""))
-            .expect_err("empty caller must be rejected");
+        let err = validate_caller_agent(Some("")).expect_err("empty caller must be rejected");
         assert!(
             err.to_string().contains("caller_agent is not set"),
             "error must mention caller_agent; got: {err}"
@@ -434,6 +472,7 @@ mod tests {
             "review this".to_string(),
             Some("sess-1".to_string()),
             None,
+            "helper",
             "helper",
         );
 
@@ -467,8 +506,8 @@ mod tests {
     /// session-key isolation invariant the issue's tests rely on.
     #[test]
     fn test_build_a2a_request_distinguishes_callers() {
-        let req_a = build_a2a_request("target", "hi".into(), None, None, "caller_a");
-        let req_b = build_a2a_request("target", "hi".into(), None, None, "caller_b");
+        let req_a = build_a2a_request("target", "hi".into(), None, None, "caller_a", "caller_a");
+        let req_b = build_a2a_request("target", "hi".into(), None, None, "caller_b", "caller_b");
 
         assert_eq!(
             req_a.caller_principal,
@@ -482,6 +521,32 @@ mod tests {
             req_a.caller_principal, req_b.caller_principal,
             "different callers must produce different principals so the \
              session keys stay isolated"
+        );
+    }
+
+    /// Issue #28: when a DID is provided as `wire_caller_id`, the
+    /// `Principal::Agent` on the wire must be the DID (not the local
+    /// name) so cross-runtime references are unambiguous. The
+    /// `caller_agent` annotation stays as the human-readable name.
+    #[test]
+    fn test_build_a2a_request_prefers_did_for_wire_principal() {
+        let req = build_a2a_request(
+            "analyzer",
+            "review this".to_string(),
+            None,
+            None,
+            "helper",
+            "did:peko:local:abc123",
+        );
+        assert_eq!(
+            req.caller_principal,
+            Some(Principal::Agent("did:peko:local:abc123".into())),
+            "caller_principal must be the DID when provided (issue #28)"
+        );
+        assert_eq!(
+            req.caller_agent.as_deref(),
+            Some("helper"),
+            "caller_agent annotation must remain the human-readable name"
         );
     }
 }

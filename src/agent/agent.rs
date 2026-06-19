@@ -9,7 +9,7 @@ use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::{ChannelType, Peer};
 use crate::tools::builtin::messaging::agent_spawn::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
@@ -107,9 +107,15 @@ impl Agent {
 
         // Add a2a_send tool for agent-to-agent messaging (ADR-023)
         if let Some(agent_service) = self.extension_core.services().agent_service() {
-            tools.push(Arc::new(
-                crate::tools::A2aSendTool::new(agent_service).with_caller(&self.config.name),
-            ));
+            // Issue #28: prefer `agent_did` for the wire-side
+            // `Principal::Agent`; fall back to the name for legacy agents
+            // that predate the per-agent persistent keypair.
+            let a2a = match self.config.agent_did.as_deref() {
+                Some(did) if !did.is_empty() => crate::tools::A2aSendTool::new(agent_service)
+                    .with_caller_did(&self.config.name, did),
+                _ => crate::tools::A2aSendTool::new(agent_service).with_caller(&self.config.name),
+            };
+            tools.push(Arc::new(a2a));
         } else {
             tracing::warn!("StatelessAgentService not available on ExtensionCore — a2a_send tool will not be registered");
         }
@@ -244,6 +250,14 @@ impl Agent {
         // Load or create identity
         let identity = Self::load_or_create_identity(&config).await?;
 
+        // Issue #28: persist the resolved DID back into the on-disk
+        // config.toml so the tunnel dispatcher can announce it without
+        // re-running identity generation.
+        let config_path = PathResolver::new().agent_config(&config.name);
+        if let Err(e) = Self::persist_agent_did(&config_path, &config, &identity.did).await {
+            warn!("Could not backfill agent_did into config: {}", e);
+        }
+
         // Initialize provider if configured
         let provider = Self::init_provider(&config).await?;
 
@@ -303,6 +317,14 @@ impl Agent {
         info!("Creating agent with shared executor: {}", config.name);
 
         let identity = Self::load_or_create_identity(&config).await?;
+
+        // Issue #28: persist the resolved DID back into config.toml. This
+        // path is reached for subagent execution where the parent's config
+        // may not yet carry agent_did — the first call backfills it.
+        let config_path = PathResolver::new().agent_config(&config.name);
+        if let Err(e) = Self::persist_agent_did(&config_path, &config, &identity.did).await {
+            warn!("Could not backfill agent_did into config: {}", e);
+        }
         let provider = Self::init_provider(&config).await?;
 
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
@@ -945,22 +967,83 @@ impl Agent {
     async fn load_or_create_identity(config: &AgentConfig) -> Result<Identity> {
         let storage = KeyStorage::new()?;
 
-        let identity_name = config.name.clone();
+        // Issue #28: prefer lookup by `agent_did` (the on-disk filename is
+        // the DID, not the agent name). Pre-#28 configs stored identity
+        // under `{name}.json` which meant a fresh keypair was generated on
+        // every agent start — the fix keys the lookup by the stable DID
+        // and falls back to the legacy name-keyed path so existing agents
+        // still resolve.
+        if let Some(ref did) = config.agent_did {
+            if let Ok(identity) = storage.load(did) {
+                info!("Loaded identity by agent_did: {}", identity.did);
+                return Ok(identity);
+            }
+            // agent_did set but identity file missing — broken state, but
+            // recoverable: log + generate a new identity. The caller will
+            // write the new DID back into config.toml.
+            warn!(
+                "agent_did '{}' in config does not resolve to a stored identity; \
+                 generating a new one (the config will be updated on next save)",
+                did
+            );
+        }
 
-        // Try to load existing identity
-        if let Ok(identity) = storage.load(&identity_name) {
-            info!("Loaded existing identity: {}", identity.did);
+        // Legacy fallback: identity file may be keyed by agent name
+        // (pre-#28 — buggy but tolerated).
+        if let Ok(identity) = storage.load(&config.name) {
+            info!("Loaded legacy name-keyed identity: {}", identity.did);
             return Ok(identity);
         }
 
         // Create new identity
-        info!("Creating new identity for: {}", identity_name);
+        info!("Creating new identity for: {}", config.name);
         let identity = Identity::generate(DIDScope::Local, None)?;
 
         storage.store(&identity)?;
         info!("Created and stored new identity: {}", identity.did);
 
         Ok(identity)
+    }
+
+    /// Persist the resolved agent_did back into the on-disk config.toml.
+    ///
+    /// Issue #28: the per-agent DID is generated lazily on first
+    /// `Agent::new()`; this call backfills it into `config.toml` so the
+    /// DID is stable across restarts and visible to the tunnel dispatcher
+    /// (which reads `agent_did` straight from the config file when
+    /// building `InstanceAnnouncePayload`).
+    ///
+    /// Best-effort: a write failure is logged but not propagated. The
+    /// in-memory identity is still valid; the next agent start will
+    /// retry the write. The caller is responsible for providing the
+    /// correct `config_path` — `PathResolver::agent_config(name)` is the
+    /// canonical location.
+    async fn persist_agent_did(
+        config_path: &std::path::Path,
+        config: &AgentConfig,
+        agent_did: &str,
+    ) -> Result<()> {
+        if config.agent_did.as_deref() == Some(agent_did) {
+            return Ok(());
+        }
+
+        let mut updated = config.clone();
+        updated.agent_did = Some(agent_did.to_string());
+
+        let toml_str =
+            toml::to_string_pretty(&updated).context("Failed to serialize updated AgentConfig")?;
+
+        tokio::fs::write(config_path, toml_str)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to persist agent_did to {} (in-memory identity will still work this session)",
+                    config_path.display()
+                )
+            })?;
+
+        info!("Backfilled agent_did into config: {}", agent_did);
+        Ok(())
     }
 
     async fn init_provider(
@@ -1236,5 +1319,69 @@ mod tests {
         let spawn_resolved = spawn_resolved.unwrap();
         assert!(spawn_resolved.context.is_subagent);
         assert!(!spawn_resolved.context.is_isolated);
+    }
+
+    /// Issue #28 acceptance criterion: two agents with the same name
+    /// on two distinct runtime directories must have different
+    /// `agent_did` values. This is what makes cross-runtime references
+    /// (a2a_send, `PermissionGrant.subject`, PekoHub instance rows)
+    /// unambiguous when two runtimes each have an agent literally
+    /// called `helper`.
+    ///
+    /// The test exercises the same `new_for_test` path used by every
+    /// agent-construction unit test in this file but with two
+    /// independent temp dirs (i.e. two independent `peko_home`s). Each
+    /// dir gets its own `KeyStorage` and its own ed25519 keypair, so
+    /// the DIDs must differ.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_two_runtimes_same_name_different_did() {
+        use crate::extension::core::ExtensionCore;
+        use crate::types::provider::{ProviderConfig, ProviderType};
+        use tempfile::TempDir;
+
+        // Force the encrypted-file identity fallback (Windows-headless
+        // keyring panics otherwise).
+        crate::identity::init_test_env();
+
+        let core = Arc::new(ExtensionCore::new());
+        crate::extension::core::init_global_core(core);
+
+        let make_config = |name: &str| AgentConfig {
+            name: name.to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // Two distinct peko_home roots.
+        let tmp_a = TempDir::new().expect("tempdir A");
+        let tmp_b = TempDir::new().expect("tempdir B");
+
+        let agent_a = Agent::new_for_test(make_config("helper"), tmp_a.path())
+            .await
+            .expect("agent A");
+        let agent_b = Agent::new_for_test(make_config("helper"), tmp_b.path())
+            .await
+            .expect("agent B");
+
+        let did_a = agent_a.did().to_string();
+        let did_b = agent_b.did().to_string();
+
+        // The DIDs are generated independently (separate keypair per
+        // `peko_home`), so they must differ even though the agent
+        // names are identical.
+        assert_ne!(
+            did_a, did_b,
+            "issue #28: two agents with the same name on distinct \
+             runtime dirs must have different agent_did values \
+             (got {did_a:?} for both)"
+        );
+
+        // Both must be well-formed peko DIDs.
+        assert!(did_a.starts_with("did:peko:"));
+        assert!(did_b.starts_with("did:peko:"));
     }
 }
