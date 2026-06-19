@@ -5,6 +5,7 @@
 //! lifecycle and shutdown.
 
 use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
+use crate::auth::caller::CallerContext;
 use crate::common::json_utils::json_subset;
 use crate::cron::events::SystemEvent;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
@@ -182,7 +183,8 @@ impl CronEngine {
 
         let _ = self
             .observability
-            .audit(
+            .audit_with_caller(
+                Some(&CallerContext::local().subject()),
                 "cron.execute",
                 job.agent_id.as_deref(),
                 serde_json::json!({
@@ -237,7 +239,8 @@ impl CronEngine {
 
         let _ = self
             .observability
-            .audit(
+            .audit_with_caller(
+                Some(&CallerContext::local().subject()),
                 "cron.result",
                 job.agent_id.as_deref(),
                 serde_json::json!({

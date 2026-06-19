@@ -4,6 +4,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+use crate::auth::Principal;
+
 /// Audit logger
 pub struct AuditLogger {
     /// In-memory buffer (for production, use persistent storage)
@@ -23,11 +25,20 @@ pub struct AuditEvent {
     pub event_type: String,
     /// Which agent (if any)
     pub agent_did: Option<String>,
-    /// Resolved caller identity (pekohub sub, API key id, or `local`) —
-    /// populated on every event that flows through the request path so the
-    /// audit trail is attributable to a real user. See issue #17.
+    /// Resolved caller identity as a typed `Principal` (ADR-039).
+    /// Populated on every event that flows through the request path so
+    /// the audit trail is attributable to a real subject — User / Agent /
+    /// Team / Public. `None` only on legacy events that pre-date the
+    /// per-user attribution plumbing (issue #17) or on system-emitted
+    /// events with no caller context (use `Principal::User("local")` —
+    /// via `CallerContext::local().subject()` — or `Principal::Public`
+    /// for genuinely unauthenticated events, issue #26). For
+    /// security events with no caller context, prefer
+    /// `Principal::Public` over `None` so per-user audit queries can
+    /// still distinguish "unauthenticated security event" from "no
+    /// caller recorded" (issue #26 review feedback).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller_id: Option<String>,
+    pub caller: Option<Principal>,
     /// Event details
     pub details: serde_json::Value,
     /// Severity level
@@ -140,7 +151,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "agent_spawn".to_string(),
                 agent_did: Some("did:1".to_string()),
-                caller_id: None,
+                caller: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -165,7 +176,7 @@ mod tests {
                     component: "test".to_string(),
                     event_type: format!("event_{i}"),
                     agent_did: None,
-                    caller_id: None,
+                    caller: None,
                     details: serde_json::json!({}),
                     severity: AuditSeverity::Info,
                 })
@@ -189,7 +200,7 @@ mod tests {
                     component: "test".to_string(),
                     event_type: format!("event_{i}"),
                     agent_did: None,
-                    caller_id: None,
+                    caller: None,
                     details: serde_json::json!({}),
                     severity: AuditSeverity::Info,
                 })
@@ -217,7 +228,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "event1".to_string(),
                 agent_did: Some("agent_a".to_string()),
-                caller_id: None,
+                caller: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -230,7 +241,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "event2".to_string(),
                 agent_did: Some("agent_b".to_string()),
-                caller_id: None,
+                caller: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -243,7 +254,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "event3".to_string(),
                 agent_did: Some("agent_a".to_string()),
-                caller_id: None,
+                caller: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -267,7 +278,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "normal_event".to_string(),
                 agent_did: None,
-                caller_id: None,
+                caller: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -280,7 +291,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "security_event".to_string(),
                 agent_did: None,
-                caller_id: None,
+                caller: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Security,
             })
@@ -293,7 +304,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "another_security".to_string(),
                 agent_did: None,
-                caller_id: None,
+                caller: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Security,
             })
@@ -317,7 +328,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "event".to_string(),
                 agent_did: None,
-                caller_id: None,
+                caller: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -354,7 +365,7 @@ mod tests {
                     component: "test".to_string(),
                     event_type: format!("event_{i}"),
                     agent_did: None,
-                    caller_id: None,
+                    caller: None,
                     details: serde_json::json!({}),
                     severity: *severity,
                 })
@@ -365,37 +376,95 @@ mod tests {
         assert_eq!(logger.len(), 5);
     }
 
-    /// Issue #17: `caller_id` must round-trip through serialization
-    /// when populated AND must be omitted (not serialized as null) when
-    /// unset — keeps the wire format compact for legacy events that
-    /// pre-date the per-user attribution plumbing.
+    /// Issue #26: `caller: Option<Principal>` must serialize in the
+    /// canonical `{kind, id}` shape that ADR-039 mandates (so per-user
+    /// and per-agent audit queries can index on the tag instead of
+    /// string-parsing the legacy `user:{sub}` convention) AND must be
+    /// omitted (not serialized as null) when unset — keeps the wire
+    /// format compact for legacy events that pre-date the per-user
+    /// attribution plumbing (issue #17).
     #[test]
-    fn audit_event_caller_id_serialization() {
-        let with_caller = AuditEvent {
+    fn audit_event_caller_principal_serialization() {
+        // Agent caller — the canonical shape required by the issue.
+        let with_agent_caller = AuditEvent {
             timestamp: chrono::Utc::now(),
             component: "tunnel".to_string(),
             event_type: "tunnel_proxied_request".to_string(),
             agent_did: Some("agent-a".to_string()),
-            caller_id: Some("user-42".to_string()),
+            caller: Some(Principal::Agent("helper".to_string())),
             details: serde_json::json!({}),
             severity: AuditSeverity::Info,
         };
-        let v: serde_json::Value = serde_json::to_value(&with_caller).unwrap();
-        assert_eq!(v["caller_id"], "user-42");
+        let v: serde_json::Value = serde_json::to_value(&with_agent_caller).unwrap();
+        // The Principal enum is `#[serde(tag = "kind", content = "id")]`
+        // so it serializes as an inline `{kind, id}` object — not nested
+        // under another key. This is the wire shape PekoHub query API
+        // will key on (issue #26 acceptance criteria).
+        assert_eq!(v["caller"]["kind"], "agent");
+        assert_eq!(v["caller"]["id"], "helper");
+        // The flat {kind, id} object is the contract — no extra nesting.
+        assert!(v["caller"].is_object());
+        assert_eq!(v["caller"].as_object().unwrap().len(), 2);
 
+        // Round-trip: re-parse the value into an `AuditEvent` and check
+        // the `Principal` survives — guards against accidental
+        // string-conversion regressions on the audit wire format.
+        let parsed: AuditEvent = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(parsed.caller, Some(Principal::Agent("helper".to_string())));
+
+        // User caller — also projects cleanly.
+        let with_user_caller = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            component: "tunnel".to_string(),
+            event_type: "tunnel_proxied_request".to_string(),
+            agent_did: Some("agent-a".to_string()),
+            caller: Some(Principal::User("user:user-42".to_string())),
+            details: serde_json::json!({}),
+            severity: AuditSeverity::Info,
+        };
+        let v: serde_json::Value = serde_json::to_value(&with_user_caller).unwrap();
+        assert_eq!(v["caller"]["kind"], "user");
+        assert_eq!(v["caller"]["id"], "user:user-42");
+
+        // Public caller — for system-initiated events with no subject.
+        let with_public_caller = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            component: "cron".to_string(),
+            event_type: "cron.execute".to_string(),
+            agent_did: None,
+            caller: Some(Principal::Public),
+            details: serde_json::json!({}),
+            severity: AuditSeverity::Info,
+        };
+        let v: serde_json::Value = serde_json::to_value(&with_public_caller).unwrap();
+        // `Principal::Public` is a unit variant of an enum tagged
+        // `#[serde(tag = "kind", content = "id")]` — so it serializes
+        // as `{"kind": "public"}` with no `id` field (there is no id
+        // to carry). This still round-trips correctly through the
+        // deserializer.
+        assert_eq!(v["caller"]["kind"], "public");
+        assert!(
+            v["caller"].get("id").is_none(),
+            "Principal::Public must not serialize an id, got: {}",
+            v["caller"]
+        );
+        let parsed: AuditEvent = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed.caller, Some(Principal::Public));
+
+        // No caller — must be omitted, not serialized as null.
         let without_caller = AuditEvent {
             timestamp: chrono::Utc::now(),
             component: "tunnel".to_string(),
             event_type: "agent_spawn".to_string(),
             agent_did: None,
-            caller_id: None,
+            caller: None,
             details: serde_json::json!({}),
             severity: AuditSeverity::Info,
         };
         let v: serde_json::Value = serde_json::to_value(&without_caller).unwrap();
         assert!(
-            v.get("caller_id").is_none(),
-            "caller_id must be omitted (skip_serializing_if) when None, got: {v}"
+            v.get("caller").is_none(),
+            "caller must be omitted (skip_serializing_if) when None, got: {v}"
         );
     }
 }

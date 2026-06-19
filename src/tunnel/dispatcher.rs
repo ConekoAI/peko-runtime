@@ -13,6 +13,7 @@ const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d
 
 use crate::agent::stateless_service::MessageRequest;
 
+use crate::auth::Principal;
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
 
@@ -512,11 +513,17 @@ impl TunnelDispatcher {
         // Audit: record the proxied request with the resolved caller so the
         // event stream is attributable to a real user, not the literal
         // `"web"` placeholder that this dispatcher used to stamp on every
-        // request (issue #17).
+        // request (issue #17). The caller is projected to a typed
+        // `Principal` (issue #26) so the audit wire shape is `{kind, id}`
+        // and per-user / per-agent queries can index on the kind tag.
+        // `Principal::from_bridge_user` centralizes the `user:` prefix
+        // and the `"anonymous" → Public` mapping next to the type's
+        // other constructors (issue #26 review feedback).
+        let caller_principal = Principal::from_bridge_user(&caller_user);
         self.app_state
             .observability()
             .audit_with_caller(
-                Some(&caller_user),
+                Some(&caller_principal),
                 "tunnel_proxied_request",
                 Some(&agent_name),
                 serde_json::json!({

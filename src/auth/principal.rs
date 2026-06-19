@@ -147,6 +147,28 @@ impl Principal {
     pub fn is_agent(&self) -> bool {
         matches!(self, Self::Agent(_))
     }
+
+    /// Project a tunnel-bridge user string (the value returned by
+    /// `resolve_bridge_caller`) into a `Principal` (issue #26).
+    ///
+    /// The bridge is the PekoHub-proxied request path. Its caller is
+    /// always a pekohub *user* — but the `"anonymous"` fallback is
+    /// semantically unauthenticated, not a user named "anonymous", so
+    /// it maps to `Principal::Public`. Every other value gets the
+    /// `user:{sub}` prefix that matches `CallerContext::subject()`'s
+    /// projection for `Identity::User`.
+    ///
+    /// Centralized here so the `user:` prefix and the anonymous
+    /// special-case live next to the type's other constructors
+    /// instead of being inlined at every call site.
+    #[must_use]
+    pub fn from_bridge_user(sub: &str) -> Principal {
+        if sub == "anonymous" {
+            Self::Public
+        } else {
+            Self::User(format!("user:{sub}"))
+        }
+    }
 }
 
 impl fmt::Display for Principal {
@@ -352,6 +374,42 @@ mod tests {
 
         assert_eq!(Principal::Public.peer_type(), "public");
         assert_eq!(Principal::Team("eng".into()).peer_type(), "team");
+    }
+
+    /// Issue #26: the tunnel dispatcher stamps audit events with a
+    /// `Principal` projection of the bridge caller string. The
+    /// `"anonymous"` fallback is semantically unauthenticated →
+    /// `Principal::Public`; everything else is a pekohub user with the
+    /// `user:` prefix (matching `CallerContext::subject()`'s
+    /// `Identity::User` projection).
+    #[test]
+    fn test_from_bridge_user() {
+        // Real user — gets the `user:` prefix.
+        assert_eq!(
+            Principal::from_bridge_user("alice"),
+            Principal::User("user:alice".to_string())
+        );
+
+        // The JWT-validated path returns a pekohub sub like
+        // `user-42`; the prefix still gets added so the kind tag is
+        // present on the wire.
+        assert_eq!(
+            Principal::from_bridge_user("user-42"),
+            Principal::User("user:user-42".to_string())
+        );
+
+        // "anonymous" fallback → unauthenticated, not a user.
+        assert_eq!(Principal::from_bridge_user("anonymous"), Principal::Public);
+
+        // Empty string is *not* a special case — it projects to
+        // `Principal::User("user:")`, distinguishable from
+        // `Principal::Public`. (Caller-side validation is responsible
+        // for not passing empty strings here; this constructor just
+        // applies the prefix.)
+        assert_eq!(
+            Principal::from_bridge_user(""),
+            Principal::User("user:".to_string())
+        );
     }
 
     #[test]
