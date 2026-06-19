@@ -19,7 +19,7 @@
 #![allow(deprecated)]
 
 use pekobot::auth::ownership::SubjectType;
-use pekobot::auth::principal::{Principal, principal_from_string_with_default_user};
+use pekobot::auth::principal::{principal_from_string_with_default_user, Principal};
 use pekobot::ipc::packet::RequestPacket;
 use pekobot::session::key::derive_base_session_key;
 
@@ -35,8 +35,8 @@ fn test_json_legacy_string_parses() {
 fn test_json_struct_form_parses() {
     // The IPC wire form: the `Principal` derive uses
     // `#[serde(tag = "kind", content = "id")]` for JSON.
-    let p: Principal = serde_json::from_str(r#"{"kind":"agent","id":"helper"}"#)
-        .expect("struct form parses");
+    let p: Principal =
+        serde_json::from_str(r#"{"kind":"agent","id":"helper"}"#).expect("struct form parses");
     assert_eq!(p, Principal::Agent("helper".into()));
 }
 
@@ -175,7 +175,9 @@ fn test_revoke_principal_subject_matches_agent_grant() {
     // pins the back-compat window for old CLIs.
     let legacy_revoke = revoke_with_subject(None, Some("helper".into()), Some(SubjectType::Agent));
     assert_eq!(
-        legacy_revoke.resolved_subject().expect("legacy revoke resolves"),
+        legacy_revoke
+            .resolved_subject()
+            .expect("legacy revoke resolves"),
         Principal::Agent("helper".into())
     );
 
@@ -202,10 +204,11 @@ fn test_revoke_principal_subject_matches_team_grant() {
     );
 
     // Legacy `(subject_id="eng", subject_type=Team)` also resolves.
-    let legacy_revoke =
-        revoke_with_subject(None, Some("eng".into()), Some(SubjectType::Team));
+    let legacy_revoke = revoke_with_subject(None, Some("eng".into()), Some(SubjectType::Team));
     assert_eq!(
-        legacy_revoke.resolved_subject().expect("legacy revoke resolves"),
+        legacy_revoke
+            .resolved_subject()
+            .expect("legacy revoke resolves"),
         Principal::Team("eng".into())
     );
 
@@ -235,16 +238,14 @@ fn test_revoke_public_sentinel_collision_and_cross_kind_guard() {
     // It must NOT match a `Principal::Public` grant when sent as
     // `(subject_id="public", subject_type=User)` — that combination
     // would have cross-kind-guarded out and silently failed pre-#25.
-    let legacy_user = revoke_with_subject(
-        None,
-        Some("public".into()),
-        Some(SubjectType::User),
-    );
+    let legacy_user = revoke_with_subject(None, Some("public".into()), Some(SubjectType::User));
     // `principal_from_wire("public", User)` returns `Principal::User("public")`,
     // which is NOT equal to `Principal::Public`. The cross-kind guard
     // catches this — it must stay guarded.
     assert_eq!(
-        legacy_user.resolved_subject().expect("legacy user resolves"),
+        legacy_user
+            .resolved_subject()
+            .expect("legacy user resolves"),
         Principal::User("public".into())
     );
     assert_ne!(Principal::User("public".into()), Principal::Public);
@@ -255,7 +256,9 @@ fn test_resolved_subject_missing_subject_errors() {
     // Both `subject` and `subject_id` absent → the resolver must
     // surface a clear error rather than silently producing a sentinel.
     let grant = grant_with_subject(None, None, None);
-    let err = grant.resolved_subject().expect_err("must error on missing subject");
+    let err = grant
+        .resolved_subject()
+        .expect_err("must error on missing subject");
     let msg = err.to_string();
     assert!(
         msg.contains("missing subject"),
@@ -302,8 +305,7 @@ fn test_resolved_subject_legacy_wire_shape_serde_round_trip() {
         "subject_type": "agent",
         "permission": "chat"
     }"#;
-    let parsed: RequestPacket =
-        serde_json::from_str(legacy_json).expect("legacy wire parses");
+    let parsed: RequestPacket = serde_json::from_str(legacy_json).expect("legacy wire parses");
     let resolved = parsed.resolved_subject().expect("legacy resolves");
     assert_eq!(resolved, Principal::Agent("helper".into()));
 
@@ -344,7 +346,7 @@ fn test_resolved_subject_legacy_wire_shape_serde_round_trip() {
 
 #[test]
 fn test_wildcard_peer_type_resolves_to_user_peer() {
-    use pekobot::session::key::{ParsedSessionKeyV2, derive_base_session_key};
+    use pekobot::session::key::{derive_base_session_key, ParsedSessionKeyV2};
 
     // Synthetic ParsedSessionKeyV2 with an unknown peer_type.
     // The "kind" is `"unknown"` — neither `"user"` nor `"agent"`,

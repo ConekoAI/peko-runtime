@@ -245,8 +245,7 @@ impl TunnelDispatcher {
             .permissions
             .iter()
             .filter(|g| {
-                g.permission.covers(&Permission::Chat)
-                    && g.subject.kind() == SubjectKind::User
+                g.permission.covers(&Permission::Chat) && g.subject.kind() == SubjectKind::User
             })
             .filter_map(|g| match &g.subject {
                 Principal::User(id) => {
@@ -285,6 +284,7 @@ impl TunnelDispatcher {
                 id: instance_id.clone(),
                 instance_type: InstanceType::Agent,
                 name: agent.name.clone(),
+                agent_did: agent.config.agent_did.clone(),
                 bundle_ref: None,
                 runtime_display_name: Some(self.runtime_display_name.clone()),
                 status: InstanceStatus::Online,
@@ -325,7 +325,10 @@ impl TunnelDispatcher {
             match state.tunnel_handle.clone() {
                 Some(h) => h,
                 None => {
-                    debug!("No tunnel handle available; skipping instance announce for {}", agent_name);
+                    debug!(
+                        "No tunnel handle available; skipping instance announce for {}",
+                        agent_name
+                    );
                     return Ok(());
                 }
             }
@@ -339,7 +342,10 @@ impl TunnelDispatcher {
                 return Ok(());
             }
             Err(e) => {
-                warn!("Failed to load agent {} for instance announce: {}", agent_name, e);
+                warn!(
+                    "Failed to load agent {} for instance announce: {}",
+                    agent_name, e
+                );
                 return Ok(());
             }
         };
@@ -350,6 +356,7 @@ impl TunnelDispatcher {
             id: instance_id.clone(),
             instance_type: InstanceType::Agent,
             name: agent.name.clone(),
+            agent_did: agent.config.agent_did.clone(),
             bundle_ref: None,
             runtime_display_name: Some(self.runtime_display_name.clone()),
             status: InstanceStatus::Online,
@@ -477,7 +484,10 @@ impl TunnelDispatcher {
         };
 
         // Defense-in-depth: enforce local ACL even though PekoHub already checked
-        if let Err(e) = self.check_request_allowed(&agent_name, &bridge_payload).await {
+        if let Err(e) = self
+            .check_request_allowed(&agent_name, &bridge_payload)
+            .await
+        {
             warn!("Tunnel ACL denied request for {}: {}", agent_name, e);
             return self
                 .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
@@ -504,11 +514,8 @@ impl TunnelDispatcher {
         // configured) over the unverified `x-pekohub-user-id` header —
         // see issue #17 acceptance criteria ("src/auth/jwt.rs pekohub
         // JWT validation is enabled ... and unit-tested").
-        let caller_user = resolve_bridge_caller(
-            &bridge_payload,
-            self.app_state.jwt_validator().as_ref(),
-        )
-        .await;
+        let caller_user =
+            resolve_bridge_caller(&bridge_payload, self.app_state.jwt_validator().as_ref()).await;
 
         // Audit: record the proxied request with the resolved caller so the
         // event stream is attributable to a real user, not the literal
@@ -681,7 +688,11 @@ impl TunnelDispatcher {
     }
 
     /// Set the status of an instance and send a status_update message to the hub.
-    pub async fn set_instance_status(&self, agent_name: &str, status: InstanceStatus) -> anyhow::Result<()> {
+    pub async fn set_instance_status(
+        &self,
+        agent_name: &str,
+        status: InstanceStatus,
+    ) -> anyhow::Result<()> {
         let instance_id = self.instance_id(agent_name);
 
         // Update local state
@@ -780,7 +791,10 @@ impl TunnelDispatcher {
         let instance_id = self.instance_id(agent_name);
         let exposure = {
             let state = self.state.read().await;
-            state.instance_state.get(&instance_id).map(|s| s.exposure.clone())
+            state
+                .instance_state
+                .get(&instance_id)
+                .map(|s| s.exposure.clone())
         };
         let exposure = match exposure {
             Some(e) if e == InstanceExposure::Private => e,
@@ -903,6 +917,7 @@ impl TunnelDispatcher {
                         id: instance_id,
                         instance_type: InstanceType::Agent,
                         name: agent.name.clone(),
+                        agent_did: agent.config.agent_did.clone(),
                         bundle_ref: None,
                         runtime_display_name: Some(self.runtime_display_name.clone()),
                         status,
@@ -911,8 +926,13 @@ impl TunnelDispatcher {
                         capabilities: None,
                         metadata: None,
                     };
-                    if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce { payload: announce_payload }) {
-                        warn!("Failed to re-announce instance {} after exposure update: {}", agent.name, e);
+                    if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce {
+                        payload: announce_payload,
+                    }) {
+                        warn!(
+                            "Failed to re-announce instance {} after exposure update: {}",
+                            agent.name, e
+                        );
                     } else {
                         debug!("Re-announced instance {} after exposure update", agent.name);
                     }
@@ -998,8 +1018,7 @@ impl TunnelDispatcher {
                 } else {
                     warn!(
                         agent_name,
-                        user_id,
-                        "Private instance request denied: user not in allowed_users"
+                        user_id, "Private instance request denied: user not in allowed_users"
                     );
                     anyhow::bail!("Forbidden")
                 }
@@ -1206,10 +1225,7 @@ mod tests {
                 "x-pekohub-user-id": "user-hub",
             },
         });
-        assert_eq!(
-            resolve_bridge_caller(&payload, None).await,
-            "user-hub"
-        );
+        assert_eq!(resolve_bridge_caller(&payload, None).await, "user-hub");
     }
 
     /// Header-only (no JWT) → uses the hub header (unverified). This is
@@ -1427,7 +1443,9 @@ mod tests {
         }
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "any-user"}});
-        let result = dispatcher.check_request_allowed("public-agent", &bridge_payload).await;
+        let result = dispatcher
+            .check_request_allowed("public-agent", &bridge_payload)
+            .await;
         assert!(result.is_ok());
     }
 
@@ -1450,7 +1468,9 @@ mod tests {
         }
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
-        let result = dispatcher.check_request_allowed("unexposed-agent", &bridge_payload).await;
+        let result = dispatcher
+            .check_request_allowed("unexposed-agent", &bridge_payload)
+            .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Agent is not exposed"));
@@ -1475,7 +1495,9 @@ mod tests {
         }
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
-        let result = dispatcher.check_request_allowed("private-agent", &bridge_payload).await;
+        let result = dispatcher
+            .check_request_allowed("private-agent", &bridge_payload)
+            .await;
         assert!(result.is_ok());
     }
 
@@ -1498,7 +1520,9 @@ mod tests {
         }
 
         let bridge_payload = serde_json::json!({"headers": {}});
-        let result = dispatcher.check_request_allowed("private-agent", &bridge_payload).await;
+        let result = dispatcher
+            .check_request_allowed("private-agent", &bridge_payload)
+            .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Authentication required"));
@@ -1523,7 +1547,9 @@ mod tests {
         }
 
         let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-999"}});
-        let result = dispatcher.check_request_allowed("private-agent", &bridge_payload).await;
+        let result = dispatcher
+            .check_request_allowed("private-agent", &bridge_payload)
+            .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Forbidden"));

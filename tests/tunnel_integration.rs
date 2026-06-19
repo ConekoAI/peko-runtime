@@ -23,7 +23,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use pekobot::tunnel::protocol::{
-    InstanceAnnouncePayload, InstanceHeartbeatPayload, InstanceExposure, InstanceStatus,
+    InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload, InstanceStatus,
     InstanceType, TunnelMessage,
 };
 
@@ -47,7 +47,10 @@ async fn seed_runtime_for_test(backend_url: &str, did: &str) {
     // Create a throwaway user
     let user_namespace = format!(
         "tunnelseed-{}",
-        did.trim_start_matches("did:key:z").chars().take(12).collect::<String>()
+        did.trim_start_matches("did:key:z")
+            .chars()
+            .take(12)
+            .collect::<String>()
     );
     let user_resp = client
         .post(format!("{}/test/create-user", backend_url))
@@ -100,11 +103,15 @@ async fn authenticate_tunnel(
     signing_key: &SigningKey,
 ) -> (
     futures::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         Message,
     >,
     futures::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
     >,
 ) {
     let (ws_stream, _) = connect_async(ws_url)
@@ -172,7 +179,9 @@ async fn authenticate_tunnel(
     };
 
     match ready {
-        TunnelMessage::TunnelReady { heartbeat_interval_secs } => {
+        TunnelMessage::TunnelReady {
+            heartbeat_interval_secs,
+        } => {
             assert!(heartbeat_interval_secs > 0);
         }
         TunnelMessage::Disconnect { reason } => {
@@ -308,7 +317,10 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
         .send()
         .await
         .expect("Failed to create runtime");
-    assert!(runtime_resp.status().is_success(), "Runtime creation failed");
+    assert!(
+        runtime_resp.status().is_success(),
+        "Runtime creation failed"
+    );
 
     // Generate JWT for authenticated requests
     let jwt_token = generate_jwt(user_id as i64, "tunneltestuser");
@@ -329,6 +341,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             id: instance_id.clone(),
             instance_type: InstanceType::Agent,
             name: "test-agent".to_string(),
+            agent_did: None,
             bundle_ref: None,
             runtime_display_name: Some("Test Runtime".to_string()),
             status: InstanceStatus::Online,
@@ -407,7 +420,10 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
 
     if offline_resp.status() == 200 {
         let detail: serde_json::Value = offline_resp.json().await.unwrap();
-        assert_eq!(detail["status"], "offline", "Instance should be offline after tunnel disconnect");
+        assert_eq!(
+            detail["status"], "offline",
+            "Instance should be offline after tunnel disconnect"
+        );
     }
 }
 
@@ -436,7 +452,10 @@ async fn test_tunnel_proxied_request_response() {
         .into_bytes(),
     };
 
-    write.send(Message::Binary(req.to_bytes().unwrap())).await.unwrap();
+    write
+        .send(Message::Binary(req.to_bytes().unwrap()))
+        .await
+        .unwrap();
 
     // PekoHub will log a warning about unexpected direction but won't disconnect.
     // Verify the connection is still alive by sending a heartbeat.
@@ -484,12 +503,18 @@ async fn test_tunnel_streaming_chunks_survive() {
             seq: i,
             payload: format!("chunk-{i}").into_bytes(),
         };
-        write.send(Message::Binary(chunk.to_bytes().unwrap())).await.unwrap();
+        write
+            .send(Message::Binary(chunk.to_bytes().unwrap()))
+            .await
+            .unwrap();
     }
     let end = TunnelMessage::StreamEnd {
         request_id: "test-stream".to_string(),
     };
-    write.send(Message::Binary(end.to_bytes().unwrap())).await.unwrap();
+    write
+        .send(Message::Binary(end.to_bytes().unwrap()))
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 

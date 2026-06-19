@@ -169,6 +169,42 @@ impl Principal {
             Self::User(format!("user:{sub}"))
         }
     }
+
+    /// Canonical wire-side identifier for an agent (issue #28).
+    ///
+    /// Resolves an `AgentConfig` (or any source that gives us a
+    /// candidate DID and a local name) to the `Principal::Agent` value
+    /// that should flow through the tunnel, the `a2a_send` wire, and
+    /// `PermissionGrant` lookups:
+    ///
+    /// - **DID wins** when present and non-empty — this is the
+    ///   stable, runtime-independent identifier that lets cross-runtime
+    ///   references (`a2a_send` from runtime A → agent on runtime B,
+    ///   `PermissionGrant.subject` on PekoHub, etc.) stay
+    ///   unambiguous.
+    /// - **Name is the back-compat fallback** when `agent_did` is
+    ///   missing or empty — fine for within-runtime references
+    ///   (a `PermissionGrant` whose `subject` was written before the
+    ///   agent was first started still matches), ambiguous across
+    ///   runtimes by design.
+    /// - **Empty DID is treated as missing** for defense in depth: a
+    ///   hand-edited `config.toml` that left `agent_did = ""` will
+    ///   not surface an empty `agentDid` over the tunnel (which would
+    ///   then serialize as `""` on the wire — see review of #34
+    ///   concern #3).
+    ///
+    /// Single source of truth for the resolution: `A2aSendTool`,
+    /// `InstanceAnnouncePayload` (via the dispatcher reading the
+    /// config), and any future `Principal::Agent` projection site
+    /// must call this helper rather than open-coding the
+    /// `Some(did).unwrap_or(name)` pattern.
+    #[must_use]
+    pub fn agent_wire_id(agent_did: Option<&str>, agent_name: &str) -> String {
+        match agent_did {
+            Some(d) if !d.is_empty() => d.to_string(),
+            _ => agent_name.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for Principal {
@@ -290,7 +326,10 @@ mod tests {
     #[test]
     fn test_display_format() {
         assert_eq!(Principal::User("alice".into()).to_string(), "user:alice");
-        assert_eq!(Principal::Agent("helper".into()).to_string(), "agent:helper");
+        assert_eq!(
+            Principal::Agent("helper".into()).to_string(),
+            "agent:helper"
+        );
         assert_eq!(Principal::Team("eng".into()).to_string(), "team:eng");
         assert_eq!(Principal::Public.to_string(), "public");
     }
@@ -338,15 +377,9 @@ mod tests {
         assert_eq!(Principal::Public.subject_id(), "public");
 
         // Same kind + same id -> equal
-        assert_eq!(
-            Principal::User("a".into()),
-            Principal::User("a".into())
-        );
+        assert_eq!(Principal::User("a".into()), Principal::User("a".into()));
         // Different kind, same id -> not equal (cross-kind guard)
-        assert_ne!(
-            Principal::User("a".into()),
-            Principal::Agent("a".into())
-        );
+        assert_ne!(Principal::User("a".into()), Principal::Agent("a".into()));
         assert_ne!(Principal::Team("a".into()), Principal::Agent("a".into()));
     }
 
@@ -425,5 +458,36 @@ mod tests {
         let toml_str = r#"owner = { kind = "agent", id = "helper" }"#;
         let w: Wrap = toml::from_str(toml_str).expect("inline table parses");
         assert_eq!(w.owner, Principal::Agent("helper".into()));
+    }
+
+    /// Issue #28: `agent_wire_id` is the single source of truth for
+    /// resolving an agent's DID-or-name into a wire identifier.
+    /// Review of #34 concern #3 made it a `Principal` method so
+    /// `A2aSendTool` and `AgentConfig::wire_agent_id` route through
+    /// the same code path — and so the empty-DID guard lives in
+    /// exactly one place (defense in depth against a hand-edited
+    /// `config.toml` that left `agent_did = ""`).
+    #[test]
+    fn test_agent_wire_id_prefers_did() {
+        // DID wins over name when present and non-empty.
+        assert_eq!(
+            Principal::agent_wire_id(Some("did:peko:local:abc123"), "helper"),
+            "did:peko:local:abc123"
+        );
+    }
+
+    #[test]
+    fn test_agent_wire_id_falls_back_to_name() {
+        // Missing DID → name.
+        assert_eq!(Principal::agent_wire_id(None, "helper"), "helper");
+    }
+
+    #[test]
+    fn test_agent_wire_id_treats_empty_did_as_missing() {
+        // Empty DID is treated as missing for defense in depth — a
+        // hand-edited config that left `agent_did = ""` should not
+        // surface an empty `agentDid` on the wire. Pinned so the
+        // semantic doesn't drift back.
+        assert_eq!(Principal::agent_wire_id(Some(""), "helper"), "helper");
     }
 }
