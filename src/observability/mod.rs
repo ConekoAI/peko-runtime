@@ -22,6 +22,7 @@ pub use performance::{
 };
 pub use tracer::{TraceSpan, Tracer};
 
+use crate::auth::Principal;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -62,17 +63,20 @@ impl Observability {
     }
 
     /// Log an audit event tagged with the resolved caller identity
-    /// (issue #17). Prefer this over `audit` on any event that flows
-    /// through a request path so the audit trail is attributable to a
-    /// real user.
+    /// (issues #17 + #26). Prefer this over `audit` on any event that
+    /// flows through a request path so the audit trail is attributable
+    /// to a real subject. The caller is a typed `Principal` (ADR-039)
+    /// — `User` / `Agent` / `Team` / `Public` — so per-user, per-key,
+    /// and per-agent audit queries can index on the kind tag instead of
+    /// string-parsing the legacy `user:{sub}` convention.
     pub async fn audit_with_caller(
         &self,
-        caller_id: Option<&str>,
+        caller: Option<&Principal>,
         event_type: &str,
         agent_did: Option<&str>,
         details: serde_json::Value,
     ) -> Result<()> {
-        self.log_audit(event_type, agent_did, caller_id, details, AuditSeverity::Info)
+        self.log_audit(event_type, agent_did, caller, details, AuditSeverity::Info)
             .await
     }
 
@@ -92,7 +96,7 @@ impl Observability {
         &self,
         event_type: &str,
         agent_did: Option<&str>,
-        caller_id: Option<&str>,
+        caller: Option<&Principal>,
         details: serde_json::Value,
         severity: AuditSeverity,
     ) -> Result<()> {
@@ -103,7 +107,7 @@ impl Observability {
                 component: self.component.clone(),
                 event_type: event_type.to_string(),
                 agent_did: agent_did.map(std::string::ToString::to_string),
-                caller_id: caller_id.map(std::string::ToString::to_string),
+                caller: caller.cloned(),
                 details,
                 severity,
             })
@@ -165,14 +169,16 @@ impl HealthStatus {
 mod tests {
     use super::*;
 
-    /// `audit_with_caller` must stamp the resolved caller identity on the
-    /// emitted event so the audit trail is attributable to a real user
-    /// (issue #17 acceptance criteria).
+    /// `audit_with_caller` must stamp the resolved caller as a typed
+    /// `Principal` on the emitted event so the audit trail is
+    /// attributable to a real subject (issues #17 + #26).
     #[tokio::test]
-    async fn audit_with_caller_records_caller_id() {
+    async fn audit_with_caller_records_caller_principal() {
+        use crate::auth::Principal;
         let obs = Observability::new("tunnel");
+        let caller = Principal::User("user:user-42".to_string());
         obs.audit_with_caller(
-            Some("user-42"),
+            Some(&caller),
             "tunnel_proxied_request",
             Some("agent-a"),
             serde_json::json!({"request_id": "req-1"}),
@@ -183,16 +189,16 @@ mod tests {
         let entries = obs.get_audit_log(10).await;
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
-        assert_eq!(e.caller_id.as_deref(), Some("user-42"));
+        assert_eq!(e.caller.as_ref(), Some(&caller));
         assert_eq!(e.event_type, "tunnel_proxied_request");
         assert_eq!(e.agent_did.as_deref(), Some("agent-a"));
         assert_eq!(e.details["request_id"], "req-1");
     }
 
-    /// `audit` (no caller) must leave `caller_id` unset — backward
+    /// `audit` (no caller) must leave `caller` unset — backward
     /// compatibility for legacy call sites that haven't been migrated yet.
     #[tokio::test]
-    async fn audit_without_caller_leaves_caller_id_unset() {
+    async fn audit_without_caller_leaves_caller_unset() {
         let obs = Observability::new("tunnel");
         obs.audit(
             "agent_spawn",
@@ -204,6 +210,6 @@ mod tests {
 
         let entries = obs.get_audit_log(10).await;
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].caller_id.is_none());
+        assert!(entries[0].caller.is_none());
     }
 }

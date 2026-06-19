@@ -512,11 +512,19 @@ impl TunnelDispatcher {
         // Audit: record the proxied request with the resolved caller so the
         // event stream is attributable to a real user, not the literal
         // `"web"` placeholder that this dispatcher used to stamp on every
-        // request (issue #17).
+        // request (issue #17). The caller is projected to a typed
+        // `Principal` (issue #26) so the audit wire shape is `{kind, id}`
+        // and per-user / per-agent queries can index on the kind tag.
+        // The `"anonymous"` fallback is unauthenticated → `Principal::Public`.
+        let caller_principal = if caller_user == "anonymous" {
+            crate::auth::Principal::Public
+        } else {
+            crate::auth::Principal::User(format!("user:{caller_user}"))
+        };
         self.app_state
             .observability()
             .audit_with_caller(
-                Some(&caller_user),
+                Some(&caller_principal),
                 "tunnel_proxied_request",
                 Some(&agent_name),
                 serde_json::json!({
