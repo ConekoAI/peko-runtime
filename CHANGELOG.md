@@ -7,7 +7,7 @@ All notable changes to Pekobot.
 ### Fixed (issue #26) — Add typed `Principal` caller field to `AuditEvent`
 
 The audit event carried caller identity as a free-form `Option<String>`
-(`caller_id`, added in #17), so per-user, per-key, and per-agent audit
+(`caller_id`, added by #17), so per-user, per-key, and per-agent audit
 queries had to string-parse the legacy `user:{sub}` convention with no
 way to distinguish `"user:alice"` from `"apikey:foo"` from
 `"agent:helper"`. This change replaces `caller_id` with
@@ -20,20 +20,31 @@ serialized as `{kind, id}` so query code can index on the kind tag.
   legacy events compact.
 - **`Observability::audit_with_caller`** now takes
   `Option<&Principal>` instead of `Option<&str>`. The plain `audit(...)`
-  helper is unchanged (still emits `caller = None`).
-- **Tunnel dispatcher** projects `caller_user` (a pekohub sub string)
-  to `Principal::User(format!("user:{sub}"))` for real users and
-  `Principal::Public` for the `"anonymous"` fallback (semantically
-  unauthenticated).
-- **Cron engine** stamps its two `cron.execute` / `cron.result` audit
-  emissions with `Principal::User("local")` (system caller, matching
-  `CallerContext::local().subject()` precedent). Previously these events
-  were unattributed.
+  helper is unchanged.
+- **`Observability::audit_security_with_caller`** is a new sibling of
+  `audit_with_caller` that stamps the caller as a typed `Principal`
+  AND marks the event as `AuditSeverity::Security`. Security events
+  are the ones operators query by user when investigating an incident
+  — leaving them unattributed would defeat the per-user audit query
+  use case this PR headlines (issue #26 review feedback).
+- **`Principal::from_bridge_user(sub)`** centralizes the tunnel-bridge
+  caller projection — `user:` prefix + `"anonymous" → Public`
+  special-case — next to the type's other constructors, so the
+  `user:` shape can't drift between the dispatcher and `CallerContext::subject()`.
+- **Tunnel dispatcher** uses `Principal::from_bridge_user(&caller_user)`
+  at the audit emission site (the projection logic is no longer inlined).
+- **Cron engine** uses `CallerContext::local().subject()` directly at
+  the two `cron.execute` / `cron.result` audit sites (matches the
+  canonical `Identity::Local` projection at `caller.rs:114`; the
+  intermediate helper has been removed).
 - **Test coverage** — new `audit_event_caller_principal_serialization`
-  asserts the canonical `{kind, id}` shape round-trips through serde for
-  `User`, `Agent`, and `Public` variants, and that `None` callers are
-  omitted (not serialized as null). Existing audit + observability
-  tests updated for the field rename.
+  asserts the canonical `{kind, id}` shape round-trips through serde
+  for `User`, `Agent`, and `Public` variants, and that `None` callers
+  are omitted. New `audit_security_with_caller_records_caller_and_severity`
+  pins the security-side migration. New `Principal::from_bridge_user`
+  tests cover the `user:` prefix and the `"anonymous" → Public`
+  special-case. Existing audit + observability tests updated for the
+  field rename.
 
 `PermissionGrant.granted_by` and audit queries on PekoHub itself are
 out of scope (parallel PekoHub issue to follow).

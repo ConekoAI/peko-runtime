@@ -5,7 +5,7 @@
 //! lifecycle and shutdown.
 
 use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
-use crate::auth::Principal;
+use crate::auth::caller::CallerContext;
 use crate::common::json_utils::json_subset;
 use crate::cron::events::SystemEvent;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
@@ -16,15 +16,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-
-/// System-initiated caller for cron audit events (issue #26).
-///
-/// Mirrors `CallerContext::local().subject()` from `auth::caller` —
-/// cron is the runtime triggering the action, not a user, so the audit
-/// trail needs an attributable subject to satisfy per-caller queries.
-fn system_cron_caller() -> Principal {
-    Principal::User("local".to_string())
-}
 
 /// Daemon-local status snapshot updated by the cron engine.
 #[derive(Debug, Default, Clone)]
@@ -193,7 +184,7 @@ impl CronEngine {
         let _ = self
             .observability
             .audit_with_caller(
-                Some(&system_cron_caller()),
+                Some(&CallerContext::local().subject()),
                 "cron.execute",
                 job.agent_id.as_deref(),
                 serde_json::json!({
@@ -249,7 +240,7 @@ impl CronEngine {
         let _ = self
             .observability
             .audit_with_caller(
-                Some(&system_cron_caller()),
+                Some(&CallerContext::local().subject()),
                 "cron.result",
                 job.agent_id.as_deref(),
                 serde_json::json!({

@@ -91,6 +91,25 @@ impl Observability {
             .await
     }
 
+    /// Log a security-sensitive event tagged with the resolved caller
+    /// identity (issues #17 + #26). Prefer this over `audit_security`
+    /// on any event that flows through a request path — security
+    /// events are the ones operators query by user when investigating
+    /// an incident, so the caller attribution matters more here than
+    /// for `Info`-level events. Use `Principal::Public` when the
+    /// event is genuinely unauthenticated (no caller context
+    /// available) rather than passing `None`.
+    pub async fn audit_security_with_caller(
+        &self,
+        caller: Option<&Principal>,
+        event_type: &str,
+        agent_did: Option<&str>,
+        details: serde_json::Value,
+    ) -> Result<()> {
+        self.log_audit(event_type, agent_did, caller, details, AuditSeverity::Security)
+            .await
+    }
+
     /// Internal: log a fully-specified audit event.
     async fn log_audit(
         &self,
@@ -211,5 +230,53 @@ mod tests {
         let entries = obs.get_audit_log(10).await;
         assert_eq!(entries.len(), 1);
         assert!(entries[0].caller.is_none());
+    }
+
+    /// `audit_security_with_caller` must stamp the resolved caller as a
+    /// typed `Principal` on the emitted event AND mark the event as
+    /// `AuditSeverity::Security` (issue #26 review: the audit_security
+    /// half of the migration was missing — security events are the
+    /// ones operators query by user when investigating an incident).
+    #[tokio::test]
+    async fn audit_security_with_caller_records_caller_and_severity() {
+        use crate::auth::Principal;
+        let obs = Observability::new("tunnel");
+        let caller = Principal::User("user:alice".to_string());
+        obs.audit_security_with_caller(
+            Some(&caller),
+            "permission_denied",
+            Some("agent-a"),
+            serde_json::json!({"resource": "team:eng"}),
+        )
+        .await
+        .unwrap();
+
+        let entries = obs.get_audit_log(10).await;
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.caller.as_ref(), Some(&caller));
+        assert_eq!(e.severity, AuditSeverity::Security);
+        assert_eq!(e.event_type, "permission_denied");
+        assert_eq!(e.agent_did.as_deref(), Some("agent-a"));
+        assert_eq!(e.details["resource"], "team:eng");
+    }
+
+    /// `audit_security` (no caller) must leave `caller` unset — backward
+    /// compatibility for legacy call sites that haven't been migrated yet.
+    #[tokio::test]
+    async fn audit_security_without_caller_leaves_caller_unset() {
+        let obs = Observability::new("tunnel");
+        obs.audit_security(
+            "permission_denied_legacy",
+            Some("agent-a"),
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+
+        let entries = obs.get_audit_log(10).await;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].caller.is_none());
+        assert_eq!(entries[0].severity, AuditSeverity::Security);
     }
 }

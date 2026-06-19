@@ -30,8 +30,13 @@ pub struct AuditEvent {
     /// the audit trail is attributable to a real subject — User / Agent /
     /// Team / Public. `None` only on legacy events that pre-date the
     /// per-user attribution plumbing (issue #17) or on system-emitted
-    /// events with no caller context (use `Principal::User("local")` or
-    /// `Principal::Public` for those — issue #26).
+    /// events with no caller context (use `Principal::User("local")` —
+    /// via `CallerContext::local().subject()` — or `Principal::Public`
+    /// for genuinely unauthenticated events, issue #26). For
+    /// security events with no caller context, prefer
+    /// `Principal::Public` over `None` so per-user audit queries can
+    /// still distinguish "unauthenticated security event" from "no
+    /// caller recorded" (issue #26 review feedback).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<Principal>,
     /// Event details
