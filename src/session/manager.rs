@@ -48,6 +48,7 @@ use super::metadata_controller::MetadataController;
 use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
+use crate::auth::principal::Principal;
 use super::unified::Session;
 use crate::common::paths::PathResolver;
 use anyhow::Result;
@@ -498,6 +499,15 @@ pub struct SessionManager {
     /// Tests that don't care about per-user session scoping can leave
     /// it empty.
     user: String,
+    /// Resolved caller principal for session peer attribution
+    /// (issue #24). When set, this takes precedence over
+    /// [`SessionManager::user`] when constructing the session peer
+    /// via [`SessionManager::peer`].
+    ///
+    /// Used by `a2a_send` (and any other agent-originated call path)
+    /// to attribute the receiving agent's session to a `Principal::Agent`
+    /// rather than the legacy `Principal::User(user)` masquerade.
+    peer_principal: Option<Principal>,
 }
 
 impl SessionManager {
@@ -524,6 +534,7 @@ impl SessionManager {
             agent_name: None,
             path_resolver: None,
             user: String::new(),
+            peer_principal: None,
         }
     }
 
@@ -618,10 +629,89 @@ impl SessionManager {
         self
     }
 
+    /// Set the resolved caller principal (issue #24).
+    ///
+    /// When set, this takes precedence over [`SessionManager::user`]
+    /// when [`SessionManager::peer`] constructs the session peer. Use
+    /// this for A2A messaging paths where the caller is an agent
+    /// (so the session is keyed under `agent:{caller}`, not
+    /// `user:{caller}`).
+    ///
+    /// Callers are responsible for passing a principal that is a
+    /// valid session peer (`Principal::is_session_peer`). A
+    /// `Team` or `Public` principal is still accepted and stored, but
+    /// [`SessionManager::peer`] warns and refuses in that case
+    /// (review #2). Prefer
+    /// [`SessionManager::with_peer_principal_opt`] for the
+    /// filtering-at-call-site behavior.
+    #[must_use]
+    pub fn with_peer_principal(mut self, principal: Principal) -> Self {
+        self.peer_principal = Some(principal);
+        self
+    }
+
+    /// Set the resolved caller principal from an Option, filtering
+    /// out principals that cannot be session peers (Team / Public).
+    ///
+    /// This is the validated entry point paired with
+    /// [`SessionManager::with_peer_principal`] (review #2). Use this
+    /// when the caller principal comes from an external source (e.g.
+    /// IPC wire, tunnel header) where you can't statically know it's
+    /// a valid session peer.
+    #[must_use]
+    pub fn with_peer_principal_opt(mut self, principal: Option<Principal>) -> Self {
+        self.peer_principal = principal.filter(|p| p.is_session_peer());
+        self
+    }
+
     /// Get the user identifier
     #[must_use]
     pub fn user(&self) -> &str {
         &self.user
+    }
+
+    /// Resolve the session peer to use for new sessions (issue #24).
+    ///
+    /// Returns the explicit `peer_principal` if set (e.g. a
+    /// `Principal::Agent` for an a2a_send call); otherwise falls back
+    /// to the legacy `Principal::User(user)` form.
+    ///
+    /// **Issue #24 review #2:** if `peer_principal` is set to a
+    /// non-session-peer principal (`Principal::Team` or
+    /// `Principal::Public`), this method REFUSES and logs a warning
+    /// rather than silently falling back to `Peer::User(user)`.
+    /// `with_peer_principal_opt` is the validated setter that filters
+    /// out non-peer principals at the call site; this is the
+    /// authoritative guard so the two entry points can't diverge.
+    #[must_use]
+    pub fn peer(&self) -> Principal {
+        match &self.peer_principal {
+            Some(p) if p.is_session_peer() => p.clone(),
+            Some(p) => {
+                // Per ADR-039: Team/Public are not valid session
+                // peers. We refuse rather than fall back to the
+                // legacy `Peer::User(user)` form because the legacy
+                // form silently re-introduces the masquerade the
+                // post-#24 caller is trying to avoid (review #2).
+                // The validated setter `with_peer_principal_opt`
+                // filters these out at the call site; this branch
+                // catches the raw `with_peer_principal` case.
+                tracing::warn!(
+                    "SessionManager::peer: principal {:?} is not a valid session peer; \
+                     refusing to masquerade as Peer::User({:?}). Use \
+                     `with_peer_principal_opt` to filter non-peer principals at \
+                     the call site (issue #24 review #2).",
+                    p,
+                    self.user
+                );
+                // Surface the misuse as the empty-user form so the
+                // session key still derives to a valid (if
+                // low-fidelity) bucket rather than panicking. The
+                // warn above tells the operator what's wrong.
+                Principal::User(String::new())
+            }
+            None => Principal::User(self.user.clone()),
+        }
     }
 
     /// Get the metadata controller (for internal use)
@@ -730,7 +820,7 @@ impl SessionManager {
         channel: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
-        let peer = Peer::User(self.user.clone());
+        let peer = self.peer();
 
         // Derive peer key ONCE and use it consistently
         let peer_key = derive_base_session_key(agent_name, &peer);
@@ -793,7 +883,7 @@ impl SessionManager {
     ) -> Result<(super::context::SessionContext, SessionHandle, String)> {
         info!("Creating fresh session for agent '{}'", agent_name);
 
-        let peer = Peer::User(self.user.clone());
+        let peer = self.peer();
 
         // Clear any existing base session for this peer to ensure fresh start
         self.remove_base_session(agent_name, &peer);
@@ -833,7 +923,7 @@ impl SessionManager {
             session_id, agent_name
         );
 
-        let peer = Peer::User(self.user.clone());
+        let peer = self.peer();
 
         // Open the SPECIFIC session by ID, creating it if it doesn't exist
         let handle = match self.open_session(session_id).await? {
@@ -1998,6 +2088,7 @@ impl SessionManager {
             agent_name: self.agent_name.clone(),
             path_resolver: self.path_resolver.clone(),
             user: self.user.clone(),
+            peer_principal: self.peer_principal.clone(),
         }
     }
 }
@@ -2424,6 +2515,110 @@ mod tests {
 
         // Can't test Channel/Spawn variants without actual data,
         // but the methods are exercised in other tests
+    }
+
+    // -- Issue #24 review #1 acceptance-criterion test --
+
+    /// End-to-end assertion that an a2a_send-originated call produces
+    /// a `SessionEntry` whose `peer_type` is `"agent"`, not `"user"`
+    /// (review #1 — the audit-trail footgun the issue is built on).
+    ///
+    /// The chain under test:
+    ///   `with_peer_principal(Principal::Agent("helper"))`
+    ///     → `SessionManager::peer()` resolves to `Principal::Agent("helper")`
+    ///     → `SessionEntry::with_peer(.., peer.peer_type(), peer.id())`
+    ///     → `SessionEntry.peer_type == Some("agent")`
+    #[test]
+    fn test_a2a_principal_produces_agent_session_entry_issue_24_review_1() {
+        let manager = SessionManager::new().with_peer_principal(Principal::Agent("helper".into()));
+
+        // The session peer resolves to the agent principal.
+        let peer = manager.peer();
+        assert_eq!(
+            peer,
+            Principal::Agent("helper".into()),
+            "peer() must return Principal::Agent for a2a (issue #24)"
+        );
+
+        // The session index entry is constructed with peer_type /
+        // peer_id from the principal. This is the on-disk
+        // representation that audit consumers read.
+        let entry = SessionEntry::with_peer(
+            "sess-1".to_string(),
+            "analyzer".to_string(),
+            "sess-1.jsonl".to_string(),
+            peer.peer_type(),
+            peer.id(),
+        );
+        assert_eq!(
+            entry.peer_type.as_deref(),
+            Some("agent"),
+            "a2a-spawned SessionEntry must have peer_type=agent, not user (review #1)"
+        );
+        assert_eq!(entry.peer_id.as_deref(), Some("helper"));
+        // Belt-and-suspenders: the masquerade value must never appear.
+        assert_ne!(
+            entry.peer_type.as_deref(),
+            Some("user"),
+            "a2a-spawned SessionEntry must NEVER have peer_type=user (review #1)"
+        );
+    }
+
+    /// `peer()` falls back to `Peer::User(user)` when no
+    /// `peer_principal` is set — the legacy path for human-originated
+    /// calls (CLI, IPC). This is the positive control for review #1:
+    /// only a2a-originated calls change attribution; everything else
+    /// stays the same.
+    #[test]
+    fn test_legacy_user_principal_unchanged_issue_24_review_1() {
+        let manager = SessionManager::new().with_user("alice");
+        let peer = manager.peer();
+        assert_eq!(peer, Principal::User("alice".into()));
+
+        let entry = SessionEntry::with_peer(
+            "sess-1".to_string(),
+            "target".to_string(),
+            "sess-1.jsonl".to_string(),
+            peer.peer_type(),
+            peer.id(),
+        );
+        assert_eq!(entry.peer_type.as_deref(), Some("user"));
+        assert_eq!(entry.peer_id.as_deref(), Some("alice"));
+    }
+
+    /// `peer()` refuses to silently masquerade a non-peer principal
+    /// (review #2). A `Principal::Team` set via the raw setter is
+    /// warned and surfaced as `Peer::User("")` rather than coerced
+    /// into the legacy form, which would silently re-introduce the
+    /// post-#24 masquerade.
+    #[test]
+    fn test_peer_refuses_non_session_peer_principal_issue_24_review_2() {
+        let manager = SessionManager::new()
+            .with_user("alice")
+            .with_peer_principal(Principal::Team("engineering".into()));
+
+        let peer = manager.peer();
+        // Must NOT be the team principal masquerading as a user
+        // (the legacy fall-back); must NOT be Principal::Team (not a
+        // valid session peer). Must be the empty-user sentinel so
+        // the session key still derives to a valid bucket.
+        assert_eq!(
+            peer,
+            Principal::User(String::new()),
+            "non-peer principal must surface as empty-user sentinel, not the legacy form (review #2)"
+        );
+
+        // The validated setter `with_peer_principal_opt` filters
+        // these out at the call site; the raw setter is what we're
+        // guarding here.
+        let manager2 = SessionManager::new()
+            .with_user("alice")
+            .with_peer_principal_opt(Some(Principal::Team("engineering".into())));
+        assert_eq!(
+            manager2.peer(),
+            Principal::User("alice".into()),
+            "with_peer_principal_opt must filter non-peer principals at the call site"
+        );
     }
 
     #[tokio::test]

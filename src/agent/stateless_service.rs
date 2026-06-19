@@ -13,6 +13,7 @@
 //! - Session state is persisted separately
 
 use crate::agent::Agent;
+use crate::auth::principal::Principal;
 use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::engine::AgenticEvent;
@@ -54,6 +55,15 @@ pub struct ExecutionRequest {
     pub user: String,
     /// Caller agent name for A2A messaging (optional)
     pub caller_agent: Option<String>,
+    /// Resolved caller principal for session peer attribution.
+    ///
+    /// When set, this takes precedence over [`ExecutionRequest::user`]
+    /// when constructing the session peer (issue #24). `a2a_send` sets
+    /// this to `Principal::Agent(caller_agent_name)` so the receiving
+    /// agent's session is keyed under `agent:{caller}` (not
+    /// `user:{caller}`), and the audit log / `PermissionGrant`
+    /// attribution is type-correct.
+    pub caller_principal: Option<Principal>,
 }
 
 impl ExecutionRequest {
@@ -76,6 +86,7 @@ impl ExecutionRequest {
             timeout_secs: None,
             user: String::new(),
             caller_agent: None,
+            caller_principal: None,
         }
     }
 
@@ -104,6 +115,26 @@ impl ExecutionRequest {
     #[must_use]
     pub fn with_caller_agent_opt(mut self, caller: Option<String>) -> Self {
         self.caller_agent = caller.filter(|s| !s.is_empty());
+        self
+    }
+
+    /// Set the resolved caller principal (issue #24).
+    ///
+    /// Use this for A2A messaging paths where the caller is an agent,
+    /// not a user. The principal is used to construct the session peer
+    /// on the receiving agent so the session is keyed under
+    /// `agent:{caller}` (not `user:{caller}`).
+    #[must_use]
+    pub fn with_caller_principal(mut self, principal: Principal) -> Self {
+        self.caller_principal = Some(principal);
+        self
+    }
+
+    /// Set the resolved caller principal from an Option, rejecting
+    /// principals that cannot be a session peer (Team / Public).
+    #[must_use]
+    pub fn with_caller_principal_opt(mut self, principal: Option<Principal>) -> Self {
+        self.caller_principal = principal.filter(|p| p.is_session_peer());
         self
     }
 }
@@ -146,6 +177,10 @@ pub struct MessageRequest {
     pub user: String,
     /// Caller agent name for A2A messaging (optional)
     pub caller_agent: Option<String>,
+    /// Resolved caller principal for session peer attribution
+    /// (issue #24). When set, this takes precedence over
+    /// [`MessageRequest::user`] when constructing the session peer.
+    pub caller_principal: Option<Principal>,
 }
 
 impl MessageRequest {
@@ -165,6 +200,7 @@ impl MessageRequest {
             timeout_secs: None,
             user: String::new(),
             caller_agent: None,
+            caller_principal: None,
         }
     }
 
@@ -225,6 +261,26 @@ impl MessageRequest {
     #[must_use]
     pub fn with_caller_agent_opt(mut self, caller: Option<String>) -> Self {
         self.caller_agent = caller.filter(|s| !s.is_empty());
+        self
+    }
+
+    /// Set the resolved caller principal (issue #24).
+    ///
+    /// Use this for A2A messaging paths where the caller is an agent,
+    /// not a user. The principal is used to construct the session peer
+    /// on the receiving agent so the session is keyed under
+    /// `agent:{caller}` (not `user:{caller}`).
+    #[must_use]
+    pub fn with_caller_principal(mut self, principal: Principal) -> Self {
+        self.caller_principal = Some(principal);
+        self
+    }
+
+    /// Set the resolved caller principal from an Option, rejecting
+    /// principals that cannot be a session peer (Team / Public).
+    #[must_use]
+    pub fn with_caller_principal_opt(mut self, principal: Option<Principal>) -> Self {
+        self.caller_principal = principal.filter(|p| p.is_session_peer());
         self
     }
 }
@@ -388,6 +444,9 @@ impl StatelessAgentService {
             team,
             &request.user,
         );
+        if let Some(principal) = request.caller_principal.as_ref() {
+            session_manager = session_manager.with_peer_principal(principal.clone());
+        }
 
         let resolved = session_manager
             .resolve_session(
@@ -412,6 +471,7 @@ impl StatelessAgentService {
             timeout_secs: request.timeout_secs,
             user: request.user.clone(),
             caller_agent: request.caller_agent,
+            caller_principal: request.caller_principal,
         };
 
         // Execute via stateless service
@@ -473,6 +533,9 @@ impl StatelessAgentService {
             team,
             &request.user,
         );
+        if let Some(principal) = request.caller_principal.as_ref() {
+            session_manager = session_manager.with_peer_principal(principal.clone());
+        }
 
         let resolved = session_manager
             .resolve_session(
@@ -497,6 +560,7 @@ impl StatelessAgentService {
             timeout_secs: request.timeout_secs,
             user: request.user.clone(),
             caller_agent: request.caller_agent,
+            caller_principal: request.caller_principal,
         };
 
         // Get base session for execution
@@ -575,6 +639,9 @@ impl StatelessAgentService {
             team,
             &request.user,
         );
+        if let Some(principal) = request.caller_principal.as_ref() {
+            session_manager = session_manager.with_peer_principal(principal.clone());
+        }
 
         // Try to open existing session, create if not exists
         let session =
@@ -583,7 +650,15 @@ impl StatelessAgentService {
                 handle.base().clone()
             } else {
                 debug!("Session '{}' not found, creating new", request.session_id);
-                let peer = Peer::User(request.user.clone());
+                // Issue #24: prefer the resolved caller principal (e.g.
+                // `Principal::Agent("helper")` for a2a_send) over the
+                // legacy `Peer::User(user)` masquerade. The principal
+                // sets the session key correctly and makes audit /
+                // permission-grant attribution type-safe.
+                let peer = request
+                    .caller_principal
+                    .clone()
+                    .unwrap_or_else(|| Peer::User(request.user.clone()));
                 let options = crate::session::SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(&request.session_id);
@@ -819,6 +894,9 @@ impl StatelessAgentService {
             team,
             &request.user,
         );
+        if let Some(principal) = request.caller_principal.as_ref() {
+            session_manager = session_manager.with_peer_principal(principal.clone());
+        }
 
         let session =
             if let Some(handle) = session_manager.open_session(&request.session_id).await? {
@@ -832,7 +910,13 @@ impl StatelessAgentService {
                     "Session '{}' not found, creating new for streaming",
                     request.session_id
                 );
-                let peer = Peer::User(request.user.clone());
+                // Issue #24: prefer the resolved caller principal (e.g.
+                // `Principal::Agent("helper")` for a2a_send) over the
+                // legacy `Peer::User(user)` masquerade.
+                let peer = request
+                    .caller_principal
+                    .clone()
+                    .unwrap_or_else(|| Peer::User(request.user.clone()));
                 let options = crate::session::SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(&request.session_id);

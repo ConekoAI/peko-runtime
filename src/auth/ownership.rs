@@ -392,6 +392,95 @@ mod tests {
         assert!(check_permission(&resource, Permission::Delete, &caller).is_err());
     }
 
+    // -- Issue #24 acceptance-criterion tests --
+
+    /// Issue #24 acceptance criterion #2: a `PermissionGrant` with
+    /// `subject = Principal::Agent("helper")` on the target agent is
+    /// honored when a2a_send originates the call (caller is
+    /// `Principal::Agent("helper")`).
+    ///
+    /// Pre-fix, `a2a_send` set the caller's peer to
+    /// `Principal::User("helper")`. The cross-kind guard from ADR-039
+    /// (in `check_permission`, line ~212: `&grant.subject == caller`)
+    /// would compare `Principal::User("helper") != Principal::Agent("helper")`
+    /// and deny — the grant would never apply to a2a-originated
+    /// calls. Post-fix, `a2a_send` constructs `Principal::Agent("helper")`,
+    /// so the grant matches.
+    #[test]
+    fn test_agent_grant_honored_for_a2a_originated_call_issue_24() {
+        let owner = Principal::User("alice".into());
+        let caller = Principal::Agent("helper".into());
+        // alice granted helper (the a2a caller) Chat permission on her agent.
+        let resource = Resource::Agent {
+            name: "alice".to_string(),
+            owner,
+            permissions: vec![PermissionGrant {
+                subject: Principal::Agent("helper".into()),
+                permission: Permission::Chat,
+                granted_at: "2026-06-19T00:00:00Z".to_string(),
+                granted_by: Principal::User("alice".into()),
+            }],
+        };
+
+        // Agent caller matches the agent grant → allowed.
+        assert!(
+            check_permission(&resource, Permission::Chat, &caller).is_ok(),
+            "Agent caller must be allowed when an Agent grant exists for that agent"
+        );
+        // Same caller without the Chat grant would be denied
+        // (Chat ≠ Delete on the same grant).
+        assert!(
+            check_permission(&resource, Permission::Delete, &caller).is_err(),
+            "Chat grant must not cover Delete"
+        );
+
+        // A different agent caller is still denied (no grant for it).
+        let other_agent = Principal::Agent("other".into());
+        assert!(
+            check_permission(&resource, Permission::Chat, &other_agent).is_err(),
+            "grant is scoped to a specific agent subject; other agents must not match"
+        );
+
+        // The cross-kind guard from ADR-039 must still bite: a User
+        // caller with the same id ("helper") must NOT match the
+        // Agent grant — that's the masquerade pre-#24 silently
+        // enabled, and the post-#24 fix correctly rejects.
+        let masquerade_user = Principal::User("helper".into());
+        assert!(
+            check_permission(&resource, Permission::Chat, &masquerade_user).is_err(),
+            "User masquerade must NOT match an Agent grant (cross-kind guard)"
+        );
+    }
+
+    /// Companion to the above: an a2a-originated call from `helper`
+    /// is denied when there is no Agent grant for `helper` on the
+    /// target, even if a User grant for `"helper"` exists. This is
+    /// the deny-path that pre-#24 silently let through (the
+    /// masquerade made the User grant match).
+    #[test]
+    fn test_a2a_originated_call_does_not_match_user_grant_issue_24() {
+        let owner = Principal::User("alice".into());
+        // alice granted user:"helper" Chat — but `helper` is the a2a
+        // caller, not a real user. Pre-fix, this grant would have
+        // matched. Post-fix, the cross-kind guard denies.
+        let resource = Resource::Agent {
+            name: "alice".to_string(),
+            owner,
+            permissions: vec![PermissionGrant {
+                subject: Principal::User("helper".into()),
+                permission: Permission::Chat,
+                granted_at: "2026-06-19T00:00:00Z".to_string(),
+                granted_by: Principal::User("alice".into()),
+            }],
+        };
+
+        let caller = Principal::Agent("helper".into());
+        assert!(
+            check_permission(&resource, Permission::Chat, &caller).is_err(),
+            "Agent caller must not be allowed by a User grant (cross-kind guard)"
+        );
+    }
+
     // -- Team role tests (rewritten to use Principal) --
 
     #[test]
