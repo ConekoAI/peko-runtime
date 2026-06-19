@@ -95,9 +95,16 @@ impl AgentConfig {
     /// `PermissionGrant.subject`, PekoHub instance row) require a live
     /// `agent_did` — the runtime-local fallback is forgeable across
     /// runtimes by design.
+    ///
+    /// Review of #34 concern #3: this is a thin shim over
+    /// `Principal::agent_wire_id` (the single source of truth for the
+    /// resolution) and inherits its empty-DID guard. Returns an owned
+    /// `String` because the unified helper takes an owned `String` —
+    /// if a hot caller surfaces, a `&str` variant can be added without
+    /// changing semantics.
     #[must_use]
-    pub fn wire_agent_id(&self) -> &str {
-        self.agent_did.as_deref().unwrap_or(&self.name)
+    pub fn wire_agent_id(&self) -> String {
+        Principal::agent_wire_id(self.agent_did.as_deref(), &self.name)
     }
 }
 
@@ -438,8 +445,9 @@ mod tests {
 
     /// Issue #28: `wire_agent_id` must return the DID when present
     /// (cross-runtime wire) and the local name as a fallback
-    /// (single-runtime back-compat). The TOML round-trip is also
-    /// verified so on-disk configs survive across restarts.
+    /// (single-runtime back-compat). The empty-DID guard is
+    /// inherited from `Principal::agent_wire_id` (review of #34
+    /// concern #3) and is pinned here so the shim doesn't drift.
     #[test]
     fn test_wire_agent_id_prefers_did_over_name() {
         let mut config = AgentConfig::default();
@@ -453,6 +461,18 @@ mod tests {
         let mut config = AgentConfig::default();
         config.name = "helper".to_string();
         config.agent_did = None;
+        assert_eq!(config.wire_agent_id(), "helper");
+    }
+
+    #[test]
+    fn test_wire_agent_id_treats_empty_did_as_missing() {
+        // Pin the empty-DID defense: a hand-edited config that left
+        // `agent_did = ""` must NOT surface an empty string as the
+        // wire id (would serialize as `agentDid: ""` over the
+        // tunnel, breaking PekoHub's lookup).
+        let mut config = AgentConfig::default();
+        config.name = "helper".to_string();
+        config.agent_did = Some(String::new());
         assert_eq!(config.wire_agent_id(), "helper");
     }
 

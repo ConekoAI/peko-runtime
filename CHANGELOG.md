@@ -4,61 +4,6 @@ All notable changes to Pekobot.
 
 ## [Unreleased]
 
-### Added (issue #28) — Per-agent persistent `agent_did` over the tunnel
-
-`Principal::Agent(agent.name)` (from #24 / ADR-039) keys agents by the
-local name — fine in a single-runtime world, but ambiguous across
-runtimes and fragile when an agent is recreated with a new local name.
-This change promotes the existing per-agent `Identity` (already
-generated and persisted under `KeyStorage` at `peko_home/identities/`)
-to a first-class `agent_did` that flows through the tunnel, the
-`a2a_send` wire, and `PermissionGrant` lookups.
-
-- **`AgentConfig.agent_did: Option<String>`** — the per-agent stable
-  identifier (`did:peko:local:<keyhash>`), persisted in `config.toml`.
-  Back-filled on first `Agent::new()` via a new
-  `Agent::persist_agent_did` helper. Two agents with the same `name` on
-  two different `peko_home` roots now have different `agent_did`
-  values; the unit test `test_two_runtimes_same_name_different_did`
-  pins this invariant. New helper `AgentConfig::wire_agent_id()` returns
-  the DID when present and the local name as a back-compat fallback.
-- **`InstanceAnnouncePayload.agent_did: Option<String>`** — PekoHub now
-  stores the per-agent DID on the instance row so it can serve as the
-  canonical primary key for `Principal::Agent(...)` callers. Wire
-  field is `agentDid` (camelCase) and is omitted when `None` so
-  pre-#28 PekoHub instances accept the payload without modification.
-- **`A2aSendTool::with_caller_did(name, did)`** — when the calling
-  agent has a `agent_did`, the `a2a_send` tool now projects that DID
-  into `Principal::Agent(...)` on the wire (instead of the local name)
-  so the receiving agent's session is keyed by a stable, runtime-
-  independent identifier. The `caller_agent` annotation stays as the
-  human-readable name regardless. The legacy `with_caller(name)` is
-  preserved and used as the fallback for agents predating #28.
-- **`load_or_create_identity` bug fix** — the previous lookup key was
-  the agent name, but `KeyStorage::store` names files after the DID,
-  so a fresh keypair was being generated on **every** agent start. The
-  fix looks up by `config.agent_did` first, falls back to the
-  name-keyed legacy path, and only then generates a new identity.
-
-### Notes for reviewers
-
-- **Name-fallback semantics (deliberate, see issue #28 comment):** when
-  an agent has no `agent_did` yet (legacy config, first run before the
-  back-fill completes), `a2a_send` falls back to the local name. Within
-  a single runtime, the name and DID are interchangeable. **Cross-
-  runtime references require a live `agent_did` — the name fallback is
-  forgeable across runtimes by design.** This is consistent with the
-  `agent_did` field being `Option<String>` and the `agentDid` wire
-  field being skipped when `None`. DID rotation / key-compromise
-  recovery is a follow-up ADR.
-- This PR lands ahead of `ConekoAI/pekohub#11` (PekoHub agent
-  enforcement); PekoHub will need to thread the new `agentDid` field
-  through to its `instances` row. Pre-#28 PekoHub instances that ignore
-  the new field will continue to work; PekoHub upgrades that want to
-  enforce per-agent matching must include the field.
-
-## [Unreleased]
-
 ### Fixed (issue #26) — Add typed `Principal` caller field to `AuditEvent`
 
 The audit event carried caller identity as a free-form `Option<String>`
@@ -103,6 +48,84 @@ serialized as `{kind, id}` so query code can index on the kind tag.
 
 `PermissionGrant.granted_by` and audit queries on PekoHub itself are
 out of scope (parallel PekoHub issue to follow).
+
+### Added (issue #28) — Per-agent persistent `agent_did` over the tunnel
+
+`Principal::Agent(agent.name)` (from #24 / ADR-039) keys agents by the
+local name — fine in a single-runtime world, but ambiguous across
+runtimes and fragile when an agent is recreated with a new local name.
+This change promotes the existing per-agent `Identity` (already
+generated and persisted under `KeyStorage` at `peko_home/identities/`)
+to a first-class `agent_did` that flows through the tunnel, the
+`a2a_send` wire, and `PermissionGrant` lookups.
+
+- **`AgentConfig.agent_did: Option<String>`** — the per-agent stable
+  identifier (`did:peko:local:<keyhash>`), persisted in `config.toml`.
+  Back-filled on first `Agent::new()` via a new
+  `Agent::backfill_agent_did` helper. Two agents with the same `name`
+  on two different `peko_home` roots now have different `agent_did`
+  values; the unit test `test_two_runtimes_same_name_different_did`
+  pins this invariant. New helper `AgentConfig::wire_agent_id()` is a
+  thin shim over `Principal::agent_wire_id` (the single source of
+  truth for the resolution, including the empty-DID defense).
+- **`InstanceAnnouncePayload.agent_did: Option<String>`** — PekoHub
+  now stores the per-agent DID on the instance row so it can serve
+  as the canonical primary key for `Principal::Agent(...)` callers.
+  Wire field is `agentDid` (camelCase) and is omitted when `None` so
+  pre-#28 PekoHub instances accept the payload without modification.
+- **`A2aSendTool::with_caller_did(name, did)`** — when the calling
+  agent has a `agent_did`, the `a2a_send` tool now projects that DID
+  into `Principal::Agent(...)` on the wire (instead of the local
+  name) so the receiving agent's session is keyed by a stable,
+  runtime-independent identifier. The `caller_agent` annotation stays
+  as the human-readable name regardless. The legacy `with_caller(name)`
+  is preserved and used as the fallback for agents predating #28.
+- **`load_or_create_identity` bug fix** — the previous lookup key
+  was the agent name, but `KeyStorage::store` names files after the
+  DID, so a fresh keypair was being generated on **every** agent
+  start. The fix looks up by `config.agent_did` first, falls back
+  to the name-keyed legacy path, and only then generates a new
+  identity.
+- **`Principal::agent_wire_id(Option<&str>, &str) -> String`** — the
+  single source of truth for the DID-or-name resolution, with the
+  empty-DID guard. `A2aSendTool` and `AgentConfig::wire_agent_id`
+  both route through it (review of #34 concern #3).
+- **Targeted backfill, not a full overwrite** (review of #34
+  concern #1) — `backfill_agent_did` reads the existing
+  `config.toml`, sets just the `agent_did` key on the parsed
+  `toml::Value`, and re-serializes. Preserves hand-edited comments,
+  key ordering, and any fields the parser doesn't know about.
+- **Loud DID rotation logging** (review of #34 concern #4) — when
+  `load_or_create_identity` recovers from a missing identity file
+  (e.g. a backup restore that lost `peko_home/identities/`), the
+  caller logs a `warn!` naming **both** the old DID (from
+  `config.agent_did`) and the new one (from the freshly generated
+  `Identity`) so the operator can correlate audit / grant breakage
+  to the event. Cross-runtime grants to the old DID are orphaned
+  by design until the follow-up DID-rotation ADR lands.
+- **Test-safety guard for subagent path** (review of #34 concern
+  #5) — `new_with_shared_executor` skips the on-disk backfill when
+  the resolved config path is under `std::env::temp_dir()`, so
+  tests that bypass `new_for_test` don't mutate the developer's
+  real `~/.peko`. The in-memory identity is still valid; the next
+  production-path call does the real backfill.
+
+### Notes for reviewers
+
+- **Name-fallback semantics (deliberate, see issue #28 comment):**
+  when an agent has no `agent_did` yet (legacy config, first run
+  before the back-fill completes), `a2a_send` falls back to the
+  local name. Within a single runtime, the name and DID are
+  interchangeable. **Cross-runtime references require a live
+  `agent_did` — the name fallback is forgeable across runtimes by
+  design.** This is consistent with the `agent_did` field being
+  `Option<String>` and the `agentDid` wire field being skipped when
+  `None`. DID rotation / key-compromise recovery is a follow-up ADR.
+- This PR lands ahead of `ConekoAI/pekohub#11` (PekoHub agent
+  enforcement); PekoHub will need to thread the new `agentDid`
+  field through to its `instances` row. Pre-#28 PekoHub instances
+  that ignore the new field will continue to work; PekoHub upgrades
+  that want to enforce per-agent matching must include the field.
 
 ### Fixed (issue #17) — Plumb hub-attested user identity through the tunnel path
 

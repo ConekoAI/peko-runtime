@@ -158,11 +158,14 @@ impl A2aSendTool {
         // DID is set — fine within a single runtime, ambiguous across
         // runtimes by design. The `caller_agent` annotation is always
         // the human-readable name regardless of which one is used.
-        let wire_caller_id = self
-            .caller_agent_did
-            .as_deref()
-            .filter(|d| !d.is_empty())
-            .unwrap_or(caller_agent);
+        //
+        // Review of #34: route through `Principal::agent_wire_id` so
+        // the DID/name resolution and the empty-string guard live in
+        // exactly one place. Previously the a2a_send path had its
+        // own `.filter(|d| !d.is_empty())` clause that disagreed
+        // subtly with `AgentConfig::wire_agent_id`.
+        let wire_caller_id =
+            Principal::agent_wire_id(self.caller_agent_did.as_deref(), caller_agent);
 
         let request = build_a2a_request(
             &args.target_agent,
@@ -170,7 +173,7 @@ impl A2aSendTool {
             args.session_id,
             args.team,
             caller_agent,
-            wire_caller_id,
+            &wire_caller_id,
         );
         Ok(request)
     }
@@ -465,6 +468,14 @@ mod tests {
     /// `Principal::User(caller)`. This is the core fix for issue
     /// #24 — the receiving agent's session is keyed under
     /// `agent:{caller}`, not `user:{caller}`.
+    ///
+    /// Review of #34 (non-blocking): `caller_agent` (the
+    /// human-readable name) and `wire_caller_id` (the value
+    /// projected to `Principal::Agent`) are intentionally
+    /// distinct here so the test exercises both the
+    /// caller-annotation code path AND the wire-identifier code
+    /// path on the same request. Pre-fix, both args were `"helper"`
+    /// and the test didn't actually distinguish them.
     #[test]
     fn test_build_a2a_request_attaches_caller_principal_as_agent() {
         let req = build_a2a_request(
@@ -473,13 +484,13 @@ mod tests {
             Some("sess-1".to_string()),
             None,
             "helper",
-            "helper",
+            "did:peko:local:abc123",
         );
 
         assert_eq!(
             req.caller_principal,
-            Some(Principal::Agent("helper".into())),
-            "caller_principal must be Principal::Agent(helper), not a User masquerade"
+            Some(Principal::Agent("did:peko:local:abc123".into())),
+            "caller_principal must be Principal::Agent(<DID>), not a User masquerade"
         );
         // Belt-and-suspenders: confirm we're not falling back to the
         // legacy user path by accident.
@@ -495,6 +506,8 @@ mod tests {
             "a2a_send must leave MessageRequest::user empty (review #1); \
              downstream code must read caller_principal instead"
         );
+        // caller_agent annotation stays as the human-readable name
+        // even when the wire id is the DID (issue #28).
         assert_eq!(req.caller_agent.as_deref(), Some("helper"));
         assert_eq!(req.session_id.as_deref(), Some("sess-1"));
         assert_eq!(req.agent_name, "analyzer");
