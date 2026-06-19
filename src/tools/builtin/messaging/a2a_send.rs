@@ -37,11 +37,91 @@ use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::auth::principal::Principal;
 use crate::tools::core::Tool;
 
+/// Where an `a2a_send` call is routed. Issue #29 (Slice A — wire shape).
+///
+/// Pre-#29 the only routable target was an agent name on the **same**
+/// runtime as the caller, threaded through the legacy
+/// `A2aSendArgs::target_agent` field. With #29 the call site can be
+/// explicit about cross-runtime addressing without breaking that
+/// legacy field — `target_agent` stays accepted, and an explicit
+/// `target: TargetSpec` overrides it when present.
+///
+/// Slice A only **parses** `TargetSpec` and round-trips it on the wire;
+/// the `Remote*` variants are not yet dispatched (they error out of
+/// `A2aSendTool::build_request` with a Slice B pointer). The outbound
+/// resolver, signer, and tunnel path are Slice B; the receiver
+/// attribution + dispatch is Slice C.
+///
+/// The JSON tag is `kind` (`local` / `remote_by_did` / `remote_by_handle`)
+/// to mirror the discriminant on the receiving runtime and on the
+/// hub-side `resolveAgentTarget` helper described in pekohub#14.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TargetSpec {
+    /// Send to an agent on the **local** runtime, addressed by its
+    /// local name. This is the current `target_agent` behavior, reified
+    /// into an explicit variant so cross-runtime callers can express
+    /// "no, really, the same runtime" without ambiguity.
+    Local {
+        /// Local agent name.
+        name: String,
+    },
+    /// Send to an agent on a **remote** runtime, addressed by its
+    /// stable DID (issue #28 form: `did:peko:agent:<keyhash>`). The
+    /// `runtime_id_hint` lets the caller short-circuit the PekoHub
+    /// directory lookup (pekohub#14) when it already knows the
+    /// target's `runtime_id` from a previous resolution.
+    #[serde(rename_all = "snake_case")]
+    RemoteByDid {
+        /// Target agent DID (`did:peko:agent:...`).
+        did: String,
+        /// Optional cached `runtime_id` of the host runtime. Slice B
+        /// uses it to skip the directory lookup; when absent, Slice B
+        /// resolves via `GET /v1/agents/by-did/:did` (pekohub#14).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_id_hint: Option<String>,
+    },
+    /// Send to an agent on a **remote** runtime, addressed by a
+    /// human-readable `{owner, agent_name}` handle. The runtime
+    /// resolves the handle via PekoHub's `GET /v1/agents/by-handle/:owner/:agent_name`
+    /// endpoint (pekohub#14).
+    #[serde(rename_all = "snake_case")]
+    RemoteByHandle {
+        /// User namespace (for `User` owners) or team handle
+        /// (for `Team` owners — gated on pekohub#8).
+        owner: String,
+        /// Agent name within that owner's namespace.
+        agent_name: String,
+    },
+}
+
+impl TargetSpec {
+    /// Whether this target requires a cross-runtime hop. `false` for
+    /// `Local`, `true` for either `Remote*` variant. Slice A short-
+    /// circuits on this in `A2aSendTool::build_request` to avoid
+    /// silently dispatching cross-runtime calls to the local agent
+    /// table before the outbound path lands in Slice B.
+    #[must_use]
+    pub const fn is_remote(&self) -> bool {
+        !matches!(self, Self::Local { .. })
+    }
+}
+
 /// Arguments for the `a2a_send` tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct A2aSendArgs {
-    /// Target agent name
+    /// Target agent name (legacy, pre-#29). Equivalent to
+    /// `target = Local { name: target_agent }`. Required for
+    /// back-compat with pre-#29 callers and the current LLM-facing
+    /// tool description; ignored when `target` is explicitly set.
     pub target_agent: String,
+    /// Issue #29: explicit target spec. When present, takes precedence
+    /// over `target_agent`. The `Local` variant behaves identically to
+    /// the legacy `target_agent` path (just spelled explicitly); the
+    /// `Remote*` variants are routed cross-runtime over the tunnel
+    /// (Slices B/C).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetSpec>,
     /// Message content to send
     pub message: String,
     /// Optional session ID to resume
@@ -50,6 +130,21 @@ pub struct A2aSendArgs {
     /// Optional team for the target agent
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
+}
+
+impl A2aSendArgs {
+    /// Resolve the effective `TargetSpec` for this call, honoring the
+    /// legacy `target_agent` path when no explicit `target` is set.
+    ///
+    /// This is the single normalization point — anything downstream
+    /// of `build_request` matches on a `TargetSpec`, never on the
+    /// (`target`, `target_agent`) pair.
+    #[must_use]
+    pub fn effective_target(&self) -> TargetSpec {
+        self.target.clone().unwrap_or_else(|| TargetSpec::Local {
+            name: self.target_agent.clone(),
+        })
+    }
 }
 
 /// Result of an `a2a_send` execution
@@ -167,8 +262,17 @@ impl A2aSendTool {
         let wire_caller_id =
             Principal::agent_wire_id(self.caller_agent_did.as_deref(), caller_agent);
 
+        // Issue #29 (Slice A): normalize the (target_agent, target)
+        // pair to a single `TargetSpec` and short-circuit the
+        // unimplemented remote variants via the same free-function
+        // seam the existing tests use for `validate_caller_agent` and
+        // `build_a2a_request`. Slice B will replace the short-circuit
+        // with the real outbound resolver + signer + tunnel hop.
+        let target = args.effective_target();
+        let local_name = resolve_local_target(&target)?.to_string();
+
         let request = build_a2a_request(
-            &args.target_agent,
+            &local_name,
             args.message,
             args.session_id,
             args.team,
@@ -199,6 +303,31 @@ pub(crate) fn validate_caller_agent(caller: Option<&str>) -> Result<&str> {
              calling agent (issue #24)."
         )
     })
+}
+
+/// Resolve a `TargetSpec` to a local agent name, or short-circuit with
+/// a Slice-B-pointer error for the remote variants. Issue #29 Slice A.
+///
+/// Exposed as `pub(crate)` so unit tests can pin the contract that the
+/// remote-rejection path returns a structured error mentioning Slice B
+/// (so anyone tracing the error back through a log or CI report can
+/// find the work that lifts the limitation).
+///
+/// The Slice B replacement will branch on this same `TargetSpec` and
+/// route remote variants through the outbound resolver + tunnel
+/// dispatcher; the local path will stay verbatim. Keeping the seam
+/// pinned today makes the Slice B diff small and review-friendly.
+pub(crate) fn resolve_local_target(target: &TargetSpec) -> Result<&str> {
+    match target {
+        TargetSpec::Local { name } => Ok(name),
+        TargetSpec::RemoteByDid { .. } | TargetSpec::RemoteByHandle { .. } => Err(anyhow!(
+            "a2a_send: cross-runtime target dispatch is not yet \
+             implemented. peko-runtime#29 Slice A landed the wire \
+             shape ({target:?}); Slice B adds the outbound resolver, \
+             signer, and tunnel hop. Use TargetSpec::Local (or the \
+             legacy target_agent field) until Slice B lands."
+        )),
+    }
 }
 
 /// Pure (no `agent_service` access) request builder, factored out so
@@ -560,6 +689,197 @@ mod tests {
             req.caller_agent.as_deref(),
             Some("helper"),
             "caller_agent annotation must remain the human-readable name"
+        );
+    }
+
+    // -- Issue #29 (Slice A): TargetSpec wire shape --------------------
+
+    /// Legacy `A2aSendArgs` JSON (no `target` field) must still
+    /// parse. Slice A is additive — the wire-compatible default for
+    /// `target` is `None`, which `effective_target()` projects to
+    /// `TargetSpec::Local { name: target_agent }`. Existing LLM
+    /// tool-call producers and persisted call records (e.g. audit
+    /// trails, fixtures) keep working without re-emission.
+    #[test]
+    fn test_a2a_send_args_back_compat_no_target() {
+        let json = r#"{
+            "target_agent": "analyzer",
+            "message": "review this"
+        }"#;
+        let args: A2aSendArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.target_agent, "analyzer");
+        assert!(args.target.is_none(), "legacy callers omit `target`");
+        assert_eq!(
+            args.effective_target(),
+            TargetSpec::Local {
+                name: "analyzer".to_string(),
+            },
+            "the legacy path projects to TargetSpec::Local"
+        );
+    }
+
+    /// When an explicit `target` is provided, it takes precedence
+    /// over the legacy `target_agent`. The `target_agent` is still
+    /// required (back-compat with the LLM tool description) but is
+    /// effectively a hint until Slice B exposes `target` to the LLM
+    /// schema.
+    #[test]
+    fn test_a2a_send_args_explicit_local_target_overrides_legacy() {
+        let json = r#"{
+            "target_agent": "ignored-legacy-name",
+            "target": { "kind": "local", "name": "preferred" },
+            "message": "hello"
+        }"#;
+        let args: A2aSendArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.target_agent, "ignored-legacy-name");
+        assert_eq!(
+            args.effective_target(),
+            TargetSpec::Local {
+                name: "preferred".to_string(),
+            },
+            "explicit `target` overrides the legacy `target_agent`"
+        );
+    }
+
+    /// `TargetSpec::RemoteByDid` round-trips through JSON with the
+    /// expected `kind` tag and snake_case field names. The
+    /// `runtime_id_hint` is optional and omitted from the wire form
+    /// when absent (the hub directory lookup is the fallback path).
+    #[test]
+    fn test_target_spec_remote_by_did_roundtrip() {
+        let spec = TargetSpec::RemoteByDid {
+            did: "did:peko:agent:abcd1234".to_string(),
+            runtime_id_hint: Some("did:key:zRuntime".to_string()),
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["kind"], "remote_by_did");
+        assert_eq!(json["did"], "did:peko:agent:abcd1234");
+        assert_eq!(json["runtime_id_hint"], "did:key:zRuntime");
+
+        let back: TargetSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, spec);
+
+        // Hint-less form is also valid and omits the field.
+        let spec_no_hint = TargetSpec::RemoteByDid {
+            did: "did:peko:agent:abcd1234".to_string(),
+            runtime_id_hint: None,
+        };
+        let json_no_hint = serde_json::to_value(&spec_no_hint).unwrap();
+        assert!(
+            json_no_hint.get("runtime_id_hint").is_none(),
+            "runtime_id_hint must be omitted when None (hub-side resolves \
+             via pekohub#14 directory lookup); got: {json_no_hint}"
+        );
+    }
+
+    /// `TargetSpec::RemoteByHandle` round-trips with `owner` +
+    /// `agent_name` — the human-friendly form that pekohub#14's
+    /// `/v1/agents/by-handle/:owner/:agent_name` endpoint resolves.
+    #[test]
+    fn test_target_spec_remote_by_handle_roundtrip() {
+        let spec = TargetSpec::RemoteByHandle {
+            owner: "alice".to_string(),
+            agent_name: "analyzer".to_string(),
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["kind"], "remote_by_handle");
+        assert_eq!(json["owner"], "alice");
+        assert_eq!(json["agent_name"], "analyzer");
+
+        let back: TargetSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, spec);
+    }
+
+    /// `TargetSpec::Local` round-trips with just `name`. Useful for
+    /// the (uncommon but legal) case where a caller wants to be
+    /// explicit about same-runtime addressing.
+    #[test]
+    fn test_target_spec_local_roundtrip() {
+        let spec = TargetSpec::Local {
+            name: "helper".to_string(),
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["kind"], "local");
+        assert_eq!(json["name"], "helper");
+
+        let back: TargetSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, spec);
+    }
+
+    /// `is_remote()` discriminates the cross-runtime variants. The
+    /// `build_request` short-circuit and the future Slice B
+    /// dispatcher both branch on this predicate, so it gets its own
+    /// guard.
+    #[test]
+    fn test_target_spec_is_remote_discriminator() {
+        assert!(!TargetSpec::Local {
+            name: "x".into(),
+        }
+        .is_remote());
+        assert!(TargetSpec::RemoteByDid {
+            did: "did:peko:agent:x".into(),
+            runtime_id_hint: None,
+        }
+        .is_remote());
+        assert!(TargetSpec::RemoteByHandle {
+            owner: "u".into(),
+            agent_name: "a".into(),
+        }
+        .is_remote());
+    }
+
+    /// `resolve_local_target` returns the local name verbatim for
+    /// `TargetSpec::Local`. This pins the "Local is just an alias for
+    /// the legacy target_agent path" invariant Slice A depends on —
+    /// the Slice B diff will keep the local arm verbatim and add a
+    /// new arm for the remote variants.
+    #[test]
+    fn test_resolve_local_target_passes_local_through() {
+        let target = TargetSpec::Local {
+            name: "helper".to_string(),
+        };
+        let name = resolve_local_target(&target).expect("Local must resolve");
+        assert_eq!(name, "helper");
+    }
+
+    /// `resolve_local_target` short-circuits on the two `Remote*`
+    /// variants with a structured error mentioning Slice B. The
+    /// error string is part of the contract — when someone hits
+    /// this in a log or test report, they need to find the issue
+    /// and slice that lifts the limitation. If Slice B changes the
+    /// message text, this test must be updated in the same diff.
+    #[test]
+    fn test_resolve_local_target_rejects_remote_with_slice_b_pointer() {
+        let did_target = TargetSpec::RemoteByDid {
+            did: "did:peko:agent:remote-xyz".to_string(),
+            runtime_id_hint: None,
+        };
+        let err = resolve_local_target(&did_target)
+            .expect_err("RemoteByDid must short-circuit until Slice B");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cross-runtime target dispatch is not yet implemented"),
+            "error must name the unimplemented condition; got: {msg}"
+        );
+        assert!(
+            msg.contains("Slice B"),
+            "error must point at Slice B so callers can find the work; got: {msg}"
+        );
+        assert!(
+            msg.contains("did:peko:agent:remote-xyz"),
+            "error must surface the target so it appears in audit/log traces; got: {msg}"
+        );
+
+        let handle_target = TargetSpec::RemoteByHandle {
+            owner: "alice".to_string(),
+            agent_name: "analyzer".to_string(),
+        };
+        let err = resolve_local_target(&handle_target)
+            .expect_err("RemoteByHandle must short-circuit until Slice B");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Slice B"),
+            "RemoteByHandle error must also point at Slice B; got: {msg}"
         );
     }
 }
