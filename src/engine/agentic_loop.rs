@@ -238,12 +238,21 @@ impl AgenticLoop {
         use crate::session::manager::SessionManager;
         use crate::session::types::Peer;
 
-        // Create session via SessionManager
+        // Create session via SessionManager. Issue #17: use the resolved
+        // caller identity (set via `with_caller_id`) as the session's
+        // `sender_id` so the session-keying scheme
+        // `(agent, channel, sender_id)` works as designed. Local CLI
+        // invocations leave `self.caller_id` as `None`, which maps to a
+        // local-trust peer.
         let path_resolver = PathResolver::new();
         let mut session_manager = SessionManager::new()
             .with_path_resolver(path_resolver, self.agent.name(), None)
             .await?;
-        let peer = Peer::User("default".to_string());
+        let peer = self
+            .caller_id
+            .as_deref()
+            .map(|c| Peer::User(c.to_string()))
+            .unwrap_or_else(|| Peer::User("local".to_string()));
         let session = session_manager
             .get_or_create_base(self.agent.name(), &peer)
             .await?;

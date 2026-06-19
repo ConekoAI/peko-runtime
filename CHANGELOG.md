@@ -38,10 +38,21 @@ end, with **cryptographic verification** when a JWT is present:
   through the request path. The tunnel dispatcher now emits a
   `tunnel_proxied_request` audit event tagged with the caller on every
   proxied request.
-- **Request defaults** — `MessageRequest::new` and `ExecutionRequest::new`
-  no longer default `user` to `"default"`. The default is now
-  `String::new()`, with a doc comment that production callers must
-  set it explicitly via `.with_user()`.
+- **Request defaults** — `MessageRequest::new`, `ExecutionRequest::new`,
+  and `SessionManager::new` no longer default `user` to `"default"`.
+  The default is now `String::new()`, with a doc comment that
+  production callers must set it explicitly via `.with_user()`. The
+  two legacy-data fallbacks in `SessionManager::get_or_load_session`
+  (peer info missing in the index) and `unified::Session::from_entries`
+  (no peer provided) also drop the `"default"` literal — empty
+  `sender_id` is the new fallback, distinguishable from a real resolved
+  caller.
+- **Agentic-loop `run` method** — `engine/agentic_loop.rs:243`'s
+  hardcoded `Peer::User("default".to_string())` now uses
+  `self.caller_id` (set via `with_caller_id` from the agent service),
+  falling back to `Peer::User("local")` for the no-caller local-CLI
+  case. The session's `sender_id` is now the resolved caller, not the
+  placeholder.
 
 **Why this matters**: unblocks per-user rate limiting
 ([`src/auth/rate_limit.rs`](src/auth/rate_limit.rs) is already keyed

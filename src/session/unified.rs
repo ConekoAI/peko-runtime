@@ -137,10 +137,11 @@ impl Session {
         // Load normalized entries (supports both new SessionEvent and legacy SessionEntry formats)
         let entries = storage.load_normalized(session_id).await?;
 
-        // Use provided peer or default
-        let peer = peer
-            .cloned()
-            .unwrap_or_else(|| Peer::User("default".to_string()));
+        // Use provided peer or fall back to an empty sender_id (issue #17).
+        // The legacy `"default"` literal is no longer used as a fallback
+        // user-attribution placeholder; empty is distinguishable from
+        // a real, resolved caller.
+        let peer = peer.cloned().unwrap_or_else(|| Peer::User(String::new()));
         let session_key = crate::session::key::derive_base_session_key(agent_name, &peer);
 
         Self::from_entries(
