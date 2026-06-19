@@ -48,6 +48,7 @@ use super::metadata_controller::MetadataController;
 use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
+use crate::auth::principal::Principal;
 use super::unified::Session;
 use crate::common::paths::PathResolver;
 use anyhow::Result;
@@ -498,6 +499,15 @@ pub struct SessionManager {
     /// Tests that don't care about per-user session scoping can leave
     /// it empty.
     user: String,
+    /// Resolved caller principal for session peer attribution
+    /// (issue #24). When set, this takes precedence over
+    /// [`SessionManager::user`] when constructing the session peer
+    /// via [`SessionManager::peer`].
+    ///
+    /// Used by `a2a_send` (and any other agent-originated call path)
+    /// to attribute the receiving agent's session to a `Principal::Agent`
+    /// rather than the legacy `Principal::User(user)` masquerade.
+    peer_principal: Option<Principal>,
 }
 
 impl SessionManager {
@@ -524,6 +534,7 @@ impl SessionManager {
             agent_name: None,
             path_resolver: None,
             user: String::new(),
+            peer_principal: None,
         }
     }
 
@@ -618,10 +629,55 @@ impl SessionManager {
         self
     }
 
+    /// Set the resolved caller principal (issue #24).
+    ///
+    /// When set, this takes precedence over [`SessionManager::user`]
+    /// when [`SessionManager::peer`] constructs the session peer. Use
+    /// this for A2A messaging paths where the caller is an agent
+    /// (so the session is keyed under `agent:{caller}`, not
+    /// `user:{caller}`).
+    ///
+    /// Callers are responsible for passing a principal that is a
+    /// valid session peer (`Principal::is_session_peer`). A
+    /// `Team` or `Public` principal is still accepted and stored, but
+    /// [`SessionManager::peer`] falls back to `Principal::User(user)`
+    /// in that case and emits a `tracing::warn!` (per ADR-039's
+    /// documented escape hatch).
+    #[must_use]
+    pub fn with_peer_principal(mut self, principal: Principal) -> Self {
+        self.peer_principal = Some(principal);
+        self
+    }
+
     /// Get the user identifier
     #[must_use]
     pub fn user(&self) -> &str {
         &self.user
+    }
+
+    /// Resolve the session peer to use for new sessions (issue #24).
+    ///
+    /// Returns the explicit `peer_principal` if set (e.g. a
+    /// `Principal::Agent` for an a2a_send call); otherwise falls back
+    /// to the legacy `Principal::User(user)` form.
+    #[must_use]
+    pub fn peer(&self) -> Principal {
+        match &self.peer_principal {
+            Some(p) if p.is_session_peer() => p.clone(),
+            Some(_) => {
+                // Per ADR-039: Team/Public are not valid session
+                // peers; fall back to the legacy form. This is the
+                // documented escape hatch, not a bug.
+                tracing::warn!(
+                    "SessionManager::peer: principal {:?} is not a valid session peer; \
+                     falling back to Peer::User({:?})",
+                    self.peer_principal,
+                    self.user
+                );
+                Principal::User(self.user.clone())
+            }
+            None => Principal::User(self.user.clone()),
+        }
     }
 
     /// Get the metadata controller (for internal use)
@@ -730,7 +786,7 @@ impl SessionManager {
         channel: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
-        let peer = Peer::User(self.user.clone());
+        let peer = self.peer();
 
         // Derive peer key ONCE and use it consistently
         let peer_key = derive_base_session_key(agent_name, &peer);
@@ -793,7 +849,7 @@ impl SessionManager {
     ) -> Result<(super::context::SessionContext, SessionHandle, String)> {
         info!("Creating fresh session for agent '{}'", agent_name);
 
-        let peer = Peer::User(self.user.clone());
+        let peer = self.peer();
 
         // Clear any existing base session for this peer to ensure fresh start
         self.remove_base_session(agent_name, &peer);
@@ -833,7 +889,7 @@ impl SessionManager {
             session_id, agent_name
         );
 
-        let peer = Peer::User(self.user.clone());
+        let peer = self.peer();
 
         // Open the SPECIFIC session by ID, creating it if it doesn't exist
         let handle = match self.open_session(session_id).await? {
@@ -1998,6 +2054,7 @@ impl SessionManager {
             agent_name: self.agent_name.clone(),
             path_resolver: self.path_resolver.clone(),
             user: self.user.clone(),
+            peer_principal: self.peer_principal.clone(),
         }
     }
 }

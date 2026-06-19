@@ -32,6 +32,16 @@ pub struct SessionInfo {
     pub total_output_tokens: usize,
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
+    /// Peer type (`"user"`, `"agent"`, `"team"`, or `"public"`).
+    ///
+    /// Reflects the `Principal` kind on the session's peer after
+    /// ADR-039. For a2a-spawned sessions this is `"agent"` (issue #24).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_type: Option<String>,
+    /// Peer id (bare id, e.g. `"helper"`, not the formatted
+    /// `"agent:helper"` form).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
 }
 
 impl From<SessionEntry> for SessionInfo {
@@ -48,6 +58,8 @@ impl From<SessionEntry> for SessionInfo {
             total_output_tokens: entry.total_output_tokens,
             parent_session_id: entry.parent_session_id,
             title: entry.title,
+            peer_type: entry.peer_type,
+            peer_id: entry.peer_id,
         }
     }
 }

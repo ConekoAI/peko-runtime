@@ -2402,6 +2402,8 @@ mod tests {
                 total_output_tokens: 0,
                 parent_session_id: None,
                 title: None,
+                peer_type: None,
+                peer_id: None,
             }],
             active_session: Some("sess-123".to_string()),
         };
@@ -2439,6 +2441,8 @@ mod tests {
                     total_output_tokens: 0,
                     parent_session_id: None,
                     title: None,
+                    peer_type: None,
+                    peer_id: None,
                 },
                 history_summary: crate::common::services::session_service::HistorySummary::default(
                 ),
@@ -4021,6 +4025,8 @@ mod tests {
                     total_output_tokens: 0,
                     parent_session_id: None,
                     title: None,
+                    peer_type: None,
+                    peer_id: None,
                 },
                 history_summary: crate::common::services::session_service::HistorySummary::default(
                 ),
@@ -4146,6 +4152,8 @@ mod tests {
                     total_output_tokens: 0,
                     parent_session_id: None,
                     title: None,
+                    peer_type: None,
+                    peer_id: None,
                 },
                 history_summary: crate::common::services::session_service::HistorySummary::default(
                 ),

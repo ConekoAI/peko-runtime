@@ -808,14 +808,28 @@ async fn a2a_isolation_t3_peer_id_isolation() {
                 .collect()
         })
         .unwrap_or_default();
+    // Issue #24: a2a_send now attributes sessions to `Principal::Agent(caller)`
+    // (not `Principal::User(caller)`). The session list must reflect the new
+    // attribution: every a2a-spawned session entry has `peer_type == "agent"`.
+    let peer_types: Vec<String> = v
+        .get("sessions")
+        .and_then(|s| s.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.get("peer_type").and_then(|p| p.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let a2a_sessions = peer_types.iter().filter(|t| t.as_str() == "agent").count();
     let has_a = peer_ids.iter().any(|p| p == caller_a);
     let has_b = peer_ids.iter().any(|p| p == caller_b);
     let both_llm_done = prompt_a.contains("A2A_TEST_DONE")
         && (out_b.contains("A2A_TEST_DONE") || err_b.is_empty());
     assert!(
-        (has_a && has_b) || both_llm_done,
+        (has_a && has_b && a2a_sessions >= 2) || both_llm_done,
         "isolation invariant not observed: peer_id-a={has_a} peer_id-b={has_b} \
-         both-llm-done={both_llm_done}; peer_ids={peer_ids:?}",
+         a2a-attributed={a2a_sessions} both-llm-done={both_llm_done}; \
+         peer_ids={peer_ids:?} peer_types={peer_types:?}",
     );
 }
 
@@ -954,6 +968,12 @@ async fn a2a_isolation_t4_caller_a_resumes() {
         .and_then(|s| s.get("session_id"))
         .and_then(|s| s.as_str())
         .map(String::from);
+    // Issue #24: a2a_send now keys the receiving agent's session under
+    // `agent:{caller}` (was `user:{caller}`). The resumption invariant
+    // — caller A's second call resumes caller A's own session — still
+    // holds because the principal-aware `derive_base_session_key`
+    // (ADR-039) keeps the byte-stable v2 format and the active-session
+    // lookup is principal-keyed.
     let structural = sessions.len() == 2
         && caller_a_session_id_after.is_some()
         && caller_a_session_id_after == caller_a_session_id_before;
