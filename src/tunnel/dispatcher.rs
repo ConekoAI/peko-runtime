@@ -24,6 +24,104 @@ use super::TunnelHandle;
 
 use crate::auth::ownership::Permission;
 
+/// Resolve the calling user from a PekoHub-proxied bridge payload (issue #17).
+///
+/// PekoHub is the security boundary: it must set `Authorization: Bearer <jwt>`
+/// on every proxied request. When a JWT is present and a `JwtValidator` is
+/// configured, this function validates the JWT (signature, audience,
+/// issuer, expiry) and uses the validated `sub` claim as the caller.
+/// Cross-checks the validated `sub` against `x-pekohub-user-id` and warns
+/// if they disagree — a mismatch means PekoHub is asserting one user in
+/// the header while the JWT proves a different one, which is a tamper
+/// attempt worth surfacing.
+///
+/// Falls back to the unverified `x-pekohub-user-id` header only when no
+/// JWT is present (back-compat with deployments that haven't enabled
+/// pekohub JWT validation yet) or when JWT validation fails. In both
+/// cases the caller is logged with `(unverified)` so downstream audit
+/// consumers know the identity wasn't cryptographically checked.
+///
+/// Returns `"anonymous"` when neither a JWT nor a `x-pekohub-user-id`
+/// header is present or usable — never the literal `"web"` that the
+/// dispatcher used to hard-code.
+pub(crate) async fn resolve_bridge_caller(
+    bridge_payload: &serde_json::Value,
+    jwt_validator: Option<&crate::auth::jwt::JwtValidator>,
+) -> String {
+    // 1. Try the signed JWT first.
+    if let Some(jwt) = extract_bearer_jwt(bridge_payload) {
+        if let Some(validator) = jwt_validator {
+            match validator.validate(&jwt).await {
+                Ok(validated) => {
+                    // Cross-check the JWT sub against the hub-asserted header
+                    // so a tampered hub that emits `Authorization: ...subA...
+                    // x-pekohub-user-id: subB` is surfaced, not silently trusted.
+                    if let Some(hub_user) = header_user(bridge_payload) {
+                        if hub_user != validated.sub {
+                            warn!(
+                                "JWT sub ({}) does not match x-pekohub-user-id ({}); \
+                                 possible tamper — trusting the JWT",
+                                validated.sub, hub_user
+                            );
+                        }
+                    }
+                    return validated.sub;
+                }
+                Err(e) => {
+                    warn!(
+                        "JWT validation failed ({}); falling back to x-pekohub-user-id header \
+                         (unverified)",
+                        e
+                    );
+                }
+            }
+        } else {
+            debug!(
+                "Authorization: Bearer <jwt> present but no JWT validator configured; \
+                 falling back to x-pekohub-user-id header (unverified)"
+            );
+        }
+    }
+
+    // 2. Fall back to the unverified hub-asserted header.
+    header_user(bridge_payload).unwrap_or_else(|| "anonymous".to_string())
+}
+
+/// Pull the unverified `x-pekohub-user-id` header out of the bridge payload.
+fn header_user(bridge_payload: &serde_json::Value) -> Option<String> {
+    bridge_payload
+        .get("headers")
+        .and_then(|h| h.get("x-pekohub-user-id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Extract the `Authorization: Bearer <jwt>` value from the bridge payload.
+///
+/// Header keys are case-insensitive per RFC 7230, so we lowercase before
+/// lookup. The token is anything after `Bearer ` (single space per RFC
+/// 6750 §2.1) with leading/trailing whitespace trimmed.
+fn extract_bearer_jwt(bridge_payload: &serde_json::Value) -> Option<String> {
+    let headers = bridge_payload.get("headers")?.as_object()?;
+    for (k, v) in headers {
+        if k.eq_ignore_ascii_case("authorization") {
+            let raw = v.as_str()?.trim();
+            let rest = raw
+                .strip_prefix("Bearer")
+                .or_else(|| raw.strip_prefix("bearer"))?
+                .trim_start();
+            // RFC 6750 §2.1: optional single space after scheme.
+            let token = rest.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Per-instance state tracked by the dispatcher.
 #[derive(Debug, Clone)]
 pub struct InstanceState {
@@ -399,9 +497,39 @@ impl TunnelDispatcher {
                 .await;
         }
 
+        // Resolve the calling user from the PekoHub-proxied headers/JWT.
+        // `resolve_bridge_caller` prefers a signed JWT (if PekoHub sent
+        // `Authorization: Bearer <jwt>` and a `JwtValidator` is
+        // configured) over the unverified `x-pekohub-user-id` header —
+        // see issue #17 acceptance criteria ("src/auth/jwt.rs pekohub
+        // JWT validation is enabled ... and unit-tested").
+        let caller_user = resolve_bridge_caller(
+            &bridge_payload,
+            self.app_state.jwt_validator().as_ref(),
+        )
+        .await;
+
+        // Audit: record the proxied request with the resolved caller so the
+        // event stream is attributable to a real user, not the literal
+        // `"web"` placeholder that this dispatcher used to stamp on every
+        // request (issue #17).
+        self.app_state
+            .observability()
+            .audit_with_caller(
+                Some(&caller_user),
+                "tunnel_proxied_request",
+                Some(&agent_name),
+                serde_json::json!({
+                    "request_id": &request_id,
+                    "caller": &caller_user,
+                }),
+            )
+            .await
+            .ok();
+
         // Build message request
         let request = MessageRequest::new(agent_name.clone(), message)
-            .with_user("web")
+            .with_user(caller_user)
             .with_new_session(false);
 
         // Execute via stateless agent service with streaming
@@ -902,6 +1030,212 @@ mod tests {
     fn mock_tunnel_handle() -> (TunnelHandle, mpsc::UnboundedReceiver<TunnelMessage>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (TunnelHandle::new(tx), rx)
+    }
+
+    // ─── Issue #17: caller resolution from bridge payload ──────────────────
+
+    /// PekoHub sets `x-pekohub-user-id` on every proxied request. When
+    /// no JWT validator is configured (the back-compat case), the
+    /// dispatcher uses that value as the `MessageRequest::user` so
+    /// downstream attribution (audit log, tool hooks) sees the real
+    /// pekohub user, not the literal `"web"` placeholder.
+    #[tokio::test]
+    async fn resolve_bridge_caller_extracts_user_from_headers() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": "user-42"},
+        });
+        assert_eq!(resolve_bridge_caller(&payload, None).await, "user-42");
+    }
+
+    /// Missing header → `"anonymous"` (not `"web"`, not the empty
+    /// string). Downstream code treats `"anonymous"` as "no real user
+    /// asserted", so per-user permission checks stay conservative.
+    #[tokio::test]
+    async fn resolve_bridge_caller_falls_back_to_anonymous_when_header_missing() {
+        let payload = serde_json::json!({"body": {"message": "hi"}});
+        assert_eq!(resolve_bridge_caller(&payload, None).await, "anonymous");
+    }
+
+    /// Empty string header → `"anonymous"`. Defends against PekoHub
+    /// bugs that emit `x-pekohub-user-id:` (empty value).
+    #[tokio::test]
+    async fn resolve_bridge_caller_falls_back_to_anonymous_when_header_empty() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": ""},
+        });
+        assert_eq!(resolve_bridge_caller(&payload, None).await, "anonymous");
+    }
+
+    /// Whitespace-only header → `"anonymous"`. Catches header values
+    /// that look populated to a JSON parse but are semantically empty.
+    #[tokio::test]
+    async fn resolve_bridge_caller_falls_back_to_anonymous_when_header_whitespace() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": "   "},
+        });
+        assert_eq!(resolve_bridge_caller(&payload, None).await, "anonymous");
+    }
+
+    /// Non-string header (e.g. number) → `"anonymous"`. Catches PekoHub
+    /// sending a typed value the runtime can't attribute.
+    #[tokio::test]
+    async fn resolve_bridge_caller_falls_back_to_anonymous_when_header_not_string() {
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": 12345},
+        });
+        assert_eq!(resolve_bridge_caller(&payload, None).await, "anonymous");
+    }
+
+    // ─── Issue #17: JWT wiring (signed identity) ───────────────────────────
+
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use ed25519_dalek::{Signer, SigningKey};
+
+    /// Build a `(validator, signing_key)` pair whose `validator` accepts
+    /// tokens signed by `signing_key` against the runtime DID
+    /// `did:key:z6MkTestRuntime` and the issuer `pekohub`.
+    fn ed25519_validator() -> (crate::auth::jwt::JwtValidator, SigningKey) {
+        use rand::Rng;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut bytes);
+        let signing_key = SigningKey::from_bytes(&bytes);
+        let verifying_key = signing_key.verifying_key();
+
+        let x = URL_SAFE_NO_PAD.encode(verifying_key.to_bytes());
+        let jwks = crate::auth::jwt::JwksResponse {
+            keys: vec![crate::auth::jwt::JwkEntry {
+                kty: "OKP".to_string(),
+                kid: Some("test-key".to_string()),
+                n: None,
+                e: None,
+                x: Some(x),
+                crv: Some("Ed25519".to_string()),
+                extra: std::collections::HashMap::new(),
+            }],
+        };
+        let validator = crate::auth::jwt::JwtValidator::with_jwks(
+            vec!["pekohub".to_string()],
+            "did:key:z6MkTestRuntime".to_string(),
+            jwks,
+        );
+        (validator, signing_key)
+    }
+
+    /// Mint an EdDSA JWT for the given sub, with the audience/issuer
+    /// expected by `ed25519_validator()`.
+    fn mint_jwt(signing_key: &SigningKey, sub: &str) -> String {
+        let header = serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": "test-key"});
+        let claims = serde_json::json!({
+            "iss": "pekohub",
+            "sub": sub,
+            "aud": "did:key:z6MkTestRuntime",
+            "exp": chrono::Utc::now().timestamp() + 3600,
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
+        let claims_b64 = URL_SAFE_NO_PAD.encode(claims.to_string());
+        let message = format!("{header_b64}.{claims_b64}");
+        let signature = signing_key.sign(message.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+        format!("{message}.{sig_b64}")
+    }
+
+    /// When PekoHub sends an `Authorization: Bearer <jwt>` and a
+    /// `JwtValidator` is configured, the validated `sub` claim is the
+    /// caller (issue #17 acceptance criteria).
+    #[tokio::test]
+    async fn resolve_bridge_caller_uses_validated_jwt_sub() {
+        let (validator, signing_key) = ed25519_validator();
+        let jwt = mint_jwt(&signing_key, "user-jwt");
+
+        let payload = serde_json::json!({
+            "headers": {
+                "Authorization": format!("Bearer {jwt}"),
+                // Header disagrees with the JWT — but the JWT wins.
+                "x-pekohub-user-id": "user-hub",
+            },
+        });
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            "user-jwt"
+        );
+    }
+
+    /// Tampered JWT (signature doesn't verify) → falls back to the
+    /// unverified `x-pekohub-user-id` header (issue #17 acceptance
+    /// criteria: "unit-tested with at least one positive and one
+    /// tampered-signature case").
+    #[tokio::test]
+    async fn resolve_bridge_caller_falls_back_on_tampered_jwt() {
+        let (validator, _signing_key) = ed25519_validator();
+        // Sign with a *different* key — the signature won't verify.
+        let mut bytes = [0u8; 32];
+        bytes[0] = 0xAB;
+        let wrong_key = SigningKey::from_bytes(&bytes);
+        let wrong_jwt = mint_jwt(&wrong_key, "user-tampered");
+
+        let payload = serde_json::json!({
+            "headers": {
+                "Authorization": format!("Bearer {wrong_jwt}"),
+                "x-pekohub-user-id": "user-hub-fallback",
+            },
+        });
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            "user-hub-fallback"
+        );
+    }
+
+    /// JWT present but no validator configured → falls back to the
+    /// unverified hub header (back-compat for runtimes that haven't
+    /// enabled pekohub JWT validation).
+    #[tokio::test]
+    async fn resolve_bridge_caller_falls_back_when_no_validator_configured() {
+        let (_validator, signing_key) = ed25519_validator();
+        let jwt = mint_jwt(&signing_key, "user-jwt");
+
+        let payload = serde_json::json!({
+            "headers": {
+                "Authorization": format!("Bearer {jwt}"),
+                "x-pekohub-user-id": "user-hub",
+            },
+        });
+        assert_eq!(
+            resolve_bridge_caller(&payload, None).await,
+            "user-hub"
+        );
+    }
+
+    /// Header-only (no JWT) → uses the hub header (unverified). This is
+    /// the back-compat path for deployments that haven't enabled
+    /// pekohub JWT validation yet.
+    #[tokio::test]
+    async fn resolve_bridge_caller_uses_header_when_no_jwt() {
+        let (validator, _signing_key) = ed25519_validator();
+        let payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": "user-hub"},
+        });
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            "user-hub"
+        );
+    }
+
+    /// `Authorization` header is case-insensitive (RFC 7230) — the
+    /// lowercase variant `authorization` must also be recognized.
+    #[tokio::test]
+    async fn resolve_bridge_caller_accepts_lowercase_authorization_header() {
+        let (validator, signing_key) = ed25519_validator();
+        let jwt = mint_jwt(&signing_key, "user-jwt");
+
+        let payload = serde_json::json!({
+            "headers": {
+                "authorization": format!("Bearer {jwt}"),
+            },
+        });
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            "user-jwt"
+        );
     }
 
     #[tokio::test]

@@ -23,6 +23,11 @@ pub struct AuditEvent {
     pub event_type: String,
     /// Which agent (if any)
     pub agent_did: Option<String>,
+    /// Resolved caller identity (pekohub sub, API key id, or `local`) —
+    /// populated on every event that flows through the request path so the
+    /// audit trail is attributable to a real user. See issue #17.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_id: Option<String>,
     /// Event details
     pub details: serde_json::Value,
     /// Severity level
@@ -135,6 +140,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "agent_spawn".to_string(),
                 agent_did: Some("did:1".to_string()),
+                caller_id: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -159,6 +165,7 @@ mod tests {
                     component: "test".to_string(),
                     event_type: format!("event_{i}"),
                     agent_did: None,
+                    caller_id: None,
                     details: serde_json::json!({}),
                     severity: AuditSeverity::Info,
                 })
@@ -182,6 +189,7 @@ mod tests {
                     component: "test".to_string(),
                     event_type: format!("event_{i}"),
                     agent_did: None,
+                    caller_id: None,
                     details: serde_json::json!({}),
                     severity: AuditSeverity::Info,
                 })
@@ -209,6 +217,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "event1".to_string(),
                 agent_did: Some("agent_a".to_string()),
+                caller_id: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -221,6 +230,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "event2".to_string(),
                 agent_did: Some("agent_b".to_string()),
+                caller_id: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -233,6 +243,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "event3".to_string(),
                 agent_did: Some("agent_a".to_string()),
+                caller_id: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -256,6 +267,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "normal_event".to_string(),
                 agent_did: None,
+                caller_id: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -268,6 +280,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "security_event".to_string(),
                 agent_did: None,
+                caller_id: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Security,
             })
@@ -280,6 +293,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "another_security".to_string(),
                 agent_did: None,
+                caller_id: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Security,
             })
@@ -303,6 +317,7 @@ mod tests {
                 component: "test".to_string(),
                 event_type: "event".to_string(),
                 agent_did: None,
+                caller_id: None,
                 details: serde_json::json!({}),
                 severity: AuditSeverity::Info,
             })
@@ -339,6 +354,7 @@ mod tests {
                     component: "test".to_string(),
                     event_type: format!("event_{i}"),
                     agent_did: None,
+                    caller_id: None,
                     details: serde_json::json!({}),
                     severity: *severity,
                 })
@@ -347,5 +363,39 @@ mod tests {
         }
 
         assert_eq!(logger.len(), 5);
+    }
+
+    /// Issue #17: `caller_id` must round-trip through serialization
+    /// when populated AND must be omitted (not serialized as null) when
+    /// unset — keeps the wire format compact for legacy events that
+    /// pre-date the per-user attribution plumbing.
+    #[test]
+    fn audit_event_caller_id_serialization() {
+        let with_caller = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            component: "tunnel".to_string(),
+            event_type: "tunnel_proxied_request".to_string(),
+            agent_did: Some("agent-a".to_string()),
+            caller_id: Some("user-42".to_string()),
+            details: serde_json::json!({}),
+            severity: AuditSeverity::Info,
+        };
+        let v: serde_json::Value = serde_json::to_value(&with_caller).unwrap();
+        assert_eq!(v["caller_id"], "user-42");
+
+        let without_caller = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            component: "tunnel".to_string(),
+            event_type: "agent_spawn".to_string(),
+            agent_did: None,
+            caller_id: None,
+            details: serde_json::json!({}),
+            severity: AuditSeverity::Info,
+        };
+        let v: serde_json::Value = serde_json::to_value(&without_caller).unwrap();
+        assert!(
+            v.get("caller_id").is_none(),
+            "caller_id must be omitted (skip_serializing_if) when None, got: {v}"
+        );
     }
 }

@@ -4,6 +4,84 @@ All notable changes to Pekobot.
 
 ## [Unreleased]
 
+### Fixed (issue #17) — Plumb hub-attested user identity through the tunnel path
+
+Pre-#17, the tunnel dispatcher hard-coded the user attribution to the
+literal string `"web"` and `MessageRequest::new` defaulted to
+`"default"` — so the audit trail, the rate limiter, and per-user tool
+permissions all operated on a placeholder. With this change, every
+proxied request carries the resolved pekohub user identity from end to
+end, with **cryptographic verification** when a JWT is present:
+
+- **Dispatcher** — `resolve_bridge_caller()` reads
+  `Authorization: Bearer <jwt>` from the bridge payload first. When a
+  `JwtValidator` is configured (via `auth_config.enable_pekohub_jwt`)
+  the JWT is signature-verified (RS256 / EdDSA), audience-checked
+  against the runtime DID, and expiry-checked, and the validated
+  `sub` claim becomes the caller. The validated sub is cross-checked
+  against `x-pekohub-user-id` and a mismatch is logged as a possible
+  tamper attempt. Falls back to the unverified header only when no
+  JWT is present or validation fails. Returns `"anonymous"` only
+  when both are absent.
+- **Hook layer** — `HookInput::ToolCall` gains a `caller_id: Option<String>`
+  field, plumbed through `execute_tool_via_core_with_context` →
+  `ToolExecutor::execute` → `HookInput::ToolCall` so every tool
+  invocation inside the agentic loop carries the resolved caller.
+- **Agentic loop** — `AgenticLoop` carries a `caller_id`, set via
+  `with_caller_id()` by `Agent::execute_streaming_with_session`. The
+  caller is `Some(user)` for real pekohub users, `None` for local CLI
+  invocations and the dispatcher's `"anonymous"` fallback.
+- **Audit log** — `AuditEvent` gains a `caller_id: Option<String>` field
+  (serialized with `skip_serializing_if = "Option::is_none"` to keep
+  legacy events compact). New `Observability::audit_with_caller()`
+  helper stamps the resolved caller on every audit event that flows
+  through the request path. The tunnel dispatcher now emits a
+  `tunnel_proxied_request` audit event tagged with the caller on every
+  proxied request.
+- **Request defaults** — `MessageRequest::new`, `ExecutionRequest::new`,
+  and `SessionManager::new` no longer default `user` to `"default"`.
+  The default is now `String::new()`, with a doc comment that
+  production callers must set it explicitly via `.with_user()`. The
+  two legacy-data fallbacks in `SessionManager::get_or_load_session`
+  (peer info missing in the index) and `unified::Session::from_entries`
+  (no peer provided) also drop the `"default"` literal — empty
+  `sender_id` is the new fallback, distinguishable from a real resolved
+  caller.
+- **Agentic-loop `run` method** — `engine/agentic_loop.rs:243`'s
+  hardcoded `Peer::User("default".to_string())` now uses
+  `self.caller_id` (set via `with_caller_id` from the agent service),
+  falling back to `Peer::User("local")` for the no-caller local-CLI
+  case. The session's `sender_id` is now the resolved caller, not the
+  placeholder.
+
+**Why this matters**: unblocks per-user rate limiting
+([`src/auth/rate_limit.rs`](src/auth/rate_limit.rs) is already keyed
+off `CallerContext`), per-user session scoping
+([`src/session/key.rs:97`](src/session/key.rs#L97) keys by `sender_id`),
+per-user extension permissions
+([`src/extension/core/registry.rs:194-202`](src/extension/core/registry.rs#L194)),
+and any future PekoHub→runtime feature that needs to know *which*
+user is asking. The JWT wiring closes the "self-asserted header"
+security gap called out in issue #17.
+
+**Test plan**:
+- All 1413 lib tests pass (3 ignored, 0 failed)
+- All 6 `extension_packaging` integration tests pass
+- 5 new dispatcher tests for `resolve_bridge_caller` (missing / empty /
+  whitespace / non-string / happy)
+- 5 new JWT-wiring tests for `resolve_bridge_caller` (signed /
+  tampered / no-validator / header-only / case-insensitive header)
+- 2 new observability tests for `audit_with_caller`
+- 1 new audit serialization test (skip_serializing_if for `None`)
+- 1 new `hook_io` test for `HookInput::ToolCall::caller_id`
+- `JwtValidator`'s existing 9 unit tests (positive + tampered) still pass
+
+**Note on `src/session/key.rs:201`**: the `"web"` string there is the
+*channel* segment of the session key format
+(`agent:{agent}:{channel}:{sender_id}`), not user attribution. The
+user's identity is keyed via `sender_id`, which is now correctly
+plumbed. No change needed.
+
 ### Fixed (issue #25) — Collapse IPC `(subject_id, subject_type)` into `subject: Principal`
 
 The IPC `RequestPacket` variants for grant/revoke

@@ -364,6 +364,7 @@ mod tests {
                 workspace: None,
                 agent_id: None,
                 session_id: None,
+                caller_id: None,
             },
             Arc::new(ExtensionServices::new()),
         );
@@ -392,6 +393,7 @@ mod tests {
                 workspace: None,
                 agent_id: None,
                 session_id: None,
+                caller_id: None,
             },
             Arc::new(ExtensionServices::new()),
         );

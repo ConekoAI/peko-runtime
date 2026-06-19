@@ -41,9 +41,14 @@ impl ToolExecutor {
     /// * `agent_workspace` - The agent's configured workspace
     /// * `session` - The session for recording results
     /// * `run_id` - The current run ID (for events)
+    /// * `caller_id` - The resolved caller identity (pekohub sub, API key id,
+    ///   or `None` for local CLI invocations) — propagated to the tool via
+    ///   `HookInput::ToolCall::caller_id` for per-user permission checks and
+    ///   audit logging (issue #17).
     /// * `on_event` - Event callback
     ///
     /// Returns the tool result message and success flag.
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute(
         &self,
         tool_call: &ContentBlock,
@@ -52,6 +57,7 @@ impl ToolExecutor {
         agent_workspace: Option<&std::path::PathBuf>,
         session: &Arc<RwLock<Session>>,
         run_id: &str,
+        caller_id: Option<&str>,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
     ) -> Result<ToolExecutionResult> {
         let (id, name, arguments) = match tool_call {
@@ -87,6 +93,7 @@ impl ToolExecutor {
                 workspace,
                 Some(agent_id),
                 Some(session_id),
+                caller_id.map(str::to_string),
             )
             .await
             {

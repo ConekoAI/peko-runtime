@@ -286,6 +286,7 @@ async fn test_extension_install_tool_registration_and_invocation() {
                 workspace: None,
                 agent_id: None,
                 session_id: None,
+                caller_id: None,
             },
         )
         .await;

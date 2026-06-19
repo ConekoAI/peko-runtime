@@ -484,12 +484,30 @@ pub struct SessionManager {
     agent_name: Option<String>,
     /// Path resolver for consistent path resolution
     path_resolver: Option<PathResolver>,
-    /// User identifier for CLI session isolation
+    /// User identifier for CLI session isolation.
+    ///
+    /// Empty by default. Production callers that route a request through
+    /// a `SessionManager` **must** set this explicitly via
+    /// [`SessionManager::with_user`] (or use [`SessionManager::for_cli`]
+    /// which takes the user as a constructor argument). The legacy
+    /// literal `"default"` was removed (issue #17) so that no
+    /// production path can ever attribute a session's `sender_id` to a
+    /// placeholder user — the session-keying scheme
+    /// `(agent, channel, sender_id)` works as designed only when
+    /// `sender_id` is the resolved caller, not the literal `"default"`.
+    /// Tests that don't care about per-user session scoping can leave
+    /// it empty.
     user: String,
 }
 
 impl SessionManager {
-    /// Create a new session manager
+    /// Create a new session manager.
+    ///
+    /// `user` defaults to the empty string. Production code paths
+    /// (the agentic loop, the agent service, the IPC server) all
+    /// override this via [`SessionManager::with_user`] or
+    /// [`SessionManager::for_cli`] so the session's `sender_id` is the
+    /// resolved caller, not a placeholder.
     #[must_use]
     pub fn new() -> Self {
         // Create a temporary metadata controller (will be replaced in with_path_resolver)
@@ -505,7 +523,7 @@ impl SessionManager {
             sessions_dir: None,
             agent_name: None,
             path_resolver: None,
-            user: "default".to_string(),
+            user: String::new(),
         }
     }
 
@@ -1043,13 +1061,18 @@ impl SessionManager {
                 match (entry.peer_type.as_deref(), entry.peer_id) {
                     (Some("agent"), Some(id)) => Peer::Agent(id),
                     (Some("user"), Some(id)) => Peer::User(id),
-                    _ => Peer::User("default".to_string()),
+                    // Legacy data (pre-#17): entry has no peer info recorded.
+                    // Empty sender_id is the right fallback — it's
+                    // distinguishable from a real, resolved caller and
+                    // doesn't mis-attribute the session to the literal
+                    // `"default"` placeholder.
+                    _ => Peer::User(String::new()),
                 }
             } else {
-                Peer::User("default".to_string())
+                Peer::User(String::new())
             }
         } else {
-            Peer::User("default".to_string())
+            Peer::User(String::new())
         };
 
         // 3. Load Session from JSONL with peer info
@@ -2132,6 +2155,30 @@ mod tests {
         assert_eq!(manager.base_session_count(), 0);
         assert_eq!(manager.channel_overlay_count(), 0);
         assert_eq!(manager.spawn_overlay_count(), 0);
+    }
+
+    /// Issue #17 acceptance criterion: the literal `"default"` must not
+    /// appear as a user-attribution default. `SessionManager::new()`
+    /// now defaults `user` to the empty string, and `with_user()` is
+    /// the only way to set a real caller identity.
+    #[tokio::test]
+    async fn test_session_manager_user_default_is_empty_not_default_literal() {
+        let manager = SessionManager::new();
+        assert_eq!(
+            manager.user(),
+            "",
+            "SessionManager::new() must default user to empty (issue #17)"
+        );
+        assert_ne!(
+            manager.user(),
+            "default",
+            "literal 'default' must never appear as a user default (issue #17)"
+        );
+
+        // Production callers (agentic loop, agent service, IPC server)
+        // override via with_user() to thread the resolved caller.
+        let manager = SessionManager::new().with_user("user-42");
+        assert_eq!(manager.user(), "user-42");
     }
 
     #[tokio::test]

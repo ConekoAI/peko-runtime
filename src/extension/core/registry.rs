@@ -767,6 +767,7 @@ mod tests {
                     workspace: None,
                     agent_id: None,
                     session_id: None,
+                    caller_id: None,
                 },
             )
             .await;
@@ -827,6 +828,7 @@ mod tests {
                     workspace: None,
                     agent_id: None,
                     session_id: None,
+                    caller_id: None,
                 },
             )
             .await;

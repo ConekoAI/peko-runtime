@@ -173,6 +173,11 @@ pub enum HookInput {
         agent_id: Option<String>,
         /// Session identifier for reserved parameter injection (optional)
         session_id: Option<String>,
+        /// Resolved caller identity (pekohub sub, API key id, or `local`)
+        /// — populated on tunneled requests so per-user permission
+        /// checks (issue #17) and audit logging can attribute the call
+        /// to a real user. `None` for local CLI invocations.
+        caller_id: Option<String>,
     },
 
     /// Async task status check
@@ -324,5 +329,36 @@ mod tests {
         let (s, _v, ok) = tool_result_from_hook(result, "test");
         assert!(!ok);
         assert!(s.contains("not available"));
+    }
+
+    /// Issue #17: `HookInput::ToolCall::caller_id` must carry the
+    /// resolved caller through to the hook layer so per-user permission
+    /// checks (issue #17 follow-up) and audit logging can attribute the
+    /// call to a real user.
+    #[test]
+    fn test_hook_input_tool_call_carries_caller_id() {
+        let input = HookInput::ToolCall {
+            tool_name: "shell".to_string(),
+            params: serde_json::json!({"command": "ls"}),
+            workspace: None,
+            agent_id: Some("agent-a".to_string()),
+            session_id: Some("sess-1".to_string()),
+            caller_id: Some("user-42".to_string()),
+        };
+        match input {
+            HookInput::ToolCall {
+                ref tool_name,
+                ref agent_id,
+                ref session_id,
+                ref caller_id,
+                ..
+            } => {
+                assert_eq!(tool_name, "shell");
+                assert_eq!(agent_id.as_deref(), Some("agent-a"));
+                assert_eq!(session_id.as_deref(), Some("sess-1"));
+                assert_eq!(caller_id.as_deref(), Some("user-42"));
+            }
+            _ => panic!("Expected ToolCall variant"),
+        }
     }
 }
