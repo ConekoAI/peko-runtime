@@ -129,18 +129,7 @@ impl A2aSendTool {
         // so a missing caller indicates a misconfigured tool
         // registration (no `with_caller()` set on the `A2aSendTool`
         // builder). Refuse rather than fall back to a fake user.
-        let caller_agent = self
-            .caller_agent
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                anyhow!(
-                    "a2a_send: caller_agent is not set; this tool must be \
-                     constructed with A2aSendTool::with_caller(...) so the \
-                     receiving agent's session is attributed to the \
-                     calling agent (issue #24)."
-                )
-            })?;
+        let caller_agent = validate_caller_agent(self.caller_agent.as_deref())?;
 
         let request = build_a2a_request(
             &args.target_agent,
@@ -153,11 +142,40 @@ impl A2aSendTool {
     }
 }
 
+/// Validate the `caller_agent` field for issue #24.
+///
+/// Returns the non-empty caller_agent string if valid, or an `Err`
+/// suitable for surfacing to the LLM caller. Exposed as `pub(crate)`
+/// so unit tests can assert the actual production predicate instead
+/// of duplicating it (review #3).
+///
+/// The empty-string check matches the pre-fix behavior; whitespace is
+/// preserved verbatim (a `Principal::Agent("   ")` is a misconfigured
+/// caller, but it's not a missing one — the agent operator will see
+/// it in the audit log immediately).
+pub(crate) fn validate_caller_agent(caller: Option<&str>) -> Result<&str> {
+    caller.filter(|s| !s.is_empty()).ok_or_else(|| {
+        anyhow!(
+            "a2a_send: caller_agent is not set; this tool must be \
+             constructed with A2aSendTool::with_caller(...) so the \
+             receiving agent's session is attributed to the \
+             calling agent (issue #24)."
+        )
+    })
+}
+
 /// Pure (no `agent_service` access) request builder, factored out so
 /// the validation logic is unit-testable (issue #24).
 ///
 /// `caller_agent` must be non-empty; the caller (`A2aSendTool::build_request`)
 /// has already validated this.
+///
+/// **Issue #24 review concern #1:** `user` is left as the empty string
+/// for a2a_send (not populated with `caller_agent`). This forces every
+/// downstream code path that still reads `MessageRequest::user` to
+/// encounter a falsy value and migrate to `caller_principal` instead
+/// of silently seeing the agent name masquerade as a user id (which
+/// is exactly the audit-trail footgun the issue is built on).
 #[allow(clippy::too_many_arguments)]
 fn build_a2a_request(
     target_agent: &str,
@@ -167,16 +185,17 @@ fn build_a2a_request(
     caller_agent: &str,
 ) -> MessageRequest {
     let caller_principal = Principal::Agent(caller_agent.to_string());
-    // The `user` field on `MessageRequest` is kept as a non-empty
-    // string so any downstream code path that still inspects it
-    // (e.g. caller_id resolution in
-    // `execute_streaming_with_session`) has a value to work with.
-    // The session peer is constructed from `caller_principal`
-    // (above), not from `user`.
+    // The `user` field is INTENTIONALLY left as the empty string for
+    // a2a_send (issue #24 review #1). Any reader of
+    // `MessageRequest::user` for a2a-originated calls must migrate to
+    // `caller_principal`. The audit log path uses `caller_principal`
+    // as its single source of truth, so the empty string here is
+    // safe — it just means "no human user is associated with this
+    // call," which is the correct semantic.
     MessageRequest::new(target_agent, message)
         .with_session_opt(session_id)
         .with_team_opt(team)
-        .with_user(caller_agent)
+        .with_user("")
         .with_caller_agent_opt(Some(caller_agent.to_string()))
         .with_caller_principal(caller_principal)
 }
@@ -370,22 +389,37 @@ mod tests {
 
     // -- Issue #24: a2a_send masquerade removal -----------------------
 
-    /// The validation filter inside `build_request` rejects a missing
-    /// or empty caller_agent (issue #24). Tested as a pure filter
-    /// because `A2aSendTool` requires a real `StatelessAgentService`
-    /// Arc we don't want to spin up just to assert a one-liner.
+    /// `validate_caller_agent` is the production predicate used by
+    /// `A2aSendTool::build_request` (issue #24). Test the actual
+    /// function, not a copy — if the production predicate drifts,
+    /// this test must catch it (review #3).
     #[test]
-    fn test_caller_agent_filter_rejects_missing_and_empty() {
-        // The exact predicate used in `A2aSendTool::build_request`,
-        // but in `String`-returning form so the test owns the data.
-        let filter = |caller: Option<String>| -> Option<String> {
-            caller.filter(|s| !s.is_empty())
-        };
+    fn test_validate_caller_agent_rejects_missing_and_empty() {
+        // Missing caller → error.
+        let err = validate_caller_agent(None)
+            .expect_err("missing caller must be rejected");
+        assert!(
+            err.to_string().contains("caller_agent is not set"),
+            "error must mention caller_agent; got: {err}"
+        );
 
-        assert_eq!(filter(None), None);
-        assert_eq!(filter(Some(String::new())), None);
-        assert_eq!(filter(Some("   ".to_string())), Some("   ".to_string())); // whitespace is NOT empty; preserved verbatim (deliberate, matches the pre-fix filter)
-        assert_eq!(filter(Some("helper".to_string())), Some("helper".to_string()));
+        // Empty caller → error (same message — they're both "no caller").
+        let err = validate_caller_agent(Some(""))
+            .expect_err("empty caller must be rejected");
+        assert!(
+            err.to_string().contains("caller_agent is not set"),
+            "error must mention caller_agent; got: {err}"
+        );
+
+        // Whitespace is NOT empty — preserved verbatim. This is
+        // deliberate: a `Principal::Agent("   ")` is a
+        // misconfigured caller, not a missing one. The agent
+        // operator sees it in the audit log immediately rather
+        // than being silently coerced to `User("default")`.
+        assert_eq!(validate_caller_agent(Some("   ")).unwrap(), "   ");
+
+        // Normal caller → passes through.
+        assert_eq!(validate_caller_agent(Some("helper")).unwrap(), "helper");
     }
 
     /// The pure `build_a2a_request` helper attaches
@@ -415,7 +449,13 @@ mod tests {
             Some(Principal::User("helper".into())),
             "must not masquerade caller_agent as Principal::User (issue #24)"
         );
-        assert_eq!(req.user, "helper", "legacy user field kept non-empty");
+        // Issue #24 review #1: `user` must be empty so downstream
+        // readers can't accidentally treat the caller as a human user.
+        assert_eq!(
+            req.user, "",
+            "a2a_send must leave MessageRequest::user empty (review #1); \
+             downstream code must read caller_principal instead"
+        );
         assert_eq!(req.caller_agent.as_deref(), Some("helper"));
         assert_eq!(req.session_id.as_deref(), Some("sess-1"));
         assert_eq!(req.agent_name, "analyzer");

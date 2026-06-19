@@ -15,6 +15,16 @@ use std::path::PathBuf;
 use tracing::{debug, info};
 
 /// Session information
+///
+/// **Issue #24 review #4:** `peer_type` and `peer_id` are populated
+/// for sessions whose metadata carries the principal-aware
+/// attribution (post-#24 a2a-spawned sessions, future post-#24 paths).
+/// For sessions created by human-originated call paths (CLI, IPC,
+/// tunnel) BEFORE the runtime populates `SessionEntry.peer_type` /
+/// `peer_id` for non-a2a paths, both fields are `None` and the JSON
+/// output omits them (via `skip_serializing_if`). Pre-existing JSON
+/// consumers stay stable. A future follow-up populates these for
+/// non-a2a paths (out of scope for this PR).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     #[serde(rename = "session_id")]
@@ -36,10 +46,15 @@ pub struct SessionInfo {
     ///
     /// Reflects the `Principal` kind on the session's peer after
     /// ADR-039. For a2a-spawned sessions this is `"agent"` (issue #24).
+    /// `None` for sessions whose on-disk metadata hasn't been
+    /// populated yet (see struct-level note above).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_type: Option<String>,
     /// Peer id (bare id, e.g. `"helper"`, not the formatted
     /// `"agent:helper"` form).
+    ///
+    /// `None` for sessions whose on-disk metadata hasn't been
+    /// populated yet (see struct-level note above).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_id: Option<String>,
 }
