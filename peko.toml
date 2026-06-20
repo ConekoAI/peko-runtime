@@ -1,9 +1,0 @@
-[daemon]
-bind_address = "127.0.0.1:11435"
-log_level = "info"
-
-[defaults]
-max_tokens = 2048
-model = "gpt-4o-mini"
-provider = "minimax"
-temperature = 0.7
