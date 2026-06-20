@@ -27,3 +27,14 @@ pub use hub_directory::{
     AgentDirectory, AgentResolution, DirectoryError, HubAgentDirectoryClient, ResolvedExposure,
 };
 pub use protocol::TunnelMessage;
+
+// Issue #29 Slice E: end-to-end integration test exercising two
+// runtimes + a synthetic hub forwarder. The forwarder sidesteps the
+// pekohub forwarding dependency (pekohub#17, merged) so the test
+// validates the runtime-side path end-to-end without needing a live
+// hub. The forwarder's behavior is the same as pekohub's
+// `tunnel-manager.ts::handleAgentToAgentRequest` — it routes the
+// request to the target runtime's tunnel and returns the response
+// back to the caller's tunnel.
+#[cfg(test)]
+mod a2a_e2e_tests;
