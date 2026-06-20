@@ -281,18 +281,21 @@ impl AgenticLoop {
             s.id.clone()
         };
 
-        // Set provider/model metadata on session (do this once at start)
-        {
+        // Resolve model id once at start — threaded through every
+        // `provider.chat_with_tools` / `stream_with_tools` call so the
+        // adapter no longer needs to bake one in.
+        let model_id = {
             let provider_name = self.agent.config.provider.provider_type.to_string();
-            let model_name = &self.agent.config.provider.default_model;
+            let model_name = self.agent.config.provider.default_model.clone();
 
             let mut s = session.write().await;
-            s.set_model(&provider_name, model_name);
+            s.set_model(&provider_name, &model_name);
             // Record model change event in session JSONL for normalization
-            if let Err(e) = s.record_model_change(&provider_name, model_name).await {
+            if let Err(e) = s.record_model_change(&provider_name, &model_name).await {
                 warn!("Failed to record model change event: {}", e);
             }
-        }
+            model_name
+        };
 
         let mut iteration = 0;
         let mut total_usage = TokenUsage::default();
@@ -408,7 +411,7 @@ impl AgenticLoop {
                 }
                 match self
                     .provider
-                    .stream_with_tools(&messages, &tool_defs, &options)
+                    .stream_with_tools(&model_id, &messages, &tool_defs, &options)
                     .await
                 {
                     Ok(s) => s,
@@ -426,7 +429,7 @@ impl AgenticLoop {
                 warn!("Provider doesn't support streaming, synthesizing from blocking response");
                 let response = self
                     .provider
-                    .chat_with_tools(&messages, &tool_defs, &options)
+                    .chat_with_tools(&model_id, &messages, &tool_defs, &options)
                     .await?;
                 crate::providers::synthetic_stream::synthesize_stream_from_blocking(
                     response,
@@ -829,7 +832,7 @@ mod tests {
 
     /// Build a mock provider with a fresh MockAdapter
     fn mock_provider() -> (Arc<Provider>, MockAdapter) {
-        let adapter = MockAdapter::new("mock-model");
+        let adapter = MockAdapter::new();
         let any = AnyAdapter::Mock(adapter.clone());
         let config = ProviderConfig {
             provider_type: ProviderType::OpenAI,

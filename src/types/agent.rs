@@ -10,25 +10,45 @@ use crate::auth::principal::Principal;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Configuration format version
+    ///
+    /// Versions:
+    /// - `"1.0"` / `"2.0"`: legacy schema with embedded
+    ///   `[provider]` table; migrated to v3 on first load.
+    /// - `"3.0"`: runtime catalog + secret store. No provider/model
+    ///   fields on the agent; optional `preferred_provider_id` and
+    ///   `preferred_model_id` as soft hints.
     #[serde(default = "default_config_version")]
     pub version: String,
     /// Unique identifier (DID will be generated from this)
     pub name: String,
     /// Human-readable description
     pub description: Option<String>,
-    /// LLM provider configuration
-    /// LLM provider configuration
+
+    /// **Deprecated.** Legacy `[provider]` table, retained only so
+    /// pre-v3 on-disk configs still parse. The runtime-owned
+    /// `ProviderCatalog` (and its companion `SecretStore`) is the
+    /// source of truth for provider/model/API-key wiring.
+    ///
+    /// `runtime::migration::migrate_adr_provider_catalog_v3` strips
+    /// this field from disk on first load and seeds the catalog +
+    /// keychain with its contents.
+    #[serde(default, skip_serializing)]
     pub provider: super::provider::ProviderConfig,
+
     /// Extension configurations — unified whitelist and settings for all extension types
     /// (tools, skills, MCP servers, universal tools, etc.)
+    #[serde(default)]
     pub extensions: Option<ExtensionConfig>,
     /// Channel configurations
+    #[serde(default)]
     pub channels: Option<ChannelConfig>,
     /// Auto-accept quotes (for trusted agents)
+    #[serde(default)]
     pub auto_accept_trusted: bool,
     /// Require human approval for contracts above this amount
     pub approval_threshold: Option<f64>,
     /// Default timeout for tasks (seconds)
+    #[serde(default = "default_timeout_seconds_value")]
     pub default_timeout_seconds: u64,
     /// Workspace directory for bootstrap files
     pub workspace: Option<PathBuf>,
@@ -69,6 +89,17 @@ pub struct AgentConfig {
     /// see `Principal::agent_wire_id` for the canonical resolution.
     #[serde(default)]
     pub agent_did: Option<String>,
+
+    /// **v3+.** Soft hint: which provider id the runtime should prefer
+    /// when this agent runs without an explicit caller override.
+    /// Resolved at request time by `LlmResolver`. Optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_provider_id: Option<String>,
+
+    /// **v3+.** Soft hint: which model id within the preferred
+    /// provider the agent is tuned for. Optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model_id: Option<String>,
 }
 
 impl AgentConfig {
@@ -109,7 +140,11 @@ impl AgentConfig {
 }
 
 fn default_config_version() -> String {
-    "1.0".to_string()
+    "3.0".to_string()
+}
+
+fn default_timeout_seconds_value() -> u64 {
+    300
 }
 
 fn default_owner() -> Principal {
@@ -160,6 +195,9 @@ impl Default for AgentConfig {
             permissions: Vec::new(),
             // Issue #28: back-filled on first `Agent::new()`.
             agent_did: None,
+            // v3+ soft hints. None by default.
+            preferred_provider_id: None,
+            preferred_model_id: None,
         }
     }
 }
@@ -630,5 +668,42 @@ mod tests {
         assert!(toml.contains("enabled"));
         assert!(toml.contains("builtin:tool:shell"));
         assert!(toml.contains("builtin:tool:read_file"));
+    }
+
+    /// v3 hardening: the legacy `[provider]` block (with literal
+    /// `api_key`) must NOT round-trip through TOML serialization.
+    /// Even if a legacy file is deserialized into an `AgentConfig`,
+    /// re-serializing it for the registry OCI config blob drops the
+    /// provider table and never embeds a credential.
+    #[test]
+    fn test_v3_round_trip_strips_legacy_provider() {
+        let mut config = AgentConfig::default();
+        config.name = "legacy".to_string();
+        config.version = "1.0".to_string();
+        config.preferred_provider_id = Some("openai".into());
+        config.preferred_model_id = Some("gpt-4o-mini".into());
+        // Stuff legacy data into the deprecated field — should
+        // never appear in the serialized output.
+        config.provider.api_key = Some("sk-NEVER-LEAK".to_string());
+        config.provider.provider_type = crate::types::provider::ProviderType::OpenAI;
+        config.provider.default_model = "gpt-4o-mini".to_string();
+
+        let toml = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            !toml.contains("sk-NEVER-LEAK"),
+            "API key must not appear in serialized agent TOML: {toml}"
+        );
+        assert!(
+            !toml.contains("[provider]"),
+            "[provider] table must not be serialized in v3: {toml}"
+        );
+        // Soft hints round-trip.
+        assert!(toml.contains("preferred_provider_id = \"openai\""));
+        assert!(toml.contains("preferred_model_id = \"gpt-4o-mini\""));
+        // We set version = "1.0" above to simulate a legacy file;
+        // a fresh v3 default would write "3.0". Both shapes are
+        // acceptable; the important property is that credentials
+        // are absent.
+        assert!(toml.contains("version = \"1.0\""));
     }
 }

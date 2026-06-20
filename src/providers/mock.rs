@@ -46,11 +46,20 @@ pub struct RecordedRequest {
     pub stream: bool,
 }
 
+impl Default for MockAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockAdapter {
-    /// Create a new mock adapter
-    pub fn new(model: impl Into<String>) -> Self {
+    /// Create a new mock adapter. Model id is supplied per-call by
+    /// the runtime (see `chat_with_tools(model_id, ...)`); the mock
+    /// adapter itself is intentionally model-agnostic.
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            model: model.into(),
+            model: String::new(),
             chat_responses: Arc::new(Mutex::new(Vec::new())),
             stream_responses: Arc::new(Mutex::new(Vec::new())),
             recorded_requests: Arc::new(Mutex::new(Vec::new())),
@@ -215,13 +224,17 @@ impl MockAdapter {
     /// Execute a mock chat (non-streaming)
     pub fn chat_with_tools(
         &self,
+        model_id: &str,
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         _options: &ChatOptions,
     ) -> Result<ChatResponse> {
         self.record_request(messages, tools, false);
         match self.pop_chat_response() {
-            Some(MockResponse::Success(response)) => Ok(response),
+            Some(MockResponse::Success(mut response)) => {
+                response.model = model_id.to_string();
+                Ok(response)
+            }
             Some(MockResponse::Error(msg)) => Err(anyhow::anyhow!(msg)),
             Some(MockResponse::Stream(events)) => {
                 // Convert stream events to a ChatResponse
@@ -256,7 +269,7 @@ impl MockAdapter {
                     stop_reason,
                     usage: crate::providers::TokenUsage::default(),
                     provider: "mock".to_string(),
-                    model: self.model.clone(),
+                    model: model_id.to_string(),
                 })
             }
             None => Err(anyhow::anyhow!(
@@ -268,6 +281,7 @@ impl MockAdapter {
     /// Execute a mock stream
     pub fn stream_with_tools(
         &self,
+        _model_id: &str,
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         _options: &ChatOptions,
@@ -335,16 +349,13 @@ impl ApiAdapter for MockAdapter {
         "mock"
     }
 
-    fn default_model(&self) -> &str {
-        &self.model
-    }
-
     fn base_url(&self) -> &str {
         "http://mock"
     }
 
     fn build_request(
         &self,
+        _model_id: &str,
         _messages: &[LlmMessage],
         _tools: Option<&[ToolDefinition]>,
         _options: &ChatOptions,
@@ -353,7 +364,7 @@ impl ApiAdapter for MockAdapter {
         Ok(("/mock/completions".to_string(), serde_json::json!({})))
     }
 
-    fn parse_response(&self, _response: Value) -> Result<ChatResponse> {
+    fn parse_response(&self, model_id: &str, _response: Value) -> Result<ChatResponse> {
         Ok(ChatResponse {
             content: vec![ContentBlock::Text {
                 text: "mock".to_string(),
@@ -362,11 +373,15 @@ impl ApiAdapter for MockAdapter {
             stop_reason: StopReason::Stop,
             usage: crate::providers::TokenUsage::default(),
             provider: "mock".to_string(),
-            model: self.model.clone(),
+            model: model_id.to_string(),
         })
     }
 
-    fn parse_sse_event(&self, _data: &str) -> Result<Option<StreamEvent>> {
+    fn parse_sse_event(
+        &self,
+        _model_id: &str,
+        _data: &str,
+    ) -> Result<Option<StreamEvent>> {
         Ok(None)
     }
 
@@ -387,18 +402,18 @@ mod tests {
 
     #[test]
     fn test_mock_adapter_creation() {
-        let adapter = MockAdapter::new("mock-model");
+        let adapter = MockAdapter::new();
         assert_eq!(adapter.name(), "mock");
-        assert_eq!(adapter.default_model(), "mock-model");
+        assert_eq!(adapter.name(), "mock");
     }
 
     #[test]
     fn test_mock_queue_text() {
-        let adapter = MockAdapter::new("mock-model");
+        let adapter = MockAdapter::new();
         adapter.queue_text("Hello, world!");
 
         let response = adapter
-            .chat_with_tools(&[], None, &ChatOptions::default())
+            .chat_with_tools("mock-model", &[], None, &ChatOptions::default())
             .unwrap();
         assert_eq!(response.content.len(), 1);
         assert!(
@@ -408,11 +423,11 @@ mod tests {
 
     #[test]
     fn test_mock_queue_tool_call() {
-        let adapter = MockAdapter::new("mock-model");
+        let adapter = MockAdapter::new();
         adapter.queue_tool_call("tc_1", "test_tool", serde_json::json!({"arg": 1}));
 
         let response = adapter
-            .chat_with_tools(&[], None, &ChatOptions::default())
+            .chat_with_tools("mock-model", &[], None, &ChatOptions::default())
             .unwrap();
         assert_eq!(response.tool_calls.len(), 1);
         assert!(
@@ -422,10 +437,10 @@ mod tests {
 
     #[test]
     fn test_mock_queue_error() {
-        let adapter = MockAdapter::new("mock-model");
+        let adapter = MockAdapter::new();
         adapter.queue_error("Something went wrong");
 
-        let result = adapter.chat_with_tools(&[], None, &ChatOptions::default());
+        let result = adapter.chat_with_tools("mock-model", &[], None, &ChatOptions::default());
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -435,11 +450,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_stream_text() {
-        let adapter = MockAdapter::new("mock-model");
+        let adapter = MockAdapter::new();
         adapter.queue_text("Streamed text");
 
         let stream = adapter
-            .stream_with_tools(&[], None, &ChatOptions::default())
+            .stream_with_tools("mock-model", &[], None, &ChatOptions::default())
             .unwrap();
         let events: Vec<_> = futures::StreamExt::collect(stream).await;
         assert!(!events.is_empty());
@@ -457,7 +472,7 @@ mod tests {
 
     #[test]
     fn test_mock_records_requests() {
-        let adapter = MockAdapter::new("mock-model");
+        let adapter = MockAdapter::new();
         adapter.queue_text("Hi");
 
         let messages = vec![LlmMessage::user("Hello")];
@@ -467,7 +482,7 @@ mod tests {
             parameters: serde_json::json!({}),
         }];
 
-        let _ = adapter.chat_with_tools(&messages, Some(&tools), &ChatOptions::default());
+        let _ = adapter.chat_with_tools("mock-model", &messages, Some(&tools), &ChatOptions::default());
 
         let recorded = adapter.recorded_requests();
         assert_eq!(recorded.len(), 1);

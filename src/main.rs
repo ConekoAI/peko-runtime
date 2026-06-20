@@ -1,8 +1,9 @@
 use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, registry,
-    runtime, search, send, session, system, team, tunnel, update, Cli, Commands, GlobalPaths,
+    agent, auth, config, credential, cron, daemon, ext, init_logging, orchestration, provider,
+    registry, runtime, search, send, session, system, team, tunnel, update, Cli, Commands,
+    GlobalPaths,
 };
 use pekobot::types::config::PekobotConfig;
 
@@ -98,6 +99,7 @@ async fn run_command(
         Commands::Team(cmd) => team::handle_team(cmd, paths, json, cli_registry).await,
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),
+        Commands::Credential(cmd) => credential::execute(cmd, paths).await,
         Commands::Ext(cmd) => ext::handle_ext_command(cmd, paths, json, cli_registry).await,
         Commands::Session(cmd) => session::handle_session(cmd, paths, json).await,
         Commands::Config(cmd) => config::handle_config(cmd, paths, json).await,
@@ -114,7 +116,7 @@ async fn run_command(
             };
             orchestration::run(cmd, &config, &config_path).await
         }
-        Commands::Provider(cmd) => provider::execute(cmd).await,
+        Commands::Provider(cmd) => provider::execute(cmd, paths).await,
         Commands::Search(cmd) => search::handle_search(cmd, paths, json).await,
         Commands::Registry(cmd) => registry::handle_registry(cmd, paths, json),
         Commands::Runtime(cmd) => runtime::handle_runtime(cmd, paths, json).await,

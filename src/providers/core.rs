@@ -20,6 +20,12 @@ use tracing::{error, info};
 ///
 /// Works with any `ApiAdapter` to provide LLM functionality.
 /// All provider-specific formatting is handled by the adapter.
+///
+/// **Model is no longer stored on the adapter.** `Provider` retains a
+/// `default_model_id` derived from its `ProviderConfig` for legacy
+/// callers, but every public `chat*` method accepts an explicit
+/// `model_id` parameter that is threaded into the adapter's
+/// `build_request`/`parse_response`/`parse_sse_event` calls.
 pub struct Provider {
     client: HttpClient,
     adapter: AnyAdapter,
@@ -69,10 +75,16 @@ impl Provider {
 
         let model_name = config
             .default_model_config()
-            .map_or(adapter.default_model(), |m| m.name.as_str());
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| {
+                // No model configured at construction time. The
+                // adapter no longer carries one; callers must pass
+                // `model_id` on every request. We log this clearly.
+                "<unset — pass model_id per request>".to_string()
+            });
 
         info!(
-            "{} provider initialized with model: {}",
+            "{} provider initialized (default model: {})",
             adapter.name(),
             model_name
         );
@@ -90,6 +102,17 @@ impl Provider {
         self.adapter.name()
     }
 
+    /// Resolve the model id this provider should use when callers
+    /// don't pass one explicitly. Pulled from `ProviderConfig`'s
+    /// default model configuration.
+    #[must_use]
+    pub fn model_id(&self) -> String {
+        self.config
+            .default_model_config()
+            .map(|m| m.name.clone())
+            .unwrap_or_default()
+    }
+
     /// Check if this provider supports native tool calling
     #[must_use]
     pub fn supports_native_tools(&self) -> bool {
@@ -98,7 +121,8 @@ impl Provider {
 
     /// Complete a prompt (legacy/simple interface)
     pub async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
-        self.chat(prompt, &self.model(), 0.7).await
+        let m = self.model_id();
+        self.chat(prompt, &m, 0.7).await
     }
 
     /// Simple chat interface
@@ -140,9 +164,9 @@ impl Provider {
 
         let (path, body) = self
             .adapter
-            .build_request(&messages, None, &options, false)?;
+            .build_request(_model, &messages, None, &options, false)?;
         let response: serde_json::Value = self.client.post_json(&path, &body).await?;
-        let parsed = self.adapter.parse_response(response)?;
+        let parsed = self.adapter.parse_response(_model, response)?;
 
         // Extract text from content
         let text: String = parsed
@@ -158,27 +182,32 @@ impl Provider {
     }
 
     /// Chat with native tool calling support (blocking)
+    ///
+    /// `model_id` is the wire-format model identifier; it is threaded
+    /// into the adapter for this call only.
     pub async fn chat_with_tools(
         &self,
+        model_id: &str,
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
         options: &ChatOptions,
     ) -> anyhow::Result<ChatResponse> {
         // Short-circuit to mock adapter when testing
         if let AnyAdapter::Mock(mock) = &self.adapter {
-            return mock.chat_with_tools(messages, Some(tools), options);
+            return mock.chat_with_tools(model_id, messages, Some(tools), options);
         }
 
         let (path, body) = self
             .adapter
-            .build_request(messages, Some(tools), options, false)?;
+            .build_request(model_id, messages, Some(tools), options, false)?;
         let response: serde_json::Value = self.client.post_json(&path, &body).await?;
-        self.adapter.parse_response(response)
+        self.adapter.parse_response(model_id, response)
     }
 
     /// Stream chat with native tool calling support
     pub async fn stream_with_tools(
         &self,
+        model_id: &str,
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
         options: &ChatOptions,
@@ -186,23 +215,24 @@ impl Provider {
     {
         // Short-circuit to mock adapter when testing
         if let AnyAdapter::Mock(mock) = &self.adapter {
-            return mock.stream_with_tools(messages, Some(tools), options);
+            return mock.stream_with_tools(model_id, messages, Some(tools), options);
         }
 
         let (path, body) = self
             .adapter
-            .build_request(messages, Some(tools), options, true)?;
+            .build_request(model_id, messages, Some(tools), options, true)?;
         let stream = self.client.post_stream(&path, &body).await?;
 
         // Parse SSE and convert to StreamEvent using a channel-based approach
         let adapter = self.adapter.clone();
+        let model_id_owned = model_id.to_string();
         let (tx, rx) = mpsc::channel::<anyhow::Result<StreamEvent>>(100);
 
         tokio::spawn(async move {
             let mut sse_stream = crate::providers::transport::sse::SseParser::parse_stream(stream);
             while let Some(result) = sse_stream.next().await {
                 let output = match result {
-                    Ok(event) => match adapter.parse_sse_event(&event.data) {
+                    Ok(event) => match adapter.parse_sse_event(&model_id_owned, &event.data) {
                         Ok(Some(stream_event)) => Some(Ok(stream_event)),
                         Ok(None) => None,
                         Err(e) => Some(Err(e)),
@@ -229,6 +259,7 @@ impl Provider {
         event_tx: mpsc::Sender<AgenticEvent>,
         run_id: String,
     ) -> anyhow::Result<()> {
+        let model_id_owned = self.model_id();
         // Emit start event
         let _ = event_tx
             .send(AgenticEvent::Lifecycle {
@@ -250,7 +281,7 @@ impl Provider {
 
         let (path, body) = self
             .adapter
-            .build_request(&messages, None, &options, true)?;
+            .build_request(&model_id_owned, &messages, None, &options, true)?;
 
         // Emit running event
         let _ = event_tx
@@ -270,7 +301,7 @@ impl Provider {
 
         while let Some(result) = parser.next().await {
             match result {
-                Ok(event) => match self.adapter.parse_sse_event(&event.data) {
+                Ok(event) => match self.adapter.parse_sse_event(&model_id_owned, &event.data) {
                     Ok(Some(StreamEvent::TextDelta { delta, .. })) => {
                         accumulated_text.push_str(&delta);
                         sequence += 1;
@@ -334,12 +365,11 @@ impl Provider {
         Ok(())
     }
 
-    /// Get the model name (config or default)
-    fn model(&self) -> String {
-        self.config.default_model_config().map_or_else(
-            || self.adapter.default_model().to_string(),
-            |m| m.name.clone(),
-        )
+    /// Legacy alias for `model_id`. Kept so older internal call sites
+    /// that referenced `self.model()` continue to compile.
+    #[must_use]
+    pub fn model(&self) -> String {
+        self.model_id()
     }
 }
 
@@ -350,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_provider_creation() {
-        let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new("gpt-4o-mini"));
+        let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new());
         let config = ProviderConfig::default();
 
         // This will fail without a real API key in tests

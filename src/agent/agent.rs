@@ -22,8 +22,19 @@ pub struct Agent {
     state: Arc<RwLock<AgentState>>,
     /// Agent identity
     pub identity: Identity,
-    /// LLM provider (stored in Arc for sharing with agentic loop)
+    /// LLM provider (stored in Arc for sharing with agentic loop).
+    ///
+    /// In v3, this is built per-session (or per-turn) by
+    /// `LlmResolver`; the field remains so legacy `Agent::new` and
+    /// test fixtures that build a single provider directly continue
+    /// to compile. Production paths construct the agent via
+    /// `Agent::new_with_resolver` so this field is repopulated at
+    /// session start with the resolver-resolved choice.
     provider: Option<Arc<crate::providers::Provider>>,
+    /// Optional resolver (v3+). When present, `init_provider` builds
+    /// a one-shot `Provider` per session via the catalog + secret
+    /// store, applying the agent's `preferred_*` hints.
+    llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
     /// Session manager for overlay lifecycle
     session_manager: Arc<TokioRwLock<SessionManager>>,
     /// Subagent executor for background task execution
@@ -47,6 +58,7 @@ impl Clone for Agent {
                 keypair: None, // Don't clone keypair for security
             },
             provider: self.provider.clone(),
+            llm_resolver: self.llm_resolver.clone(),
             session_manager: Arc::clone(&self.session_manager),
             subagent_executor: Arc::clone(&self.subagent_executor),
             session_key_provider: Arc::clone(&self.session_key_provider),
@@ -249,16 +261,46 @@ impl Agent {
             .with_path_resolver(path_resolver, &config.name, None)
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
-        Self::new_with_session_manager(config, session_manager).await
+        Self::new_with_session_manager_and_resolver(config, session_manager, None).await
     }
 
-    /// Create a new agent with an existing session manager.
+    /// Create a new agent backed by a `LlmResolver` (v3+ path).
     ///
-    /// Used for subagent execution where the child must share the parent's
-    /// session manager (and therefore session storage and context).
-    pub async fn new_with_session_manager(
+    /// The resolver is consulted in `init_provider` to build a
+    /// one-shot `Provider` from the agent's `preferred_*` hints (or
+    /// the runtime default). If the resolver has no matching entry
+    /// (e.g. the catalog hasn't been seeded yet), the constructor
+    /// falls back to the deprecated `config.provider` field so
+    /// pre-v3 fixtures still work.
+    pub async fn new_with_resolver(
+        config: AgentConfig,
+        resolver: Arc<crate::providers::LlmResolver>,
+    ) -> Result<Self> {
+        let path_resolver = PathResolver::new();
+        let session_manager = SessionManager::new()
+            .with_path_resolver(path_resolver, &config.name, None)
+            .await?;
+        let session_manager = Arc::new(TokioRwLock::new(session_manager));
+        Self::new_with_session_manager_and_resolver(config, session_manager, Some(resolver)).await
+    }
+
+/// Create a new agent with an existing session manager.
+///
+/// Used for subagent execution where the child must share the parent's
+/// session manager (and therefore session storage and context).
+pub async fn new_with_session_manager(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
+    ) -> Result<Self> {
+        Self::new_with_session_manager_and_resolver(config, session_manager, None).await
+    }
+
+    /// Like `new_with_session_manager`, but also accepts an optional
+    /// `LlmResolver` (v3+).
+    pub async fn new_with_session_manager_and_resolver(
+        config: AgentConfig,
+        session_manager: Arc<TokioRwLock<SessionManager>>,
+        llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
     ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
 
@@ -291,7 +333,7 @@ impl Agent {
         }
 
         // Initialize provider if configured
-        let provider = Self::init_provider(&config).await?;
+        let provider = Self::init_provider(&config, llm_resolver.as_ref()).await?;
 
         // Initialize subagent executor
         let subagent_executor_base = SubagentExecutor::new(
@@ -322,6 +364,7 @@ impl Agent {
             state: Arc::new(RwLock::new(AgentState::Idle)),
             identity,
             provider,
+            llm_resolver,
             session_manager,
             subagent_executor,
             session_key_provider,
@@ -375,7 +418,8 @@ impl Agent {
                 config_path.display()
             );
         }
-        let provider = Self::init_provider(&config).await?;
+        let provider = Self::init_provider(&config, None).await?;
+        let llm_resolver: Option<Arc<crate::providers::LlmResolver>> = None;
 
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
             "agent:{}:cli:default",
@@ -389,6 +433,7 @@ impl Agent {
             state: Arc::new(RwLock::new(AgentState::Idle)),
             identity,
             provider,
+            llm_resolver,
             session_manager,
             subagent_executor,
             session_key_provider,
@@ -979,7 +1024,7 @@ impl Agent {
             }
         };
 
-        let provider = Self::init_provider(&config).await?;
+        let provider = Self::init_provider(&config, None).await?;
 
         let subagent_executor_base =
             SubagentExecutor::new(Arc::clone(&session_manager), config.name.clone(), 5);
@@ -1004,6 +1049,7 @@ impl Agent {
             state: Arc::new(RwLock::new(AgentState::Idle)),
             identity,
             provider,
+            llm_resolver: None,
             session_manager,
             subagent_executor,
             session_key_provider,
@@ -1182,6 +1228,47 @@ impl Agent {
 
     async fn init_provider(
         config: &AgentConfig,
+        resolver: Option<&Arc<crate::providers::LlmResolver>>,
+    ) -> Result<Option<Arc<crate::providers::Provider>>> {
+        // v3 path: ask the resolver to build a one-shot provider from
+        // the agent's `preferred_*` hints (or the runtime default).
+        if let Some(r) = resolver {
+            let req = crate::providers::resolver::ResolveRequest {
+                agent_provider: config.preferred_provider_id.as_deref(),
+                agent_model: config.preferred_model_id.as_deref(),
+                ..Default::default()
+            };
+            match r.build(req).await {
+                Ok((provider, choice)) => {
+                    info!(
+                        "Agent '{}' resolved provider: {}",
+                        config.name, choice
+                    );
+                    return Ok(Some(provider));
+                }
+                Err(e) => {
+                    warn!(
+                        "Agent '{}': LlmResolver failed ({}); falling back to legacy provider wiring",
+                        config.name, e
+                    );
+                    // fall through to legacy
+                }
+            }
+        }
+
+        // Legacy / fallback path: build a provider from the
+        // deprecated `provider: ProviderConfig` field on
+        // `AgentConfig`. Preserved so test fixtures and pre-v3
+        // configs continue to compile.
+        Self::init_provider_legacy(config).await
+    }
+
+    /// Legacy provider initializer: builds an `Arc<Provider>` from
+    /// the deprecated `config.provider` field. Kept for back-compat
+    /// during the v3 migration window; will be removed once the
+    /// migration (`migrate_adr_provider_catalog_v3`) lands.
+    async fn init_provider_legacy(
+        config: &AgentConfig,
     ) -> Result<Option<Arc<crate::providers::Provider>>> {
         use crate::providers::registry::create_provider;
         use crate::types::provider::ProviderType;
@@ -1195,7 +1282,6 @@ impl Agent {
             ProviderType::Minimax => "minimax",
             ProviderType::Ollama => "ollama",
             ProviderType::OpenAICompatible => {
-                // Use base_url to determine provider
                 if let Some(ref url) = config.provider.base_url {
                     if url.contains("moonshot.cn") {
                         "moonshot"
@@ -1218,7 +1304,6 @@ impl Agent {
             }
         };
 
-        // Get the provider type for the registry
         let provider_type = match provider_name {
             "openai" => ProviderType::OpenAI,
             "anthropic" => ProviderType::Anthropic,
@@ -1229,7 +1314,6 @@ impl Agent {
             _ => ProviderType::OpenAICompatible,
         };
 
-        // Create provider config from the old config format
         let provider_config = crate::types::provider::ProviderConfig {
             provider_type,
             api_key: config.provider.api_key.clone(),
@@ -1245,7 +1329,7 @@ impl Agent {
         match create_provider(provider_config) {
             Ok(provider) => Ok(Some(provider)),
             Err(e) => {
-                warn!("Failed to create provider: {}", e);
+                warn!("Failed to create legacy provider: {}", e);
                 Ok(None)
             }
         }

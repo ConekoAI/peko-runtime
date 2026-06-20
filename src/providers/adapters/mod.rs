@@ -155,22 +155,32 @@ impl Default for ToolCallAccumulator {
 /// API format adapter trait
 ///
 /// Implementations convert between unified internal types and provider-specific
-/// request/response formats. Each adapter is stateless and can be cheaply cloned.
+/// request/response formats. Each adapter is stateless and can be cheaply
+/// cloned.
+///
+/// **Model is not stored on the adapter.** `model_id` is passed in to
+/// `build_request` per call so that the same adapter instance can serve
+/// any model the provider offers. This is the structural change that
+/// makes the runtime-owned provider catalog possible: adapters are
+/// created per format, not per `(provider, model)` pair.
 pub trait ApiAdapter: Send + Sync {
     /// Provider name (e.g., "openai", "anthropic")
     fn name(&self) -> &str;
 
-    /// Default model for this provider
-    fn default_model(&self) -> &str;
-
     /// Base URL for API requests (without trailing slash)
     fn base_url(&self) -> &str;
 
-    /// Build request for chat completion
+    /// Build request for chat completion.
     ///
-    /// Returns (path, body) where path is the API endpoint (e.g., "/chat/completions")
+    /// `model_id` is the wire-format model identifier chosen by the
+    /// caller at request time. Adapters must include it verbatim in
+    /// the request body and must not store it.
+    ///
+    /// Returns (path, body) where path is the API endpoint (e.g.,
+    /// "/chat/completions").
     fn build_request(
         &self,
+        model_id: &str,
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
@@ -178,12 +188,16 @@ pub trait ApiAdapter: Send + Sync {
     ) -> Result<(String, Value)>;
 
     /// Parse non-streaming response into unified format
-    fn parse_response(&self, response: Value) -> Result<ChatResponse>;
+    fn parse_response(&self, model_id: &str, response: Value) -> Result<ChatResponse>;
 
     /// Parse SSE event data into unified stream event
     ///
     /// Returns None if the event should be skipped (e.g., keep-alive)
-    fn parse_sse_event(&self, data: &str) -> Result<Option<StreamEvent>>;
+    fn parse_sse_event(
+        &self,
+        model_id: &str,
+        data: &str,
+    ) -> Result<Option<StreamEvent>>;
 
     /// Get authentication configuration
     fn auth_config(&self, api_key: &str) -> AuthConfig;
@@ -243,15 +257,6 @@ impl ApiAdapter for AnyAdapter {
         }
     }
 
-    fn default_model(&self) -> &str {
-        match self {
-            Self::OpenAi(a) => a.default_model(),
-            Self::Anthropic(a) => a.default_model(),
-            Self::OpenAiCompatible(a) => a.default_model(),
-            Self::Mock(a) => a.default_model(),
-        }
-    }
-
     fn base_url(&self) -> &str {
         match self {
             Self::OpenAi(a) => a.base_url(),
@@ -263,34 +268,41 @@ impl ApiAdapter for AnyAdapter {
 
     fn build_request(
         &self,
+        model_id: &str,
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
         stream: bool,
     ) -> Result<(String, Value)> {
         match self {
-            Self::OpenAi(a) => a.build_request(messages, tools, options, stream),
-            Self::Anthropic(a) => a.build_request(messages, tools, options, stream),
-            Self::OpenAiCompatible(a) => a.build_request(messages, tools, options, stream),
-            Self::Mock(a) => a.build_request(messages, tools, options, stream),
+            Self::OpenAi(a) => a.build_request(model_id, messages, tools, options, stream),
+            Self::Anthropic(a) => a.build_request(model_id, messages, tools, options, stream),
+            Self::OpenAiCompatible(a) => {
+                a.build_request(model_id, messages, tools, options, stream)
+            }
+            Self::Mock(a) => a.build_request(model_id, messages, tools, options, stream),
         }
     }
 
-    fn parse_response(&self, response: Value) -> Result<ChatResponse> {
+    fn parse_response(&self, model_id: &str, response: Value) -> Result<ChatResponse> {
         match self {
-            Self::OpenAi(a) => a.parse_response(response),
-            Self::Anthropic(a) => a.parse_response(response),
-            Self::OpenAiCompatible(a) => a.parse_response(response),
-            Self::Mock(a) => a.parse_response(response),
+            Self::OpenAi(a) => a.parse_response(model_id, response),
+            Self::Anthropic(a) => a.parse_response(model_id, response),
+            Self::OpenAiCompatible(a) => a.parse_response(model_id, response),
+            Self::Mock(a) => a.parse_response(model_id, response),
         }
     }
 
-    fn parse_sse_event(&self, data: &str) -> Result<Option<StreamEvent>> {
+    fn parse_sse_event(
+        &self,
+        model_id: &str,
+        data: &str,
+    ) -> Result<Option<StreamEvent>> {
         match self {
-            Self::OpenAi(a) => a.parse_sse_event(data),
-            Self::Anthropic(a) => a.parse_sse_event(data),
-            Self::OpenAiCompatible(a) => a.parse_sse_event(data),
-            Self::Mock(a) => a.parse_sse_event(data),
+            Self::OpenAi(a) => a.parse_sse_event(model_id, data),
+            Self::Anthropic(a) => a.parse_sse_event(model_id, data),
+            Self::OpenAiCompatible(a) => a.parse_sse_event(model_id, data),
+            Self::Mock(a) => a.parse_sse_event(model_id, data),
         }
     }
 

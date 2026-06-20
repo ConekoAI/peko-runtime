@@ -17,7 +17,6 @@ use tracing::debug;
 /// Anthropic API adapter
 #[derive(Debug, Clone)]
 pub struct AnthropicAdapter {
-    model: String,
     base_url: String,
     extra_headers: Vec<(String, String)>,
     /// Accumulates input tokens from `message_start` for usage tracking
@@ -27,10 +26,10 @@ pub struct AnthropicAdapter {
 }
 
 impl AnthropicAdapter {
-    /// Create a new Anthropic adapter
-    pub fn new(model: impl Into<String>) -> Self {
+    /// Create a new Anthropic adapter.
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            model: model.into(),
             base_url: "https://api.anthropic.com".to_string(),
             extra_headers: vec![("anthropic-version".to_string(), "2023-06-01".to_string())],
             pending_input_tokens: Arc::new(Mutex::new(None)),
@@ -39,17 +38,27 @@ impl AnthropicAdapter {
     }
 
     /// Create with custom base URL (for Kimi Code and other Anthropic-compatible providers)
+    #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
     }
 
     /// Add an extra header
+    #[must_use]
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra_headers.push((name.into(), value.into()));
         self
     }
+}
 
+impl Default for AnthropicAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AnthropicAdapter {
     /// Convert unified messages to Anthropic format
     ///
     /// Anthropic uses a different format:
@@ -179,10 +188,6 @@ impl super::ApiAdapter for AnthropicAdapter {
         "anthropic"
     }
 
-    fn default_model(&self) -> &str {
-        &self.model
-    }
-
     fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -193,6 +198,7 @@ impl super::ApiAdapter for AnthropicAdapter {
 
     fn build_request(
         &self,
+        model_id: &str,
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
@@ -201,7 +207,7 @@ impl super::ApiAdapter for AnthropicAdapter {
         let (system, anthropic_messages) = self.convert_messages(messages);
 
         let mut body = json!({
-            "model": self.model,
+            "model": model_id,
             "messages": anthropic_messages,
             "max_tokens": options.max_tokens.unwrap_or(4096),
             "stream": stream,
@@ -227,7 +233,7 @@ impl super::ApiAdapter for AnthropicAdapter {
         Ok(("/v1/messages".to_string(), body))
     }
 
-    fn parse_response(&self, response: Value) -> Result<ChatResponse> {
+    fn parse_response(&self, model_id: &str, response: Value) -> Result<ChatResponse> {
         debug!(
             "Anthropic response: {}",
             serde_json::to_string_pretty(&response)?
@@ -282,11 +288,11 @@ impl super::ApiAdapter for AnthropicAdapter {
                 total: u64::from(result.usage.input_tokens + result.usage.output_tokens),
             },
             provider: self.name().to_string(),
-            model: self.model.clone(),
+            model: model_id.to_string(),
         })
     }
 
-    fn parse_sse_event(&self, data: &str) -> Result<Option<StreamEvent>> {
+    fn parse_sse_event(&self, model_id: &str, data: &str) -> Result<Option<StreamEvent>> {
         debug!("Parsing Anthropic SSE event: {}", data);
         let event: AnthropicSseEvent =
             serde_json::from_str(data).context("Failed to parse Anthropic SSE event")?;
@@ -301,7 +307,7 @@ impl super::ApiAdapter for AnthropicAdapter {
                 }
                 Ok(Some(StreamEvent::Start {
                     provider: self.name().to_string(),
-                    model: self.model.clone(),
+                    model: model_id.to_string(),
                 }))
             }
             Some("content_block_start") => {
@@ -569,15 +575,15 @@ mod tests {
 
     #[test]
     fn test_adapter_creation() {
-        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        let adapter = AnthropicAdapter::new();
         assert_eq!(adapter.name(), "anthropic");
-        assert_eq!(adapter.default_model(), "claude-3-sonnet");
+        assert_eq!(adapter.name(), "anthropic");
         assert_eq!(adapter.base_url(), "https://api.anthropic.com");
     }
 
     #[test]
     fn test_convert_messages_with_system() {
-        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        let adapter = AnthropicAdapter::new();
         let messages = vec![
             LlmMessage::system("You are helpful"),
             LlmMessage::user("Hello"),
@@ -591,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_auth_config() {
-        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        let adapter = AnthropicAdapter::new();
         let auth = adapter.auth_config("test_key");
         match auth {
             AuthConfig::Header { name, value } => {
@@ -604,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_parse_response() {
-        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        let adapter = AnthropicAdapter::new();
         let response = json!({
             "content": [{
                 "type": "text",
@@ -617,7 +623,7 @@ mod tests {
             }
         });
 
-        let parsed = adapter.parse_response(response).unwrap();
+        let parsed = adapter.parse_response("claude-3-sonnet", response).unwrap();
         assert_eq!(parsed.content.len(), 1);
         assert!(matches!(parsed.content[0], ContentBlock::Text { .. }));
         assert_eq!(parsed.usage.input, 10);
@@ -626,7 +632,7 @@ mod tests {
 
     #[test]
     fn test_parse_response_with_tool_use() {
-        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        let adapter = AnthropicAdapter::new();
         let response = json!({
             "content": [
                 {
@@ -647,7 +653,7 @@ mod tests {
             }
         });
 
-        let parsed = adapter.parse_response(response).unwrap();
+        let parsed = adapter.parse_response("claude-3-sonnet", response).unwrap();
         assert_eq!(parsed.content.len(), 1);
         assert_eq!(parsed.tool_calls.len(), 1);
         assert!(matches!(
@@ -659,12 +665,12 @@ mod tests {
 
     #[test]
     fn test_message_start_usage_extraction() {
-        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        let adapter = AnthropicAdapter::new();
         // message_start event with usage info
         let data =
             r#"{"type":"message_start","message":{"usage":{"input_tokens":25,"output_tokens":0}}}"#;
 
-        let event = adapter.parse_sse_event(data).unwrap();
+        let event = adapter.parse_sse_event("claude-3-sonnet", data).unwrap();
         // Should return Start event
         assert!(matches!(
             event,
@@ -676,14 +682,14 @@ mod tests {
 
     #[test]
     fn test_message_delta_usage_extraction() {
-        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        let adapter = AnthropicAdapter::new();
         // First set up the input tokens (as if message_start was processed)
         *adapter.pending_input_tokens.lock().unwrap() = Some(25);
 
         // message_delta event with output tokens
         let data = r#"{"type":"message_delta","usage":{"output_tokens":12}}"#;
 
-        let event = adapter.parse_sse_event(data).unwrap();
+        let event = adapter.parse_sse_event("claude-3-sonnet", data).unwrap();
         match event {
             Some(crate::providers::StreamEvent::Usage {
                 input,

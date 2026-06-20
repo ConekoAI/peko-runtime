@@ -638,11 +638,13 @@ impl AgentService {
 
         if let Some(image_ref) = update.image {
             let model_name = parse_image_model_name(&image_ref)?;
-            config.provider.default_model = model_name;
+            // v3: model lives in the catalog + secret store; the
+            // agent only carries a soft hint.
+            config.preferred_model_id = Some(model_name);
         }
 
         if let Some(model) = update.model {
-            config.provider.default_model = model;
+            config.preferred_model_id = Some(model);
         }
 
         if update.description.is_some() {
@@ -1206,7 +1208,9 @@ mod tests {
         service.update_agent("alice", None, update).await.unwrap();
 
         let info = service.get_agent("alice", None).await.unwrap().unwrap();
-        assert_eq!(info.config.provider.default_model, "mini-4");
+        // As of v3, the model is a soft hint, not an embedded provider
+        // field. `agent update --model X` populates `preferred_model_id`.
+        assert_eq!(info.config.preferred_model_id.as_deref(), Some("mini-4"));
         assert_eq!(info.config.description.as_deref(), Some("Agent for testing"));
         assert_eq!(info.system_prompt.as_deref(), Some("You are a test assistant."));
         assert!(info

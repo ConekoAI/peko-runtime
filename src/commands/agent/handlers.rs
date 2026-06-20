@@ -1182,6 +1182,11 @@ async fn agent_to_registry_manifest(
     // after a `push → pull → import` cycle. Embedding the full
     // TOML in the config blob closes that gap: the pull path can
     // recover the exact signed manifest.
+    // Serialize the agent manifest to TOML for embedding in the OCI
+    // config blob. As of v3 the `provider` field is `skip_serializing`
+    // on `AgentConfig`, so legacy `api_key` literals cannot leak into
+    // the registry even if a pre-migration config was loaded. See
+    // `types::agent::tests::test_v3_round_trip_strips_legacy_provider`.
     let agent_manifest_toml = agent_manifest.to_toml()?;
     let config_json = serde_json::to_string(&serde_json::json!({
         "name": agent_manifest.agent.name,

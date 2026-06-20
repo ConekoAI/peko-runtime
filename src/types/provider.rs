@@ -9,21 +9,41 @@ pub struct ProviderConfig {
     /// Provider type
     pub provider_type: ProviderType,
     /// API key (optional - can use env var)
+    #[serde(default)]
     pub api_key: Option<String>,
     /// API key environment variable name
+    #[serde(default)]
     pub api_key_env: Option<String>,
     /// Base URL (for custom/OpenAI-compatible endpoints)
+    #[serde(default)]
     pub base_url: Option<String>,
     /// Default model
+    #[serde(default)]
     pub default_model: String,
     /// Model configurations
+    #[serde(default)]
     pub models: HashMap<String, ModelConfig>,
     /// Request timeout (seconds)
+    #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
     /// Maximum retries
+    #[serde(default = "default_retries")]
     pub max_retries: u32,
     /// Retry delay (milliseconds)
+    #[serde(default = "default_retry_delay")]
     pub retry_delay_ms: u64,
+}
+
+fn default_timeout() -> u64 {
+    60
+}
+
+fn default_retries() -> u32 {
+    3
+}
+
+fn default_retry_delay() -> u64 {
+    1000
 }
 
 impl Default for ProviderConfig {
@@ -109,8 +129,10 @@ pub struct ModelConfig {
     /// Top-p sampling
     pub top_p: f32,
     /// Presence penalty
+    #[serde(default)]
     pub presence_penalty: f32,
     /// Frequency penalty
+    #[serde(default)]
     pub frequency_penalty: f32,
 }
 

@@ -7,6 +7,7 @@
 pub mod identity;
 pub mod metadata;
 pub mod migration;
+pub mod migration_v3;
 pub mod registry;
 pub mod tool_runtime;
 

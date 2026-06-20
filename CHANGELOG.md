@@ -4,6 +4,117 @@ All notable changes to Pekobot.
 
 ## [Unreleased]
 
+### Provider catalog & agent decoupling (v3)
+
+This release decouples agent configs from provider/model/API-key
+wiring. Pulled registry agents now work on any host with at least one
+configured provider; secrets never touch plaintext disk.
+
+#### New: runtime-owned provider catalog (`~/.peko/providers.toml`)
+
+- `src/providers/catalog.rs` — `ProviderCatalog`, `ProviderCatalogEntry`,
+  `ModelInfo`, `ApiFormat`. Loaded on startup, shared via
+  `Arc<RwLock<…>>`, persisted atomically.
+- `src/providers/templates.rs` — `BUILT_IN_TEMPLATES` (15 providers:
+  openai, anthropic, ollama, groq, together, fireworks, moonshot,
+  deepseek, cohere, openrouter, perplexity, xai, kimi, minimax,
+  azure-openai) with curated model lists and known context lengths.
+- `src/providers/resolver.rs` — `LlmResolver`. Resolution precedence:
+  caller override > session-pinned > agent preference > runtime
+  default > first enabled catalog entry. Optional `--bootstrap-env-keys`
+  for headless / CI deployments.
+- CLI: `peko provider {list, templates, add, remove, set-default,
+  get-default, fetch-models}`.
+
+#### New: secure secret store
+
+- `src/common/secret_store.rs` — `SecretStore` trait with two impls:
+  - `OsKeychainSecretStore` (production) using the `keyring` crate.
+    Service name `"peko"`, account = `provider_id`. Same namespace as
+    `peko-desktop`'s `vault/mod.rs`, so desktop-entered keys are
+    visible to the runtime after this release.
+  - `InMemorySecretStore` (tests only — explicit opt-in, never used in
+    production).
+- CLI: `peko credential {set, delete, list, test}` with a hidden
+  terminal prompt via `rpassword`.
+- The legacy plaintext `~/.peko/credentials.json` is no longer
+  written. The migration (`migrate_adr_provider_catalog_v3`) reads it
+  once on first run, moves every entry into the keychain, and deletes
+  the file.
+
+#### New: agent ↔ provider decoupling
+
+- `AgentConfig.version` is bumped to `"3.0"`.
+- The embedded `provider: ProviderConfig` field is now
+  `#[serde(default, skip_serializing)]` — it still parses legacy
+  configs for migration but is never written back. The
+  `test_v3_round_trip_strips_legacy_provider` test pins this guarantee.
+- New soft hints on `AgentConfig`:
+  `preferred_provider_id: Option<String>`,
+  `preferred_model_id: Option<String>`. The runtime resolves these via
+  `LlmResolver` at request time. There is no hard binding between an
+  agent and a provider.
+- New constructors: `Agent::new_with_resolver(config, resolver)` and
+  `Agent::new_with_session_manager_and_resolver(...)`. The original
+  `Agent::new(config)` continues to work — it falls back to the legacy
+  `provider` field so pre-v3 fixtures still compile.
+
+#### Adapter signature refactor (per-call `model_id`)
+
+- `ApiAdapter::build_request` now takes `model_id: &str` as the first
+  argument. The `model` field is removed from `OpenAiAdapter`,
+  `AnthropicAdapter`, and `OpenAiCompatibleAdapter` — adapters are
+  model-agnostic. The model id is threaded per call.
+- `ApiAdapter::parse_response(model_id, response)` and
+  `parse_sse_event(model_id, data)` carry the model id into the parsed
+  `ChatResponse` / `StreamEvent::Start` events.
+- `Provider::chat_with_tools(model_id, …)` and
+  `stream_with_tools(model_id, …)` thread `model_id` into the adapter.
+- `MockAdapter::new()` (no model argument) — model is set per call.
+
+#### Migration (`src/runtime/migration_v3.rs`)
+
+- `migrate_adr_provider_catalog_v3(resolver)`:
+  - Walks `~/.peko/agents/*/config.toml`.
+  - For any non-default `[provider]` block, creates a matching
+    `ProviderCatalogEntry` (if absent) and seeds soft hints.
+  - Moves any literal `api_key` into the OS keychain under
+    `provider_id`.
+  - Bumps `version` to `"3.0"` and atomic-writes the config.
+  - Idempotent — already-v3 files are skipped.
+- `migrate_legacy_data` now calls the v3 migration after ADR-032/033.
+- Verified by `legacy_agent_config_gets_v3_and_hints` and
+  `empty_state_reports_zero_migrations`.
+
+#### Registry round-trip hardening
+
+- `AgentConfig::provider` is `skip_serializing`, so the OCI config
+  blob embedded by `agent_to_registry_manifest` cannot carry a
+  literal `api_key`. The `test_v3_round_trip_strips_legacy_provider`
+  test guards this property.
+- Legacy `.agent` packages still in flight are stripped
+  defensively: re-hydration reads the v3-clean TOML.
+
+#### Desktop (`peko-desktop`)
+
+- `src-tauri/src/ipc/mod.rs` gains `credential_get`, `credential_set`,
+  `credential_delete`, `credential_list` IPC clients that proxy to the
+  runtime's secret store.
+- `src-tauri/src/commands/settings.rs` `credential_*` commands now
+  route through IPC rather than reading/writing the desktop's local
+  `vault/mod.rs`. The OS keychain is the single source of truth.
+- `peko-desktop/src-tauri/src/vault/mod.rs` remains in place for the
+  PekoHub-token callers (`pekohub.rs`, `registry.rs`) — they will
+  follow in a subsequent change.
+
+#### Mid-session model switching
+
+- Between turns only (per the v3 plan). New CLI flag: `peko send
+  --provider X --model Y` (or equivalent SDK/IPC parameter). The
+  resolved pair is captured in `SessionState` and reused for every
+  LLM call within that turn. In-turn provider swap remains out of
+  scope (documented as a future ADR).
+
 ### Fixed (issue #26) — Add typed `Principal` caller field to `AuditEvent`
 
 The audit event carried caller identity as a free-form `Option<String>`
