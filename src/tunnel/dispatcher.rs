@@ -17,6 +17,7 @@ use crate::auth::Principal;
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
 
+use super::a2a_audit;
 use super::protocol::{
     ExposureUpdatePayload, InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload,
     InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
@@ -1131,6 +1132,27 @@ impl TunnelDispatcher {
             }
         };
 
+        // Slice D: emit the inbound-receive audit event now that
+        // the request has been verified, the agent has been
+        // located, and we're about to dispatch. The session_id is
+        // best-effort empty here (the dispatcher doesn't have
+        // session context); a future PR can thread it through.
+        let local_runtime_id = self.app_state.runtime_identity().runtime_did.clone();
+        let received_event = a2a_audit::build_a2a_received_inbound(
+            "", // session_id
+            &request_id,
+            &caller_runtime_id,
+            &caller_agent_did,
+            // Note: at this point we don't know the *original
+            // caller's* runtime_id beyond `caller_runtime_id`
+            // (the local runtime IS the target). The audit row
+            // records the local runtime's id as `runtime_id_target`.
+            &local_runtime_id,
+            &target_agent_did,
+            &message,
+        );
+        a2a_audit::emit_a2a_received(&received_event);
+
         // 4 + 5. Build the request and dispatch.
         let caller_principal = Principal::Agent(caller_agent_did.clone());
         let request = MessageRequest::new(&local_agent_name, message.clone())
@@ -1194,6 +1216,28 @@ impl TunnelDispatcher {
                     .await;
             }
         };
+
+        // Slice D: emit the response-side audit event before
+        // sending. The local agent is the "caller" of the
+        // response; the original caller is the "target".
+        let response_preview = if a2a_result.success {
+            a2a_result.response.clone()
+        } else {
+            a2a_result
+                .error
+                .clone()
+                .unwrap_or_else(|| "(no error message)".to_string())
+        };
+        let sent_response_event = a2a_audit::build_a2a_sent_response(
+            "", // session_id
+            &request_id,
+            &caller_runtime_id,
+            &caller_agent_did,
+            &local_runtime_id,
+            &target_agent_did,
+            &response_preview,
+        );
+        a2a_audit::emit_a2a_sent(&sent_response_event);
 
         handle.send(TunnelMessage::AgentToAgentResponse {
             request_id,

@@ -182,34 +182,111 @@ pub enum A2aMessageType {
     Custom,
 }
 
-/// a2a.sent - Agent sent a message to the team event bus
+/// a2a.sent - Agent sent an A2A message.
+///
+/// Pre-#29 this struct modeled a topic-pubsub broadcast
+/// (`topic` + `to`). Post-#29 it is the canonical audit trail
+/// for both same-runtime (`Local`) and cross-runtime
+/// (`RemoteByDid`/`RemoteByHandle`) sends. The legacy
+/// `topic`/`to` fields stay populated for the topic-pubsub
+/// path; the new `*_did` / `runtime_id_*` fields are populated
+/// on the cross-runtime path. Event consumers that only care
+/// about the topic-pubsub path can ignore the new fields;
+/// consumers that care about cross-runtime a2a can read them
+/// directly without parsing the envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct A2aSentEvent {
     #[serde(flatten)]
     pub envelope: EventEnvelope,
     /// A2A message type
     pub message_type: A2aMessageType,
-    /// Topic/channel sent to
+    /// Topic/channel sent to. Same-runtime topic-pubsub path
+    /// (pre-#29) populates this; the cross-runtime path leaves
+    /// it empty rather than synthesizing a fake topic.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub topic: String,
-    /// Target instance ID
+    /// Target instance ID. Same-runtime topic-pubsub path
+    /// populates this; the cross-runtime path leaves it empty
+    /// (the `runtime_id_target` + `target_did` fields are the
+    /// authoritative identifiers in that case).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub to: String,
     /// Message payload
     pub payload: serde_json::Value,
+    /// Issue #29: cross-runtime a2a audit fields. All four are
+    /// `Some` on the cross-runtime path and `None` on the
+    /// legacy same-runtime topic-pubsub path so a single event
+    /// consumer can distinguish the two with a single check.
+    /// The combination `(caller_did, runtime_id_caller)` is the
+    /// caller's identity; `(target_did, runtime_id_target)` is
+    /// the target's. Together they disambiguate "who sent what
+    /// to whom" even when the agent names are reused across
+    /// runtimes.
+    /// Caller agent's stable DID (issue #28 form:
+    /// `did:peko:agent:<keyhash>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_did: Option<String>,
+    /// Caller runtime's `did:key` (from the `TunnelMessage`'s
+    /// `caller_runtime_id` field on the inbound side; from
+    /// `ctx.caller_runtime_id` on the outbound side).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id_caller: Option<String>,
+    /// Target agent's stable DID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_did: Option<String>,
+    /// Target runtime's `did:key` (from the pekohub directory
+    /// response's `runtimeId` field on the outbound side).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id_target: Option<String>,
+    /// `request_id` (UUIDv4) of the `AgentToAgentRequest` /
+    /// `AgentToAgentResponse` pair, when this event is part of
+    /// a cross-runtime round-trip. `None` on the same-runtime
+    /// topic-pubsub path (where request correlation is
+    /// per-session, not per-message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
-/// a2a.received - Agent received a message from the team event bus
+/// a2a.received - Agent received an A2A message.
+///
+/// Same shape evolution as `A2aSentEvent`: legacy `topic` /
+/// `from` fields stay populated for the same-runtime path;
+/// the new `*_did` / `runtime_id_*` fields carry the
+/// cross-runtime audit trail.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct A2aReceivedEvent {
     #[serde(flatten)]
     pub envelope: EventEnvelope,
     /// A2A message type
     pub message_type: A2aMessageType,
-    /// Topic/channel received from
+    /// Topic/channel received from. Same-runtime topic-pubsub
+    /// path populates this; the cross-runtime path leaves it
+    /// empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub topic: String,
-    /// Source instance ID
+    /// Source instance ID. Same-runtime topic-pubsub path
+    /// populates this; the cross-runtime path leaves it empty
+    /// (the `runtime_id_caller` + `caller_did` fields are the
+    /// authoritative identifiers in that case).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub from: String,
     /// Message payload
     pub payload: serde_json::Value,
+    /// Issue #29: cross-runtime a2a audit fields. See
+    /// `A2aSentEvent` for the field semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id_caller: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id_target: Option<String>,
+    /// `request_id` of the inbound `AgentToAgentRequest` /
+    /// `AgentToAgentResponse`, when this event is part of a
+    /// cross-runtime round-trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Hook type for hook.trigger events

@@ -39,6 +39,7 @@ use tokio::sync::RwLock;
 use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::auth::principal::Principal;
 use crate::tools::core::Tool;
+use crate::tunnel::a2a_audit;
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentDirectory, DirectoryError, ResolvedExposure};
@@ -652,6 +653,23 @@ impl A2aSendTool {
             )));
         }
 
+        // Slice D: emit the outbound audit event now that the
+        // request is on the wire. The session_id is best-effort:
+        // we don't have it here (the call comes from the tool
+        // layer above the session manager), so the audit row
+        // records the empty session. A future PR can plumb the
+        // session id through to the tool.
+        let sent_event = a2a_audit::build_a2a_sent_outbound(
+            "", // session_id — see comment above
+            &request_id,
+            &ctx.caller_runtime_id,
+            caller_agent_did,
+            &resolution.runtime_id,
+            target_agent_did,
+            &args.message,
+        );
+        a2a_audit::emit_a2a_sent(&sent_event);
+
         // Now block on the matching response. The dispatcher's
         // `AgentToAgentResponse` arm (Slice B' wires this) decodes the
         // inbound envelope and calls `ctx.pending.complete(...)`.
@@ -703,7 +721,25 @@ impl A2aSendTool {
             )));
         }
         match serde_json::from_slice::<A2aSendResult>(&payload) {
-            Ok(result) => Ok(serde_json::to_value(result)?),
+            Ok(result) => {
+                // Slice D: emit the response-side audit event
+                // (the "received" half of the round-trip on the
+                // caller side). Uses the same caller/target swap
+                // as the dispatcher's `build_a2a_sent_response`:
+                // from the local runtime's perspective, the local
+                // agent is the "target" of the response.
+                let received_event = a2a_audit::build_a2a_received_response(
+                    "", // session_id — see earlier comment
+                    &request_id,
+                    &ctx.caller_runtime_id,
+                    caller_agent_did,
+                    &resolution.runtime_id,
+                    target_agent_did,
+                    &result.response,
+                );
+                a2a_audit::emit_a2a_received(&received_event);
+                Ok(serde_json::to_value(result)?)
+            }
             Err(decode_err) => Ok(remote_error_value(&format!(
                 "remote a2a response payload could not be decoded: {decode_err}"
             ))),
