@@ -34,11 +34,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 
 use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::auth::principal::Principal;
 use crate::tools::core::Tool;
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
+use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentDirectory, DirectoryError, ResolvedExposure};
 use crate::tunnel::{
     A2aWaitError, PendingA2aResponses, TunnelHandle, TunnelMessage,
@@ -188,51 +190,11 @@ pub struct A2aSendTool {
     /// Optional cross-runtime context (issue #29 Slice B). When set,
     /// `Remote*` `TargetSpec` variants dispatch over the tunnel via
     /// the hub directory; when unset they error with a structured
-    /// "cross-runtime not configured" message. The ctx is set by the
-    /// daemon-state bootstrap (Slice B' follow-up); production builds
-    /// today still see `None` until that wiring lands.
+    /// "cross-runtime not configured" message. The ctx lives in
+    /// `tunnel::cross_runtime` (re-exported here) so both the
+    /// daemon-state bootstrap side and the consumer side reference
+    /// the same type without an `extension` ↔ `tools` cycle.
     cross_runtime: Option<Arc<CrossRuntimeA2aCtx>>,
-}
-
-/// Cross-runtime a2a dispatch context. Issue #29 Slice B.
-///
-/// Bundled together so the daemon-state bootstrap (Slice B' follow-up)
-/// builds one of these once at startup and injects the same `Arc` into
-/// every `A2aSendTool` it constructs per-agent. Holding everything
-/// behind a single struct keeps the `A2aSendTool` field count low and
-/// makes it obvious from the call site whether cross-runtime dispatch
-/// is enabled (`Option::is_some`).
-///
-/// The fields are deliberately `pub` — there is no invariant to
-/// enforce on construction, and tests need to build one of these
-/// directly with fakes (`FakeAgentDirectory`, a stub `mpsc` for the
-/// tunnel handle, a one-off `SigningKey`).
-pub struct CrossRuntimeA2aCtx {
-    /// Directory client (`HubAgentDirectoryClient` in production, a
-    /// fake in tests). The outbound path calls
-    /// `resolve_by_did`/`resolve_by_handle` to learn where to send.
-    pub directory: Arc<dyn AgentDirectory>,
-    /// Response correlation registry. Shared with the tunnel
-    /// dispatcher's `AgentToAgentResponse` arm (Slice B' wires that
-    /// in `dispatcher.rs`).
-    pub pending: Arc<PendingA2aResponses>,
-    /// The runtime's own `PekoHubCredential` signing key. Used to
-    /// sign the `AgentToAgentRequest` envelope so the target runtime
-    /// can verify the caller's runtime identity end-to-end.
-    pub signing_key: Arc<SigningKey>,
-    /// The runtime's own `runtime_id` (did:key form). Echoed verbatim
-    /// into the `caller_runtime_id` field of every outbound request.
-    pub caller_runtime_id: String,
-    /// Sink for outbound `TunnelMessage`s. Production wires this to
-    /// the live `TunnelClient`'s `TunnelHandle`; tests use the
-    /// `#[cfg(test)]` constructor with a buffered `mpsc` they can
-    /// drain to assert on.
-    pub tunnel: TunnelHandle,
-    /// How long to wait for the matching `AgentToAgentResponse` before
-    /// surfacing a `Timeout` error to the calling agent. Production
-    /// default is 60s (configurable via daemon config in Slice B');
-    /// tests use sub-second values.
-    pub response_timeout: Duration,
 }
 
 impl A2aSendTool {
@@ -659,9 +621,31 @@ impl A2aSendTool {
             Err(err) => return Ok(remote_error_value(&err.to_string())),
         };
 
-        if let Err(err) = ctx.tunnel.send(envelope) {
-            // Send failure means the tunnel is dead. Drop the pending
-            // entry so it doesn't leak past the failure.
+        // Send over the live tunnel handle. The handle slot is
+        // `None` when the tunnel isn't currently connected (e.g. the
+        // daemon just started and the WebSocket hasn't completed
+        // yet, or the most recent reconnect attempt is still in
+        // backoff). Both are "temporarily unavailable" conditions
+        // that the LLM caller might reasonably want to retry.
+        let tunnel_handle = {
+            let guard = ctx.tunnel.read().await;
+            match guard.clone() {
+                Some(h) => h,
+                None => {
+                    // Drop the pending entry so a future request
+                    // doesn't collide on the request_id.
+                    ctx.pending.discard(&request_id);
+                    return Ok(remote_error_value(
+                        "tunnel is not currently connected; a2a_send cannot dispatch \
+                         cross-runtime until the pekohub tunnel is up",
+                    ));
+                }
+            }
+        };
+        if let Err(err) = tunnel_handle.send(envelope) {
+            // Send failure means the tunnel channel is closed (e.g.
+            // the dispatcher task ended). Drop the pending entry
+            // so it doesn't leak past the failure.
             ctx.pending.discard(&request_id);
             return Ok(remote_error_value(&format!(
                 "tunnel send failed: {err} (tunnel may be disconnected)"
@@ -840,7 +824,13 @@ fn remote_error_value(err: &str) -> serde_json::Value {
 /// `A2aSendResult` shape) and surfaces the structured `code` + `message`
 /// to the LLM. The `code` is one of: `target_not_found`,
 /// `target_offline`, `forbidden`, `timeout`, `internal_error`.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `Serialize` is also derived so the target runtime's inbound
+/// dispatcher (Slice C, see `dispatcher.rs::send_hub_error`) can
+/// produce a `HubA2AErrorResponse` in the rare case it has to
+/// reject an inbound request — keeping the same wire shape on both
+/// sides simplifies the caller's decode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubA2AErrorResponse {
     pub kind: String,
     pub code: String,
@@ -1359,7 +1349,7 @@ mod tests {
         use crate::tunnel::PendingA2aResponses;
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let tunnel = TunnelHandle::new(tx); // #[cfg(test)] constructor
+        let tunnel = Arc::new(RwLock::new(Some(TunnelHandle::new(tx)))); // #[cfg(test)] ctor
         let fake_dir = std::sync::Arc::new(FakeAgentDirectory::new());
         let pending = std::sync::Arc::new(PendingA2aResponses::new());
         let kp = KeyPair::generate();
@@ -1726,6 +1716,43 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(500),
             "timeout must surface near the configured 50ms; got {elapsed:?}"
+        );
+    }
+
+    /// When the tunnel slot is empty (e.g. daemon just started and
+    /// the WebSocket hasn't connected yet, or the most recent
+    /// reconnect attempt is in backoff), the outbound path errors
+    /// with a "tunnel not connected" message rather than blocking
+    /// on a non-existent handle.
+    #[tokio::test]
+    async fn test_execute_remote_tunnel_not_connected_errors_cleanly() {
+        let service = build_test_service().await;
+        let (ctx, _rx, dir) = build_test_ctx(Duration::from_secs(1));
+        dir.register_did("did:peko:agent:target-keyhash", sample_remote_resolution());
+        // Replace the tunnel slot with an empty one to simulate a
+        // disconnected tunnel. (build_test_ctx's default has Some.)
+        *ctx.tunnel.write().await = None;
+
+        let tool = A2aSendTool::new(service)
+            .with_caller_did("caller", "did:peko:agent:caller-keyhash")
+            .with_cross_runtime(ctx);
+        let args = A2aSendArgs {
+            target_agent: "ignored".to_string(),
+            target: Some(TargetSpec::RemoteByDid {
+                did: "did:peko:agent:target-keyhash".to_string(),
+                runtime_id_hint: None,
+            }),
+            message: "hi".to_string(),
+            session_id: None,
+            team: None,
+        };
+        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let result: A2aSendResult = serde_json::from_value(value).unwrap();
+        assert!(!result.success);
+        let err = result.error.unwrap();
+        assert!(
+            err.contains("tunnel is not currently connected"),
+            "error must name the condition; got: {err}"
         );
     }
 
