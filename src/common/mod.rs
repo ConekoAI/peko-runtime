@@ -6,6 +6,7 @@
 pub mod config_path;
 pub mod credentials_store;
 pub mod identifiers;
+pub mod secret_store;
 pub mod json_utils;
 pub mod paths;
 pub mod process;

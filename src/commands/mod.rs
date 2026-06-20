@@ -15,6 +15,7 @@ pub mod agent;
 pub mod agent_bootstrap;
 pub mod auth;
 pub mod config;
+pub mod credential;
 pub mod cron;
 pub mod daemon;
 pub mod ext;
@@ -115,6 +116,10 @@ pub enum Commands {
     /// Authentication and credential management
     #[command(subcommand)]
     Auth(auth::AuthCommands),
+
+    /// Provider API key management (OS keychain backed)
+    #[command(subcommand)]
+    Credential(credential::CredentialCommands),
 
     /// Extension management commands (skills, MCP, tools, channels, hooks)
     #[command(subcommand)]

@@ -16,28 +16,37 @@ use tracing::debug;
 /// `OpenAI` API adapter
 #[derive(Debug, Clone)]
 pub struct OpenAiAdapter {
-    model: String,
     base_url: String,
     /// Accumulates tool call parts during streaming
     tool_call_accumulator: ToolCallAccumulator,
 }
 
 impl OpenAiAdapter {
-    /// Create a new `OpenAI` adapter
-    pub fn new(model: impl Into<String>) -> Self {
+    /// Create a new `OpenAI` adapter pointing at the canonical
+    /// `https://api.openai.com/v1` base URL.
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            model: model.into(),
             base_url: "https://api.openai.com/v1".to_string(),
             tool_call_accumulator: ToolCallAccumulator::new(),
         }
     }
 
-    /// Create with custom base URL (for Azure, etc.)
+    /// Create with custom base URL (for Azure, OpenRouter, etc.)
+    #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
     }
+}
 
+impl Default for OpenAiAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OpenAiAdapter {
     /// Convert unified messages to `OpenAI` format
     fn convert_messages(&self, messages: &[LlmMessage]) -> Vec<OpenAiMessage> {
         messages
@@ -107,10 +116,6 @@ impl super::ApiAdapter for OpenAiAdapter {
         "openai"
     }
 
-    fn default_model(&self) -> &str {
-        &self.model
-    }
-
     fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -121,6 +126,7 @@ impl super::ApiAdapter for OpenAiAdapter {
 
     fn build_request(
         &self,
+        model_id: &str,
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
@@ -129,7 +135,7 @@ impl super::ApiAdapter for OpenAiAdapter {
         let openai_messages = self.convert_messages(messages);
 
         let mut body = json!({
-            "model": self.model,
+            "model": model_id,
             "messages": openai_messages,
             "stream": stream,
         });
@@ -157,7 +163,7 @@ impl super::ApiAdapter for OpenAiAdapter {
         Ok(("/chat/completions".to_string(), body))
     }
 
-    fn parse_response(&self, response: Value) -> Result<ChatResponse> {
+    fn parse_response(&self, model_id: &str, response: Value) -> Result<ChatResponse> {
         debug!(
             "OpenAI response: {}",
             serde_json::to_string_pretty(&response)?
@@ -215,11 +221,11 @@ impl super::ApiAdapter for OpenAiAdapter {
                 total: u64::from(completion.usage.total_tokens),
             },
             provider: self.name().to_string(),
-            model: self.model.clone(),
+            model: model_id.to_string(),
         })
     }
 
-    fn parse_sse_event(&self, data: &str) -> Result<Option<StreamEvent>> {
+    fn parse_sse_event(&self, model_id: &str, data: &str) -> Result<Option<StreamEvent>> {
         if data.trim() == "[DONE]" {
             // Clear accumulator when stream ends
             self.tool_call_accumulator.reset();
@@ -438,21 +444,21 @@ mod tests {
 
     #[test]
     fn test_adapter_creation() {
-        let adapter = OpenAiAdapter::new("gpt-4o-mini");
+        let adapter = OpenAiAdapter::new();
         assert_eq!(adapter.name(), "openai");
-        assert_eq!(adapter.default_model(), "gpt-4o-mini");
+        assert_eq!(adapter.name(), "openai");
     }
 
     #[test]
     fn test_convert_messages() {
-        let adapter = OpenAiAdapter::new("gpt-4o-mini");
+        let adapter = OpenAiAdapter::new();
         let messages = vec![
             LlmMessage::system("You are helpful"),
             LlmMessage::user("Hello"),
         ];
 
         let (path, body) = adapter
-            .build_request(&messages, None, &ChatOptions::default(), false)
+            .build_request("gpt-4o-mini", &messages, None, &ChatOptions::default(), false)
             .unwrap();
         assert_eq!(path, "/chat/completions");
         assert_eq!(body["model"], "gpt-4o-mini");
@@ -460,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_parse_response() {
-        let adapter = OpenAiAdapter::new("gpt-4o-mini");
+        let adapter = OpenAiAdapter::new();
         let response = json!({
             "choices": [{
                 "message": {
@@ -476,7 +482,7 @@ mod tests {
             }
         });
 
-        let parsed = adapter.parse_response(response).unwrap();
+        let parsed = adapter.parse_response("gpt-4o-mini", response).unwrap();
         assert_eq!(parsed.content.len(), 1);
         assert!(matches!(parsed.content[0], ContentBlock::Text { .. }));
         assert_eq!(parsed.usage.total, 15);
@@ -484,10 +490,10 @@ mod tests {
 
     #[test]
     fn test_parse_sse_text_delta() {
-        let adapter = OpenAiAdapter::new("gpt-4o-mini");
+        let adapter = OpenAiAdapter::new();
         let data = r#"{"choices":[{"delta":{"content":"Hello"},"index":0}]}"#;
 
-        let event = adapter.parse_sse_event(data).unwrap();
+        let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         assert!(matches!(
             event,
             Some(crate::providers::StreamEvent::TextDelta {
@@ -499,11 +505,11 @@ mod tests {
 
     #[test]
     fn test_parse_sse_with_usage() {
-        let adapter = OpenAiAdapter::new("gpt-4o-mini");
+        let adapter = OpenAiAdapter::new();
         // Final chunk with usage and empty choices
         let data = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
 
-        let event = adapter.parse_sse_event(data).unwrap();
+        let event = adapter.parse_sse_event("gpt-4o-mini", data).unwrap();
         match event {
             Some(crate::providers::StreamEvent::Usage {
                 input,

@@ -1,0 +1,481 @@
+//! Preset provider templates.
+//!
+//! These are the canonical "starter kits" the runtime offers via
+//! `peko provider add --template <id>`. Each template describes a
+//! known provider with its default base URL, API format, curated model
+//! list, known context lengths, and any required headers.
+//!
+//! Templates are **not** runtime state. They are compiled-in
+//! `&'static` data; running the runtime with no users still has
+//! templates available. Users instantiate a `ProviderCatalogEntry`
+//! from a template via `peko provider add --template <id>`, at which
+//! point the entry is owned by the user and can be edited freely.
+//!
+//! ## When to add a template vs. a custom provider
+//!
+//! - **Template**: when a provider has stable, widely-known URL, format,
+//!   and model IDs worth curating (Anthropic, OpenAI, Groq, Together,
+//!   Ollama, …).
+//! - **Custom** (`peko provider add --custom`): for one-off or
+//!   self-hosted endpoints (a llama.cpp server, an internal proxy, a
+//!   new vendor before we've blessed it as a template).
+//!
+//! ## Adding new templates
+//!
+//! Append to `BUILT_IN_TEMPLATES` with a unique lowercase id, a
+//! non-empty model list, and a `default_model` that references one of
+//! those models. Add a unit test asserting the template is findable.
+
+use crate::providers::catalog::ApiFormat;
+
+/// One model declared by a provider template.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelTemplate {
+    /// Model id as it appears on the wire.
+    pub id: &'static str,
+    /// Human-readable display name (optional).
+    pub display_name: Option<&'static str>,
+    /// Maximum context length in tokens.
+    pub context_length: Option<u32>,
+    /// Maximum output tokens for a single response.
+    pub max_output_tokens: Option<u32>,
+    /// Capability tags. See `catalog::ModelCapability`.
+    pub capabilities: &'static [crate::providers::catalog::ModelCapability],
+}
+
+/// One preset provider template.
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderTemplate {
+    /// Canonical lowercase provider id.
+    pub id: &'static str,
+    /// Human-readable display name.
+    pub display_name: &'static str,
+    /// Wire format.
+    pub api_format: ApiFormat,
+    /// Base URL for the API.
+    pub base_url: &'static str,
+    /// Whether an API key is required.
+    pub requires_key: bool,
+    /// Curated model list.
+    pub models: &'static [ModelTemplate],
+    /// Default model id (must reference one of `models`).
+    pub default_model: &'static str,
+    /// Optional extra HTTP headers.
+    pub headers: &'static [(&'static str, &'static str)],
+}
+
+/// Built-in provider templates. Add new templates at the end; never
+/// reorder or remove existing entries — registry and CLI users may
+/// reference the template id by name.
+pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
+    // ── Native OpenAI ─────────────────────────────────────────────────
+    ProviderTemplate {
+        id: "openai",
+        display_name: "OpenAI",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.openai.com/v1",
+        requires_key: true,
+        models: &[
+            ModelTemplate {
+                id: "gpt-4o",
+                display_name: Some("GPT-4o"),
+                context_length: Some(128_000),
+                max_output_tokens: Some(16_384),
+                capabilities: &[
+                    crate::providers::catalog::ModelCapability::ToolUse,
+                    crate::providers::catalog::ModelCapability::Vision,
+                    crate::providers::catalog::ModelCapability::JsonMode,
+                    crate::providers::catalog::ModelCapability::Streaming,
+                ],
+            },
+            ModelTemplate {
+                id: "gpt-4o-mini",
+                display_name: Some("GPT-4o mini"),
+                context_length: Some(128_000),
+                max_output_tokens: Some(16_384),
+                capabilities: &[
+                    crate::providers::catalog::ModelCapability::ToolUse,
+                    crate::providers::catalog::ModelCapability::Vision,
+                    crate::providers::catalog::ModelCapability::JsonMode,
+                    crate::providers::catalog::ModelCapability::Streaming,
+                ],
+            },
+            ModelTemplate {
+                id: "o1",
+                display_name: Some("o1"),
+                context_length: Some(200_000),
+                max_output_tokens: Some(100_000),
+                capabilities: &[
+                    crate::providers::catalog::ModelCapability::ToolUse,
+                    crate::providers::catalog::ModelCapability::Streaming,
+                ],
+            },
+        ],
+        default_model: "gpt-4o-mini",
+        headers: &[],
+    },
+    // ── Native Anthropic ──────────────────────────────────────────────
+    ProviderTemplate {
+        id: "anthropic",
+        display_name: "Anthropic",
+        api_format: ApiFormat::AnthropicMessages,
+        base_url: "https://api.anthropic.com",
+        requires_key: true,
+        models: &[
+            ModelTemplate {
+                id: "claude-sonnet-4-5",
+                display_name: Some("Claude Sonnet 4.5"),
+                context_length: Some(200_000),
+                max_output_tokens: Some(8_192),
+                capabilities: &[
+                    crate::providers::catalog::ModelCapability::ToolUse,
+                    crate::providers::catalog::ModelCapability::Vision,
+                    crate::providers::catalog::ModelCapability::PromptCaching,
+                    crate::providers::catalog::ModelCapability::Streaming,
+                ],
+            },
+            ModelTemplate {
+                id: "claude-3-5-sonnet-latest",
+                display_name: Some("Claude 3.5 Sonnet"),
+                context_length: Some(200_000),
+                max_output_tokens: Some(8_192),
+                capabilities: &[
+                    crate::providers::catalog::ModelCapability::ToolUse,
+                    crate::providers::catalog::ModelCapability::Vision,
+                    crate::providers::catalog::ModelCapability::PromptCaching,
+                    crate::providers::catalog::ModelCapability::Streaming,
+                ],
+            },
+            ModelTemplate {
+                id: "claude-3-5-haiku-latest",
+                display_name: Some("Claude 3.5 Haiku"),
+                context_length: Some(200_000),
+                max_output_tokens: Some(8_192),
+                capabilities: &[
+                    crate::providers::catalog::ModelCapability::ToolUse,
+                    crate::providers::catalog::ModelCapability::PromptCaching,
+                    crate::providers::catalog::ModelCapability::Streaming,
+                ],
+            },
+        ],
+        default_model: "claude-sonnet-4-5",
+        headers: &[],
+    },
+    // ── OpenAI-compatible providers (alphabetical) ────────────────────
+    ProviderTemplate {
+        id: "azure-openai",
+        display_name: "Azure OpenAI",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "", // user must supply deployment URL
+        requires_key: true,
+        models: &[ModelTemplate {
+            id: "gpt-4",
+            display_name: Some("GPT-4 (deployment-specific)"),
+            context_length: Some(8_192),
+            max_output_tokens: None,
+            capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+        }],
+        default_model: "gpt-4",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "cohere",
+        display_name: "Cohere",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.cohere.com/v2",
+        requires_key: true,
+        models: &[ModelTemplate {
+            id: "command-r-plus",
+            display_name: Some("Command R+"),
+            context_length: Some(128_000),
+            max_output_tokens: None,
+            capabilities: &[
+                crate::providers::catalog::ModelCapability::ToolUse,
+                crate::providers::catalog::ModelCapability::Streaming,
+            ],
+        }],
+        default_model: "command-r-plus",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "deepseek",
+        display_name: "DeepSeek",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.deepseek.com/v1",
+        requires_key: true,
+        models: &[
+            ModelTemplate {
+                id: "deepseek-chat",
+                display_name: Some("DeepSeek-V3"),
+                context_length: Some(64_000),
+                max_output_tokens: None,
+                capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+            },
+            ModelTemplate {
+                id: "deepseek-reasoner",
+                display_name: Some("DeepSeek-R1"),
+                context_length: Some(64_000),
+                max_output_tokens: None,
+                capabilities: &[],
+            },
+        ],
+        default_model: "deepseek-chat",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "fireworks",
+        display_name: "Fireworks AI",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.fireworks.ai/inference/v1",
+        requires_key: true,
+        models: &[ModelTemplate {
+            id: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            display_name: Some("Llama 3.1 70B (Fireworks)"),
+            context_length: Some(131_072),
+            max_output_tokens: None,
+            capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+        }],
+        default_model: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "groq",
+        display_name: "Groq",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.groq.com/openai/v1",
+        requires_key: true,
+        models: &[
+            ModelTemplate {
+                id: "llama-3.1-70b-versatile",
+                display_name: Some("Llama 3.1 70B Versatile"),
+                context_length: Some(131_072),
+                max_output_tokens: None,
+                capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+            },
+            ModelTemplate {
+                id: "llama-3.3-70b-versatile",
+                display_name: Some("Llama 3.3 70B Versatile"),
+                context_length: Some(131_072),
+                max_output_tokens: None,
+                capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+            },
+        ],
+        default_model: "llama-3.3-70b-versatile",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "moonshot",
+        display_name: "Moonshot AI (Kimi)",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.moonshot.cn/v1",
+        requires_key: true,
+        models: &[ModelTemplate {
+            id: "kimi-k2.5",
+            display_name: Some("Kimi K2.5"),
+            context_length: Some(128_000),
+            max_output_tokens: None,
+            capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+        }],
+        default_model: "kimi-k2.5",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "ollama",
+        display_name: "Ollama (local)",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "http://localhost:11434/v1",
+        requires_key: false,
+        models: &[
+            ModelTemplate {
+                id: "llama3.1",
+                display_name: Some("Llama 3.1"),
+                context_length: Some(128_000),
+                max_output_tokens: None,
+                capabilities: &[],
+            },
+            ModelTemplate {
+                id: "qwen2.5-coder",
+                display_name: Some("Qwen 2.5 Coder"),
+                context_length: Some(32_768),
+                max_output_tokens: None,
+                capabilities: &[],
+            },
+        ],
+        default_model: "llama3.1",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "openrouter",
+        display_name: "OpenRouter",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://openrouter.ai/api/v1",
+        requires_key: true,
+        models: &[
+            ModelTemplate {
+                id: "openai/gpt-4o-mini",
+                display_name: Some("GPT-4o mini (via OpenRouter)"),
+                context_length: Some(128_000),
+                max_output_tokens: None,
+                capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+            },
+            ModelTemplate {
+                id: "anthropic/claude-3.5-sonnet",
+                display_name: Some("Claude 3.5 Sonnet (via OpenRouter)"),
+                context_length: Some(200_000),
+                max_output_tokens: None,
+                capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+            },
+        ],
+        default_model: "openai/gpt-4o-mini",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "perplexity",
+        display_name: "Perplexity",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.perplexity.ai",
+        requires_key: true,
+        models: &[ModelTemplate {
+            id: "llama-3.1-sonar-large-128k-online",
+            display_name: Some("Llama 3.1 Sonar Large 128k Online"),
+            context_length: Some(127_072),
+            max_output_tokens: None,
+            capabilities: &[],
+        }],
+        default_model: "llama-3.1-sonar-large-128k-online",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "together",
+        display_name: "Together AI",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.together.xyz/v1",
+        requires_key: true,
+        models: &[ModelTemplate {
+            id: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+            display_name: Some("Llama 3.1 70B Instruct Turbo"),
+            context_length: Some(131_072),
+            max_output_tokens: None,
+            capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+        }],
+        default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "xai",
+        display_name: "xAI (Grok)",
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url: "https://api.x.ai/v1",
+        requires_key: true,
+        models: &[
+            ModelTemplate {
+                id: "grok-beta",
+                display_name: Some("Grok Beta"),
+                context_length: Some(131_072),
+                max_output_tokens: None,
+                capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+            },
+            ModelTemplate {
+                id: "grok-2",
+                display_name: Some("Grok 2"),
+                context_length: Some(131_072),
+                max_output_tokens: None,
+                capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+            },
+        ],
+        default_model: "grok-2",
+        headers: &[],
+    },
+    // ── Anthropic-compatible providers ───────────────────────────────
+    ProviderTemplate {
+        id: "kimi",
+        display_name: "Kimi (Kimi Code API)",
+        api_format: ApiFormat::AnthropicMessages,
+        base_url: "https://api.kimi.com/coding",
+        requires_key: true,
+        models: &[ModelTemplate {
+            id: "kimi-for-coding",
+            display_name: Some("Kimi for Coding"),
+            context_length: Some(128_000),
+            max_output_tokens: None,
+            capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+        }],
+        default_model: "kimi-for-coding",
+        headers: &[],
+    },
+    ProviderTemplate {
+        id: "minimax",
+        display_name: "MiniMax",
+        api_format: ApiFormat::AnthropicMessages,
+        base_url: "https://api.minimaxi.com/anthropic",
+        requires_key: true,
+        models: &[ModelTemplate {
+            id: "MiniMax-M2.7",
+            display_name: Some("MiniMax M2.7"),
+            context_length: Some(128_000),
+            max_output_tokens: None,
+            capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
+        }],
+        default_model: "MiniMax-M2.7",
+        headers: &[],
+    },
+];
+
+/// Find a template by its canonical id (case-insensitive).
+#[must_use]
+pub fn find_template(id: &str) -> Option<&'static ProviderTemplate> {
+    let needle = id.to_lowercase();
+    BUILT_IN_TEMPLATES
+        .iter()
+        .find(|t| t.id.eq_ignore_ascii_case(&needle))
+}
+
+/// Enumerate all built-in templates.
+pub fn iter_templates() -> impl Iterator<Item = &'static ProviderTemplate> {
+    BUILT_IN_TEMPLATES.iter()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_template_has_a_default_model_in_its_list() {
+        for t in BUILT_IN_TEMPLATES {
+            assert!(
+                t.models.iter().any(|m| m.id == t.default_model),
+                "template '{}' default_model '{}' is not in its models list",
+                t.id,
+                t.default_model
+            );
+        }
+    }
+
+    #[test]
+    fn every_template_has_a_nonempty_model_list() {
+        for t in BUILT_IN_TEMPLATES {
+            assert!(
+                !t.models.is_empty(),
+                "template '{}' ships with no models",
+                t.id
+            );
+        }
+    }
+
+    #[test]
+    fn template_ids_are_unique_and_lowercase() {
+        let mut seen = std::collections::HashSet::new();
+        for t in BUILT_IN_TEMPLATES {
+            assert_eq!(t.id, t.id.to_lowercase(), "template id '{}' not lowercase", t.id);
+            assert!(seen.insert(t.id), "duplicate template id '{}'", t.id);
+        }
+    }
+
+    #[test]
+    fn find_template_is_case_insensitive() {
+        assert!(find_template("Anthropic").is_some());
+        assert!(find_template("ANTHROPIC").is_some());
+        assert!(find_template("anthropic").is_some());
+        assert!(find_template("nope").is_none());
+    }
+}

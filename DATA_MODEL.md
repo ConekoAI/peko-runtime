@@ -93,15 +93,25 @@ description = "..."                 # Optional. Free text, shown in registry lis
 author      = "user@example.com"   # Optional
 license     = "MIT"                # Optional
 
-# ── Provider ──────────────────────────────────────────────────────────────────
+# ── Provider preference (v3+) ────────────────────────────────────────────────
+# Provider/model/API-key wiring lives in the runtime-owned catalog at
+# `~/.peko/providers.toml` plus the OS keychain (service "peko",
+# account = provider_id). An agent only carries soft hints:
 
-[provider]
-provider_type = "anthropic"        # REQUIRED. See §2.2
-model         = "claude-sonnet-4-6" # REQUIRED. Provider-specific model identifier
-max_tokens    = 8096               # Optional. Default: 8096
-temperature   = 0.7                # Optional. Default: 1.0 (provider default)
-top_p         = null               # Optional. Null = provider default
-system_prompt = null               # Optional. Inline system prompt (prefer BOOTSTRAP.md)
+preferred_provider_id = "anthropic"   # Optional. Provider id from the catalog.
+preferred_model_id    = "claude-sonnet-4-5"  # Optional. Model id within that provider.
+
+# These are *hints* — `LlmResolver` chooses the actual provider/model
+# at request time using this precedence:
+#   1. explicit caller override (`peko send --provider X --model Y`)
+#   2. session-pinned choice from a prior turn
+#   3. agent.preferred_provider_id / preferred_model_id  <-- here
+#   4. runtime default (`peko provider set-default X`)
+#   5. first enabled catalog entry
+
+# Legacy `[provider]` blocks are still parseable so the v3 migration
+# can extract them on first load, but the field is
+# `#[serde(skip_serializing)]` — re-serialized agents never carry it.
 
 # ── Base image inheritance ─────────────────────────────────────────────────
 
@@ -162,23 +172,49 @@ session_timeout_seconds = 3600    # Optional. Idle session timeout. Default: no 
 max_session_tokens  = 200000      # Optional. Truncate context if exceeded
 ```
 
-### 2.2 provider_type Values
+### 2.2 Provider catalog (v3+)
 
-| Value | Provider |
-|-------|----------|
-| `anthropic` | Anthropic Claude (via API key) |
-| `openai` | OpenAI (via API key) |
-| `ollama` | Local Ollama instance |
-| `openai_compatible` | Any OpenAI-compatible endpoint; set `base_url` in `[provider]` |
-
-For `ollama` and `openai_compatible`, add:
+As of v3, providers are not declared in `config.toml`. They live in
+the runtime-owned catalog at `~/.peko/providers.toml`:
 
 ```toml
-[provider]
-provider_type = "openai_compatible"
-model         = "llama3.2"
-base_url      = "http://localhost:11435/v1"
+# ~/.peko/providers.toml
+version = "3.0"
+
+[entries.openai]
+display_name = "OpenAI"
+api_format   = "openai_completions"
+base_url     = "https://api.openai.com/v1"
+default_model_id = "gpt-4o-mini"
+models = [
+    { id = "gpt-4o",      context_length = 128000, capabilities = ["tool_use", "vision"] },
+    { id = "gpt-4o-mini", context_length = 128000 },
+]
+
+[entries.anthropic]
+display_name = "Anthropic"
+api_format   = "anthropic_messages"
+base_url     = "https://api.anthropic.com"
+default_model_id = "claude-sonnet-4-5"
+models       = [...]
+
+default_provider_id = "openai"
+default_model_id    = "gpt-4o-mini"
 ```
+
+API keys are NOT in this file. They live in the OS keychain under
+service `"peko"` with the provider id as the account name. Manage
+them with:
+
+```bash
+peko provider add --template anthropic   # seeds a catalog entry
+peko credential set anthropic             # stores the API key in the keychain
+peko provider set-default anthropic --model claude-sonnet-4-5
+```
+
+The legacy `[provider]` block in agent configs is preserved as
+`#[serde(default, skip_serializing)]` for migration only — it is
+never re-written and cannot be pushed to a registry.
 
 ### 2.3 Inheritance and Merging
 

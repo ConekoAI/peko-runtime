@@ -360,43 +360,42 @@ fn create_openai_compatible_provider(config: &ProviderConfig) -> Result<Arc<Prov
         .clone()
         .context("Base URL required for OpenAI-compatible provider")?;
 
-    let model = config
-        .default_model_config()
-        .map_or_else(|| "gpt-4o-mini".to_string(), |m| m.name.clone());
-
-    // Create a generic OpenAI-compatible adapter
+    // Create a generic OpenAI-compatible adapter. The model id is no
+    // longer baked into the adapter — it's threaded per request.
     let adapter = AnyAdapter::OpenAiCompatible(OpenAiCompatibleAdapter::new(
         "openai-compatible",
-        base_url.clone(),
-        model,
+        base_url,
     ));
     Ok(Arc::new(Provider::new(adapter, api_key, config.clone())?))
 }
 
-/// Create provider with appropriate adapter
+/// Create provider with appropriate adapter.
+///
+/// `model` is preserved only on `ProviderConfig` (used as the default
+/// `model_id` when callers don't pass one explicitly). Adapters no
+/// longer store it.
 fn create_provider_with_adapter(
     metadata: &ProviderMetadata,
     api_key: String,
     base_url: String,
-    model: String,
+    _model: String,
     config: ProviderConfig,
 ) -> Result<Arc<Provider>> {
     match metadata.api_type {
         ApiType::OpenAICompletions => {
-            let adapter =
-                AnyAdapter::OpenAi(if base_url.is_empty() || base_url == metadata.base_url {
-                    OpenAiAdapter::new(model)
-                } else {
-                    OpenAiAdapter::new(model).with_base_url(base_url)
-                });
+            let adapter = if base_url.is_empty() || base_url == metadata.base_url {
+                AnyAdapter::OpenAi(OpenAiAdapter::new())
+            } else {
+                AnyAdapter::OpenAi(OpenAiAdapter::new().with_base_url(base_url))
+            };
             Ok(Arc::new(Provider::new(adapter, api_key, config)?))
         }
         ApiType::AnthropicMessages => {
-            let adapter = AnyAdapter::Anthropic(if base_url.is_empty() {
-                AnthropicAdapter::new(model)
+            let adapter = if base_url.is_empty() {
+                AnyAdapter::Anthropic(AnthropicAdapter::new())
             } else {
-                AnthropicAdapter::new(model).with_base_url(base_url)
-            });
+                AnyAdapter::Anthropic(AnthropicAdapter::new().with_base_url(base_url))
+            };
             Ok(Arc::new(Provider::new(adapter, api_key, config)?))
         }
     }
@@ -492,15 +491,13 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_metadata() {
+    fn test_provider_metadata_anthropic_groq() {
         let registry = ProviderRegistry::new();
 
-        // Anthropic provider
         let anthropic = registry.get("anthropic").unwrap();
         assert_eq!(anthropic.id, "anthropic");
         assert_eq!(anthropic.api_type, ApiType::AnthropicMessages);
 
-        // Groq provider (OpenAI-compatible)
         let groq = registry.get("groq").unwrap();
         assert_eq!(groq.id, "groq");
         assert_eq!(groq.api_type, ApiType::OpenAICompletions);
@@ -508,10 +505,68 @@ mod tests {
     }
 
     #[test]
-    fn test_list_providers() {
+    fn test_list_providers_includes_canonical_ids() {
         let providers = list_providers();
         assert!(!providers.is_empty());
         assert!(providers.iter().any(|p| p.id == "openai"));
         assert!(providers.iter().any(|p| p.id == "anthropic"));
     }
+}
+
+/// Build an `Arc<Provider>` from a catalog entry plus an API key and
+/// the chosen model.
+///
+/// This is the factory used by `LlmResolver` and the migration path.
+/// The adapter is chosen from `entry.api_format`; the model id is
+/// stored on the `ProviderConfig` so `Provider::model_id()` returns
+/// it as the default for legacy callers.
+pub fn create_provider_for_entry(
+    entry: &crate::providers::catalog::ProviderCatalogEntry,
+    api_key: &str,
+    model: &crate::providers::catalog::ModelInfo,
+) -> Result<Arc<Provider>> {
+    use crate::providers::adapters::{AnyAdapter, AnthropicAdapter, OpenAiAdapter};
+    use crate::providers::catalog::ApiFormat;
+    use crate::providers::types::ProviderConfig;
+
+    let adapter = match entry.api_format {
+        ApiFormat::OpenaiCompletions => {
+            let a = if entry.base_url.is_empty() {
+                OpenAiAdapter::new()
+            } else {
+                OpenAiAdapter::new().with_base_url(&entry.base_url)
+            };
+            AnyAdapter::OpenAi(a)
+        }
+        ApiFormat::AnthropicMessages => {
+            let a = if entry.base_url.is_empty() {
+                AnthropicAdapter::new()
+            } else {
+                AnthropicAdapter::new().with_base_url(&entry.base_url)
+            };
+            AnyAdapter::Anthropic(a)
+        }
+    };
+
+    let mut models = std::collections::HashMap::new();
+    models.insert(
+        entry.default_model_id.clone(),
+        crate::types::provider::ModelConfig {
+            name: model.id.clone(),
+            ..Default::default()
+        },
+    );
+    let mut config = ProviderConfig::default();
+    config.default_model = entry.default_model_id.clone();
+    config.models = models;
+
+    Provider::new(adapter, api_key.to_string(), config).map(Arc::new)
+}
+
+/// Resolve the model name to thread as the default for the legacy
+/// `ProviderConfig`-based path. Mirrors `entry.default_model_id`.
+pub fn default_model_for_entry(
+    entry: &crate::providers::catalog::ProviderCatalogEntry,
+) -> &str {
+    &entry.default_model_id
 }

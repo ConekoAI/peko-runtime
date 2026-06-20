@@ -12,10 +12,13 @@
 //! 2. If unique API: Implement `ApiAdapter` trait
 
 pub mod adapters;
+pub mod catalog;
 pub mod core;
 pub mod mock;
 pub mod registry;
+pub mod resolver;
 pub mod synthetic_stream;
+pub mod templates;
 pub mod transport;
 pub mod types;
 
@@ -23,9 +26,17 @@ pub mod types;
 pub use adapters::{
     AnthropicAdapter, AnyAdapter, ApiAdapter, OpenAiAdapter, OpenAiCompatibleAdapter,
 };
+pub use catalog::{
+    ApiFormat, ModelCapability, ModelInfo, ProviderCatalog, ProviderCatalogEntry,
+    ProviderCatalogFile,
+};
 pub use core::Provider;
 pub use mock::{MockAdapter, MockResponse};
 pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
+pub use resolver::{
+    KeyProbeReport, LlmResolver, ResolvedChoice, ResolveRequest, ResolveSource,
+};
+pub use templates::{find_template, iter_templates, ModelTemplate, ProviderTemplate};
 pub use transport::{AuthConfig, HttpClient, SseParser};
 pub use types::{
     BlockType, ChatOptions, ChatResponse, ContentBlock, ContentBlockId, ContentDelta, LlmMessage,

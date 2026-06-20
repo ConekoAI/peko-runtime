@@ -22,6 +22,7 @@ fn is_owner_empty_user(owner: &Principal) -> bool {
 pub async fn migrate_legacy_data(resolver: &PathResolver, runtime_id: &str) -> Result<()> {
     migrate_adr032(resolver, runtime_id).await?;
     migrate_adr033(resolver, runtime_id).await?;
+    crate::runtime::migration_v3::migrate_adr_provider_catalog_v3(resolver).await?;
     Ok(())
 }
 

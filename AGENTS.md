@@ -100,7 +100,12 @@ src/
 ├── observability/  # Metrics, logging, tracing
 ├── portable/       # OCI-inspired image packaging (.agent packages)
 ├── prompt/         # Prompt assembly (markdown files, skills injection)
-├── providers/      # LLM provider integrations (OpenAI, Anthropic, Ollama, Kimi, etc.)
+├── providers/      # LLM provider integrations (v3: catalog + resolver)
+│   ├── adapters/   # OpenAI / Anthropic / openai-compatible ApiAdapters
+│   ├── catalog.rs  # ProviderCatalog — runtime-owned, persisted to `~/.peko/providers.toml`
+│   ├── templates.rs# Built-in preset templates with curated model lists
+│   ├── resolver.rs # LlmResolver — precedence: override > session > agent > default > first
+│   └── core.rs     # Unified Provider type
 ├── registry/       # Image registry push/pull with auth
 ├── runtime/        # Runtime configuration and state
 ├── session/        # Session JSONL management, branching, indexing
