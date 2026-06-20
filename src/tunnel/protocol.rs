@@ -208,6 +208,101 @@ pub enum TunnelMessage {
     /// Status update
     #[serde(rename = "status_update")]
     StatusUpdate { payload: StatusUpdatePayload },
+
+    // --- Cross-runtime agent-to-agent (issue #29) ---
+    /// Agent-to-agent request from the **caller** runtime to the
+    /// **target** runtime, proxied through PekoHub. Issue #29 (Slice A —
+    /// wire shape).
+    ///
+    /// The caller runtime resolves the target via PekoHub's directory
+    /// API (pekohub#14: `GET /v1/agents/by-did/:did` or
+    /// `GET /v1/agents/by-handle/:owner/:agent_name`), signs this
+    /// envelope with its `PekoHubCredential` private key, and sends
+    /// it to PekoHub which forwards to the target runtime over the
+    /// target's existing tunnel. The target verifies the caller's
+    /// `caller_runtime_id` against the hub's allowlist (defense in
+    /// depth) before attributing the receiving agent's session to
+    /// `Principal::Agent(caller_agent_did)` and dispatching.
+    ///
+    /// Slice A only defines and round-trips the wire shape. Slice B
+    /// adds the outbound signer (`PekoHubCredential::sign(...)` against
+    /// the canonical pre-image `request_id || caller_runtime_id ||
+    /// caller_agent_did || target_agent_did || message || session_id?`).
+    /// Slice C adds the inbound verifier + dispatcher route.
+    #[serde(rename = "agent_to_agent_request", rename_all = "camelCase")]
+    AgentToAgentRequest {
+        /// Globally unique request ID. Used to correlate the matching
+        /// `AgentToAgentResponse` and to scope the canonical
+        /// signature pre-image (replay protection: PekoHub MAY
+        /// reject duplicate IDs within a sliding window).
+        request_id: String,
+        /// The caller runtime's `did:key` form (the `runtime_id` it
+        /// presented in `RuntimeHello`). The target runtime verifies
+        /// the `signature` field against the public key derived from
+        /// this DID and rejects the message if the caller is not on
+        /// the hub's allowlist.
+        caller_runtime_id: String,
+        /// The caller agent's stable DID (issue #28 form:
+        /// `did:peko:agent:<keyhash>`). Projected to
+        /// `Principal::Agent(caller_agent_did)` on the target side
+        /// for session attribution, permission grant lookup, and the
+        /// `AuditEvent.caller` field (issue #26).
+        caller_agent_did: String,
+        /// The **target** agent's stable DID. The target runtime
+        /// resolves this against its local agent table
+        /// (`AgentConfig.agent_did`) to find the agent name to
+        /// dispatch on. A missing target_agent_did on the receiving
+        /// side is a 404 — the hub-side directory should have caught
+        /// this, so it most often indicates a stale resolution
+        /// cached on the caller.
+        target_agent_did: String,
+        /// Optional session ID to resume on the target side. When
+        /// absent, the target runtime allocates a fresh session
+        /// keyed under `peer: agent:<caller_agent_did>`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        /// The message body to deliver to the target agent.
+        message: String,
+        /// Optional team name to scope the target agent's session
+        /// within. When absent, the target runtime uses its default
+        /// team. Mirrors the local `a2a_send` semantics.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        team: Option<String>,
+        /// Ed25519 signature, base64url-encoded, over the canonical
+        /// pre-image (see Slice B comment above). The target derives
+        /// the verifying public key from `caller_runtime_id`
+        /// (self-certifying `did:key`).
+        ///
+        /// Left as `String` rather than `Vec<u8>` so the wire form
+        /// matches the existing `RuntimeHello.signature` /
+        /// `TunnelChallengeAck.signature` shape — those use
+        /// base64url-in-string and the hub-side TypeScript code
+        /// expects strings.
+        signature: String,
+    },
+
+    /// Agent-to-agent response from the **target** runtime back to the
+    /// **caller**, also proxied through PekoHub. Issue #29 (Slice A —
+    /// wire shape).
+    ///
+    /// The `payload` is the serialized form of an IPC `ResponsePacket`
+    /// (same as `ProxiedResponse.payload`) so the caller-side decoder
+    /// can be the same code path for both user-originated and
+    /// agent-originated proxied responses. Slice C is what actually
+    /// emits this; Slice A only pins the shape.
+    #[serde(rename = "agent_to_agent_response", rename_all = "camelCase")]
+    AgentToAgentResponse {
+        /// Matches the `request_id` of the originating
+        /// `AgentToAgentRequest`. PekoHub uses this to route the
+        /// response back to the caller's tunnel.
+        request_id: String,
+        /// Serialized IPC `ResponsePacket` (same encoding as
+        /// `ProxiedResponse.payload`). Slice C decides whether the
+        /// target's `AuditEvent` is emitted on the target side, on
+        /// the caller side, or both — the payload itself is
+        /// indifferent.
+        payload: Vec<u8>,
+    },
 }
 
 impl TunnelMessage {
@@ -607,6 +702,161 @@ mod tests {
                 assert_eq!(payload.status, InstanceStatus::Busy);
             }
             _ => panic!("Expected StatusUpdate"),
+        }
+    }
+
+    // -- Issue #29 (Slice A): cross-runtime a2a wire shape ------------
+
+    /// `AgentToAgentRequest` round-trips with all fields populated.
+    /// The on-wire tag is `agent_to_agent_request` (snake_case, to
+    /// match the existing dispatch table on the hub side) and the
+    /// field names are camelCase (matching every other tunnel
+    /// message). Slice B (outbound signer) and Slice C (inbound
+    /// verifier) will read these names verbatim, so pinning them
+    /// here also pins the contract with pekohub#14.
+    #[test]
+    fn test_agent_to_agent_request_roundtrip() {
+        let msg = TunnelMessage::AgentToAgentRequest {
+            request_id: "req-abc-123".to_string(),
+            caller_runtime_id: "did:key:zRuntime1".to_string(),
+            caller_agent_did: "did:peko:agent:caller-hash".to_string(),
+            target_agent_did: "did:peko:agent:target-hash".to_string(),
+            session_id: Some("sess-xyz".to_string()),
+            message: "review this PR".to_string(),
+            team: Some("default".to_string()),
+            signature: "base64url-sig".to_string(),
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+
+        assert!(
+            json.contains("\"agent_to_agent_request\""),
+            "tag must be snake_case `agent_to_agent_request`, got: {json}"
+        );
+        // Every field is camelCase on the wire.
+        assert!(
+            json.contains("\"requestId\""),
+            "field requestId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"callerRuntimeId\""),
+            "field callerRuntimeId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"callerAgentDid\""),
+            "field callerAgentDid must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"targetAgentDid\""),
+            "field targetAgentDid must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"sessionId\""),
+            "field sessionId must be camelCase, got: {json}"
+        );
+        assert!(
+            json.contains("\"signature\""),
+            "signature must be present on the wire, got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::AgentToAgentRequest {
+                request_id,
+                caller_runtime_id,
+                caller_agent_did,
+                target_agent_did,
+                session_id,
+                message,
+                team,
+                signature,
+            } => {
+                assert_eq!(request_id, "req-abc-123");
+                assert_eq!(caller_runtime_id, "did:key:zRuntime1");
+                assert_eq!(caller_agent_did, "did:peko:agent:caller-hash");
+                assert_eq!(target_agent_did, "did:peko:agent:target-hash");
+                assert_eq!(session_id.as_deref(), Some("sess-xyz"));
+                assert_eq!(message, "review this PR");
+                assert_eq!(team.as_deref(), Some("default"));
+                assert_eq!(signature, "base64url-sig");
+            }
+            other => panic!("Expected AgentToAgentRequest, got: {other:?}"),
+        }
+    }
+
+    /// Minimal `AgentToAgentRequest` — no `session_id`, no `team`.
+    /// Both Option fields must be omitted from the wire form so
+    /// pre-#29 PekoHub doesn't see "unknown null field"; this is the
+    /// same back-compat shape the existing `bundleRef` / `metadata`
+    /// fields use elsewhere in this enum.
+    #[test]
+    fn test_agent_to_agent_request_minimal_roundtrip() {
+        let msg = TunnelMessage::AgentToAgentRequest {
+            request_id: "req-min".to_string(),
+            caller_runtime_id: "did:key:zRuntime1".to_string(),
+            caller_agent_did: "did:peko:agent:caller-hash".to_string(),
+            target_agent_did: "did:peko:agent:target-hash".to_string(),
+            session_id: None,
+            message: "hi".to_string(),
+            team: None,
+            signature: "sig".to_string(),
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+
+        assert!(
+            !json.contains("sessionId"),
+            "session_id must be omitted from the wire when None; got: {json}"
+        );
+        assert!(
+            !json.contains("\"team\""),
+            "team must be omitted from the wire when None; got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::AgentToAgentRequest {
+                session_id, team, ..
+            } => {
+                assert!(session_id.is_none());
+                assert!(team.is_none());
+            }
+            other => panic!("Expected AgentToAgentRequest, got: {other:?}"),
+        }
+    }
+
+    /// `AgentToAgentResponse` round-trips with a binary payload (the
+    /// IPC `ResponsePacket` form, opaque at this layer). Field name
+    /// is camelCase on the wire; the tag is snake_case
+    /// `agent_to_agent_response`.
+    #[test]
+    fn test_agent_to_agent_response_roundtrip() {
+        let msg = TunnelMessage::AgentToAgentResponse {
+            request_id: "req-abc-123".to_string(),
+            payload: vec![0xde, 0xad, 0xbe, 0xef],
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let json = String::from_utf8(bytes.clone()).unwrap();
+
+        assert!(
+            json.contains("\"agent_to_agent_response\""),
+            "tag must be snake_case `agent_to_agent_response`, got: {json}"
+        );
+        assert!(
+            json.contains("\"requestId\""),
+            "field requestId must be camelCase, got: {json}"
+        );
+
+        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
+        match decoded {
+            TunnelMessage::AgentToAgentResponse {
+                request_id,
+                payload,
+            } => {
+                assert_eq!(request_id, "req-abc-123");
+                assert_eq!(payload, vec![0xde, 0xad, 0xbe, 0xef]);
+            }
+            other => panic!("Expected AgentToAgentResponse, got: {other:?}"),
         }
     }
 }

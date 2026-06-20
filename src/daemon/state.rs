@@ -147,6 +147,22 @@ pub struct AppState {
     /// to surface the `disconnected` state with a non-zero attempt count.
     tunnel_attempts: Arc<RwLock<u32>>,
 
+    /// Cross-runtime a2a response correlation registry. Issue #29.
+    /// Shared between the outbound `A2aSendTool` path (which
+    /// registers a oneshot under `request_id`) and the inbound
+    /// tunnel dispatcher arm (which completes the oneshot when the
+    /// matching `AgentToAgentResponse` arrives). Initialized lazily
+    /// (a fresh `PendingA2aResponses`) so the registry exists even
+    /// before the tunnel connects.
+    pending_a2a_responses: Arc<crate::tunnel::PendingA2aResponses>,
+
+    /// Slot for the live outbound tunnel handle. The
+    /// `TunnelDispatcher` writes the freshest handle on every
+    /// reconnect; the `CrossRuntimeA2aCtx` (and any other consumer
+    /// that needs to send on the live tunnel) reads through the
+    /// same `Arc`. `None` when the tunnel isn't connected.
+    tunnel_handle_slot: Arc<RwLock<Option<crate::tunnel::TunnelHandle>>>,
+
     /// Last tunnel error message (set on each failed attempt; cleared on
     /// successful connect). Surfaced via `tunnel_health()` and ultimately
     /// `peko daemon status --json` (issue #8).
@@ -561,6 +577,13 @@ impl AppState {
             tunnel_attempts: Arc::new(RwLock::new(0)),
             tunnel_last_error: Arc::new(RwLock::new(None)),
             tunnel_degraded: Arc::new(RwLock::new(false)),
+            // Issue #29: cross-runtime a2a response correlation
+            // registry + outbound tunnel handle slot. Initialized
+            // eagerly so the registry exists before the tunnel
+            // connects; the slot starts as `None` and is filled by
+            // the dispatcher's handle-publisher on every reconnect.
+            pending_a2a_responses: Arc::new(crate::tunnel::PendingA2aResponses::new()),
+            tunnel_handle_slot: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -829,7 +852,7 @@ impl AppState {
         max_reconnect_attempts: u32,
     ) -> anyhow::Result<bool> {
         use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
-        use tracing::info;
+        use tracing::{info, warn};
 
         let cred = match load_pekohub_credential(None)? {
             Some(c) => c,
@@ -843,6 +866,27 @@ impl AppState {
         }
 
         let dispatcher = TunnelDispatcher::new(self.clone());
+
+        // Issue #29: build the cross-runtime a2a dispatch ctx
+        // (Slice B + Slice C bootstrap). Wires the
+        // `HubAgentDirectoryClient` (HTTP client to the hub's
+        // agent directory API) + the runtime's signing key + the
+        // pending registry + the tunnel handle slot into a single
+        // `Arc<CrossRuntimeA2aCtx>` and registers it on the
+        // `ExtensionServices` so every per-agent `A2aSendTool`
+        // gets the ctx injected (via `agent.rs`).
+        //
+        // If the directory client or signing-key build fails, log
+        // a warning and skip the registration — the local a2a path
+        // still works, and the operator can debug the directory
+        // config without losing tunnel connectivity.
+        if let Err(e) = self.install_cross_runtime_a2a_ctx(&cred).await {
+            warn!(
+                "Could not install cross-runtime a2a ctx (peko-runtime#29); \
+                 cross-runtime a2a will be unavailable until this is fixed. \
+                 The local a2a path is unaffected. error: {e:#}"
+            );
+        }
         {
             let mut td = self.tunnel_dispatcher.write().await;
             *td = Some(dispatcher.clone());
@@ -946,6 +990,102 @@ impl AppState {
     pub async fn tunnel_connected(&self) -> bool {
         let connected = self.tunnel_connected.read().await;
         *connected
+    }
+
+    /// Cross-runtime a2a response correlation registry (issue #29).
+    /// Shared with the `CrossRuntimeA2aCtx` on every `A2aSendTool`
+    /// and the inbound `AgentToAgentResponse` arm of the
+    /// `TunnelDispatcher`. Returns a clone of the inner `Arc`, so
+    /// call sites hold a cheap reference.
+    pub fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {
+        self.pending_a2a_responses.clone()
+    }
+
+    /// Slot for the live outbound tunnel handle (issue #29). The
+    /// `TunnelDispatcher` writes the freshest handle here on every
+    /// reconnect; the `CrossRuntimeA2aCtx` and any other consumer
+    /// reads through the returned `Arc` to send on the live
+    /// tunnel.
+    pub fn tunnel_handle_slot(&self) -> Arc<RwLock<Option<crate::tunnel::TunnelHandle>>> {
+        self.tunnel_handle_slot.clone()
+    }
+
+    /// Install the cross-runtime a2a dispatch context on the
+    /// `ExtensionServices` so every per-agent `A2aSendTool` is
+    /// built with the ctx (issue #29, Slice B + Slice C
+    /// bootstrap). Called by `start_tunnel` after the dispatcher
+    /// is built but before the tunnel client starts.
+    ///
+    /// The default response timeout is 60s — long enough to absorb
+    /// a hub round-trip and a target-runtime dispatch without
+    /// being so long the LLM caller hangs indefinitely if the
+    /// target is stuck. Make this configurable via daemon config
+    /// in a follow-up.
+    async fn install_cross_runtime_a2a_ctx(
+        &self,
+        cred: &crate::tunnel::PekoHubCredential,
+    ) -> anyhow::Result<()> {
+        use crate::tunnel::CrossRuntimeA2aCtx;
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine as _;
+        use ed25519_dalek::SigningKey;
+        use std::time::Duration;
+
+        // 1. Build the directory HTTP client from the credential
+        //    URL. `from_credential` flips wss:// → https:// and
+        //    strips the /v1/tunnel path. This is the only place
+        //    the runtime talks to pekohub's HTTP surface.
+        let directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
+            .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?;
+        let directory: Arc<dyn crate::tunnel::AgentDirectory> = Arc::new(directory);
+
+        // 2. Build the SigningKey from the credential's stored
+        //    private key. `resolve_private_key` returns the
+        //    base64-encoded raw 32 bytes (resolved from the OS
+        //    keychain if necessary). Decode and construct.
+        let privkey_b64 = cred.resolve_private_key()?;
+        let privkey_bytes = BASE64
+            .decode(privkey_b64.trim())
+            .map_err(|e| anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}"))?;
+        if privkey_bytes.len() != 32 {
+            anyhow::bail!(
+                "PekoHubCredential private key is {} bytes; expected 32",
+                privkey_bytes.len()
+            );
+        }
+        let mut key_arr = [0u8; 32];
+        key_arr.copy_from_slice(&privkey_bytes);
+        let signing_key = Arc::new(SigningKey::from_bytes(&key_arr));
+
+        // 3. Build the ctx. The handle slot is shared with the
+        //    `TunnelDispatcher` so the outbound path sees the
+        //    freshest handle on every reconnect.
+        let ctx = Arc::new(CrossRuntimeA2aCtx {
+            directory,
+            pending: self.pending_a2a_responses(),
+            signing_key,
+            caller_runtime_id: cred.runtime_id.clone(),
+            tunnel: self.tunnel_handle_slot(),
+            response_timeout: Duration::from_secs(60),
+        });
+
+        // 4. Register on the `ExtensionServices`. The per-agent
+        //    `A2aSendTool` constructor in `agent.rs` consults
+        //    `services().cross_runtime_a2a_ctx()` and calls
+        //    `with_cross_runtime(ctx)` if present.
+        //
+        //    `tool_runtime.extension_core().services()` returns
+        //    `Arc<ExtensionServices>`; we set the ctx on the
+        //    underlying ExtensionServices via the Arc. (In tests
+        //    the ExtensionCore may have no services — log and
+        //    skip rather than crash; the outbound path returns a
+        //    clean "not configured" error in that case.)
+        self.tool_runtime
+            .extension_core()
+            .services()
+            .set_cross_runtime_a2a_ctx(ctx);
+
+        Ok(())
     }
 
     /// Check if the tunnel has been started (has a cancellation token)

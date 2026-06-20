@@ -110,11 +110,26 @@ impl Agent {
             // Issue #28: prefer `agent_did` for the wire-side
             // `Principal::Agent`; fall back to the name for legacy agents
             // that predate the per-agent persistent keypair.
-            let a2a = match self.config.agent_did.as_deref() {
+            //
+            // Issue #29 (Slice B+C): also pull the cross-runtime a2a
+            // ctx from the extension services (set by the daemon-state
+            // after `start_tunnel`). If the runtime hasn't initialized
+            // cross-runtime dispatch yet (offline runtime, no PekoHub
+            // credential, or this PR's bootstrap hasn't shipped), the
+            // ctx is `None` and the tool falls back to the local-only
+            // path — same behavior as pre-#29.
+            let cross_ctx = self
+                .extension_core
+                .services()
+                .cross_runtime_a2a_ctx();
+            let mut a2a = match self.config.agent_did.as_deref() {
                 Some(did) if !did.is_empty() => crate::tools::A2aSendTool::new(agent_service)
                     .with_caller_did(&self.config.name, did),
                 _ => crate::tools::A2aSendTool::new(agent_service).with_caller(&self.config.name),
             };
+            if let Some(ctx) = cross_ctx {
+                a2a = a2a.with_cross_runtime(ctx);
+            }
             tools.push(Arc::new(a2a));
         } else {
             tracing::warn!("StatelessAgentService not available on ExtensionCore — a2a_send tool will not be registered");

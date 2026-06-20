@@ -17,11 +17,17 @@ use crate::auth::Principal;
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
 
+use super::a2a_audit;
 use super::protocol::{
     ExposureUpdatePayload, InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload,
     InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
 };
 use super::TunnelHandle;
+use super::{
+    a2a_signature::{verify_request, SignedFields},
+    did_key::did_key_to_verifying_key,
+};
+use crate::tools::builtin::messaging::a2a_send::{A2aSendResult, HubA2AErrorResponse};
 
 use crate::auth::ownership::Permission;
 
@@ -166,16 +172,33 @@ pub struct TunnelDispatcher {
     app_state: AppState,
     state: Arc<RwLock<TunnelDispatcherState>>,
     runtime_display_name: String,
+    /// Slot the dispatcher writes the live tunnel handle to on
+    /// every inbound message. The `CrossRuntimeA2aCtx` (issue #29)
+    /// holds a clone of this `Arc` and reads the handle when
+    /// sending outbound `AgentToAgentRequest` envelopes, so the
+    /// outbound path always uses the most-recent handle without
+    /// having to be re-built on reconnect. `None` until the first
+    /// inbound message lands.
+    tunnel_handle_slot: Arc<tokio::sync::RwLock<Option<TunnelHandle>>>,
 }
 
 impl TunnelDispatcher {
     /// Create a new tunnel dispatcher bound to the daemon's AppState
     pub fn new(app_state: AppState) -> Self {
+        // Pull the tunnel handle slot FIRST (clones the `Arc`,
+        // not the handle) so the field move into the struct
+        // below is the final use of `app_state`.
+        let tunnel_handle_slot = app_state.tunnel_handle_slot();
         let runtime_display_name = app_state.runtime_metadata().display_name.clone();
         Self {
             app_state,
             state: Arc::new(RwLock::new(TunnelDispatcherState::default())),
             runtime_display_name,
+            // Mirror the AppState's slot so the dispatcher publishes
+            // and the ctx reads from the SAME `Arc<RwLock<...>>`. The
+            // getter on AppState (`tunnel_handle_slot`) returns the
+            // exact `Arc`; cloning it here is a no-op refcount bump.
+            tunnel_handle_slot,
         }
     }
 
@@ -185,6 +208,15 @@ impl TunnelDispatcher {
         {
             let mut state = self.state.write().await;
             state.tunnel_handle = Some(handle.clone());
+        }
+        // Publish the live handle to the AppState slot so the
+        // outbound `CrossRuntimeA2aCtx` can send on the most-recent
+        // tunnel. Doing this synchronously (not under the spawn
+        // boundary) means the ctx sees the new handle before any
+        // a2a call started by the inbound message could race.
+        {
+            let mut slot = self.tunnel_handle_slot.write().await;
+            *slot = Some(handle.clone());
         }
         let dispatcher = self.clone();
         tokio::spawn(async move {
@@ -451,6 +483,45 @@ impl TunnelDispatcher {
             TunnelMessage::Disconnect { reason } => {
                 info!("Tunnel disconnect: {}", reason);
                 self.mark_disconnected().await;
+            }
+            // Issue #29 (Slice C): inbound `AgentToAgentRequest` from
+            // a peer runtime (proxied by pekohub). Verify the caller's
+            // signature against the `caller_runtime_id` they claim,
+            // look up the local agent by `target_agent_did`,
+            // attribute the dispatch under
+            // `Principal::Agent(caller_agent_did)`, run it, and send
+            // back an `AgentToAgentResponse` carrying the
+            // `A2aSendResult` payload.
+            TunnelMessage::AgentToAgentRequest {
+                request_id,
+                caller_runtime_id,
+                caller_agent_did,
+                target_agent_did,
+                session_id,
+                message,
+                team,
+                signature,
+            } => {
+                self.handle_inbound_agent_to_agent_request(
+                    handle,
+                    request_id,
+                    caller_runtime_id,
+                    caller_agent_did,
+                    target_agent_did,
+                    session_id,
+                    message,
+                    team,
+                    signature,
+                )
+                .await?;
+            }
+            // Inbound `AgentToAgentResponse` for a request the
+            // outbound `A2aSendTool` path registered in the pending
+            // registry. Complete the oneshot so the outbound
+            // `execute_remote` unblocks and decodes the payload.
+            TunnelMessage::AgentToAgentResponse { request_id, payload } => {
+                self.handle_inbound_agent_to_agent_response(request_id, payload)
+                    .await?;
             }
             _ => {
                 debug!("Ignoring tunnel message: {:?}", msg);
@@ -967,6 +1038,284 @@ impl TunnelDispatcher {
         drop(state);
 
         Ok(())
+    }
+
+    /// Handle an inbound `AgentToAgentRequest` from a peer runtime
+    /// (proxied by pekohub). Issue #29 Slice C.
+    ///
+    /// Steps:
+    /// 1. Derive the caller's `VerifyingKey` from `caller_runtime_id`
+    ///    (did:key is self-certifying).
+    /// 2. Re-verify the signature on the canonical pre-image — the
+    ///    hub's source-allowlist is the primary gate; this is
+    ///    defense in depth against a hub bug or a stale forwarder.
+    /// 3. Look up the local agent by `target_agent_did`.
+    /// 4. Build a `MessageRequest` with `caller_principal =
+    ///    Principal::Agent(caller_agent_did)` (issue #24 + #28).
+    /// 5. Dispatch via `StatelessAgentService`.
+    /// 6. Serialize the result to `A2aSendResult` and send back via
+    ///    the same tunnel as an `AgentToAgentResponse`.
+    ///
+    /// Every error path sends a structured `HubA2AErrorResponse`
+    /// back to the caller so the caller can distinguish "target
+    /// not found" from "target rejected me" from "I'm broken"
+    /// rather than waiting for a timeout.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_inbound_agent_to_agent_request(
+        &self,
+        handle: TunnelHandle,
+        request_id: String,
+        caller_runtime_id: String,
+        caller_agent_did: String,
+        target_agent_did: String,
+        session_id: Option<String>,
+        message: String,
+        team: Option<String>,
+        signature: String,
+    ) -> anyhow::Result<()> {
+        // 1. Derive the verifying key from the caller's runtime_id.
+        let verifying_key = match did_key_to_verifying_key(&caller_runtime_id) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(
+                    "inbound AgentToAgentRequest: invalid caller_runtime_id {caller_runtime_id}: {e}"
+                );
+                return self
+                    .send_hub_error(
+                        &handle,
+                        &request_id,
+                        "internal_error",
+                        &format!("invalid caller_runtime_id: {e}"),
+                    )
+                    .await;
+            }
+        };
+
+        // 2. Re-verify the signature on the canonical pre-image.
+        let signed = SignedFields {
+            request_id: &request_id,
+            caller_runtime_id: &caller_runtime_id,
+            caller_agent_did: &caller_agent_did,
+            target_agent_did: &target_agent_did,
+            message: &message,
+            session_id: session_id.as_deref(),
+            team: team.as_deref(),
+        };
+        if let Err(e) = verify_request(&verifying_key, signed, &signature) {
+            warn!(
+                "inbound AgentToAgentRequest: signature verification failed for caller_runtime_id={caller_runtime_id}: {e}"
+            );
+            return self
+                .send_hub_error(
+                    &handle,
+                    &request_id,
+                    "forbidden",
+                    &format!("signature did not verify: {e}"),
+                )
+                .await;
+        }
+
+        // 3. Look up the local agent by target_agent_did.
+        let local_agent_name = match self.find_local_agent_by_did(&target_agent_did).await {
+            Some(name) => name,
+            None => {
+                return self
+                    .send_hub_error(
+                        &handle,
+                        &request_id,
+                        "target_not_found",
+                        &format!(
+                            "no local agent has agent_did={target_agent_did} (request_id={request_id})"
+                        ),
+                    )
+                    .await;
+            }
+        };
+
+        // Slice D: emit the inbound-receive audit event now that
+        // the request has been verified, the agent has been
+        // located, and we're about to dispatch. The session_id is
+        // best-effort empty here (the dispatcher doesn't have
+        // session context); a future PR can thread it through.
+        let local_runtime_id = self.app_state.runtime_identity().runtime_did.clone();
+        let received_event = a2a_audit::build_a2a_received_inbound(
+            "", // session_id
+            &request_id,
+            &caller_runtime_id,
+            &caller_agent_did,
+            // Note: at this point we don't know the *original
+            // caller's* runtime_id beyond `caller_runtime_id`
+            // (the local runtime IS the target). The audit row
+            // records the local runtime's id as `runtime_id_target`.
+            &local_runtime_id,
+            &target_agent_did,
+            &message,
+        );
+        a2a_audit::emit_a2a_received(&received_event);
+
+        // 4 + 5. Build the request and dispatch.
+        let caller_principal = Principal::Agent(caller_agent_did.clone());
+        let request = MessageRequest::new(&local_agent_name, message.clone())
+            .with_session_opt(session_id.clone())
+            .with_team_opt(team.clone())
+            .with_user("")
+            .with_caller_agent_opt(Some(caller_agent_did.clone()))
+            .with_caller_principal(caller_principal);
+
+        let agent_service = self.app_state.agent_service();
+        let result = agent_service.execute_message(request).await;
+
+        // 6. Serialize and respond.
+        let a2a_result = match result {
+            Ok(msg) => A2aSendResult {
+                success: msg.success,
+                response: msg.content,
+                session_id: msg.session_id,
+                iterations: Some(msg.iterations),
+                tool_calls: if msg.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(
+                        msg.tool_calls
+                            .iter()
+                            .map(|tc| {
+                                serde_json::json!({
+                                    "id": tc.id,
+                                    "name": tc.name,
+                                    "parameters": tc.parameters,
+                                    "result": tc.result,
+                                })
+                            })
+                            .collect(),
+                    )
+                },
+                duration_ms: Some(msg.duration_ms),
+                error: msg.error,
+            },
+            Err(e) => A2aSendResult {
+                success: false,
+                response: String::new(),
+                session_id: String::new(),
+                iterations: None,
+                tool_calls: None,
+                duration_ms: None,
+                error: Some(e.to_string()),
+            },
+        };
+
+        let payload = match serde_json::to_vec(&a2a_result) {
+            Ok(p) => p,
+            Err(e) => {
+                return self
+                    .send_hub_error(
+                        &handle,
+                        &request_id,
+                        "internal_error",
+                        &format!("failed to serialize A2aSendResult: {e}"),
+                    )
+                    .await;
+            }
+        };
+
+        // Slice D: emit the response-side audit event before
+        // sending. The local agent is the "caller" of the
+        // response; the original caller is the "target".
+        let response_preview = if a2a_result.success {
+            a2a_result.response.clone()
+        } else {
+            a2a_result
+                .error
+                .clone()
+                .unwrap_or_else(|| "(no error message)".to_string())
+        };
+        let sent_response_event = a2a_audit::build_a2a_sent_response(
+            "", // session_id
+            &request_id,
+            &caller_runtime_id,
+            &caller_agent_did,
+            &local_runtime_id,
+            &target_agent_did,
+            &response_preview,
+        );
+        a2a_audit::emit_a2a_sent(&sent_response_event);
+
+        handle.send(TunnelMessage::AgentToAgentResponse {
+            request_id,
+            payload,
+        })?;
+        Ok(())
+    }
+
+    /// Handle an inbound `AgentToAgentResponse` — the half of the
+    /// round-trip that completes the `oneshot::Receiver` the
+    /// outbound `A2aSendTool` is awaiting on. Issue #29 Slice C.
+    async fn handle_inbound_agent_to_agent_response(
+        &self,
+        request_id: String,
+        payload: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        let pending = self.app_state.pending_a2a_responses();
+        let delivered = pending.complete(&request_id, payload);
+        if !delivered {
+            // The caller already timed out, the request was
+            // cancelled, or the request_id is spurious (e.g. a
+            // pekohub test forwarding a synthetic response to a
+            // nonexistent id). Logging as a warn is the right
+            // signal — it's a peer contract violation, not a crash.
+            warn!(
+                "inbound AgentToAgentResponse: no pending a2a request for request_id={request_id} \
+                 (probably already timed out or cancelled)"
+            );
+        }
+        Ok(())
+    }
+
+    /// Synthesize a `HubA2AErrorResponse` and send it back to the
+    /// caller over the live tunnel handle. Used by
+    /// `handle_inbound_agent_to_agent_request` on every error
+    /// path so the caller's `execute_remote` decodes a structured
+    /// error (target_not_found / forbidden / internal_error)
+    /// rather than a hang or a generic "remote a2a failed" string.
+    async fn send_hub_error(
+        &self,
+        handle: &TunnelHandle,
+        request_id: &str,
+        code: &str,
+        message: &str,
+    ) -> anyhow::Result<()> {
+        let payload = serde_json::to_vec(&HubA2AErrorResponse {
+            kind: "error".to_string(),
+            code: code.to_string(),
+            message: message.to_string(),
+        })
+        .map_err(|e| anyhow::anyhow!("failed to serialize HubA2AErrorResponse: {e}"))?;
+        handle.send(TunnelMessage::AgentToAgentResponse {
+            request_id: request_id.to_string(),
+            payload,
+        })?;
+        Ok(())
+    }
+
+    /// Look up the local agent that owns the given `agent_did`.
+    /// Returns the agent's local name (used to dispatch via
+    /// `MessageRequest::new(...)`). Returns `None` if no local
+    /// agent has that DID, or the DID isn't set.
+    ///
+    /// O(N) over the local agent table; an `agent_did` index is a
+    /// natural follow-up but unnecessary for the typical
+    /// (small) number of agents a single runtime hosts.
+    async fn find_local_agent_by_did(&self, agent_did: &str) -> Option<String> {
+        let agent_mgmt = self.app_state.agent_mgmt_service();
+        let agents = agent_mgmt.list_agents(None).await.ok()?;
+        for summary in agents {
+            // `common::types::agent::AgentSummary` carries the full
+            // `AgentConfig`; the per-agent DID lives on
+            // `summary.config.agent_did` (issue #28).
+            if summary.config.agent_did.as_deref() == Some(agent_did) {
+                return Some(summary.name);
+            }
+        }
+        None
     }
 
     /// Check if a proxied request is allowed for the given agent/instance.
@@ -1553,5 +1902,179 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Forbidden"));
+    }
+
+    // -- Issue #29 (Slice C): inbound AgentToAgentRequest + Response -----
+
+    /// `handle_inbound_agent_to_agent_request` rejects a request with
+    /// a malformed caller_runtime_id (cannot be parsed as a did:key)
+    /// by sending back an `internal_error` `HubA2AErrorResponse`
+    /// rather than crashing the dispatcher.
+    #[tokio::test]
+    async fn test_inbound_agent_to_agent_request_rejects_malformed_caller_did() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let (handle, mut rx) = mock_tunnel_handle();
+
+        dispatcher
+            .handle_inbound_agent_to_agent_request(
+                handle,
+                "req-malformed".to_string(),
+                "did:peko:agent:not-a-real-did-key".to_string(), // not a did:key form
+                "did:peko:agent:caller".to_string(),
+                "did:peko:agent:target".to_string(),
+                None,
+                "hi".to_string(),
+                None,
+                "sig".to_string(),
+            )
+            .await
+            .expect("handler must not panic; errors are reported via the response");
+
+        // The handler should have sent back a structured
+        // HubA2AErrorResponse. Drain the response and check the shape.
+        let response = rx.recv().await.expect("response must be sent");
+        let TunnelMessage::AgentToAgentResponse { request_id, payload } = response else {
+            panic!("expected AgentToAgentResponse, got: {response:?}");
+        };
+        assert_eq!(request_id, "req-malformed");
+        let err: HubA2AErrorResponse =
+            serde_json::from_slice(&payload).expect("payload must be a HubA2AErrorResponse");
+        assert_eq!(err.kind, "error");
+        assert_eq!(err.code, "internal_error");
+        assert!(
+            err.message.contains("invalid caller_runtime_id"),
+            "error must name the cause; got: {}",
+            err.message
+        );
+    }
+
+    /// `handle_inbound_agent_to_agent_request` rejects a request with
+    /// an invalid signature (key is well-formed but signature bytes
+    /// don't verify) by sending back a `forbidden`
+    /// `HubA2AErrorResponse`.
+    #[tokio::test]
+    async fn test_inbound_agent_to_agent_request_rejects_bad_signature() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let (handle, mut rx) = mock_tunnel_handle();
+
+        // Use a known-good did:key (from a generated keypair) but
+        // sign with a DIFFERENT key — signature must not verify.
+        let kp_caller = crate::identity::keys::KeyPair::generate();
+        let kp_attacker = crate::identity::keys::KeyPair::generate();
+        let caller_did = crate::tunnel::verifying_key_to_did_key(&kp_caller.verifying_key);
+        let signed = crate::tunnel::SignedFields {
+            request_id: "req-bad-sig",
+            caller_runtime_id: &caller_did,
+            caller_agent_did: "did:peko:agent:caller",
+            target_agent_did: "did:peko:agent:target",
+            message: "hi",
+            session_id: None,
+            team: None,
+        };
+        let sig = crate::tunnel::sign_request(&kp_attacker.signing_key, signed);
+
+        dispatcher
+            .handle_inbound_agent_to_agent_request(
+                handle,
+                "req-bad-sig".to_string(),
+                caller_did,
+                "did:peko:agent:caller".to_string(),
+                "did:peko:agent:target".to_string(),
+                None,
+                "hi".to_string(),
+                None,
+                sig,
+            )
+            .await
+            .expect("handler must not panic");
+
+        let response = rx.recv().await.expect("response must be sent");
+        let TunnelMessage::AgentToAgentResponse { request_id, payload } = response else {
+            panic!("expected AgentToAgentResponse, got: {response:?}");
+        };
+        assert_eq!(request_id, "req-bad-sig");
+        let err: HubA2AErrorResponse =
+            serde_json::from_slice(&payload).expect("payload must decode");
+        assert_eq!(err.code, "forbidden");
+        assert!(
+            err.message.contains("signature did not verify"),
+            "error must name the cause; got: {}",
+            err.message
+        );
+    }
+
+    /// `handle_inbound_agent_to_agent_response` completes the
+    /// matching pending oneshot on the `PendingA2aResponses`
+    /// registry so the outbound `A2aSendTool` awaiter unblocks.
+    #[tokio::test]
+    async fn test_inbound_agent_to_agent_response_completes_pending() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        let pending = dispatcher.app_state.pending_a2a_responses();
+
+        // Register a waiter for a known request_id, then send
+        // the matching response through the dispatcher.
+        let rx = pending
+            .register("req-1")
+            .expect("register must succeed for a fresh request_id");
+
+        dispatcher
+            .handle_inbound_agent_to_agent_response(
+                "req-1".to_string(),
+                b"hello".to_vec(),
+            )
+            .await
+            .expect("handler must not panic");
+
+        let delivered = rx.await.expect("waiter must complete");
+        assert_eq!(delivered, b"hello");
+    }
+
+    /// `handle_inbound_agent_to_agent_response` for a request_id with
+    /// no pending waiter is a no-op (logged as a warn). Catches the
+    /// failure mode where a stale or duplicate response would
+    /// panic.
+    #[tokio::test]
+    async fn test_inbound_agent_to_agent_response_unknown_request_id_is_noop() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+        dispatcher
+            .handle_inbound_agent_to_agent_response(
+                "unknown-request-id".to_string(),
+                b"orphan".to_vec(),
+            )
+            .await
+            .expect("handler must not panic on unknown id");
+    }
+
+    /// `handle_message` publishes the live `TunnelHandle` to
+    /// `AppState.tunnel_handle_slot()` so the outbound
+    /// `CrossRuntimeA2aCtx` can send on the most-recent handle on
+    /// every reconnect.
+    #[tokio::test]
+    async fn test_handle_message_publishes_handle_to_app_state_slot() {
+        let app_state = create_test_app_state().await;
+        let slot = app_state.tunnel_handle_slot();
+        // The slot starts as None.
+        {
+            let g = slot.read().await;
+            assert!(g.is_none(), "slot must start empty");
+        }
+
+        let dispatcher = TunnelDispatcher::new(app_state.clone());
+        let (handle, _rx) = mock_tunnel_handle();
+        dispatcher
+            .handle_message(TunnelMessage::Heartbeat { seq: 1 }, handle)
+            .await;
+
+        // The slot should now be populated. Yield to let the
+        // dispatch task finish (handle_message spawns it).
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let g = slot.read().await;
+        assert!(g.is_some(), "handle slot must be filled by handle_message");
     }
 }

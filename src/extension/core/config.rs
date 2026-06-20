@@ -31,6 +31,17 @@ pub struct ExtensionServices {
 
     /// Stateless agent service for A2A messaging (set by AppState after initialization)
     agent_service: std::sync::RwLock<Option<Arc<crate::agent::StatelessAgentService>>>,
+
+    /// Cross-runtime a2a dispatch context (issue #29). Set by the
+    /// daemon-state after the tunnel client is built and the
+    /// `HubAgentDirectoryClient` is ready. `None` on runtimes that
+    /// haven't run `peko tunnel setup` (no PekoHub credential) or
+    /// are running offline. The `A2aSendTool::with_cross_runtime`
+    /// builder consults this slot when registering the tool per
+    /// agent; tools built without a ctx fall back to the local-only
+    /// path.
+    cross_runtime_a2a_ctx:
+        std::sync::RwLock<Option<Arc<crate::tunnel::CrossRuntimeA2aCtx>>>,
 }
 
 impl ExtensionServices {
@@ -63,6 +74,12 @@ impl ExtensionServices {
             reserved_params: crate::extension::services::ReservedParamsService::new(),
             async_router,
             agent_service: std::sync::RwLock::new(None),
+            // Issue #29: cross-runtime a2a ctx starts as None and
+            // is filled in by the daemon-state after the tunnel
+            // client is wired. Until then, every per-agent
+            // A2aSendTool is built without a ctx and falls back to
+            // the local-only path (the same behavior as pre-#29).
+            cross_runtime_a2a_ctx: std::sync::RwLock::new(None),
         }
     }
 
@@ -102,6 +119,33 @@ impl ExtensionServices {
     #[must_use]
     pub fn agent_service(&self) -> Option<Arc<crate::agent::StatelessAgentService>> {
         self.agent_service.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Set the cross-runtime a2a dispatch context (issue #29). The
+    /// daemon-state calls this after the tunnel client is built and
+    /// the `HubAgentDirectoryClient` is wired; the per-agent tool
+    /// constructor in `agent.rs` reads via `cross_runtime_a2a_ctx`
+    /// and injects the ctx into each `A2aSendTool` it builds.
+    pub fn set_cross_runtime_a2a_ctx(
+        &self,
+        ctx: Arc<crate::tunnel::CrossRuntimeA2aCtx>,
+    ) {
+        if let Ok(mut guard) = self.cross_runtime_a2a_ctx.write() {
+            *guard = Some(ctx);
+        }
+    }
+
+    /// Get the cross-runtime a2a dispatch context, if one is set.
+    /// Returns `None` on runtimes that haven't initialized
+    /// cross-runtime dispatch (offline runtimes, runtimes without
+    /// a PekoHub credential, runtimes before this PR's bootstrap
+    /// follow-up).
+    #[must_use]
+    pub fn cross_runtime_a2a_ctx(&self) -> Option<Arc<crate::tunnel::CrossRuntimeA2aCtx>> {
+        self.cross_runtime_a2a_ctx
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// Record a hook invocation
