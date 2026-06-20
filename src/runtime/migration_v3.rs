@@ -87,27 +87,63 @@ pub async fn migrate_adr_provider_catalog_v3(
     }
 
     // 2. Migrate legacy plaintext credentials.json.
+    //
+    // The file historically stored TWO kinds of secrets:
+    //   * `credentials` — provider API keys (plaintext) → keychain
+    //   * `registry`    — pekohub registry bearer token
+    //
+    // v3 moves the API keys to the OS keychain, but the registry
+    // token MUST stay on disk (the `RegistryClient` reads it on every
+    // request, and the keychain is provider-scoped to LLM providers,
+    // not pekohub). The previous revision of this migration deleted
+    // the whole file, which also wiped the registry token and broke
+    // `peko ext push` / `peko ext pull` (CI failure surfaced by
+    // s2_extension_registry_roundtrip after the PR #43 fix landed).
+    //
+    // We now load the full `CredentialsStore`, move API keys out,
+    // and rewrite the file with `credentials: {}` and the original
+    // `registry` field preserved.
     let creds_path = resolver.config_dir().join("credentials.json");
     if creds_path.exists() {
-        match load_legacy_credentials(&creds_path) {
-            Ok(legacy) => {
-                for (provider_id, api_key) in &legacy {
-                    let already = secrets.get(provider_id).ok().flatten().is_some();
-                    if !already && !api_key.is_empty() {
-                        let s = secrecy::SecretString::from(api_key.clone());
-                        if let Err(e) = secrets.set(provider_id, &s) {
-                            warn!(
-                                "v3 migration: failed to write key for '{provider_id}' to keychain: {e}"
-                            );
-                        } else {
-                            report.secrets_to_keychain += 1;
-                        }
+        match load_full_credentials_store(&creds_path) {
+            Ok(mut store) => {
+                let mut migrated_any = false;
+                for (provider_id, credential) in std::mem::take(&mut store.credentials) {
+                    if credential.api_key.is_empty() {
+                        continue;
+                    }
+                    let already = secrets.get(&provider_id).ok().flatten().is_some();
+                    if already {
+                        continue;
+                    }
+                    let s = secrecy::SecretString::from(credential.api_key);
+                    if let Err(e) = secrets.set(&provider_id, &s) {
+                        warn!(
+                            "v3 migration: failed to write key for '{provider_id}' to keychain: {e}"
+                        );
+                    } else {
+                        report.secrets_to_keychain += 1;
+                        migrated_any = true;
                     }
                 }
-                if let Err(e) = std::fs::remove_file(&creds_path) {
-                    warn!("v3 migration: failed to delete legacy credentials.json: {e}");
+
+                // If we migrated at least one API key, rewrite the
+                // file with empty credentials but the registry token
+                // (if any) preserved. If we migrated nothing AND the
+                // file has no registry token either, delete it
+                // (matches the original cleanup intent).
+                if migrated_any || store.registry.is_some() {
+                    if let Err(e) = write_credentials_store(&creds_path, &store) {
+                        warn!(
+                            "v3 migration: failed to rewrite credentials.json with registry token preserved: {e}"
+                        );
+                    }
                 } else {
-                    report.deleted_credentials_json = true;
+                    if let Err(e) = std::fs::remove_file(&creds_path) {
+                        warn!("v3 migration: failed to delete legacy credentials.json: {e}");
+                    } else {
+                        report.deleted_credentials_json = true;
+                    }
                 }
             }
             Err(e) => warn!("v3 migration: could not read legacy credentials.json: {e}"),
@@ -278,31 +314,68 @@ fn provider_id_from_legacy(
     }
 }
 
-/// Read `credentials.json` as `(provider_id, api_key)` pairs.
+/// Read `credentials.json` as a full `CredentialsStore` (both the
+/// `credentials` provider-key map AND the `registry` token).
 ///
 /// We don't use `crate::common::credentials_store` directly because
-/// that path imports `GlobalPaths` (CLI-only). For migration we
-/// only need the literal values.
-fn load_legacy_credentials(
+/// that path imports `GlobalPaths` (CLI-only). For migration we need
+/// the in-memory representation that lets us preserve the registry
+/// token across the v1→v3 cutover. The schema is defined here as a
+/// mirror of `crate::common::credentials_store::CredentialsStore`:
+/// keep the two in sync if the canonical struct ever gains a field.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+struct LegacyCredential {
+    api_key: String,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+struct LegacyRegistryCredential {
+    token: String,
+    #[serde(default)]
+    registry_host: Option<String>,
+    #[serde(default)]
+    user_namespace: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+}
+
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
+struct LegacyCredentialsStore {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    credentials: std::collections::HashMap<String, LegacyCredential>,
+    #[serde(default)]
+    registry: Option<LegacyRegistryCredential>,
+}
+
+fn load_full_credentials_store(
     path: &std::path::Path,
-) -> Result<Vec<(String, String)>> {
+) -> Result<LegacyCredentialsStore> {
     let text = std::fs::read_to_string(path)?;
-    let value: serde_json::Value = serde_json::from_str(&text)?;
-    let credentials = value
-        .get("credentials")
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default();
-    let mut out = Vec::with_capacity(credentials.len());
-    for (provider_id, entry) in credentials {
-        let api_key = entry
-            .get("api_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        out.push((provider_id, api_key));
+    let store: LegacyCredentialsStore = serde_json::from_str(&text)?;
+    Ok(store)
+}
+
+fn write_credentials_store(
+    path: &std::path::Path,
+    store: &LegacyCredentialsStore,
+) -> Result<()> {
+    let content = serde_json::to_string_pretty(store)?;
+    std::fs::write(path, content)?;
+    // Mirror `credentials_store::save_credentials`: tighten perms on
+    // Unix so a freshly-rewritten file with a registry token doesn't
+    // accidentally end up world-readable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(path, perms);
+        }
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -377,5 +450,111 @@ top_p = 1.0
         assert_eq!(report.created_providers, 0);
         assert_eq!(report.secrets_to_keychain, 0);
         assert!(!report.deleted_credentials_json);
+    }
+
+    /// PR #43 follow-up: v1→v3 migration must preserve the `registry`
+    /// token in `credentials.json`. The previous revision deleted the
+    /// whole file, which wiped the bearer token used by
+    /// `peko ext push` / `peko ext pull` (CI failure surfaced by
+    /// s2_extension_registry_roundtrip after the first fix landed).
+    #[tokio::test]
+    async fn migration_preserves_registry_token_when_credentials_exist() {
+        let (_dir, resolver) = temp_resolver();
+        let creds_path = resolver.config_dir().join("credentials.json");
+        std::fs::create_dir_all(resolver.config_dir()).unwrap();
+        std::fs::write(
+            &creds_path,
+            r#"{
+  "version": 1,
+  "credentials": {
+    "openai": {
+      "provider": "openai",
+      "api_key": "sk-must-not-leak",
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  },
+  "registry": {
+    "token": "ph_keep_me_around",
+    "registry_host": "pekohub.example",
+    "user_namespace": null,
+    "created_at": "2026-01-01T00:00:00Z"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        // Run migration. The keychain step may fail on CI without a
+        // secret service; the test asserts the on-disk file is rewritten
+        // (not deleted) and the registry token survives.
+        let _ = migrate_adr_provider_catalog_v3(&resolver).await;
+
+        assert!(
+            creds_path.exists(),
+            "credentials.json must NOT be deleted when a registry token is present"
+        );
+        let content = std::fs::read_to_string(&creds_path).unwrap();
+        assert!(
+            content.contains("ph_keep_me_around"),
+            "registry token must survive migration: {content}"
+        );
+        assert!(
+            content.contains("pekohub.example"),
+            "registry_host must survive migration: {content}"
+        );
+        // The plaintext API key was migrated (or attempted) to the
+        // keychain; it should no longer appear in credentials.json.
+        assert!(
+            !content.contains("sk-must-not-leak"),
+            "plaintext API key must be removed from credentials.json after migration: {content}"
+        );
+        assert!(
+            content.contains("\"credentials\": {}"),
+            "credentials map must be empty after migration: {content}"
+        );
+    }
+
+    /// PR #43 follow-up: legacy-only credentials.json (no registry
+    /// token) is best-effort rewritten when the keychain accepts the
+    /// plaintext keys, or deleted when the keychain refuses (e.g.
+    /// headless CI without a secret service). Either way, the
+    /// plaintext key MUST NOT survive on disk.
+    #[tokio::test]
+    async fn migration_scrubs_plaintext_credentials_without_registry() {
+        let (_dir, resolver) = temp_resolver();
+        let creds_path = resolver.config_dir().join("credentials.json");
+        std::fs::create_dir_all(resolver.config_dir()).unwrap();
+        std::fs::write(
+            &creds_path,
+            r#"{
+  "version": 1,
+  "credentials": {
+    "anthropic": {
+      "provider": "anthropic",
+      "api_key": "sk-ant-must-not-leak",
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let _ = migrate_adr_provider_catalog_v3(&resolver).await;
+
+        if creds_path.exists() {
+            // File was rewritten with empty credentials map.
+            let content = std::fs::read_to_string(&creds_path).unwrap();
+            assert!(
+                !content.contains("sk-ant-must-not-leak"),
+                "plaintext key must be scrubbed from disk: {content}"
+            );
+            assert!(
+                content.contains("\"credentials\": {}"),
+                "credentials map must be empty after migration: {content}"
+            );
+        }
+        // If the file was deleted (keychain refused), the
+        // plaintext key is also gone — both outcomes are safe.
     }
 }
