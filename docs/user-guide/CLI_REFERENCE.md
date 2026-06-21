@@ -157,34 +157,87 @@ peko send my-agent "Hello!" --no-stream
 
 ---
 
-### `auth` — Authentication Management
+### `credential` — Provider API key management
 
-Manage API keys and credentials.
+Store and inspect provider API keys. Keys live in the OS keychain
+(`~/.peko/providers.toml` references the provider id; the secret itself
+is in the OS secret service). This is the v3 replacement for the
+removed `peko auth set/list/remove/test` flow.
 
 ```bash
-peko auth <COMMAND>
+peko credential <COMMAND>
 ```
 
 #### Subcommands
 
 | Subcommand | Description |
 |-----------|-------------|
-| `set` | Add a new API key |
-| `list` | List configured credentials |
-| `remove` | Remove a credential |
-| `test` | Test a credential |
+| `set <provider>` | Store an API key (hidden prompt; `--key` for non-interactive). |
+| `delete <provider>` | Remove a stored key. |
+| `list` | List provider ids that currently have a stored key. |
+| `test <provider>` | Format-only check (presence + shape). |
 
 #### Examples
 
 ```bash
-# Set an API key
-peko auth set openai
+# Store the OpenAI API key
+peko credential set openai
 
-# List credentials
-peko auth list
+# Non-interactive (CI / scripting)
+peko credential set openai --key "$OPENAI_API_KEY"
 
-# Test a credential
-peko auth test openai
+# Inspect + verify
+peko credential list
+peko credential test openai
+
+# Rotate
+peko credential delete openai
+peko credential set openai --key "$NEW_OPENAI_KEY"
+```
+
+---
+
+### `provider` — Runtime provider catalog
+
+Inspect and manage the provider catalog (`~/.peko/providers.toml`).
+Agents reference catalog entries by id via their
+`preferred_provider_id` soft hint; the catalog + keychain own all
+provider wiring.
+
+```bash
+peko provider <COMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `list [--detailed]` | List all catalog entries. |
+| `templates` | Print built-in provider templates (openai, anthropic, …). |
+| `add <id> [--template T \| --api-format F --base-url U --default-model M]` | Add or update an entry. |
+| `remove <id>` | Remove an entry from the catalog. |
+| `set-default <id> [--model M]` | Set the runtime default provider / model. |
+| `get-default` | Print the current default provider + model. |
+
+#### Examples
+
+```bash
+# Seed from a built-in template
+peko provider add openai --template openai
+
+# Self-hosted OpenAI-compatible endpoint
+peko provider add my-local \
+    --api-format openai_completions \
+    --base-url http://localhost:8080 \
+    --default-model default
+
+# Inspect
+peko provider list
+peko provider list --detailed
+
+# Default
+peko provider set-default openai
+peko provider get-default
 ```
 
 ---
@@ -539,10 +592,11 @@ peko send my-agent "Hello!"
 peko send myteam/my-agent "Hello!" --new
 peko send my-agent --file prompt.txt
 
-# Authentication
-peko auth set openai
-peko auth list
-peko auth test openai
+# Authentication (v3: catalog + keychain)
+peko provider add openai --template openai
+peko credential set openai
+peko credential list
+peko credential test openai
 
 # Extensions
 peko ext list

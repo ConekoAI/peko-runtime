@@ -114,6 +114,24 @@ impl PekoCli {
             .env("PEKO_HOME", self.peko_dir())
             .env_remove("MINIMAX_API_KEY");
 
+        // v3 mock-LLM bootstrap: when `MOCK_LLM_URL` is set, the
+        // daemon needs to find the catalog entry `mock-llm` (seeded
+        // by `seed_mock_provider_in_catalog` before spawn) and look
+        // up the API key. Production OS-keychain access doesn't work
+        // in CI / headless test runners, so we flip two env vars:
+        //
+        //   PEKO_TEST_RESOLVER_BOOTSTRAP=1   — turn on env-var fallback
+        //   MOCK_LLM_API_KEY=mock-llm-test-key  — match the literal key
+        //     that the test harness writes into the catalog for
+        //     catalog entries with id `mock-llm`.
+        //
+        // Both env vars are no-ops if the daemon's `MOCK_LLM_URL`
+        // is unset (i.e., the test isn't a mock-LLM test).
+        if std::env::var_os("MOCK_LLM_URL").is_some() {
+            c.env("PEKO_TEST_RESOLVER_BOOTSTRAP", "1");
+            c.env("MOCK_LLM_API_KEY", "mock-llm-test-key");
+        }
+
         // Platform-specific IPC endpoint override.
         #[cfg(unix)]
         {

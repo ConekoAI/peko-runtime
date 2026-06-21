@@ -135,28 +135,14 @@ fn write_provider_agent(
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
     let config_toml = format!(
-        r#"version = "1.0"
+        r#"version = "3.0"
 name = "{name}"
 description = "CLI integration test agent for the real-LLM provider smoke"
 auto_accept_trusted = false
+
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
 default_timeout_seconds = 60
-
-[provider]
-provider_type = "{provider_type}"
-api_key = "{api_key}"
-base_url = "{base_url}"
-default_model = "{default_model}"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "{default_model}"
-max_tokens = 1024
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
 
 [extensions]
 enabled = []

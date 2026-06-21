@@ -1,60 +1,35 @@
 //! Agent-config helpers for CLI tests.
 //!
-//! Writes an `openai_compatible` provider config that points at the URL
-//! passed in (the CI's `MOCK_LLM_URL`, e.g. `http://mock-llm:8080`).
+//! Writes a v3 agent config (no `[provider]` block) that references
+//! the catalog entry `mock-llm` (seeded by `seed_mock_provider_in_catalog`
+//! below). The catalog entry holds the actual base_url and api_key.
 //! Lives in the `~/.peko/agents/<name>/` layout the CLI expects.
-//!
-//! **Note:** the URL must go in `base_url`, not `api_key`. The provider
-//! dispatch logic in `src/agent/agent.rs::init_provider` maps
-//! `ProviderType::OpenAICompatible` to one of the built-in concrete
-//! providers by inspecting `base_url`'s hostname; if `base_url` is
-//! `None`, it falls back to `ProviderType::OpenAI`, which uses the
-//! hardcoded `https://api.openai.com/v1` and treats `api_key` as a
-//! real `Authorization: Bearer` token. With the URL stuck in
-//! `api_key` we'd hit OpenAI for real and get back 401 Unauthorized.
 
 #![allow(dead_code)]
 
 use std::path::Path;
 
-/// Write a minimal agent config that talks to the mock LLM at
-/// `mock_llm_url`. The URL goes in `base_url`; `api_key` is a
-/// placeholder string the mock LLM ignores.
+/// Write a minimal agent config that points at the catalog entry
+/// `mock-llm` (which `seed_mock_provider_in_catalog` writes to
+/// `~/.peko/providers.toml`). The agent itself only carries the
+/// soft hints — no `[provider]` block.
 ///
 /// Layout produced under `home/.peko/`:
-///   agents/<name>/config.toml          provider/extensions/channels/prompt
+///   agents/<name>/config.toml          v3 agent config with soft hints
 ///   agents/<name>/SYSTEM.md            empty system prompt
-pub fn write_mock_agent(home: &Path, name: &str, mock_llm_url: &str) -> std::io::Result<()> {
+pub fn write_v3_mock_agent(home: &Path, name: &str, _mock_llm_url: &str) -> std::io::Result<()> {
     let agent_dir = home.join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
 
-    // Strip a trailing slash so URL composition in the provider transport
-    // (`{base_url}{path}`) doesn't end up with `//v1/chat/completions`.
-    let base_url = mock_llm_url.trim_end_matches('/');
-
     let config_toml = format!(
-        r#"version = "1.0"
+        r#"version = "3.0"
 name = "{name}"
 description = "CLI integration test agent"
 auto_accept_trusted = false
+
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
 default_timeout_seconds = 60
-
-[provider]
-provider_type = "openai_compatible"
-api_key = "mock-llm-test-key"
-base_url = "{base_url}"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "default"
-max_tokens = 1024
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
 
 [extensions]
 enabled = []
@@ -70,4 +45,68 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     std::fs::write(agent_dir.join("config.toml"), config_toml)?;
     std::fs::write(agent_dir.join("SYSTEM.md"), "")?;
     Ok(())
+}
+
+/// Backward-compat alias used by code that hasn't migrated to the v3
+/// catalog-seeding flow yet. New code should call `write_v3_mock_agent`
+/// + `seed_mock_provider_in_catalog` from `tests/common/harness.rs` (or
+/// its own setup).
+///
+/// (Removed: the v3 rename already happened, so callers should use
+/// `write_v3_mock_agent` directly. The deprecated alias is removed.)
+
+/// Seed a `mock-llm` catalog entry pointing at `mock_llm_url`. The
+/// test harness invokes this before spawning the daemon so the
+/// daemon's `LlmResolver` finds the entry on first lookup.
+///
+/// In production CI / Linux, the OS keychain isn't available, so the
+/// daemon additionally honors `PEKO_TEST_RESOLVER_BOOTSTRAP=1` to
+/// fall back to `MOCK_LLM_API_KEY`. `PekoCli::cmd` exports both
+/// env vars whenever `MOCK_LLM_URL` is set.
+///
+/// Idempotent: re-running with the same `mock_llm_url` overwrites
+/// the entry with the same values.
+pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
+    use pekobot::providers::catalog::{
+        ApiFormat, ModelInfo, ProviderCatalogFile, ProviderCatalogEntry,
+    };
+    use std::collections::BTreeMap;
+
+    let peko_dir = home.join(".peko");
+    let catalog_path = peko_dir.join("providers.toml");
+    if let Some(parent) = catalog_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let base_url = mock_llm_url.trim_end_matches('/').to_string();
+    let now = chrono::Utc::now();
+    let entry = ProviderCatalogEntry {
+        id: "mock-llm".to_string(),
+        display_name: "mock-llm".to_string(),
+        template_id: None,
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url,
+        default_model_id: "default".to_string(),
+        models: vec![ModelInfo {
+            id: "default".to_string(),
+            display_name: None,
+            context_length: None,
+            max_output_tokens: None,
+            capabilities: vec![],
+        }],
+        headers: BTreeMap::new(),
+        requires_key: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    let mut entries = BTreeMap::new();
+    entries.insert("mock-llm".to_string(), entry);
+    let file = ProviderCatalogFile {
+        version: "3.0".to_string(),
+        entries,
+        default_provider_id: None,
+        default_model_id: None,
+    };
+    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
+    std::fs::write(&catalog_path, toml).expect("write catalog");
 }

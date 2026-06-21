@@ -445,7 +445,7 @@ async fn agent_push_with_no_extensions_round_trip() {
     let author = PekoCli::new();
     peko_login(&author, &author_key, &backend.url);
     let author_agent = "s3_author_agent";
-    common::write_mock_agent(author.home(), author_agent, &mock_url)
+    common::write_v3_mock_agent(author.home(), author_agent, &mock_url)
         .expect("write author mock agent");
     let author_daemon = common::DaemonGuard::spawn(&author);
     let author_file = export_agent_to_file(&author, author_agent);
@@ -470,7 +470,7 @@ async fn agent_push_with_no_extensions_round_trip() {
     let expected_ref = format!("{}/{}/{author_agent}:v1.0", host_only(&backend.url), author_ns);
     assert_eq!(v["registry_ref"], expected_ref, "push JSON: {v}");
     // Manifest layers: 2 (config + identity) for the
-    // `write_mock_agent` shape — the config layer is `agent.toml`,
+    // `write_v3_mock_agent` shape — the config layer is `agent.toml`,
     // the identity layer is the DID doc.
     assert_eq!(
         v["manifest"]["layers"],
@@ -581,7 +581,7 @@ async fn agent_pull_auto_pulls_declared_extension() {
     }
 
     let author_agent = "s3_author_agent";
-    common::write_mock_agent(author.home(), author_agent, &mock_url)
+    common::write_v3_mock_agent(author.home(), author_agent, &mock_url)
         .expect("write author mock agent");
     // Enable the ext on the agent (daemon-driven).
     {
@@ -701,7 +701,7 @@ async fn agent_pull_already_present_ext_no_repull() {
         round_trip_extension_through_registry(&author, ext_id, &ext_ref);
     }
     let author_agent = "s3_author_agent";
-    common::write_mock_agent(author.home(), author_agent, &mock_url)
+    common::write_v3_mock_agent(author.home(), author_agent, &mock_url)
         .expect("write author mock agent");
     {
         let _daemon = common::DaemonGuard::spawn(&author);
@@ -829,7 +829,7 @@ async fn agent_pull_failed_ext_does_not_block_pull() {
         write_ext_source(&author, ext_id, &bad_ref);
     }
     let author_agent = "s3_author_agent";
-    common::write_mock_agent(author.home(), author_agent, &mock_url)
+    common::write_v3_mock_agent(author.home(), author_agent, &mock_url)
         .expect("write author mock agent");
     {
         let _daemon = common::DaemonGuard::spawn(&author);

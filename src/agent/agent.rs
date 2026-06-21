@@ -24,12 +24,10 @@ pub struct Agent {
     pub identity: Identity,
     /// LLM provider (stored in Arc for sharing with agentic loop).
     ///
-    /// In v3, this is built per-session (or per-turn) by
-    /// `LlmResolver`; the field remains so legacy `Agent::new` and
-    /// test fixtures that build a single provider directly continue
-    /// to compile. Production paths construct the agent via
-    /// `Agent::new_with_resolver` so this field is repopulated at
-    /// session start with the resolver-resolved choice.
+    /// Built by `LlmResolver::build` from the agent's `preferred_*`
+    /// hints (or the runtime default) at session start. The
+    /// `Option` shape is preserved for unit tests that don't wire
+    /// a resolver and run pure-Rust agentic-loop tests offline.
     provider: Option<Arc<crate::providers::Provider>>,
     /// Optional resolver (v3+). When present, `init_provider` builds
     /// a one-shot `Provider` per session via the catalog + secret
@@ -310,8 +308,19 @@ pub async fn new_with_session_manager(
         // Issue #28: persist the resolved DID back into the on-disk
         // config.toml so the tunnel dispatcher can announce it without
         // re-running identity generation.
+        //
+        // Soft-fail: the agent_dir may not exist yet for a freshly-
+        // spawned subagent whose in-memory config hasn't been written.
+        // `backfill_agent_did` itself returns
+        // "Failed to persist agent_did ... (in-memory identity will
+        // still work this session)" so the next production-path
+        // `Agent::new()` call will retry the write. Hard-failing here
+        // would break unit tests that build agents against a tempdir
+        // without pre-creating `agents/<name>/`.
         let config_path = PathResolver::new().agent_config(&config.name);
-        Self::backfill_agent_did(&config_path, &config, &identity.did).await;
+        if let Err(e) = Self::backfill_agent_did(&config_path, &config, &identity.did).await {
+            warn!("Could not backfill agent_did into config: {}", e);
+        }
 
         // Issue #28 review #4: surface DID rotation loudly. If the
         // resolved identity's DID differs from the one the config
@@ -384,10 +393,20 @@ pub async fn new_with_session_manager(
     ///
     /// Used for subagent execution where the child must share the parent's
     /// session manager AND subagent registry (for proper depth tracking).
+    ///
+    /// The child's provider is **inherited from the parent** via the
+    /// `inherited_provider` argument. This avoids a v3 regression where the
+    /// child was created without an `LlmResolver`, so `init_provider`
+    /// returned `Ok(None)` (the v1 fallback was removed in PR #44), and
+    /// `execute_with_session` then errored with `"No provider configured"`
+    /// before the child could call any tool. Passing the parent's already-
+    /// resolved provider lets the child run its own LLM calls against the
+    /// same provider/catalog entry.
     pub async fn new_with_shared_executor(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
+        inherited_provider: Option<Arc<crate::providers::Provider>>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
 
@@ -418,7 +437,14 @@ pub async fn new_with_session_manager(
                 config_path.display()
             );
         }
-        let provider = Self::init_provider(&config, None).await?;
+        // Prefer the inherited provider so the child reuses the parent's
+        // resolved provider instead of paying the resolver's catalog
+        // lookup cost twice. Fall back to the v3 resolver path if the
+        // caller didn't supply one (e.g., unit tests).
+        let provider = match inherited_provider {
+            Some(p) => Some(p),
+            None => Self::init_provider(&config, None).await?,
+        };
         let llm_resolver: Option<Arc<crate::providers::LlmResolver>> = None;
 
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
@@ -1232,108 +1258,35 @@ pub async fn new_with_session_manager(
     ) -> Result<Option<Arc<crate::providers::Provider>>> {
         // v3 path: ask the resolver to build a one-shot provider from
         // the agent's `preferred_*` hints (or the runtime default).
-        if let Some(r) = resolver {
-            let req = crate::providers::resolver::ResolveRequest {
-                agent_provider: config.preferred_provider_id.as_deref(),
-                agent_model: config.preferred_model_id.as_deref(),
-                ..Default::default()
-            };
-            match r.build(req).await {
-                Ok((provider, choice)) => {
-                    info!(
-                        "Agent '{}' resolved provider: {}",
-                        config.name, choice
-                    );
-                    return Ok(Some(provider));
-                }
-                Err(e) => {
-                    warn!(
-                        "Agent '{}': LlmResolver failed ({}); falling back to legacy provider wiring",
-                        config.name, e
-                    );
-                    // fall through to legacy
-                }
+        // No legacy fallback — the inline `[provider]` block on
+        // `AgentConfig` is gone; the resolver is the only source of
+        // truth.
+        let Some(r) = resolver else {
+            return Ok(None);
+        };
+        let req = crate::providers::resolver::ResolveRequest {
+            agent_provider: config.preferred_provider_id.as_deref(),
+            agent_model: config.preferred_model_id.as_deref(),
+            ..Default::default()
+        };
+        match r.build(req).await {
+            Ok((provider, choice)) => {
+                info!(
+                    "Agent '{}' resolved provider: {}",
+                    config.name, choice
+                );
+                Ok(Some(provider))
             }
-        }
-
-        // Legacy / fallback path: build a provider from the
-        // deprecated `provider: ProviderConfig` field on
-        // `AgentConfig`. Preserved so test fixtures and pre-v3
-        // configs continue to compile.
-        Self::init_provider_legacy(config).await
-    }
-
-    /// Legacy provider initializer: builds an `Arc<Provider>` from
-    /// the deprecated `config.provider` field. Kept for back-compat
-    /// during the v3 migration window; will be removed once the
-    /// migration (`migrate_adr_provider_catalog_v3`) lands.
-    async fn init_provider_legacy(
-        config: &AgentConfig,
-    ) -> Result<Option<Arc<crate::providers::Provider>>> {
-        use crate::providers::registry::create_provider;
-        use crate::types::provider::ProviderType;
-
-        // Map ProviderType to string for registry lookup
-        let provider_name = match config.provider.provider_type {
-            ProviderType::OpenAI => "openai",
-            ProviderType::Anthropic => "anthropic",
-            ProviderType::Moonshot => "moonshot",
-            ProviderType::Kimi => "kimi",
-            ProviderType::Minimax => "minimax",
-            ProviderType::Ollama => "ollama",
-            ProviderType::OpenAICompatible => {
-                if let Some(ref url) = config.provider.base_url {
-                    if url.contains("moonshot.cn") {
-                        "moonshot"
-                    } else if url.contains("kimi.com") {
-                        "kimi"
-                    } else if url.contains("minimaxi") {
-                        "minimax"
-                    } else if url.contains("groq") {
-                        "groq"
-                    } else if url.contains("together") {
-                        "together"
-                    } else if url.contains("fireworks") {
-                        "fireworks"
-                    } else {
-                        "openai"
-                    }
-                } else {
-                    "openai"
-                }
-            }
-        };
-
-        let provider_type = match provider_name {
-            "openai" => ProviderType::OpenAI,
-            "anthropic" => ProviderType::Anthropic,
-            "moonshot" => ProviderType::Moonshot,
-            "kimi" => ProviderType::Kimi,
-            "minimax" => ProviderType::Minimax,
-            "ollama" => ProviderType::Ollama,
-            _ => ProviderType::OpenAICompatible,
-        };
-
-        let provider_config = crate::types::provider::ProviderConfig {
-            provider_type,
-            api_key: config.provider.api_key.clone(),
-            api_key_env: config.provider.api_key_env.clone(),
-            base_url: config.provider.base_url.clone(),
-            default_model: config.provider.default_model.clone(),
-            models: config.provider.models.clone(),
-            timeout_seconds: config.provider.timeout_seconds,
-            max_retries: config.provider.max_retries,
-            retry_delay_ms: config.provider.retry_delay_ms,
-        };
-
-        match create_provider(provider_config) {
-            Ok(provider) => Ok(Some(provider)),
             Err(e) => {
-                warn!("Failed to create legacy provider: {}", e);
+                warn!(
+                    "Agent '{}': LlmResolver failed ({}); agent will run without an LLM provider",
+                    config.name, e
+                );
                 Ok(None)
             }
         }
     }
+
     /// Execute with native tool calling using `AgenticLoop` (unified API).
     ///
     /// This is the recommended method for agent execution with native tool calling support.
@@ -1375,10 +1328,6 @@ mod tests {
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama,
-                ..Default::default()
-            },
             ..Default::default()
         };
 
@@ -1406,10 +1355,6 @@ mod tests {
 
         let config = AgentConfig {
             name: "test-agent-session".to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama,
-                ..Default::default()
-            },
             ..Default::default()
         };
 
@@ -1438,10 +1383,6 @@ mod tests {
 
         let config = AgentConfig {
             name: "test-agent-router".to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama,
-                ..Default::default()
-            },
             ..Default::default()
         };
 
@@ -1475,10 +1416,6 @@ mod tests {
 
         let config = AgentConfig {
             name: "test-agent-context".to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama,
-                ..Default::default()
-            },
             ..Default::default()
         };
 
@@ -1511,10 +1448,6 @@ mod tests {
 
         let config = AgentConfig {
             name: "test-agent-spawn".to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama,
-                ..Default::default()
-            },
             ..Default::default()
         };
 
@@ -1567,10 +1500,6 @@ mod tests {
 
         let make_config = |name: &str| AgentConfig {
             name: name.to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama,
-                ..Default::default()
-            },
             ..Default::default()
         };
 

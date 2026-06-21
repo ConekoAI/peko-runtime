@@ -154,28 +154,14 @@ fn write_builtin_agent(
     std::fs::create_dir_all(&agent_dir)?;
     let base_url = mock_llm_url.trim_end_matches('/');
     let config_toml = format!(
-        r#"version = "1.0"
+        r#"version = "3.0"
 name = "{name}"
 description = "CLI integration test agent for built-in tools"
 auto_accept_trusted = false
+
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
 default_timeout_seconds = 60
-
-[provider]
-provider_type = "openai_compatible"
-api_key = "mock-llm-test-key"
-base_url = "{base_url}"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "default"
-max_tokens = 1024
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
 
 [extensions]
 enabled = [

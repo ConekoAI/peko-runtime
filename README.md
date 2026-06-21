@@ -145,12 +145,28 @@ pekobot send <AGENT> --stdin                         # Read message from stdin
 pekobot send <AGENT> "Hello" --session <ID>          # Send to specific session
 ```
 
-#### Authentication
+#### Authentication (v3: catalog + keychain)
 ```bash
-pekobot auth set <PROVIDER> --key <KEY>              # Set provider API key
-pekobot auth list                                    # List configured credentials
-pekobot auth remove <PROVIDER>                       # Remove credential
-pekobot auth test <PROVIDER>                         # Test credential
+# 1. Add a provider entry to the runtime catalog (`~/.peko/providers.toml`)
+pekobot provider add openai --template openai
+pekobot provider add my-local --api-format openai_completions --base-url http://localhost:8080
+
+# 2. Store the API key in the OS keychain (one per provider)
+pekobot credential set openai            # prompts for the key
+pekobot credential set my-local --key $MY_KEY
+
+# 3. Create an agent — the provider id references the catalog entry
+pekobot agent create alice --preferred-provider openai --preferred-model gpt-4o-mini
+
+# Inspect / manage the catalog
+pekobot provider list
+pekobot provider set-default openai
+pekobot credential list
+pekobot credential test openai
+
+# PekoHub registry token (separate flow)
+pekobot login --api-key ph_xxx --registry https://hub.example.com
+pekobot logout
 ```
 
 #### Extension Management

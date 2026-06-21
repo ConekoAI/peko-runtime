@@ -208,21 +208,6 @@ impl ApiKeyResolver {
         warn!("No API key found for provider {:?}", provider_type);
         None
     }
-
-    /// Resolve API key for agent config if not already set
-    ///
-    /// Only sets the API key if it's not already configured in the config.
-    pub fn resolve_config_api_key(&self, config: &mut AgentConfig) {
-        // Only resolve if api_key is not already set (allows override in config.toml)
-        if config.provider.api_key.is_some() {
-            debug!("API key already set in config, skipping resolution");
-            return;
-        }
-
-        if let Some(api_key) = self.resolve(config.provider.provider_type) {
-            config.provider.api_key = Some(api_key);
-        }
-    }
 }
 
 #[cfg(test)]

@@ -564,14 +564,12 @@ impl Packager {
     }
 
     /// Make config portable (remove runtime-specific paths)
+    ///
+    /// v3: nothing to strip — API keys live in the OS keychain
+    /// (referenced by the catalog's `provider_id`), not on the
+    /// agent config. Just hand the config back unchanged.
     fn make_portable_config(&self) -> AgentConfig {
-        let mut portable = self.config.clone();
-
-        // Remove sensitive data (API keys should be set on import)
-        portable.provider.api_key = None;
-        portable.provider.api_key_env = None;
-
-        portable
+        self.config.clone()
     }
 }
 

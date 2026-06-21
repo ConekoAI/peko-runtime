@@ -148,7 +148,7 @@ fn fixture_dir(relative: &str) -> PathBuf {
 /// names. See the file-level doc comment for the source of these ids.
 ///
 /// URL goes in `base_url`, not `api_key` — same gotcha as
-/// [`write_mock_agent`](../../tests/common/agent.rs) (the provider
+/// [`write_v3_mock_agent`](../../tests/common/agent.rs) (the provider
 /// dispatch logic in `src/agent/agent.rs::init_provider` keys off
 /// `base_url`'s hostname; an empty `base_url` would fall through to
 /// OpenAI real and the test would 401).
@@ -167,28 +167,14 @@ fn write_ext_agent(
         .collect::<Vec<_>>()
         .join("\n");
     let config_toml = format!(
-        r#"version = "1.0"
+        r#"version = "3.0"
 name = "{name}"
 description = "CLI integration test agent for L3 extension tool dispatch (issue #15)"
 auto_accept_trusted = false
+
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
 default_timeout_seconds = 60
-
-[provider]
-provider_type = "openai_compatible"
-api_key = "mock-llm-test-key"
-base_url = "{base_url}"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "default"
-max_tokens = 1024
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
 
 [extensions]
 enabled = [

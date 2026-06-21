@@ -369,7 +369,6 @@ pub struct ExecutionMetrics {
 }
 
 /// Stateless agent service - cold-start execution
-#[derive(Debug)]
 pub struct StatelessAgentService {
     /// Agent configuration service
     config_service: Arc<ConfigAuthorityImpl>,
@@ -379,6 +378,10 @@ pub struct StatelessAgentService {
     metrics: RwLock<ExecutionMetrics>,
     /// Path resolver for team-aware paths
     path_resolver: PathResolver,
+    /// v3 LLM resolver. Required in production (every `peko send`
+    /// goes through `LlmResolver::build`); may be `None` only in
+    /// offline unit tests that don't exercise the LLM path.
+    resolver: Option<Arc<crate::providers::LlmResolver>>,
 }
 
 impl StatelessAgentService {
@@ -387,22 +390,72 @@ impl StatelessAgentService {
         config_service: Arc<ConfigAuthorityImpl>,
         path_resolver: PathResolver,
     ) -> Result<Self> {
+        Self::new_with_resolver(config_service, path_resolver, None).await
+    }
+
+    /// Create a new stateless agent service with a v3 `LlmResolver`.
+    ///
+    /// Production path (`peko daemon`); every cold-started agent
+    /// routes through `LlmResolver::build` so the agent never reads
+    /// the inline-`[provider]` field. The unit-test constructor
+    /// (`new(...)`) keeps an `Option::None` resolver for the few
+    /// tests that don't exercise the LLM call path.
+    pub async fn new_with_resolver(
+        config_service: Arc<ConfigAuthorityImpl>,
+        path_resolver: PathResolver,
+        resolver: Option<Arc<crate::providers::LlmResolver>>,
+    ) -> Result<Self> {
         let service = Self {
             config_service,
             default_timeout: Duration::from_secs(300), // 5 minutes default
             metrics: RwLock::new(ExecutionMetrics::default()),
             path_resolver,
+            resolver,
         };
 
-        info!("StatelessAgentService initialized with team-aware paths");
+        info!(
+            "StatelessAgentService initialized with team-aware paths (resolver: {})",
+            if service.resolver.is_some() { "wired" } else { "none" }
+        );
 
         Ok(service)
+    }
+
+    /// The v3 `LlmResolver` if one was wired at construction time.
+    #[must_use]
+    pub fn resolver(&self) -> Option<&Arc<crate::providers::LlmResolver>> {
+        self.resolver.as_ref()
     }
 
     /// Set default timeout
     pub fn with_default_timeout(mut self, timeout: Duration) -> Self {
         self.default_timeout = timeout;
         self
+    }
+
+    /// Cold-start an `Agent` for an inbound request.
+    ///
+    /// In v3 this routes through `Agent::new_with_resolver` so the
+    /// agent's `preferred_provider_id` / `preferred_model_id` resolve
+    /// via the daemon's `LlmResolver` (catalog + keychain). If the
+    /// service was constructed without a resolver (offline unit
+    /// tests), it falls back to the deprecated `Agent::new` path
+    /// that reads the inline `[provider]` block. The fallback is
+    /// deleted in commit 2.
+    async fn build_agent(
+        &self,
+        agent_name: &str,
+        config: crate::types::agent::AgentConfig,
+    ) -> Result<Agent> {
+        if let Some(resolver) = self.resolver.as_ref() {
+            Agent::new_with_resolver(config, resolver.clone())
+                .await
+                .with_context(|| format!("Failed to create agent: {agent_name}"))
+        } else {
+            Agent::new(config)
+                .await
+                .with_context(|| format!("Failed to create agent: {agent_name}"))
+        }
     }
 
     /// Load agent config fresh, bypassing any stale cache
@@ -673,7 +726,8 @@ impl StatelessAgentService {
         let history = self.load_session_history(session.clone()).await?;
 
         // 4. Cold-start agent (spawn)
-        let agent = Agent::new(config_entry.config.clone())
+        let agent = self
+            .build_agent(&request.agent_name, config_entry.config.clone())
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
@@ -881,7 +935,8 @@ impl StatelessAgentService {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
-        let _agent = Agent::new(config_entry.config.clone())
+        let _agent = self
+            .build_agent(&request.agent_name, config_entry.config.clone())
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
@@ -957,7 +1012,8 @@ impl StatelessAgentService {
         // ADR-019: Invalidate cache to pick up mid-session tool config changes
         let config_entry = self.load_config_fresh(&request.agent_name).await?;
 
-        let agent = Agent::new(config_entry.config.clone())
+        let agent = self
+            .build_agent(&request.agent_name, config_entry.config.clone())
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 

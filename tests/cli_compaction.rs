@@ -88,29 +88,20 @@ fn write_compaction_agent(
     let agent_dir = home.join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
     let base_url = mock_llm_url.trim_end_matches('/');
+    // v3 agent config: soft hints only (catalog + keychain own the
+    // provider wiring). The test harness pre-seeds a `mock-llm`
+    // provider in the catalog via `seed_mock_provider_in_catalog`
+    // (commit 3.5); this helper assumes that step has already run
+    // for the given `home`.
     let config_toml = format!(
-        r#"version = "1.0"
+        r#"version = "3.0"
 name = "{name}"
 description = "CLI integration test agent for session compaction"
 auto_accept_trusted = false
 default_timeout_seconds = 60
 
-[provider]
-provider_type = "openai_compatible"
-api_key = "mock-llm-test-key"
-base_url = "{base_url}"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "default"
-max_tokens = 1024
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
 
 [extensions]
 enabled = [

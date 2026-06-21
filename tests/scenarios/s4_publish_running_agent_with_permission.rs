@@ -192,30 +192,16 @@ granted_by = {{ kind = "user", id = "system" }}
     };
 
     let config_toml = format!(
-        r#"version = "1.0"
+        r#"version = "3.0"
 name = "{agent_name}"
 description = "D4 publish-with-permission agent"
 auto_accept_trusted = false
+
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
 default_timeout_seconds = 60
 host_runtime_id = "{owner_did}"
 owner_id = "{owner_did}"
-
-[provider]
-provider_type = "openai_compatible"
-api_key = "mock-llm-test-key"
-base_url = "{base_url}"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "default"
-max_tokens = 1024
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
 
 [extensions]
 enabled = []

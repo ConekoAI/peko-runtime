@@ -15,7 +15,7 @@
 //!  landing — see ADR-038.)
 
 mod common;
-use common::{write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use common::{write_v3_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -94,7 +94,7 @@ fn session_list_shows_created_sessions() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "list-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "list-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Initially no sessions
@@ -124,7 +124,7 @@ fn session_show_displays_session_details() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "show-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "show-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Create a session
@@ -157,7 +157,7 @@ fn session_show_json_output_contains_session_id() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "show-json-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "show-json-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     send_msg(&cli, "show-json-agent", "Hello");
@@ -191,7 +191,7 @@ fn session_branch_creates_child_with_parent_history() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "branch-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "branch-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Create parent session with two messages
@@ -254,7 +254,7 @@ fn session_branch_with_label() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "branch-label-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "branch-label-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     send_msg(&cli, "branch-label-agent", "Hello");
@@ -319,7 +319,7 @@ fn session_switch_changes_active_session() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "switch-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "switch-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Create two sessions
@@ -375,7 +375,7 @@ fn session_remove_deletes_session() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "remove-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "remove-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Create a session
@@ -415,7 +415,7 @@ fn session_user_isolation_different_users_different_active_sessions() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "user-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "user-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Default user creates a session
@@ -508,7 +508,7 @@ fn session_show_no_active_session_reports_error() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "no-sess-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "no-sess-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Try to show active session when none exists

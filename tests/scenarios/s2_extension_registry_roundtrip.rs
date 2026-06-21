@@ -405,7 +405,7 @@ async fn ext_pull_round_trip_two_clis() {
     // isn't exposed as a public CLI argument. The pull round-trip
     // itself is asserted via the pull_json above.
     let collab_agent = "s2_collab_agent";
-    common::write_mock_agent(collab.home(), collab_agent, &mock_url)
+    common::write_v3_mock_agent(collab.home(), collab_agent, &mock_url)
         .expect("write collab mock agent");
 
     // The `peko ext pull` above already installed the extension

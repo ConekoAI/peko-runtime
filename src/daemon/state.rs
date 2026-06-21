@@ -360,23 +360,42 @@ impl AppState {
         );
         let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
 
-        // ADR-032: Backfill legacy agents and teams with host_runtime_id
-        if let Err(e) = crate::runtime::migration::migrate_legacy_data(
-            &path_resolver,
-            &runtime_identity.runtime_did,
-        )
-        .await
-        {
-            tracing::warn!("Failed to run ADR-032 legacy migration: {}", e);
-        }
+        // v3-cleanup: ADR-032 / ADR-033 / provider-catalog migration
+        // runners were deleted; the runtime now expects every agent
+        // and team on disk to already have `host_runtime_id` and
+        // `owner` set (which `create_agent` does at v3).
 
         let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
+        // v3: Build the `LlmResolver` here so every agent cold-start
+        // goes through `LlmResolver::build` instead of the deprecated
+        // inline-[provider] path. Catalog is `~/.peko/providers.toml`,
+        // secrets are the OS keychain. Test harnesses that need a
+        // env-var fallback (no keychain on CI) flip
+        // `PEKO_TEST_RESOLVER_BOOTSTRAP=1`; the daemon picks that up
+        // via `LlmResolver::with_env_bootstrap()` below.
+        let catalog_path = path_resolver.config_dir().join("providers.toml");
+        let catalog = crate::providers::ProviderCatalog::load_or_init(&catalog_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to load provider catalog: {e}"))?;
+        let secrets: Arc<dyn crate::common::secret_store::SecretStore> =
+            Arc::new(crate::common::secret_store::OsKeychainSecretStore::new());
+        let mut resolver_builder =
+            crate::providers::LlmResolver::new(catalog, secrets);
+        if std::env::var_os("PEKO_TEST_RESOLVER_BOOTSTRAP").is_some() {
+            resolver_builder = resolver_builder.with_env_bootstrap();
+        }
+        let resolver = Arc::new(resolver_builder);
+
         let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_service.clone(), path_resolver.clone())
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create agent service: {e}"))?,
+            StatelessAgentService::new_with_resolver(
+                config_service.clone(),
+                path_resolver.clone(),
+                Some(resolver.clone()),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create agent service: {e}"))?,
         );
 
         let lifecycle = Arc::new(LifecycleManager::new());
@@ -1365,10 +1384,6 @@ mod tests {
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama,
-                ..Default::default()
-            },
             ..Default::default()
         };
 

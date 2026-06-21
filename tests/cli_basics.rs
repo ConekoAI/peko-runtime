@@ -10,7 +10,7 @@
 //!  landing — see ADR-038.)
 
 mod common;
-use common::{write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use common::{write_v3_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -69,13 +69,13 @@ fn agent_create_list_show_remove() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "existing-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "existing-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Create an agent
     let (out, err, status) = run(
         &cli,
-        &["agent", "create", "test-agent", "--provider", "openai_compatible"],
+        &["agent", "create", "test-agent", "--provider", "mock-llm"],
     );
     assert_ok(&out, &err, &status);
 
@@ -91,7 +91,7 @@ fn agent_create_list_show_remove() {
     let (out, err, status) = run(&cli, &["agent", "show", "test-agent"]);
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("test-agent") || out.contains("openai_compatible"),
+        out.contains("test-agent") || out.contains("mock-llm"),
         "show should display agent info: {out}"
     );
 
@@ -116,12 +116,12 @@ fn agent_create_json_output() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "json-agent-precreate", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "json-agent-precreate", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     let (out, err, status) = run(
         &cli,
-        &["agent", "create", "json-agent", "--provider", "openai_compatible", "--json"],
+        &["agent", "create", "json-agent", "--provider", "mock-llm", "--json"],
     );
     assert_ok(&out, &err, &status);
 
@@ -146,7 +146,7 @@ fn agent_move_renames_agent() {
     // Create agent (daemon will write the config)
     let (_, _, status) = run(
         &cli,
-        &["agent", "create", "old-name", "--provider", "openai_compatible"],
+        &["agent", "create", "old-name", "--provider", "mock-llm"],
     );
     assert!(status.success(), "agent create should succeed");
 
@@ -170,7 +170,7 @@ fn agent_show_nonexistent_fails() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "other-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "other-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     let (out, err, status) = run(&cli, &["agent", "show", "no-such-agent"]);
@@ -189,7 +189,7 @@ fn team_create_list_show_remove() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "team-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "team-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Create a team
@@ -237,7 +237,7 @@ fn team_create_with_description() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "desc-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "desc-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     let (out, err, status) = run(
@@ -269,7 +269,7 @@ fn team_move_renames_team() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "move-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "move-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     let (_, _, status) = run(&cli, &["team", "create", "old-team"]);
@@ -293,7 +293,7 @@ fn team_show_nonexistent_fails() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "show-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "show-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     let (out, err, status) = run(&cli, &["team", "show", "no-such-team"]);
