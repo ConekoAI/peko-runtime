@@ -62,7 +62,7 @@ pub(crate) enum ServerSocket {
     },
 }
 
-/// Peer address returned by `ServerSocket::recv_from` and threaded through
+/// Principal address returned by `ServerSocket::recv_from` and threaded through
 /// the request handlers so they can `send_to` the response back. Unix domain
 /// datagram sockets return the sender's filesystem path; UDP returns a
 /// `std::net::SocketAddr`. Windows named pipes (ADR-038) are
@@ -1542,7 +1542,7 @@ impl IpcServer {
                 match agent {
                     Some(agent_name) => {
                         let session_peer =
-                            crate::session::types::Peer::User("default".to_string());
+                            crate::auth::principal::Principal::User("default".to_string());
                         match service
                             .list_sessions_with_active(&agent_name, team.as_deref(), &session_peer)
                             .await
@@ -1685,7 +1685,7 @@ impl IpcServer {
                     team.as_deref(),
                     &user,
                 );
-                let session_peer = crate::session::Peer::User(user);
+                let session_peer = crate::auth::principal::Principal::User(user);
                 match manager.switch_session(&session_peer, &session_id).await {
                     Ok(_) => {
                         let response = ResponsePacket::SessionSwitched {

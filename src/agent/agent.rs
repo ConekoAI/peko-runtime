@@ -6,7 +6,8 @@ use crate::extension::core::{global_core, ExtensionCore};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
-use crate::session::types::{ChannelType, Peer};
+use crate::auth::principal::Principal;
+use crate::session::types::{ChannelType};
 use crate::tools::builtin::messaging::agent_spawn::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::{Context, Result};
@@ -801,7 +802,7 @@ pub async fn new_with_session_manager(
     /// and `handle` for all session operations.
     pub async fn resolve_session(
         &self,
-        peer: &Peer,
+        peer: &Principal,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
@@ -815,7 +816,7 @@ pub async fn new_with_session_manager(
     ///
     /// Convenience method for CLI and simple channels.
     pub async fn resolve_default_session(&self) -> Result<ResolvedSession> {
-        let peer = Peer::User("default".to_string());
+        let peer = Principal::User("default".to_string());
         self.resolve_session(&peer, ChannelType::Cli, "default")
             .await
     }
@@ -829,7 +830,7 @@ pub async fn new_with_session_manager(
     /// and the operations handle (`handle`).
     pub async fn spawn_session(
         &self,
-        peer: &Peer,
+        peer: &Principal,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
@@ -851,7 +852,7 @@ pub async fn new_with_session_manager(
     // Session management commands (CLI integration)
 
     /// Create a new session (/new command)
-    pub async fn session_new(&self, peer: &Peer) -> Result<String> {
+    pub async fn session_new(&self, peer: &Principal) -> Result<String> {
         use crate::session::manager::SessionCreateOptions;
         let mut manager = self.session_manager.write().await;
         let options = SessionCreateOptions::new().with_trigger("user");
@@ -864,7 +865,7 @@ pub async fn new_with_session_manager(
     }
 
     /// Branch current session (/branch command)
-    pub async fn session_branch(&self, peer: &Peer, label: Option<String>) -> Result<String> {
+    pub async fn session_branch(&self, peer: &Principal, label: Option<String>) -> Result<String> {
         let mut manager = self.session_manager.write().await;
         let session_id = manager.branch_session(peer, label).await?;
         info!("Branched session {} from peer {:?}", session_id, peer);
@@ -872,7 +873,7 @@ pub async fn new_with_session_manager(
     }
 
     /// Switch to a different session (/switch command)
-    pub async fn session_switch(&self, peer: &Peer, session_id: &str) -> Result<()> {
+    pub async fn session_switch(&self, peer: &Principal, session_id: &str) -> Result<()> {
         let mut manager = self.session_manager.write().await;
         manager.switch_session(peer, session_id).await?;
         info!("Switched peer {:?} to session {}", peer, session_id);
@@ -880,7 +881,7 @@ pub async fn new_with_session_manager(
     }
 
     /// List all sessions for a peer (/sessions command)
-    pub async fn session_list(&self, peer: &Peer) -> Result<Vec<crate::session::SessionEntry>> {
+    pub async fn session_list(&self, peer: &Principal) -> Result<Vec<crate::session::SessionEntry>> {
         let mut manager = self.session_manager.write().await;
         let sessions = manager.list_sessions_for_peer(peer).await?;
         Ok(sessions)
@@ -928,7 +929,7 @@ pub async fn new_with_session_manager(
     /// Returns (false, _) if not a command (should be processed as normal message)
     pub async fn process_session_command(
         &self,
-        peer: &Peer,
+        peer: &Principal,
         command: &str,
     ) -> Result<(bool, String)> {
         let parts: Vec<&str> = command.split_whitespace().collect();
@@ -1370,7 +1371,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
         use crate::extension::core::ExtensionCore;
-        use crate::session::types::{ChannelType, Peer};
+        use crate::auth::principal::Principal;
+use crate::session::types::{ChannelType};
         use crate::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
@@ -1389,7 +1391,7 @@ mod tests {
         let agent = Agent::new(config).await.unwrap();
 
         // Session manager should be able to route to sessions
-        let peer = Peer::User("test_user".to_string());
+        let peer = Principal::User("test_user".to_string());
         let resolved = agent
             .resolve_session(&peer, ChannelType::Cli, "default")
             .await;
@@ -1403,7 +1405,8 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
         use crate::extension::core::ExtensionCore;
-        use crate::session::types::{ChannelType, Peer};
+        use crate::auth::principal::Principal;
+use crate::session::types::{ChannelType};
         use crate::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
@@ -1420,7 +1423,7 @@ mod tests {
         };
 
         let agent = Agent::new(config).await.unwrap();
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         let resolved = agent
             .resolve_session(&peer, ChannelType::Cli, "default")
@@ -1435,7 +1438,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_spawn_session() {
         use crate::extension::core::ExtensionCore;
-        use crate::session::types::Peer;
+        use crate::auth::principal::Principal;
         use crate::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
@@ -1452,7 +1455,7 @@ mod tests {
         };
 
         let agent = Agent::new(config).await.unwrap();
-        let peer = Peer::User("bob".to_string());
+        let peer = Principal::User("bob".to_string());
 
         // Create a parent session first
         let parent_resolved = agent

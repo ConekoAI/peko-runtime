@@ -253,7 +253,7 @@ pub fn cli_session_key(agent: &str) -> String {
 /// Derive a base session key from agent and peer
 /// Format: agent:{agent}:peer:{type}:{id}
 ///
-/// After ADR-039, `Peer` is an alias for `Principal`. The key format
+/// After ADR-039, `Principal` is an alias for `Principal`. The key format
 /// is **byte-stable** for `Principal::User` and `Principal::Agent` —
 /// these are the only valid session peers (`Principal::is_session_peer`).
 /// For `Principal::Team` and `Principal::Public`, the function falls
@@ -261,7 +261,7 @@ pub fn cli_session_key(agent: &str) -> String {
 /// principal never produces an orphan key. This is the documented
 /// behavior, not a bug.
 #[must_use]
-pub fn derive_base_session_key(agent: &str, peer: &super::Peer) -> String {
+pub fn derive_base_session_key(agent: &str, peer: &crate::auth::principal::Principal) -> String {
     use crate::auth::principal::Principal;
     match peer {
         Principal::User(id) => {
@@ -471,13 +471,13 @@ mod tests {
 
     #[test]
     fn test_derive_base_session_key() {
-        use super::super::Peer;
+        use crate::auth::principal::Principal;
 
-        let user_peer = Peer::User("alice".to_string());
+        let user_peer = Principal::User("alice".to_string());
         let key = derive_base_session_key("testagent", &user_peer);
         assert_eq!(key, "agent:testagent:peer:user:alice");
 
-        let agent_peer = Peer::Agent("helper".to_string());
+        let agent_peer = Principal::Agent("helper".to_string());
         let key = derive_base_session_key("testagent", &agent_peer);
         assert_eq!(key, "agent:testagent:peer:agent:helper");
     }

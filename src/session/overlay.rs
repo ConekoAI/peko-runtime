@@ -4,7 +4,8 @@
 //! - `ChannelOverlay`: Channel-specific state storage
 //! - `ChannelContext`: Interface for channel-specific data
 
-use super::types::{ChannelType, OverlayType, Peer};
+use crate::auth::principal::Principal;
+use super::types::{ChannelType, OverlayType};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,7 @@ pub trait SessionOverlay: Send + Sync {
     fn base_session_key(&self) -> &str;
 
     /// Get the peer this overlay belongs to
-    fn peer(&self) -> &Peer;
+    fn peer(&self) -> &Principal;
 
     /// Get creation timestamp
     fn created_at(&self) -> DateTime<Utc>;
@@ -70,7 +71,7 @@ pub struct ChannelOverlay {
     /// Parent base session key
     pub base_session_key: String,
     /// The peer this overlay belongs to
-    pub peer: Peer,
+    pub peer: Principal,
     /// Type of channel
     pub channel_type: ChannelType,
     /// Channel-specific identifier (e.g., guild ID for Discord)
@@ -93,7 +94,7 @@ impl ChannelOverlay {
     /// * `channel_id` - The channel-specific identifier
     pub fn new(
         base_session_key: impl Into<String>,
-        peer: Peer,
+        peer: Principal,
         channel_type: ChannelType,
         channel_id: impl Into<String>,
     ) -> Self {
@@ -158,7 +159,7 @@ impl ChannelOverlay {
     /// Create from stored data (for deserialization)
     pub fn from_stored(
         base_session_key: impl Into<String>,
-        peer: Peer,
+        peer: Principal,
         channel_type: ChannelType,
         channel_id: impl Into<String>,
         state: HashMap<String, Value>,
@@ -213,7 +214,7 @@ impl SessionOverlay for ChannelOverlay {
         &self.base_session_key
     }
 
-    fn peer(&self) -> &Peer {
+    fn peer(&self) -> &Principal {
         &self.peer
     }
 
@@ -245,7 +246,7 @@ impl ChannelContext for ChannelOverlay {
 pub struct ChannelOverlayData {
     pub overlay_id: String,
     pub base_session_key: String,
-    pub peer: Peer,
+    pub peer: Principal,
     pub channel_type: ChannelType,
     pub channel_id: String,
     pub state: HashMap<String, Value>,
@@ -291,7 +292,7 @@ mod tests {
     fn test_channel_overlay_new() {
         let overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
-            Peer::User("alice".to_string()),
+            Principal::User("alice".to_string()),
             ChannelType::Discord,
             "guild123",
         );
@@ -308,7 +309,7 @@ mod tests {
     fn test_channel_overlay_state() {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
-            Peer::User("alice".to_string()),
+            Principal::User("alice".to_string()),
             ChannelType::Discord,
             "guild123",
         );
@@ -341,7 +342,7 @@ mod tests {
     fn test_channel_overlay_overlay_type() {
         let overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
-            Peer::User("alice".to_string()),
+            Principal::User("alice".to_string()),
             ChannelType::Cli,
             "default",
         );
@@ -356,7 +357,7 @@ mod tests {
     fn test_channel_overlay_to_json() {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
-            Peer::User("alice".to_string()),
+            Principal::User("alice".to_string()),
             ChannelType::Discord,
             "guild123",
         );
@@ -377,7 +378,7 @@ mod tests {
     fn test_channel_overlay_serialization() {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
-            Peer::User("alice".to_string()),
+            Principal::User("alice".to_string()),
             ChannelType::Discord,
             "guild123",
         );
@@ -400,7 +401,7 @@ mod tests {
     fn test_channel_context_trait() {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
-            Peer::User("alice".to_string()),
+            Principal::User("alice".to_string()),
             ChannelType::Discord,
             "guild123",
         );
@@ -426,7 +427,7 @@ mod tests {
     fn test_touch_updates_last_accessed() {
         let mut overlay = ChannelOverlay::new(
             "agent:test:peer:user:alice",
-            Peer::User("alice".to_string()),
+            Principal::User("alice".to_string()),
             ChannelType::Cli,
             "default",
         );
@@ -450,7 +451,7 @@ mod tests {
 
         let overlay = ChannelOverlay::from_stored(
             "agent:test:peer:user:alice",
-            Peer::User("alice".to_string()),
+            Principal::User("alice".to_string()),
             ChannelType::Discord,
             "guild123",
             state,

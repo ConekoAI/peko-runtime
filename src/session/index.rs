@@ -2,7 +2,7 @@
 //!
 //! Two-file architecture:
 //! - sessions.json: Session metadata keyed by `session_id` (`HashMap`<String, `SessionEntry`>)
-//! - peers.json: Peer routing keyed by `peer_key` (`HashMap`<String, `PeerInfo`>)
+//! - peers.json: Principal routing keyed by `peer_key` (`HashMap`<String, `PeerInfo`>)
 //!
 //! This provides:
 //! - O(1) lookup by `session_id`
@@ -45,9 +45,9 @@ pub struct SessionEntry {
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
     pub trigger: String,
-    /// Peer type ("user" or "agent") - for session identity restoration
+    /// Principal type ("user" or "agent") - for session identity restoration
     pub peer_type: Option<String>,
-    /// Peer ID - for session identity restoration
+    /// Principal ID - for session identity restoration
     pub peer_id: Option<String>,
 }
 
@@ -142,7 +142,7 @@ impl SessionEntry {
     }
 }
 
-/// Peer routing information
+/// Principal routing information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
     /// Currently active session for this peer
@@ -185,7 +185,7 @@ impl PeerInfo {
     }
 }
 
-/// Peer index structure
+/// Principal index structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PeerIndex {
     /// `peer_key` → peer info
@@ -387,7 +387,7 @@ impl SessionIndex {
     }
 
     // =================================================================================
-    // Peer Routing Operations (O(1) for critical path)
+    // Principal Routing Operations (O(1) for critical path)
     // =================================================================================
 
     /// Get active session for peer (O(1)) - CRITICAL for message routing
@@ -436,7 +436,7 @@ impl SessionIndex {
         let peer_info = peers
             .peers
             .get_mut(peer_key)
-            .ok_or_else(|| anyhow::anyhow!("Peer {peer_key} not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("Principal {peer_key} not found"))?;
 
         peer_info.switch_to(session_id)?;
         self.peers_modified = true;

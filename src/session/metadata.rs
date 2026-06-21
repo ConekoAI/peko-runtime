@@ -31,9 +31,9 @@ pub struct SessionMetadata {
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
     pub trigger: String,
-    /// Peer type ("user" or "agent")
+    /// Principal type ("user" or "agent")
     pub peer_type: Option<String>,
-    /// Peer ID
+    /// Principal ID
     pub peer_id: Option<String>,
 }
 

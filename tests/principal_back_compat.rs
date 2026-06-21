@@ -337,9 +337,9 @@ fn test_resolved_subject_legacy_wire_shape_serde_round_trip() {
 // -- Pin the `manager.rs:1743` wildcard arm behavior (ADR-039) --
 //
 // The wildcard arm in the spawn-cleanup peer-rehydration match
-// previously defaulted to `Peer::Agent(id)`, inconsistent with the
+// previously defaulted to `Principal::Agent(id)`, inconsistent with the
 // v1 defaults at `manager.rs:1046, 1049, 1052` (which default to
-// `Peer::User("default")` for unknown peer types). After ADR-039
+// `Principal::User("default")` for unknown peer types). After ADR-039
 // the wildcard arm produces a `Principal::User` peer. This test
 // pins that behavior by constructing a `ParsedSessionKeyV2` with
 // an unknown peer_type and verifying the resulting `Principal` is

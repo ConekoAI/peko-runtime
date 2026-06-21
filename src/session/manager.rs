@@ -47,8 +47,8 @@ use super::metadata::SessionMetadata;
 use super::metadata_controller::MetadataController;
 use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
-use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
 use crate::auth::principal::Principal;
+use super::types::{ChannelType, SpawnCleanupPolicy};
 use super::unified::Session;
 use crate::common::paths::PathResolver;
 use anyhow::Result;
@@ -196,7 +196,7 @@ impl SessionHandle {
     }
 
     /// Get the peer
-    pub async fn peer(&self) -> Peer {
+    pub async fn peer(&self) -> Principal {
         let base = self.base.read().await;
         base.peer.clone()
     }
@@ -469,7 +469,7 @@ pub struct ResolvedSession {
 #[derive(Debug)]
 pub struct SessionManager {
     /// Base sessions: (`agent_id`, peer) -> `Session`
-    base_sessions: HashMap<(String, Peer), Arc<RwLock<Session>>>,
+    base_sessions: HashMap<(String, Principal), Arc<RwLock<Session>>>,
     /// Channel overlays: `overlay_key` -> `ChannelOverlay`
     channel_overlays: HashMap<String, Arc<RwLock<ChannelOverlay>>>,
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
@@ -679,7 +679,7 @@ impl SessionManager {
     /// **Issue #24 review #2:** if `peer_principal` is set to a
     /// non-session-peer principal (`Principal::Team` or
     /// `Principal::Public`), this method REFUSES and logs a warning
-    /// rather than silently falling back to `Peer::User(user)`.
+    /// rather than silently falling back to `Principal::User(user)`.
     /// `with_peer_principal_opt` is the validated setter that filters
     /// out non-peer principals at the call site; this is the
     /// authoritative guard so the two entry points can't diverge.
@@ -690,7 +690,7 @@ impl SessionManager {
             Some(p) => {
                 // Per ADR-039: Team/Public are not valid session
                 // peers. We refuse rather than fall back to the
-                // legacy `Peer::User(user)` form because the legacy
+                // legacy `Principal::User(user)` form because the legacy
                 // form silently re-introduces the masquerade the
                 // post-#24 caller is trying to avoid (review #2).
                 // The validated setter `with_peer_principal_opt`
@@ -698,7 +698,7 @@ impl SessionManager {
                 // catches the raw `with_peer_principal` case.
                 tracing::warn!(
                     "SessionManager::peer: principal {:?} is not a valid session peer; \
-                     refusing to masquerade as Peer::User({:?}). Use \
+                     refusing to masquerade as Principal::User({:?}). Use \
                      `with_peer_principal_opt` to filter non-peer principals at \
                      the call site (issue #24 review #2).",
                     p,
@@ -962,7 +962,7 @@ impl SessionManager {
     /// peer and channel, enabling cross-channel context sharing.
     pub async fn route(
         &mut self,
-        _peer: &Peer,
+        _peer: &Principal,
         channel_type: ChannelType,
         channel_id: &str,
         agent: Option<&str>,
@@ -979,7 +979,7 @@ impl SessionManager {
     pub async fn route_to_agent(
         &mut self,
         agent: &str,
-        _peer: &Peer,
+        _peer: &Principal,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
@@ -991,7 +991,7 @@ impl SessionManager {
     pub async fn spawn_session(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        peer: &Principal,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
@@ -1034,7 +1034,7 @@ impl SessionManager {
     pub async fn create_session(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        peer: &Principal,
         options: SessionCreateOptions,
     ) -> Result<SessionHandle> {
         let sessions_dir = self
@@ -1149,20 +1149,20 @@ impl SessionManager {
             {
                 // Restore peer from entry
                 match (entry.peer_type.as_deref(), entry.peer_id) {
-                    (Some("agent"), Some(id)) => Peer::Agent(id),
-                    (Some("user"), Some(id)) => Peer::User(id),
+                    (Some("agent"), Some(id)) => Principal::Agent(id),
+                    (Some("user"), Some(id)) => Principal::User(id),
                     // Legacy data (pre-#17): entry has no peer info recorded.
                     // Empty sender_id is the right fallback — it's
                     // distinguishable from a real, resolved caller and
                     // doesn't mis-attribute the session to the literal
                     // `"default"` placeholder.
-                    _ => Peer::User(String::new()),
+                    _ => Principal::User(String::new()),
                 }
             } else {
-                Peer::User(String::new())
+                Principal::User(String::new())
             }
         } else {
-            Peer::User(String::new())
+            Principal::User(String::new())
         };
 
         // 3. Load Session from JSONL with peer info
@@ -1234,7 +1234,7 @@ impl SessionManager {
     // ====================================================================================
 
     /// Branch current session (/branch command)
-    pub async fn branch_session(&mut self, peer: &Peer, label: Option<String>) -> Result<String> {
+    pub async fn branch_session(&mut self, peer: &Principal, label: Option<String>) -> Result<String> {
         // Get agent name first to avoid borrow issues
         let agent = self
             .agent_name
@@ -1344,7 +1344,7 @@ impl SessionManager {
     }
 
     /// Switch to a different session (/switch command)
-    pub async fn switch_session(&mut self, peer: &Peer, session_id: &str) -> Result<()> {
+    pub async fn switch_session(&mut self, peer: &Principal, session_id: &str) -> Result<()> {
         if self.index.is_none() {
             return Err(anyhow::anyhow!("Session index not initialized"));
         }
@@ -1369,7 +1369,7 @@ impl SessionManager {
     ///
     /// NOTE: This returns `SessionEntry` for backward compatibility.
     /// Consider using `list_sessions()` for new code.
-    pub async fn list_sessions_for_peer(&mut self, peer: &Peer) -> Result<Vec<SessionEntry>> {
+    pub async fn list_sessions_for_peer(&mut self, peer: &Principal) -> Result<Vec<SessionEntry>> {
         let agent = self
             .agent_name
             .as_ref()
@@ -1389,7 +1389,7 @@ impl SessionManager {
     }
 
     /// Get active session ID for a peer
-    pub async fn get_active_session_id(&mut self, peer: &Peer) -> Result<Option<String>> {
+    pub async fn get_active_session_id(&mut self, peer: &Principal) -> Result<Option<String>> {
         let agent = self
             .agent_name
             .as_ref()
@@ -1417,7 +1417,7 @@ impl SessionManager {
     pub async fn get_or_create_base(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        peer: &Principal,
     ) -> Result<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
 
@@ -1494,7 +1494,7 @@ impl SessionManager {
 
     /// Get an existing base session if it exists
     #[must_use]
-    pub fn get_existing_base(&self, agent: &str, peer: &Peer) -> Option<Arc<RwLock<Session>>> {
+    pub fn get_existing_base(&self, agent: &str, peer: &Principal) -> Option<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.get(&key).cloned()
     }
@@ -1506,7 +1506,7 @@ impl SessionManager {
     pub async fn create_channel_overlay(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        peer: &Principal,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionHandle> {
@@ -1523,7 +1523,7 @@ impl SessionManager {
     pub async fn create_channel_overlay_on_base(
         &mut self,
         base: Arc<RwLock<Session>>,
-        peer: &Peer,
+        peer: &Principal,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionHandle> {
@@ -1535,7 +1535,7 @@ impl SessionManager {
     async fn create_channel_overlay_on_base_as_handle(
         &mut self,
         base: Arc<RwLock<Session>>,
-        peer: &Peer,
+        peer: &Principal,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionHandle> {
@@ -1594,14 +1594,14 @@ impl SessionManager {
     pub async fn create_spawn_overlay(
         &mut self,
         agent: &str,
-        _peer: &Peer,
+        _peer: &Principal,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
     ) -> Result<SessionHandle> {
         // Always create a new base session for the child
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
-        let spawn_peer = Peer::Agent(spawn_id);
+        let spawn_peer = Principal::Agent(spawn_id);
         let child_base = self.get_or_create_base(agent, &spawn_peer).await?;
 
         // If not isolated, copy parent's context to child's session
@@ -1645,7 +1645,7 @@ impl SessionManager {
     pub async fn create_spawn_overlay_with_config(
         &mut self,
         agent: &str,
-        _peer: &Peer,
+        _peer: &Principal,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
@@ -1655,7 +1655,7 @@ impl SessionManager {
     ) -> Result<SessionHandle> {
         // Always create a new base session for the child (no shared JSONL file)
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
-        let spawn_peer = Peer::Agent(spawn_id);
+        let spawn_peer = Principal::Agent(spawn_id);
         let child_base = self.get_or_create_base(agent, &spawn_peer).await?;
 
         // If not isolated, copy parent's context to child's session
@@ -1721,8 +1721,8 @@ impl SessionManager {
             let peer_id = parts.get(peer_idx + 2)?;
 
             let peer = match *peer_type {
-                "agent" => Peer::Agent(peer_id.to_string()),
-                _ => Peer::User(peer_id.to_string()),
+                "agent" => Principal::Agent(peer_id.to_string()),
+                _ => Principal::User(peer_id.to_string()),
             };
 
             return self.get_existing_base(agent, &peer);
@@ -1744,7 +1744,7 @@ impl SessionManager {
     pub async fn get_session_for_channel(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        peer: &Principal,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionHandle> {
@@ -1769,7 +1769,7 @@ impl SessionManager {
     pub fn remove_base_session(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        peer: &Principal,
     ) -> Option<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.remove(&key)
@@ -1852,15 +1852,15 @@ impl SessionManager {
         if let Some(parsed) = crate::session::key::parse_session_key_v2(&base_key) {
             // The wildcard arm aligns with the v1 defaults at
             // `manager.rs:1046, 1049, 1052` (which default to
-            // `Peer::User("default")` for unknown peer types). This
+            // `Principal::User("default")` for unknown peer types). This
             // is the documented ADR-039 behavior change; see the
             // regression test
             // `test_wildcard_peer_type_resolves_to_user_peer` in
             // `tests/principal_back_compat.rs`.
             let peer = match parsed.peer_type.as_str() {
-                "agent" => Peer::Agent(parsed.peer_id),
-                "user" => Peer::User(parsed.peer_id),
-                _ => Peer::User(parsed.peer_id),
+                "agent" => Principal::Agent(parsed.peer_id),
+                "user" => Principal::User(parsed.peer_id),
+                _ => Principal::User(parsed.peer_id),
             };
 
             // Remove the base session
@@ -2278,7 +2278,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         let base1 = manager
             .get_or_create_base("test_agent", &peer)
@@ -2300,7 +2300,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
@@ -2322,7 +2322,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create CLI session
         let cli = manager
@@ -2359,7 +2359,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         let handle = manager
             .create_spawn_overlay("test_agent", &peer, "Research task", false, "parent_key")
@@ -2379,7 +2379,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create parent session
         let parent = manager
@@ -2404,7 +2404,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create parent session and add a message
         let parent = manager
@@ -2444,7 +2444,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         let handle = manager
             .create_spawn_overlay_with_config(
@@ -2476,7 +2476,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
@@ -2495,7 +2495,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
@@ -2564,7 +2564,7 @@ mod tests {
         );
     }
 
-    /// `peer()` falls back to `Peer::User(user)` when no
+    /// `peer()` falls back to `Principal::User(user)` when no
     /// `peer_principal` is set — the legacy path for human-originated
     /// calls (CLI, IPC). This is the positive control for review #1:
     /// only a2a-originated calls change attribution; everything else
@@ -2588,7 +2588,7 @@ mod tests {
 
     /// `peer()` refuses to silently masquerade a non-peer principal
     /// (review #2). A `Principal::Team` set via the raw setter is
-    /// warned and surfaced as `Peer::User("")` rather than coerced
+    /// warned and surfaced as `Principal::User("")` rather than coerced
     /// into the legacy form, which would silently re-introduce the
     /// post-#24 masquerade.
     #[test]
@@ -2627,7 +2627,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create session
         let handle = manager
@@ -2659,7 +2659,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create session
         let handle = manager
@@ -2683,7 +2683,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create session
         let handle = manager
@@ -2712,7 +2712,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create first session
         let handle1 = manager
@@ -2747,7 +2747,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create session via SessionManager (the ONLY way)
         let handle = manager
@@ -2778,7 +2778,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create session
         let handle = manager
@@ -2808,7 +2808,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // Create session
         let handle = manager
@@ -2847,7 +2847,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
 
         // get_or_create_base should require initialized SessionManager
         // (no legacy fallback to Session::open)

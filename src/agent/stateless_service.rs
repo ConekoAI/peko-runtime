@@ -19,7 +19,7 @@ use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::engine::AgenticEvent;
 use crate::providers::TokenUsage;
 use crate::session::manager::SessionManager;
-use crate::session::types::{ChannelType, Peer};
+use crate::session::types::ChannelType;
 use crate::types::message::LlmMessage;
 // Note: Session storage uses jsonl module directly
 use crate::types::message::ContentBlock;
@@ -705,13 +705,13 @@ impl StatelessAgentService {
                 debug!("Session '{}' not found, creating new", request.session_id);
                 // Issue #24: prefer the resolved caller principal (e.g.
                 // `Principal::Agent("helper")` for a2a_send) over the
-                // legacy `Peer::User(user)` masquerade. The principal
+                // legacy `Principal::User(user)` masquerade. The principal
                 // sets the session key correctly and makes audit /
                 // permission-grant attribution type-safe.
                 let peer = request
                     .caller_principal
                     .clone()
-                    .unwrap_or_else(|| Peer::User(request.user.clone()));
+                    .unwrap_or_else(|| Principal::User(request.user.clone()));
                 let options = crate::session::SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(&request.session_id);
@@ -967,11 +967,11 @@ impl StatelessAgentService {
                 );
                 // Issue #24: prefer the resolved caller principal (e.g.
                 // `Principal::Agent("helper")` for a2a_send) over the
-                // legacy `Peer::User(user)` masquerade.
+                // legacy `Principal::User(user)` masquerade.
                 let peer = request
                     .caller_principal
                     .clone()
-                    .unwrap_or_else(|| Peer::User(request.user.clone()));
+                    .unwrap_or_else(|| Principal::User(request.user.clone()));
                 let options = crate::session::SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(&request.session_id);

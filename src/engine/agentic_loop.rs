@@ -236,7 +236,7 @@ impl AgenticLoop {
     ) -> Result<AgenticResult> {
         use crate::common::paths::PathResolver;
         use crate::session::manager::SessionManager;
-        use crate::session::types::Peer;
+        use crate::auth::principal::Principal;
 
         // Create session via SessionManager. Issue #17: use the resolved
         // caller identity (set via `with_caller_id`) as the session's
@@ -251,8 +251,8 @@ impl AgenticLoop {
         let peer = self
             .caller_id
             .as_deref()
-            .map(|c| Peer::User(c.to_string()))
-            .unwrap_or_else(|| Peer::User("local".to_string()));
+            .map(|c| Principal::User(c.to_string()))
+            .unwrap_or_else(|| Principal::User("local".to_string()));
         let session = session_manager
             .get_or_create_base(self.agent.name(), &peer)
             .await?;
@@ -827,7 +827,7 @@ mod tests {
     use crate::extension::core::{global_core, init_global_core, ExtensionCore};
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;
-    use crate::session::types::Peer;
+    use crate::auth::principal::Principal;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ProviderConfig, ProviderType};
     use std::sync::{Arc, Mutex};
@@ -865,7 +865,7 @@ mod tests {
         let mut manager = SessionManager::new()
             .with_sessions_dir_internal(temp_dir.join("data").join("sessions"))
             .with_agent_name(agent_name);
-        let peer = Peer::User("default".to_string());
+        let peer = Principal::User("default".to_string());
         let handle = manager
             .create_session(
                 agent_name,
