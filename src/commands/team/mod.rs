@@ -11,7 +11,7 @@ use crate::common::services::CredentialsService;
 use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
 use crate::extension::core::global_core;
 use crate::extension::manager::{ExtensionManager, ExtensionStorage};
-use crate::portable::registry::AgentRegistry;
+use crate::registry::AgentRegistry;
 use crate::portable::team_layer_builder::{build_team_config_layer, decompose_team_archive};
 use crate::portable::team_layer_reconstructor::reconstruct_team;
 use crate::portable::types::ExtensionRef;

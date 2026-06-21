@@ -6,8 +6,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use pekobot::registry::{RegistryClient, RegistryConfig, ProgressEvent};
-//! use pekobot::portable::registry::AgentRegistry;
+//! use pekobot::registry::{RegistryClient, RegistryConfig, ProgressEvent, AgentRegistry};
 //!
 //! let config = RegistryConfig::default();
 //! let registry = AgentRegistry::new(".peko/registry");
@@ -24,10 +23,12 @@
 //! }).await?;
 //! ```
 
+pub mod agent_registry;
 pub mod client;
 pub mod config;
 pub mod manifest;
 
+pub use agent_registry::AgentRegistry;
 pub use client::{ProgressEvent, RegistryClient, RegistryRef};
 pub use config::{load_from_workspace, AuthConfig, RegistryConfig, RegistrySource, ResolvedAuth};
 pub use manifest::RegistryManifest;
