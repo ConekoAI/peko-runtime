@@ -360,15 +360,10 @@ impl AppState {
         );
         let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
 
-        // ADR-032: Backfill legacy agents and teams with host_runtime_id
-        if let Err(e) = crate::runtime::migration::migrate_legacy_data(
-            &path_resolver,
-            &runtime_identity.runtime_did,
-        )
-        .await
-        {
-            tracing::warn!("Failed to run ADR-032 legacy migration: {}", e);
-        }
+        // v3-cleanup: ADR-032 / ADR-033 / provider-catalog migration
+        // runners were deleted; the runtime now expects every agent
+        // and team on disk to already have `host_runtime_id` and
+        // `owner` set (which `create_agent` does at v3).
 
         let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
@@ -1389,10 +1384,6 @@ mod tests {
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama,
-                ..Default::default()
-            },
             ..Default::default()
         };
 

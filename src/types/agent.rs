@@ -24,17 +24,6 @@ pub struct AgentConfig {
     /// Human-readable description
     pub description: Option<String>,
 
-    /// **Deprecated.** Legacy `[provider]` table, retained only so
-    /// pre-v3 on-disk configs still parse. The runtime-owned
-    /// `ProviderCatalog` (and its companion `SecretStore`) is the
-    /// source of truth for provider/model/API-key wiring.
-    ///
-    /// `runtime::migration::migrate_adr_provider_catalog_v3` strips
-    /// this field from disk on first load and seeds the catalog +
-    /// keychain with its contents.
-    #[serde(default, skip_serializing)]
-    pub provider: super::provider::ProviderConfig,
-
     /// Extension configurations — unified whitelist and settings for all extension types
     /// (tools, skills, MCP servers, universal tools, etc.)
     #[serde(default)]
@@ -57,19 +46,14 @@ pub struct AgentConfig {
     /// Host runtime identifier for multi-host awareness (ADR-032)
     #[serde(default)]
     pub host_runtime_id: String,
-    /// Owner identity for ownership and permission model (ADR-033, ADR-039).
+    /// Owner identity for ownership and permission model (ADR-039).
     ///
-    /// Canonical form is `owner = { kind, id }` (a `Principal`). The
-    /// legacy `owner_id` field is also accepted for back-compat with
-    /// on-disk configs written before ADR-039. If both are present,
-    /// `owner` wins.
+    /// Canonical form is `owner = { kind, id }` (a `Principal`).
+    /// v1 legacy `owner_id` string support was removed in v3-cleanup
+    /// (commit 2.1): on-disk configs that pre-date ADR-039 must be
+    /// rewritten once via `peko agent update --owner ...`.
     #[serde(default)]
     pub owner: Principal,
-    /// Legacy owner-id string (ADR-033, pre-039). The service layer
-    /// folds this into `owner` if `owner` is still the default
-    /// `Principal::User("")`. New configs should set `owner` only.
-    #[serde(default)]
-    pub owner_id: Option<String>,
     /// Explicit permission grants on this agent (ADR-033)
     #[serde(default)]
     pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
@@ -103,17 +87,14 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    /// Resolve the effective `Principal` owner, taking the legacy
-    /// `owner_id` string into account if `owner` is still the default
-    /// "no owner" sentinel. Used by the service layer on load.
+    /// Resolve the effective `Principal` owner.
+    ///
+    /// In v3-cleanup the legacy `owner_id` string was removed (ADR-039
+    /// is canonical). This is now a thin alias for `self.owner.clone()`
+    /// kept for source-compat with callers that previously consulted
+    /// the legacy field.
+    #[must_use]
     pub fn resolved_owner(&self) -> Principal {
-        use crate::auth::principal::principal_from_string_with_default_user;
-        let legacy_empty = matches!(&self.owner, Principal::User(s) if s.is_empty());
-        if legacy_empty {
-            if let Some(ref id) = self.owner_id {
-                return principal_from_string_with_default_user(id);
-            }
-        }
         self.owner.clone()
     }
 
@@ -181,7 +162,6 @@ impl Default for AgentConfig {
             version: default_config_version(),
             name: "unnamed-agent".to_string(),
             description: None,
-            provider: super::provider::ProviderConfig::default(),
             extensions: Some(ExtensionConfig::default()),
             channels: None,
             auto_accept_trusted: false,
@@ -191,7 +171,6 @@ impl Default for AgentConfig {
             prompt: None,
             host_runtime_id: "".to_string(),
             owner: default_owner(),
-            owner_id: None,
             permissions: Vec::new(),
             // Issue #28: back-filled on first `Agent::new()`.
             agent_did: None,
@@ -670,40 +649,28 @@ mod tests {
         assert!(toml.contains("builtin:tool:read_file"));
     }
 
-    /// v3 hardening: the legacy `[provider]` block (with literal
-    /// `api_key`) must NOT round-trip through TOML serialization.
-    /// Even if a legacy file is deserialized into an `AgentConfig`,
-    /// re-serializing it for the registry OCI config blob drops the
-    /// provider table and never embeds a credential.
+    /// v3-cleanup (commit 2.1): the legacy `[provider]` and
+    /// `owner_id` fields are gone entirely. The agent TOML carries
+    /// only soft hints and ownership metadata.
     #[test]
-    fn test_v3_round_trip_strips_legacy_provider() {
+    fn test_v3_round_trip_has_no_legacy_fields() {
         let mut config = AgentConfig::default();
-        config.name = "legacy".to_string();
-        config.version = "1.0".to_string();
+        config.name = "modern".to_string();
         config.preferred_provider_id = Some("openai".into());
         config.preferred_model_id = Some("gpt-4o-mini".into());
-        // Stuff legacy data into the deprecated field — should
-        // never appear in the serialized output.
-        config.provider.api_key = Some("sk-NEVER-LEAK".to_string());
-        config.provider.provider_type = crate::types::provider::ProviderType::OpenAI;
-        config.provider.default_model = "gpt-4o-mini".to_string();
 
         let toml = toml::to_string_pretty(&config).unwrap();
         assert!(
-            !toml.contains("sk-NEVER-LEAK"),
-            "API key must not appear in serialized agent TOML: {toml}"
+            !toml.contains("[provider]"),
+            "[provider] table must NOT be serialized in v3 (PR #43 cleanup): {toml}"
         );
         assert!(
-            !toml.contains("[provider]"),
-            "[provider] table must not be serialized in v3: {toml}"
+            !toml.contains("owner_id"),
+            "owner_id field must NOT be serialized in v3 (PR #43 cleanup): {toml}"
         );
         // Soft hints round-trip.
         assert!(toml.contains("preferred_provider_id = \"openai\""));
         assert!(toml.contains("preferred_model_id = \"gpt-4o-mini\""));
-        // We set version = "1.0" above to simulate a legacy file;
-        // a fresh v3 default would write "3.0". Both shapes are
-        // acceptable; the important property is that credentials
-        // are absent.
-        assert!(toml.contains("version = \"1.0\""));
+        assert!(toml.contains("version = \"3.0\""));
     }
 }

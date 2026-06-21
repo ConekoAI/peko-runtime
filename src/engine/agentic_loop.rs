@@ -850,11 +850,8 @@ mod tests {
     fn test_agent_config(name: &str) -> AgentConfig {
         AgentConfig {
             name: name.to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::OpenAI,
-                api_key: Some("mock_key".to_string()),
-                ..Default::default()
-            },
+            preferred_provider_id: Some("openai".into()),
+            preferred_model_id: Some("default".into()),
             extensions: Some(crate::types::agent::ExtensionConfig {
                 enabled: vec!["*".to_string()],
                 ..Default::default()
@@ -1019,7 +1016,9 @@ mod tests {
         mock.queue_text("Quick response");
 
         let mut config = test_agent_config("rt003-agent");
-        config.provider.timeout_seconds = 42;
+        // v3: timeout is no longer on the per-agent `[provider]`
+        // block. The agentic loop consults the resolved Provider's
+        // own timeout. Default timeout in tests is sufficient.
         let agent = Arc::new(
             Agent::new_for_test(config.clone(), temp_dir.path())
                 .await

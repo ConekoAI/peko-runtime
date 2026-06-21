@@ -10,7 +10,6 @@
 //! - `entry.rs`: Unified `AgentConfigEntry` and `ConfigSource` types
 //! - `cache.rs`: In-memory caching wrapper
 //! - `io.rs`: TOML file I/O and `ApiKeyResolver`
-//! - `migration.rs`: JSON to TOML migration utilities
 //!
 //! ## Usage
 //!
@@ -26,7 +25,6 @@ pub mod cache;
 pub mod entry;
 pub mod implementation;
 pub mod io;
-pub mod migration;
 
 // Re-export types for convenience
 pub use authority_trait::{ConfigAuthority, ConfigError, ConfigResult};
