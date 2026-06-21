@@ -133,6 +133,18 @@ follow-up work:
   9-domain target. The right home for `AppState` is the daemon
   composition layer (or a future `composition` domain once #31
   lands), not `engine/`. Recorded as a deliberate non-change.
+- **CI smoke gate is currently red on the `runtime-cleanup` base
+  branch.** `cargo clippy --all-targets -- -D warnings` reports 141
+  errors inherited from the pre-cleanup codebase (snake_case
+  violations, manual `RangeInclusive::contains`, `Duration`
+  unit hints, etc.). The Horizon-B stacked PRs (`#48`–`#52`) do
+  not introduce any new clippy errors — every `cargo check`,
+  `cargo test --lib`, and `cargo clippy` warning added by the
+  stacked work is `0`. The red smoke gate is inherited debt, not
+  regression, and will be cleared by the `cargo clippy --fix`
+  sweep that's the documented prerequisite for promoting
+  `cargo fmt --check` from advisory to a hard gate (recorded in
+  `integration.yml:104-109`).
 - `SubjectType` enum, `principal_from_string*` helpers, `Peer` type
   alias, and `Principal::{id, peer_type, is_user, is_agent}` compat
   methods are deprecated but still in place.
