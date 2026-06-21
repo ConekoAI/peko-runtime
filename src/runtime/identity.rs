@@ -4,21 +4,25 @@
 //!
 //! DID format: `did:key:z6Mk{base58-btc-multicodec-ed25519-pubkey}`
 //! The multicodec prefix for ed25519-pub is `0xed01` (two bytes: `[0xed, 0x01]`).
+//!
+//! The private signing key is stored in the encrypted vault; only public
+//! identity metadata is kept in `identity.toml`.
 
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use thiserror::Error;
 use tracing::info;
 
 use crate::common::paths::PathResolver;
+use crate::common::vault::Vault;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 /// Prefix for did:key method
 const DID_KEY_PREFIX: &str = "did:key:";
@@ -50,24 +54,6 @@ pub struct RuntimeIdentity {
     pub created_at: DateTime<Utc>,
 }
 
-/// Encrypted key entry (currently base64-encoded raw key as starting point)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncryptedKey {
-    /// The encrypted (or base64-encoded) private key
-    pub encrypted_private_key: String,
-    /// Algorithm identifier
-    pub algorithm: String,
-}
-
-/// On-disk identity file format
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeIdentityFile {
-    /// The runtime identity metadata
-    pub identity: RuntimeIdentity,
-    /// Map of key_id -> encrypted key
-    pub keys: HashMap<String, EncryptedKey>,
-}
-
 impl RuntimeIdentity {
     /// Generate a new runtime identity with a fresh ed25519 keypair
     pub fn generate() -> Result<(Self, [u8; 32])> {
@@ -94,33 +80,43 @@ impl RuntimeIdentity {
         ))
     }
 
-    /// Load identity from a file, or generate a new one if it doesn't exist
-    pub fn generate_or_load(resolver: &PathResolver) -> Result<Self> {
+    /// Load identity from a file, or generate a new one if it doesn't exist.
+    ///
+    /// The private key is stored in the encrypted vault; `identity.toml` only
+    /// holds public metadata.
+    pub fn generate_or_load(resolver: &PathResolver, vault: &Vault) -> Result<Self> {
         let identity_path = resolver.runtime_dir().join("identity.toml");
 
         if identity_path.exists() {
             let content = fs::read_to_string(&identity_path)
                 .with_context(|| format!("Failed to read identity file: {identity_path:?}"))?;
-            let file: RuntimeIdentityFile =
+            // Inspect the TOML structure first to detect legacy files that
+            // contained a `keys` map with private key material.
+            let value: toml::Value =
+                toml::from_str(&content).with_context(|| "Failed to parse identity.toml")?;
+            if value.get("keys").is_some() || value.get("encrypted_private_key").is_some() {
+                anyhow::bail!(
+                    "Legacy identity.toml format detected at {identity_path:?}. \
+                     It contains a plaintext/private key map. Run `peko runtime reset-identity` \
+                     or delete the file to regenerate a secure identity."
+                );
+            }
+            let identity: RuntimeIdentity =
                 toml::from_str(&content).with_context(|| "Failed to parse identity.toml")?;
             info!("Loaded runtime identity from: {:?}", identity_path);
-            return Ok(file.identity);
+            return Ok(identity);
         }
 
         let (identity, private_key_bytes) = Self::generate()?;
 
-        let encrypted_key = EncryptedKey {
-            encrypted_private_key: BASE64.encode(private_key_bytes),
-            algorithm: "ed25519-raw-base64".to_string(),
-        };
-
-        let mut keys = HashMap::new();
-        keys.insert(identity.key_id.clone(), encrypted_key);
-
-        let file = RuntimeIdentityFile {
-            identity: identity.clone(),
-            keys,
-        };
+        // Store private key in the vault.
+        vault
+            .set_identity_private_key(
+                &identity.key_id,
+                "ed25519-raw-base64",
+                &BASE64.encode(private_key_bytes),
+            )
+            .with_context(|| "Failed to store runtime identity private key in vault")?;
 
         // Ensure parent directory exists
         if let Some(parent) = identity_path.parent() {
@@ -128,13 +124,20 @@ impl RuntimeIdentity {
                 .with_context(|| format!("Failed to create runtime directory: {parent:?}"))?;
         }
 
-        let toml = toml::to_string_pretty(&file)
+        let toml = toml::to_string_pretty(&identity)
             .with_context(|| "Failed to serialize identity to TOML")?;
         fs::write(&identity_path, toml)
             .with_context(|| format!("Failed to write identity file: {identity_path:?}"))?;
 
         info!("Saved new runtime identity to: {:?}", identity_path);
         Ok(identity)
+    }
+
+    /// Load the private signing key for this identity from the vault.
+    pub fn load_private_key(&self, vault: &Vault) -> Result<Option<String>> {
+        Ok(vault
+            .get_identity_private_key(&self.key_id)
+            .map(|s| s.expose_secret().to_string()))
     }
 
     /// Get the runtime DID
@@ -202,6 +205,7 @@ pub fn identity_file_path(resolver: &PathResolver) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_public_key_to_did_key_roundtrip() {
@@ -239,26 +243,49 @@ mod tests {
     }
 
     #[test]
-    fn test_identity_file_roundtrip() {
-        let identity = RuntimeIdentity {
-            runtime_did: "did:key:z6MkTest".to_string(),
-            key_id: "did:key:z6MkTest#keys-1".to_string(),
-            created_at: Utc::now(),
-        };
-
-        let mut keys = HashMap::new();
-        keys.insert(
-            identity.key_id.clone(),
-            EncryptedKey {
-                encrypted_private_key: "base64data".to_string(),
-                algorithm: "ed25519-raw-base64".to_string(),
-            },
+    fn test_runtime_identity_generate_or_load_stores_key_in_vault() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "identity-test");
+        let resolver = PathResolver::with_dirs(
+            dir.path().to_path_buf(),
+            dir.path().join("data"),
+            dir.path().join("cache"),
         );
 
-        let file = RuntimeIdentityFile { identity, keys };
-        let toml_str = toml::to_string_pretty(&file).unwrap();
-        let parsed: RuntimeIdentityFile = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.identity.runtime_did, "did:key:z6MkTest");
-        assert_eq!(parsed.keys.len(), 1);
+        let identity = RuntimeIdentity::generate_or_load(&resolver, &vault).unwrap();
+        let loaded = RuntimeIdentity::generate_or_load(&resolver, &vault).unwrap();
+        assert_eq!(loaded.runtime_did, identity.runtime_did);
+
+        let private_key = loaded.load_private_key(&vault).unwrap();
+        assert!(private_key.is_some());
+
+        // identity.toml should not contain private key material.
+        let content = fs::read_to_string(identity_file_path(&resolver)).unwrap();
+        assert!(!content.contains("encrypted_private_key"));
+        assert!(!content.contains("[keys]"));
+    }
+
+    #[test]
+    fn test_legacy_identity_file_rejected() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "identity-test");
+        let resolver = PathResolver::with_dirs(
+            dir.path().to_path_buf(),
+            dir.path().join("data"),
+            dir.path().join("cache"),
+        );
+
+        fs::create_dir_all(resolver.runtime_dir()).unwrap();
+        let legacy = r#"
+runtime_did = "did:key:z6MkTest"
+key_id = "did:key:z6MkTest#keys-1"
+created_at = "2024-01-01T00:00:00Z"
+
+[keys]
+"did:key:z6MkTest#keys-1" = { encrypted_private_key = "c2VjcmV0", algorithm = "ed25519-raw-base64" }
+"#;
+        fs::write(identity_file_path(&resolver), legacy).unwrap();
+
+        assert!(RuntimeIdentity::generate_or_load(&resolver, &vault).is_err());
     }
 }

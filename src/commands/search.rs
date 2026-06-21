@@ -118,7 +118,7 @@ async fn handle_search_query(
     let mut req = client.get(&url).header("Accept", "application/json");
 
     // Add auth header if registry token is available
-    let creds = CredentialsService::new(paths.clone());
+    let creds = CredentialsService::new(paths.clone())?;
     if let Some(token) = creds.get_registry_token()? {
         req = req.bearer_auth(token.token);
     }
@@ -261,7 +261,7 @@ async fn handle_search_info(paths: &GlobalPaths, bundle: &str, json: bool) -> Re
     let mut req = client.get(&url).header("Accept", "application/json");
 
     // Add auth header if registry token is available
-    let creds = CredentialsService::new(paths.clone());
+    let creds = CredentialsService::new(paths.clone())?;
     if let Some(token) = creds.get_registry_token()? {
         req = req.bearer_auth(token.token);
     }

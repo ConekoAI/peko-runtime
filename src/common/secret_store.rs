@@ -10,10 +10,9 @@
 //! ## On-disk layout
 //!
 //! Secrets are not persisted by this module. The OS keychain is the
-//! single source of truth. The legacy plaintext file at
-//! `~/.peko/credentials.json` is migrated on first startup by
-//! `runtime::migration::migrate_adr_provider_catalog_v3` and then
-//! deleted; new writes never touch disk.
+//! single source of truth when this module is used directly. For the
+//! unified runtime vault (provider API keys, registry tokens, identity
+//! keys, tunnel keys), see `crate::common::vault`.
 //!
 //! ## Service / account naming
 //!

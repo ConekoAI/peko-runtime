@@ -252,7 +252,7 @@ fn resolve_registry_config(
     }
 
     // Check for registry token and wire auth into the source
-    let creds = CredentialsService::new(paths.clone());
+    let creds = CredentialsService::new(paths.clone())?;
     let token = creds.get_registry_token()?.map(|t| t.token);
 
     if token.is_none() {

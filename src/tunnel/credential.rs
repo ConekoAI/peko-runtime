@@ -2,55 +2,39 @@
 //!
 //! Loads and stores the runtime's PekoHub credentials from disk.
 //!
-//! The credential file (`pekohub.toml`) no longer stores the raw private key.
-//! Instead it stores a `keyring_entry` (the DID) that references the key in the
-//! OS keychain. Legacy files that contain `private_key` are auto-migrated on
-//! first load.
+//! The credential file (`pekohub.toml`) only stores public metadata: the
+//! tunnel URL and the runtime DID. The private signing key lives in the
+//! encrypted vault under the key `tunnel:{runtime_id}`.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
 
-use crate::identity::keychain::KeychainStorage;
+use crate::common::paths::PathResolver;
+use crate::common::vault::Vault;
+use secrecy::ExposeSecret;
 
 /// On-disk PekoHub credential format
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PekoHubCredential {
     /// WebSocket tunnel URL
     pub url: String,
     /// Runtime DID (did:key format)
     pub runtime_id: String,
-    /// Keychain entry reference (the DID used as the keychain account name)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub keyring_entry: Option<String>,
-    /// Legacy: Ed25519 private key (base64-encoded raw 32 bytes).
-    /// This field is read for migration but never written.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub private_key: Option<String>,
 }
 
 impl PekoHubCredential {
     /// Load credential from the given path
-    ///
-    /// Auto-migrates legacy credentials that contain a raw `private_key`:
-    /// the key is moved into the OS keychain and the file is rewritten
-    /// with `keyring_entry` instead.
     ///
     /// # Errors
     /// Returns error if file cannot be read or parsed
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read PekoHub credential: {path:?}"))?;
-        let mut cred: Self = toml::from_str(&content)
+        let cred: Self = toml::from_str(&content)
             .with_context(|| format!("Failed to parse PekoHub credential: {path:?}"))?;
-
-        // Auto-migrate legacy credentials
-        if cred.keyring_entry.is_none() && cred.private_key.is_some() {
-            warn!("Legacy PekoHub credential detected at {} — migrating to keychain", path.display());
-            cred.migrate_to_keychain(path)?;
-        }
-
         Ok(cred)
     }
 
@@ -80,63 +64,51 @@ impl PekoHubCredential {
         Ok(())
     }
 
-    /// Migrate a legacy credential (with raw private_key) to the keychain.
-    fn migrate_to_keychain(&mut self, path: &Path) -> Result<()> {
-        let private_key = self
-            .private_key
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("migrate_to_keychain called without private_key"))?;
-
-        let keychain = KeychainStorage::new();
-        let entry = self.runtime_id.clone();
-
-        if keychain.is_available() {
-            keychain
-                .store_key(&entry, &private_key)
-                .with_context(|| "Failed to store migrated key in OS keychain")?;
-            info!("Migrated private key to OS keychain for {}", self.runtime_id);
-            self.keyring_entry = Some(entry);
-            self.private_key = None;
-            self.save_to_file(path)
-                .with_context(|| "Failed to rewrite credential file after migration")?;
-        } else {
-            // Keychain unavailable — put the private_key back and skip migration
-            warn!("OS keychain unavailable — skipping legacy credential migration for {}", self.runtime_id);
-            self.private_key = Some(private_key);
-        }
-
-        Ok(())
+    /// Resolve the private key for this credential from the given vault.
+    ///
+    /// Returns the base64-encoded private key.
+    pub fn resolve_private_key(&self, vault: &Vault) -> Result<String> {
+        vault
+            .get_tunnel_private_key(&self.runtime_id)
+            .map(|s| s.expose_secret().to_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No tunnel private key found in vault for {}. \
+                     Run `peko tunnel setup` to reconfigure.",
+                    self.runtime_id
+                )
+            })
     }
 
-    /// Resolve the private key for this credential.
+    /// Convenience: resolve the private key by loading the vault from the
+    /// default config directory.
     ///
-    /// Returns the base64-encoded private key, fetching it from the keychain
-    /// if necessary.
-    pub fn resolve_private_key(&self) -> Result<String> {
-        if let Some(ref entry) = self.keyring_entry {
-            let keychain = KeychainStorage::new();
-            keychain
-                .retrieve_key(entry)
-                .with_context(|| format!("Failed to retrieve key from keychain for {entry}"))
-        } else if let Some(ref key) = self.private_key {
-            // Legacy path (should only happen if migration failed)
-            Ok(key.clone())
-        } else {
-            anyhow::bail!(
-                "PekoHub credential has neither keyring_entry nor private_key. \
-                 Run `peko tunnel setup` to reconfigure."
-            )
-        }
+    /// Prefer the explicit `resolve_private_key(vault)` when the vault path is
+    /// known (e.g. in the daemon with custom `--config-dir`).
+    pub fn resolve_private_key_default(&self) -> Result<String> {
+        let vault = Vault::load(crate::common::paths::default_config_dir().join("vault.enc"))
+            .with_context(|| "failed to load vault to resolve tunnel private key")?;
+        self.resolve_private_key(&vault)
     }
 
     /// Get the default credential file path
     ///
-    /// Path: `{config_dir}/pekohub.toml` where `{config_dir}` is the
-    /// `PEKO_HOME` env var (if set) or `~/.peko` (see
-    /// [`crate::common::paths::default_config_dir`]).
+    /// Path: `{config_dir}/runtime/pekohub.toml` where `{config_dir}` is the
+    /// `PEKO_HOME` env var (if set) or `~/.peko`.
     #[must_use]
     pub fn default_path() -> PathBuf {
-        crate::common::paths::default_config_dir().join("pekohub.toml")
+        PathResolver::default().pekohub_config()
+    }
+
+    /// Get the credential file path for a given config directory.
+    #[must_use]
+    pub fn path_for_config_dir(config_dir: &Path) -> PathBuf {
+        PathResolver::with_dirs(
+            config_dir.to_path_buf(),
+            config_dir.join("data"),
+            config_dir.join("cache"),
+        )
+        .pekohub_config()
     }
 }
 
@@ -168,15 +140,13 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_credential_roundtrip_new_format() {
+    fn test_credential_roundtrip() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("pekohub.toml");
 
         let cred = PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            keyring_entry: Some("did:key:z6MkTest".to_string()),
-            private_key: None,
         };
 
         cred.save_to_file(&path).unwrap();
@@ -184,12 +154,11 @@ mod tests {
 
         assert_eq!(loaded.url, cred.url);
         assert_eq!(loaded.runtime_id, cred.runtime_id);
-        assert_eq!(loaded.keyring_entry, cred.keyring_entry);
-        assert!(loaded.private_key.is_none(), "private_key should not be written when None");
 
         // Verify the TOML does not contain private_key
         let toml_content = std::fs::read_to_string(&path).unwrap();
         assert!(!toml_content.contains("private_key"));
+        assert!(!toml_content.contains("keyring_entry"));
     }
 
     #[test]
@@ -203,20 +172,20 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_credential_deserialization() {
+    fn test_resolve_private_key_with_vault() {
         let temp = TempDir::new().unwrap();
-        let path = temp.path().join("pekohub.toml");
+        let vault = Vault::for_test(temp.path(), "tunnel-test");
+        let cred = PekoHubCredential {
+            url: "wss://pekohub.org/v1/tunnel".to_string(),
+            runtime_id: "did:key:z6MkTest".to_string(),
+        };
 
-        let legacy_toml = r#"
-url = "wss://pekohub.org/v1/tunnel"
-runtime_id = "did:key:z6MkTest"
-private_key = "base64encodedkey"
-"#;
-        std::fs::write(&path, legacy_toml).unwrap();
+        cred.resolve_private_key(&vault).unwrap_err();
 
-        let loaded = PekoHubCredential::from_file(&path).unwrap();
-        assert_eq!(loaded.runtime_id, "did:key:z6MkTest");
-        // private_key should still be present if keychain unavailable,
-        // or None if migration succeeded. Either is valid.
+        vault
+            .set_tunnel_private_key(&cred.runtime_id, "dHVubmVsLWtleQ==")
+            .unwrap();
+        let key = cred.resolve_private_key(&vault).unwrap();
+        assert_eq!(key, "dHVubmVsLWtleQ==");
     }
 }

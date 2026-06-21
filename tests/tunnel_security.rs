@@ -15,6 +15,7 @@
 
 use secrecy::SecretString;
 
+use pekobot::common::vault::Vault;
 use pekobot::identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
 use pekobot::identity::storage::KeyStorage;
 use pekobot::identity::{DIDScope, Identity};
@@ -32,8 +33,6 @@ fn test_pekohub_credential_does_not_contain_raw_key() {
     let cred = PekoHubCredential {
         url: "wss://pekohub.org/v1/tunnel".to_string(),
         runtime_id: "did:key:z6MkTest".to_string(),
-        keyring_entry: Some("did:key:z6MkTest".to_string()),
-        private_key: None,
     };
 
     cred.save_to_file(&path).unwrap();
@@ -46,11 +45,11 @@ fn test_pekohub_credential_does_not_contain_raw_key() {
 }
 
 #[test]
-fn test_pekohub_credential_legacy_migration() {
+fn test_pekohub_credential_legacy_file_rejected() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("pekohub.toml");
 
-    // Write a legacy credential file
+    // Write a legacy credential file that contains a raw private key.
     let legacy_toml = r#"
 url = "wss://pekohub.org/v1/tunnel"
 runtime_id = "did:key:z6MkTest"
@@ -58,33 +57,13 @@ private_key = "dGVzdC1rZXk="
 "#;
     std::fs::write(&path, legacy_toml).unwrap();
 
-    // Load should always parse the legacy format successfully.
-    // Migration may or may not succeed depending on keychain availability,
-    // but parsing must not panic.
+    // The new format no longer supports a raw private_key field. The private
+    // key now lives in the encrypted vault.
     let loaded = PekoHubCredential::from_file(&path);
     assert!(
-        loaded.is_ok(),
-        "Legacy credential file must be parseable: {:?}",
-        loaded.err()
+        loaded.is_err(),
+        "Legacy credential file with raw private_key must be rejected"
     );
-    let cred = loaded.unwrap();
-    assert_eq!(cred.runtime_id, "did:key:z6MkTest");
-
-    // If keychain is available, the private key should have been migrated
-    // into the keychain and the on-disk private_key field should be cleared.
-    // If keychain is unavailable, the private_key remains in memory from parsing.
-    let keychain_available = cred.keyring_entry.is_some();
-    if keychain_available {
-        assert!(
-            cred.private_key.is_none(),
-            "When keychain is available, private_key should be migrated to keychain"
-        );
-    } else {
-        assert!(
-            cred.private_key.is_some(),
-            "When keychain is unavailable, private_key should still be present"
-        );
-    }
 }
 
 #[test]
@@ -246,27 +225,33 @@ fn test_encrypted_key_storage_roundtrip() {
 }
 
 #[test]
-fn test_credential_resolve_private_key_from_legacy_field() {
+fn test_credential_resolve_private_key_from_vault() {
+    let temp = tempfile::tempdir().unwrap();
+    let vault = Vault::for_test(temp.path(), "tunnel-security-test");
+
     let cred = PekoHubCredential {
         url: "wss://example.com".to_string(),
         runtime_id: "did:key:z6MkTest".to_string(),
-        keyring_entry: None,
-        private_key: Some("dGVzdC1rZXk=".to_string()),
     };
 
-    let resolved = cred.resolve_private_key().unwrap();
+    vault
+        .set_tunnel_private_key(&cred.runtime_id, "dGVzdC1rZXk=")
+        .unwrap();
+
+    let resolved = cred.resolve_private_key(&vault).unwrap();
     assert_eq!(resolved, "dGVzdC1rZXk=");
 }
 
 #[test]
 fn test_credential_resolve_private_key_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let vault = Vault::for_test(temp.path(), "tunnel-security-test");
+
     let cred = PekoHubCredential {
         url: "wss://example.com".to_string(),
         runtime_id: "did:key:z6MkTest".to_string(),
-        keyring_entry: None,
-        private_key: None,
     };
 
-    let result = cred.resolve_private_key();
+    let result = cred.resolve_private_key(&vault);
     assert!(result.is_err());
 }

@@ -296,7 +296,27 @@ async fn test_e2e_tunnel_chat_with_llm() {
         .await
         .expect("Failed to create test workspace");
 
-    // 4. Build AppState with real services
+    // 4. Prepare the credential vault before building AppState so that both
+    //    AppState::with_data_dir() and start_tunnel() load the same vault with
+    //    the same passphrase. In CI PEKO_MASTER_PASSPHRASE is set; locally we
+    //    fall back to the test default.
+    let vault_passphrase = std::env::var("PEKO_MASTER_PASSPHRASE")
+        .unwrap_or_else(|_| "peko-test-vault-passphrase".to_string());
+    let private_key_b64 = BASE64.encode(signing_key.to_bytes());
+    let vault_path = workspace_path.join("config").join("vault.enc");
+    tokio::fs::create_dir_all(vault_path.parent().unwrap())
+        .await
+        .unwrap();
+    let vault = pekobot::common::vault::Vault::with_passphrase(
+        &vault_path,
+        &secrecy::SecretString::new(vault_passphrase.clone().into()),
+    )
+    .expect("create vault for tunnel credential");
+    vault
+        .set_tunnel_private_key(&did, &private_key_b64)
+        .expect("store tunnel private key in vault");
+
+    // 5. Build AppState with real services
     let config = DaemonConfigSnapshot {
         data_dir: workspace_path.join("data"),
         config_dir: workspace_path.join("config"),
@@ -313,7 +333,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     .await
     .expect("Failed to build AppState");
 
-    // 5. Create runtime record (with owner_id = the user we created above)
+    // 6. Create runtime record (with owner_id = the user we created above)
 
     // Insert runtime record for owner resolution
     let runtime_resp = client
@@ -326,15 +346,20 @@ async fn test_e2e_tunnel_chat_with_llm() {
         .send()
         .await
         .expect("Failed to create runtime");
-    assert!(runtime_resp.status().is_success(), "Runtime creation failed");
+    assert!(
+        runtime_resp.status().is_success(),
+        "Runtime creation failed"
+    );
 
     // Generate JWT for authenticated requests
     let jwt_token = generate_jwt(user_id as i64, "e2etestuser");
     let auth_header = format!("Bearer {jwt_token}");
 
-    // 5. Write tunnel credentials to the default location (~/.peko/pekohub.toml)
-    // so that start_tunnel() can find them
-    let cred_path = pekobot::tunnel::PekoHubCredential::default_path();
+    // 7. Write tunnel credentials next to the AppState config directory so
+    // that start_tunnel() can find them. The private key lives in the vault
+    // at the AppState's config directory.
+    let config_dir = workspace_path.join("config");
+    let cred_path = pekobot::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
     tokio::fs::create_dir_all(cred_path.parent().unwrap())
         .await
         .unwrap();
@@ -342,10 +367,9 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let cred = pekobot::tunnel::PekoHubCredential {
         url: backend.ws_url.clone(),
         runtime_id: did.clone(),
-        keyring_entry: None,
-        private_key: Some(BASE64.encode(signing_key.to_bytes())),
     };
-    cred.save_to_file(&cred_path).expect("Failed to save credentials");
+    cred.save_to_file(&cred_path)
+        .expect("Failed to save credentials");
 
     // Clean up credential file after test
     let _cleanup = scopeguard::guard(cred_path.clone(), |p| {
@@ -358,7 +382,10 @@ async fn test_e2e_tunnel_chat_with_llm() {
         .start_tunnel(5)
         .await
         .expect("Failed to start tunnel");
-    assert!(tunnel_started, "Tunnel should have started (credentials exist)");
+    assert!(
+        tunnel_started,
+        "Tunnel should have started (credentials exist)"
+    );
 
     // Give tunnel time to connect and announce
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -405,7 +432,10 @@ async fn test_e2e_tunnel_chat_with_llm() {
     );
 
     // Consume SSE stream
-    let body_text = chat_resp.text().await.expect("Failed to read response body");
+    let body_text = chat_resp
+        .text()
+        .await
+        .expect("Failed to read response body");
     let mut chunks: Vec<String> = Vec::new();
     let mut full_text = String::new();
 

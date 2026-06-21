@@ -5,7 +5,7 @@
 use super::authority_trait::{ConfigAuthority, ConfigError, ConfigResult};
 use super::cache::ConfigCache;
 use super::entry::{AgentConfigEntry, ConfigSource};
-use super::io::{ApiKeyResolver, ConfigIo};
+use super::io::ConfigIo;
 use crate::common::paths::PathResolver;
 use crate::types::agent::AgentConfig;
 use async_trait::async_trait;
@@ -19,13 +19,11 @@ use tracing::{debug, info, warn};
 /// It coordinates between:
 /// - `ConfigCache`: In-memory caching
 /// - `ConfigIo`: TOML file operations
-/// - `ApiKeyResolver`: API key resolution
 #[derive(Debug)]
 pub struct ConfigAuthorityImpl {
     path_resolver: PathResolver,
     cache: ConfigCache,
     io: ConfigIo,
-    api_key_resolver: ApiKeyResolver,
 }
 
 impl std::fmt::Display for ConfigAuthorityImpl {
@@ -38,12 +36,10 @@ impl ConfigAuthorityImpl {
     /// Create a new `ConfigAuthorityImpl`
     #[must_use]
     pub fn new(path_resolver: PathResolver) -> Self {
-        let config_dir = path_resolver.config_dir().to_path_buf();
         Self {
             path_resolver,
             cache: ConfigCache::new(),
             io: ConfigIo::new(),
-            api_key_resolver: ApiKeyResolver::new(config_dir),
         }
     }
 
@@ -53,13 +49,11 @@ impl ConfigAuthorityImpl {
         path_resolver: PathResolver,
         cache: ConfigCache,
         io: ConfigIo,
-        api_key_resolver: ApiKeyResolver,
     ) -> Self {
         Self {
             path_resolver,
             cache,
             io,
-            api_key_resolver,
         }
     }
 
@@ -84,7 +78,7 @@ impl ConfigAuthority for ConfigAuthorityImpl {
             return Ok(None);
         }
 
-        let mut config = self.io.load_toml(&config_path).await.map_err(|e| {
+        let config = self.io.load_toml(&config_path).await.map_err(|e| {
             ConfigError::Other(format!(
                 "Failed to load config from {}: {}",
                 config_path.display(),
@@ -424,7 +418,6 @@ impl Clone for ConfigAuthorityImpl {
             path_resolver: self.path_resolver.clone(),
             cache: ConfigCache::new(), // Fresh cache for cloned instance
             io: self.io.clone(),
-            api_key_resolver: self.api_key_resolver.clone(),
         }
     }
 }

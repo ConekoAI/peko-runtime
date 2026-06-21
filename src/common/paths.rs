@@ -290,6 +290,14 @@ impl PathResolver {
         self.runtime_dir().join("pekohub.toml")
     }
 
+    /// Get the encrypted vault file path
+    ///
+    /// Path: `{config_dir}/vault.enc`
+    #[must_use]
+    pub fn vault(&self) -> PathBuf {
+        self.config_dir.join("vault.enc")
+    }
+
     /// Get the Universal Tools directory
     ///
     /// Path: `{data_dir}/tools`

@@ -24,6 +24,8 @@ use tempfile::TempDir;
 /// spawned `peko` subprocesses, and knows where the built binary lives.
 pub struct PekoCli {
     home: TempDir,
+    /// Passphrase for the encrypted vault created for this test.
+    vault_passphrase: String,
     /// Windows-only: per-test unique named pipe. `None` on Unix.
     #[cfg(windows)]
     pipe_name: String,
@@ -41,6 +43,19 @@ impl PekoCli {
             std::fs::create_dir_all(home.path().join(sub))
                 .unwrap_or_else(|e| panic!("create {sub}: {e}"));
         }
+
+        // Create an encrypted vault with a test passphrase so the daemon
+        // can load provider keys / identity keys / tunnel keys without an OS
+        // keychain in CI/headless environments. Each test has its own tempdir,
+        // so a shared passphrase is safe.
+        let vault_passphrase = "peko-test-vault-passphrase".to_string();
+        let vault_path = home.path().join(".peko").join("vault.enc");
+        pekobot::common::vault::Vault::with_passphrase(
+            &vault_path,
+            &secrecy::SecretString::new(vault_passphrase.clone().into()),
+        )
+        .expect("create test vault");
+
         // Per-test unique named pipe on Windows. The PID + a short random
         // suffix guarantees uniqueness across concurrent test processes.
         #[cfg(windows)]
@@ -56,6 +71,7 @@ impl PekoCli {
         };
         Self {
             home,
+            vault_passphrase,
             #[cfg(windows)]
             pipe_name,
         }
@@ -64,6 +80,15 @@ impl PekoCli {
     /// Absolute path to the isolated `HOME`.
     pub fn home(&self) -> &Path {
         self.home.path()
+    }
+
+    /// Passphrase used for the encrypted vault created for this test.
+    ///
+    /// Subcommands spawned via [`PekoCli::cmd`] already receive this as
+    /// `PEKO_MASTER_PASSPHRASE`. Tests that mutate the vault directly can use
+    /// this value to stay in sync with the CLI environment.
+    pub fn vault_passphrase(&self) -> &str {
+        &self.vault_passphrase
     }
 
     /// `<HOME>/.peko` — what `default_config_dir()` and the daemon both resolve to.
@@ -100,6 +125,20 @@ impl PekoCli {
         }
     }
 
+    /// Install the platform-specific IPC endpoint env var into the current
+    /// process so in-test `DaemonClient::connect()` calls reach the isolated
+    /// daemon instead of the user's default socket/pipe.
+    pub fn install_ipc_endpoint_env(&self) {
+        #[cfg(unix)]
+        {
+            std::env::set_var("PEKO_DAEMON_SOCK", self.daemon_sock());
+        }
+        #[cfg(windows)]
+        {
+            std::env::set_var("PEKO_DAEMON_PIPE", &self.pipe_name);
+        }
+    }
+
     /// Build a `Command` that runs the `peko` binary with the isolated env.
     ///
     /// Sets `HOME`, `USERPROFILE` (Windows), `PEKO_HOME`, the
@@ -112,6 +151,7 @@ impl PekoCli {
         c.env("HOME", self.home.path())
             .env("USERPROFILE", self.home.path())
             .env("PEKO_HOME", self.peko_dir())
+            .env("PEKO_MASTER_PASSPHRASE", &self.vault_passphrase)
             .env_remove("MINIMAX_API_KEY");
 
         // v3 mock-LLM bootstrap: when `MOCK_LLM_URL` is set, the
@@ -135,11 +175,7 @@ impl PekoCli {
         // Platform-specific IPC endpoint override.
         #[cfg(unix)]
         {
-            // We don't currently set PEKO_DAEMON_SOCK explicitly — the
-            // daemon's default discovery uses default_socket_path() which
-            // resolves to <HOME>/.peko/run/daemon.sock, matching the
-            // tempdir-based HOME. The test runs as the same user that
-            // created the tempdir, so the socket's 0600 mode is fine.
+            c.env("PEKO_DAEMON_SOCK", self.daemon_sock());
         }
         #[cfg(windows)]
         {
