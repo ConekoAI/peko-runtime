@@ -1232,35 +1232,34 @@ pub async fn new_with_session_manager(
     ) -> Result<Option<Arc<crate::providers::Provider>>> {
         // v3 path: ask the resolver to build a one-shot provider from
         // the agent's `preferred_*` hints (or the runtime default).
-        if let Some(r) = resolver {
-            let req = crate::providers::resolver::ResolveRequest {
-                agent_provider: config.preferred_provider_id.as_deref(),
-                agent_model: config.preferred_model_id.as_deref(),
-                ..Default::default()
-            };
-            match r.build(req).await {
-                Ok((provider, choice)) => {
-                    info!(
-                        "Agent '{}' resolved provider: {}",
-                        config.name, choice
-                    );
-                    return Ok(Some(provider));
-                }
-                Err(e) => {
-                    warn!(
-                        "Agent '{}': LlmResolver failed ({}); falling back to legacy provider wiring",
-                        config.name, e
-                    );
-                    // fall through to legacy
-                }
+        // The legacy fallback (build a provider from the inline
+        // `[provider]` block via `init_provider_legacy`) is retained
+        // for unit tests that haven't been wired to a resolver yet
+        // and gets deleted in commit 2.
+        let Some(r) = resolver else {
+            return Self::init_provider_legacy(config).await;
+        };
+        let req = crate::providers::resolver::ResolveRequest {
+            agent_provider: config.preferred_provider_id.as_deref(),
+            agent_model: config.preferred_model_id.as_deref(),
+            ..Default::default()
+        };
+        match r.build(req).await {
+            Ok((provider, choice)) => {
+                info!(
+                    "Agent '{}' resolved provider: {}",
+                    config.name, choice
+                );
+                Ok(Some(provider))
+            }
+            Err(e) => {
+                warn!(
+                    "Agent '{}': LlmResolver failed ({}); falling back to legacy provider wiring",
+                    config.name, e
+                );
+                Self::init_provider_legacy(config).await
             }
         }
-
-        // Legacy / fallback path: build a provider from the
-        // deprecated `provider: ProviderConfig` field on
-        // `AgentConfig`. Preserved so test fixtures and pre-v3
-        // configs continue to compile.
-        Self::init_provider_legacy(config).await
     }
 
     /// Legacy provider initializer: builds an `Arc<Provider>` from

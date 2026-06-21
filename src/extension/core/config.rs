@@ -12,7 +12,6 @@ use std::sync::Arc;
 ///
 /// This provides access to shared services like logging, configuration,
 /// and other cross-cutting concerns.
-#[derive(Debug)]
 pub struct ExtensionServices {
     /// Configuration service
     config: ExtensionConfig,
@@ -42,6 +41,21 @@ pub struct ExtensionServices {
     /// path.
     cross_runtime_a2a_ctx:
         std::sync::RwLock<Option<Arc<crate::tunnel::CrossRuntimeA2aCtx>>>,
+}
+
+impl std::fmt::Debug for ExtensionServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Manual impl: `StatelessAgentService` no longer derives Debug
+        // (carries an `LlmResolver` Arc which has no Debug impl). All
+        // other fields are stable identifiers.
+        f.debug_struct("ExtensionServices")
+            .field("config", &self.config)
+            .field("telemetry", &self.telemetry)
+            .field("async_router", &self.async_router)
+            .field("agent_service", &"<RwLock<Option<Arc<StatelessAgentService>>>>")
+            .field("cross_runtime_a2a_ctx", &"<RwLock<Option<Arc<CrossRuntimeA2aCtx>>>>")
+            .finish_non_exhaustive()
+    }
 }
 
 impl ExtensionServices {

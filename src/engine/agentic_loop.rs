@@ -284,9 +284,13 @@ impl AgenticLoop {
         // Resolve model id once at start — threaded through every
         // `provider.chat_with_tools` / `stream_with_tools` call so the
         // adapter no longer needs to bake one in.
+        //
+        // v3: the model id comes from the resolved `Provider` (built
+        // by `LlmResolver` from the agent's `preferred_*` hints), not
+        // from the deprecated inline `[provider]` block.
         let model_id = {
-            let provider_name = self.agent.config.provider.provider_type.to_string();
-            let model_name = self.agent.config.provider.default_model.clone();
+            let provider_name = self.provider.name().to_string();
+            let model_name = self.provider.model_id();
 
             let mut s = session.write().await;
             s.set_model(&provider_name, &model_name);

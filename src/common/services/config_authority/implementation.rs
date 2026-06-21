@@ -92,8 +92,9 @@ impl ConfigAuthority for ConfigAuthorityImpl {
             ))
         })?;
 
-        // Resolve API key if not set in config
-        self.api_key_resolver.resolve_config_api_key(&mut config);
+        // v3: API keys live in the OS keychain (catalog + SecretStore),
+        // not on the agent config. The config has no `provider`
+        // block to backfill.
 
         let entry = AgentConfigEntry {
             name: agent_name.to_string(),
@@ -191,8 +192,7 @@ impl ConfigAuthority for ConfigAuthorityImpl {
             }
 
             match self.io.load_toml(&config_path).await {
-                Ok(mut config) => {
-                    self.api_key_resolver.resolve_config_api_key(&mut config);
+                Ok(config) => {
                     all_agents.push(AgentConfigEntry {
                         name: agent_name.to_string(),
                         config,

@@ -750,8 +750,8 @@ fn render_team_show(
             .map(|(name, config)| {
                 serde_json::json!({
                     "name": name,
-                    "provider": format!("{:?}", config.provider.provider_type),
-                    "model": config.provider.default_model,
+                    "preferred_provider": config.preferred_provider_id,
+                    "preferred_model": config.preferred_model_id,
                     "description": config.description,
                 })
             })
@@ -793,7 +793,10 @@ fn render_team_show(
                 if let Some(ref desc) = config.description {
                     println!("      {desc}");
                 }
-                println!("      Provider: {:?}", config.provider.provider_type);
+                println!(
+                    "      Preferred provider: {}",
+                    config.preferred_provider_id.as_deref().unwrap_or("<none>")
+                );
             }
         }
     }

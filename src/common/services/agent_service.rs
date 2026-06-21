@@ -270,50 +270,24 @@ fn base_url(provider_type: ProviderType) -> Option<String> {
 }
 
 fn build_default_agent_config(name: &str, provider: &str, model: Option<String>) -> AgentConfig {
-    let provider_type = parse_provider_type(provider);
-    let default_model = model.unwrap_or_else(|| "default".to_string());
-
-    let mut models = HashMap::new();
-    models.insert(
-        "default".to_string(),
-        ModelConfig {
-            name: default_model_name(provider_type),
-            max_tokens: 4096,
-            temperature: 0.7,
-            top_p: 1.0,
-            presence_penalty: 0.0,
-            frequency_penalty: 0.0,
-        },
-    );
-
-    // Try to get API key from environment
-    let api_key_env = api_key_env_var(provider_type);
-    let api_key = api_key_env.as_ref().and_then(|env| std::env::var(env).ok());
+    // v3: agent config carries only soft hints (`preferred_*`); the
+    // actual provider/model wiring lives in the catalog + keychain.
+    // The old `ProviderConfig` field is `skip_serializing` and goes
+    // away in commit 2.
+    let preferred_model_id = Some(model.unwrap_or_else(|| "default".to_string()));
 
     AgentConfig {
-        version: "1.0".to_string(),
+        version: "3.0".to_string(),
         name: name.to_string(),
         description: Some(format!("peko agent: {name}")),
-        // team and tenant removed - agents are standalone in new layout
-        provider: ProviderConfig {
-            provider_type,
-            api_key,
-            api_key_env,
-            base_url: base_url(provider_type),
-            default_model,
-            models,
-            timeout_seconds: 60,
-            max_retries: 3,
-            retry_delay_ms: 1000,
-        },
-        // Include system file configuration for prompt building
+        preferred_provider_id: Some(provider.to_string()),
+        preferred_model_id,
         prompt: Some(PromptConfig {
             system: Some(SystemFileConfig {
                 max_chars_per_file: 20_000,
                 files: Some(vec!["SYSTEM.md".to_string()]),
             }),
         }),
-        // Use defaults for the rest
         ..Default::default()
     }
 }
@@ -469,6 +443,33 @@ impl AgentService {
             anyhow::bail!(
                 "Agent '{name}' already exists. Use --force to overwrite or delete it first."
             );
+        }
+
+        // v3: validate the requested provider exists in the catalog
+        // before writing the agent config. The runtime owns the
+        // provider wiring — agents are now thin shells with only
+        // soft hints.
+        let catalog_path = self.resolver.config_dir().join("providers.toml");
+        let provider_id = request.provider.clone();
+        if let Ok(catalog) =
+            crate::providers::ProviderCatalog::load_or_init(&catalog_path).await
+        {
+            if catalog.get_enabled(&provider_id).await.is_none() {
+                let available = catalog
+                    .list_enabled()
+                    .await
+                    .into_iter()
+                    .map(|e| e.id)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                anyhow::bail!(
+                    "provider '{}' is not in the catalog. Run `peko provider add {}` first. \
+                     Available providers: {}. See `peko provider templates` for built-in templates.",
+                    provider_id,
+                    provider_id,
+                    if available.is_empty() { "<none>".to_string() } else { available }
+                );
+            }
         }
 
         // Create agent directory
@@ -1018,6 +1019,69 @@ fn parse_image_model_name(image_ref: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    /// Seed a `ProviderCatalog` on disk with the providers the legacy
+    /// `create_agent` tests request (`minimax`, `openai`, etc.).
+    /// Production code does this via `peko provider add`; the unit
+    /// tests below all predate the catalog-validation step in
+    /// `create_agent` (commit 1.5) and would otherwise fail at the
+    /// catalog check. Centralized so each test is one line.
+    ///
+    /// We write to disk directly (rather than upserting through the
+    /// `ProviderCatalog` API) because the daemon's `create_agent`
+    /// re-loads the catalog via `load_or_init` — two separate
+    /// in-memory `Arc<ProviderCatalog>`s would not share state.
+    async fn seed_test_catalog(resolver: &PathResolver) {
+        use crate::providers::catalog::{
+            ApiFormat, ModelInfo, ProviderCatalogFile, ProviderCatalogEntry,
+        };
+        let catalog_path = resolver.config_dir().join("providers.toml");
+        if let Some(parent) = catalog_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let entries = vec![
+            ("minimax", ApiFormat::AnthropicMessages, "https://api.minimaxi.com/anthropic", "MiniMax-M2.7"),
+            ("openai", ApiFormat::OpenaiCompletions, "https://api.openai.com/v1", "gpt-4o-mini"),
+            ("anthropic", ApiFormat::AnthropicMessages, "https://api.anthropic.com", "claude-3-5-sonnet-latest"),
+        ];
+        let now = chrono::Utc::now();
+        let provider_entries: std::collections::BTreeMap<String, ProviderCatalogEntry> = entries
+            .iter()
+            .map(|(id, fmt, base, default_model)| {
+                (
+                    id.to_string(),
+                    ProviderCatalogEntry {
+                        id: id.to_string(),
+                        display_name: id.to_string(),
+                        template_id: None,
+                        api_format: *fmt,
+                        base_url: base.to_string(),
+                        default_model_id: default_model.to_string(),
+                        models: vec![ModelInfo {
+                            id: default_model.to_string(),
+                            display_name: None,
+                            context_length: None,
+                            max_output_tokens: None,
+                            capabilities: vec![],
+                        }],
+                        headers: std::collections::BTreeMap::new(),
+                        requires_key: true,
+                        enabled: true,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                )
+            })
+            .collect();
+        let file = ProviderCatalogFile {
+            version: "3.0".to_string(),
+            entries: provider_entries,
+            default_provider_id: None,
+            default_model_id: None,
+        };
+        let toml = toml::to_string_pretty(&file).unwrap();
+        std::fs::write(&catalog_path, toml).unwrap();
+    }
+
     #[test]
     fn test_agent_service_creation() {
         let resolver = PathResolver::new();
@@ -1047,6 +1111,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         let result = service.create_agent(request).await.unwrap();
@@ -1070,6 +1135,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         service.create_agent(request).await.unwrap();
@@ -1090,6 +1156,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         service.create_agent(request).await.unwrap();
@@ -1111,6 +1178,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         service.create_agent(request).await.unwrap();
@@ -1131,6 +1199,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir.clone(), data_dir.clone(), cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         service.create_agent(request).await.unwrap();
@@ -1153,6 +1222,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         service.create_agent(request).await.unwrap();
@@ -1177,6 +1247,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         let result = service.create_agent(request).await.unwrap();
@@ -1195,6 +1266,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         service.create_agent(request).await.unwrap();
@@ -1232,6 +1304,7 @@ mod tests {
 
         let resolver = PathResolver::with_dirs(config_dir, data_dir, cache_dir);
         let service = AgentService::new(resolver);
+        seed_test_catalog(&service.resolver).await;
 
         let request = AgentCreateRequest::new("alice", "minimax");
         service.create_agent(request).await.unwrap();

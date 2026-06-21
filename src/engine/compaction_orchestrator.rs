@@ -43,6 +43,10 @@ pub struct CompactionOrchestrator {
 
 impl CompactionOrchestrator {
     /// Create a new compaction orchestrator for the given provider and agent config.
+    ///
+    /// `agent_config` is consulted only for legacy model-context
+    /// overrides; the provider/model identity comes from the resolved
+    /// `Provider` itself (v3 `LlmResolver` output).
     pub fn new(provider: Arc<Provider>, agent_config: &crate::types::AgentConfig) -> Self {
         let config = load_compaction_config();
         let mut registry = ModelContextRegistry::new();
@@ -52,8 +56,12 @@ impl CompactionOrchestrator {
         };
         registry.merge(&override_registry);
 
-        let provider_str = agent_config.provider.provider_type.to_string();
-        let context_window = registry.get(&provider_str, &agent_config.provider.default_model);
+        // v3: use the resolved provider/model from the `Provider`
+        // instead of the deprecated inline `[provider]` block on
+        // the agent config.
+        let provider_str = provider.name().to_string();
+        let model_id = provider.model_id();
+        let context_window = registry.get(&provider_str, &model_id);
 
         let background_compactor = BackgroundCompactor::new(provider);
 

@@ -37,8 +37,8 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
                     .map(|agent| {
                         serde_json::json!({
                             "name": agent.name,
-                            "provider": format!("{:?}", agent.config.provider.provider_type),
-                            "model": agent.config.provider.default_model,
+                            "preferred_provider": agent.config.preferred_provider_id,
+                            "preferred_model": agent.config.preferred_model_id,
                             "description": agent.config.description,
                         })
                     })
@@ -55,8 +55,14 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
                 for agent in agents {
                     if long {
                         println!("\n  📦 {}", agent.name);
-                        println!("     Provider: {:?}", agent.config.provider.provider_type);
-                        println!("     Model: {}", agent.config.provider.default_model);
+                        println!(
+                            "     Preferred provider: {}",
+                            agent.config.preferred_provider_id.as_deref().unwrap_or("<none>")
+                        );
+                        println!(
+                            "     Preferred model: {}",
+                            agent.config.preferred_model_id.as_deref().unwrap_or("<none>")
+                        );
                         if let Some(desc) = &agent.config.description {
                             println!("     Description: {desc}");
                         }
@@ -101,8 +107,14 @@ pub async fn handle_agent_show(
             } else {
                 println!("📦 Agent: {}", agent.name);
                 println!("   Config: {}", agent.config_path.display());
-                println!("   Provider: {:?}", agent.config.provider.provider_type);
-                println!("   Model: {}", agent.config.provider.default_model);
+                println!(
+                    "   Preferred provider: {}",
+                    agent.config.preferred_provider_id.as_deref().unwrap_or("<none>")
+                );
+                println!(
+                    "   Preferred model: {}",
+                    agent.config.preferred_model_id.as_deref().unwrap_or("<none>")
+                );
                 println!("   Sessions: {}", agent.session_count);
                 if let Some(desc) = &agent.config.description {
                     println!("   Description: {desc}");
