@@ -45,15 +45,12 @@ configured provider; secrets never touch plaintext disk.
 #### New: agent ↔ provider decoupling
 
 - `AgentConfig.version` is bumped to `"3.0"`.
-- The embedded `provider: ProviderConfig` field is now
-  `#[serde(default, skip_serializing)]` — it still parses legacy
-  configs for migration but is never written back. The
-  `test_v3_round_trip_strips_legacy_provider` test pins this guarantee.
-- New soft hints on `AgentConfig`:
-  `preferred_provider_id: Option<String>`,
-  `preferred_model_id: Option<String>`. The runtime resolves these via
-  `LlmResolver` at request time. There is no hard binding between an
-  agent and a provider.
+- The embedded `provider: ProviderConfig` field is gone (deleted in
+  v3-cleanup, PR #44). Agents carry only `preferred_provider_id` and
+  `preferred_model_id` soft hints; the runtime resolves these via
+  `LlmResolver` against the catalog (`~/.peko/providers.toml`) and
+  the OS keychain at request time. There is no hard binding between
+  an agent and a provider.
 - New constructors: `Agent::new_with_resolver(config, resolver)` and
   `Agent::new_with_session_manager_and_resolver(...)`. The original
   `Agent::new(config)` continues to work — it falls back to the legacy
@@ -88,10 +85,9 @@ configured provider; secrets never touch plaintext disk.
 
 #### Registry round-trip hardening
 
-- `AgentConfig::provider` is `skip_serializing`, so the OCI config
-  blob embedded by `agent_to_registry_manifest` cannot carry a
-  literal `api_key`. The `test_v3_round_trip_strips_legacy_provider`
-  test guards this property.
+- `AgentConfig` no longer carries a `provider` field at all (deleted in
+  v3-cleanup, PR #44), so the OCI config blob embedded by
+  `agent_to_registry_manifest` cannot carry a literal `api_key`.
 - Legacy `.agent` packages still in flight are stripped
   defensively: re-hydration reads the v3-clean TOML.
 

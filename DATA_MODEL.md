@@ -109,9 +109,9 @@ preferred_model_id    = "claude-sonnet-4-5"  # Optional. Model id within that pr
 #   4. runtime default (`peko provider set-default X`)
 #   5. first enabled catalog entry
 
-# Legacy `[provider]` blocks are still parseable so the v3 migration
-# can extract them on first load, but the field is
-# `#[serde(skip_serializing)]` — re-serialized agents never carry it.
+# v3 agents only carry soft hints. The actual provider wiring
+# (base_url, api_key, model catalog) lives in `~/.peko/providers.toml`
+# and the OS keychain via `peko provider add` / `peko credential set`.
 
 # ── Base image inheritance ─────────────────────────────────────────────────
 
@@ -212,9 +212,9 @@ peko credential set anthropic             # stores the API key in the keychain
 peko provider set-default anthropic --model claude-sonnet-4-5
 ```
 
-The legacy `[provider]` block in agent configs is preserved as
-`#[serde(default, skip_serializing)]` for migration only — it is
-never re-written and cannot be pushed to a registry.
+Agent configs carry `preferred_provider_id` / `preferred_model_id`
+only — never an inline `[provider]` block. The v3-cleanup series
+deleted the deprecated field entirely (PR #43 follow-up).
 
 ### 2.3 Inheritance and Merging
 
