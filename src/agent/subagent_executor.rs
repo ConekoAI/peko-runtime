@@ -756,10 +756,18 @@ async fn execute_subagent_task(
     );
 
     // Create a subagent that shares the parent's session manager and executor registry.
-    let subagent =
-        crate::agent::Agent::new_with_shared_executor(config, session_manager, shared_executor)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
+    // Pass the parent's provider through so the child can run its own LLM calls —
+    // `new_with_shared_executor` no longer re-resolves a provider (the v1
+    // `[provider]` fallback was removed in PR #44) and would otherwise fail
+    // `execute_with_session` with "No provider configured".
+    let subagent = crate::agent::Agent::new_with_shared_executor(
+        config,
+        session_manager,
+        shared_executor,
+        Some(provider.clone()),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
 
     // If we have an extension core, ensure the subagent uses it.
     // (new_with_shared_executor already pulls from global_core(), so this

@@ -308,8 +308,19 @@ pub async fn new_with_session_manager(
         // Issue #28: persist the resolved DID back into the on-disk
         // config.toml so the tunnel dispatcher can announce it without
         // re-running identity generation.
+        //
+        // Soft-fail: the agent_dir may not exist yet for a freshly-
+        // spawned subagent whose in-memory config hasn't been written.
+        // `backfill_agent_did` itself returns
+        // "Failed to persist agent_did ... (in-memory identity will
+        // still work this session)" so the next production-path
+        // `Agent::new()` call will retry the write. Hard-failing here
+        // would break unit tests that build agents against a tempdir
+        // without pre-creating `agents/<name>/`.
         let config_path = PathResolver::new().agent_config(&config.name);
-        Self::backfill_agent_did(&config_path, &config, &identity.did).await;
+        if let Err(e) = Self::backfill_agent_did(&config_path, &config, &identity.did).await {
+            warn!("Could not backfill agent_did into config: {}", e);
+        }
 
         // Issue #28 review #4: surface DID rotation loudly. If the
         // resolved identity's DID differs from the one the config
@@ -382,10 +393,20 @@ pub async fn new_with_session_manager(
     ///
     /// Used for subagent execution where the child must share the parent's
     /// session manager AND subagent registry (for proper depth tracking).
+    ///
+    /// The child's provider is **inherited from the parent** via the
+    /// `inherited_provider` argument. This avoids a v3 regression where the
+    /// child was created without an `LlmResolver`, so `init_provider`
+    /// returned `Ok(None)` (the v1 fallback was removed in PR #44), and
+    /// `execute_with_session` then errored with `"No provider configured"`
+    /// before the child could call any tool. Passing the parent's already-
+    /// resolved provider lets the child run its own LLM calls against the
+    /// same provider/catalog entry.
     pub async fn new_with_shared_executor(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
+        inherited_provider: Option<Arc<crate::providers::Provider>>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
 
@@ -416,7 +437,14 @@ pub async fn new_with_session_manager(
                 config_path.display()
             );
         }
-        let provider = Self::init_provider(&config, None).await?;
+        // Prefer the inherited provider so the child reuses the parent's
+        // resolved provider instead of paying the resolver's catalog
+        // lookup cost twice. Fall back to the v3 resolver path if the
+        // caller didn't supply one (e.g., unit tests).
+        let provider = match inherited_provider {
+            Some(p) => Some(p),
+            None => Self::init_provider(&config, None).await?,
+        };
         let llm_resolver: Option<Arc<crate::providers::LlmResolver>> = None;
 
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
