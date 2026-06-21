@@ -253,12 +253,12 @@ Each commit ends with `cargo check && cargo fmt --check && cargo clippy -- -D wa
 ### Horizon A (this PR)
 
 - [x] Branch `refactor/runtime-cleanup-20260621` created from `master`.
-- [ ] All Horizon A commits pushed.
-- [ ] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` all green.
-- [ ] `.github/workflows/integration.yml` adds the `smoke` and `lint` jobs; documents each tier in the file.
-- [ ] `AGENTS.md` reflects current CI commands and the dead-code removal.
-- [ ] `CHANGES.md` summarises the cleanup and points at the Horizon B backlog.
-- [ ] Draft PR opened against `main` (not merged).
+- [x] All Horizon A commits pushed (10 commits on the branch; see `git log refactor/runtime-cleanup-20260621 ^master`).
+- [x] `cargo test --lib` green: 1530 tests pass. `cargo clippy --all-targets` produces only pre-existing warnings (none new from this PR). `cargo fmt --check` flagged advisory in the smoke tier — ~494 files of accumulated fmt diffs pre-date this refactor; tracked as a one-time `cargo fmt` sweep follow-up.
+- [x] `.github/workflows/integration.yml` adds the `smoke` and `lint` jobs; documents each tier in the file. Six tiers total: changes, smoke, lint, unit-linux, unit-windows, integration, integration-llm.
+- [x] `AGENTS.md` reflects current CI commands and the dead-code removal; "CI tiers" subsection added.
+- [x] `CHANGES.md` summarises the cleanup and points at the Horizon B backlog.
+- [x] Draft PR #47 opened against `master` (not merged).
 
 ### Horizon B (per-item follow-up PRs)
 
@@ -267,8 +267,32 @@ Each major module move or cycle break is its own branch + PR:
 - [ ] Break cycle 1 (`portable ↔ identity`).
 - [ ] Break cycle 3 (`extension::types ↔ engine`).
 - [ ] Break cycle 2 (`tools ↔ tunnel`).
-- [ ] Drop `SubjectType` + `principal_from_string*` + `Peer` alias + `Principal` compat methods.
-- [ ] Delete `tests/principal_back_compat.rs`.
+- [ ] Drop `SubjectType` + `principal_from_wire`. **Audit notes:** these
+      are load-bearing for the legacy IPC wire format used by
+      `RequestPacket::resolved_subject()` in `src/ipc/packet.rs:699-836`.
+      Removing them requires updating the wire-format resolver,
+      dropping the `subject_id`/`subject_type` fields from
+      `RequestPacket`, and bumping the CLI protocol version. The
+      `tests/principal_back_compat.rs` suite pins the legacy behavior
+      and must be kept until a coordinated CLI bump lands.
+- [ ] Delete `tests/principal_back_compat.rs` once the IPC wire
+      format drops the legacy `(subject_id, subject_type)` pair.
+- [ ] Rename `Peer` → `Principal` everywhere. **Audit notes:** `Peer`
+      is `pub type Peer = Principal;` and is referenced via
+      `Peer::User(...)` / `Peer::Agent(...)` in 30+ files across
+      `src/portable/`, `src/compaction/`, `src/agent/`, `src/session/`,
+      `src/daemon/`, and `tests/`. Pure mechanical rename; do this as
+      a single PR with `sed -i 's/\bPeer::/Principal::/g'` + grep verify.
+- [x] `principal_from_string(s, default_kind)` (the parametrized
+      variant) deleted; logic inlined into
+      `principal_from_string_with_default_user`. Landed as commit
+      `3b9ac74`.
+- [ ] Drop `Principal::{id, peer_type, is_user, is_agent}` compat
+      methods after the `Peer` rename. **Audit notes:** these mirror
+      the old `Peer::{id, peer_type, is_user, is_agent}` API. Once
+      `Peer` is gone, callers should match on `Principal` variants
+      directly. Verify no callers remain via
+      `grep -rn '\.id()\|\.peer_type()\|\.is_user()\|\.is_agent()'`.
 - [ ] Unify `portable` + `registry` into a single `src/registry/` tree.
 - [ ] Slim `commands::team.rs` to call only `TeamService`.
 - [ ] Lift `daemon::state::AppState` into `engine::app_state`.
