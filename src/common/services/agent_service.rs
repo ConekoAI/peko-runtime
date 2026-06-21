@@ -449,17 +449,22 @@ impl AgentService {
         // before writing the agent config. The runtime owns the
         // provider wiring — agents are now thin shells with only
         // soft hints.
+        //
+        // Skip the check on a fresh install (empty catalog) to match
+        // the v1-to-v3 migration's behavior: it seeds catalog entries
+        // from the legacy `[provider]` block. The strict check fires
+        // once the user has run `peko provider add` and we know
+        // they understand the catalog concept.
         let catalog_path = self.resolver.config_dir().join("providers.toml");
         let provider_id = request.provider.clone();
         if let Ok(catalog) =
             crate::providers::ProviderCatalog::load_or_init(&catalog_path).await
         {
-            if catalog.get_enabled(&provider_id).await.is_none() {
-                let available = catalog
-                    .list_enabled()
-                    .await
-                    .into_iter()
-                    .map(|e| e.id)
+            let enabled = catalog.list_enabled().await;
+            if !enabled.is_empty() && catalog.get_enabled(&provider_id).await.is_none() {
+                let available = enabled
+                    .iter()
+                    .map(|e| e.id.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
                 anyhow::bail!(
@@ -467,7 +472,7 @@ impl AgentService {
                      Available providers: {}. See `peko provider templates` for built-in templates.",
                     provider_id,
                     provider_id,
-                    if available.is_empty() { "<none>".to_string() } else { available }
+                    available
                 );
             }
         }
