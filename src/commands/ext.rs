@@ -2,7 +2,7 @@
 //!
 //! Thin CLI dispatcher — all business logic lives in domain modules:
 //! - `extension::services::ExtensionConfigService` — config persistence
-//! - `extension::adapters::ExtensionValidationService` — manifest validation
+//! - `extensions::validation::ExtensionValidationService` — manifest validation
 //! - `ipc::client_service::DaemonClientService` — daemon IPC
 //! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
@@ -439,7 +439,7 @@ pub async fn handle_ext_command(
                     warnings,
                     ..
                 } => {
-                    let report = crate::extension::adapters::ValidationReport {
+                    let report = crate::extensions::validation::ValidationReport {
                         detected_type: "unknown".to_string(),
                         errors,
                         warnings,
@@ -675,7 +675,7 @@ pub async fn handle_ext_command(
 // --- Validation Report Rendering ---
 
 fn print_validation_report(
-    report: &crate::extension::adapters::ValidationReport,
+    report: &crate::extensions::validation::ValidationReport,
     verbose: bool,
 ) -> anyhow::Result<()> {
     if !verbose {

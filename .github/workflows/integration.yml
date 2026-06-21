@@ -130,18 +130,17 @@ jobs:
         run: cargo test --lib
 
   # ── Tier 0b: Lint — Issue-015 boundary rules, every PR ───────────────
-  # ADVISORY for now: scripts/check_module_boundaries.sh reports known
-  # pre-existing violations (see PLAN.md Horizon B backlog — moving
-  # adapters/validation.rs imports out of the framework). The job is
-  # wired up so the rule is visible on every PR and regressions trip it,
-  # but `continue-on-error` keeps the existing violations from blocking
-  # the refactor. Promote to a hard gate once Horizon B clears them.
+  # HARD GATE. `scripts/check_module_boundaries.sh` enforces the three
+  # rules from Issue 015: framework code (`src/extension/`) must not
+  # depend on extension type implementations (`src/extensions/`),
+  # extension types must not depend on each other, and
+  # `src/extension/core/` must not depend on `daemon/` or `tools/`.
+  # Regressions trip this job and block the PR.
   lint:
     name: Lint (module boundaries)
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.src == 'true'
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Run boundary check

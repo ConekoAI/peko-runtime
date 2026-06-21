@@ -1894,7 +1894,7 @@ impl IpcServer {
                 id,
                 target,
             } => {
-                let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
+                let is_builtin = crate::extension::adapters::builtin_tools::is_builtin_tool(&id)
                     || id.starts_with("builtin:");
 
                 // Build canonical extension ID for whitelist entries.
@@ -2000,7 +2000,7 @@ impl IpcServer {
                 id,
                 target,
             } => {
-                let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
+                let is_builtin = crate::extension::adapters::builtin_tools::is_builtin_tool(&id)
                     || id.starts_with("builtin:");
 
                 let canonical_id = if is_builtin {
@@ -2400,11 +2400,11 @@ impl IpcServer {
                 semantic,
             } => {
                 let depth = if semantic {
-                    crate::extension::adapters::ValidationDepth::Semantic
+                    crate::extensions::validation::ValidationDepth::Semantic
                 } else {
-                    crate::extension::adapters::ValidationDepth::Static
+                    crate::extensions::validation::ValidationDepth::Static
                 };
-                match crate::extension::adapters::ExtensionValidationService::validate_with_depth(
+                match crate::extensions::validation::ExtensionValidationService::validate_with_depth(
                     std::path::Path::new(&path),
                     verbose,
                     depth,

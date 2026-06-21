@@ -47,6 +47,13 @@ pub mod skill;
 /// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
 
+/// Manifest validation service — walks an extension directory, detects its
+/// type (Tier 1 ecosystem standard or Tier 2 unified manifest), and runs
+/// optional semantic checks (ADR-036). Lives here next to the extension
+/// types it inspects rather than in the framework, so the framework can
+/// stay free of `crate::extensions::*` dependencies.
+pub mod validation;
+
 // ============================================================================
 // Utilities
 // ============================================================================
