@@ -12,7 +12,7 @@ use crate::common::services::ConfigAuthority;
 use crate::common::services::CredentialsService;
 use crate::common::types::agent::AgentImportOptions;
 use crate::portable::manifest::{AgentLayers, AgentManifest};
-use crate::portable::registry::AgentRegistry;
+use crate::registry::AgentRegistry;
 use crate::portable::types::{ExtensionRef, ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};

@@ -14,10 +14,12 @@
 use pekobot::identity::{did::DIDScope, Identity};
 use pekobot::portable::manifest::AgentLayers;
 use pekobot::portable::{
-    export_team, import_team_with_base_dir, inspect_team, AgentManifest, AgentRegistry,
-    ExportOptions, ImportOptions, Packager, TeamExportOptions, TeamImportOptions,
+    export_team, import_team_with_base_dir, inspect_team, AgentManifest, ExportOptions,
+    ImportOptions, Packager, TeamExportOptions, TeamImportOptions,
 };
-use pekobot::registry::{RegistryClient, RegistryConfig, RegistryManifest, RegistrySource};
+use pekobot::registry::{
+    AgentRegistry, RegistryClient, RegistryConfig, RegistryManifest, RegistrySource,
+};
 use pekobot::types::agent::AgentConfig;
 use std::collections::BTreeMap;
 use std::io::Read;

@@ -15,7 +15,7 @@ use crate::extension::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
 use crate::extension::services::{ConfigScope, ExtensionConfigService};
 use crate::extension::types::{ExtensionId, ExtensionManifest};
 use crate::ipc::client_service::DaemonClientService;
-use crate::portable::registry::AgentRegistry;
+use crate::registry::AgentRegistry;
 use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};

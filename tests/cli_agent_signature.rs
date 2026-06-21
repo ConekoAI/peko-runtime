@@ -380,7 +380,7 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
     // the bytes the unpackager verifies against are byte-identical
     // to the bytes the packager signed. This is the real CI
     // failure surface (s3_agent_registry_roundtrip).
-    use pekobot::portable::registry::AgentRegistry;
+    use pekobot::registry::AgentRegistry;
 
     let (signer, did_doc, did) = fresh_identity();
     let (did_json, config_bytes, keys_bytes, _) =

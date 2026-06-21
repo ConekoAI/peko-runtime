@@ -2577,8 +2577,8 @@ impl IpcServer {
                     });
                 }
 
-                let agent_registry = crate::portable::registry::AgentRegistry::new(
-                    crate::portable::registry::AgentRegistry::default_path(),
+                let agent_registry = crate::registry::AgentRegistry::new(
+                    crate::registry::AgentRegistry::default_path(),
                 );
                 if let Err(e) = agent_registry.init().await {
                     let response = ResponsePacket::Error {

@@ -1,7 +1,7 @@
 //! Local content-addressable registry for .agent packages
 //!
 //! Stores layers and manifests deduplicated by digest.
-//! Merged from the former `src/image/registry.rs`.
+//! Previously lived at `crate::portable::registry` (issue #29).
 //!
 //! Storage layout:
 //! ```text

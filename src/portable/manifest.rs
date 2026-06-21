@@ -205,7 +205,7 @@ impl AgentManifest {
         let checksum = Self::compute_checksum(data);
         // Maintain `packaging.files` in sorted order on every insert.
         // This is required for signature determinism (issue #14):
-        // the packager signs the manifest, then [`crate::portable::registry::AgentRegistry::export_package`]
+        // the packager signs the manifest, then [`crate::registry::AgentRegistry::export_package`]
         // re-serializes the manifest after a registry round-trip and
         // it sorts the file list — if the original bytes were in
         // insertion order, the re-serialized bytes would differ and

@@ -4,7 +4,7 @@
 //! each agent's files from its content-addressable layers, enabling direct
 //! in-memory import without creating a temporary `.team` file.
 
-use crate::portable::registry::AgentRegistry;
+use crate::registry::AgentRegistry;
 use crate::portable::team_packager::{AgentLayerRef, TeamAgentIndex};
 use crate::portable::types::LayerType;
 use anyhow::Context;
@@ -179,7 +179,7 @@ fn extract_team_toml(layer_bytes: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portable::registry::AgentRegistry;
+    use crate::registry::AgentRegistry;
     use crate::portable::team_layer_builder::{build_tarball, decompose_team_archive};
     use std::collections::HashMap;
 

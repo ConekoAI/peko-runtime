@@ -18,7 +18,8 @@
 //! Run in container:
 //!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test pekohub_integration -- --ignored
 
-use pekobot::portable::{manifest::AgentLayers, AgentManifest, AgentRegistry, Layer, LayerType};
+use pekobot::portable::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
+use pekobot::registry::AgentRegistry;
 use pekobot::registry::client::ResourceType;
 use pekobot::registry::{
     media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,

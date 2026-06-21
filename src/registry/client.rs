@@ -3,7 +3,7 @@
 //! HTTP client for pushing and pulling images from remote registries.
 //! Implements OCI-inspired distribution protocol.
 
-use crate::portable::registry::AgentRegistry;
+use crate::registry::AgentRegistry;
 use crate::portable::types::{ImageDigest, Layer};
 use crate::registry::config::{RegistryConfig, RegistrySource, ResolvedAuth};
 use crate::registry::manifest::RegistryManifest;
