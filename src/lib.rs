@@ -147,8 +147,6 @@ pub mod engine;
 pub mod session;
 
 /// Orchestration layer (event router, file watcher, webhooks)
-/// Team runtime (multi-agent teams, event bus, shared services)
-pub mod team;
 
 // ============================================================================
 // External Interfaces
