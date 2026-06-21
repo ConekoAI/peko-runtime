@@ -193,16 +193,16 @@ mod tests {
     #[test]
     fn test_peer_id() {
         let user = Principal::User("alice".to_string());
-        assert_eq!(user.id(), "alice");
-        assert_eq!(user.peer_type(), "user");
-        assert!(user.is_user());
-        assert!(!user.is_agent());
+        assert_eq!(user.subject_id(), "alice");
+        assert_eq!(user.kind().to_string(), "user");
+        assert!(matches!(user, Principal::User(_)));
+        assert!(!matches!(user, Principal::Agent(_)));
 
         let agent = Principal::Agent("researcher".to_string());
-        assert_eq!(agent.id(), "researcher");
-        assert_eq!(agent.peer_type(), "agent");
-        assert!(agent.is_agent());
-        assert!(!agent.is_user());
+        assert_eq!(agent.subject_id(), "researcher");
+        assert_eq!(agent.kind().to_string(), "agent");
+        assert!(matches!(agent, Principal::Agent(_)));
+        assert!(!matches!(agent, Principal::User(_)));
     }
 
     #[test]

@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn test_peer_re_export() {
         let peer = Principal::User("test".to_string());
-        assert_eq!(peer.id(), "test");
+        assert_eq!(peer.subject_id(), "test");
     }
 
     #[test]
