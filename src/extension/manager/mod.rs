@@ -850,7 +850,7 @@ impl ExtensionManager {
     /// Returns None for built-in tools or unknown names.
     pub fn resolve_tool_name(&self, name: &str) -> Option<ToolResolution> {
         // Check if it's a built-in tool
-        if crate::extensions::builtin::BuiltinToolAdapter::is_builtin(name)
+        if crate::extension::adapters::builtin_tools::is_builtin_tool(name)
             || name.starts_with("builtin:")
         {
             return None;

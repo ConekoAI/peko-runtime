@@ -23,8 +23,17 @@ echo ""
 echo "Rule 1: src/extension/ must NOT import from src/extensions/"
 echo ""
 
-VIOLATIONS_1=$(grep -r "use crate::extensions::" src/extension/ --include="*.rs" 2>/dev/null || true)
-VIOLATIONS_1B=$(grep -r "crate::extensions::" src/extension/ --include="*.rs" 2>/dev/null | grep -v "use crate::extensions::" || true)
+VIOLATIONS_1=$(grep -rE '^[[:space:]]*use crate::extensions::' src/extension/ --include="*.rs" 2>/dev/null || true)
+# Strip doc comments (`//`, `///`, `//!`) before scanning for the bare
+# `crate::extensions::` path, since doc comments that *reference* the
+# extensions module are not imports. `grep -r` without `-n` produces
+# `path:content` (no line number).
+VIOLATIONS_1B=$(grep -r "crate::extensions::" src/extension/ --include="*.rs" 2>/dev/null \
+    | grep -v "use crate::extensions::" \
+    | grep -vE ':[[:space:]]*://' \
+    | grep -vE ':[[:space:]]*//' \
+    | grep -vE ':[[:space:]]*///?' \
+    || true)
 
 if [ -n "$VIOLATIONS_1" ] || [ -n "$VIOLATIONS_1B" ]; then
     echo "  ❌ FAIL: src/extension/ imports from src/extensions/"
