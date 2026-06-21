@@ -355,10 +355,11 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let jwt_token = generate_jwt(user_id as i64, "e2etestuser");
     let auth_header = format!("Bearer {jwt_token}");
 
-    // 7. Write tunnel credentials to the default location (~/.peko/runtime/pekohub.toml)
-    // so that start_tunnel() can find them. The private key lives in the vault
+    // 7. Write tunnel credentials next to the AppState config directory so
+    // that start_tunnel() can find them. The private key lives in the vault
     // at the AppState's config directory.
-    let cred_path = pekobot::tunnel::PekoHubCredential::default_path();
+    let config_dir = workspace_path.join("config");
+    let cred_path = pekobot::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
     tokio::fs::create_dir_all(cred_path.parent().unwrap())
         .await
         .unwrap();
