@@ -108,44 +108,14 @@ impl Principal {
         matches!(self, Self::User(_) | Self::Agent(_))
     }
 
-    // -- Compatibility shim for the old `Principal` API --
+    // -- Compatibility shim removed (issue #25) --
     //
-    // These methods mirror `Principal::{id, peer_type, is_user, is_agent}` so
-    // the 25 call sites that used the old enum keep compiling through
-    // the `pub type Principal = Principal;` alias. `peer_type` is kept for
-    // backwards compatibility but the new `kind()` is preferred.
-
-    /// Get the peer's ID string (mirrors `Principal::id`).
-    #[must_use]
-    pub fn id(&self) -> &str {
-        self.subject_id()
-    }
-
-    /// Get the peer type as a string (mirrors `Principal::peer_type`).
-    ///
-    /// Returns `"user" | "agent" | "team" | "public"`. Existing callers
-    /// that only inspect `"user"` or `"agent"` are unaffected.
-    #[must_use]
-    pub fn peer_type(&self) -> &'static str {
-        match self {
-            Self::User(_) => "user",
-            Self::Agent(_) => "agent",
-            Self::Team(_) => "team",
-            Self::Public => "public",
-        }
-    }
-
-    /// Check if this principal is a user (mirrors `Principal::is_user`).
-    #[must_use]
-    pub fn is_user(&self) -> bool {
-        matches!(self, Self::User(_))
-    }
-
-    /// Check if this principal is an agent (mirrors `Principal::is_agent`).
-    #[must_use]
-    pub fn is_agent(&self) -> bool {
-        matches!(self, Self::Agent(_))
-    }
+    // The `id`, `peer_type`, `is_user`, and `is_agent` methods were
+    // carried over from the old `Peer` enum during the ADR-039
+    // migration. After the stacked Peer→Principal rename, every
+    // call site uses the canonical surface: `subject_id()`,
+    // `kind().to_string()`, and `matches!(p, Principal::User(_))` /
+    // `matches!(p, Principal::Agent(_))`.
 
     /// Project a tunnel-bridge user string (the value returned by
     /// `resolve_bridge_caller`) into a `Principal` (issue #26).
@@ -374,21 +344,15 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_compat_methods() {
-        let p = Principal::User("alice".into());
-        assert_eq!(p.id(), "alice");
-        assert_eq!(p.peer_type(), "user");
-        assert!(p.is_user());
-        assert!(!p.is_agent());
-
-        let p = Principal::Agent("helper".into());
-        assert_eq!(p.id(), "helper");
-        assert_eq!(p.peer_type(), "agent");
-        assert!(p.is_agent());
-        assert!(!p.is_user());
-
-        assert_eq!(Principal::Public.peer_type(), "public");
-        assert_eq!(Principal::Team("eng".into()).peer_type(), "team");
+    fn test_kind_display() {
+        // The canonical replacement for the dropped `peer_type()`
+        // method: `kind().to_string()` produces the same lowercase
+        // string for every variant. Pin the contract here so any
+        // future change to `SubjectKind`'s Display impl surfaces.
+        assert_eq!(Principal::User("alice".into()).kind().to_string(), "user");
+        assert_eq!(Principal::Agent("helper".into()).kind().to_string(), "agent");
+        assert_eq!(Principal::Team("eng".into()).kind().to_string(), "team");
+        assert_eq!(Principal::Public.kind().to_string(), "public");
     }
 
     /// Issue #26: the tunnel dispatcher stamps audit events with a

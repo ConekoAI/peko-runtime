@@ -1090,8 +1090,8 @@ impl SessionManager {
                 session_id.clone(),
                 agent.to_string(),
                 format!("{session_id}.jsonl"),
-                peer.peer_type(),
-                peer.id(),
+                peer.kind().to_string(),
+                peer.subject_id().to_string(),
             );
             self.metadata_controller
                 .write()
@@ -1444,8 +1444,8 @@ impl SessionManager {
                         new_id.clone(),
                         agent.to_string(),
                         transcript_file,
-                        peer.peer_type(),
-                        peer.id(),
+                        peer.kind().to_string(),
+                        peer.subject_id().to_string(),
                     );
                     controller.create_for_peer(entry, &peer_key).await?;
                     controller.save_index().await?;
@@ -2526,7 +2526,7 @@ mod tests {
     /// The chain under test:
     ///   `with_peer_principal(Principal::Agent("helper"))`
     ///     → `SessionManager::peer()` resolves to `Principal::Agent("helper")`
-    ///     → `SessionEntry::with_peer(.., peer.peer_type(), peer.id())`
+    ///     → `SessionEntry::with_peer(.., peer.kind().to_string(), peer.subject_id().to_string())`
     ///     → `SessionEntry.peer_type == Some("agent")`
     #[test]
     fn test_a2a_principal_produces_agent_session_entry_issue_24_review_1() {
@@ -2547,8 +2547,8 @@ mod tests {
             "sess-1".to_string(),
             "analyzer".to_string(),
             "sess-1.jsonl".to_string(),
-            peer.peer_type(),
-            peer.id(),
+            peer.kind().to_string(),
+            peer.subject_id().to_string(),
         );
         assert_eq!(
             entry.peer_type.as_deref(),
@@ -2579,8 +2579,8 @@ mod tests {
             "sess-1".to_string(),
             "target".to_string(),
             "sess-1.jsonl".to_string(),
-            peer.peer_type(),
-            peer.id(),
+            peer.kind().to_string(),
+            peer.subject_id().to_string(),
         );
         assert_eq!(entry.peer_type.as_deref(), Some("user"));
         assert_eq!(entry.peer_id.as_deref(), Some("alice"));

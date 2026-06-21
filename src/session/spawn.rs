@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(overlay.overlay_type(), OverlayType::Spawn);
         assert!(overlay.overlay_id().starts_with("spawn_"));
         assert_eq!(overlay.base_session_key(), "agent:test:peer:user:alice");
-        assert_eq!(overlay.peer().id(), "alice");
+        assert_eq!(overlay.peer().subject_id(), "alice");
     }
 
     #[test]
