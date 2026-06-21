@@ -383,8 +383,7 @@ impl AppState {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to load provider catalog: {e}"))?;
         let secrets: Arc<dyn crate::common::secret_store::SecretStore> = Arc::new(vault);
-        let mut resolver_builder =
-            crate::providers::LlmResolver::new(catalog, secrets);
+        let mut resolver_builder = crate::providers::LlmResolver::new(catalog, secrets);
         if std::env::var_os("PEKO_TEST_RESOLVER_BOOTSTRAP").is_some() {
             resolver_builder = resolver_builder.with_env_bootstrap();
         }
@@ -869,19 +868,21 @@ impl AppState {
     /// for the default.
     ///
     /// Returns true if the tunnel was started, false if no credentials exist.
-    pub async fn start_tunnel(
-        &self,
-        max_reconnect_attempts: u32,
-    ) -> anyhow::Result<bool> {
+    pub async fn start_tunnel(&self, max_reconnect_attempts: u32) -> anyhow::Result<bool> {
         use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
         use tracing::{info, warn};
 
-        let vault_path = self.config_dir.join("vault.enc");
-        let vault = crate::common::vault::Vault::load(vault_path)
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.cache_dir.clone(),
+        );
+        let vault = crate::common::vault::Vault::load(path_resolver.vault())
             .map_err(|e| anyhow::anyhow!("Failed to load credential vault for tunnel: {e}"))?;
         let vault = std::sync::Arc::new(vault);
 
-        let cred = match load_pekohub_credential(None)? {
+        let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&self.config_dir);
+        let cred = match load_pekohub_credential(Some(&cred_path))? {
             Some(c) => c,
             None => return Ok(false),
         };
@@ -1071,9 +1072,9 @@ impl AppState {
         //    private key in the vault. `resolve_private_key` returns the
         //    base64-encoded raw 32 bytes. Decode and construct.
         let privkey_b64 = cred.resolve_private_key(vault)?;
-        let privkey_bytes = BASE64
-            .decode(privkey_b64.trim())
-            .map_err(|e| anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}"))?;
+        let privkey_bytes = BASE64.decode(privkey_b64.trim()).map_err(|e| {
+            anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}")
+        })?;
         if privkey_bytes.len() != 32 {
             anyhow::bail!(
                 "PekoHubCredential private key is {} bytes; expected 32",
@@ -1184,7 +1185,10 @@ impl AppState {
             };
         }
         if attempts > 0 {
-            return TunnelHealth::Disconnected { attempts, last_error };
+            return TunnelHealth::Disconnected {
+                attempts,
+                last_error,
+            };
         }
         TunnelHealth::Disabled
     }
@@ -1206,10 +1210,7 @@ pub enum TunnelHealth {
     },
     /// The reconnect-attempt cap was hit; the tunnel client has stopped
     /// retrying. Operator must restart with `peko tunnel start` to retry.
-    Degraded {
-        attempts: u32,
-        last_error: String,
-    },
+    Degraded { attempts: u32, last_error: String },
 }
 
 impl TunnelHealth {
@@ -1458,8 +1459,7 @@ mod tests {
         let state = create_test_state().await;
 
         *state.tunnel_attempts.write().await = 50;
-        *state.tunnel_last_error.write().await =
-            Some("tunnel reconnect cap reached".to_string());
+        *state.tunnel_last_error.write().await = Some("tunnel reconnect cap reached".to_string());
         *state.tunnel_degraded.write().await = true;
 
         let health = state.tunnel_health().await;
@@ -1484,8 +1484,7 @@ mod tests {
         // retry state, attempts < cap).
         let state = create_test_state().await;
         *state.tunnel_attempts.write().await = 3;
-        *state.tunnel_last_error.write().await =
-            Some("connection refused".to_string());
+        *state.tunnel_last_error.write().await = Some("connection refused".to_string());
 
         let health = state.tunnel_health().await;
         match &health {

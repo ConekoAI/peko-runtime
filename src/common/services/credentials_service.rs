@@ -51,12 +51,12 @@ impl CredentialsService {
         }))
     }
 
-    /// Clear registry credentials.
+    /// Clear registry credentials for the given host.
     ///
     /// Returns `true` if a token was cleared.
-    pub fn clear_registry_token(&self) -> Result<bool> {
+    pub fn clear_registry_token(&self, host: &str) -> Result<bool> {
         self.vault
-            .clear_registry_token()
+            .clear_registry_token(host)
             .with_context(|| "failed to clear registry token")
     }
 
@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(token.registry_host, "pekohub.com");
         assert_eq!(token.user_namespace, Some("acme".to_string()));
 
-        assert!(service.clear_registry_token().unwrap());
+        assert!(service.clear_registry_token("pekohub.com").unwrap());
         assert!(service.get_registry_token().unwrap().is_none());
     }
 }

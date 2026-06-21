@@ -38,9 +38,9 @@ use rand::RngCore;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::info;
 
@@ -124,10 +124,7 @@ impl Default for VaultFile {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VaultEntry {
     /// LLM provider API key.
-    ProviderApiKey {
-        provider: String,
-        key: String,
-    },
+    ProviderApiKey { provider: String, key: String },
     /// PekoHub registry token.
     RegistryToken {
         host: String,
@@ -142,14 +139,9 @@ pub enum VaultEntry {
         key: String,
     },
     /// PekoHub tunnel private key.
-    TunnelPrivateKey {
-        runtime_id: String,
-        key: String,
-    },
+    TunnelPrivateKey { runtime_id: String, key: String },
     /// Generic fallback secret.
-    Secret {
-        value: String,
-    },
+    Secret { value: String },
 }
 
 /// How the vault DEK was obtained.
@@ -159,10 +151,12 @@ pub enum UnlockMethod {
     Passphrase,
 }
 
-/// In-memory vault state holding the decrypted DEK.
+/// In-memory vault state holding the decrypted DEK and, for passphrase-backed
+/// vaults, the salt used to derive it.
 struct VaultState {
     file: VaultFile,
     dek: Vec<u8>,
+    salt: Option<Vec<u8>>,
 }
 
 /// Unified encrypted secret vault.
@@ -201,15 +195,12 @@ impl Vault {
     /// passphrase, bypassing environment-variable lookup.
     ///
     /// Returns an error if the vault was created in keychain mode.
-    pub fn load_with_passphrase(
-        path: impl AsRef<Path>,
-        passphrase: &SecretString,
-    ) -> Result<Self> {
+    pub fn load_with_passphrase(path: impl AsRef<Path>, passphrase: &SecretString) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let bytes = std::fs::read(&path)
             .with_context(|| format!("failed to read vault: {}", path.display()))?;
-        let envelope: VaultEnvelope = serde_json::from_slice(&bytes)
-            .with_context(|| "failed to parse vault envelope")?;
+        let envelope: VaultEnvelope =
+            serde_json::from_slice(&bytes).with_context(|| "failed to parse vault envelope")?;
 
         if envelope.version != VAULT_VERSION {
             anyhow::bail!(
@@ -225,12 +216,16 @@ impl Vault {
             .ok_or_else(|| anyhow::anyhow!("vault is not passphrase-protected"))?;
         let dek = Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?;
         let plaintext = Self::decrypt(&envelope, &dek)?;
-        let file: VaultFile = serde_json::from_slice(&plaintext)
-            .with_context(|| "failed to parse vault contents")?;
+        let file: VaultFile =
+            serde_json::from_slice(&plaintext).with_context(|| "failed to parse vault contents")?;
 
         Ok(Self {
             path,
-            inner: std::sync::RwLock::new(VaultState { file, dek }),
+            inner: std::sync::RwLock::new(VaultState {
+                file,
+                dek,
+                salt: Some(salt.to_vec()),
+            }),
             unlock_method: UnlockMethod::Passphrase,
         })
     }
@@ -242,14 +237,21 @@ impl Vault {
     pub fn with_passphrase(path: impl AsRef<Path>, passphrase: &SecretString) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let (file, dek, salt) = Self::new_file_with_passphrase(passphrase)?;
-        let state = VaultState { file, dek };
+        let state = VaultState {
+            file,
+            dek,
+            salt: Some(salt.clone()),
+        };
         let vault = Self {
             path,
             inner: std::sync::RwLock::new(state),
             unlock_method: UnlockMethod::Passphrase,
         };
         vault.save_envelope(Some(&salt))?;
-        info!("Created new passphrase-protected vault at {}", vault.path.display());
+        info!(
+            "Created new passphrase-protected vault at {}",
+            vault.path.display()
+        );
         Ok(vault)
     }
 
@@ -276,13 +278,33 @@ impl Vault {
     }
 
     // ------------------------------------------------------------------
+    // Entry key namespacing
+    // ------------------------------------------------------------------
+
+    fn provider_key(provider: &str) -> String {
+        format!("provider:{provider}")
+    }
+
+    fn registry_key(host: &str) -> String {
+        format!("registry:{host}")
+    }
+
+    fn identity_key(key_id: &str) -> String {
+        format!("identity:{key_id}")
+    }
+
+    fn tunnel_key(runtime_id: &str) -> String {
+        format!("tunnel:{runtime_id}")
+    }
+
+    // ------------------------------------------------------------------
     // Provider API keys
     // ------------------------------------------------------------------
 
     /// Get a provider API key.
     pub fn get_provider_key(&self, provider: &str) -> Option<SecretString> {
         let inner = self.inner.read().ok()?;
-        match inner.file.entries.get(provider)? {
+        match inner.file.entries.get(&Self::provider_key(provider))? {
             VaultEntry::ProviderApiKey { key, .. } => Some(SecretString::new(key.clone().into())),
             _ => None,
         }
@@ -291,11 +313,12 @@ impl Vault {
     /// Store or overwrite a provider API key.
     pub fn set_provider_key(&self, provider: &str, key: &SecretString) -> Result<()> {
         {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
             inner.file.entries.insert(
-                provider.to_string(),
+                Self::provider_key(provider),
                 VaultEntry::ProviderApiKey {
                     provider: provider.to_string(),
                     key: key.expose_secret().to_string(),
@@ -308,10 +331,15 @@ impl Vault {
     /// Remove a provider API key.
     pub fn delete_provider_key(&self, provider: &str) -> Result<bool> {
         let removed = {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
-            inner.file.entries.remove(provider).is_some()
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            inner
+                .file
+                .entries
+                .remove(&Self::provider_key(provider))
+                .is_some()
         };
         if removed {
             self.save()?;
@@ -345,8 +373,8 @@ impl Vault {
         let key = self.get_provider_key(provider)?;
         let s = key.expose_secret();
         let ok = match provider {
-            "openai" | "azure-openai" | "azure" | "openrouter" | "together"
-            | "fireworks" | "groq" | "deepseek" | "xai" | "grok" | "moonshot" | "kimi" => {
+            "openai" | "azure-openai" | "azure" | "openrouter" | "together" | "fireworks"
+            | "groq" | "deepseek" | "xai" | "grok" | "moonshot" | "kimi" => {
                 s.starts_with("sk-") || s.len() > 10
             }
             "anthropic" => s.starts_with("sk-ant-") || s.len() > 10,
@@ -361,6 +389,9 @@ impl Vault {
     // ------------------------------------------------------------------
 
     /// Get the stored registry token, if any.
+    ///
+    /// Returns the first registry token found. Callers that know the host can
+    /// use [`Self::get_registry_token_for_host`].
     pub fn get_registry_token(&self) -> Option<RegistryToken> {
         let inner = self.inner.read().ok()?;
         inner.file.entries.values().find_map(|e| match e {
@@ -377,15 +408,37 @@ impl Vault {
         })
     }
 
-    /// Store or overwrite the registry token.
-    pub fn set_registry_token(&self, host: &str, token: &str, namespace: Option<&str>) -> Result<()> {
+    /// Get the registry token for a specific host.
+    pub fn get_registry_token_for_host(&self, host: &str) -> Option<RegistryToken> {
+        let inner = self.inner.read().ok()?;
+        match inner.file.entries.get(&Self::registry_key(host))? {
+            VaultEntry::RegistryToken {
+                host,
+                token,
+                namespace,
+            } => Some(RegistryToken {
+                host: host.clone(),
+                token: token.clone(),
+                namespace: namespace.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Store or overwrite the registry token for a host.
+    pub fn set_registry_token(
+        &self,
+        host: &str,
+        token: &str,
+        namespace: Option<&str>,
+    ) -> Result<()> {
         {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
-            // Use a stable key so there is only ever one registry token.
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
             inner.file.entries.insert(
-                "registry".to_string(),
+                Self::registry_key(host),
                 VaultEntry::RegistryToken {
                     host: host.to_string(),
                     token: token.to_string(),
@@ -396,13 +449,18 @@ impl Vault {
         self.save()
     }
 
-    /// Clear the registry token.
-    pub fn clear_registry_token(&self) -> Result<bool> {
+    /// Clear the registry token for a host.
+    pub fn clear_registry_token(&self, host: &str) -> Result<bool> {
         let removed = {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
-            inner.file.entries.remove("registry").is_some()
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            inner
+                .file
+                .entries
+                .remove(&Self::registry_key(host))
+                .is_some()
         };
         if removed {
             self.save()?;
@@ -417,11 +475,12 @@ impl Vault {
     /// Store a runtime identity private key.
     pub fn set_identity_private_key(&self, key_id: &str, algorithm: &str, key: &str) -> Result<()> {
         {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
             inner.file.entries.insert(
-                key_id.to_string(),
+                Self::identity_key(key_id),
                 VaultEntry::IdentityPrivateKey {
                     key_id: key_id.to_string(),
                     algorithm: algorithm.to_string(),
@@ -435,7 +494,7 @@ impl Vault {
     /// Get a runtime identity private key by key id.
     pub fn get_identity_private_key(&self, key_id: &str) -> Option<SecretString> {
         let inner = self.inner.read().ok()?;
-        match inner.file.entries.get(key_id)? {
+        match inner.file.entries.get(&Self::identity_key(key_id))? {
             VaultEntry::IdentityPrivateKey { key, .. } => {
                 Some(SecretString::new(key.clone().into()))
             }
@@ -446,10 +505,15 @@ impl Vault {
     /// Remove a runtime identity private key.
     pub fn delete_identity_private_key(&self, key_id: &str) -> Result<bool> {
         let removed = {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
-            inner.file.entries.remove(key_id).is_some()
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            inner
+                .file
+                .entries
+                .remove(&Self::identity_key(key_id))
+                .is_some()
         };
         if removed {
             self.save()?;
@@ -464,11 +528,12 @@ impl Vault {
     /// Store a PekoHub tunnel private key.
     pub fn set_tunnel_private_key(&self, runtime_id: &str, key: &str) -> Result<()> {
         {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
             inner.file.entries.insert(
-                format!("tunnel:{runtime_id}"),
+                Self::tunnel_key(runtime_id),
                 VaultEntry::TunnelPrivateKey {
                     runtime_id: runtime_id.to_string(),
                     key: key.to_string(),
@@ -481,10 +546,8 @@ impl Vault {
     /// Get a PekoHub tunnel private key by runtime id.
     pub fn get_tunnel_private_key(&self, runtime_id: &str) -> Option<SecretString> {
         let inner = self.inner.read().ok()?;
-        match inner.file.entries.get(&format!("tunnel:{runtime_id}"))? {
-            VaultEntry::TunnelPrivateKey { key, .. } => {
-                Some(SecretString::new(key.clone().into()))
-            }
+        match inner.file.entries.get(&Self::tunnel_key(runtime_id))? {
+            VaultEntry::TunnelPrivateKey { key, .. } => Some(SecretString::new(key.clone().into())),
             _ => None,
         }
     }
@@ -492,10 +555,15 @@ impl Vault {
     /// Remove a PekoHub tunnel private key.
     pub fn delete_tunnel_private_key(&self, runtime_id: &str) -> Result<bool> {
         let removed = {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
-            inner.file.entries.remove(&format!("tunnel:{runtime_id}")).is_some()
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            inner
+                .file
+                .entries
+                .remove(&Self::tunnel_key(runtime_id))
+                .is_some()
         };
         if removed {
             self.save()?;
@@ -516,9 +584,10 @@ impl Vault {
     /// Remove an arbitrary entry.
     pub fn delete_entry(&self, key: &str) -> Result<bool> {
         let removed = {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
             inner.file.entries.remove(key).is_some()
         };
         if removed {
@@ -545,29 +614,11 @@ impl Vault {
 
     /// Persist the vault to disk.
     pub fn save(&self) -> Result<()> {
-        let inner = self.inner.read().map_err(|e| {
-            VaultError::Backend(format!("vault lock poisoned: {e}"))
-        })?;
-        let salt = if self.unlock_method == UnlockMethod::Passphrase {
-            // We need the salt used to derive the current DEK. It is not stored
-            // in VaultState, so read it back from the existing envelope. This is
-            // fine because passphrase-protected vaults always have an envelope
-            // on disk before mutating.
-            let envelope: VaultEnvelope = if self.path.exists() {
-                let bytes = std::fs::read(&self.path)
-                    .with_context(|| format!("failed to read vault: {}", self.path.display()))?;
-                serde_json::from_slice(&bytes)
-                    .with_context(|| "failed to parse existing vault envelope")?
-            } else {
-                return Err(VaultError::Backend(
-                    "passphrase vault has no envelope to read salt from".to_string(),
-                )
-                .into());
-            };
-            envelope.salt
-        } else {
-            None
-        };
+        let inner = self
+            .inner
+            .read()
+            .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+        let salt = inner.salt.clone();
         Self::write_envelope(&self.path, &inner.dek, salt.as_deref(), &inner.file)
     }
 
@@ -581,9 +632,10 @@ impl Vault {
 
         let new_dek = Self::generate_dek();
         {
-            let mut inner = self.inner.write().map_err(|e| {
-                VaultError::Backend(format!("vault lock poisoned: {e}"))
-            })?;
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
             Self::store_dek_in_keychain(&new_dek)?;
             inner.dek = new_dek;
         }
@@ -596,24 +648,33 @@ impl Vault {
     // SecretStore trait integration
     // ------------------------------------------------------------------
 
-    fn validate_account(account: &str) -> Result<(), crate::common::secret_store::SecretStoreError> {
+    fn validate_account(
+        account: &str,
+    ) -> Result<(), crate::common::secret_store::SecretStoreError> {
         if account.is_empty() {
-            return Err(crate::common::secret_store::SecretStoreError::InvalidAccount(
-                "empty account name".to_string(),
-            ));
+            return Err(
+                crate::common::secret_store::SecretStoreError::InvalidAccount(
+                    "empty account name".to_string(),
+                ),
+            );
         }
         if account.len() > 128 {
-            return Err(crate::common::secret_store::SecretStoreError::InvalidAccount(
-                format!("account name too long ({} > 128 chars)", account.len()),
-            ));
+            return Err(
+                crate::common::secret_store::SecretStoreError::InvalidAccount(format!(
+                    "account name too long ({} > 128 chars)",
+                    account.len()
+                )),
+            );
         }
         if !account
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
         {
-            return Err(crate::common::secret_store::SecretStoreError::InvalidAccount(
-                format!("account name '{account}' contains disallowed characters"),
-            ));
+            return Err(
+                crate::common::secret_store::SecretStoreError::InvalidAccount(format!(
+                    "account name '{account}' contains disallowed characters"
+                )),
+            );
         }
         Ok(())
     }
@@ -625,8 +686,8 @@ impl Vault {
     fn load_existing(path: PathBuf) -> Result<Self> {
         let bytes = std::fs::read(&path)
             .with_context(|| format!("failed to read vault: {}", path.display()))?;
-        let envelope: VaultEnvelope = serde_json::from_slice(&bytes)
-            .with_context(|| "failed to parse vault envelope")?;
+        let envelope: VaultEnvelope =
+            serde_json::from_slice(&bytes).with_context(|| "failed to parse vault envelope")?;
 
         if envelope.version != VAULT_VERSION {
             anyhow::bail!(
@@ -636,25 +697,25 @@ impl Vault {
             );
         }
 
-        let (dek, unlock_method) = if let Some(salt) = envelope.salt.as_deref() {
+        let (dek, unlock_method, salt) = if let Some(salt) = envelope.salt.as_deref() {
             // Passphrase mode.
-            let passphrase = Self::passphrase_from_env_or_test_fallback()
-                .ok_or(VaultError::NoPassphrase)?;
+            let passphrase =
+                Self::passphrase_from_env_or_test_fallback().ok_or(VaultError::NoPassphrase)?;
             let dek = Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?;
-            (dek, UnlockMethod::Passphrase)
+            (dek, UnlockMethod::Passphrase, Some(salt.to_vec()))
         } else {
             // Keychain mode.
             let dek = Self::retrieve_dek_from_keychain()?;
-            (dek, UnlockMethod::Keychain)
+            (dek, UnlockMethod::Keychain, None)
         };
 
         let plaintext = Self::decrypt(&envelope, &dek)?;
-        let file: VaultFile = serde_json::from_slice(&plaintext)
-            .with_context(|| "failed to parse vault contents")?;
+        let file: VaultFile =
+            serde_json::from_slice(&plaintext).with_context(|| "failed to parse vault contents")?;
 
         Ok(Self {
             path,
-            inner: std::sync::RwLock::new(VaultState { file, dek }),
+            inner: std::sync::RwLock::new(VaultState { file, dek, salt }),
             unlock_method,
         })
     }
@@ -674,21 +735,37 @@ impl Vault {
 
         #[cfg(not(test))]
         {
-            let keychain = crate::identity::keychain::KeychainStorage::with_service(KEYCHAIN_SERVICE.to_string());
+            let keychain = crate::identity::keychain::KeychainStorage::with_service(
+                KEYCHAIN_SERVICE.to_string(),
+            );
             let (file, dek, salt, unlock_method) = if keychain.is_available() {
-                let dek = Self::generate_dek();
-                Self::store_dek_in_keychain(&dek)?;
+                // If a DEK already exists in the keychain, reuse it so that a
+                // deleted vault file can be recreated without destroying the
+                // key needed to decrypt any backups of the old file.
+                let dek = match Self::try_retrieve_dek_from_keychain() {
+                    Ok(Some(dek)) => dek,
+                    Ok(None) => {
+                        let dek = Self::generate_dek();
+                        Self::store_dek_in_keychain(&dek)?;
+                        dek
+                    }
+                    Err(e) => return Err(e),
+                };
                 (VaultFile::default(), dek, None, UnlockMethod::Keychain)
             } else {
-                let passphrase = Self::passphrase_from_env_or_test_fallback()
-                    .ok_or(VaultError::NoPassphrase)?;
+                let passphrase =
+                    Self::passphrase_from_env_or_test_fallback().ok_or(VaultError::NoPassphrase)?;
                 let (file, dek, salt) = Self::new_file_with_passphrase(&passphrase)?;
                 (file, dek, Some(salt), UnlockMethod::Passphrase)
             };
 
             let vault = Self {
                 path,
-                inner: std::sync::RwLock::new(VaultState { file, dek }),
+                inner: std::sync::RwLock::new(VaultState {
+                    file,
+                    dek,
+                    salt: salt.clone(),
+                }),
                 unlock_method,
             };
             vault.save_envelope(salt.as_deref())?;
@@ -719,7 +796,9 @@ impl Vault {
             })
     }
 
-    fn new_file_with_passphrase(passphrase: &SecretString) -> Result<(VaultFile, Vec<u8>, Vec<u8>)> {
+    fn new_file_with_passphrase(
+        passphrase: &SecretString,
+    ) -> Result<(VaultFile, Vec<u8>, Vec<u8>)> {
         let mut salt = vec![0u8; 32];
         OsRng.fill_bytes(&mut salt);
         let dek = Self::derive_key_from_passphrase(passphrase.expose_secret(), &salt)?;
@@ -727,9 +806,10 @@ impl Vault {
     }
 
     fn save_envelope(&self, salt: Option<&[u8]>) -> Result<()> {
-        let inner = self.inner.read().map_err(|e| {
-            VaultError::Backend(format!("vault lock poisoned: {e}"))
-        })?;
+        let inner = self
+            .inner
+            .read()
+            .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
         Self::write_envelope(&self.path, &inner.dek, salt, &inner.file)
     }
 
@@ -739,8 +819,8 @@ impl Vault {
         salt: Option<&[u8]>,
         file: &VaultFile,
     ) -> Result<()> {
-        let plaintext = serde_json::to_vec(file)
-            .with_context(|| "failed to serialize vault contents")?;
+        let plaintext =
+            serde_json::to_vec(file).with_context(|| "failed to serialize vault contents")?;
         let mut nonce = vec![0u8; NONCE_LENGTH];
         OsRng.fill_bytes(&mut nonce);
 
@@ -804,22 +884,42 @@ impl Vault {
         Ok(())
     }
 
-    fn retrieve_dek_from_keychain() -> Result<Vec<u8>> {
+    /// Try to retrieve an existing DEK from the OS keychain.
+    ///
+    /// Returns `Ok(None)` if no entry exists, `Ok(Some(dek))` if a valid DEK
+    /// is found, and propagates any other keychain error.
+    fn try_retrieve_dek_from_keychain() -> Result<Option<Vec<u8>>> {
         let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
             .with_context(|| "failed to create keychain entry for vault DEK")?;
-        let dek_hex = entry
-            .get_password()
-            .with_context(|| "failed to retrieve vault DEK from OS keychain")?;
-        hex::decode(&dek_hex)
-            .with_context(|| "vault DEK in keychain is not valid hex")
+        match entry.get_password() {
+            Ok(dek_hex) => {
+                let dek = hex::decode(&dek_hex)
+                    .with_context(|| "vault DEK in keychain is not valid hex")?;
+                Ok(Some(dek))
+            }
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(anyhow::anyhow!(e)
+                .context("failed to retrieve vault DEK from OS keychain")
+                .into()),
+        }
+    }
+
+    fn retrieve_dek_from_keychain() -> Result<Vec<u8>> {
+        Self::try_retrieve_dek_from_keychain()?
+            .ok_or_else(|| anyhow::anyhow!("no vault DEK found in OS keychain"))
     }
 
     fn derive_key_from_passphrase(passphrase: &str, salt: &[u8]) -> Result<Vec<u8>> {
         let argon2 = Argon2::new(
             argon2::Algorithm::Argon2id,
             argon2::Version::V0x13,
-            argon2::Params::new(ARGON2_MEMORY_COST, ARGON2_TIME_COST, ARGON2_PARALLELISM, None)
-                .map_err(|e| anyhow::anyhow!("invalid Argon2 params: {e}"))?,
+            argon2::Params::new(
+                ARGON2_MEMORY_COST,
+                ARGON2_TIME_COST,
+                ARGON2_PARALLELISM,
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("invalid Argon2 params: {e}"))?,
         );
         let mut key = vec![0u8; KEY_LENGTH];
         argon2
@@ -856,10 +956,7 @@ impl crate::common::secret_store::SecretStore for Vault {
             .map_err(|e| crate::common::secret_store::SecretStoreError::Backend(e.to_string()))
     }
 
-    fn delete(
-        &self,
-        account: &str,
-    ) -> Result<bool, crate::common::secret_store::SecretStoreError> {
+    fn delete(&self, account: &str) -> Result<bool, crate::common::secret_store::SecretStoreError> {
         Self::validate_account(account)?;
         self.delete_provider_key(account)
             .map_err(|e| crate::common::secret_store::SecretStoreError::Backend(e.to_string()))
@@ -897,11 +994,9 @@ mod tests {
         assert_eq!(key.expose_secret(), "sk-test");
 
         // Reload from disk using the explicit passphrase.
-        let reloaded = Vault::load_with_passphrase(
-            vault.path(),
-            &SecretString::new("test-passphrase".into()),
-        )
-        .unwrap();
+        let reloaded =
+            Vault::load_with_passphrase(vault.path(), &SecretString::new("test-passphrase".into()))
+                .unwrap();
         let reloaded_key = reloaded.get_provider_key("openai").unwrap();
         assert_eq!(reloaded_key.expose_secret(), "sk-test");
     }
@@ -940,7 +1035,7 @@ mod tests {
         assert_eq!(token.token, "ph_abc");
         assert_eq!(token.namespace, Some("acme".to_string()));
 
-        assert!(vault.clear_registry_token().unwrap());
+        assert!(vault.clear_registry_token("pekohub.ai").unwrap());
         assert!(vault.get_registry_token().is_none());
     }
 

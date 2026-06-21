@@ -69,13 +69,9 @@ fn mask_key(key: &str) -> String {
 /// Handle auth commands
 pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
     match cmd {
-        AuthCommands::Login { registry, api_key } => {
-            handle_login(paths, &registry, api_key)
-        }
+        AuthCommands::Login { registry, api_key } => handle_login(paths, &registry, api_key),
 
-        AuthCommands::Logout { registry } => {
-            handle_logout(paths, &registry)
-        }
+        AuthCommands::Logout { registry } => handle_logout(paths, &registry),
 
         AuthCommands::Status => {
             let service = CredentialsService::new(paths.clone())?;
@@ -199,7 +195,7 @@ pub fn handle_login(paths: &GlobalPaths, host: &str, api_key: Option<String>) ->
 /// Handle top-level `peko logout` command
 pub fn handle_logout(paths: &GlobalPaths, host: &str) -> Result<()> {
     let service = CredentialsService::new(paths.clone())?;
-    match service.clear_registry_token()? {
+    match service.clear_registry_token(host)? {
         true => println!("✓ Logged out from {host}"),
         false => println!("✗ Not logged in to {host}"),
     }

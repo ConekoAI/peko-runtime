@@ -90,8 +90,11 @@ impl RuntimeIdentity {
         if identity_path.exists() {
             let content = fs::read_to_string(&identity_path)
                 .with_context(|| format!("Failed to read identity file: {identity_path:?}"))?;
-            // Reject legacy files that contain a `keys` map with plaintext keys.
-            if content.contains("[keys]") || content.contains("encrypted_private_key") {
+            // Inspect the TOML structure first to detect legacy files that
+            // contained a `keys` map with private key material.
+            let value: toml::Value =
+                toml::from_str(&content).with_context(|| "Failed to parse identity.toml")?;
+            if value.get("keys").is_some() || value.get("encrypted_private_key").is_some() {
                 anyhow::bail!(
                     "Legacy identity.toml format detected at {identity_path:?}. \
                      It contains a plaintext/private key map. Run `peko runtime reset-identity` \
@@ -132,7 +135,9 @@ impl RuntimeIdentity {
 
     /// Load the private signing key for this identity from the vault.
     pub fn load_private_key(&self, vault: &Vault) -> Result<Option<String>> {
-        Ok(vault.get_identity_private_key(&self.key_id).map(|s| s.expose_secret().to_string()))
+        Ok(vault
+            .get_identity_private_key(&self.key_id)
+            .map(|s| s.expose_secret().to_string()))
     }
 
     /// Get the runtime DID
