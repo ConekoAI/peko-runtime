@@ -8,7 +8,6 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::services::CredentialsService;
-use crate::common::time::format_timestamp;
 use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
 use crate::extension::core::global_core;
 use crate::extension::manager::{ExtensionManager, ExtensionStorage};
@@ -254,7 +253,7 @@ pub async fn handle_team(
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::TeamCreated { result, .. } => {
-                    render_team_created(&result, json);
+                    render::render_team_created(&result, json);
                     Ok(())
                 }
                 _ => anyhow::bail!("Unexpected response"),
@@ -265,7 +264,7 @@ pub async fn handle_team(
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::TeamList { teams, .. } => {
-                    render_team_list(&teams, long, json);
+                    render::render_team_list(&teams, long, json);
                     Ok(())
                 }
                 _ => anyhow::bail!("Unexpected response"),
@@ -302,7 +301,7 @@ pub async fn handle_team(
                 _ => Vec::new(),
             };
 
-            render_team_show(&team_info, &agents, json);
+            render::render_team_show(&team_info, &agents, json);
             Ok(())
         }
         TeamCommands::Remove { name, force } => {
@@ -318,7 +317,7 @@ pub async fn handle_team(
             };
 
             // Confirm deletion
-            if !force && !confirm_team_deletion(&name, team_info.agent_count)? {
+            if !force && !render::confirm_team_deletion(&name, team_info.agent_count)? {
                 if json {
                     println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
                 } else {
@@ -335,7 +334,7 @@ pub async fn handle_team(
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::TeamDeleted { result, .. } => {
-                    render_team_deleted(&result, json);
+                    render::render_team_deleted(&result, json);
                     Ok(())
                 }
                 _ => anyhow::bail!("Unexpected response"),
@@ -420,7 +419,7 @@ pub async fn handle_team(
                         output_path: std::path::PathBuf::from(output_path),
                         agent_count: 0, // Not returned via IPC
                     };
-                    render_team_exported(&result, json);
+                    render::render_team_exported(&result, json);
                     Ok(())
                 }
                 _ => anyhow::bail!("Unexpected response"),
@@ -451,7 +450,7 @@ pub async fn handle_team(
                         path: std::path::PathBuf::from(path),
                         agents_imported: 0, // Not returned via IPC
                     };
-                    render_team_imported(&result, json);
+                    render::render_team_imported(&result, json);
                     Ok(())
                 }
                 _ => anyhow::bail!("Unexpected response"),
@@ -658,218 +657,12 @@ fn parse_team_permission(s: &str) -> anyhow::Result<crate::auth::ownership::Perm
     }
 }
 
-// ================================================================================
-// Rendering Functions (CLI-specific output formatting)
-// ================================================================================
-
-fn render_team_created(result: &TeamCreationResult, json: bool) {
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "success": true,
-                "name": result.metadata.name,
-                "path": result.path.display().to_string(),
-            })
-        );
-    } else {
-        println!("✅ Created team '{}'", result.metadata.name);
-        println!("   Path: {}", result.path.display());
-        if let Some(desc) = &result.metadata.description {
-            println!("   Description: {desc}");
-        }
-        println!();
-        println!("   You can now create agents in this team:");
-        println!(
-            "     peko agent create {}/<agent-name>",
-            result.metadata.name
-        );
-    }
-}
-
-fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
-    if json {
-        let teams_json: Vec<_> = teams
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "name": t.name,
-                    "agent_count": t.agent_count,
-                    "description": t.metadata.description.clone(),
-                    "created_at": t.metadata.created_at.clone(),
-                })
-            })
-            .collect();
-        println!("{}", serde_json::json!({"teams": teams_json}));
-    } else if teams.is_empty() {
-        println!("No teams found.");
-        println!("Create one with: peko team create <name>");
-    } else {
-        println!("📁 Teams ({} found):", teams.len());
-        println!();
-
-        for team in teams {
-            let is_default = team.name == "default";
-            let icon = if is_default { "⭐" } else { "📁" };
-
-            if long {
-                println!("{} {}", icon, team.name);
-                if let Some(ref desc) = team.metadata.description {
-                    println!("   Description: {desc}");
-                }
-                println!(
-                    "   Created: {}",
-                    format_timestamp(&team.metadata.created_at)
-                );
-                println!("   Agents: {}", team.agent_count);
-                println!("   Path: {}", team.path.display());
-                println!();
-            } else {
-                let desc_marker = if team.metadata.description.is_some() {
-                    " •"
-                } else {
-                    ""
-                };
-                println!(
-                    "{} {}{} ({} agents)",
-                    icon, team.name, desc_marker, team.agent_count
-                );
-            }
-        }
-    }
-}
-
-fn render_team_show(
-    team: &TeamInfo,
-    agents: &[(String, crate::types::agent::AgentConfig)],
-    json: bool,
-) {
-    if json {
-        let agents_json: Vec<_> = agents
-            .iter()
-            .map(|(name, config)| {
-                serde_json::json!({
-                    "name": name,
-                    "preferred_provider": config.preferred_provider_id,
-                    "preferred_model": config.preferred_model_id,
-                    "description": config.description,
-                })
-            })
-            .collect();
-
-        println!(
-            "{}",
-            serde_json::json!({
-                "name": team.name,
-                "path": team.path.display().to_string(),
-                "description": team.metadata.description.clone(),
-                "created_at": team.metadata.created_at.clone(),
-                "agents": agents_json,
-                "agent_count": team.agent_count,
-            })
-        );
-    } else {
-        println!("📁 Team: {}", team.name);
-        if let Some(ref desc) = team.metadata.description {
-            println!("   Description: {desc}");
-        }
-        println!(
-            "   Created: {}",
-            format_timestamp(&team.metadata.created_at)
-        );
-        println!("   Path: {}", team.path.display());
-        println!();
-
-        if team.agent_count == 0 {
-            println!("   No agents in this team.");
-            println!(
-                "   Create one with: peko agent create {}/<agent-name>",
-                team.name
-            );
-        } else {
-            println!("   Agents ({}):", team.agent_count);
-            for (agent_name, config) in agents {
-                println!("   📦 {agent_name}");
-                if let Some(ref desc) = config.description {
-                    println!("      {desc}");
-                }
-                println!(
-                    "      Preferred provider: {}",
-                    config.preferred_provider_id.as_deref().unwrap_or("<none>")
-                );
-            }
-        }
-    }
-}
-
-fn render_team_deleted(result: &TeamDeletionResult, json: bool) {
-    if json {
-        println!(
-            "{{\"success\": true, \"name\": \"{}\", \"agents_deleted\": {}}}",
-            result.name, result.agents_deleted
-        );
-    } else {
-        println!("✅ Deleted team '{}'", result.name);
-        if result.agents_deleted > 0 {
-            println!("   Removed {} agent(s)", result.agents_deleted);
-        }
-    }
-}
 
 // ================================================================================
-// Helper Functions
+// Rendering / CLI presentation lives in `team::render`.
 // ================================================================================
 
-fn render_team_exported(result: &crate::common::types::team::TeamExportResult, json: bool) {
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "success": true,
-                "name": result.name,
-                "output_path": result.output_path.display().to_string(),
-                "agent_count": result.agent_count,
-            })
-        );
-    } else {
-        println!("📦 Exported team '{}'", result.name);
-        println!("   Agents: {}", result.agent_count);
-        println!("   Output: {}", result.output_path.display());
-    }
-}
-
-fn render_team_imported(result: &crate::common::types::team::TeamImportResult, json: bool) {
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "success": true,
-                "name": result.name,
-                "path": result.path.display().to_string(),
-                "agents_imported": result.agents_imported,
-            })
-        );
-    } else {
-        println!("📥 Imported team '{}'", result.name);
-        println!("   Agents: {}", result.agents_imported);
-        println!("   Path: {}", result.path.display());
-    }
-}
-
-fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
-    println!("⚠️  This will permanently delete team '{name}'.");
-    if agent_count > 0 {
-        println!("   It contains {agent_count} agent(s) that will also be deleted.");
-    }
-    println!("   This action cannot be undone.");
-    print!("   Continue? [y/N] ");
-    std::io::Write::flush(&mut std::io::stdout())?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-
-    Ok(input.trim().eq_ignore_ascii_case("y"))
-}
+mod render;
 
 async fn handle_team_push(
     paths: &GlobalPaths,

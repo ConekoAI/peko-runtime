@@ -122,6 +122,17 @@ follow-up work:
   (`portable ↔ identity`, `tools ↔ tunnel`,
   `extension::types ↔ engine`, `tools::core ↔ extension::types`,
   `tunnel → tools → agent → session → engine`) are not yet broken.
+- **Issue #26 (lift `AppState` to `engine/`) is intentionally
+  skipped.** `AppState` is the daemon's composition root; its fields
+  reference `agent::lifecycle`, `agent::stateless_service`,
+  `common::services`, `extension::async_exec`, `observability`,
+  `registry`, `runtime`, and `daemon::background_runtime`. Moving
+  the type into `engine/` would force `engine` to depend on all of
+  those, inverting the current `daemon → engine` direction and
+  turning `engine` into a god module — the opposite of the
+  9-domain target. The right home for `AppState` is the daemon
+  composition layer (or a future `composition` domain once #31
+  lands), not `engine/`. Recorded as a deliberate non-change.
 - `SubjectType` enum, `principal_from_string*` helpers, `Peer` type
   alias, and `Principal::{id, peer_type, is_user, is_agent}` compat
   methods are deprecated but still in place.
