@@ -45,12 +45,17 @@ which diffs need which tier. Key wins:
 
 - **Smoke tier** runs `cargo fmt --check && cargo clippy --all-targets
   -- -D warnings && cargo test --lib` on every PR that touches
-  `src/**` or `tests/**`, finishing in < 6 min on warm cache.
+  `src/**` or `tests/**`, finishing in < 6 min on warm cache. The
+  `cargo fmt --check` step is `continue-on-error: true` because
+  master has ~494 files with accumulated fmt diffs that pre-date
+  this refactor — the diff is still reported on the PR; promote to
+  a hard gate once a one-time `cargo fmt` sweep lands.
 - **Lint tier** runs `scripts/check_module_boundaries.sh` on every PR
-  that touches `src/**`. Currently **advisory** (`continue-on-error`)
-  while known pre-existing violations remain in
-  `src/extension/adapters/validation.rs` and
-  `src/extension/manager/mod.rs` — see PLAN.md Horizon B.
+  that touches `src/**`. As of the Issue-015 follow-up commit, it is
+  a **hard gate** — all three rules (framework → extensions,
+  cross-extension, core → daemon/tools) pass. Regressions block the
+  PR. Doc-comment mentions of `crate::extensions::*` are now correctly
+  filtered by the script (they were being mis-flagged before).
 - **Integration tier** is now path-aware: pure refactors (only
   `src/**` changed) skip the Docker stack entirely. The job runs only
   when `tests/**`, `docker/**`, `Dockerfile*`/`docker-compose*.yml`,
@@ -64,6 +69,27 @@ which diffs need which tier. Key wins:
   `~/.cargo/...` on Windows and produces lower hit rates).
 - Doc-only PRs (only `*.md`, `PLAN.md`, `CHANGES.md`, `docs/**`) do
   **not** trigger CI at all thanks to the workflow-level `paths` filter.
+
+### Issue-015 boundary violations cleared
+
+The two known `src/extension/ → src/extensions/` imports that were
+keeping the lint job advisory are removed:
+
+- `src/extension/adapters/validation.rs` → `src/extensions/validation.rs`.
+  The validation service walks an extension directory, detects its
+  type (Tier 1 / Tier 2 per ADR-024), and runs optional semantic
+  checks (ADR-036). Type detection and validation are inherently
+  type-aware — there is no shared trait surface that hides which
+  concrete types exist, so the framework can never host this
+  service. Callers in `src/commands/ext.rs` and `src/ipc/server.rs`
+  updated to use `crate::extensions::validation::*`.
+- The static built-in tool-name list moves to the framework as
+  `src/extension/adapters/builtin_tools.rs`. `manager::resolve_tool_name`
+  and the IPC ExtensionEnable / ExtensionDisable handlers now call
+  `crate::extension::adapters::builtin_tools::is_builtin_tool` —
+  no more reach into `extensions::builtin` from the framework.
+  `extensions::builtin::BuiltinToolAdapter` delegates to the
+  framework helpers (one-way dep: extensions→framework is allowed).
 
 ### Documentation aligned
 
@@ -92,10 +118,6 @@ follow-up work:
   methods are deprecated but still in place.
 - `tests/principal_back_compat.rs` is retained as the safety net for
   the legacy IPC wire format.
-- `src/extension/adapters/validation.rs` and
-  `src/extension/manager/mod.rs` still import concrete extension types
-  from the framework (Issue 015). Lint job is advisory until these
-  violations clear.
 - 34 `#[allow(dead_code)]` annotations across the codebase. Most
   pinpoint specific deletion candidates to evaluate in Horizon B;
   removing them in bulk is the right time only after each one has
@@ -104,7 +126,7 @@ follow-up work:
 ## Verification
 
 - `cargo check --lib --tests` passes locally.
-- `cargo test --lib` passes: 1527 tests, 0 failures.
+- `cargo test --lib` passes: 1530 tests, 0 failures.
 - `cargo clippy --all-targets` produces only pre-existing warnings
   (none new from this PR — the files I touched are clean).
 - YAML schema for `.github/workflows/integration.yml` validates via
@@ -112,5 +134,5 @@ follow-up work:
   `actionlint` is not installed locally but the structure follows
   the same template as the previous workflow with the addition of
   the standard `dorny/paths-filter@v3` action.
-- `bash scripts/check_module_boundaries.sh` runs and reports the
-  expected pre-existing violations (advisory, not blocking).
+- `bash scripts/check_module_boundaries.sh` — all three rules pass;
+  the lint job is a hard gate.
