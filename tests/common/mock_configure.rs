@@ -17,11 +17,6 @@
 
 use std::time::Duration;
 
-/// Build the URL of the test-only `/configure` endpoint.
-pub fn configure_url(base: &str) -> String {
-    format!("{}/_test/configure", base.trim_end_matches('/'))
-}
-
 /// Install `MOCK_LLM_SCRIPT` on the mock and reset its per-substring
 /// counters. The script is passed as a JSON-encoded string (the same
 /// shape as the env var the docker-compose entrypoint sets), which lets
@@ -35,7 +30,7 @@ pub async fn configure_mock(base: &str, mock_llm_script_json: &str) {
         .timeout(Duration::from_secs(5))
         .build()
         .expect("build reqwest client");
-    let url = configure_url(base);
+    let url = format!("{}/_test/configure", base.trim_end_matches('/'));
     let body = serde_json::json!({ "MOCK_LLM_SCRIPT": mock_llm_script_json });
     let resp = client
         .post(&url)

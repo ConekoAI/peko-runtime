@@ -253,77 +253,24 @@ Each commit ends with `cargo check && cargo fmt --check && cargo clippy -- -D wa
 ### Horizon A (this PR)
 
 - [x] Branch `refactor/runtime-cleanup-20260621` created from `master`.
-- [x] All Horizon A commits pushed (10 commits on the branch; see `git log refactor/runtime-cleanup-20260621 ^master`).
-- [x] `cargo test --lib` green: 1530 tests pass. `cargo clippy --all-targets` produces only pre-existing warnings (none new from this PR). `cargo fmt --check` flagged advisory in the smoke tier — ~494 files of accumulated fmt diffs pre-date this refactor; tracked as a one-time `cargo fmt` sweep follow-up.
-- [x] `.github/workflows/integration.yml` adds the `smoke` and `lint` jobs; documents each tier in the file. Six tiers total: changes, smoke, lint, unit-linux, unit-windows, integration, integration-llm.
-- [x] `AGENTS.md` reflects current CI commands and the dead-code removal; "CI tiers" subsection added.
-- [x] `CHANGES.md` summarises the cleanup and points at the Horizon B backlog.
-- [x] Draft PR #47 opened against `master` (not merged).
+- [ ] All Horizon A commits pushed.
+- [ ] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` all green.
+- [ ] `.github/workflows/integration.yml` adds the `smoke` and `lint` jobs; documents each tier in the file.
+- [ ] `AGENTS.md` reflects current CI commands and the dead-code removal.
+- [ ] `CHANGES.md` summarises the cleanup and points at the Horizon B backlog.
+- [ ] Draft PR opened against `main` (not merged).
 
 ### Horizon B (per-item follow-up PRs)
 
 Each major module move or cycle break is its own branch + PR:
 
-- [x] Break cycle 1 (`portable ↔ identity`). **Landed:** `src/portable/crypto.rs`
-      → `src/identity/crypto.rs` in PR #59 (#31f). `crate::identity::keychain`
-      no longer reaches into `portable`.
-- [x] Break cycle 3 (`extension::types ↔ engine`). **Landed:** framework-defined
-      `ToolProgressEvent` decouples `extension::types::tool_exec` from
-      `engine::AgenticEvent` in PR #57 (#31d).
-- [x] Break cycle 2 (`tools ↔ tunnel`). **Landed:** `a2a_send` tool inverted —
-      `src/tools/builtin/messaging/a2a_send.rs` → `src/tunnel/a2a_send_tool.rs`
-      in PR #57 (#31d).
-- [x] Drop `SubjectType` + `principal_from_wire`. **Landed:** PR #26
-      (`refactor/drop-subjecttype-and-backcompat`).
-- [x] Delete `tests/principal_back_compat.rs`. **Landed:** PR #26.
-- [x] Rename `Peer` → `Principal` everywhere. **Landed:** PR #24
-      (`refactor/peer-to-principal-rename`).
-- [x] `principal_from_string(s, default_kind)` (the parametrized
-      variant) deleted; logic inlined into
-      `principal_from_string_with_default_user`. Landed as commit
-      `3b9ac74`.
-- [x] Drop `Principal::{id, peer_type, is_user, is_agent}` compat
-      methods. **Landed:** PR #25 (`refactor/drop-principal-compat-methods`).
-- [x] Unify `portable` + `registry` into a single `src/registry/` tree.
-      **Landed:** `src/portable/` → `src/registry/packaging/` in PR #59 (#31f).
-- [x] Slim `commands::team.rs` to call only `TeamService`. **Landed:**
-      PR #27 (`refactor/slim-commands-team`).
-- [x] Lift `daemon::state::AppState` into `engine::app_state`. **Landed:**
-      PR #26 (`refactor/lift-appstate-to-engine`).
-- [x] Merge `compaction/`, `prompt/`, `team/`, `runtime/` into their target
-      domains. **Landed across the 9-domain PR series:**
-      - `compaction/` → `session/compaction/` (#55, #31b)
-      - `prompt/` → `agents/prompt/` (#54, #31a)
-      - `runtime/` → `identity/runtime.rs` + `engine/tool_runtime.rs` +
-        `tunnel/known_runtimes.rs` (#56, #31c)
-- [x] Reorganize tools/extensions: move `builtin/` and `skill/` to live next
-      to the framework that owns them. **Landed:** the generic framework now
-      lives at `src/extensions/framework/` with sibling type implementations
-      (`builtin/`, `gateway/`, `general/`, `mcp/`, `skill/`, `universal/`,
-      `validation`) in PR #59 (#31f).
-
-### 9-domain layout (achieved)
-
-```
-src/
-├── agents/         # agents + agent_config + prompt + lifecycle + subagent_*
-├── common/         # shared services + types + paths + identifiers
-├── engine/         # execution engine + agentic loop + tool runtime + app_state
-├── extensions/     # framework + builtin/gateway/general/mcp/skill/universal/validation
-├── identity/       # DID + keys + keychain + crypto + runtime metadata
-└── registry/       # remote client + local packaging (formerly portable)
-```
-
-**Stacked PR series (each based on the previous tip):**
-
-| # | Title | PR | Status |
-|---|---|---|---|
-| #31a | agent→agents + prompt merge | #54 | ✅ landed |
-| #31b | compaction → session/compaction | #55 | ✅ landed |
-| #31c | split src/runtime/ → identity/engine/tunnel | #56 | ✅ landed |
-| #31d | cycle breaks (a2a_send, ToolProgressEvent) | #57 | ✅ landed |
-| #31e | types/ → common/types/ | #58 | ✅ landed |
-| #31f | extension→extensions/framework + portable→registry/packaging | #59 | 🟢 CI run 27927104710 |
-
-**Verification:** 1522 tests pass on every branch; clippy delta +1 error
-(within baseline noise).
+- [ ] Break cycle 1 (`portable ↔ identity`).
+- [ ] Break cycle 3 (`extension::types ↔ engine`).
+- [ ] Break cycle 2 (`tools ↔ tunnel`).
+- [ ] Drop `SubjectType` + `principal_from_string*` + `Peer` alias + `Principal` compat methods.
+- [ ] Delete `tests/principal_back_compat.rs`.
+- [ ] Unify `portable` + `registry` into a single `src/registry/` tree.
+- [ ] Slim `commands::team.rs` to call only `TeamService`.
+- [ ] Lift `daemon::state::AppState` into `engine::app_state`.
+- [ ] Merge `compaction/`, `prompt/`, `team/`, `runtime/` into their target domains.
+- [ ] Reorganize tools/extensions: move `builtin/` and `skill/` to live next to the framework that owns them.
