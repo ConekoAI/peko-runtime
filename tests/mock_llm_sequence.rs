@@ -24,7 +24,7 @@
 //! Rule") and §7 Phase C.
 
 mod common;
-use common::{configure_mock, write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use common::{configure_mock, write_v3_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
 use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
@@ -87,7 +87,7 @@ async fn mock_llm_script_list_returns_ith_element_per_call() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "seq-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "seq-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Three sends, each prompt contains the needle so the substring
@@ -132,7 +132,7 @@ async fn mock_llm_script_list_clamps_to_last_element_after_exhaustion() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "clamp-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "clamp-agent", &mock_url).expect("write mock agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     for (i, expected) in ["R1", "R2", "R2", "R2"].iter().enumerate() {

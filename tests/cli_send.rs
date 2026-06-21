@@ -20,7 +20,7 @@
 //! Tests early-return if unset so `cargo test` still passes on a bare checkout.
 
 mod common;
-use common::{write_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use common::{write_v3_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -107,7 +107,7 @@ fn send_default_response_streams_to_stdout() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "test-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "test-agent", &mock_url).expect("write mock agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -135,7 +135,7 @@ fn send_keyword_echo_returns_marker() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "echo-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "echo-agent", &mock_url).expect("write mock agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -168,7 +168,7 @@ fn send_file_option_reads_message_from_file() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "file-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "file-agent", &mock_url).expect("write mock agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -199,7 +199,7 @@ fn send_new_flag_creates_additional_session() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "new-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "new-agent", &mock_url).expect("write mock agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -250,7 +250,7 @@ fn send_session_option_resumes_existing_session() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "sess-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "sess-agent", &mock_url).expect("write mock agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -315,7 +315,7 @@ fn send_nonexistent_agent_fails() {
     };
     let cli = PekoCli::new();
     // Do NOT write an agent config for "no-such-agent"
-    write_mock_agent(cli.home(), "other-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "other-agent", &mock_url).expect("write mock agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -341,7 +341,7 @@ fn send_no_message_and_no_file_stdin_fails() {
         return;
     };
     let cli = PekoCli::new();
-    write_mock_agent(cli.home(), "no-msg-agent", &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), "no-msg-agent", &mock_url).expect("write mock agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 

@@ -33,6 +33,15 @@ impl DaemonGuard {
     /// captures the relevant pekohub-test / mock-llm output anyway
     /// (those are the services doing the real work).
     pub fn spawn(cli: &PekoCli) -> Self {
+        // v3 mock-LLM bootstrap: if `MOCK_LLM_URL` is set, seed the
+        // catalog with a `mock-llm` entry pointing at the URL before
+        // the daemon starts. `PekoCli::cmd` exports the matching
+        // `PEKO_TEST_RESOLVER_BOOTSTRAP=1` + `MOCK_LLM_API_KEY` so
+        // the daemon can find the API key without a real keychain.
+        if let Some(mock_url) = std::env::var_os("MOCK_LLM_URL") {
+            super::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url.to_string_lossy());
+        }
+
         let child = cli
             .cmd()
             .args(["daemon", "start", "--foreground"])

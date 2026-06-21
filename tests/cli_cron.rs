@@ -31,6 +31,7 @@
 
 mod common;
 use common::{configure_mock, PekoCli, run_with_timeout};
+use common::agent::seed_mock_provider_in_catalog;
 use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
@@ -47,6 +48,13 @@ struct CronDaemonGuard {
 
 impl CronDaemonGuard {
     fn spawn(cli: &PekoCli) -> Self {
+        // v3 mock-LLM bootstrap: same as `DaemonGuard::spawn` —
+        // seed the catalog before the daemon starts so the
+        // `LlmResolver` finds the entry on first lookup.
+        if let Some(mock_url) = std::env::var_os("MOCK_LLM_URL") {
+            seed_mock_provider_in_catalog(cli.home(), &mock_url.to_string_lossy());
+        }
+
         let child = cli
             .cmd()
             .args(["daemon", "start", "--foreground", "--interval", "1"])
@@ -185,7 +193,7 @@ fn remove_jobs_with_prefix(cli: &PekoCli, prefix: &str) {
 
 /// Write a mock-LLM-pointed agent with the `cron` tool enabled.
 ///
-/// `write_mock_agent` (in `tests/common/agent.rs`) writes an agent
+/// `write_v3_mock_agent` (in `tests/common/agent.rs`) writes an agent
 /// with `[extensions] enabled = []`, which the agent's `init_builtins_async`
 /// uses as an EXCLUSIVE whitelist — the daemon's `register_builtins`
 /// enables every built-in tool by default, but the agent's whitelist
@@ -204,28 +212,14 @@ fn write_cron_agent(
     std::fs::create_dir_all(&agent_dir)?;
     let base_url = mock_llm_url.trim_end_matches('/');
     let config_toml = format!(
-        r#"version = "1.0"
+        r#"version = "3.0"
 name = "{name}"
 description = "Agent-tool cron test agent"
 auto_accept_trusted = false
+
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
 default_timeout_seconds = 60
-
-[provider]
-provider_type = "openai_compatible"
-api_key = "mock-llm-test-key"
-base_url = "{base_url}"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-
-[provider.models.default]
-name = "default"
-max_tokens = 1024
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
 
 [extensions]
 enabled = ["builtin:tool:cron"]
@@ -866,7 +860,7 @@ fn cron_remove_idempotent_on_missing_job() {
 // Flow (per test):
 //   1. Spawn the cron daemon (CronDaemonGuard).
 //   2. Write a mock-LLM-pointed agent with the cron tool enabled
-//      (write_cron_agent). The default `write_mock_agent` has
+//      (write_cron_agent). The default `write_v3_mock_agent` has
 //      `[extensions] enabled = []`, which the agent treats as an
 //      EXCLUSIVE whitelist — the daemon's `register_builtins` enables
 //      cron by default, but the agent's empty whitelist overrides that

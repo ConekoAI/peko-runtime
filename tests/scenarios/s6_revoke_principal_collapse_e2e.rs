@@ -72,30 +72,16 @@ use pekobot::ipc::DaemonClient;
 fn write_agent_config(cli: &PekoCli, agent_name: &str) {
     let agent_dir = cli.peko_dir().join("agents").join(agent_name);
     std::fs::create_dir_all(&agent_dir).expect("create agent dir");
-    let toml = r#"version = "1.0"
+    let toml = r#"version = "3.0"
 name = "s6-agent"
 description = "issue #25 collapse-IPC e2e"
 auto_accept_trusted = false
+
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
 default_timeout_seconds = 60
 host_runtime_id = ""
 owner = { kind = "user", id = "local" }
-
-[provider]
-provider_type = "openai_compatible"
-api_key = "mock-llm-test-key"
-base_url = "http://127.0.0.1:1"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 0
-retry_delay_ms = 0
-
-[provider.models.default]
-name = "default"
-max_tokens = 16
-temperature = 0.0
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
 
 [extensions]
 enabled = []

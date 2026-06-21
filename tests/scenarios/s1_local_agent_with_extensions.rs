@@ -42,7 +42,7 @@
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::{run_with_timeout, write_mock_agent, DaemonGuard, PekoCli};
+use common::{run_with_timeout, write_v3_mock_agent, DaemonGuard, PekoCli};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -132,7 +132,7 @@ fn agent_config_path(cli: &PekoCli, agent_name: &str) -> PathBuf {
 /// Flow 1: create an agent locally. The agent's `config.toml` must
 /// exist at `<peko_dir>/agents/<name>/config.toml` and must contain
 /// the openai_compatible provider pointed at the mock LLM. We write
-/// the agent config directly (the `write_mock_agent` pattern) rather
+/// the agent config directly (the `write_v3_mock_agent` pattern) rather
 /// than driving `peko agent create` (which would re-do the same
 /// filesystem work; the create-vs-write helper is unit-tested
 /// elsewhere). The point of D1 is the lifecycle, not the create CLI.
@@ -146,7 +146,7 @@ fn agent_create_local_minimal() {
 
     let cli = PekoCli::new();
     let agent_name = "s1_local_agent";
-    write_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
 
     // `peko agent show <name>` reads back the config; this is the
     // closest thing to a list/show verification without a
@@ -164,16 +164,19 @@ fn agent_create_local_minimal() {
         "show output should contain the agent name: stdout={out} stderr={err}",
     );
 
-    // Sanity: the on-disk config has the mock URL.
+    // Sanity: the on-disk config carries the v3 soft hints. The
+    // mock URL itself lives in the catalog (seeded by
+    // `DaemonGuard::spawn` via `seed_mock_provider_in_catalog`),
+    // not on the agent config — that was the v1 shape.
     let cfg =
         std::fs::read_to_string(agent_config_path(&cli, agent_name)).expect("read agent config");
     assert!(
-        cfg.contains(&mock_url.trim_end_matches('/').to_string()),
-        "agent config should reference the mock LLM URL: {cfg}",
+        cfg.contains("preferred_provider_id = \"mock-llm\""),
+        "agent config should reference the mock-llm catalog entry: {cfg}",
     );
     assert!(
-        cfg.contains("provider_type = \"openai_compatible\""),
-        "agent config should use openai_compatible provider: {cfg}",
+        cfg.contains("version = \"3.0\""),
+        "agent config should be v3: {cfg}",
     );
 }
 
@@ -254,7 +257,7 @@ fn ext_enable_modifies_agent_whitelist() {
 
     let cli = PekoCli::new();
     let agent_name = "s1_enable_test_agent";
-    write_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
     let scratch = scratch_dir(&cli);
     let skill_dir = write_calculator_skill(&scratch).expect("write skill fixture");
 
@@ -269,7 +272,7 @@ fn ext_enable_modifies_agent_whitelist() {
     assert_ok(&out, &err, &status);
 
     // The agent config has an empty `[extensions] enabled` list
-    // straight from `write_mock_agent`; verify that baseline.
+    // straight from `write_v3_mock_agent`; verify that baseline.
     let cfg = agent_config_path(&cli, agent_name);
     let before = std::fs::read_to_string(&cfg).expect("read agent config");
     assert!(
@@ -319,7 +322,7 @@ fn ext_disable_removes_from_whitelist() {
 
     let cli = PekoCli::new();
     let agent_name = "s1_disable_test_agent";
-    write_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
     let scratch = scratch_dir(&cli);
     let skill_dir = write_calculator_skill(&scratch).expect("write skill fixture");
 
@@ -384,7 +387,7 @@ fn agent_chats_locally_with_keyword() {
 
     let cli = PekoCli::new();
     let agent_name = "s1_chat_agent";
-    write_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -422,7 +425,7 @@ fn agent_chats_with_enabled_extension() {
 
     let cli = PekoCli::new();
     let agent_name = "s1_chat_with_ext_agent";
-    write_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
+    write_v3_mock_agent(cli.home(), agent_name, &mock_url).expect("write mock agent");
     let scratch = scratch_dir(&cli);
     let skill_dir = write_calculator_skill(&scratch).expect("write skill fixture");
 
