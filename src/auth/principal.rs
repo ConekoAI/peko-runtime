@@ -254,30 +254,7 @@ impl FromStr for Principal {
     }
 }
 
-/// Build a `Principal` from a wire-format string with a fallback kind.
-///
-/// This is the defensive parser for legacy data where the kind is
-/// implicit (e.g. a bare `owner_id = "user:abc"` → `Principal::User`).
-/// Tries `Principal::from_str` first; on failure, treats the string as
-/// an id of the supplied kind. An empty string always resolves to
-/// `Principal::User("")` (the legacy "no owner" sentinel).
-#[must_use]
-pub fn principal_from_string(s: &str, default_kind: SubjectKind) -> Principal {
-    if s.is_empty() {
-        return Principal::User(String::new());
-    }
-    if let Ok(p) = Principal::from_str(s) {
-        return p;
-    }
-    match default_kind {
-        SubjectKind::User => Principal::User(s.to_string()),
-        SubjectKind::Agent => Principal::Agent(s.to_string()),
-        SubjectKind::Team => Principal::Team(s.to_string()),
-        SubjectKind::Public => Principal::Public,
-    }
-}
-
-/// Convenience: parse an `owner_id` string as a `Principal::User`
+/// Parse an `owner_id` string as a `Principal::User`
 /// (the legacy default kind for ownership strings).
 ///
 /// Tries `Principal::from_str` first; on failure, treats the string as
@@ -301,7 +278,13 @@ pub fn principal_from_string(s: &str, default_kind: SubjectKind) -> Principal {
 /// explicitly.
 #[must_use]
 pub fn principal_from_string_with_default_user(s: &str) -> Principal {
-    principal_from_string(s, SubjectKind::User)
+    if s.is_empty() {
+        return Principal::User(String::new());
+    }
+    if let Ok(p) = Principal::from_str(s) {
+        return p;
+    }
+    Principal::User(s.to_string())
 }
 
 #[cfg(test)]
