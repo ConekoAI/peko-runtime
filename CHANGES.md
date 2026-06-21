@@ -91,6 +91,15 @@ keeping the lint job advisory are removed:
   `extensions::builtin::BuiltinToolAdapter` delegates to the
   framework helpers (one-way dep: extensions→framework is allowed).
 
+### Misc dead code
+
+- `src/auth/principal.rs::principal_from_string(s, default_kind)` was
+  referenced only by its sibling `principal_from_string_with_default_user`
+  (same file) and one doc comment. Inlined the User-default path
+  (the only path actually used) and deleted the wrapper.
+  `SubjectKind` enum stays — `Principal::kind()` and `SubjectType::kind()`
+  still use it.
+
 ### Documentation aligned
 
 - `PLAN.md` — new file. Full refactor roadmap with the 9-domain target
