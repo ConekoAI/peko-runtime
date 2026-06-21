@@ -11,7 +11,7 @@
 
 Pekobot is a Rust-based multi-agent runtime with a unified extension architecture. It provides:
 
-- **Agent runtime** with turn-based agentic loops (LLM → tool execution → respond)
+- **Agent harness** with turn-based agentic loops (LLM → tool execution → respond)
 - **HTTP API daemon** (default `localhost:11435`) with SSE streaming and WebSocket support
 - **Session management** via durable JSONL files with atomic writes
 - **Built-in tools** (filesystem, process, apply_patch, agent_spawn, cron, etc.)
