@@ -343,9 +343,13 @@ impl AppState {
             cache_dir.clone(),
         );
 
+        // Load the unified credential vault before identity/provider setup.
+        let vault = crate::common::vault::Vault::load(path_resolver.vault())
+            .map_err(|e| anyhow::anyhow!("Failed to load credential vault: {e}"))?;
+
         // ADR-032: Initialize runtime identity, metadata, and registry
         let runtime_identity =
-            crate::runtime::identity::RuntimeIdentity::generate_or_load(&path_resolver)?;
+            crate::runtime::identity::RuntimeIdentity::generate_or_load(&path_resolver, &vault)?;
         let runtime_metadata = crate::runtime::metadata::RuntimeMetadata::load_or_create(
             &path_resolver,
             &runtime_identity.runtime_did,
@@ -378,8 +382,7 @@ impl AppState {
         let catalog = crate::providers::ProviderCatalog::load_or_init(&catalog_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to load provider catalog: {e}"))?;
-        let secrets: Arc<dyn crate::common::secret_store::SecretStore> =
-            Arc::new(crate::common::secret_store::OsKeychainSecretStore::new());
+        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = Arc::new(vault);
         let mut resolver_builder =
             crate::providers::LlmResolver::new(catalog, secrets);
         if std::env::var_os("PEKO_TEST_RESOLVER_BOOTSTRAP").is_some() {
@@ -873,6 +876,11 @@ impl AppState {
         use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
         use tracing::{info, warn};
 
+        let vault_path = self.config_dir.join("vault.enc");
+        let vault = crate::common::vault::Vault::load(vault_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load credential vault for tunnel: {e}"))?;
+        let vault = std::sync::Arc::new(vault);
+
         let cred = match load_pekohub_credential(None)? {
             Some(c) => c,
             None => return Ok(false),
@@ -899,7 +907,7 @@ impl AppState {
         // a warning and skip the registration — the local a2a path
         // still works, and the operator can debug the directory
         // config without losing tunnel connectivity.
-        if let Err(e) = self.install_cross_runtime_a2a_ctx(&cred).await {
+        if let Err(e) = self.install_cross_runtime_a2a_ctx(&cred, &vault).await {
             warn!(
                 "Could not install cross-runtime a2a ctx (peko-runtime#29); \
                  cross-runtime a2a will be unavailable until this is fixed. \
@@ -913,7 +921,7 @@ impl AppState {
 
         let dispatcher_for_handler = dispatcher;
 
-        let mut client = TunnelClient::new_with(cred, max_reconnect_attempts);
+        let mut client = TunnelClient::new_with(cred, max_reconnect_attempts).with_vault(vault);
         client.on_request(move |msg, handle| {
             let dispatcher = dispatcher_for_handler.clone();
             async move {
@@ -1043,6 +1051,7 @@ impl AppState {
     async fn install_cross_runtime_a2a_ctx(
         &self,
         cred: &crate::tunnel::PekoHubCredential,
+        vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<()> {
         use crate::tunnel::CrossRuntimeA2aCtx;
         use base64::engine::general_purpose::STANDARD as BASE64;
@@ -1059,10 +1068,9 @@ impl AppState {
         let directory: Arc<dyn crate::tunnel::AgentDirectory> = Arc::new(directory);
 
         // 2. Build the SigningKey from the credential's stored
-        //    private key. `resolve_private_key` returns the
-        //    base64-encoded raw 32 bytes (resolved from the OS
-        //    keychain if necessary). Decode and construct.
-        let privkey_b64 = cred.resolve_private_key()?;
+        //    private key in the vault. `resolve_private_key` returns the
+        //    base64-encoded raw 32 bytes. Decode and construct.
+        let privkey_b64 = cred.resolve_private_key(vault)?;
         let privkey_bytes = BASE64
             .decode(privkey_b64.trim())
             .map_err(|e| anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}"))?;

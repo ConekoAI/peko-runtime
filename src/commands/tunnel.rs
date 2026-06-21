@@ -27,7 +27,7 @@ pub enum TunnelCommands {
 
     /// Start the tunnel connection to PekoHub
     Start {
-        /// Path to PekoHub credential file (default: ~/.peko/pekohub.toml)
+        /// Path to PekoHub credential file (default: ~/.peko/runtime/pekohub.toml)
         #[arg(short, long)]
         credential: Option<PathBuf>,
     },
@@ -48,8 +48,11 @@ async fn handle_tunnel_setup(
     url: Option<String>,
     api_key: Option<String>,
     _json: bool,
+    paths: &GlobalPaths,
 ) -> anyhow::Result<()> {
     let cred_path = crate::tunnel::PekoHubCredential::default_path();
+    let vault = crate::common::vault::Vault::load(paths.resolver().vault())
+        .context("Failed to load credential vault")?;
 
     // Check if credential already exists
     if cred_path.exists() {
@@ -160,26 +163,16 @@ async fn handle_tunnel_setup(
         }
     }
 
-    // Store the private key in the OS keychain
-    let keychain = crate::identity::keychain::KeychainStorage::new();
-    if keychain.is_available() {
-        keychain
-            .store_key(&runtime_did, &BASE64.encode(private_key_bytes))
-            .context("Failed to store private key in OS keychain")?;
-        println!("   Private key stored securely in OS keychain.");
-    } else {
-        anyhow::bail!(
-            "OS keychain is unavailable. Cannot store the private key securely. \
-             Please ensure a keychain service is running (e.g., gnome-keyring on Linux)."
-        );
-    }
+    // Store the private key in the encrypted vault.
+    vault
+        .set_tunnel_private_key(&runtime_did, &BASE64.encode(private_key_bytes))
+        .context("Failed to store tunnel private key in vault")?;
+    println!("   Private key stored securely in vault.");
 
     // Create credential (no raw private_key)
     let credential = crate::tunnel::PekoHubCredential {
         url: hub_url.clone(),
         runtime_id: runtime_did.clone(),
-        keyring_entry: Some(runtime_did.clone()),
-        private_key: None,
     };
 
     // Save credential to file
@@ -199,12 +192,12 @@ async fn handle_tunnel_setup(
 /// Handle tunnel commands
 pub async fn handle_tunnel(
     cmd: TunnelCommands,
-    _paths: &GlobalPaths,
+    paths: &GlobalPaths,
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
         TunnelCommands::Setup { url, api_key } => {
-            handle_tunnel_setup(url, api_key, json).await
+            handle_tunnel_setup(url, api_key, json, paths).await
         }
         TunnelCommands::Start { credential } => {
             let cred_path = credential.as_deref();
@@ -242,7 +235,9 @@ pub async fn handle_tunnel(
                 println!("   Warning: Chat requests will not be dispatched without the daemon.");
             }
 
-            let mut client = TunnelClient::new(cred);
+            let vault = crate::common::vault::Vault::load(paths.resolver().vault())
+                .context("Failed to load credential vault")?;
+            let mut client = TunnelClient::new(cred).with_vault(std::sync::Arc::new(vault));
             client.on_request(|msg, _handle| async move {
                 tracing::info!("Received tunnel message (no dispatcher): {:?}", msg);
             });

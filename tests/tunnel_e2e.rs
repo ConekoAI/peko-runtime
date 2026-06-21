@@ -332,18 +332,33 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let jwt_token = generate_jwt(user_id as i64, "e2etestuser");
     let auth_header = format!("Bearer {jwt_token}");
 
-    // 5. Write tunnel credentials to the default location (~/.peko/pekohub.toml)
-    // so that start_tunnel() can find them
+    // 5. Write tunnel credentials to the default location (~/.peko/runtime/pekohub.toml)
+    // so that start_tunnel() can find them. The private key lives in the vault
+    // at the AppState's config directory.
     let cred_path = pekobot::tunnel::PekoHubCredential::default_path();
     tokio::fs::create_dir_all(cred_path.parent().unwrap())
         .await
         .unwrap();
 
+    let private_key_b64 = BASE64.encode(signing_key.to_bytes());
+
+    // Store the tunnel private key in the vault at the AppState config dir.
+    let vault_path = workspace_path.join("config").join("vault.enc");
+    tokio::fs::create_dir_all(vault_path.parent().unwrap())
+        .await
+        .unwrap();
+    let vault = pekobot::common::vault::Vault::with_passphrase(
+        &vault_path,
+        &secrecy::SecretString::new("test-tunnel-passphrase".into()),
+    )
+    .expect("create vault for tunnel credential");
+    vault
+        .set_tunnel_private_key(&did, &private_key_b64)
+        .expect("store tunnel private key in vault");
+
     let cred = pekobot::tunnel::PekoHubCredential {
         url: backend.ws_url.clone(),
         runtime_id: did.clone(),
-        keyring_entry: None,
-        private_key: Some(BASE64.encode(signing_key.to_bytes())),
     };
     cred.save_to_file(&cred_path).expect("Failed to save credentials");
 

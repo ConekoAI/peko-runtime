@@ -4,7 +4,6 @@
 //! ensuring consistency in path resolution, configuration handling, etc.
 
 pub mod config_path;
-pub mod credentials_store;
 pub mod identifiers;
 pub mod secret_store;
 pub mod json_utils;
@@ -14,6 +13,7 @@ pub mod registry;
 pub mod services;
 pub mod time;
 pub mod types;
+pub mod vault;
 
 // Re-export commonly used items
 pub use identifiers::{

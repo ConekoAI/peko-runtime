@@ -232,13 +232,27 @@ fn write_pekohub_credential(
     signing_key: &ed25519_dalek::SigningKey,
 ) -> PathBuf {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    use secrecy::SecretString;
+
+    let private_key_b64 = BASE64.encode(signing_key.to_bytes());
+
+    // Store the private key in the encrypted vault.
+    let vault_path = cli.peko_dir().join("vault.enc");
+    let vault = pekobot::common::vault::Vault::with_passphrase(
+        &vault_path,
+        &SecretString::new("test-tunnel-passphrase".into()),
+    )
+    .expect("create vault for tunnel credential");
+    vault
+        .set_tunnel_private_key(did, &private_key_b64)
+        .expect("store tunnel private key in vault");
+
     let cred = pekobot::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
-        keyring_entry: None,
-        private_key: Some(BASE64.encode(signing_key.to_bytes())),
     };
-    let path = cli.peko_dir().join("pekohub.toml");
+    let path = cli.peko_dir().join("runtime").join("pekohub.toml");
+    std::fs::create_dir_all(path.parent().unwrap()).expect("create runtime dir");
     cred.save_to_file(&path).expect("save pekohub.toml");
     path
 }

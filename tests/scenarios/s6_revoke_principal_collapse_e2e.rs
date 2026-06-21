@@ -138,6 +138,7 @@ fn read_team_permissions(cli: &PekoCli, team_name: &str) -> Vec<Permission> {
 #[serial]
 async fn s6_revoke_agent_subject_round_trips_through_ipc() {
     let cli = PekoCli::new();
+    cli.install_ipc_endpoint_env();
     let agent = "s6-agent";
     write_agent_config(&cli, agent);
 
@@ -200,6 +201,7 @@ async fn s6_revoke_agent_subject_round_trips_through_ipc() {
 #[serial]
 async fn s6_revoke_team_subject_round_trips_through_ipc() {
     let cli = PekoCli::new();
+    cli.install_ipc_endpoint_env();
     let team = "s6-team";
     write_team(&cli, team);
 
@@ -258,6 +260,7 @@ async fn s6_revoke_team_subject_round_trips_through_ipc() {
 #[serial]
 async fn s6_legacy_cli_wire_shape_still_accepted() {
     let cli = PekoCli::new();
+    cli.install_ipc_endpoint_env();
     let agent = "s6-agent";
     write_agent_config(&cli, agent);
 
@@ -318,6 +321,7 @@ async fn s6_legacy_cli_wire_shape_still_accepted() {
 #[serial]
 async fn s6_missing_subject_returns_error() {
     let cli = PekoCli::new();
+    cli.install_ipc_endpoint_env();
     let agent = "s6-agent";
     write_agent_config(&cli, agent);
 

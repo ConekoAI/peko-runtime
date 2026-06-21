@@ -19,6 +19,7 @@ use tracing::{debug, error, info, trace, warn};
 use super::backoff::ExponentialBackoff;
 use super::credential::PekoHubCredential;
 use super::protocol::TunnelMessage;
+use crate::common::vault::Vault;
 
 /// Errors that can occur in the tunnel client
 #[derive(Debug, thiserror::Error)]
@@ -136,6 +137,7 @@ pub enum TunnelStatusUpdate {
 pub struct TunnelClient {
     hub_url: String,
     credential: PekoHubCredential,
+    vault: Option<Arc<Vault>>,
     backoff: ExponentialBackoff,
     state: Arc<RwLock<TunnelState>>,
     /// Maximum number of consecutive reconnect attempts before giving up
@@ -165,11 +167,20 @@ impl TunnelClient {
         Self::new_with_options(credential, max_reconnect_attempts)
     }
 
+    /// Attach an explicit vault for resolving the tunnel private key.
+    ///
+    /// When unset, the client loads the vault from the default config directory.
+    pub fn with_vault(mut self, vault: Arc<Vault>) -> Self {
+        self.vault = Some(vault);
+        self
+    }
+
     fn new_with_options(credential: PekoHubCredential, max_reconnect_attempts: u32) -> Self {
         let hub_url = credential.url.clone();
         Self {
             hub_url,
             credential,
+            vault: None,
             backoff: ExponentialBackoff::default_tunnel(),
             state: Arc::new(RwLock::new(TunnelState {
                 heartbeat_seq: 0,
@@ -590,7 +601,7 @@ impl TunnelClient {
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = BASE64.encode(&nonce_bytes);
 
-        let private_key_b64 = self.credential
+        let private_key_b64 = self
             .resolve_private_key()
             .map_err(|e| TunnelError::AuthFailed(format!("Failed to resolve private key: {e}")))?;
 
@@ -623,7 +634,7 @@ impl TunnelClient {
     /// matching how the server verifies it (text-mode
     /// `verifyDidKeySignature(did, nonce, signature)`).
     fn sign_challenge(&self, nonce: &str) -> Result<String, TunnelError> {
-        let private_key_b64 = self.credential
+        let private_key_b64 = self
             .resolve_private_key()
             .map_err(|e| TunnelError::AuthFailed(format!("Failed to resolve private key: {e}")))?;
 
@@ -646,6 +657,14 @@ impl TunnelClient {
     /// Check if the tunnel is currently connected and authenticated
     pub async fn is_ready(&self) -> bool {
         self.state.read().await.ready
+    }
+
+    /// Resolve the tunnel private key, using the explicit vault if attached.
+    fn resolve_private_key(&self) -> Result<String, anyhow::Error> {
+        match &self.vault {
+            Some(vault) => self.credential.resolve_private_key(vault),
+            None => self.credential.resolve_private_key_default(),
+        }
     }
 }
 
@@ -712,8 +731,6 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            keyring_entry: None,
-            private_key: Some(BASE64.encode(&[0u8; 32])),
         };
         let client = TunnelClient::new(cred);
         assert!(!client.is_ready().await);
@@ -731,8 +748,6 @@ mod tests {
         let cred = PekoHubCredential {
             url: "ws://127.0.0.1:1/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            keyring_entry: None,
-            private_key: Some(BASE64.encode(&[0u8; 32])),
         };
         let mut client = TunnelClient::new_with(cred, 2);
 
@@ -781,8 +796,6 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            keyring_entry: None,
-            private_key: Some(BASE64.encode(&[0u8; 32])),
         };
         let client = TunnelClient::new_with(cred, 7);
         assert_eq!(client.max_reconnect_attempts(), 7);

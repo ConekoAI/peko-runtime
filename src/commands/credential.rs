@@ -1,8 +1,9 @@
 //! Credential management commands.
 //!
-//! These commands manage provider API keys, which are stored in the
-//! OS keychain via `crate::common::secret_store`. They replace the
-//! earlier `peko auth set` flow that wrote plaintext JSON.
+//! These commands manage runtime secrets stored in the encrypted vault at
+//! `{config_dir}/vault.enc` (see `crate::common::vault`). Provider API keys
+//! are the most common use case, but the vault also holds registry tokens,
+//! identity private keys, and tunnel private keys.
 //!
 //! Typical flows:
 //!
@@ -18,21 +19,23 @@
 //!
 //! # Remove a key
 //! peko credential delete openai
+//!
+//! # Migrate legacy keychain entries into the vault
+//! peko credential migrate
 //! ```
 
 use crate::commands::GlobalPaths;
 use crate::common::secret_store::{OsKeychainSecretStore, SecretStore};
+use crate::common::vault::Vault;
 use anyhow::{Context, Result};
-use std::sync::Arc;
 
 /// Credential commands
 #[derive(clap::Subcommand)]
 pub enum CredentialCommands {
-    /// Store an API key for a provider in the OS keychain.
+    /// Store an API key for a provider in the vault.
     ///
     /// The key is read from the terminal with hidden echo (or from
-    /// `--key` for scripting). It is never written to disk in
-    /// plaintext.
+    /// `--key` for scripting). It is encrypted at rest inside the vault.
     Set {
         /// Provider id (e.g. `openai`, `anthropic`, `groq`).
         provider: String,
@@ -56,40 +59,44 @@ pub enum CredentialCommands {
         /// Provider id.
         provider: String,
     },
+    /// Migrate legacy provider keys from the OS keychain into the vault.
+    ///
+    /// This reads any keys previously stored by `peko credential set` and
+    /// writes them into the encrypted vault. The original keychain entries
+    /// are left in place as a safety measure; delete them manually once
+    /// you have verified the migration.
+    Migrate,
 }
 
 /// Execute a credential subcommand.
-pub async fn execute(cmd: CredentialCommands, _paths: &GlobalPaths) -> Result<()> {
-    let store: Arc<dyn SecretStore> = Arc::new(OsKeychainSecretStore::new());
+pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()> {
+    let vault = Vault::load(paths.resolver().vault())
+        .with_context(|| "failed to load credential vault")?;
+
     match cmd {
-        CredentialCommands::Set { provider, key } => set_cmd(store.as_ref(), &provider, key).await,
-        CredentialCommands::Delete { provider } => delete_cmd(store.as_ref(), &provider).await,
-        CredentialCommands::List => list_cmd(store.as_ref()).await,
-        CredentialCommands::Test { provider } => test_cmd(store.as_ref(), &provider).await,
+        CredentialCommands::Set { provider, key } => set_cmd(&vault, &provider, key).await,
+        CredentialCommands::Delete { provider } => delete_cmd(&vault, &provider).await,
+        CredentialCommands::List => list_cmd(&vault).await,
+        CredentialCommands::Test { provider } => test_cmd(&vault, &provider).await,
+        CredentialCommands::Migrate => migrate_cmd(&vault).await,
     }
 }
 
-async fn set_cmd(
-    store: &dyn SecretStore,
-    provider: &str,
-    key: Option<String>,
-) -> Result<()> {
+async fn set_cmd(vault: &Vault, provider: &str, key: Option<String>) -> Result<()> {
     let secret_value = match key {
         Some(k) if !k.is_empty() => k,
         _ => prompt_hidden("API key: ")?,
     };
     let secret = secrecy::SecretString::from(secret_value);
-    store.set(provider, &secret).with_context(|| {
-        format!(
-            "failed to store key for '{provider}' in the OS keychain (is a secret service running?)"
-        )
-    })?;
-    println!("Stored key for '{provider}' in the OS keychain.");
+    vault
+        .set_provider_key(provider, &secret)
+        .with_context(|| format!("failed to store key for '{provider}' in vault"))?;
+    println!("Stored key for '{provider}' in the vault.");
     Ok(())
 }
 
-async fn delete_cmd(store: &dyn SecretStore, provider: &str) -> Result<()> {
-    if store.delete(provider)? {
+async fn delete_cmd(vault: &Vault, provider: &str) -> Result<()> {
+    if vault.delete_provider_key(provider)? {
         println!("Removed key for '{provider}'.");
     } else {
         println!("No key stored for '{provider}'.");
@@ -97,13 +104,10 @@ async fn delete_cmd(store: &dyn SecretStore, provider: &str) -> Result<()> {
     Ok(())
 }
 
-async fn list_cmd(store: &dyn SecretStore) -> Result<()> {
-    let accounts = store.list_accounts()?;
+async fn list_cmd(vault: &Vault) -> Result<()> {
+    let accounts = vault.list_providers();
     if accounts.is_empty() {
-        println!(
-            "No keys stored in the OS keychain (or the platform keychain \
-             does not support enumeration)."
-        );
+        println!("No provider API keys stored in the vault.");
         return Ok(());
     }
     println!("Providers with stored keys ({}):", accounts.len());
@@ -113,12 +117,48 @@ async fn list_cmd(store: &dyn SecretStore) -> Result<()> {
     Ok(())
 }
 
-async fn test_cmd(store: &dyn SecretStore, provider: &str) -> Result<()> {
-    match store.test_format(provider)? {
+async fn test_cmd(vault: &Vault, provider: &str) -> Result<()> {
+    match vault.test_provider_key(provider) {
         Some(true) => println!("Stored key for '{provider}' looks well-formed."),
         Some(false) => println!("Stored key for '{provider}' has an unexpected shape."),
         None => println!("No key stored for '{provider}'."),
     }
+    Ok(())
+}
+
+async fn migrate_cmd(vault: &Vault) -> Result<()> {
+    let legacy = OsKeychainSecretStore::new();
+    let accounts = legacy
+        .list_accounts()
+        .with_context(|| "failed to list legacy keychain entries")?;
+
+    if accounts.is_empty() {
+        println!("No legacy keychain entries found to migrate.");
+        return Ok(());
+    }
+
+    let mut migrated = 0;
+    for account in accounts {
+        match legacy.get(&account) {
+            Ok(Some(secret)) => {
+                if vault.get_provider_key(&account).is_some() {
+                    println!("  - '{account}' already exists in vault, skipping");
+                    continue;
+                }
+                vault.set_provider_key(&account, &secret)?;
+                println!("  + Migrated '{account}'");
+                migrated += 1;
+            }
+            Ok(None) => {
+                println!("  - '{account}' not found in keychain, skipping");
+            }
+            Err(e) => {
+                println!("  ! Failed to read '{account}': {e}");
+            }
+        }
+    }
+
+    println!("Migrated {migrated} provider key(s) into the vault.");
     Ok(())
 }
 
