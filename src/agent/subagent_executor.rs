@@ -28,7 +28,8 @@ use crate::extension::async_exec::executor::{
 };
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
-use crate::session::types::{Peer, SpawnCleanupPolicy};
+use crate::auth::principal::Principal;
+use crate::session::types::{ SpawnCleanupPolicy};
 use crate::types::agent::AgentConfig;
 
 /// Channel for announcing completed subagent runs
@@ -247,7 +248,7 @@ impl SubagentExecutor {
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
         // Create spawn session
-        let peer = Peer::Agent(format!("spawn_{}", uuid::Uuid::new_v4().simple()));
+        let peer = Principal::Agent(format!("spawn_{}", uuid::Uuid::new_v4().simple()));
         let spawn_resolved = {
             let mut manager = self.session_manager.write().await;
             manager
@@ -711,8 +712,8 @@ async fn execute_subagent_task(
                 let peer_type = parts.get(peer_idx + 1).unwrap_or(&"agent");
                 let peer_id = parts.get(peer_idx + 2).unwrap_or(&"spawn");
                 let peer = match *peer_type {
-                    "agent" => Peer::Agent(peer_id.to_string()),
-                    _ => Peer::User(peer_id.to_string()),
+                    "agent" => Principal::Agent(peer_id.to_string()),
+                    _ => Principal::User(peer_id.to_string()),
                 };
 
                 let manager = session_manager.read().await;
@@ -917,7 +918,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_cleanup_delete_policy() {
         use crate::common::PathResolver;
-        use crate::session::types::Peer;
+        use crate::auth::principal::Principal;
 
         // Create a session manager with path resolver
         let path_resolver = PathResolver::new();
@@ -928,7 +929,7 @@ mod tests {
         let manager = Arc::new(RwLock::new(manager));
 
         // Create a parent session
-        let parent_peer = Peer::User("parent".to_string());
+        let parent_peer = Principal::User("parent".to_string());
         {
             let mut mgr = manager.write().await;
             let parent_handle = mgr
@@ -948,7 +949,7 @@ mod tests {
             let handle = mgr
                 .create_spawn_overlay(
                     "test_agent",
-                    &Peer::Agent("child".to_string()),
+                    &Principal::Agent("child".to_string()),
                     "test task",
                     false,
                     "agent:test_agent:peer:user:parent",

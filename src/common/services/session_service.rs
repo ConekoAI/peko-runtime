@@ -7,7 +7,7 @@ use crate::common::paths::PathResolver;
 use crate::session::events::SessionEvent;
 use crate::session::metadata_controller::MetadataController;
 use crate::session::sync::SyncSessionStorage;
-use crate::session::types::Peer;
+use crate::auth::principal::Principal;
 use crate::session::SessionEntry;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
@@ -42,7 +42,7 @@ pub struct SessionInfo {
     pub total_output_tokens: usize,
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
-    /// Peer type (`"user"`, `"agent"`, `"team"`, or `"public"`).
+    /// Principal type (`"user"`, `"agent"`, `"team"`, or `"public"`).
     ///
     /// Reflects the `Principal` kind on the session's peer after
     /// ADR-039. For a2a-spawned sessions this is `"agent"` (issue #24).
@@ -50,7 +50,7 @@ pub struct SessionInfo {
     /// populated yet (see struct-level note above).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_type: Option<String>,
-    /// Peer id (bare id, e.g. `"helper"`, not the formatted
+    /// Principal id (bare id, e.g. `"helper"`, not the formatted
     /// `"agent:helper"` form).
     ///
     /// `None` for sessions whose on-disk metadata hasn't been
@@ -221,7 +221,7 @@ impl SessionService {
         &self,
         agent_name: &str,
         team: Option<&str>,
-        peer: &crate::session::types::Peer,
+        peer: &crate::auth::principal::Principal,
     ) -> Result<(Vec<SessionInfo>, Option<String>)> {
         let sessions = self.list_sessions(agent_name, team).await?;
 
@@ -481,7 +481,7 @@ impl SessionService {
             None => {
                 let mut manager =
                     SessionManager::for_cli(self.path_resolver.clone(), agent_name, team, user);
-                let peer = Peer::User(user.to_string());
+                let peer = Principal::User(user.to_string());
                 match manager.get_active_session_id(&peer).await? {
                     Some(id) => Ok(id),
                     None => Err(anyhow::anyhow!(
@@ -503,7 +503,7 @@ impl SessionService {
         user: &str,
     ) -> Result<crate::session::unified::Session> {
         let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
-        let peer = Peer::User(user.to_string());
+        let peer = Principal::User(user.to_string());
         crate::session::unified::Session::open_by_id(
             agent_name,
             session_id,

@@ -3,11 +3,11 @@
 //! Before this module, the runtime had three different ways to model
 //! "who is this?" that disagreed on the universe of subjects:
 //!
-//! - `Peer::{User, Agent}` — no `Team` variant.
+//! - `Principal::{User, Agent}` — no `Team` variant.
 //! - `SubjectType::{User, Team, Public}` — no `Agent` variant.
 //! - `AgentConfig::owner_id: String` — free-form, default `""`.
 //!
-//! `Principal` unifies them into a single value type. `Peer` is now a
+//! `Principal` unifies them into a single value type. `Principal` is now a
 //! type alias for `Principal`, and `SubjectType` is kept as the IPC
 //! wire-side tag.
 //!
@@ -108,20 +108,20 @@ impl Principal {
         matches!(self, Self::User(_) | Self::Agent(_))
     }
 
-    // -- Compatibility shim for the old `Peer` API --
+    // -- Compatibility shim for the old `Principal` API --
     //
-    // These methods mirror `Peer::{id, peer_type, is_user, is_agent}` so
+    // These methods mirror `Principal::{id, peer_type, is_user, is_agent}` so
     // the 25 call sites that used the old enum keep compiling through
-    // the `pub type Peer = Principal;` alias. `peer_type` is kept for
+    // the `pub type Principal = Principal;` alias. `peer_type` is kept for
     // backwards compatibility but the new `kind()` is preferred.
 
-    /// Get the peer's ID string (mirrors `Peer::id`).
+    /// Get the peer's ID string (mirrors `Principal::id`).
     #[must_use]
     pub fn id(&self) -> &str {
         self.subject_id()
     }
 
-    /// Get the peer type as a string (mirrors `Peer::peer_type`).
+    /// Get the peer type as a string (mirrors `Principal::peer_type`).
     ///
     /// Returns `"user" | "agent" | "team" | "public"`. Existing callers
     /// that only inspect `"user"` or `"agent"` are unaffected.
@@ -135,13 +135,13 @@ impl Principal {
         }
     }
 
-    /// Check if this principal is a user (mirrors `Peer::is_user`).
+    /// Check if this principal is a user (mirrors `Principal::is_user`).
     #[must_use]
     pub fn is_user(&self) -> bool {
         matches!(self, Self::User(_))
     }
 
-    /// Check if this principal is an agent (mirrors `Peer::is_agent`).
+    /// Check if this principal is an agent (mirrors `Principal::is_agent`).
     #[must_use]
     pub fn is_agent(&self) -> bool {
         matches!(self, Self::Agent(_))

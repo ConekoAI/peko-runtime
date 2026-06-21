@@ -11,7 +11,7 @@ use crate::portable::{
     validation::{validate_package, ValidationResult},
 };
 use crate::session::key::derive_base_session_key;
-use crate::session::types::Peer;
+use crate::auth::principal::Principal;
 use crate::types::agent::AgentConfig;
 use std::collections::HashMap;
 use std::io::Read;
@@ -724,7 +724,7 @@ impl Unpackager {
         let most_recent = entries.into_iter().max_by_key(|e| e.updated_at);
 
         if let Some(entry) = most_recent {
-            let peer = Peer::User("default".to_string());
+            let peer = Principal::User("default".to_string());
             let peer_key = derive_base_session_key(agent_name, &peer);
             controller
                 .ensure_peer_active(&peer_key, &entry.session_id)

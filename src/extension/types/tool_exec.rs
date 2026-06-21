@@ -86,7 +86,7 @@ pub struct ToolContext {
     pub agent_id: Option<String>,
     /// Session identifier (for reserved parameter injection)
     pub session_id: Option<String>,
-    /// Peer identifier for distributed contexts
+    /// Principal identifier for distributed contexts
     pub peer_id: Option<String>,
     /// Workspace path
     pub workspace: Option<String>,

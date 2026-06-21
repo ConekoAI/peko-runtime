@@ -13,7 +13,7 @@ use crate::session::presentation::{
     render_session_history, render_session_list, render_session_list_json,
     render_session_show_json, render_switch_success,
 };
-use crate::session::types::Peer;
+use crate::auth::principal::Principal;
 use anyhow::Result;
 use clap::Subcommand;
 
@@ -138,7 +138,7 @@ pub async fn handle_session(
                         Some(team),
                         paths.user(),
                     );
-                    let peer = Peer::User(paths.user().to_string());
+                    let peer = Principal::User(paths.user().to_string());
                     let active_session_id =
                         manager.get_active_session_id(&peer).await.ok().flatten();
 
@@ -467,7 +467,7 @@ async fn switch_session(
         .await
         .map_err(|_| anyhow::anyhow!("Session '{session_id}' not found for agent '{agent}'"))?;
 
-    let peer = Peer::User(user.to_string());
+    let peer = Principal::User(user.to_string());
     manager.switch_session(&peer, session_id).await?;
 
     if json {
