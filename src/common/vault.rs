@@ -65,6 +65,12 @@ const NONCE_LENGTH: usize = 12;
 /// AES-256 key length in bytes.
 const KEY_LENGTH: usize = 32;
 
+/// Test-only fallback passphrase used when the OS keychain is unavailable and
+/// `PEKO_MASTER_PASSPHRASE` is not set. This is only compiled into test builds
+/// so that unit tests are self-contained in headless environments.
+#[cfg(test)]
+const TEST_MASTER_PASSPHRASE: &str = "peko-unit-test-passphrase-do-not-use";
+
 /// Argon2id default parameters for passphrase derivation.
 const ARGON2_MEMORY_COST: u32 = 65536; // 64 MB
 const ARGON2_TIME_COST: u32 = 3;
@@ -189,6 +195,44 @@ impl Vault {
         }
 
         Self::create_new(path)
+    }
+
+    /// Load an existing passphrase-protected vault using the provided
+    /// passphrase, bypassing environment-variable lookup.
+    ///
+    /// Returns an error if the vault was created in keychain mode.
+    pub fn load_with_passphrase(
+        path: impl AsRef<Path>,
+        passphrase: &SecretString,
+    ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("failed to read vault: {}", path.display()))?;
+        let envelope: VaultEnvelope = serde_json::from_slice(&bytes)
+            .with_context(|| "failed to parse vault envelope")?;
+
+        if envelope.version != VAULT_VERSION {
+            anyhow::bail!(
+                "unsupported vault version: {} (expected {})",
+                envelope.version,
+                VAULT_VERSION
+            );
+        }
+
+        let salt = envelope
+            .salt
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("vault is not passphrase-protected"))?;
+        let dek = Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?;
+        let plaintext = Self::decrypt(&envelope, &dek)?;
+        let file: VaultFile = serde_json::from_slice(&plaintext)
+            .with_context(|| "failed to parse vault contents")?;
+
+        Ok(Self {
+            path,
+            inner: std::sync::RwLock::new(VaultState { file, dek }),
+            unlock_method: UnlockMethod::Passphrase,
+        })
     }
 
     /// Create a vault in the given directory with the provided master passphrase.
@@ -594,10 +638,7 @@ impl Vault {
 
         let (dek, unlock_method) = if let Some(salt) = envelope.salt.as_deref() {
             // Passphrase mode.
-            let passphrase = std::env::var(MASTER_PASSPHRASE_ENV)
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(|s| SecretString::new(s.into()))
+            let passphrase = Self::passphrase_from_env_or_test_fallback()
                 .ok_or(VaultError::NoPassphrase)?;
             let dek = Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?;
             (dek, UnlockMethod::Passphrase)
@@ -625,10 +666,7 @@ impl Vault {
             Self::store_dek_in_keychain(&dek)?;
             (VaultFile::default(), dek, None, UnlockMethod::Keychain)
         } else {
-            let passphrase = std::env::var(MASTER_PASSPHRASE_ENV)
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(|s| SecretString::new(s.into()))
+            let passphrase = Self::passphrase_from_env_or_test_fallback()
                 .ok_or(VaultError::NoPassphrase)?;
             let (file, dek, salt) = Self::new_file_with_passphrase(&passphrase)?;
             (file, dek, Some(salt), UnlockMethod::Passphrase)
@@ -642,6 +680,28 @@ impl Vault {
         vault.save_envelope(salt.as_deref())?;
         info!("Created new vault at {}", vault.path.display());
         Ok(vault)
+    }
+
+    /// Return the configured master passphrase, if any.
+    ///
+    /// In test builds, falls back to a hardcoded test passphrase so that unit
+    /// tests do not require an OS keychain or environment variable to create a
+    /// vault. Production builds only use `PEKO_MASTER_PASSPHRASE`.
+    fn passphrase_from_env_or_test_fallback() -> Option<SecretString> {
+        std::env::var(MASTER_PASSPHRASE_ENV)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| SecretString::new(s.into()))
+            .or_else(|| {
+                #[cfg(test)]
+                {
+                    Some(SecretString::new(TEST_MASTER_PASSPHRASE.into()))
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            })
     }
 
     fn new_file_with_passphrase(passphrase: &SecretString) -> Result<(VaultFile, Vec<u8>, Vec<u8>)> {
@@ -821,12 +881,14 @@ mod tests {
         let key = vault.get_provider_key("openai").unwrap();
         assert_eq!(key.expose_secret(), "sk-test");
 
-        // Reload from disk.
-        std::env::set_var(MASTER_PASSPHRASE_ENV, "test-passphrase");
-        let reloaded = Vault::load(vault.path()).unwrap();
+        // Reload from disk using the explicit passphrase.
+        let reloaded = Vault::load_with_passphrase(
+            vault.path(),
+            &SecretString::new("test-passphrase".into()),
+        )
+        .unwrap();
         let reloaded_key = reloaded.get_provider_key("openai").unwrap();
         assert_eq!(reloaded_key.expose_secret(), "sk-test");
-        std::env::remove_var(MASTER_PASSPHRASE_ENV);
     }
 
     #[test]
