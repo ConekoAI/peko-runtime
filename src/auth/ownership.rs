@@ -43,64 +43,10 @@ impl Permission {
     }
 }
 
-/// Type tag for a subject in a permission grant. Used on the IPC wire.
-///
-/// After ADR-039, the in-memory representation is a full `Principal`;
-/// `SubjectType` is kept for back-compat with the legacy IPC
-/// `RequestPacket` shape (issue #25). New CLIs emit a single
-/// `subject: Principal` and never touch this enum. Remove in the next
-/// release after the deprecation warning logs show no legacy traffic.
-#[deprecated(
-    since = "TBD",
-    note = "Use `crate::auth::principal::Principal` directly. SubjectType is \
-            wire-only and will be removed in the next release."
-)]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SubjectType {
-    /// A pekohub user or local DID
-    User,
-    /// A peko agent instance (added in ADR-039)
-    Agent,
-    /// A team (all members get the permission)
-    Team,
-    /// Unauthenticated public access
-    Public,
-}
-
-impl SubjectType {
-    /// Convert a `SubjectType` wire tag to the corresponding kind.
-    #[must_use]
-    pub fn kind(self) -> crate::auth::principal::SubjectKind {
-        match self {
-            Self::User => crate::auth::principal::SubjectKind::User,
-            Self::Agent => crate::auth::principal::SubjectKind::Agent,
-            Self::Team => crate::auth::principal::SubjectKind::Team,
-            Self::Public => crate::auth::principal::SubjectKind::Public,
-        }
-    }
-}
-
-/// Build a `Principal` from a `(subject_id, subject_type)` IPC pair.
-///
-/// This is the wire-side bridge used by the legacy
-/// `RequestPacket::resolved_subject` (issue #25). New CLIs should
-/// emit a single `subject: Principal` directly; this helper will be
-/// removed in the next release.
-#[deprecated(
-    since = "TBD",
-    note = "Use `Principal` directly. Kept for one release of back-compat \
-            with the legacy `(subject_id, subject_type)` IPC wire shape."
-)]
-#[must_use]
-pub fn principal_from_wire(subject_id: &str, subject_type: SubjectType) -> Principal {
-    match subject_type {
-        SubjectType::User => Principal::User(subject_id.to_string()),
-        SubjectType::Agent => Principal::Agent(subject_id.to_string()),
-        SubjectType::Team => Principal::Team(subject_id.to_string()),
-        SubjectType::Public => Principal::Public,
-    }
-}
+// `SubjectType` and `principal_from_wire` were removed in issue #30.
+// The IPC wire format now carries a single `subject: Principal` per
+// grant/revoke packet; see `RequestPacket::resolved_subject` for the
+// (now trivial) resolver.
 
 /// A single permission grant on a resource.
 ///
@@ -553,25 +499,7 @@ mod tests {
         assert!(check_permission(&resource, Permission::Chat, &caller).is_err());
     }
 
-    // -- Wire-bridge helper --
-
-    #[test]
-    fn test_principal_from_wire() {
-        assert_eq!(
-            principal_from_wire("user:123", SubjectType::User),
-            Principal::User("user:123".into())
-        );
-        assert_eq!(
-            principal_from_wire("helper", SubjectType::Agent),
-            Principal::Agent("helper".into())
-        );
-        assert_eq!(
-            principal_from_wire("eng", SubjectType::Team),
-            Principal::Team("eng".into())
-        );
-        assert_eq!(
-            principal_from_wire("ignored", SubjectType::Public),
-            Principal::Public
-        );
-    }
+    // -- `principal_from_wire` removed in issue #30; the IPC resolver
+//    no longer needs a wire-side bridge since every grant/revoke
+//    packet carries a `Principal` directly. --
 }
