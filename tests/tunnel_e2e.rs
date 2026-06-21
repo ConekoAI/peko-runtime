@@ -60,47 +60,47 @@ async fn create_test_workspace(
     let agent_dir = agents_dir.join(agent_name);
     tokio::fs::create_dir_all(&agent_dir).await?;
 
-    // Determine provider: use mock LLM if MOCK_LLM_URL is set, otherwise minimax
-    let (provider_type, api_key, default_model, base_url) =
-        if let Ok(mock_llm_url) = std::env::var("MOCK_LLM_URL") {
-            (
-                "openai_compatible",
-                "dummy-key-for-mock-llm".to_string(),
-                "default",
-                Some(mock_llm_url),
-            )
-        } else {
-            let api_key = std::env::var("MINIMAX_API_KEY")
-                .map_err(|_| anyhow::anyhow!("MINIMAX_API_KEY or MOCK_LLM_URL environment variable not set"))?;
-            ("minimax", api_key, "MiniMax-M2.7", None)
-        };
-
-    let base_url_line = base_url
-        .map(|url| format!("base_url = \"{}\"\n", url))
-        .unwrap_or_default();
+    // Determine provider: use mock LLM if MOCK_LLM_URL is set, otherwise minimax.
+    // v3 splits provider config out of the agent: the agent carries only
+    // soft hints (`preferred_provider_id` / `preferred_model_id`), and the
+    // actual base_url + api_key live in the v3 provider catalog at
+    // `~/.peko/providers.toml`. We seed the catalog entry here, then write
+    // a hint-only agent config.
+    //
+    // This mirrors `tests/common/agent.rs::seed_mock_provider_in_catalog`
+    // + `write_v3_mock_agent` used by the cli_subagent integration suite.
+    let preferred_provider_id = if let Ok(mock_llm_url) = std::env::var("MOCK_LLM_URL") {
+        if mock_llm_url.is_empty() {
+            return Err(anyhow::anyhow!("MOCK_LLM_URL is set but empty"));
+        }
+        // Seed the v3 catalog with a `mock-llm` entry so the daemon's
+        // LlmResolver finds it on first lookup. The api_key
+        // `mock-llm-test-key` matches what `PekoCli::cmd` exports as
+        // `MOCK_LLM_API_KEY` under the `PEKO_TEST_RESOLVER_BOOTSTRAP=1`
+        // headless fallback (CI mode).
+        seed_mock_provider_catalog(workspace_dir, &mock_llm_url, "mock-llm-test-key")?;
+        "mock-llm"
+    } else {
+        let api_key = std::env::var("MINIMAX_API_KEY").map_err(|_| {
+            anyhow::anyhow!("MINIMAX_API_KEY or MOCK_LLM_URL environment variable not set")
+        })?;
+        // Seed the v3 catalog with a `minimax` entry pointing at the
+        // production Minimax endpoint. The API key is loaded from the
+        // OS keychain (or, under PEKO_TEST_RESOLVER_BOOTSTRAP=1, the
+        // MINIMAX_API_KEY env var).
+        seed_minimax_catalog_entry(workspace_dir, &api_key)?;
+        "minimax"
+    };
 
     let config_toml = format!(
-        r#"version = "1.0"
+        r#"version = "3.0"
 name = "{agent_name}"
 description = "E2E test agent"
 auto_accept_trusted = false
 default_timeout_seconds = 60
 
-[provider]
-provider_type = "{provider_type}"
-api_key = "{api_key}"
-default_model = "default"
-timeout_seconds = 60
-max_retries = 3
-retry_delay_ms = 1000
-{base_url_line}
-[provider.models.default]
-name = "{default_model}"
-max_tokens = 1024
-temperature = 0.7
-top_p = 1.0
-presence_penalty = 0.0
-frequency_penalty = 0.0
+preferred_provider_id = "{preferred_provider_id}"
+preferred_model_id = "default"
 
 [extensions]
 enabled = []
@@ -130,12 +130,131 @@ granted_by = {{ kind = "user", id = "system" }}
 }
 
 // ---------------------------------------------------------------------------
+// v3 provider-catalog seeders (PR #44: removed inline [provider] block)
+// ---------------------------------------------------------------------------
+
+/// Seed a v3 `mock-llm` catalog entry under `<workspace_dir>/config/`
+/// so the daemon's `LlmResolver` finds it on first lookup. The path
+/// matches `AppState::with_data_dir(workspace_path, ..., config =
+/// { config_dir: workspace_path.join("config"), ... })` — the catalog
+/// resolver reads `<config_dir>/providers.toml`.
+fn seed_mock_provider_catalog(
+    workspace_dir: &std::path::Path,
+    mock_llm_url: &str,
+    api_key: &str,
+) -> anyhow::Result<()> {
+    use pekobot::providers::catalog::{
+        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
+    };
+    use std::collections::BTreeMap;
+
+    let config_dir = workspace_dir.join("config");
+    std::fs::create_dir_all(&config_dir)?;
+    let catalog_path = config_dir.join("providers.toml");
+    let base_url = mock_llm_url.trim_end_matches('/').to_string();
+    let now = chrono::Utc::now();
+    let entry = ProviderCatalogEntry {
+        id: "mock-llm".to_string(),
+        display_name: "mock-llm".to_string(),
+        template_id: None,
+        api_format: ApiFormat::OpenaiCompletions,
+        base_url,
+        default_model_id: "default".to_string(),
+        models: vec![ModelInfo {
+            id: "default".to_string(),
+            display_name: None,
+            context_length: None,
+            max_output_tokens: None,
+            capabilities: vec![],
+        }],
+        headers: BTreeMap::new(),
+        requires_key: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    let mut entries = BTreeMap::new();
+    entries.insert("mock-llm".to_string(), entry);
+    let file = ProviderCatalogFile {
+        version: "3.0".to_string(),
+        entries,
+        default_provider_id: None,
+        default_model_id: None,
+    };
+    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
+    std::fs::write(&catalog_path, toml)?;
+    // The API key is exposed via env in CI; for local runs the OS
+    // keychain holds it. See the env-var fallback in
+    // `LlmResolver::resolve_api_key`.
+    let _ = api_key;
+    Ok(())
+}
+
+/// Seed a v3 `minimax` catalog entry under `<workspace_dir>/config/`
+/// pointing at the production Minimax endpoint.
+fn seed_minimax_catalog_entry(
+    workspace_dir: &std::path::Path,
+    api_key: &str,
+) -> anyhow::Result<()> {
+    use pekobot::providers::catalog::{
+        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
+    };
+    use std::collections::BTreeMap;
+
+    let config_dir = workspace_dir.join("config");
+    std::fs::create_dir_all(&config_dir)?;
+    let catalog_path = config_dir.join("providers.toml");
+    let now = chrono::Utc::now();
+    let entry = ProviderCatalogEntry {
+        id: "minimax".to_string(),
+        display_name: "Minimax".to_string(),
+        template_id: None,
+        api_format: ApiFormat::AnthropicMessages,
+        base_url: "https://api.minimaxi.com/anthropic".to_string(),
+        default_model_id: "MiniMax-M2.7".to_string(),
+        models: vec![ModelInfo {
+            id: "MiniMax-M2.7".to_string(),
+            display_name: None,
+            context_length: None,
+            max_output_tokens: None,
+            capabilities: vec![],
+        }],
+        headers: BTreeMap::new(),
+        requires_key: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    let mut entries = BTreeMap::new();
+    entries.insert("minimax".to_string(), entry);
+    let file = ProviderCatalogFile {
+        version: "3.0".to_string(),
+        entries,
+        default_provider_id: None,
+        default_model_id: None,
+    };
+    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
+    std::fs::write(&catalog_path, toml)?;
+    let _ = api_key;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // E2E Test
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[ignore = "requires PekoHub backend and LLM (MINIMAX_API_KEY or MOCK_LLM_URL)"]
 async fn test_e2e_tunnel_chat_with_llm() {
+    // v3 headless bootstrap: this test builds an in-process AppState that
+    // uses the OS keychain by default. In CI there is no keychain, so when
+    // MOCK_LLM_URL is set we enable the env-var API-key fallback that
+    // `PekoCli::cmd` normally exports for the CLI-based integration suites.
+    if std::env::var_os("MOCK_LLM_URL").is_some() {
+        std::env::set_var("PEKO_TEST_RESOLVER_BOOTSTRAP", "1");
+        std::env::set_var("MOCK_LLM_API_KEY", "mock-llm-test-key");
+    }
+
     // 1. Start PekoHub backend
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
