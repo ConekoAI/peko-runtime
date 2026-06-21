@@ -660,26 +660,41 @@ impl Vault {
     }
 
     fn create_new(path: PathBuf) -> Result<Self> {
-        let keychain = crate::identity::keychain::KeychainStorage::with_service(KEYCHAIN_SERVICE.to_string());
-        let (file, dek, salt, unlock_method) = if keychain.is_available() {
-            let dek = Self::generate_dek();
-            Self::store_dek_in_keychain(&dek)?;
-            (VaultFile::default(), dek, None, UnlockMethod::Keychain)
-        } else {
+        // In test builds, never probe or use the OS keychain. Tests run in
+        // parallel and may be executed headless, so always derive the DEK from
+        // PEKO_MASTER_PASSPHRASE (if set) or the test fallback. This avoids
+        // keychain permission dialogs during local `cargo test` runs and keeps
+        // CI deterministic.
+        #[cfg(test)]
+        {
             let passphrase = Self::passphrase_from_env_or_test_fallback()
-                .ok_or(VaultError::NoPassphrase)?;
-            let (file, dek, salt) = Self::new_file_with_passphrase(&passphrase)?;
-            (file, dek, Some(salt), UnlockMethod::Passphrase)
-        };
+                .expect("test passphrase fallback is always available");
+            return Self::with_passphrase(&path, &passphrase);
+        }
 
-        let vault = Self {
-            path,
-            inner: std::sync::RwLock::new(VaultState { file, dek }),
-            unlock_method,
-        };
-        vault.save_envelope(salt.as_deref())?;
-        info!("Created new vault at {}", vault.path.display());
-        Ok(vault)
+        #[cfg(not(test))]
+        {
+            let keychain = crate::identity::keychain::KeychainStorage::with_service(KEYCHAIN_SERVICE.to_string());
+            let (file, dek, salt, unlock_method) = if keychain.is_available() {
+                let dek = Self::generate_dek();
+                Self::store_dek_in_keychain(&dek)?;
+                (VaultFile::default(), dek, None, UnlockMethod::Keychain)
+            } else {
+                let passphrase = Self::passphrase_from_env_or_test_fallback()
+                    .ok_or(VaultError::NoPassphrase)?;
+                let (file, dek, salt) = Self::new_file_with_passphrase(&passphrase)?;
+                (file, dek, Some(salt), UnlockMethod::Passphrase)
+            };
+
+            let vault = Self {
+                path,
+                inner: std::sync::RwLock::new(VaultState { file, dek }),
+                unlock_method,
+            };
+            vault.save_envelope(salt.as_deref())?;
+            info!("Created new vault at {}", vault.path.display());
+            Ok(vault)
+        }
     }
 
     /// Return the configured master passphrase, if any.

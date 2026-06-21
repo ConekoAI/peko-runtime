@@ -82,6 +82,15 @@ impl PekoCli {
         self.home.path()
     }
 
+    /// Passphrase used for the encrypted vault created for this test.
+    ///
+    /// Subcommands spawned via [`PekoCli::cmd`] already receive this as
+    /// `PEKO_MASTER_PASSPHRASE`. Tests that mutate the vault directly can use
+    /// this value to stay in sync with the CLI environment.
+    pub fn vault_passphrase(&self) -> &str {
+        &self.vault_passphrase
+    }
+
     /// `<HOME>/.peko` — what `default_config_dir()` and the daemon both resolve to.
     pub fn peko_dir(&self) -> PathBuf {
         self.home.path().join(".peko")

@@ -130,13 +130,15 @@ fn write_pekohub_credential(
 
     let private_key_b64 = BASE64.encode(signing_key.to_bytes());
 
-    // Store the private key in the encrypted vault.
+    // Store the private key in the encrypted vault. The vault was already
+    // created by PekoCli with its own passphrase, so load it explicitly
+    // rather than creating a new one with a different passphrase.
     let vault_path = cli.peko_dir().join("vault.enc");
-    let vault = pekobot::common::vault::Vault::with_passphrase(
+    let vault = pekobot::common::vault::Vault::load_with_passphrase(
         &vault_path,
-        &SecretString::new("test-tunnel-passphrase".into()),
+        &SecretString::new(cli.vault_passphrase().into()),
     )
-    .expect("create vault for tunnel credential");
+    .expect("load test vault for tunnel credential");
     vault
         .set_tunnel_private_key(did, &private_key_b64)
         .expect("store tunnel private key in vault");
