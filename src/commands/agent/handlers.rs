@@ -397,9 +397,7 @@ pub async fn handle_agent_permit(
     let packet = crate::ipc::RequestPacket::AgentGrantPermission {
         request_id: 1,
         agent: name.clone(),
-        subject: Some(principal),
-        subject_id: None,
-        subject_type: None,
+        subject: principal,
         permission,
     };
     let response = client.request_response(packet).await?;
@@ -443,9 +441,7 @@ pub async fn handle_agent_revoke(
     let packet = crate::ipc::RequestPacket::AgentRevokePermission {
         request_id: 1,
         agent: name.clone(),
-        subject: Some(principal),
-        subject_id: None,
-        subject_type: None,
+        subject: principal,
         permission,
     };
     let response = client.request_response(packet).await?;

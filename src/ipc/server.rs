@@ -699,7 +699,7 @@ impl IpcServer {
         // `&request.resolved_subject()` from inside the arms — compute
         // it here while `request` is still accessible. The borrow
         // released by the time the match starts (NLL).
-        let pre_resolved_subject: Option<anyhow::Result<crate::auth::principal::Principal>> =
+        let pre_resolved_subject: Option<crate::auth::principal::Principal> =
             match &request {
                 RequestPacket::AgentGrantPermission { .. }
                 | RequestPacket::AgentRevokePermission { .. }
@@ -714,24 +714,14 @@ impl IpcServer {
         /// `Ok(principal)` on success. Defined inside `handle_request`
         /// to avoid threading `sink` through a free-function signature.
         async fn take_resolved_subject(
-            pre_resolved: Option<&anyhow::Result<crate::auth::principal::Principal>>,
-            request_id: u64,
-            sink: &dyn crate::ipc::response_sink::ResponseSink,
+            pre_resolved: Option<&crate::auth::principal::Principal>,
+            _request_id: u64,
+            _sink: &dyn crate::ipc::response_sink::ResponseSink,
         ) -> Result<crate::auth::principal::Principal, ()> {
-            let Some(result) = pre_resolved else {
+            let Some(p) = pre_resolved else {
                 unreachable!("take_resolved_subject called for a non-grant/revoke variant")
             };
-            match result {
-                Ok(p) => Ok(p.clone()),
-                Err(e) => {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("{e}"),
-                    };
-                    let _ = IpcServer::send_sink(sink, response).await;
-                    Err(())
-                }
-            }
+            Ok(p.clone())
         }
 
         match request {

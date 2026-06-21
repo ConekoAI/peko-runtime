@@ -519,9 +519,7 @@ pub async fn handle_team(
             let packet = crate::ipc::RequestPacket::TeamGrantPermission {
                 request_id: 1,
                 team: name.clone(),
-                subject: Some(principal),
-                subject_id: None,
-                subject_type: None,
+                subject: principal,
                 permission,
             };
             let response = ipc_request(packet).await?;
@@ -558,9 +556,7 @@ pub async fn handle_team(
             let packet = crate::ipc::RequestPacket::TeamRevokePermission {
                 request_id: 1,
                 team: name.clone(),
-                subject: Some(principal),
-                subject_id: None,
-                subject_type: None,
+                subject: principal,
                 permission,
             };
             let response = ipc_request(packet).await?;
