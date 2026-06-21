@@ -234,7 +234,8 @@ fn test_revoke_public_sentinel_collision_and_cross_kind_guard() {
     );
 
     // The legacy `"public"` string still folds to `Principal::Public`
-    // (this is the documented edge case from `principal_from_string`).
+    // (this is the documented edge case from
+    // `principal_from_string_with_default_user`).
     // It must NOT match a `Principal::Public` grant when sent as
     // `(subject_id="public", subject_type=User)` — that combination
     // would have cross-kind-guarded out and silently failed pre-#25.
