@@ -45,9 +45,8 @@ pub enum Principal {
 }
 
 impl Default for Principal {
-    /// Default is `Principal::User("")` (the legacy "no owner" sentinel
-    /// used in `runtime/migration.rs:170-171, 234-235`). This is
-    /// required so `#[serde(default)]` on the `owner` field works.
+    /// Default is `Principal::User("")` (the legacy "no owner" sentinel).
+    /// This is required so `#[serde(default)]` on the `owner` field works.
     fn default() -> Self {
         Principal::User(String::new())
     }

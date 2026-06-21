@@ -254,7 +254,7 @@ impl ConfigAuthorityImpl {
     /// `api_key` / `base_url` / `provider_type` when the catalog resolver
     /// is not in use), producing empty stdout from `peko send`. Using a
     /// targeted `toml::Value` edit preserves the legacy block during the
-    /// v1→v3 migration window (see `runtime::migration_v3`).
+    /// v1→v3 migration window.
     pub fn enable_tool_sync(&self, agent_name: &str, tool_name: &str) -> anyhow::Result<()> {
         let config_path = self.config_path(agent_name);
         if !config_path.exists() {

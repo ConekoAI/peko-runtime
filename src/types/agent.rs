@@ -129,8 +129,7 @@ fn default_timeout_seconds_value() -> u64 {
 }
 
 fn default_owner() -> Principal {
-    // Preserve the legacy "no owner" sentinel used in
-    // `src/runtime/migration.rs:170-171, 234-235` and on-disk configs.
+    // Preserve the legacy "no owner" sentinel used in on-disk configs.
     Principal::User(String::new())
 }
 
@@ -225,9 +224,6 @@ pub struct SystemFileConfig {
     /// Custom system files to load
     pub files: Option<Vec<String>>,
 }
-
-/// Deprecated: Use `SystemFileConfig` instead
-pub type BootstrapFileConfig = SystemFileConfig;
 
 fn default_max_chars() -> usize {
     20_000

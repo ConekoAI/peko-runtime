@@ -192,8 +192,6 @@ pub mod auth;
 /// Cron job scheduling
 pub(crate) mod cron;
 
-// / Hook registry and management (Milestone 8 — deprecated, see Issue 001)
-// pub mod hooks; // Removed per Issue 001 — use extensions::core instead
 /// Daemon mode for background execution (internal, exposed for integration tests)
 #[cfg(not(feature = "test-utils"))]
 pub(crate) mod daemon;

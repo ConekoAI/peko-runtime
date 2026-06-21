@@ -44,9 +44,6 @@ impl AsyncReceipt {
     }
 }
 
-/// Status of an async task (re-exported from `async_executor` for convenience)
-pub use crate::extension::async_exec::executor::AsyncTaskStatus;
-
 #[cfg(test)]
 mod tests {
     use super::*;
