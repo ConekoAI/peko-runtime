@@ -152,11 +152,39 @@ src/
 - Tests cover critical paths: extension lifecycle, agent lifecycle, provider operations, session operations, tool operations.
 - The project targets 80%+ test coverage.
 
+### CI tiers (see `.github/workflows/integration.yml`)
+
+The workflow runs a path-aware, six-tier pipeline. Doc-only PRs (only
+`*.md`, `PLAN.md`, `CHANGES.md`, `docs/**`) do **not** trigger CI at all
+(workflow-level `paths` filter). For PRs that do trigger:
+
+| Tier | Trigger | Wall-clock (warm) | Make target |
+|---|---|---|---|
+| `smoke` | `src/**` or `tests/**` changed | < 6 min | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` |
+| `lint` | `src/**` changed (advisory) | < 1 min | `bash scripts/check_module_boundaries.sh` |
+| `unit-linux` | `src/**` or `tests/**` changed | ~3 min | `cargo test --lib` |
+| `unit-windows` | Windows-specific paths or `[windows]` keyword / schedule / manual | ~5 min | `cargo test --lib` |
+| `integration` | `tests/**`, `docker/**`, `Dockerfile*`, or `workflow` changed; or schedule / manual | ~10-15 min | `make docker-up` + `make test-integration` |
+| `integration-llm` | `src/**` or `tests/**` changed AND `[llm]` keyword / schedule / manual | ~5 min extra | `make test-integration-llm` |
+
+### Local quick feedback loop
+
 ```bash
+# Fastest: fmt + clippy + lib tests only (no Docker)
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --lib
+
+# Mock-LLM tier (needs docker compose stack)
+make docker-up
+make test-integration
+make docker-down
+
+# Real-LLM tier (needs MINIMAX_API_KEY + KIMI_API_KEY)
+make test-integration-llm
+
 # Run all tests
 cargo test
-
-# Run tests with all features
 cargo test --all-features
 ```
 
