@@ -431,13 +431,12 @@ impl AgentService {
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
         // Build config with workspace set
-        let owner_principal = request.owner();
         let mut config = build_default_agent_config(name, &request.provider, request.model);
         config.workspace = Some(workspace_dir.clone());
         if let Some(ref host_id) = request.host_runtime_id {
             config.host_runtime_id = host_id.clone();
         }
-        if let Some(owner) = owner_principal {
+        if let Some(owner) = request.owner {
             config.owner = owner;
         }
         let toml = toml::to_string_pretty(&config)?;
@@ -803,7 +802,7 @@ impl AgentService {
     pub async fn transfer_agent_owner(
         &self,
         name: &str,
-        new_owner_id: &str,
+        new_owner: crate::auth::principal::Principal,
         caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
@@ -820,7 +819,7 @@ impl AgentService {
             anyhow::bail!("Permission denied: only the owner can transfer ownership");
         }
 
-        config.owner = crate::auth::principal::principal_from_string_with_default_user(new_owner_id);
+        config.owner = new_owner;
         let updated = toml::to_string_pretty(&config)?;
         tokio::fs::write(&config_path, updated).await?;
         Ok(())

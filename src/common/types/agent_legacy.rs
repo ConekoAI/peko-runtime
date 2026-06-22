@@ -420,7 +420,7 @@ mod tests {
 
     /// v3-cleanup (commit 2.1): the legacy `[provider]` and
     /// `owner_id` fields are gone entirely. The agent TOML carries
-    /// only soft hints and ownership metadata.
+    /// only soft hints and ownership metadata (`owner` as a `Principal`).
     #[test]
     fn test_v3_round_trip_has_no_legacy_fields() {
         let mut config = AgentConfig::default();
@@ -433,9 +433,10 @@ mod tests {
             !toml.contains("[provider]"),
             "[provider] table must NOT be serialized in v3 (PR #43 cleanup): {toml}"
         );
+        // `owner` serializes as a `Principal` inline table (ADR-039).
         assert!(
-            !toml.contains("owner_id"),
-            "owner_id field must NOT be serialized in v3 (PR #43 cleanup): {toml}"
+            toml.contains("owner"),
+            "owner field must be serialized as a Principal in v3 (PR #43 cleanup): {toml}"
         );
         // Soft hints round-trip.
         assert!(toml.contains("preferred_provider_id = \"openai\""));

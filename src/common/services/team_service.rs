@@ -12,7 +12,6 @@
 //! - Team-side: `teams/{team}/members.toml`
 
 use crate::agents::agent_config::AgentConfig;
-use crate::auth::principal::principal_from_string_with_default_user;
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::types::membership::{
@@ -92,7 +91,6 @@ impl TeamService {
             owner: owner
                 .cloned()
                 .unwrap_or_else(|| crate::auth::principal::Principal::User(String::new())),
-            owner_id: None,
             permissions: Vec::new(),
         };
 
@@ -494,7 +492,7 @@ impl TeamService {
     pub async fn transfer_team_owner(
         &self,
         name: &str,
-        new_owner_id: &str,
+        new_owner: crate::auth::principal::Principal,
         caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let team_dir = self.resolver.team_dir(name);
@@ -510,7 +508,7 @@ impl TeamService {
             anyhow::bail!("Permission denied: only the owner can transfer ownership");
         }
 
-        meta.owner = principal_from_string_with_default_user(new_owner_id);
+        meta.owner = new_owner;
         let updated = toml::to_string_pretty(&meta)?;
         tokio::fs::write(&meta_path, updated).await?;
         Ok(())
@@ -1243,7 +1241,6 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         created_at,
         host_runtime_id: String::new(),
         owner: crate::auth::principal::Principal::User(String::new()),
-        owner_id: None,
         permissions: Vec::new(),
     }
 }

@@ -5,7 +5,7 @@
 //!
 //! - `Principal::{User, Agent}` — no `Team` variant.
 //! - `SubjectType::{User, Team, Public}` — no `Agent` variant.
-//! - `AgentConfig::owner_id: String` — free-form, default `""`.
+//! - Free-form ownership strings — default `""`.
 //!
 //! `Principal` unifies them into a single value type. The legacy `SubjectType`
 //! enum and `Peer` type alias were removed in issues #25 and #30; `Principal`
@@ -222,28 +222,23 @@ impl FromStr for Principal {
     }
 }
 
-/// Parse an `owner_id` string as a `Principal::User`
-/// (the legacy default kind for ownership strings).
+/// Parse a CLI ownership string into a `Principal`.
 ///
-/// Tries `Principal::from_str` first; on failure, treats the string as
-/// a `Principal::User` id. An empty string always resolves to
-/// `Principal::User("")` (the legacy "no owner" sentinel).
+/// This is a CLI-level convenience parser: it tries `Principal::from_str`
+/// first and falls back to `Principal::User(s)` for bare strings (the
+/// common case for `peko agent transfer --to alice`). An empty string
+/// resolves to `Principal::User("")` (the "no owner" sentinel).
 ///
-/// **Asymmetric prefix handling (intentional, but worth flagging):**
+/// **Asymmetric prefix handling (intentional):**
 /// - `"user:alice"` → `Principal::User("alice")` (the `user:` prefix is
-///   stripped as a legacy normalization)
+///   stripped)
 /// - `"agent:helper"` / `"team:eng"` / `"public"` → resolved via
-///   `Principal::from_str` (prefix-agnostic — the full string is the
-///   kind:id pair)
-/// - bare `"alice"` → `Principal::User("alice")` (the legacy fallback
-///   when the string has no `:` separator)
+///   `Principal::from_str` (the full string is the kind:id pair)
+/// - bare `"alice"` → `Principal::User("alice")` (fallback when the
+///   string has no `:` separator)
 ///
-/// This means a typo like `owner_id = "use:alice"` silently becomes
-/// `Principal::User("use:alice")` rather than being normalized. That
-/// matches the pre-ADR-039 behavior (the legacy `subject_id` field was
-/// always treated as a user identifier), so the asymmetry is
-/// backward-compatible. New configs should set `owner = { kind, id }`
-/// explicitly.
+/// On-disk configs should set `owner = { kind, id }` directly; this helper
+/// is only for CLI arguments that arrive as plain strings.
 #[must_use]
 pub fn principal_from_string_with_default_user(s: &str) -> Principal {
     if s.is_empty() {

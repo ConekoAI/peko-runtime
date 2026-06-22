@@ -49,9 +49,6 @@ pub struct AgentConfig {
     /// Owner identity for ownership and permission model (ADR-039).
     ///
     /// Canonical form is `owner = { kind, id }` (a `Principal`).
-    /// v1 legacy `owner_id` string support was removed in v3-cleanup
-    /// (commit 2.1): on-disk configs that pre-date ADR-039 must be
-    /// rewritten once via `peko agent update --owner ...`.
     #[serde(default)]
     pub owner: Principal,
     /// Explicit permission grants on this agent (ADR-033)
@@ -89,10 +86,7 @@ pub struct AgentConfig {
 impl AgentConfig {
     /// Resolve the effective `Principal` owner.
     ///
-    /// In v3-cleanup the legacy `owner_id` string was removed (ADR-039
-    /// is canonical). This is now a thin alias for `self.owner.clone()`
-    /// kept for source-compat with callers that previously consulted
-    /// the legacy field.
+    /// Thin alias for `self.owner.clone()`.
     #[must_use]
     pub fn resolved_owner(&self) -> Principal {
         self.owner.clone()

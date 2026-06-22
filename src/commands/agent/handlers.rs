@@ -353,10 +353,12 @@ pub async fn handle_agent_transfer(
     json: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
+    let new_owner_principal =
+        crate::auth::principal::principal_from_string_with_default_user(&new_owner);
     let packet = crate::ipc::RequestPacket::AgentTransferOwner {
         request_id: 1,
         agent: name.clone(),
-        new_owner_id: new_owner.clone(),
+        new_owner: new_owner_principal,
     };
     let response = client.request_response(packet).await?;
     match response {

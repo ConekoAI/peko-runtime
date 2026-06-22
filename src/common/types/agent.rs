@@ -3,7 +3,6 @@
 //! These types represent agent entities and are used by both
 //! CLI commands and API routes for consistent agent data representation.
 
-use crate::auth::principal::Principal;
 use crate::agents::agent_config::AgentConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -58,9 +57,9 @@ pub struct AgentCreateRequest {
     pub force: bool,
     #[serde(default)]
     pub host_runtime_id: Option<String>,
-    /// Owner subject ID (e.g., `local:{runtime_did}`, `user:123`)
+    /// Owner principal (e.g., `Principal::User("local:{runtime_did}")`).
     #[serde(default)]
-    pub owner_id: Option<String>,
+    pub owner: Option<crate::auth::principal::Principal>,
 }
 
 impl AgentCreateRequest {
@@ -72,7 +71,7 @@ impl AgentCreateRequest {
             description: None,
             force: false,
             host_runtime_id: None,
-            owner_id: None,
+            owner: None,
         }
     }
 
@@ -98,18 +97,6 @@ impl AgentCreateRequest {
         self
     }
 
-    /// Resolve the `owner_id` wire string to a `Principal` (ADR-039).
-    ///
-    /// Tries `Principal::from_str` first; on failure, treats the string
-    /// as a `Principal::User` (the legacy default kind). An empty or
-    /// missing value resolves to `Principal::User("")` (the legacy
-    /// "no owner" sentinel).
-    #[must_use]
-    pub fn owner(&self) -> Option<Principal> {
-        self.owner_id
-            .as_deref()
-            .map(crate::auth::principal::principal_from_string_with_default_user)
-    }
 }
 
 /// Agent deletion options

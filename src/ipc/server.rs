@@ -1055,8 +1055,8 @@ impl IpcServer {
                 if request.host_runtime_id.is_none() {
                     request.host_runtime_id = Some(state.runtime_identity().runtime_did.clone());
                 }
-                if request.owner_id.is_none() {
-                    request.owner_id = Some(caller.subject_id());
+                if request.owner.is_none() {
+                    request.owner = Some(caller.subject());
                 }
                 let agent_name = request.name.clone();
                 match service.create_agent(request).await {
@@ -3084,12 +3084,12 @@ impl IpcServer {
             RequestPacket::AgentTransferOwner {
                 request_id,
                 agent,
-                new_owner_id,
+                new_owner,
             } => {
                 let service = state.agent_mgmt_service();
                 let caller_principal = caller.subject();
                 match service
-                    .transfer_agent_owner(&agent, &new_owner_id, &caller_principal)
+                    .transfer_agent_owner(&agent, new_owner, &caller_principal)
                     .await
                 {
                     Ok(()) => {
@@ -3227,14 +3227,14 @@ impl IpcServer {
             RequestPacket::TeamTransferOwner {
                 request_id,
                 team,
-                new_owner_id,
+                new_owner,
             } => {
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
                 let caller_principal = caller.subject();
                 match service
-                    .transfer_team_owner(&team, &new_owner_id, &caller_principal)
+                    .transfer_team_owner(&team, new_owner, &caller_principal)
                     .await
                 {
                     Ok(()) => {

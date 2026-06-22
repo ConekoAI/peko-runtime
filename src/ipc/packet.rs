@@ -532,7 +532,7 @@ pub enum RequestPacket {
     AgentTransferOwner {
         request_id: u64,
         agent: String,
-        new_owner_id: String,
+        new_owner: crate::auth::principal::Principal,
     },
     #[serde(rename = "agent_grant_permission")]
     AgentGrantPermission {
@@ -552,7 +552,7 @@ pub enum RequestPacket {
     TeamTransferOwner {
         request_id: u64,
         team: String,
-        new_owner_id: String,
+        new_owner: crate::auth::principal::Principal,
     },
     #[serde(rename = "team_grant_permission")]
     TeamGrantPermission {
@@ -1887,7 +1887,7 @@ mod tests {
             description: Some("A test agent".to_string()),
             force: false,
             host_runtime_id: None,
-            owner_id: None,
+            owner: None,
         };
         let req = RequestPacket::AgentCreate {
             request_id: 302,
@@ -2162,7 +2162,6 @@ mod tests {
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: String::new(),
                     owner: crate::auth::principal::Principal::User(String::new()),
-                    owner_id: None,
                     permissions: Vec::new(),
                 },
                 agent_count: 0,
@@ -2194,7 +2193,6 @@ mod tests {
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: String::new(),
                     owner: crate::auth::principal::Principal::User(String::new()),
-                    owner_id: None,
                     permissions: Vec::new(),
                 },
                 agent_count: 0,
@@ -3625,7 +3623,6 @@ mod tests {
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: String::new(),
                     owner: crate::auth::principal::Principal::User(String::new()),
-                    owner_id: None,
                     permissions: Vec::new(),
                 },
                 path: std::path::PathBuf::from("/tmp/teams/new-team"),
@@ -3722,7 +3719,6 @@ mod tests {
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: String::new(),
                     owner: crate::auth::principal::Principal::User(String::new()),
-                    owner_id: None,
                     permissions: Vec::new(),
                 },
                 path: std::path::PathBuf::from("/tmp"),

@@ -440,10 +440,11 @@ pub async fn handle_team(
             Ok(())
         }
         TeamCommands::Transfer { name, to } => {
+            let new_owner = crate::auth::principal::principal_from_string_with_default_user(&to);
             let packet = crate::ipc::RequestPacket::TeamTransferOwner {
                 request_id: 1,
                 team: name.clone(),
-                new_owner_id: to.clone(),
+                new_owner,
             };
             let response = ipc_request(packet).await?;
             match response {

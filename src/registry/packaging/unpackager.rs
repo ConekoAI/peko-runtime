@@ -413,7 +413,7 @@ impl Unpackager {
         let mut config: AgentConfig = toml::from_str(config_str)?;
 
         // Update runtime-specific fields. The `host_runtime_id`
-        // and `owner_id` are derived from the .agent file's
+        // and `owner` are derived from the .agent file's
         // `identity/did.json`, but `import_agent` runs with
         // `rotate_keys: true` (see agent_service.rs:782) which
         // generates a fresh DID locally and stores its key in
