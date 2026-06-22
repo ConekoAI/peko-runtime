@@ -263,9 +263,14 @@ impl TunnelDispatcher {
     /// Compute allowed user IDs from an agent's permission grants.
     ///
     /// Filters for `Chat` permission grants where `subject` is a `User`
-    /// principal, returning the bare user id (with `user:` prefix
-    /// stripped if present). Non-User subjects (Agent/Team/Public) are
-    /// filtered out — they cannot be expressed as a hub user_id.
+    /// principal, returning the bare user ids (with `user:` prefix
+    /// stripped if present) as `Some(vec![...])`. Non-User subjects
+    /// (Agent/Team/Public) are filtered out — they cannot be expressed
+    /// as a hub user_id.
+    ///
+    /// An empty vector is returned as `Some(vec![])` rather than `None`
+    /// so that re-announcing an instance clears PekoHub's `allowedUsers`
+    /// when the last user grant is revoked.
     ///
     /// TODO(#16): re-derive from `Principal::User` and surface
     /// `Principal::Agent` subjects to the hub once PekoHub accepts the
@@ -290,11 +295,7 @@ impl TunnelDispatcher {
                 _ => None,
             })
             .collect();
-        if ids.is_empty() {
-            None
-        } else {
-            Some(ids)
-        }
+        Some(ids)
     }
 
     /// Send initial instance announcements for all local agents
@@ -838,13 +839,19 @@ impl TunnelDispatcher {
         self.send_exposure_update(agent_name, exposure).await
     }
 
-    /// Re-push the current exposure for an instance to PekoHub with an
-    /// `allowed_user_ids` list freshly derived from the on-disk agent
-    /// config. Used by the permit/revoke IPC paths (issue #16) so that
-    /// PekoHub's `canChat` ACL and the runtime's defense-in-depth
+    /// Re-push the current allow-list for an instance to PekoHub by
+    /// re-announcing the instance. The `allowed_users` list is freshly
+    /// derived from the on-disk `AgentConfig.permissions`. Used by the
+    /// permit/revoke IPC paths (issue #16) so that PekoHub's `canChat`
+    /// ACL and the runtime's defense-in-depth
     /// `instance_state.allowed_users` cache are kept in sync with the
-    /// local `AgentConfig.permissions` without requiring a daemon
-    /// restart or a new `instance_announce`.
+    /// local config without requiring a daemon restart.
+    ///
+    /// PekoHub ignores runtime-originated `exposure_update` control
+    /// messages (they are hub-to-runtime only), so we use
+    /// `instance_announce` which the hub treats as an upsert and which
+    /// updates both the hub-side allow-list and the runtime's local
+    /// cache.
     ///
     /// No-ops if:
     /// - the agent has no cached `instance_state` (tunnel not yet
@@ -855,7 +862,6 @@ impl TunnelDispatcher {
     ///   agents don't carry an `allowed_users` list, and we must not
     ///   silently flip the exposure as a side effect of a permit
     ///   call).
-    /// - there is no live tunnel handle.
     pub async fn refresh_instance_allowed_users(&self, agent_name: &str) -> anyhow::Result<()> {
         let instance_id = self.instance_id(agent_name);
         let exposure = {
@@ -865,8 +871,8 @@ impl TunnelDispatcher {
                 .get(&instance_id)
                 .map(|s| s.exposure.clone())
         };
-        let exposure = match exposure {
-            Some(e) if e == InstanceExposure::Private => e,
+        match exposure {
+            Some(e) if e == InstanceExposure::Private => {}
             Some(e) => {
                 debug!(
                     "Skipping allowed_users refresh for {}: exposure is {:?}, not Private",
@@ -883,7 +889,7 @@ impl TunnelDispatcher {
                 return Ok(());
             }
         };
-        self.send_exposure_update(agent_name, exposure).await
+        self.announce_single_instance(agent_name).await
     }
 
     /// Build and send an `ExposureUpdate` for the given agent, with

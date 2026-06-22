@@ -5,21 +5,23 @@
 //!
 //! Regression for [ConekoAI/peko-runtime#16][issue-16]: the agent permit
 //! CLI used to write the grant to `~/.peko/agents/<name>/config.toml`
-//! but never pushed a fresh `exposure_update` to PekoHub, so PekoHub's
+//! but never re-announced the instance to PekoHub, so PekoHub's
 //! `canChat` ACL stayed stale until the daemon restarted. The fix
 //! (see `src/ipc/server.rs` `AgentGrantPermission` /
 //! `AgentRevokePermission` handlers, and
 //! `src/tunnel/dispatcher.rs::refresh_instance_allowed_users`) makes
 //! the IPC handler call the dispatcher's `refresh_instance_allowed_users`
-//! after the local config write, which sends an `exposure_update` with
-//! the freshly-derived `allowed_user_ids` to PekoHub. PekoHub's
-//! `handleExposureUpdate` re-broadcasts the change via
-//! `instance_announce`; PekoHub's `canChat` reads the new
-//! `allowedUsers`. PekoHub's `handleExposureUpdate` also updates
-//! PekoHub's instance record; PekoHub's `canChat` (`backend/src/services/instances.ts:339-345`)
+//! after the local config write, which re-announces the instance with
+//! the freshly-derived `allowed_user_ids` to PekoHub. PekoHub treats
+//! `instance_announce` as an upsert, updating `allowedUsers` in its
+//! instance record; PekoHub's `canChat` (`backend/src/services/instances.ts:339-345`)
 //! then sees the new `allowedUsers`. The runtime's defense-in-depth
 //! `instance_state.allowed_users` cache is updated in the same
-//! round-trip via `dispatcher::handle_exposure_update`.
+//! round-trip by `announce_single_instance`.
+//!
+//! (Runtime-originated `exposure_update` messages are hub-to-runtime
+//! only in the current PekoHub tunnel protocol, so we use
+//! `instance_announce` for the runtime-to-hub direction.)
 //!
 //! # What this test asserts
 //!
@@ -101,7 +103,7 @@ preferred_provider_id = "mock-llm"
 preferred_model_id = "default"
 default_timeout_seconds = 60
 host_runtime_id = "{runtime_did}"
-owner_id = "local"
+owner = {{ kind = "user", id = "local" }}
 
 [extensions]
 enabled = []
@@ -392,7 +394,7 @@ async fn permit_revoke_propagates_to_pekohub_within_1s() {
         .expect("instance GET transport failed");
     assert!(resp.status().is_success(), "instance GET non-2xx");
     let instance: serde_json::Value = resp.json().await.unwrap_or_default();
-    let allowed = instance["data"]["allowedUsers"]
+    let allowed = instance["allowedUsers"]
         .as_array()
         .expect("instance.allowedUsers not an array");
     let allowed_ids: Vec<String> = allowed
