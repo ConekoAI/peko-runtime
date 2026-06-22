@@ -1,7 +1,6 @@
 //! Pekobot global configuration
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Global peko configuration
@@ -385,6 +384,7 @@ pub struct ExternalSource {
 /// `PekobotConfig.compaction` keeps this name so existing TOML configs
 /// continue to round-trip. The canonical type lives next to the engine
 /// that consumes it (`engine/compaction_orchestrator`, `session/compaction/*`).
+#[allow(unused_imports)]
 pub use crate::session::compaction::CompactionConfig;
 
 #[cfg(test)]
