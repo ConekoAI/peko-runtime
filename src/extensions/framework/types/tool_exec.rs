@@ -658,17 +658,12 @@ mod tests {
             .await;
 
         if let Some(event) = rx.recv().await {
-            match event {
-                ToolProgressEvent {
-                    progress_percent,
-                    output,
-                    ..
-                } => {
-                    assert_eq!(progress_percent, Some(50));
-                    assert_eq!(output, Some("Half done".to_string()));
-                }
-                _ => panic!("Expected ToolUpdate event"),
-            }
+            assert!(
+                matches!(event.progress_percent, Some(50)),
+                "expected progress_percent=Some(50), got {:?}",
+                event.progress_percent
+            );
+            assert_eq!(event.output, Some("Half done".to_string()));
         } else {
             panic!("No event received");
         }

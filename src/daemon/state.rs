@@ -1383,7 +1383,7 @@ mod tests {
         use crate::extensions::framework::core::init_global_core;
         use crate::extensions::framework::{HookInput, HookPoint};
         use crate::agents::agent_config::AgentConfig;
-        use crate::common::types::provider::{ProviderConfig, ProviderType};
+        
 
         let state = create_test_state().await;
         let global_core = state.tool_runtime.extension_core().clone();

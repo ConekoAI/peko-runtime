@@ -440,8 +440,8 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let mut full_text = String::new();
 
     for line in body_text.lines() {
-        if line.starts_with("data:") {
-            let data = line[5..].trim();
+        if let Some(rest) = line.strip_prefix("data:") {
+            let data = rest.trim();
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
                 if let Some(chunk) = event.get("chunk").and_then(|c| c.as_str()) {
                     chunks.push(chunk.to_string());

@@ -397,7 +397,7 @@ async fn test_registry_client_push_and_pull() {
         .no_proxy()
         .build()
         .unwrap();
-    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, _ns) = create_test_user(&client, &backend.url, "ns").await;
 
     let host = backend.url.strip_prefix("http://").unwrap();
 
@@ -506,7 +506,7 @@ async fn test_registry_client_skips_existing_layers() {
         .no_proxy()
         .build()
         .unwrap();
-    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, _ns) = create_test_user(&client, &backend.url, "ns").await;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let registry = AgentRegistry::new(temp_dir.path());

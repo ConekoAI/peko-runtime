@@ -311,7 +311,7 @@ mod tests {
 
         let join = tokio::spawn(async move {
             registry2
-                .register_and_wait("req-cancel", Duration::from_secs(60))
+                .register_and_wait("req-cancel", Duration::from_mins(1))
                 .await
         });
 

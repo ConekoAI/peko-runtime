@@ -1318,7 +1318,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_creation() {
         use crate::extensions::framework::core::ExtensionCore;
-        use crate::common::types::provider::{ProviderConfig, ProviderType};
+        
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale (Windows-headless
@@ -1346,7 +1346,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_has_session_manager() {
         use crate::extensions::framework::core::ExtensionCore;
-        use crate::common::types::provider::{ProviderConfig, ProviderType};
+        
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1375,7 +1375,7 @@ mod tests {
         use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
 use crate::session::types::{ChannelType};
-        use crate::common::types::provider::{ProviderConfig, ProviderType};
+        
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1409,7 +1409,7 @@ use crate::session::types::{ChannelType};
         use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
 use crate::session::types::{ChannelType};
-        use crate::common::types::provider::{ProviderConfig, ProviderType};
+        
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1441,7 +1441,7 @@ use crate::session::types::{ChannelType};
     async fn test_agent_spawn_session() {
         use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
-        use crate::common::types::provider::{ProviderConfig, ProviderType};
+        
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1493,7 +1493,7 @@ use crate::session::types::{ChannelType};
     #[serial_test::serial(core)]
     async fn test_two_runtimes_same_name_different_did() {
         use crate::extensions::framework::core::ExtensionCore;
-        use crate::common::types::provider::{ProviderConfig, ProviderType};
+        
         use tempfile::TempDir;
 
         // Force the encrypted-file identity fallback (Windows-headless

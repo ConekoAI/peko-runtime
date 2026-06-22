@@ -730,7 +730,7 @@ impl Vault {
         {
             let passphrase = Self::passphrase_from_env_or_test_fallback()
                 .expect("test passphrase fallback is always available");
-            return Self::with_passphrase(&path, &passphrase);
+            Self::with_passphrase(&path, &passphrase)
         }
 
         #[cfg(not(test))]

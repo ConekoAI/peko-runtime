@@ -90,7 +90,7 @@ fn hub_and_llm_urls() -> Option<(String, String)> {
 fn write_agent(cli: &PekoCli, agent_name: &str, mock_llm_url: &str, runtime_did: &str) {
     let agent_dir = cli.peko_dir().join("agents").join(agent_name);
     std::fs::create_dir_all(&agent_dir).expect("create agent dir");
-    let base_url = mock_llm_url.trim_end_matches('/');
+    let _base_url = mock_llm_url.trim_end_matches('/');
     let config_toml = format!(
         r#"version = "3.0"
 name = "{agent_name}"

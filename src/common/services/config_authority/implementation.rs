@@ -556,9 +556,7 @@ cli = true
 
         let updated = update_extensions_enabled(v1_with_provider, |existing| {
             assert!(existing.is_empty());
-            let mut next = Vec::new();
-            next.push("calculator-skill".to_string());
-            Some(next)
+            Some(vec!["calculator-skill".to_string()])
         })
         .expect("update succeeds");
 

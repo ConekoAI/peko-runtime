@@ -529,7 +529,7 @@ mod tests {
         let response = AgentSpawnTool::format_error_response(&depth_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("depth"));
-        assert!(response["error"].as_str().unwrap().contains("4"));
+        assert!(response["error"].as_str().unwrap().contains('4'));
 
         // Test typed concurrent error
         let concurrent_err =

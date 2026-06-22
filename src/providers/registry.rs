@@ -472,46 +472,6 @@ pub fn list_providers() -> Vec<&'static ProviderMetadata> {
     BUILT_IN_PROVIDERS.iter().collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_provider_registry() {
-        let registry = ProviderRegistry::new();
-
-        // Test canonical lookup
-        assert!(registry.has("openai"));
-        assert!(registry.has("anthropic"));
-
-        // Test alias lookup
-        assert!(registry.has("moonshot"));
-        assert!(registry.has("claude"));
-    }
-
-    #[test]
-    fn test_provider_metadata_anthropic_groq() {
-        let registry = ProviderRegistry::new();
-
-        let anthropic = registry.get("anthropic").unwrap();
-        assert_eq!(anthropic.id, "anthropic");
-        assert_eq!(anthropic.api_type, ApiType::AnthropicMessages);
-
-        let groq = registry.get("groq").unwrap();
-        assert_eq!(groq.id, "groq");
-        assert_eq!(groq.api_type, ApiType::OpenAICompletions);
-        assert!(groq.base_url.contains("groq"));
-    }
-
-    #[test]
-    fn test_list_providers_includes_canonical_ids() {
-        let providers = list_providers();
-        assert!(!providers.is_empty());
-        assert!(providers.iter().any(|p| p.id == "openai"));
-        assert!(providers.iter().any(|p| p.id == "anthropic"));
-    }
-}
-
 /// Build an `Arc<Provider>` from a catalog entry plus an API key and
 /// the chosen model.
 ///
@@ -568,4 +528,44 @@ pub fn default_model_for_entry(
     entry: &crate::providers::catalog::ProviderCatalogEntry,
 ) -> &str {
     &entry.default_model_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_provider_registry() {
+        let registry = ProviderRegistry::new();
+
+        // Test canonical lookup
+        assert!(registry.has("openai"));
+        assert!(registry.has("anthropic"));
+
+        // Test alias lookup
+        assert!(registry.has("moonshot"));
+        assert!(registry.has("claude"));
+    }
+
+    #[test]
+    fn test_provider_metadata_anthropic_groq() {
+        let registry = ProviderRegistry::new();
+
+        let anthropic = registry.get("anthropic").unwrap();
+        assert_eq!(anthropic.id, "anthropic");
+        assert_eq!(anthropic.api_type, ApiType::AnthropicMessages);
+
+        let groq = registry.get("groq").unwrap();
+        assert_eq!(groq.id, "groq");
+        assert_eq!(groq.api_type, ApiType::OpenAICompletions);
+        assert!(groq.base_url.contains("groq"));
+    }
+
+    #[test]
+    fn test_list_providers_includes_canonical_ids() {
+        let providers = list_providers();
+        assert!(!providers.is_empty());
+        assert!(providers.iter().any(|p| p.id == "openai"));
+        assert!(providers.iter().any(|p| p.id == "anthropic"));
+    }
 }

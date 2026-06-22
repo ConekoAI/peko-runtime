@@ -127,10 +127,10 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 fn write_provider_agent(
     home: &Path,
     name: &str,
-    provider_type: &str,
-    base_url: &str,
-    default_model: &str,
-    api_key: &str,
+    _provider_type: &str,
+    _base_url: &str,
+    _default_model: &str,
+    _api_key: &str,
 ) -> std::io::Result<()> {
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;

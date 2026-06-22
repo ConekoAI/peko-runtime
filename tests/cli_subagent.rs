@@ -131,7 +131,7 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
 fn write_subagent_agent(
     home: &std::path::Path,
     name: &str,
-    mock_llm_url: &str,
+    _mock_llm_url: &str,
 ) -> std::io::Result<()> {
     use std::path::Path;
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);

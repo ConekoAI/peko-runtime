@@ -56,6 +56,7 @@ fn test_registry_config(host: &str) -> RegistryConfig {
 }
 
 /// Create a test registry config with bearer token auth
+#[allow(dead_code)]
 fn test_registry_config_with_token(host: &str, token: &str) -> RegistryConfig {
     let mut config = RegistryConfig::default();
     config.sources.clear();
@@ -69,6 +70,7 @@ fn test_registry_config_with_token(host: &str, token: &str) -> RegistryConfig {
 }
 
 /// Create a minimal AgentManifest with layers for testing
+#[allow(dead_code)]
 fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
     let mut manifest = AgentManifest::new(name, "1.0.0", "did:pekobot:test");
 
@@ -104,6 +106,7 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
 }
 
 /// Store a RegistryManifest locally so the client can push it
+#[allow(dead_code)]
 async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,

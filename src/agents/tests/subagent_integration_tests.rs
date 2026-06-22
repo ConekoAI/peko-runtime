@@ -470,7 +470,7 @@ async fn test_list_runs_functionality() {
     let all_entries = registry_guard.list_tasks(None);
     let all_runs: Vec<_> = all_entries
         .iter()
-        .filter_map(|e| crate::agents::subagent_types::SubagentRunView::from_entry(e))
+        .filter_map(crate::agents::subagent_types::SubagentRunView::from_entry)
         .collect();
     assert_eq!(all_runs.len(), 3);
 
@@ -696,16 +696,16 @@ async fn test_runs_by_parent_filtering() {
     let registry_guard = registry.read().await;
 
     // Check runs for parent 1
-    let runs1 = registry_guard.list_subagents_for_parent(&parent_key1);
-    assert_eq!(runs1.len(), 2);
-    let ids1: std::collections::HashSet<_> = runs1.iter().map(|e| e.task_id.clone()).collect();
+    let runs_for_parent1 = registry_guard.list_subagents_for_parent(&parent_key1);
+    assert_eq!(runs_for_parent1.len(), 2);
+    let ids1: std::collections::HashSet<_> = runs_for_parent1.iter().map(|e| e.task_id.clone()).collect();
     assert!(ids1.contains(&run1));
     assert!(ids1.contains(&run2));
 
     // Check runs for parent 2
-    let runs2 = registry_guard.list_subagents_for_parent(&parent_key2);
-    assert_eq!(runs2.len(), 1);
-    assert_eq!(runs2[0].task_id, run3);
+    let runs_for_parent2 = registry_guard.list_subagents_for_parent(&parent_key2);
+    assert_eq!(runs_for_parent2.len(), 1);
+    assert_eq!(runs_for_parent2[0].task_id, run3);
 }
 
 #[tokio::test]

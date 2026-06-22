@@ -220,11 +220,11 @@ async fn build_caller(
     // needs an async constructor.
     let service = build_minimal_service().await;
 
-    let tool = A2aSendTool::new(service.clone())
-        .with_caller_did("caller-agent", &caller_agent_did)
-        .with_cross_runtime(ctx);
+    
 
-    tool
+    A2aSendTool::new(service.clone())
+        .with_caller_did("caller-agent", &caller_agent_did)
+        .with_cross_runtime(ctx)
 }
 
 /// Cheaply-construct a `StatelessAgentService` for the test

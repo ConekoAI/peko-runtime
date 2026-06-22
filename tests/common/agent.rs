@@ -47,14 +47,8 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     Ok(())
 }
 
-/// Backward-compat alias used by code that hasn't migrated to the v3
-/// catalog-seeding flow yet. New code should call `write_v3_mock_agent`
-/// + `seed_mock_provider_in_catalog` from `tests/common/harness.rs` (or
-/// its own setup).
-///
 /// (Removed: the v3 rename already happened, so callers should use
 /// `write_v3_mock_agent` directly. The deprecated alias is removed.)
-
 /// Seed a `mock-llm` catalog entry pointing at `mock_llm_url`. The
 /// test harness invokes this before spawning the daemon so the
 /// daemon's `LlmResolver` finds the entry on first lookup.

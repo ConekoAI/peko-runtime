@@ -174,8 +174,8 @@ fn test_headless_store_without_passphrase_fails() {
     let storage = KeyStorage::with_path(temp_dir.path().to_path_buf()).unwrap();
     let result = storage.generate_identity(DIDScope::Local, Some("test"));
     // If keychain is unavailable, this should fail with a clear error
-    if result.is_err() {
-        let err = format!("{}", result.unwrap_err());
+    if let Err(e) = result {
+        let err = format!("{e}");
         assert!(
             err.contains("keychain") || err.contains("passphrase"),
             "Expected keychain/passphrase error, got: {err}"

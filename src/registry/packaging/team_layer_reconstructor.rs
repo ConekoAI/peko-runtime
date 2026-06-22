@@ -242,8 +242,8 @@ include_mcp = false
             .await
             .unwrap();
 
-        for (_, layers) in &decomposed.agent_layers {
-            for (_, layer) in layers {
+        for layers in decomposed.agent_layers.values() {
+            for layer in layers.values() {
                 registry
                     .store_layer(&layer.digest, &layer.bytes)
                     .await
@@ -379,8 +379,8 @@ include_mcp = false
         let decomposed = decompose_team_archive(&files).unwrap();
 
         // Store layers
-        for (_, layers) in &decomposed.agent_layers {
-            for (_, layer) in layers {
+        for layers in decomposed.agent_layers.values() {
+            for layer in layers.values() {
                 registry
                     .store_layer(&layer.digest, &layer.bytes)
                     .await

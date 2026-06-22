@@ -1278,7 +1278,7 @@ mod tests {
             .with_caller_agent_opt(Some("researcher".to_string()));
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
-        let req2 = MessageRequest::new("agent", "hi").with_caller_agent_opt(Some("".to_string()));
+        let req2 = MessageRequest::new("agent", "hi").with_caller_agent_opt(Some(String::new()));
         assert_eq!(req2.caller_agent, None);
 
         let req3 = MessageRequest::new("agent", "hi").with_caller_agent_opt(None);
@@ -1292,7 +1292,7 @@ mod tests {
         assert_eq!(req1.caller_agent, Some("researcher".to_string()));
 
         let req2 = ExecutionRequest::new("agent", "session", "hi")
-            .with_caller_agent_opt(Some("".to_string()));
+            .with_caller_agent_opt(Some(String::new()));
         assert_eq!(req2.caller_agent, None);
 
         let req3 = ExecutionRequest::new("agent", "session", "hi").with_caller_agent_opt(None);
@@ -1318,7 +1318,7 @@ mod tests {
         // We can't directly check the private field, but we can verify
         // the method returns self correctly
         let service_with_timeout =
-            service.with_default_timeout(std::time::Duration::from_secs(120));
+            service.with_default_timeout(std::time::Duration::from_mins(2));
         // Just verify it compiles and returns
         drop(service_with_timeout);
     }

@@ -401,7 +401,7 @@ mod tests {
             config_dir: tmp.path().join("config"),
             data_dir: tmp.path().join("data"),
             enable_isolated_execution: false,
-            maintenance_interval: Duration::from_secs(60),
+            maintenance_interval: Duration::from_mins(1),
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
         };
 

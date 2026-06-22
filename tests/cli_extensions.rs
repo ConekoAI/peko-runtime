@@ -151,7 +151,7 @@ fn write_ext_agent(home: &Path, name: &str, mock_llm_url: &str) -> std::io::Resu
     use std::path::Path;
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
-    let base_url = mock_llm_url.trim_end_matches('/');
+    let _base_url = mock_llm_url.trim_end_matches('/');
     let config_toml = format!(
         r#"version = "3.0"
 name = "{name}"

@@ -1015,7 +1015,7 @@ mod tests {
         let (provider, mock) = mock_provider();
         mock.queue_text("Quick response");
 
-        let mut config = test_agent_config("rt003-agent");
+        let config = test_agent_config("rt003-agent");
         // v3: timeout is no longer on the per-agent `[provider]`
         // block. The agentic loop consults the resolved Provider's
         // own timeout. Default timeout in tests is sufficient.

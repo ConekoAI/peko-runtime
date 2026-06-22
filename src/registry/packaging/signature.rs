@@ -298,7 +298,7 @@ mod tests {
         let pk_bytes = keypair.verifying_key.as_bytes();
         let did = format!(
             "did:peko:local:{}",
-            blake3::hash(pk_bytes).to_hex().to_string()[..16].to_string()
+            &blake3::hash(pk_bytes).to_hex().to_string()[..16]
         );
 
         let manifest_bytes = make_signed_manifest(&keypair, &did);
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn rejects_unsigned_when_not_allowed() {
         let identity = Identity::generate(DIDScope::Local, Some("ns")).unwrap();
-        let mut manifest = AgentManifest::new("u", "1.0.0", &identity.did);
+        let manifest = AgentManifest::new("u", "1.0.0", &identity.did);
         // signatures.manifest is empty by default.
         let manifest_bytes = manifest.to_toml().unwrap().into_bytes();
         let did_bytes = serde_json::to_vec(&identity.document).unwrap();
@@ -339,7 +339,7 @@ mod tests {
         let pk_bytes = keypair.verifying_key.as_bytes();
         let did = format!(
             "did:peko:local:{}",
-            blake3::hash(pk_bytes).to_hex().to_string()[..16].to_string()
+            &blake3::hash(pk_bytes).to_hex().to_string()[..16]
         );
 
         let mut manifest_bytes = make_signed_manifest(&keypair, &did);
@@ -364,7 +364,7 @@ mod tests {
         let pk_bytes = signer.verifying_key.as_bytes();
         let did = format!(
             "did:peko:local:{}",
-            blake3::hash(pk_bytes).to_hex().to_string()[..16].to_string()
+            &blake3::hash(pk_bytes).to_hex().to_string()[..16]
         );
 
         // Manifest is signed by `imposter` but DID doc claims `signer`'s key.

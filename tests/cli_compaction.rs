@@ -87,7 +87,7 @@ fn write_compaction_agent(
 ) -> std::io::Result<()> {
     let agent_dir = home.join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
-    let base_url = mock_llm_url.trim_end_matches('/');
+    let _base_url = mock_llm_url.trim_end_matches('/');
     // v3 agent config: soft hints only (catalog + keychain own the
     // provider wiring). The test harness pre-seeds a `mock-llm`
     // provider in the catalog via `seed_mock_provider_in_catalog`

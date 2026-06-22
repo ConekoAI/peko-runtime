@@ -415,7 +415,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn engine_from_tmp(tmp: &TempDir) -> CronEngine {
-        let scheduler = Arc::new(CronScheduler::new(&tmp.path().join("cron.json")).unwrap());
+        let scheduler = Arc::new(CronScheduler::new(tmp.path().join("cron.json")).unwrap());
         let idle = Arc::new(IdleDetector::new());
         let obs = Arc::new(Observability::new("daemon"));
         CronEngine::new(scheduler, idle, obs, tmp.path().join("data"), false)

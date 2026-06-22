@@ -153,7 +153,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let scheduler = MaintenanceScheduler::new(temp.path().to_path_buf());
 
-        assert_eq!(scheduler.interval, Duration::from_secs(3600));
+        assert_eq!(scheduler.interval, Duration::from_hours(1));
     }
 
     #[tokio::test]
