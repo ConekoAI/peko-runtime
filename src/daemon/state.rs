@@ -18,7 +18,7 @@ use crate::common::services::{
 use crate::extension::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
-use crate::runtime::ToolRuntime;
+use crate::engine::tool_runtime::ToolRuntime;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -109,14 +109,14 @@ pub struct AppState {
     inner: Arc<RwLock<AppStateInner>>,
 
     /// Runtime identity (ADR-032)
-    pub runtime_identity: crate::runtime::identity::RuntimeIdentity,
+    pub runtime_identity: crate::identity::runtime::RuntimeIdentity,
 
     /// Runtime metadata (ADR-032)
-    pub runtime_metadata: crate::runtime::metadata::RuntimeMetadata,
+    pub runtime_metadata: crate::identity::runtime_metadata::RuntimeMetadata,
 
     /// Known runtimes registry (ADR-032)
     pub known_runtimes:
-        std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>>,
+        std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>>,
 
     /// Auth configuration (ADR-034)
     auth_config: crate::auth::config::AuthConfig,
@@ -349,18 +349,18 @@ impl AppState {
 
         // ADR-032: Initialize runtime identity, metadata, and registry
         let runtime_identity =
-            crate::runtime::identity::RuntimeIdentity::generate_or_load(&path_resolver, &vault)?;
-        let runtime_metadata = crate::runtime::metadata::RuntimeMetadata::load_or_create(
+            crate::identity::runtime::RuntimeIdentity::generate_or_load(&path_resolver, &vault)?;
+        let runtime_metadata = crate::identity::runtime_metadata::RuntimeMetadata::load_or_create(
             &path_resolver,
             &runtime_identity.runtime_did,
         )?;
         let mut known_runtimes =
-            crate::runtime::registry::KnownRuntimes::load_or_create(&path_resolver)?;
+            crate::tunnel::known_runtimes::KnownRuntimes::load_or_create(&path_resolver)?;
         known_runtimes.register(
             &runtime_identity.runtime_did,
             &runtime_metadata.display_name,
             None,
-            crate::runtime::registry::TrustLevel::SelfRuntime,
+            crate::tunnel::known_runtimes::TrustLevel::SelfRuntime,
         );
         let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
 
@@ -831,13 +831,13 @@ impl AppState {
 
     /// Get the runtime identity (ADR-032)
     #[must_use]
-    pub fn runtime_identity(&self) -> &crate::runtime::identity::RuntimeIdentity {
+    pub fn runtime_identity(&self) -> &crate::identity::runtime::RuntimeIdentity {
         &self.runtime_identity
     }
 
     /// Get the runtime metadata (ADR-032)
     #[must_use]
-    pub fn runtime_metadata(&self) -> &crate::runtime::metadata::RuntimeMetadata {
+    pub fn runtime_metadata(&self) -> &crate::identity::runtime_metadata::RuntimeMetadata {
         &self.runtime_metadata
     }
 
@@ -845,7 +845,7 @@ impl AppState {
     #[must_use]
     pub fn known_runtimes(
         &self,
-    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>> {
+    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
         &self.known_runtimes
     }
 

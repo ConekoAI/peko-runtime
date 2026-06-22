@@ -11,6 +11,7 @@ pub mod events;
 pub mod execution;
 pub mod input;
 pub mod tool_executor;
+pub mod tool_runtime;
 // Note: SimpleSession merged into Session in src/session/unified.rs
 pub mod state;
 pub mod stream_buffer;
