@@ -501,17 +501,42 @@
 
   Find any `A2aSendTool::new(Arc::new(service))` calls in the test file. They become `A2aSendTool::new(Arc::new(service) as Arc<dyn AgentMessageService>)` or `A2aSendTool::new(Arc::clone(&service_arc) as Arc<dyn AgentMessageService>)` — depends on the local variable. If the local is already an `Arc<StatelessAgentService>`, the coercion is automatic.
 
-- [ ] **Step 4.11: Verify the build is green (temporarily allowing `agents::agent.rs` to fail)**
+- [ ] **Step 4.11: Update `src/agents/agent.rs:138,140` to use the new signature**
 
-  Run: `cargo check --lib 2>&1 | head -50`
-  Expected: `agents::agent.rs:138,140` will fail to compile because `A2aSendTool::new` now takes `Arc<dyn AgentMessageService>` but `agents::agent.rs` is passing `Arc<StatelessAgentService>`. **This is expected and will be fixed in Task 5.** All OTHER files must compile cleanly.
+  The caller must be updated in this task so the commit ends with the build green (per Global Constraints). Find the `A2aSendTool::new(agent_service).with_caller_did(...)` and `A2aSendTool::new(agent_service).with_caller(...)` calls and replace them with the `build_tool` factory. Around line 124-128, where `agent_service` is extracted, coerce the concrete arc into the trait-object type:
+  ```rust
+  let dyn_service: Arc<dyn crate::tunnel::a2a_send_tool::AgentMessageService> =
+      agent_service;
+  let cross_ctx = self.extension_core.services().cross_runtime_a2a_ctx();
+  ```
 
-  If other files fail, fix them per the import-path pattern. The `agents::agent.rs:138,140` failure is NOT a problem in this task.
+  Around line 138-140, replace the match expression that wires `with_caller_did`/`with_caller`/`with_cross_runtime` with:
+  ```rust
+  let tool = crate::tunnel::a2a_send_tool::build_tool(
+      dyn_service,
+      Some(&self.config.name),
+      self.config.agent_did.as_deref(),
+      cross_ctx,
+  );
+  tools.push(tool);
+  ```
 
-- [ ] **Step 4.12: Commit**
+  Delete the now-unused `let mut a2a = match ...` block and the `if let Some(ctx) = cross_ctx { a2a = a2a.with_cross_runtime(ctx); }` block. The factory handles all three wires.
+
+- [ ] **Step 4.12: Verify the build is green**
+
+  Run:
+  ```bash
+  cargo check --lib --tests
+  cargo clippy --all-targets -- -D warnings
+  cargo test --lib
+  ```
+  Expected: all green. If a test fails, fix import-path issues; if the new `build_tool` call fails, fix the coercion in Step 4.11.
+
+- [ ] **Step 4.13: Commit**
 
   ```bash
-  git add src/tunnel/a2a_message_types.rs src/tunnel/mod.rs src/tunnel/a2a_send_tool.rs src/tunnel/dispatcher.rs src/tunnel/a2a_e2e_tests.rs src/ipc/server.rs src/agents/stateless_service.rs
+  git add -A
   git commit -m "refactor(tunnel): introduce AgentMessageService trait + build_tool factory (cycle 5, part 1)
 
   Adds the trait and the factory in tunnel::a2a_send_tool, and moves
@@ -520,8 +545,8 @@
   internal callers compiling.
 
   A2aSendTool::new now takes Arc<dyn AgentMessageService> instead of
-  Arc<StatelessAgentService>. The only production caller (agents/agent.rs)
-  is updated in the follow-up commit.
+  Arc<StatelessAgentService>. agents/agent.rs routes through the
+  build_tool factory so this commit ends green.
 
   Co-Authored-By: Claude <noreply@anthropic.com>"
   ```
@@ -574,26 +599,9 @@
 
   If any change in this step feels like scope creep, switch to Path A and document the deferred cleanup in a follow-up note inside `CHANGES.md`. Do not let the shim removal block this commit.
 
-- [ ] **Step 5.3: Update `src/agents/agent.rs:138,140`**
+- [ ] **Step 5.3: Update `src/agents/agent.rs` (only if a follow-up is needed)**
 
-  Find the `A2aSendTool::new(agent_service).with_caller_did(...)` and `A2aSendTool::new(agent_service).with_caller(...)` calls. Replace with:
-  ```rust
-  // Around line 124-128, where `agent_service` is extracted:
-  let dyn_service: Arc<dyn crate::tunnel::a2a_send_tool::AgentMessageService> =
-      agent_service;
-  let cross_ctx = self.extension_core.services().cross_runtime_a2a_ctx();
-
-  // Around line 138-140, replace the match expression with:
-  let tool = crate::tunnel::a2a_send_tool::build_tool(
-      dyn_service,
-      Some(&self.config.name),
-      self.config.agent_did.as_deref(),
-      cross_ctx,
-  );
-  tools.push(tool);
-  ```
-
-  Delete the now-unused `let mut a2a = match ...` block. Delete the `if let Some(ctx) = cross_ctx { a2a = a2a.with_cross_runtime(ctx); }` block (the factory handles it).
+  Task 4 already routed `agents::agent.rs:138,140` through the `build_tool` factory, so no changes are required in this task unless the trait-impl wiring in Step 5.1 introduces a new import path. Verify with `cargo check --lib --tests` after Step 5.1; if anything fails, fix here.
 
 - [ ] **Step 5.4: Update `src/tunnel/a2a_send_tool.rs` aliases (if Path B was taken in Step 5.2)**
 
