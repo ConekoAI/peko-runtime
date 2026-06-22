@@ -229,8 +229,14 @@ pub struct StatelessAgentService {
 impl crate::tunnel::a2a_send_tool::AgentMessageService for StatelessAgentService {
     async fn execute_message(
         &self,
-        req: MessageRequest,
-    ) -> Result<MessageResult> {
+        req: crate::tunnel::a2a_message_types::A2aMessageRequest,
+    ) -> Result<crate::tunnel::a2a_message_types::A2aMessageResponse> {
+        // The local `MessageRequest`/`MessageResult` aliases (from the
+        // re-export shim added in Task 4) are the same types as
+        // `A2aMessageRequest`/`A2aMessageResponse` — the shim is
+        // `pub use ... as MessageRequest`. The compiler monomorphizes
+        // both signatures to the same call, so we can forward `req`
+        // directly without an `.into()`.
         StatelessAgentService::execute_message(self, req).await
     }
 }
