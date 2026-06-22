@@ -4,8 +4,8 @@
 //! Wire format follows OCI Image Manifest v1.1 spec for interoperability.
 //! The canonical on-disk format remains TOML (`AgentManifest`).
 
-use crate::portable::manifest::Signatures;
-use crate::portable::types::{ExtensionRef, Layer};
+use crate::registry::packaging::manifest::Signatures;
+use crate::registry::packaging::types::{ExtensionRef, Layer};
 use serde::{Deserialize, Serialize};
 
 /// OCI Image Manifest media type
@@ -618,7 +618,7 @@ impl RegistryManifest {
 
     /// Get layer by type
     #[must_use]
-    pub fn get_layer(&self, layer_type: crate::portable::types::LayerType) -> Option<&Layer> {
+    pub fn get_layer(&self, layer_type: crate::registry::packaging::types::LayerType) -> Option<&Layer> {
         self.layers.iter().find(|l| l.layer_type == layer_type)
     }
 }
@@ -626,7 +626,7 @@ impl RegistryManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portable::types::LayerType;
+    use crate::registry::packaging::types::LayerType;
 
     #[test]
     fn test_registry_manifest_oci_serialization() {

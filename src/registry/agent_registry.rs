@@ -1,7 +1,7 @@
 //! Local content-addressable registry for .agent packages
 //!
 //! Stores layers and manifests deduplicated by digest.
-//! Previously lived at `crate::portable::registry` (issue #29).
+//! Previously lived at `crate::registry::packaging::registry` (issue #29).
 //!
 //! Storage layout:
 //! ```text
@@ -16,8 +16,8 @@
 //!     └── my-agent_v1.0       # file contains manifest digest
 //! ```
 
-use crate::portable::manifest::AgentManifest;
-use crate::portable::types::{ImageDigest, LayerType};
+use crate::registry::packaging::manifest::AgentManifest;
+use crate::registry::packaging::types::{ImageDigest, LayerType};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;

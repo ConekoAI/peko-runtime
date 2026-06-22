@@ -3,7 +3,7 @@
 //! These tests verify the full flow: manifest -> adapter -> protocol -> result
 
 use super::*;
-use crate::extension::services::ReservedParamsConfig;
+use crate::extensions::framework::services::ReservedParamsConfig;
 use crate::tools::core::traits::Tool;
 use serde_json::json;
 use tempfile::TempDir;
@@ -197,7 +197,7 @@ for line in sys.stdin:
     tokio::fs::write(&script_path, script).await.unwrap();
 
     // Use ExtensionManager for discovery (legacy discovery module removed)
-    use crate::extension::manager::ExtensionManager;
+    use crate::extensions::framework::manager::ExtensionManager;
     use crate::extensions::BuiltInAdapters;
     let mut manager = ExtensionManager::new();
     for adapter in BuiltInAdapters::new().adapters() {

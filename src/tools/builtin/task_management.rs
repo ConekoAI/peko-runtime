@@ -9,7 +9,7 @@ use serde_json::json;
 #[cfg(test)]
 use std::sync::Arc;
 
-use crate::extension::async_exec::executor::{
+use crate::extensions::framework::async_exec::executor::{
     cancel_task_across_all_registries, find_task_across_all_registries,
     list_all_tasks_across_all_registries, CancelResult, SharedAsyncTaskRegistry, TaskView,
 };
@@ -269,7 +269,7 @@ Returns structured data appropriate to the action."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extension::async_exec::executor::{
+    use crate::extensions::framework::async_exec::executor::{
         AsyncTaskEntry, AsyncTaskStatus, AsyncToolConfig,
     };
 
@@ -293,7 +293,7 @@ mod tests {
         // fixture must start at zero — a leaked sibling registry is not
         // a contract violation we want this test to catch.
         let registry = std::sync::Arc::new(tokio::sync::RwLock::new(
-            crate::extension::async_exec::executor::AsyncTaskRegistry::new(),
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
         ));
         let tool = TaskTool::with_registry(registry);
         let result = tool.execute(json!({"action": "list"})).await.unwrap();
@@ -304,7 +304,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_status_with_registry() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extension::async_exec::executor::AsyncTaskRegistry::new(),
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
         ));
         {
             let mut reg = registry.write().await;
@@ -333,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_list_with_registry_filters() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extension::async_exec::executor::AsyncTaskRegistry::new(),
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
         ));
         {
             let mut reg = registry.write().await;
@@ -386,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_cancel_success() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extension::async_exec::executor::AsyncTaskRegistry::new(),
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
         ));
         {
             let mut reg = registry.write().await;
@@ -414,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_cancel_already_terminal() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::extension::async_exec::executor::AsyncTaskRegistry::new(),
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
         ));
         {
             let mut reg = registry.write().await;

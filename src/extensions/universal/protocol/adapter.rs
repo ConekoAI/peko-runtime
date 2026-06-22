@@ -351,7 +351,7 @@ impl Default for UniversalToolBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extension::services::ReservedParamsConfig;
+    use crate::extensions::framework::services::ReservedParamsConfig;
     use serde_json::json;
 
     #[test]

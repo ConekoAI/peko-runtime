@@ -1,5 +1,6 @@
 //! DID Identity management
 
+pub mod crypto;
 pub mod did;
 pub mod keys;
 pub mod keychain;

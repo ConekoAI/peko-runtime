@@ -13,9 +13,9 @@ use crate::session::compaction::{
     CompactionConfig, CompactionResult,
 };
 use crate::engine::AgenticEvent;
-use crate::extension::core::hook_points::HookPoint;
-use crate::extension::types::{HookInput, HookOutput, HookResult, SessionSnapshot};
-use crate::extension::ExtensionCore;
+use crate::extensions::framework::core::hook_points::HookPoint;
+use crate::extensions::framework::types::{HookInput, HookOutput, HookResult, SessionSnapshot};
+use crate::extensions::framework::ExtensionCore;
 use crate::providers::Provider;
 use crate::session::Session;
 use crate::common::types::message::LlmMessage;

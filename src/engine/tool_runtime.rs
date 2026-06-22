@@ -4,9 +4,9 @@
 //! (and other non-agent contexts) to resolve and execute built-in tools.
 
 use crate::common::paths::PathResolver;
-use crate::extension::core::{ExtensionCore, ExtensionServices};
-use crate::extension::types::{tool_result_from_hook, HookInput};
-use crate::extension::HookPoint;
+use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
+use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
+use crate::extensions::framework::HookPoint;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::tools::{
     CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, TaskTool, Tool,
@@ -272,7 +272,7 @@ impl ToolRuntime {
 
     /// List all registered tools
     #[must_use]
-    pub async fn list_tools(&self) -> Vec<crate::extension::types::ToolMetadata> {
+    pub async fn list_tools(&self) -> Vec<crate::extensions::framework::types::ToolMetadata> {
         self.extension_core.list_tools().await
     }
 

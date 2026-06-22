@@ -2,7 +2,7 @@
 
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
-use crate::extension::core::{global_core, ExtensionCore};
+use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
@@ -189,7 +189,7 @@ impl Agent {
                 self.config.name
             );
             // Use ExtensionManager for unified tool discovery
-            use crate::extension::manager::ExtensionManager;
+            use crate::extensions::framework::manager::ExtensionManager;
             use crate::extensions::BuiltInAdapters;
             let mut manager = ExtensionManager::with_core(self.extension_core.clone());
             for adapter in BuiltInAdapters::new().adapters() {
@@ -495,8 +495,8 @@ pub async fn new_with_session_manager(
         let shutdown_result = self
             .extension_core
             .invoke_hook(
-                crate::extension::core::HookPoint::AgentShutdown,
-                crate::extension::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::AgentShutdown,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await;
         tracing::info!(
@@ -757,8 +757,8 @@ pub async fn new_with_session_manager(
         let init_result = self
             .extension_core
             .invoke_hook(
-                crate::extension::core::HookPoint::AgentInit,
-                crate::extension::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::AgentInit,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await;
         tracing::info!(
@@ -1317,7 +1317,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_creation() {
-        use crate::extension::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use crate::common::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
@@ -1327,7 +1327,7 @@ mod tests {
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        crate::extension::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
@@ -1345,7 +1345,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_has_session_manager() {
-        use crate::extension::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use crate::common::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
@@ -1354,7 +1354,7 @@ mod tests {
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        crate::extension::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-session".to_string(),
@@ -1372,7 +1372,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
-        use crate::extension::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
 use crate::session::types::{ChannelType};
         use crate::common::types::provider::{ProviderConfig, ProviderType};
@@ -1383,7 +1383,7 @@ use crate::session::types::{ChannelType};
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        crate::extension::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-router".to_string(),
@@ -1406,7 +1406,7 @@ use crate::session::types::{ChannelType};
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
-        use crate::extension::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
 use crate::session::types::{ChannelType};
         use crate::common::types::provider::{ProviderConfig, ProviderType};
@@ -1417,7 +1417,7 @@ use crate::session::types::{ChannelType};
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        crate::extension::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-context".to_string(),
@@ -1439,7 +1439,7 @@ use crate::session::types::{ChannelType};
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_spawn_session() {
-        use crate::extension::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
         use crate::common::types::provider::{ProviderConfig, ProviderType};
 
@@ -1449,7 +1449,7 @@ use crate::session::types::{ChannelType};
 
         // Initialize global ExtensionCore for the test
         let core = Arc::new(ExtensionCore::new());
-        crate::extension::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-spawn".to_string(),
@@ -1492,7 +1492,7 @@ use crate::session::types::{ChannelType};
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_two_runtimes_same_name_different_did() {
-        use crate::extension::core::ExtensionCore;
+        use crate::extensions::framework::core::ExtensionCore;
         use crate::common::types::provider::{ProviderConfig, ProviderType};
         use tempfile::TempDir;
 
@@ -1501,7 +1501,7 @@ use crate::session::types::{ChannelType};
         crate::identity::init_test_env();
 
         let core = Arc::new(ExtensionCore::new());
-        crate::extension::core::init_global_core(core);
+        crate::extensions::framework::core::init_global_core(core);
 
         let make_config = |name: &str| AgentConfig {
             name: name.to_string(),

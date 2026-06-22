@@ -55,7 +55,7 @@ pub struct AgenticLoop {
     max_iterations: usize,
     system_prompt: String,
     /// Extension core for skill loading and tool registration.
-    extension_core: Arc<crate::extension::ExtensionCore>,
+    extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     /// Resolved caller identity (pekohub sub, API key id, or `None` for
     /// local CLI invocations). Propagated to `HookInput::ToolCall::caller_id`
     /// on every tool invocation so downstream permission checks and audit
@@ -73,7 +73,7 @@ impl AgenticLoop {
     pub async fn new(
         agent: Arc<Agent>,
         provider: Arc<crate::providers::Provider>,
-        extension_core: Arc<crate::extension::ExtensionCore>,
+        extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
         let system_prompt = SystemPromptService::build(&agent, &extension_core).await;
 
@@ -106,7 +106,7 @@ impl AgenticLoop {
 
     /// Get the extension core
     #[must_use]
-    pub fn extension_core(&self) -> &Arc<crate::extension::ExtensionCore> {
+    pub fn extension_core(&self) -> &Arc<crate::extensions::framework::ExtensionCore> {
         &self.extension_core
     }
 
@@ -824,7 +824,7 @@ impl AgenticLoop {
 mod tests {
     use super::*;
     use crate::agents::Agent;
-    use crate::extension::core::{global_core, init_global_core, ExtensionCore};
+    use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;
     use crate::auth::principal::Principal;

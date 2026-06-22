@@ -8,15 +8,15 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::services::CredentialsService;
-use crate::extension::core::ExtensionCore;
-use crate::extension::manager::packaging::ExtensionPackager;
-use crate::extension::manager::{ExtensionManager, ExtensionStorage};
-use crate::extension::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
-use crate::extension::services::{ConfigScope, ExtensionConfigService};
-use crate::extension::types::{ExtensionId, ExtensionManifest};
+use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::manager::packaging::ExtensionPackager;
+use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
+use crate::extensions::framework::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
+use crate::extensions::framework::services::{ConfigScope, ExtensionConfigService};
+use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::ipc::client_service::DaemonClientService;
 use crate::registry::AgentRegistry;
-use crate::portable::types::{compute_digest, ImageDigest, Layer, LayerType};
+use crate::registry::packaging::types::{compute_digest, ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
@@ -282,7 +282,7 @@ pub async fn handle_ext_command(
     // Get the global ExtensionCore — initialized by main.rs before command dispatch.
     // We extract it once and pass it down to eliminate direct global_core() calls
     // in subcommand handlers.
-    let core = crate::extension::core::global_core().expect("Global ExtensionCore not initialized");
+    let core = crate::extensions::framework::core::global_core().expect("Global ExtensionCore not initialized");
 
     match command {
         // --- IPC commands (thin client) ---
@@ -723,7 +723,7 @@ pub fn prepare_install_path(path: &std::path::Path) -> anyhow::Result<std::path:
         );
         std::fs::create_dir_all(&temp_dir)?;
         let extracted =
-            crate::extension::manager::packaging::ExtensionUnpackager::install(path, &temp_dir)
+            crate::extensions::framework::manager::packaging::ExtensionUnpackager::install(path, &temp_dir)
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
                 })?;
@@ -905,7 +905,7 @@ async fn handle_ext_push(
             let missing: Vec<_> = resolution
                 .missing
                 .iter()
-                .filter(|m| matches!(m, crate::extension::manager::DependencyStatus::Missing { required: true, .. }))
+                .filter(|m| matches!(m, crate::extensions::framework::manager::DependencyStatus::Missing { required: true, .. }))
                 .map(|m| format!("{m:?}"))
                 .collect();
             anyhow::bail!(
@@ -914,8 +914,8 @@ async fn handle_ext_push(
             );
         }
         for dep in &resolution.satisfied {
-            if let crate::extension::manager::DependencyStatus::Satisfied { package, .. } = dep {
-                dep_ids.push(crate::extension::types::ExtensionId::new(package));
+            if let crate::extensions::framework::manager::DependencyStatus::Satisfied { package, .. } = dep {
+                dep_ids.push(crate::extensions::framework::types::ExtensionId::new(package));
             }
         }
     }
@@ -1105,7 +1105,7 @@ pub async fn handle_ext_pull_to_temp(
     tokio::fs::write(&temp_path, &data).await?;
 
     // Record the registry source for this extension in local manager
-    let ext_id = crate::extension::types::ExtensionId::new(&manifest.name);
+    let ext_id = crate::extensions::framework::types::ExtensionId::new(&manifest.name);
     if manager.storage_dir().is_some() {
         let _ = manager.storage().write_source(&ext_id, registry_ref);
     }
@@ -1148,7 +1148,7 @@ async fn handle_ext_pull_with_seen(
     paths: &GlobalPaths,
     already_pulled: &mut std::collections::HashSet<String>,
 ) -> anyhow::Result<()> {
-    use crate::extension::manager::{DependencyResolution, DependencyStatus};
+    use crate::extensions::framework::manager::{DependencyResolution, DependencyStatus};
 
     // Prevent infinite recursion: if we've already attempted to pull this ref
     // in the current dependency tree, skip it.

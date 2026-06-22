@@ -14,7 +14,7 @@
 
 pub mod traits;
 
-pub use crate::extension::types::{
+pub use crate::extensions::framework::types::{
     AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolResult, ToolWithContext,
 };
 pub use traits::Tool;

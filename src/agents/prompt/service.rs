@@ -4,7 +4,7 @@
 //! keeping prompt-layer concerns out of the engine.
 
 use crate::agents::Agent;
-use crate::extension::ExtensionCore;
+use crate::extensions::framework::ExtensionCore;
 use crate::extensions::skill::{register_skills_with_core, SkillAdapter};
 use crate::agents::prompt::{PromptMode, SystemPromptBuilder};
 use std::path::PathBuf;

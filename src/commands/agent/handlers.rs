@@ -11,9 +11,9 @@ use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::ConfigAuthority;
 use crate::common::services::CredentialsService;
 use crate::common::types::agent::AgentImportOptions;
-use crate::portable::manifest::{AgentLayers, AgentManifest};
+use crate::registry::packaging::manifest::{AgentLayers, AgentManifest};
 use crate::registry::AgentRegistry;
-use crate::portable::types::{ExtensionRef, ImageDigest, Layer, LayerType};
+use crate::registry::packaging::types::{ExtensionRef, ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
@@ -295,7 +295,7 @@ pub async fn handle_agent_import(
 
 /// Handle agent inspect command
 pub async fn handle_agent_inspect(file: String, json: bool) -> anyhow::Result<()> {
-    use crate::portable::get_package_info;
+    use crate::registry::packaging::get_package_info;
 
     if !std::path::Path::new(&file).exists() {
         anyhow::bail!("File not found: {file}");
@@ -1025,7 +1025,7 @@ pub async fn handle_agent_pull(
     // Inspect the temp package to read manifest extensions before import.
     // The registry manifest does not carry extension dependency metadata;
     // it is stored only in the agent manifest TOML inside the .agent package.
-    let (agent_manifest, _) = crate::portable::inspect_agent(&temp_path, None).await?;
+    let (agent_manifest, _) = crate::registry::packaging::inspect_agent(&temp_path, None).await?;
     let extension_refs = agent_manifest.extensions;
 
     // Import using AgentService (properly registers config/identity/workspace/etc.)
@@ -1362,9 +1362,9 @@ async fn ensure_extensions_for_agent(
     agent_name: &str,
     cli_registry: Option<&str>,
 ) -> ExtensionPullResult {
-    use crate::extension::core::global_core;
-    use crate::extension::manager::{ExtensionManager, ExtensionStorage};
-    use crate::extension::types::ExtensionId;
+    use crate::extensions::framework::core::global_core;
+    use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
+    use crate::extensions::framework::types::ExtensionId;
     use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::gateway::GatewayAdapter;
     use crate::extensions::general::GeneralExtensionAdapter;

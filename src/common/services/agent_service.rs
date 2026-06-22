@@ -20,7 +20,7 @@ use crate::common::types::agent::{
 };
 use crate::common::types::membership::AgentMemberships;
 use crate::identity::Identity;
-use crate::portable::{
+use crate::registry::packaging::{
     self, ExportOptions as PortableExportOptions, ExtensionRef, ImportOptions as PortableImportOptions,
 };
 use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
@@ -37,8 +37,8 @@ async fn resolve_extension_refs(
     config: &AgentConfig,
     extensions_dir: &std::path::Path,
 ) -> Vec<ExtensionRef> {
-    use crate::extension::core::global_core;
-    use crate::extension::manager::{ExtensionManager, ExtensionStorage};
+    use crate::extensions::framework::core::global_core;
+    use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
     use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::gateway::GatewayAdapter;
     use crate::extensions::general::GeneralExtensionAdapter;
@@ -129,11 +129,11 @@ async fn build_embedded_extensions(
     extension_refs: &[ExtensionRef],
     extensions_dir: &std::path::Path,
 ) -> HashMap<String, Vec<u8>> {
-    use crate::extension::core::global_core;
-    use crate::extension::manager::{
+    use crate::extensions::framework::core::global_core;
+    use crate::extensions::framework::manager::{
         packaging::ExtensionPackager, ExtensionManager, ExtensionStorage,
     };
-    use crate::extension::types::ExtensionId;
+    use crate::extensions::framework::types::ExtensionId;
     use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::gateway::GatewayAdapter;
     use crate::extensions::general::GeneralExtensionAdapter;
@@ -753,7 +753,7 @@ impl AgentService {
             tools_dir: None,
         };
 
-        let packager = portable::Packager::new(config, identity, None)
+        let packager = crate::registry::packaging::Packager::new(config, identity, None)
             .with_workspace_dir(&workspace_dir)
             .with_sessions_dir(&sessions_dir)
             .with_extension_refs(extension_refs)
@@ -808,7 +808,7 @@ impl AgentService {
         // Phase D3 flow 5 is the first end-to-end test that exercised
         // this code path and surfaced the regression.
         let config_dir = self.resolver.agents_root_dir().parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.resolver.agents_root_dir());
-        let unpackager = portable::Unpackager::new(file_path).with_base_dir(&config_dir);
+        let unpackager = crate::registry::packaging::Unpackager::new(file_path).with_base_dir(&config_dir);
 
         // Import the package
         let result = match unpackager.import(import_opts).await {

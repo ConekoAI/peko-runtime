@@ -4,7 +4,7 @@
 //! Implements OCI-inspired distribution protocol.
 
 use crate::registry::AgentRegistry;
-use crate::portable::types::{ImageDigest, Layer};
+use crate::registry::packaging::types::{ImageDigest, Layer};
 use crate::registry::config::{RegistryConfig, RegistrySource, ResolvedAuth};
 use crate::registry::manifest::RegistryManifest;
 use crate::registry::media_types;
@@ -384,7 +384,7 @@ impl RegistryClient {
         if !manifest.config.digest.is_empty() {
             let config_layer = Layer::new(
                 manifest.config.digest.clone(),
-                crate::portable::types::LayerType::Config,
+                crate::registry::packaging::types::LayerType::Config,
                 manifest.config.size,
             );
             if !self.registry.has_layer(&manifest.config.digest) {
