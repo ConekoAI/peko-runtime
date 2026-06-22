@@ -8,7 +8,7 @@
 //! output formatting.
 
 use crate::commands::GlobalPaths;
-use crate::registry::packaging::types::ExtensionRef;
+use crate::common::types::team::ExtensionRef;
 use anyhow::Result;
 use clap::Subcommand;
 

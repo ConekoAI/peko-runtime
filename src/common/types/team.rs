@@ -3,6 +3,7 @@
 //! These types represent team entities and are used by both
 //! CLI commands and API routes for consistent data representation.
 
+pub use crate::registry::packaging::types::ExtensionRef;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
