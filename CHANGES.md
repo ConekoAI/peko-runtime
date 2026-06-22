@@ -4,6 +4,42 @@ This document summarises the architectural cleanup of `peko-runtime`
 on the `refactor/clippy-cleanup-rust196` branch (PR #62). It accompanies
 `PLAN.md` (full roadmap) and the per-tier CI table in `AGENTS.md`.
 
+## Unreleased
+
+### Cycle breaks (commits 1-6 on `refactor/clippy-cleanup-rust196`)
+
+- **Cycle 4 (`tools::core ↔ extensions::framework`):** Moved 7 tool execution
+  primitives (`ToolContext`, `ToolError`, `ToolResult`, `AbortSignal`,
+  `ToolWithContext`, `ToolProgressEvent`, `ToolContextAdapter`) and the
+  `ContextSource` trait from `extensions/framework/types/` and
+  `extensions/framework/protocols/shared/` into `tools::core/`. The
+  dependency direction is now one-way `extensions::framework → tools::core`.
+  The blanket impl `impl<T: Tool> ToolWithContext for T` is now in place
+  (was previously blocked by the cycle).
+
+- **Cycle 5 (`tunnel ↔ agents`):** Introduced the `AgentMessageService` trait
+  in `tunnel::a2a_send_tool`. Moved `MessageRequest` / `MessageResult` to a
+  new `tunnel::a2a_message_types` module. `agents::StatelessAgentService`
+  implements the trait; `agents::agent.rs` routes `a2a_send` tool
+  construction through a new `build_tool` factory in `tunnel`. Net
+  dependency: `agents → tunnel` (one-way).
+
+- **CI:** `scripts/check_module_boundaries.sh` now scans
+  `src/extensions/framework/` (not the obsolete `src/extension/` path).
+  Rule 3 relaxed to allow `tools::core` imports in framework. New **Rule 5**
+  bans `agents` / `tunnel` / `daemon` imports from
+  `src/extensions/framework/`. (The existing Rule 4 is the commands
+  advisory; it remains in place.)
+
+- **Deferred cleanup (Path A for cycle 5):** The `MessageRequest` /
+  `MessageResult` re-export shim in `agents::stateless_service` is kept
+  for now to minimize churn across ~30 references in
+  `agents/stateless_service.rs`, `tunnel/a2a_send_tool.rs`,
+  `daemon/cron_engine/mod.rs`, and `extensions/gateway/runtime/router.rs`.
+  A follow-up commit should remove the shim and rename the call sites.
+  The cycle is broken at the type-system level regardless of the shim's
+  presence (trait in `tunnel`, impl in `agents`).
+
 ## Scope
 
 This PR delivers **Horizon A plus the bulk of Horizon B** from
