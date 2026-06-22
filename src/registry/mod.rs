@@ -28,6 +28,15 @@ pub mod client;
 pub mod config;
 pub mod manifest;
 
+/// Local packaging for agent/team archives (`.agent` / `.team`).
+///
+/// Relocated from `src/portable/` in issue #31f as part of the
+/// 9-domain reorganization. Owns the manifest format, layer model,
+/// signatures, encrypted exports, and team archive builder/reconstructor.
+/// The remote registry client ([`client`]) consumes the same digest /
+/// media-type conventions as this module's local artifacts.
+pub mod packaging;
+
 pub use agent_registry::AgentRegistry;
 pub use client::{ProgressEvent, RegistryClient, RegistryRef};
 pub use config::{load_from_workspace, AuthConfig, RegistryConfig, RegistrySource, ResolvedAuth};

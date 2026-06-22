@@ -166,7 +166,7 @@ pub struct AgentImportOptions {
     pub name: Option<String>,
     pub force: bool,
     /// Allow importing an unsigned `.agent` package (issue #14).
-    /// See [`crate::portable::ImportOptions::allow_unsigned`].
+    /// See [`crate::registry::packaging::ImportOptions::allow_unsigned`].
     #[serde(default)]
     pub allow_unsigned: bool,
 }

@@ -24,14 +24,14 @@
 //! Skills hook into:
 //! - `PromptSystemSection { section: "skills" }` - Injects available skills into system prompt
 
-use crate::extension::adapters::parsing;
-use crate::extension::adapters::{ExtensionTypeAdapter, ManifestFormat};
+use crate::extensions::framework::adapters::parsing;
+use crate::extensions::framework::adapters::{ExtensionTypeAdapter, ManifestFormat};
 #[cfg(test)]
-use crate::extension::core::ExtensionServices;
-use crate::extension::core::{
+use crate::extensions::framework::core::ExtensionServices;
+use crate::extensions::framework::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
-use crate::extension::types::{ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult};
+use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -174,7 +174,7 @@ impl ExtensionTypeAdapter for SkillAdapter {
         &self,
         path: &Path,
         content: &str,
-    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extensions::framework::ExtensionManifest> {
         // Use shared parsing utility
         let (skill_frontmatter, _): (SkillFrontmatter, _) =
             parsing::parse_yaml_frontmatter_typed(content)
@@ -357,7 +357,7 @@ pub fn load_skills_from_directory(path: &Path) -> Vec<DiscoveredSkill> {
 
 /// Register skills with an `ExtensionCore`
 pub async fn register_skills_with_core(
-    core: &crate::extension::ExtensionCore,
+    core: &crate::extensions::framework::ExtensionCore,
     skills: Vec<DiscoveredSkill>,
 ) -> Result<Vec<HookId>> {
     let mut hook_ids = Vec::new();
@@ -559,7 +559,7 @@ This is the body content.
                 section: "skills".to_string(),
                 priority: 100,
             },
-            crate::extension::HookInput::Unit,
+            crate::extensions::framework::HookInput::Unit,
             Arc::new(ExtensionServices::new()),
         );
 
@@ -584,7 +584,7 @@ This is the body content.
         create_test_skill(temp.path(), "skill1", "First skill");
         create_test_skill(temp.path(), "skill2", "Second skill");
 
-        let core = crate::extension::ExtensionCore::new();
+        let core = crate::extensions::framework::ExtensionCore::new();
         let skills = load_skills_from_directory(temp.path());
 
         assert_eq!(skills.len(), 2);

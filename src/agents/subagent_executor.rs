@@ -21,7 +21,7 @@ use tracing::{error, info, warn};
 use crate::agents::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
-use crate::extension::async_exec::executor::{
+use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
     SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
@@ -298,7 +298,7 @@ impl SubagentExecutor {
         let agent_config_clone = self.agent_config.clone();
         let session_manager_clone = self.session_manager.clone();
         let session_manager_for_cleanup = self.session_manager.clone();
-        let extension_core_clone = crate::extension::core::global_core();
+        let extension_core_clone = crate::extensions::framework::core::global_core();
         let cleanup_policy_clone = config.cleanup;
 
         self.unified_executor
@@ -682,7 +682,7 @@ async fn execute_subagent_task(
     agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
     async_registry: SharedAsyncTaskRegistry,
-    extension_core: Option<Arc<crate::extension::ExtensionCore>>,
+    extension_core: Option<Arc<crate::extensions::framework::ExtensionCore>>,
 ) -> Result<String> {
     info!(
         "Executing subagent task: agent={} session={}",

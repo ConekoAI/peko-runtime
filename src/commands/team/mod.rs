@@ -9,13 +9,13 @@
 use crate::commands::GlobalPaths;
 use crate::common::services::CredentialsService;
 use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
-use crate::extension::core::global_core;
-use crate::extension::manager::{ExtensionManager, ExtensionStorage};
+use crate::extensions::framework::core::global_core;
+use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
 use crate::registry::AgentRegistry;
-use crate::portable::team_layer_builder::{build_team_config_layer, decompose_team_archive};
-use crate::portable::team_layer_reconstructor::reconstruct_team;
-use crate::portable::types::ExtensionRef;
-use crate::portable::types::{ImageDigest, Layer, LayerType};
+use crate::registry::packaging::team_layer_builder::{build_team_config_layer, decompose_team_archive};
+use crate::registry::packaging::team_layer_reconstructor::reconstruct_team;
+use crate::registry::packaging::types::ExtensionRef;
+use crate::registry::packaging::types::{ImageDigest, Layer, LayerType};
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::{RegistryConfig, RegistrySource};
 use crate::registry::manifest::RegistryManifest;
@@ -700,7 +700,7 @@ async fn handle_team_push(
             .get("team/manifest.toml")
             .ok_or_else(|| anyhow::anyhow!("Missing team/manifest.toml in package"))?;
         let manifest_str = std::str::from_utf8(manifest_bytes)?;
-        crate::portable::team_packager::TeamManifest::from_toml(manifest_str)?
+        crate::registry::packaging::team_packager::TeamManifest::from_toml(manifest_str)?
     };
     let team_toml = files.get("team/team.toml").cloned();
     let rebuilt_team_config = build_team_config_layer(
@@ -1158,7 +1158,7 @@ async fn ensure_extensions_for_team(
     team_name: &str,
     cli_registry: Option<&str>,
 ) -> ExtensionPullResult {
-    use crate::extension::types::ExtensionId;
+    use crate::extensions::framework::types::ExtensionId;
 
     let mut result = ExtensionPullResult::default();
 
@@ -1259,8 +1259,8 @@ async fn import_agent_from_files(
     files: &std::collections::HashMap<String, Vec<u8>>,
     team_name: &str,
     team_dir: &std::path::Path,
-) -> anyhow::Result<crate::portable::team_unpackager::AgentImportSummary> {
-    use crate::portable::unpackager::{ImportOptions, Unpackager};
+) -> anyhow::Result<crate::registry::packaging::team_unpackager::AgentImportSummary> {
+    use crate::registry::packaging::unpackager::{ImportOptions, Unpackager};
 
     let unpackager = Unpackager::new("dummy.agent")
         .with_base_dir(team_dir)
@@ -1290,7 +1290,7 @@ async fn import_agent_from_files(
 
     let result = unpackager.import_from_files(files, agent_opts).await?;
 
-    Ok(crate::portable::team_unpackager::AgentImportSummary {
+    Ok(crate::registry::packaging::team_unpackager::AgentImportSummary {
         name: result.name,
         did: result.did,
         keys_rotated: result.keys_rotated,
@@ -1301,8 +1301,8 @@ async fn import_agent_from_files(
 fn build_minimal_manifest(
     name: &str,
     files: &std::collections::HashMap<String, Vec<u8>>,
-) -> anyhow::Result<crate::portable::manifest::AgentManifest> {
-    use crate::portable::manifest::AgentManifest;
+) -> anyhow::Result<crate::registry::packaging::manifest::AgentManifest> {
+    use crate::registry::packaging::manifest::AgentManifest;
 
     let did = if let Some(did_bytes) = files.get("identity/did.json") {
         let did_doc: crate::identity::DIDDocument = serde_json::from_slice(did_bytes)?;

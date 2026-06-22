@@ -8,7 +8,7 @@
 //! - Duration tracking
 
 use crate::engine::AgenticEvent;
-use crate::extension::ExtensionCore;
+use crate::extensions::framework::ExtensionCore;
 use crate::session::Session;
 use crate::common::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;

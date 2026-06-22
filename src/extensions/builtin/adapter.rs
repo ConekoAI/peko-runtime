@@ -11,9 +11,9 @@
 //! BuiltinToolAdapter::register_tool(&core, shell).await?;
 //! ```
 
-use crate::extension::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
-use crate::extension::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
-use crate::extension::HookResult;
+use crate::extensions::framework::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
+use crate::extensions::framework::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
+use crate::extensions::framework::HookResult;
 use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -204,7 +204,7 @@ impl BuiltinToolAdapter {
     /// `BuiltinToolAdapter::register_all()` and are shared across all agents.
     #[must_use]
     pub fn global_tool_names() -> Vec<&'static str> {
-        crate::extension::adapters::builtin_tools::GLOBAL_TOOL_NAMES.to_vec()
+        crate::extensions::framework::adapters::builtin_tools::GLOBAL_TOOL_NAMES.to_vec()
     }
 
     /// Get list of agent-specific built-in tool names.
@@ -214,25 +214,25 @@ impl BuiltinToolAdapter {
     /// per-agent in `Agent::init_builtins_async()`.
     #[must_use]
     pub fn agent_specific_tool_names() -> Vec<&'static str> {
-        crate::extension::adapters::builtin_tools::AGENT_SPECIFIC_TOOL_NAMES.to_vec()
+        crate::extensions::framework::adapters::builtin_tools::AGENT_SPECIFIC_TOOL_NAMES.to_vec()
     }
 
     /// Get list of ALL built-in tool names (global + agent-specific).
     #[must_use]
     pub fn all_tool_names() -> Vec<&'static str> {
-        crate::extension::adapters::builtin_tools::all_tool_names()
+        crate::extensions::framework::adapters::builtin_tools::all_tool_names()
     }
 
     /// Check if a tool name is a built-in tool (global or agent-specific).
     #[must_use]
     pub fn is_builtin(name: &str) -> bool {
-        crate::extension::adapters::builtin_tools::is_builtin_tool(name)
+        crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(name)
     }
 
     /// Check if a tool name is an agent-specific built-in (registered per-agent).
     #[must_use]
     pub fn is_agent_specific_builtin(name: &str) -> bool {
-        crate::extension::adapters::builtin_tools::is_agent_specific_builtin_tool(name)
+        crate::extensions::framework::adapters::builtin_tools::is_agent_specific_builtin_tool(name)
     }
 }
 
@@ -269,7 +269,7 @@ impl HookHandler for BuiltinExecuteHandler {
         let tool_name_for_ctx = tool_name.clone();
 
         let exec_config =
-            crate::extension::services::ToolExecutionConfig::with_schema(self.tool.parameters());
+            crate::extensions::framework::services::ToolExecutionConfig::with_schema(self.tool.parameters());
 
         ctx.services
             .async_router()

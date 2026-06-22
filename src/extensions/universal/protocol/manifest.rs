@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // Re-export shared types for convenience
-pub use crate::extension::services::{ParamSource, ReservedParamsConfig};
+pub use crate::extensions::framework::services::{ParamSource, ReservedParamsConfig};
 
 /// Tool manifest with reserved parameter support
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,13 +115,13 @@ impl Manifest {
 
         let parameters = yaml
             .get("parameters")
-            .map(|v| crate::extension::adapters::parsing::yaml_to_json(v.clone()))
+            .map(|v| crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone()))
             .unwrap_or_else(|| serde_json::json!({"type": "object"}));
 
         let reserved_parameters: ReservedParamsConfig = yaml
             .get("reserved_parameters")
             .and_then(|v| {
-                let json_val = crate::extension::adapters::parsing::yaml_to_json(v.clone());
+                let json_val = crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone());
                 serde_json::from_value(json_val).ok()
             })
             .unwrap_or_default();
@@ -129,7 +129,7 @@ impl Manifest {
         let protocol = yaml
             .get("protocol")
             .and_then(|v| {
-                let json_val = crate::extension::adapters::parsing::yaml_to_json(v.clone());
+                let json_val = crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone());
                 serde_json::from_value(json_val).ok()
             })
             .unwrap_or_default();
@@ -151,7 +151,7 @@ impl Manifest {
     /// preventing confusion and security issues.
     #[must_use]
     pub fn exposed_parameters(&self) -> Value {
-        use crate::extension::protocols::shared::filter_reserved_params;
+        use crate::extensions::framework::protocols::shared::filter_reserved_params;
         use std::collections::HashSet;
 
         let reserved: HashSet<String> = self.reserved_param_names().into_iter().cloned().collect();
@@ -185,7 +185,7 @@ impl Manifest {
     /// 1. All required exposed parameters are present
     /// 2. No reserved parameters are present (they should be injected)
     pub fn validate_params(&self, params: &Value) -> anyhow::Result<()> {
-        use crate::extension::protocols::shared::validation;
+        use crate::extensions::framework::protocols::shared::validation;
         use std::collections::HashSet;
 
         let reserved: HashSet<String> = self.reserved_param_names().into_iter().cloned().collect();

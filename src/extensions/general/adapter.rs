@@ -71,10 +71,10 @@
 //! - `agent.shutdown` - Agent shutdown hook
 //! - `agent.iteration` - Between loop iterations (params: iteration)
 
-use crate::extension::adapters::parsing;
-use crate::extension::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
-use crate::extension::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
-use crate::extension::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
+use crate::extensions::framework::adapters::parsing;
+use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
+use crate::extensions::framework::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
+use crate::extensions::framework::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -212,9 +212,9 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
         GENERAL_EXTENSION_TYPE
     }
 
-    fn manifest_format(&self) -> crate::extension::adapters::ManifestFormat {
+    fn manifest_format(&self) -> crate::extensions::framework::adapters::ManifestFormat {
         // ADR-024: General extensions use pure YAML manifest.yaml with extension_type: "general".
-        crate::extension::adapters::ManifestFormat::Yaml {
+        crate::extensions::framework::adapters::ManifestFormat::Yaml {
             schema: "general".to_string(),
             file_name: "manifest.yaml",
         }
@@ -224,14 +224,14 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
         &self,
         path: &std::path::Path,
         content: &str,
-    ) -> anyhow::Result<crate::extension::ExtensionManifest> {
+    ) -> anyhow::Result<crate::extensions::framework::ExtensionManifest> {
         use anyhow::Context;
 
         let yaml: serde_yaml::Value = serde_yaml::from_str(content)
             .with_context(|| format!("Failed to parse general extension manifest at {path:?}"))?;
 
         let (id, name, version, description) =
-            crate::extension::adapters::parsing::extract_extension_fields(&yaml)?;
+            crate::extensions::framework::adapters::parsing::extract_extension_fields(&yaml)?;
 
         // Validate extension_type if present (absence is allowed for legacy fallback)
         if let Some(ext_type) = yaml.get("extension_type").and_then(|v| v.as_str()) {
@@ -258,7 +258,7 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
         if let Some(hooks) = yaml.get("hooks") {
             manifest.set(
                 "hooks",
-                crate::extension::adapters::parsing::yaml_to_json(hooks.clone()),
+                crate::extensions::framework::adapters::parsing::yaml_to_json(hooks.clone()),
             );
         }
 
@@ -278,7 +278,7 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
                     {
                         manifest.set(
                             key,
-                            crate::extension::adapters::parsing::yaml_to_json(v.clone()),
+                            crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone()),
                         );
                     }
                 }
@@ -382,7 +382,7 @@ impl HookHandlerFactory for GeneralHandlerFactory {
         Box::new(GeneralHandler {
             handler_name: self.handler_name.clone(),
             hook_type: self.hook_type.clone(),
-            extension_id: crate::extension::types::ExtensionId::new(&self.manifest.id.0),
+            extension_id: crate::extensions::framework::types::ExtensionId::new(&self.manifest.id.0),
         })
     }
 }
@@ -392,7 +392,7 @@ impl HookHandlerFactory for GeneralHandlerFactory {
 struct GeneralHandler {
     handler_name: String,
     hook_type: String,
-    extension_id: crate::extension::types::ExtensionId,
+    extension_id: crate::extensions::framework::types::ExtensionId,
 }
 
 impl std::fmt::Debug for GeneralHandler {
@@ -527,7 +527,7 @@ pub struct DiscoveredGeneralExtension {
 
 /// Register general extensions with an `ExtensionCore`
 pub async fn register_general_extensions_with_core(
-    core: &crate::extension::ExtensionCore,
+    core: &crate::extensions::framework::ExtensionCore,
     extensions: Vec<DiscoveredGeneralExtension>,
 ) -> Result<usize> {
     let adapter = GeneralExtensionAdapter::new();
@@ -542,7 +542,7 @@ pub async fn register_general_extensions_with_core(
 
         for binding in bindings {
             let handler = binding.handler_factory.create(ext.manifest.clone());
-            let handler_arc: Arc<dyn crate::extension::core::HookHandler> = Arc::from(handler);
+            let handler_arc: Arc<dyn crate::extensions::framework::core::HookHandler> = Arc::from(handler);
 
             if let Err(e) = core
                 .register_hook(binding.point, handler_arc, &extension_id)
@@ -567,7 +567,7 @@ pub async fn register_general_extensions_with_core(
 
 /// Convenience function to discover and register general extensions
 pub async fn load_and_register_general_extensions(
-    core: &crate::extension::ExtensionCore,
+    core: &crate::extensions::framework::ExtensionCore,
     extensions_dir: &Path,
 ) -> Result<usize> {
     let extensions = discover_general_extensions(extensions_dir).await?;
@@ -586,7 +586,7 @@ mod tests {
 
         assert!(matches!(
             format,
-            crate::extension::adapters::ManifestFormat::Yaml { .. }
+            crate::extensions::framework::adapters::ManifestFormat::Yaml { .. }
         ));
     }
 
@@ -719,7 +719,7 @@ hooks:
             .await
             .unwrap();
 
-        let core = crate::extension::ExtensionCore::new();
+        let core = crate::extensions::framework::ExtensionCore::new();
         let count = load_and_register_general_extensions(&core, temp.path())
             .await
             .unwrap();

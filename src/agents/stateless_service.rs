@@ -746,25 +746,25 @@ impl StatelessAgentService {
         let prompt = match agent
             .extension_core()
             .invoke_hook(
-                crate::extension::core::HookPoint::ChannelInput,
-                crate::extension::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::ChannelInput,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await
         {
-            crate::extension::types::HookResult::Continue(
-                crate::extension::types::HookOutput::Text(transformed),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             )
-            | crate::extension::types::HookResult::Replace(
-                crate::extension::types::HookOutput::Text(transformed),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelInput hook transformed prompt");
                 transformed
             }
-            crate::extension::types::HookResult::Continue(
-                crate::extension::types::HookOutput::Json(json),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Json(json),
             )
-            | crate::extension::types::HookResult::Replace(
-                crate::extension::types::HookOutput::Json(json),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Json(json),
             ) => {
                 // If the hook returns JSON with a "message" or "prompt" field, use it
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
@@ -845,25 +845,25 @@ impl StatelessAgentService {
         let final_response = match agent
             .extension_core()
             .invoke_hook(
-                crate::extension::core::HookPoint::ChannelOutput,
-                crate::extension::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::ChannelOutput,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await
         {
-            crate::extension::types::HookResult::Continue(
-                crate::extension::types::HookOutput::Text(transformed),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             )
-            | crate::extension::types::HookResult::Replace(
-                crate::extension::types::HookOutput::Text(transformed),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelOutput hook transformed response");
                 transformed
             }
-            crate::extension::types::HookResult::Continue(
-                crate::extension::types::HookOutput::Json(json),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Json(json),
             )
-            | crate::extension::types::HookResult::Replace(
-                crate::extension::types::HookOutput::Json(json),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Json(json),
             ) => {
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
                     debug!("ChannelOutput hook transformed response from JSON");
@@ -1022,25 +1022,25 @@ impl StatelessAgentService {
         let prompt = match agent
             .extension_core()
             .invoke_hook(
-                crate::extension::core::HookPoint::ChannelInput,
-                crate::extension::types::HookInput::Unit,
+                crate::extensions::framework::core::HookPoint::ChannelInput,
+                crate::extensions::framework::types::HookInput::Unit,
             )
             .await
         {
-            crate::extension::types::HookResult::Continue(
-                crate::extension::types::HookOutput::Text(transformed),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             )
-            | crate::extension::types::HookResult::Replace(
-                crate::extension::types::HookOutput::Text(transformed),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Text(transformed),
             ) => {
                 debug!("ChannelInput hook transformed prompt (streaming)");
                 transformed
             }
-            crate::extension::types::HookResult::Continue(
-                crate::extension::types::HookOutput::Json(json),
+            crate::extensions::framework::types::HookResult::Continue(
+                crate::extensions::framework::types::HookOutput::Json(json),
             )
-            | crate::extension::types::HookResult::Replace(
-                crate::extension::types::HookOutput::Json(json),
+            | crate::extensions::framework::types::HookResult::Replace(
+                crate::extensions::framework::types::HookOutput::Json(json),
             ) => {
                 if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
                     debug!("ChannelInput hook transformed prompt from JSON (streaming)");
@@ -1104,8 +1104,8 @@ impl StatelessAgentService {
             // The hook can still perform side effects (logging, metrics, etc.)
             let channel_output_result = extension_core
                 .invoke_hook(
-                    crate::extension::core::HookPoint::ChannelOutput,
-                    crate::extension::types::HookInput::Unit,
+                    crate::extensions::framework::core::HookPoint::ChannelOutput,
+                    crate::extensions::framework::types::HookInput::Unit,
                 )
                 .await;
             debug!(

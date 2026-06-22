@@ -66,7 +66,7 @@ impl ExtensionValidationService {
         verbose: bool,
         depth: ValidationDepth,
     ) -> anyhow::Result<ValidationReport> {
-        use crate::extension::adapters::extract_extension_type_from_yaml;
+        use crate::extensions::framework::adapters::extract_extension_type_from_yaml;
         use crate::extensions::general::discover_general_extensions;
         use crate::extensions::mcp::McpAdapter;
         use crate::extensions::skill::SkillAdapter;

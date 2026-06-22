@@ -152,18 +152,12 @@ pub mod session;
 /// LLM provider integrations
 pub mod providers;
 
-/// Extension Framework (generic, no external deps)
+/// Extension Framework and Type Implementations (MCP, Gateway, Skill,
+/// Builtin, General, Universal).
 ///
-/// Contains the unified extension architecture: hook points, registries,
-/// types, managers, and shared services. Zero dependencies on extension
-/// type implementations.
-pub mod extension;
-
-/// Extension Type Implementations (MCP, Gateway, Skill, Builtin, General, Universal)
-///
-/// Each extension type lives in its own directory with its adapter,
-/// runtime, and protocol code. Depends on `crate::extension` for the
-/// generic framework.
+/// Contains the generic extension framework (under `crate::extensions::framework`)
+/// and the extension type implementations (sibling submodules). The framework
+/// is dependency-free; type adapters depend on it.
 pub mod extensions;
 
 // ============================================================================
@@ -222,10 +216,8 @@ pub mod commands;
 // Utilities
 // ============================================================================
 
-/// Portable agent packaging (export/import/build/push/pull)
-pub mod portable;
-
-/// Remote registry client (push/pull)
+/// Remote registry client (push/pull) and local packaging
+/// (export/import/build/push/pull of `.agent` / `.team` archives).
 pub mod registry;
 
 /// Runtime-Pekohub tunnel protocol (ADR-035)

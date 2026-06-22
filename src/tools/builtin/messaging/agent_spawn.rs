@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::extension::async_exec::executor::TaskMetadata;
+use crate::extensions::framework::async_exec::executor::TaskMetadata;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::core::Tool;
 
@@ -267,7 +267,7 @@ impl AgentSpawnTool {
                 let status_str = run.status.as_str();
                 let success = matches!(
                     run.status,
-                    crate::extension::async_exec::executor::AsyncTaskStatus::Completed { .. }
+                    crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Completed { .. }
                 );
 
                 let mut result = json!({

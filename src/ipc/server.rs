@@ -1884,7 +1884,7 @@ impl IpcServer {
                 id,
                 target,
             } => {
-                let is_builtin = crate::extension::adapters::builtin_tools::is_builtin_tool(&id)
+                let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
                     || id.starts_with("builtin:");
 
                 // Build canonical extension ID for whitelist entries.
@@ -1914,7 +1914,7 @@ impl IpcServer {
                                 "Built-in capability '{capability}' enabled globally"
                             ))
                         } else {
-                            let ext_id = crate::extension::types::ExtensionId::new(&id);
+                            let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                             match manager.enable(&ext_id).await {
                                 Ok(()) => Ok(format!("Extension '{id}' enabled globally")),
                                 Err(e) => Err(e),
@@ -1990,7 +1990,7 @@ impl IpcServer {
                 id,
                 target,
             } => {
-                let is_builtin = crate::extension::adapters::builtin_tools::is_builtin_tool(&id)
+                let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
                     || id.starts_with("builtin:");
 
                 let canonical_id = if is_builtin {
@@ -2019,7 +2019,7 @@ impl IpcServer {
                                 "Built-in capability '{capability}' disabled globally"
                             ))
                         } else {
-                            let ext_id = crate::extension::types::ExtensionId::new(&id);
+                            let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                             match manager.disable(&ext_id).await {
                                 Ok(()) => Ok(format!("Extension '{id}' disabled globally")),
                                 Err(e) => Err(e),
@@ -2362,7 +2362,7 @@ impl IpcServer {
 
             RequestPacket::ExtensionUninstall { request_id, id } => {
                 let mut manager = state.extension_manager().write().await;
-                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
 
                 match manager.uninstall(&ext_id).await {
                     Ok(()) => {
@@ -2422,7 +2422,7 @@ impl IpcServer {
 
             RequestPacket::ExtensionDebug { request_id, id } => {
                 let manager = state.extension_manager().read().await;
-                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                 match manager.get_extension(&ext_id) {
                     Some(ext) => {
                         let info = serde_json::json!({
@@ -2452,7 +2452,7 @@ impl IpcServer {
 
             RequestPacket::ExtensionInfo { request_id, id } => {
                 let manager = state.extension_manager().read().await;
-                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                 match manager.get_extension(&ext_id) {
                     Some(ext) => {
                         let info = serde_json::json!({
@@ -2485,8 +2485,8 @@ impl IpcServer {
                 output,
             } => {
                 let manager = state.extension_manager().read().await;
-                let ext_id = crate::extension::types::ExtensionId::new(&id);
-                match crate::extension::manager::packaging::ExtensionPackager::export(
+                let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
+                match crate::extensions::framework::manager::packaging::ExtensionPackager::export(
                     &manager, &ext_id, &output,
                 ) {
                     Ok(_) => {
@@ -2515,7 +2515,7 @@ impl IpcServer {
                 let manager = state.extension_manager().read().await;
                 let ext_ids: Vec<_> = ids
                     .iter()
-                    .map(|id| crate::extension::types::ExtensionId::new(id))
+                    .map(|id| crate::extensions::framework::types::ExtensionId::new(id))
                     .collect();
                 match manager.create_bundle(ext_ids, &name) {
                     Ok(bundle) => {
@@ -3546,7 +3546,7 @@ impl IpcServer {
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
-        use crate::extension::async_exec::executor::{AsyncTaskId, AsyncToolConfig};
+        use crate::extensions::framework::async_exec::executor::{AsyncTaskId, AsyncToolConfig};
 
         let tool_runtime = state.tool_runtime.clone();
         let executor = state.async_task_executor.clone();

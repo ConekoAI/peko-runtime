@@ -1,6 +1,6 @@
 //! Tool trait
 
-use crate::extension::types::{ToolContext, ToolError};
+use crate::extensions::framework::types::{ToolContext, ToolError};
 use crate::observability::performance::GLOBAL_METRICS;
 use async_trait::async_trait;
 

@@ -39,7 +39,7 @@ pub struct SystemPromptBuilder {
     sandbox_enabled: bool,
     channel: String,
     /// Optional extension core for hook integration (Phase 1: Extension Architecture)
-    extension_core: Option<Arc<crate::extension::ExtensionCore>>,
+    extension_core: Option<Arc<crate::extensions::framework::ExtensionCore>>,
 }
 
 impl SystemPromptBuilder {
@@ -64,7 +64,7 @@ impl SystemPromptBuilder {
     /// Set the extension core for hook integration
     ///
     /// This enables extensions to inject content into prompt sections.
-    pub fn with_extension_core(mut self, core: Arc<crate::extension::ExtensionCore>) -> Self {
+    pub fn with_extension_core(mut self, core: Arc<crate::extensions::framework::ExtensionCore>) -> Self {
         self.extension_core = Some(core);
         self
     }
@@ -160,7 +160,7 @@ impl SystemPromptBuilder {
         let mut has_extension_tools = false;
         if let Some(ref core) = self.extension_core {
             if let Ok(_handle) = tokio::runtime::Handle::try_current() {
-                use crate::extension::{HookInput, HookPoint};
+                use crate::extensions::framework::{HookInput, HookPoint};
                 let hook_point = HookPoint::PromptSystemSection {
                     section: "tools".to_string(),
                     priority: 100,
@@ -277,7 +277,7 @@ impl SystemPromptBuilder {
     /// Uses the `ExtensionCore` hook system to inject skills content from registered
     /// skill extensions. This replaces the legacy `SkillsRegistry` approach.
     fn build_skills_section(&self) -> String {
-        use crate::extension::{HookInput, HookPoint};
+        use crate::extensions::framework::{HookInput, HookPoint};
 
         if let Some(ref core) = self.extension_core {
             // Try to invoke skills hooks via ExtensionCore
@@ -432,7 +432,7 @@ Be safe.
 
     #[test]
     fn test_builder_with_skills_via_extension_core() {
-        use crate::extension::ExtensionManifest;
+        use crate::extensions::framework::ExtensionManifest;
         use crate::extensions::skill::{register_skills_with_core, DiscoveredSkill};
         use std::path::PathBuf;
 
@@ -444,7 +444,7 @@ Be safe.
         std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         // Create ExtensionCore and register skills
-        let core = crate::extension::ExtensionCore::new();
+        let core = crate::extensions::framework::ExtensionCore::new();
 
         // Create a test skill using the new Extension system
         let skill = DiscoveredSkill {

@@ -22,7 +22,7 @@ use crate::common::types::team::{
     TeamMetadata, TeamMoveResult,
 };
 use crate::identity::Identity;
-use crate::portable::{self, TeamExportOptions, TeamImportOptions};
+use crate::registry::packaging::{self, TeamExportOptions, TeamImportOptions};
 use crate::agents::agent_config::AgentConfig;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -615,7 +615,7 @@ impl TeamService {
 
         // Export the team
         let config_dir = self.resolver.config_dir().to_path_buf();
-        let output_path = portable::export_team_with_config_dir(
+        let output_path = packaging::export_team_with_config_dir(
             name,
             None,
             &base_dir,
@@ -678,7 +678,7 @@ impl TeamService {
         let config_dir = self.resolver.config_dir();
         let result_team_dir = self.resolver.team_dir(team_name);
 
-        let result = portable::import_team_with_base_dir(&path, &config_dir, import_opts)
+        let result = packaging::import_team_with_base_dir(&path, &config_dir, import_opts)
             .await
             .with_context(|| format!("Failed to import team from '{file_path}'"))?;
 

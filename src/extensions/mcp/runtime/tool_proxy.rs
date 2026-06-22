@@ -3,7 +3,7 @@
 //! Adapts MCP tools to Pekobot's Tool trait, allowing MCP tools to be used
 //! seamlessly by the agent system.
 
-use crate::extension::protocols::shared::proxy_utils::{
+use crate::extensions::framework::protocols::shared::proxy_utils::{
     estimate_tool_duration, execute_with_context_handling,
 };
 use crate::extensions::mcp::protocol::{
