@@ -9,8 +9,8 @@ use crate::daemon::background_runtime::{
 use crate::extensions::gateway::runtime::{GatewayRouter, GatewayRuntimeStarter};
 use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
-use crate::agent::lifecycle::LifecycleManager;
-use crate::agent::stateless_service::StatelessAgentService;
+use crate::agents::lifecycle::LifecycleManager;
+use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::services::{
     AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService, TeamManagementService,
     TeamService,
@@ -1379,7 +1379,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_init_preserves_pre_registered_tools() {
-        use crate::agent::Agent;
+        use crate::agents::Agent;
         use crate::extension::core::init_global_core;
         use crate::extension::{HookInput, HookPoint};
         use crate::types::agent::AgentConfig;

@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
+use crate::agents::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::auth::principal::Principal;
 use crate::tools::core::Tool;
 use crate::tunnel::a2a_audit;
@@ -878,7 +878,7 @@ pub struct HubA2AErrorResponse {
 /// behavior) and any future code path that needs the same shape can
 /// share the conversion.
 fn message_result_to_a2a_value(
-    result: Result<crate::agent::stateless_service::MessageResult>,
+    result: Result<crate::agents::stateless_service::MessageResult>,
 ) -> serde_json::Value {
     match result {
         Ok(msg_result) => {
@@ -1351,7 +1351,7 @@ mod tests {
     /// construction. Uses the same TempDir pattern as the rest of
     /// `agent::stateless_service` tests.
     async fn build_test_service() -> Arc<StatelessAgentService> {
-        use crate::agent::stateless_service::StatelessAgentService;
+        use crate::agents::stateless_service::StatelessAgentService;
         use crate::common::paths::PathResolver;
         use crate::common::services::config_authority::ConfigAuthorityImpl;
 

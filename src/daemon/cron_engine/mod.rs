@@ -4,7 +4,7 @@
 //! delivery, and audit logging. Keeps the daemon's main loop focused on
 //! lifecycle and shutdown.
 
-use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
+use crate::agents::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::auth::caller::CallerContext;
 use crate::common::json_utils::json_subset;
 use crate::cron::events::SystemEvent;

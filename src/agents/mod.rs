@@ -28,6 +28,9 @@ pub use lifecycle::{ExecutionRecord, LifecycleManager};
 pub mod context;
 pub mod types;
 
+// System prompt generation (absorbed from src/prompt/ in issue #31a)
+pub mod prompt;
+
 // Subagent support
 pub mod announcement_service;
 pub mod subagent_announce;

@@ -1,6 +1,6 @@
 //! Agent management module
 
-use crate::agent::subagent_executor::SubagentExecutor;
+use crate::agents::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
 use crate::extension::core::{global_core, ExtensionCore};
 use crate::extensions::builtin::BuiltinToolAdapter;

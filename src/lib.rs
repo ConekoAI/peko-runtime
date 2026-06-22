@@ -133,8 +133,8 @@ pub mod common;
 // Core Runtime
 // ============================================================================
 
-/// Agent runtime, lifecycle, and multi-agent management
-pub mod agent;
+/// Agent runtime, lifecycle, and multi-agent management (absorbed `prompt/`)
+pub mod agents;
 
 /// Shared runtime components (tool runtime, etc.)
 pub mod runtime;
@@ -224,9 +224,6 @@ pub mod tools;
 /// CLI command handlers
 pub mod commands;
 
-/// Prompt generation and bootstrap
-pub(crate) mod prompt;
-
 // ============================================================================
 // Utilities
 // ============================================================================
@@ -251,7 +248,7 @@ pub(crate) mod compaction;
 // ============================================================================
 // Public API
 // ============================================================================
-pub use agent::Agent;
+pub use agents::Agent;
 
 // Re-export event types for tool monitoring and streaming
 pub use engine::{AgenticEvent, LifecyclePhase};

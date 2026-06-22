@@ -2,8 +2,8 @@
 //!
 //! Matches `OpenClaw`'s section-based prompt assembly
 
-use crate::prompt::bootstrap::{default_workspace_dir, inject_bootstrap_files, BootstrapConfig};
-use crate::prompt::placeholder::{replace_placeholders, Placeholder};
+use crate::agents::prompt::bootstrap::{default_workspace_dir, inject_bootstrap_files, BootstrapConfig};
+use crate::agents::prompt::placeholder::{replace_placeholders, Placeholder};
 use crate::providers::ToolDefinition;
 use crate::tools::Tool;
 use chrono::Local;

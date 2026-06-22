@@ -3352,7 +3352,7 @@ impl IpcServer {
         sink: &dyn ResponseSink,
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
-        use crate::agent::stateless_service::MessageRequest;
+        use crate::agents::stateless_service::MessageRequest;
         use crate::engine::{AgenticEvent, LifecyclePhase};
 
         tracing::info!(

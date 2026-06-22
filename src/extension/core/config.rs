@@ -29,7 +29,7 @@ pub struct ExtensionServices {
     async_router: crate::extension::transport::AsyncExecutionRouter,
 
     /// Stateless agent service for A2A messaging (set by AppState after initialization)
-    agent_service: std::sync::RwLock<Option<Arc<crate::agent::StatelessAgentService>>>,
+    agent_service: std::sync::RwLock<Option<Arc<crate::agents::StatelessAgentService>>>,
 
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
@@ -69,7 +69,7 @@ impl ExtensionServices {
     #[must_use]
     pub fn with_async_router_and_agent_service(
         async_router: crate::extension::transport::AsyncExecutionRouter,
-        agent_service: Arc<crate::agent::StatelessAgentService>,
+        agent_service: Arc<crate::agents::StatelessAgentService>,
     ) -> Self {
         let s = Self::with_async_router(async_router);
         s.set_agent_service(agent_service);
@@ -123,7 +123,7 @@ impl ExtensionServices {
     }
 
     /// Set the stateless agent service (for A2A messaging)
-    pub fn set_agent_service(&self, service: Arc<crate::agent::StatelessAgentService>) {
+    pub fn set_agent_service(&self, service: Arc<crate::agents::StatelessAgentService>) {
         if let Ok(mut guard) = self.agent_service.write() {
             *guard = Some(service);
         }
@@ -131,7 +131,7 @@ impl ExtensionServices {
 
     /// Get the stateless agent service (for A2A messaging)
     #[must_use]
-    pub fn agent_service(&self) -> Option<Arc<crate::agent::StatelessAgentService>> {
+    pub fn agent_service(&self) -> Option<Arc<crate::agents::StatelessAgentService>> {
         self.agent_service.read().ok().and_then(|g| g.clone())
     }
 

@@ -18,9 +18,9 @@ use chrono::Utc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
-use crate::agent::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
-use crate::agent::subagent_error::SpawnError;
-use crate::agent::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
+use crate::agents::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
+use crate::agents::subagent_error::SpawnError;
+use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
 use crate::extension::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
@@ -651,7 +651,7 @@ impl SubagentExecutor {
     /// Send announcement for a completed run
     pub async fn send_announcement(&self, run: &SubagentRunView) -> anyhow::Result<()> {
         if let Some(ref tx) = self.announcement_tx {
-            let announcement = crate::agent::subagent_announce::format_announcement(run);
+            let announcement = crate::agents::subagent_announce::format_announcement(run);
             let completed = CompletedRun {
                 run: run.clone(),
                 parent_session_key: run.parent_session_key.clone(),
@@ -761,7 +761,7 @@ async fn execute_subagent_task(
     // `new_with_shared_executor` no longer re-resolves a provider (the v1
     // `[provider]` fallback was removed in PR #44) and would otherwise fail
     // `execute_with_session` with "No provider configured".
-    let subagent = crate::agent::Agent::new_with_shared_executor(
+    let subagent = crate::agents::Agent::new_with_shared_executor(
         config,
         session_manager,
         shared_executor,
@@ -816,7 +816,7 @@ async fn execute_subagent_task(
             // has empty text content.
             if final_answer.trim().is_empty() {
                 if let Some(recovered) =
-                    crate::agent::subagent_recovery::ResultRecovery::recover_from_session(
+                    crate::agents::subagent_recovery::ResultRecovery::recover_from_session(
                         &child_session_for_recovery,
                     )
                     .await

@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 /// This is a fixed UUIDv4 that acts as the namespace for UUIDv5 generation.
 const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6");
 
-use crate::agent::stateless_service::MessageRequest;
+use crate::agents::stateless_service::MessageRequest;
 
 use crate::auth::Principal;
 use crate::daemon::state::AppState;
