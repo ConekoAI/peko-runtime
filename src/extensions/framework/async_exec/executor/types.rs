@@ -1,6 +1,6 @@
 //! Core types for the async executor framework
 
-use crate::extensions::framework::types::ToolResult;
+use crate::tools::core::ToolResult;
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for an async task

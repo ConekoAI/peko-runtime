@@ -120,7 +120,7 @@ impl ReservedParamsConfig {
     #[must_use]
     pub fn resolve(
         &self,
-        ctx: Option<&crate::extensions::framework::types::ToolContext>,
+        ctx: Option<&crate::tools::core::ToolContext>,
     ) -> HashMap<String, Value> {
         let mut result = HashMap::new();
         for (name, source) in &self.params {
@@ -131,7 +131,7 @@ impl ReservedParamsConfig {
 
     /// Convert to JSON object with resolved values
     #[must_use]
-    pub fn resolve_to_object(&self, ctx: Option<&crate::extensions::framework::types::ToolContext>) -> Value {
+    pub fn resolve_to_object(&self, ctx: Option<&crate::tools::core::ToolContext>) -> Value {
         let resolved = self.resolve(ctx);
         Value::Object(
             resolved
@@ -149,9 +149,9 @@ impl ParamSource {
     ///
     /// # Returns
     /// The resolved value, or `Value::Null` if not available
-    pub fn resolve(&self, ctx: Option<&crate::extensions::framework::types::ToolContext>) -> Value {
-        use crate::extensions::framework::types::ToolContextAdapter;
+    pub fn resolve(&self, ctx: Option<&crate::tools::core::ToolContext>) -> Value {
         use crate::tools::core::context_source::ContextResolver;
+        use crate::tools::core::ToolContextAdapter;
 
         match self {
             Self::Runtime { field } => ctx.map_or(Value::Null, |c| {

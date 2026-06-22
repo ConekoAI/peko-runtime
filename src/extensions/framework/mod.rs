@@ -45,7 +45,7 @@ pub use services::{
 // Re-export protocols shared utilities
 pub use protocols::shared::{
     estimate_tool_duration, execute_with_context_handling, filter_reserved_params, format_status,
-    validate_no_reserved_params_leak, ContextResolver, ProcessConfig, ProcessTransport,
+    validate_no_reserved_params_leak, ProcessConfig, ProcessTransport,
     ProcessTransportBuilder, ValidationError,
 };
 

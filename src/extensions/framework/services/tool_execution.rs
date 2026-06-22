@@ -40,7 +40,7 @@
 //! ```
 
 use crate::extensions::framework::services::reserved_params::ReservedParamsConfig;
-use crate::extensions::framework::types::ToolContext;
+use crate::tools::core::ToolContext;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashSet;

@@ -7,7 +7,7 @@ use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget, WaitResult,
 };
-use crate::extensions::framework::types::ToolResult;
+use crate::tools::core::ToolResult;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;

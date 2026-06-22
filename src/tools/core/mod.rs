@@ -8,9 +8,7 @@
 //! # Module Boundary Note
 //!
 //! `tools::core` is the canonical home for the execution primitives and the
-//! `ContextSource` trait. Older paths (`extensions::framework::types::*` and
-//! `extensions::framework::protocols::shared::context_resolver::ContextSource`)
-//! re-export these names for one commit while consumers migrate.
+//! `ContextSource` trait. There are no re-exports anywhere else in the crate.
 
 pub mod context_source;
 pub mod exec;

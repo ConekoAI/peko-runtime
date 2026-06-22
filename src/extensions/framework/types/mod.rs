@@ -132,15 +132,6 @@ pub mod hook_io;
 pub mod manifest;
 pub mod session;
 pub mod tool;
-pub mod tool_exec;
-
-// Re-exports for in-flight compat while the execution primitives
-// are migrated to tools::core. Removed in the follow-up commit.
-#[allow(deprecated)]
-pub use crate::tools::core::exec::{
-    AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolProgressEvent, ToolResult,
-    ToolWithContext,
-};
 
 #[cfg(test)]
 mod tests {

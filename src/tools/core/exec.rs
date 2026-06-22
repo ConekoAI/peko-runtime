@@ -9,17 +9,10 @@
 //!
 //! # Module Boundary Note
 //!
-//! These primitives live in `tools::core` and are the canonical home. The
-//! `extension::framework::types` module keeps thin re-exports for one commit
-//! while consumers migrate; those re-exports are removed in the follow-up.
+//! These primitives live in `tools::core` and are the canonical home. There
+//! are no re-exports anywhere else in the crate.
 
 use super::context_source::ContextSource;
-// In-flight compat: `HookOutput` lives in `hook_io` and is re-exported from
-// `framework::types`. The `From` impl below points at the canonical
-// `hook_io::HookOutput` location, so this re-export is unused; commit 2 will
-// fold the framework re-export into the same shape.
-#[allow(unused_imports)]
-use crate::extensions::framework::types::HookOutput;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -499,12 +492,10 @@ pub trait ToolWithContext: Send + Sync {
     }
 }
 
-// Blanket implementation: all Tools are ToolWithContext
-// Note: This blanket impl is intentionally not provided here because
-// `Tool` lives in `tools::core::traits` and we cannot reference it from
-// `extension::types` without creating a circular dependency.
-// Instead, `tools::core` provides the blanket impl after importing
-// `ToolWithContext` from here.
+// Blanket impl that was deliberately omitted from extensions/framework
+// (the cycle prevented it). Now that Tool lives in tools::core alongside
+// ToolWithContext, the impl is sound.
+impl<T: crate::tools::core::Tool> ToolWithContext for T {}
 
 /// Result of a tool execution
 ///
