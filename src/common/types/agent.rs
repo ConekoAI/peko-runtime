@@ -164,3 +164,37 @@ pub struct AgentImportResult {
     pub name: String,
     pub config_path: PathBuf,
 }
+
+/// Agent push result
+#[derive(Debug, Clone)]
+pub struct AgentPushResult {
+    pub local_tag: String,
+    pub registry_ref: String,
+    pub name: String,
+    pub version: String,
+    pub digest: String,
+    pub layers: usize,
+    pub total_size: u64,
+}
+
+/// Agent pull result
+#[derive(Debug, Clone)]
+pub struct AgentPullResult {
+    pub name: String,
+    pub version: String,
+    pub tag: String,
+    pub output_path: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
+    pub manifest_digest: String,
+    pub manifest_layers: usize,
+    pub manifest_total_size: u64,
+    pub extension_results: AgentExtensionPullResult,
+}
+
+/// Result of pulling extensions for an agent
+#[derive(Debug, Clone, Default)]
+pub struct AgentExtensionPullResult {
+    pub pulled: Vec<String>,
+    pub already_present: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}

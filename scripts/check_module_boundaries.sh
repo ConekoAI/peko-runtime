@@ -9,7 +9,7 @@
 # 3. src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/
 #    (except tools::core, the established one-way dep).
 # 4. src/commands/ should NOT import from low-level persistence/packaging modules
-#    (advisory while the command layer is being cleaned up).
+#    (hard gate).
 # 5. src/extensions/framework/ must NOT import from src/agents/, src/tunnel/, or
 #    src/daemon/.
 
@@ -23,10 +23,10 @@ EXTENSION_TYPES=(builtin gateway general mcp skill universal)
 
 # ---------------------------------------------------------------------------
 # Whether Rule 4 (commands -> persistence/packaging) is a hard gate.
-# Set to 0 (advisory) until existing violations are resolved; flip to 1 once
-# the command layer no longer reaches past the service boundary.
+# The command layer now delegates persistence/packaging work to services,
+# so this is enforced.
 # ---------------------------------------------------------------------------
-RULE4_HARD_GATE=0
+RULE4_HARD_GATE=1
 
 echo "=========================================="
 echo "Module Boundary Check (Issue 015 / 020)"
@@ -163,7 +163,7 @@ echo ""
 # Rule 4: src/commands/ should NOT import from low-level persistence/packaging
 # -----------------------------------------------------------------------------
 if [ "$RULE4_HARD_GATE" -eq 1 ]; then
-    echo "Rule 4: src/commands/ must NOT import from persistence/packaging modules"
+    echo "Rule 4: src/commands/ must NOT import from persistence/packaging modules (hard gate)"
 else
     echo "Rule 4: src/commands/ should NOT import from persistence/packaging modules (advisory)"
 fi

@@ -9,6 +9,7 @@ pub mod a2a;
 pub mod agent;
 pub mod agent_legacy;
 pub mod config;
+pub mod extension;
 pub mod membership;
 pub mod message;
 pub mod provider;

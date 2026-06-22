@@ -8,6 +8,7 @@ pub mod agent_validator;
 pub mod credentials_service;
 pub mod daemon_process_service;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
+pub mod extension_management_service;
 pub mod session_service;
 pub mod team_management_service;
 pub mod team_service;
@@ -20,6 +21,7 @@ pub use agent_service::AgentService;
 pub use agent_validator::AgentValidator;
 pub use credentials_service::CredentialsService;
 pub use daemon_process_service::{DaemonProcessService, DaemonStatus};
+pub use extension_management_service::ExtensionManagementService;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub use session_service::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,
@@ -47,6 +49,7 @@ pub struct ServiceContainer {
     agent_config: ConfigAuthorityImpl,
     team: TeamService,
     team_management: TeamManagementService,
+    extension_management: ExtensionManagementService,
 }
 
 impl ServiceContainer {
@@ -58,7 +61,8 @@ impl ServiceContainer {
             agent: AgentService::new(resolver.clone()),
             agent_config: ConfigAuthorityImpl::new(resolver.clone()),
             team: team_service.clone(),
-            team_management: TeamManagementService::new(team_service, resolver),
+            team_management: TeamManagementService::new(team_service.clone(), resolver.clone()),
+            extension_management: ExtensionManagementService::new(resolver),
         }
     }
 
@@ -80,5 +84,10 @@ impl ServiceContainer {
     /// Get the team management service (unified operations)
     pub fn team_management(&self) -> &TeamManagementService {
         &self.team_management
+    }
+
+    /// Get the extension management service (registry push/pull)
+    pub fn extension_management(&self) -> &ExtensionManagementService {
+        &self.extension_management
     }
 }

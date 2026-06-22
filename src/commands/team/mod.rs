@@ -627,17 +627,13 @@ async fn ensure_extensions_for_team(
             continue;
         }
 
-        match crate::commands::ext::handle_ext_pull(
-            &mut manager,
-            &ext_ref.registry_ref,
-            false,
-            false,
-            cli_registry,
-            paths,
-        )
-        .await
+        match paths
+            .services()
+            .extension_management()
+            .pull_extension(&ext_ref.registry_ref, cli_registry, false, |_| {})
+            .await
         {
-            Ok(()) => {
+            Ok(_) => {
                 result.pulled.push(ext_ref.id.clone());
             }
             Err(e) => {

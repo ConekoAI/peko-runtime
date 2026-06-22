@@ -282,7 +282,7 @@ pub async fn handle_agent(
         } => {
             handlers::handle_agent_import(paths, file, name, team, allow_unsigned_agent).await
         }
-        AgentCommands::Inspect { file } => handlers::handle_agent_inspect(file, json).await,
+        AgentCommands::Inspect { file } => handlers::handle_agent_inspect(paths, file, json).await,
         AgentCommands::Push {
             local_tag,
             registry_ref,

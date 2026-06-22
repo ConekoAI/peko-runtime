@@ -7,23 +7,12 @@
 //! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
 use crate::commands::GlobalPaths;
-use crate::common::services::CredentialsService;
-use crate::extensions::framework::core::ExtensionCore;
-use crate::extensions::framework::manager::packaging::ExtensionPackager;
-use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
 use crate::extensions::framework::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
 use crate::extensions::framework::services::{ConfigScope, ExtensionConfigService};
-use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::ipc::client_service::DaemonClientService;
-use crate::registry::AgentRegistry;
-use crate::registry::packaging::types::{compute_digest, ImageDigest, Layer, LayerType};
-use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
-use crate::registry::config::{RegistryConfig, RegistrySource};
-use crate::registry::manifest::RegistryManifest;
-use anyhow::Context;
+use crate::registry::client::ProgressEvent;
 use clap::Subcommand;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 /// Extension management subcommands
 #[derive(Subcommand)]
@@ -195,83 +184,6 @@ pub enum ExtCommands {
     },
 }
 
-/// Create an `ExtensionManager` with all default adapters registered
-async fn create_manager_with_adapters(
-    core: Arc<ExtensionCore>,
-    storage: Option<ExtensionStorage>,
-) -> ExtensionManager {
-    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
-    use crate::extensions::gateway::GatewayAdapter;
-    use crate::extensions::general::GeneralExtensionAdapter;
-    use crate::extensions::mcp::McpAdapter;
-    use crate::extensions::skill::SkillAdapter;
-    use crate::extensions::universal::UniversalToolAdapter;
-
-    if let Err(e) =
-        BuiltinToolAdapter::register_all(&core, &BuiltinToolRegistrarConfig::default()).await
-    {
-        tracing::warn!(
-            "Failed to register built-in tools with ExtensionCore: {}",
-            e
-        );
-    }
-
-    let mut manager = ExtensionManager::with_core(core.clone());
-    if let Some(storage) = storage {
-        manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
-    }
-
-    manager.register_adapter(Box::new(SkillAdapter::new()));
-    manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
-    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
-    manager.register_adapter(Box::new(GatewayAdapter::new(core)));
-    manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
-
-    manager
-}
-
-/// Resolve registry configuration for push/pull operations
-fn resolve_registry_config(
-    paths: &GlobalPaths,
-    cli_registry: Option<&str>,
-    host: &str,
-) -> anyhow::Result<RegistryConfig> {
-    let mut config = paths.registry_config();
-
-    // Apply CLI --registry override
-    if let Some(url) = cli_registry {
-        config.default = url.to_string();
-        if config.get_source(url).is_none() {
-            config.add_source(RegistrySource {
-                url: url.to_string(),
-                priority: 0,
-                auth: None,
-                token: None,
-            });
-        }
-    }
-
-    // Check for registry token and wire auth into the source
-    let creds = CredentialsService::new(paths.clone())?;
-    let token = creds.get_registry_token()?.map(|t| t.token);
-
-    if token.is_none() {
-        anyhow::bail!(
-            "No registry authentication found.\n\
-             Run: peko login --api-key <key>"
-        );
-    }
-
-    config.add_source(RegistrySource {
-        url: host.to_string(),
-        priority: 1,
-        auth: None,
-        token,
-    });
-
-    Ok(config)
-}
-
 /// Handle extension subcommands
 pub async fn handle_ext_command(
     command: ExtCommands,
@@ -279,11 +191,6 @@ pub async fn handle_ext_command(
     json: bool,
     cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
-    // Get the global ExtensionCore — initialized by main.rs before command dispatch.
-    // We extract it once and pass it down to eliminate direct global_core() calls
-    // in subcommand handlers.
-    let core = crate::extensions::framework::core::global_core().expect("Global ExtensionCore not initialized");
-
     match command {
         // --- IPC commands (thin client) ---
         ExtCommands::List {
@@ -564,10 +471,7 @@ pub async fn handle_ext_command(
             registry_ref,
             with_deps,
         } => {
-            let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
-            let mut manager = create_manager_with_adapters(core.clone(), Some(storage)).await;
-            manager.load_all().await?;
-            handle_ext_push(&manager, &id, &registry_ref, json, cli_registry, paths, with_deps).await
+            handle_ext_push(paths, &id, &registry_ref, json, cli_registry, with_deps).await
         }
 
         ExtCommands::Pull {
@@ -575,46 +479,7 @@ pub async fn handle_ext_command(
             json: pull_json,
             no_deps,
         } => {
-            let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
-            let mut manager = create_manager_with_adapters(core.clone(), Some(storage)).await;
-            manager.load_all().await?;
-
-            // Pull the extension to a temp file using local manager
-            let (temp_path, _manifest) = handle_ext_pull_to_temp(
-                &mut manager,
-                &registry_ref,
-                pull_json,
-                no_deps,
-                cli_registry,
-                paths,
-            )
-            .await?;
-
-            // Install via IPC so the daemon knows about it
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::ExtensionInstall {
-                request_id: 1,
-                path: temp_path.to_string_lossy().to_string(),
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                crate::ipc::ResponsePacket::ExtensionInstalled { id, message, .. } => {
-                    if pull_json {
-                        println!(
-                            "{{\"success\": true, \"id\": \"{}\", \"message\": \"{}\"}}",
-                            id, message
-                        );
-                    } else {
-                        println!("{message}");
-                        println!("   ID: {id}");
-                    }
-                    Ok(())
-                }
-                crate::ipc::ResponsePacket::Error { message, .. } => Err(anyhow::anyhow!(
-                    "Failed to install pulled extension: {message}"
-                )),
-                _ => anyhow::bail!("Unexpected response from daemon during extension install"),
-            }
+            handle_ext_pull(paths, &registry_ref, pull_json, cli_registry, no_deps).await
         }
 
         ExtCommands::Init {
@@ -730,38 +595,6 @@ pub fn prepare_install_path(path: &std::path::Path) -> anyhow::Result<std::path:
         Ok(extracted)
     } else {
         Ok(path.to_path_buf())
-    }
-}
-
-async fn handle_install(
-    manager: &mut ExtensionManager,
-    path: PathBuf,
-    ext_type: Option<String>,
-) -> anyhow::Result<ExtensionManifest> {
-    println!("Installing extension from: {}", path.display());
-    if let Some(ref t) = ext_type {
-        println!("   Type: {t}");
-    }
-
-    let install_path = prepare_install_path(&path)?;
-    if install_path != path {
-        println!("   Extracted .ext package to: {}", install_path.display());
-    }
-
-    match manager.install(&install_path).await {
-        Ok(id) => {
-            println!("Extension installed successfully");
-            println!("   ID: {id}");
-            // Return the manifest of the installed extension
-            manager
-                .get_extension(&id)
-                .map(|e| e.manifest.clone())
-                .context("Installed extension not found in manager")
-        }
-        Err(e) => {
-            eprintln!("Failed to install extension: {e}");
-            Err(e)
-        }
     }
 }
 
@@ -882,133 +715,37 @@ async fn handle_config(
 // --- Push / Pull ---
 
 async fn handle_ext_push(
-    manager: &ExtensionManager,
+    paths: &GlobalPaths,
     id: &str,
     registry_ref: &str,
     json: bool,
     cli_registry: Option<&str>,
-    paths: &GlobalPaths,
     with_deps: bool,
 ) -> anyhow::Result<()> {
-    let ext_id = ExtensionId::new(id);
-
-    // Verify extension exists before exporting
-    let ext = manager
-        .get_extension(&ext_id)
-        .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
-
-    // Resolve dependencies if --with-deps
-    let mut dep_ids = Vec::new();
-    if with_deps {
-        let resolution = manager.resolve_dependencies_root(&ext.manifest)?;
-        if resolution.has_required_missing() {
-            let missing: Vec<_> = resolution
-                .missing
-                .iter()
-                .filter(|m| matches!(m, crate::extensions::framework::manager::DependencyStatus::Missing { required: true, .. }))
-                .map(|m| format!("{m:?}"))
-                .collect();
-            anyhow::bail!(
-                "Cannot push with --with-deps: required dependencies are not installed: {}",
-                missing.join(", ")
-            );
-        }
-        for dep in &resolution.satisfied {
-            if let crate::extensions::framework::manager::DependencyStatus::Satisfied { package, .. } = dep {
-                dep_ids.push(crate::extensions::framework::types::ExtensionId::new(package));
+    let result = paths
+        .services()
+        .extension_management()
+        .push_extension(id, registry_ref, cli_registry, with_deps, move |event| {
+            if json {
+                return;
             }
-        }
-    }
-
-    // Export to a temp .ext file
-    let temp_dir = std::env::temp_dir().join("PEKO_ext_push");
-    std::fs::create_dir_all(&temp_dir)?;
-    let temp_path = temp_dir.join(format!("{}.ext", ext.manifest.id.0));
-
-    ExtensionPackager::export_with_deps(manager, &ext_id, &dep_ids, temp_path.to_string_lossy().as_ref())?;
-
-    // Read file bytes and compute digest
-    let data = tokio::fs::read(&temp_path).await?;
-    let layer_digest = compute_digest(&data);
-
-    // Store as layer in AgentRegistry
-    let registry = AgentRegistry::new(AgentRegistry::default_path());
-    registry.init().await?;
-    registry.store_layer(&layer_digest, &data).await?;
-
-    // Build RegistryManifest with kind="extension", single layer.
-    // The OCI top-level `config` descriptor must point to a real
-    // sha256:<hex> blob, otherwise pekohub rejects the push with
-    // 400 "Invalid digest format" (see
-    // `pekohub/backend/src/routes/oci/manifests.ts:172` and the
-    // `bundle_versions.config_digest` NOT NULL constraint). For
-    // extensions the .ext payload itself serves as the config
-    // blob — point the descriptor at the same digest/size as the
-    // layer below.
-    let mut manifest =
-        RegistryManifest::new(ext.manifest.name.clone(), ext.manifest.version.clone())
-            .with_kind("extension")
-            .with_ref(registry_ref)
-            .with_bundle_type("extension")
-            .with_extension_type(&ext.extension_type)
-            .with_description(&ext.manifest.description)
-            .with_config(layer_digest.clone(), data.len() as u64, None::<String>);
-    manifest.add_layer(Layer::new(
-        layer_digest.clone(),
-        LayerType::Config,
-        data.len() as u64,
-    ));
-
-    // Compute manifest digest
-    let manifest_json = manifest.to_json()?;
-    let manifest_digest = ImageDigest::from_bytes(manifest_json.as_bytes());
-    manifest.digest = manifest_digest.as_str().to_string();
-
-    // Store manifest for RegistryClient
-    store_registry_manifest_for_client(&registry, &manifest).await?;
-
-    // Parse registry ref and configure client
-    let reg_ref = RegistryRef::parse_with_default(
-        registry_ref,
-        cli_registry.or(Some(&paths.registry_config().default)),
-        Some(ResourceType::Extension),
-    )?;
-    let config = resolve_registry_config(paths, cli_registry, &reg_ref.host)?;
-
-    let client = RegistryClient::new(config, registry);
-
-    let resolved_ref = reg_ref.full_ref();
-
-    if json {
-        let result = client.push(&manifest_digest, &resolved_ref, |_| {}).await?;
-        let output = serde_json::json!({
-            "success": true,
-            "extension_id": id,
-            "registry_ref": resolved_ref,
-            "manifest": {
-                "name": result.name,
-                "version": result.version,
-                "digest": result.digest,
-                "kind": result.kind,
-                "layers": result.layers.len(),
-                "total_size": result.total_size_bytes(),
-            }
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        println!("Pushing extension '{id}' to {resolved_ref}...");
-        let _result = client
-            .push(&manifest_digest, &resolved_ref, |event| match event {
+            match event {
                 ProgressEvent::Resolving { .. } => {}
                 ProgressEvent::Pushing {
                     layer,
                     bytes_sent,
                     bytes_total,
                 } => {
+                    let short_digest = if layer.len() > 19 {
+                        format!("{}...", &layer[..19])
+                    } else {
+                        layer.clone()
+                    };
+
                     if bytes_sent == bytes_total && bytes_sent != Some(0) {
-                        println!("  Layer {}  ✓ uploaded", &layer[..19.min(layer.len())]);
+                        println!("  Layer {}  ✓ uploaded", short_digest);
                     } else if bytes_sent == Some(0) {
-                        println!("  Layer {}  → uploading", &layer[..19.min(layer.len())]);
+                        println!("  Layer {}  → uploading", short_digest);
                     }
                 }
                 ProgressEvent::Done { .. } => {
@@ -1019,50 +756,45 @@ async fn handle_ext_push(
                     eprintln!("  Error: {code} - {message}");
                 }
                 _ => {}
-            })
-            .await?;
-    }
+            }
+        })
+        .await?;
 
-    // Clean up temp file
-    let _ = tokio::fs::remove_file(&temp_path).await;
+    if json {
+        let output = serde_json::json!({
+            "success": true,
+            "extension_id": result.id,
+            "registry_ref": result.registry_ref,
+            "manifest": {
+                "name": result.name,
+                "version": result.version,
+                "digest": result.digest,
+                "kind": result.kind,
+                "layers": result.layers,
+                "total_size": result.total_size,
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    }
 
     Ok(())
 }
 
-/// Pull an extension from a registry to a temp file, returning the temp path and manifest.
-///
-/// This is used by `peko ext pull` when it wants to install via IPC.
-pub async fn handle_ext_pull_to_temp(
-    manager: &mut ExtensionManager,
+async fn handle_ext_pull(
+    paths: &GlobalPaths,
     registry_ref: &str,
     json: bool,
-    _no_deps: bool,
     cli_registry: Option<&str>,
-    paths: &GlobalPaths,
-) -> anyhow::Result<(
-    std::path::PathBuf,
-    crate::registry::manifest::RegistryManifest,
-)> {
-    let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
-    agent_registry.init().await?;
-
-    let reg_ref = RegistryRef::parse_with_default(
-        registry_ref,
-        cli_registry.or(Some(&paths.registry_config().default)),
-        Some(ResourceType::Extension),
-    )?;
-    let config = resolve_registry_config(paths, cli_registry, &reg_ref.host)?;
-
-    let client = RegistryClient::new(config, agent_registry.clone());
-
-    let resolved_ref = reg_ref.full_ref();
-
-    let manifest = if json {
-        client.pull(&resolved_ref, |_| {}).await?
-    } else {
-        println!("Pulling extension {resolved_ref}...");
-        client
-            .pull(&resolved_ref, |event| match event {
+    no_deps: bool,
+) -> anyhow::Result<()> {
+    let result = paths
+        .services()
+        .extension_management()
+        .pull_extension(registry_ref, cli_registry, no_deps, move |event| {
+            if json {
+                return;
+            }
+            match event {
                 ProgressEvent::Resolving { .. } => {
                     println!("  Resolving...");
                 }
@@ -1071,10 +803,16 @@ pub async fn handle_ext_pull_to_temp(
                     bytes_received,
                     bytes_total,
                 } => {
+                    let short_digest = if layer.len() > 19 {
+                        format!("{}...", &layer[..19])
+                    } else {
+                        layer.clone()
+                    };
+
                     if bytes_received == bytes_total && bytes_received != Some(0) {
-                        println!("  Layer {}  ✓ downloaded", &layer[..19.min(layer.len())]);
+                        println!("  Layer {}  ✓ downloaded", short_digest);
                     } else if bytes_received == Some(0) {
-                        println!("  Layer {}  → downloading", &layer[..19.min(layer.len())]);
+                        println!("  Layer {}  → downloading", short_digest);
                     }
                 }
                 ProgressEvent::Verifying { layer } => {
@@ -1087,314 +825,61 @@ pub async fn handle_ext_pull_to_temp(
                     eprintln!("  Error: {code} - {message}");
                 }
                 _ => {}
-            })
-            .await?
-    };
-
-    // Read the layer bytes from AgentRegistry
-    let layer = manifest
-        .layers
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("Manifest has no layers"))?;
-    let data = agent_registry.get_layer(&layer.digest).await?;
-
-    // Write to a temp .ext file
-    let temp_dir = std::env::temp_dir().join("PEKO_ext_pull");
-    std::fs::create_dir_all(&temp_dir)?;
-    let temp_path = temp_dir.join(format!("{}.ext", manifest.name));
-    tokio::fs::write(&temp_path, &data).await?;
-
-    // Record the registry source for this extension in local manager
-    let ext_id = crate::extensions::framework::types::ExtensionId::new(&manifest.name);
-    if manager.storage_dir().is_some() {
-        let _ = manager.storage().write_source(&ext_id, registry_ref);
-    }
-
-    Ok((temp_path, manifest))
-}
-
-/// Pull an extension from a registry and install it.
-///
-/// This is the public entry point used by both `peko ext pull` and
-/// `peko team pull` (for auto-pulling team extensions).
-pub async fn handle_ext_pull(
-    manager: &mut ExtensionManager,
-    registry_ref: &str,
-    json: bool,
-    no_deps: bool,
-    cli_registry: Option<&str>,
-    paths: &GlobalPaths,
-) -> anyhow::Result<()> {
-    handle_ext_pull_with_seen(
-        manager,
-        registry_ref,
-        json,
-        no_deps,
-        cli_registry,
-        paths,
-        &mut std::collections::HashSet::new(),
-    )
-    .await
-}
-
-/// Internal implementation that tracks which packages have already been pulled
-/// in this dependency tree to prevent infinite recursion on circular dependencies.
-async fn handle_ext_pull_with_seen(
-    manager: &mut ExtensionManager,
-    registry_ref: &str,
-    json: bool,
-    no_deps: bool,
-    cli_registry: Option<&str>,
-    paths: &GlobalPaths,
-    already_pulled: &mut std::collections::HashSet<String>,
-) -> anyhow::Result<()> {
-    use crate::extensions::framework::manager::{DependencyResolution, DependencyStatus};
-
-    // Prevent infinite recursion: if we've already attempted to pull this ref
-    // in the current dependency tree, skip it.
-    if !already_pulled.insert(registry_ref.to_string()) {
-        if !json {
-            eprintln!(
-                "  Skipping {} (already pulled in this dependency tree)",
-                registry_ref
-            );
-        }
-        return Ok(());
-    }
-
-    let (temp_path, manifest) =
-        handle_ext_pull_to_temp(manager, registry_ref, json, no_deps, cli_registry, paths).await?;
-
-    // Install the main extension first — on success we get the manifest back
-    let install_result = handle_install(manager, temp_path.clone(), None).await;
-
-    // Record the registry source for this extension
-    if let Ok(ref ext_manifest) = install_result {
-        let ext_id = ext_manifest.id.clone();
-        if manager.storage_dir().is_some() {
-            let _ = manager.storage().write_source(&ext_id, registry_ref);
-        }
-        // Also update the in-memory manifest if it's loaded
-        if let Some(loaded) = manager.get_extension_mut(&ext_id) {
-            loaded.manifest.source = Some(registry_ref.to_string());
-        }
-    }
-
-    // Resolve dependencies using the manifest returned from install, or fail clearly
-    let dep_resolution: DependencyResolution = match &install_result {
-        Ok(ext_manifest) => manager.resolve_dependencies_root(ext_manifest)?,
-        Err(e) => {
-            // Install failed — clean up and report
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            if json {
-                let output = serde_json::json!({
-                    "success": false,
-                    "registry_ref": registry_ref,
-                    "error": e.to_string(),
-                    "dependencies": [],
-                });
-                println!("{}", serde_json::to_string_pretty(&output)?);
             }
-            return Err(anyhow::anyhow!("{e}"));
-        }
-    };
-
-    // Handle dependency resolution output and recursive pulling
-    let mut dep_pull_results: Vec<(String, anyhow::Result<()>)> = Vec::new();
-
-    if !no_deps && !dep_resolution.missing.is_empty() {
-        if json {
-            // JSON output for dependencies will be included in the final output
-        } else {
-            let required_count = dep_resolution
-                .missing
-                .iter()
-                .filter(|d| matches!(d, DependencyStatus::Missing { required: true, .. }))
-                .count();
-            let optional_count = dep_resolution
-                .missing
-                .iter()
-                .filter(|d| {
-                    matches!(
-                        d,
-                        DependencyStatus::Missing {
-                            required: false,
-                            ..
-                        }
-                    )
-                })
-                .count();
-
-            println!();
-            if required_count > 0 && optional_count > 0 {
-                println!(
-                    "Dependencies ({} required, {} optional need installation):",
-                    required_count, optional_count
-                );
-            } else if required_count > 0 {
-                println!(
-                    "Dependencies ({} required need installation):",
-                    required_count
-                );
-            } else {
-                println!(
-                    "Dependencies ({} optional need installation):",
-                    optional_count
-                );
-            }
-
-            for dep in &dep_resolution.missing {
-                if let DependencyStatus::Missing { package, required } = dep {
-                    let label = if *required { "required" } else { "optional" };
-                    println!("  - {} ({})", package, label);
-                }
-            }
-            println!();
-            println!("Pulling dependencies...");
-
-            for dep in &dep_resolution.missing {
-                if let DependencyStatus::Missing { package, .. } = dep {
-                    let result = Box::pin(handle_ext_pull_with_seen(
-                        manager,
-                        package,
-                        false, // non-JSON for recursive deps
-                        false, // always pull deps of deps
-                        cli_registry,
-                        paths,
-                        already_pulled,
-                    ))
-                    .await;
-                    dep_pull_results.push((package.clone(), result));
-                }
-            }
-        }
-    } else if no_deps && !dep_resolution.missing.is_empty() {
-        // Emit warning when --no-deps is used and dependencies are missing
-        if json {
-            // Warning included in JSON output below
-        } else {
-            let ext_name = install_result
-                .as_ref()
-                .map(|m| m.name.as_str())
-                .unwrap_or(&manifest.name);
-            let missing_count = dep_resolution.missing.len();
-            eprintln!();
-            eprintln!(
-                "WARNING: Extension '{}' declares {} dependenc{} that are not installed:",
-                ext_name,
-                missing_count,
-                if missing_count == 1 { "y" } else { "ies" }
-            );
-            for dep in &dep_resolution.missing {
-                if let DependencyStatus::Missing { package, required } = dep {
-                    let req_label = if *required { "required" } else { "optional" };
-                    eprintln!("  - {}: {}", req_label, package);
-                }
-            }
-            eprintln!("Run 'peko ext pull {}' to install them.", registry_ref);
-        }
-    }
-
-    // Report circular dependencies
-    if !dep_resolution.circular.is_empty() && !json {
-        eprintln!();
-        eprintln!("WARNING: Circular dependencies detected:");
-        for cycle in &dep_resolution.circular {
-            eprintln!("  {}", cycle.join(" -> "));
-        }
-    }
-
-    // Clean up temp file
-    let _ = tokio::fs::remove_file(&temp_path).await;
-
-    // Build dependency JSON for output
-    let mut dep_json = Vec::new();
-    for dep in &dep_resolution.missing {
-        if let DependencyStatus::Missing { package, required } = dep {
-            let pulled = dep_pull_results.iter().find(|(p, _)| p == package);
-            dep_json.push(serde_json::json!({
-                "package": package,
-                "status": "missing",
-                "required": required,
-                "pulled": pulled.map(|(_, r)| r.is_ok()).unwrap_or(false),
-            }));
-        }
-    }
-    for dep in &dep_resolution.satisfied {
-        if let DependencyStatus::Satisfied {
-            package,
-            installed_version,
-        } = dep
-        {
-            dep_json.push(serde_json::json!({
-                "package": package,
-                "status": "satisfied",
-                "version": installed_version,
-            }));
-        }
-    }
-    for dep in &dep_resolution.version_mismatches {
-        if let DependencyStatus::VersionMismatch {
-            package,
-            have,
-            need,
-        } = dep
-        {
-            dep_json.push(serde_json::json!({
-                "package": package,
-                "status": "version_mismatch",
-                "installed_version": have,
-                "required_version": need,
-            }));
-        }
-    }
+        })
+        .await?;
 
     if json {
+        let dep_json: Vec<_> = result
+            .dependencies
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "registry_ref": d.registry_ref,
+                    "success": d.success,
+                    "error": d.error,
+                })
+            })
+            .collect();
+
         let output = serde_json::json!({
             "success": true,
-            "registry_ref": registry_ref,
+            "registry_ref": result.registry_ref,
             "manifest": {
-                "name": manifest.name,
-                "version": manifest.version,
-                "digest": manifest.digest,
-                "kind": manifest.kind,
-                "layers": manifest.layers.len(),
-                "total_size": manifest.total_size_bytes(),
+                "name": result.manifest_name,
+                "version": result.manifest_version,
+                "digest": result.manifest_digest,
+                "kind": result.manifest_kind,
+                "layers": result.manifest_layers,
+                "total_size": result.manifest_total_size,
             },
             "dependencies": dep_json,
             "no_deps": no_deps,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        // Report any failed dependency pulls
-        let failed_deps: Vec<_> = dep_pull_results
+        println!(
+            "Extension installed successfully\n   ID: {}",
+            result.manifest_name
+        );
+
+        let failed = result
+            .dependencies
             .iter()
-            .filter(|(_, r)| r.is_err())
-            .collect();
-        if !failed_deps.is_empty() {
+            .filter(|d| !d.success)
+            .collect::<Vec<_>>();
+        if !failed.is_empty() {
             eprintln!();
             eprintln!("WARNING: Some dependencies failed to pull:");
-            for (pkg, err) in &failed_deps {
-                eprintln!("  - {}: {}", pkg, err.as_ref().unwrap_err());
+            for dep in &failed {
+                eprintln!(
+                    "  - {}: {}",
+                    dep.registry_ref,
+                    dep.error.as_deref().unwrap_or("unknown error")
+                );
             }
         }
     }
 
     Ok(())
-}
-
-async fn store_registry_manifest_for_client(
-    registry: &AgentRegistry,
-    manifest: &RegistryManifest,
-) -> anyhow::Result<ImageDigest> {
-    let digest = ImageDigest::new(&manifest.digest)?;
-    let image_dir = registry
-        .root_path()
-        .join("registry_manifests")
-        .join(digest.dir_name());
-    tokio::fs::create_dir_all(&image_dir).await?;
-    let manifest_path = image_dir.join("manifest.json");
-    let json = manifest.to_json()?;
-    tokio::fs::write(&manifest_path, json).await?;
-    Ok(digest)
 }
