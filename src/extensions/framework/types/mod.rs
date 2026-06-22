@@ -9,9 +9,6 @@ pub use self::hook_io::{tool_result_from_hook, HookInput, HookOutput, HookResult
 pub use self::manifest::{ExtensionDependency, ExtensionManifest};
 pub use self::session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
 pub use self::tool::{ToolMetadata, ToolSource};
-pub use self::tool_exec::{
-    AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolResult, ToolWithContext,
-};
 pub use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
 
 use serde::{Deserialize, Serialize};
@@ -136,6 +133,14 @@ pub mod manifest;
 pub mod session;
 pub mod tool;
 pub mod tool_exec;
+
+// Re-exports for in-flight compat while the execution primitives
+// are migrated to tools::core. Removed in the follow-up commit.
+#[allow(deprecated)]
+pub use crate::tools::core::exec::{
+    AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolProgressEvent, ToolResult,
+    ToolWithContext,
+};
 
 #[cfg(test)]
 mod tests {

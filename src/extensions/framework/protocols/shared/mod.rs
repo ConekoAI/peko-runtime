@@ -25,3 +25,7 @@ pub use proxy_utils::{estimate_tool_duration, execute_with_context_handling, for
 pub use crate::extensions::framework::services::ParamSource as ReservedParamSource;
 pub use schema_filter::filter_reserved_params;
 pub use validation::{validate_no_reserved_params_leak, ValidationError};
+
+// In-flight compat: `ContextSource` was moved to `tools::core::context_source`.
+// Re-exported from the new location for one commit while consumers migrate.
+pub use crate::tools::core::context_source::ContextSource;

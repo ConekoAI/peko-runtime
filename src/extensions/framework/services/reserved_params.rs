@@ -150,8 +150,8 @@ impl ParamSource {
     /// # Returns
     /// The resolved value, or `Value::Null` if not available
     pub fn resolve(&self, ctx: Option<&crate::extensions::framework::types::ToolContext>) -> Value {
-        use crate::extensions::framework::protocols::shared::context_resolver::ContextResolver;
         use crate::extensions::framework::types::ToolContextAdapter;
+        use crate::tools::core::context_source::ContextResolver;
 
         match self {
             Self::Runtime { field } => ctx.map_or(Value::Null, |c| {
