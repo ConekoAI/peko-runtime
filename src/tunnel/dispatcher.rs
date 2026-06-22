@@ -27,7 +27,7 @@ use super::{
     a2a_signature::{verify_request, SignedFields},
     did_key::did_key_to_verifying_key,
 };
-use crate::tools::builtin::messaging::a2a_send::{A2aSendResult, HubA2AErrorResponse};
+use crate::tunnel::a2a_send_tool::{A2aSendResult, HubA2AErrorResponse};
 
 use crate::auth::ownership::Permission;
 

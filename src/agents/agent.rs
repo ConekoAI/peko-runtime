@@ -134,9 +134,10 @@ impl Agent {
                 .services()
                 .cross_runtime_a2a_ctx();
             let mut a2a = match self.config.agent_did.as_deref() {
-                Some(did) if !did.is_empty() => crate::tools::A2aSendTool::new(agent_service)
+                Some(did) if !did.is_empty() => crate::tunnel::a2a_send_tool::A2aSendTool::new(agent_service)
                     .with_caller_did(&self.config.name, did),
-                _ => crate::tools::A2aSendTool::new(agent_service).with_caller(&self.config.name),
+                _ => crate::tunnel::a2a_send_tool::A2aSendTool::new(agent_service)
+                    .with_caller(&self.config.name),
             };
             if let Some(ctx) = cross_ctx {
                 a2a = a2a.with_cross_runtime(ctx);

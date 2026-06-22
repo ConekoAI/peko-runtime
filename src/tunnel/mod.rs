@@ -5,6 +5,7 @@
 
 pub mod a2a_audit;
 pub mod a2a_pending;
+pub mod a2a_send_tool;
 pub mod a2a_signature;
 pub mod backoff;
 pub mod client;

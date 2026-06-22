@@ -36,7 +36,7 @@ use crate::tunnel::hub_directory::{
     AgentDirectory, AgentResolution, FakeAgentDirectory, ResolvedExposure,
 };
 use crate::tunnel::{PendingA2aResponses, TunnelHandle, TunnelMessage};
-use crate::tools::builtin::messaging::a2a_send::{
+use crate::tunnel::a2a_send_tool::{
     A2aSendArgs, A2aSendResult, A2aSendTool, HubA2AErrorResponse, TargetSpec,
 };
 
