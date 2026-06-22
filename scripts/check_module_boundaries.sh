@@ -6,9 +6,12 @@
 # 1. src/extensions/framework/ must NOT import from concrete extension types
 #    (src/extensions/<type>/ where <type> != framework).
 # 2. src/extensions/<type>/ should NOT import from src/extensions/<other_type>/.
-# 3. src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/.
+# 3. src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/
+#    (except tools::core, the established one-way dep).
 # 4. src/commands/ should NOT import from low-level persistence/packaging modules
 #    (advisory while the command layer is being cleaned up).
+# 5. src/extensions/framework/ must NOT import from src/agents/, src/tunnel/, or
+#    src/daemon/.
 
 set -e
 
@@ -127,15 +130,16 @@ echo ""
 
 # -----------------------------------------------------------------------------
 # Rule 3: src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/
+#        (tools::core is the one allowed one-way dep)
 # -----------------------------------------------------------------------------
-echo "Rule 3: src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/"
+echo "Rule 3: src/extensions/framework/core/ must NOT import from src/daemon/ or src/tools/ (except tools::core)"
 echo ""
 
 VIOLATIONS_3A=$(grep -r "crate::daemon::" src/extensions/framework/core/ --include="*.rs" 2>/dev/null || true)
-VIOLATIONS_3B=$(grep -r "crate::tools::" src/extensions/framework/core/ --include="*.rs" 2>/dev/null || true)
+VIOLATIONS_3B=$(grep -rE "crate::tools::(builtin|registry|factory)" src/extensions/framework/core/ --include="*.rs" 2>/dev/null || true)
 
 if [ -n "$VIOLATIONS_3A" ] || [ -n "$VIOLATIONS_3B" ]; then
-    echo "  ❌ FAIL: src/extensions/framework/core/ imports from forbidden modules"
+    echo "  ❌ FAIL: src/extensions/framework/core/ imports from forbidden modules (daemon, tools::builtin, tools::registry, tools::factory)"
     echo ""
     if [ -n "$VIOLATIONS_3A" ]; then
         echo "$VIOLATIONS_3A" | while read -r line; do
@@ -209,6 +213,29 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
+# Rule 5: src/extensions/framework/ must NOT import from src/agents/, src/tunnel/, or src/daemon/
+# -----------------------------------------------------------------------------
+echo "Rule 5: src/extensions/framework/ must NOT import from src/agents/, src/tunnel/, or src/daemon/"
+echo ""
+
+VIOLATIONS_5A=$(grep -rE "crate::(agents|tunnel|daemon)::" src/extensions/framework/ --include="*.rs" 2>/dev/null || true)
+# Exclude self-references to src/extensions/framework/ (e.g. in error messages)
+VIOLATIONS_5A=$(echo "$VIOLATIONS_5A" | grep -v "src/extensions/framework/" || true)
+
+if [ -n "$VIOLATIONS_5A" ]; then
+    echo "  ❌ FAIL: src/extensions/framework/ imports from agents/tunnel/daemon"
+    echo ""
+    echo "$VIOLATIONS_5A" | while read -r line; do
+        echo "     $line"
+    done
+    echo ""
+    EXIT_CODE=1
+else
+    echo "  ✓ PASS: No forbidden cross-domain imports"
+fi
+echo ""
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 echo "=========================================="
@@ -223,8 +250,9 @@ else
     echo "Fix guidance:"
     echo "  - Framework code (src/extensions/framework/) must not depend on concrete extension types"
     echo "  - Extension types should depend on the framework, not each other"
-    echo "  - src/extensions/framework/core/ must not depend on daemon/ or tools/"
+    echo "  - src/extensions/framework/core/ must not depend on daemon/ or tools/ (except tools::core)"
     echo "  - Commands should delegate persistence/packaging work to services"
+    echo "  - src/extensions/framework/ must not depend on agents/, tunnel/, or daemon/"
 fi
 
 exit $EXIT_CODE
