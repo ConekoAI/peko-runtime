@@ -2,13 +2,13 @@
 //!
 //! Tools for inter-agent communication and messaging:
 //! - `agent_spawn`: Spawn sub-agents
-//! - `a2a_send`: A2A message sending
 //! - `message_tool`: General message tool
+//!
+//! A2A message sending moved to `crate::tunnel::a2a_send_tool` in
+//! issue #31d (cycle break). Tools layer no longer depends on tunnel.
 
-pub mod a2a_send;
 pub mod agent_spawn;
 pub mod message_tool;
 
-pub use a2a_send::A2aSendTool;
 pub use agent_spawn::AgentSpawnTool;
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};

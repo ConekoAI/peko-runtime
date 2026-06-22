@@ -13,13 +13,30 @@
 //! can use them without depending on `crate::tools`. The `tools::core` module
 //! re-exports them for backward compatibility.
 
-use crate::engine::AgenticEvent;
 use crate::extension::protocols::shared::context_resolver::ContextSource;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+/// Progress event emitted by a tool during execution.
+///
+/// Framework-defined; intentionally independent of `crate::engine::AgenticEvent`
+/// so the extension framework does not depend on the engine. Callers that want
+/// to surface tool progress in the engine's event stream should convert this
+/// to an `AgenticEvent::ToolUpdate` at the integration boundary.
+#[derive(Debug, Clone)]
+pub struct ToolProgressEvent {
+    /// Run identifier
+    pub run_id: String,
+    /// Tool identifier
+    pub tool_id: String,
+    /// Optional incremental output to surface
+    pub output: Option<String>,
+    /// Optional progress percentage (0-100)
+    pub progress_percent: Option<u8>,
+}
 
 /// Errors that can occur during tool execution
 #[derive(Debug, Clone, PartialEq)]
@@ -73,7 +90,7 @@ pub struct ToolContext {
     /// Tool name
     pub tool_name: String,
     /// Channel for emitting events (progress updates, etc.)
-    event_tx: Option<mpsc::Sender<AgenticEvent>>,
+    event_tx: Option<mpsc::Sender<ToolProgressEvent>>,
     /// Abort signal receiver
     abort_rx: tokio::sync::watch::Receiver<bool>,
     /// Progress update throttle (minimum ms between updates)
@@ -170,7 +187,7 @@ impl ToolContext {
         tool_id: impl Into<String>,
         tool_name: impl Into<String>,
         abort_rx: tokio::sync::watch::Receiver<bool>,
-        event_tx: mpsc::Sender<AgenticEvent>,
+        event_tx: mpsc::Sender<ToolProgressEvent>,
     ) -> Self {
         Self {
             run_id: run_id.into(),
@@ -308,10 +325,10 @@ impl ToolContext {
 
             let output = message.unwrap_or_else(|| format!("Progress: {current}/{total}"));
 
-            let event = AgenticEvent::ToolUpdate {
+            let event = ToolProgressEvent {
                 run_id: self.run_id.clone(),
                 tool_id: self.tool_id.clone(),
-                output,
+                output: Some(output),
                 progress_percent: percent,
             };
 
@@ -334,10 +351,10 @@ impl ToolContext {
         }
 
         if let Some(ref tx) = self.event_tx {
-            let event = AgenticEvent::ToolUpdate {
+            let event = ToolProgressEvent {
                 run_id: self.run_id.clone(),
                 tool_id: self.tool_id.clone(),
-                output: message.into(),
+                output: Some(message.into()),
                 progress_percent: None,
             };
             let _ = tx.send(event).await;
@@ -408,7 +425,7 @@ impl AbortSignal {
         run_id: impl Into<String>,
         tool_id: impl Into<String>,
         tool_name: impl Into<String>,
-        event_tx: mpsc::Sender<AgenticEvent>,
+        event_tx: mpsc::Sender<ToolProgressEvent>,
     ) -> ToolContext {
         ToolContext::with_events(run_id, tool_id, tool_name, self.tx.subscribe(), event_tx)
     }
@@ -642,13 +659,13 @@ mod tests {
 
         if let Some(event) = rx.recv().await {
             match event {
-                AgenticEvent::ToolUpdate {
+                ToolProgressEvent {
                     progress_percent,
                     output,
                     ..
                 } => {
                     assert_eq!(progress_percent, Some(50));
-                    assert_eq!(output, "Half done");
+                    assert_eq!(output, Some("Half done".to_string()));
                 }
                 _ => panic!("Expected ToolUpdate event"),
             }
