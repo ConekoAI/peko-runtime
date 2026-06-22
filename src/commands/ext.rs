@@ -844,6 +844,7 @@ async fn handle_ext_pull(
 
         let output = serde_json::json!({
             "success": true,
+            "id": result.manifest_name,
             "registry_ref": result.registry_ref,
             "manifest": {
                 "name": result.manifest_name,

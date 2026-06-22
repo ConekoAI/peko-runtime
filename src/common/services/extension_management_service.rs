@@ -307,7 +307,33 @@ impl ExtensionManagementService {
         registry_ref: &str,
         temp_path: &Path,
     ) -> Result<ExtensionManifest> {
-        let install_result = manager.install(temp_path).await;
+        // .ext packages are archives; the manager's type detection only works
+        // on an extracted directory. Unpack to a temp dir before installing.
+        let install_dir = if temp_path.extension().map_or(false, |e| e == "ext") {
+            let temp_dir = std::env::temp_dir()
+                .join("PEKO_ext_install")
+                .join(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                        .to_string(),
+                );
+            tokio::fs::create_dir_all(&temp_dir).await?;
+            crate::extensions::framework::manager::packaging::ExtensionUnpackager::install(
+                temp_path, &temp_dir,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to extract .ext package '{}': {e}",
+                    temp_path.display()
+                )
+            })?
+        } else {
+            temp_path.to_path_buf()
+        };
+
+        let install_result = manager.install(&install_dir).await;
 
         if let Err(ref e) = install_result {
             return Err(anyhow::anyhow!("{e}"));
