@@ -386,10 +386,14 @@ fn config_init_creates_config_file() {
     let (out, err, status) = run(&cli, &["config", "init"]);
     assert_ok(&out, &err, &status);
 
-    // config init writes to the current working directory (CWD of the subprocess).
-    // The subprocess CWD is the project root (where cargo test runs from), not the tempdir.
-    // We can't reliably predict the CWD, so we just verify the command succeeded
-    // and mentions creating a config file.
+    // PekoCli isolates the subprocess CWD to the temp HOME, so `config init`
+    // should have written peko.toml there rather than the project root.
+    let created = cli.home().join("peko.toml");
+    assert!(
+        created.exists(),
+        "config init should create peko.toml in isolated CWD ({}): {out}",
+        created.display()
+    );
     assert!(
         out.to_lowercase().contains("created") || out.to_lowercase().contains("config"),
         "config init should report creating a config file: {out}"

@@ -143,8 +143,12 @@ impl PekoCli {
     ///
     /// Sets `HOME`, `USERPROFILE` (Windows), `PEKO_HOME`, the
     /// platform-specific IPC override (`PEKO_DAEMON_SOCK` on Unix,
-    /// `PEKO_DAEMON_PIPE` on Windows), and unsets `MINIMAX_API_KEY` so a
-    /// leaking env can't switch the test to the real provider mid-run.
+    /// `PEKO_DAEMON_PIPE` on Windows), unsets `MINIMAX_API_KEY` so a
+    /// leaking env can't switch the test to the real provider mid-run,
+    /// and changes the subprocess current working directory to the isolated
+    /// `HOME`. The CWD isolation prevents commands like `config init`
+    /// (which writes `peko.toml` relative to CWD) from polluting the
+    /// project root and causing flaky environmental failures.
     pub fn cmd(&self) -> Command {
         let bin = env!("CARGO_BIN_EXE_peko");
         let mut c = Command::new(bin);
@@ -152,7 +156,8 @@ impl PekoCli {
             .env("USERPROFILE", self.home.path())
             .env("PEKO_HOME", self.peko_dir())
             .env("PEKO_MASTER_PASSPHRASE", &self.vault_passphrase)
-            .env_remove("MINIMAX_API_KEY");
+            .env_remove("MINIMAX_API_KEY")
+            .current_dir(self.home.path());
 
         // v3 mock-LLM bootstrap: when `MOCK_LLM_URL` is set, the
         // daemon needs to find the catalog entry `mock-llm` (seeded
