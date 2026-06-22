@@ -3361,8 +3361,8 @@ impl IpcServer {
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
-        use crate::agents::stateless_service::MessageRequest;
         use crate::engine::{AgenticEvent, LifecyclePhase};
+        use crate::tunnel::a2a_message_types::A2aMessageRequest;
 
         tracing::info!(
             "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}, session_id={:?}, new_session={}",
@@ -3376,7 +3376,7 @@ impl IpcServer {
 
         let agent_service = state.agent_service().clone();
 
-        let request = MessageRequest::new(&agent, message)
+        let request = A2aMessageRequest::new(&agent, message)
             .with_team(&team)
             .with_session_opt(session_id)
             .with_new_session(new_session)

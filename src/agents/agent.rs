@@ -130,20 +130,25 @@ impl Agent {
             // credential, or this PR's bootstrap hasn't shipped), the
             // ctx is `None` and the tool falls back to the local-only
             // path — same behavior as pre-#29.
+            //
+            // Cycle 5 (refactor/clippy-cleanup-rust196): coerce the
+            // concrete service arc into the `AgentMessageService`
+            // trait object so the tool is constructed through the
+            // `build_tool` factory rather than directly binding to the
+            // concrete `StatelessAgentService` type.
+            let dyn_service: Arc<dyn crate::tunnel::a2a_send_tool::AgentMessageService> =
+                agent_service;
             let cross_ctx = self
                 .extension_core
                 .services()
                 .cross_runtime_a2a_ctx();
-            let mut a2a = match self.config.agent_did.as_deref() {
-                Some(did) if !did.is_empty() => crate::tunnel::a2a_send_tool::A2aSendTool::new(agent_service)
-                    .with_caller_did(&self.config.name, did),
-                _ => crate::tunnel::a2a_send_tool::A2aSendTool::new(agent_service)
-                    .with_caller(&self.config.name),
-            };
-            if let Some(ctx) = cross_ctx {
-                a2a = a2a.with_cross_runtime(ctx);
-            }
-            tools.push(Arc::new(a2a));
+            let tool = crate::tunnel::a2a_send_tool::build_tool(
+                dyn_service,
+                Some(&self.config.name),
+                self.config.agent_did.as_deref(),
+                cross_ctx,
+            );
+            tools.push(tool);
         } else {
             tracing::warn!("StatelessAgentService not available on ExtensionCore — a2a_send tool will not be registered");
         }

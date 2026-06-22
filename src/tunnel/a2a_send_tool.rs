@@ -33,10 +33,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::agents::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::auth::principal::Principal;
 use crate::tools::core::Tool;
 use crate::tunnel::a2a_audit;
+use crate::tunnel::a2a_message_types::{A2aMessageRequest as MessageRequest, A2aMessageResponse as MessageResult};
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentDirectory, DirectoryError, ResolvedExposure};
@@ -180,7 +180,7 @@ pub struct A2aSendResult {
 /// This tool delegates to StatelessAgentService, reusing the exact same
 /// execution path as `peko send` and the HTTP API.
 pub struct A2aSendTool {
-    agent_service: Arc<StatelessAgentService>,
+    agent_service: Arc<dyn AgentMessageService>,
     /// Optional caller agent name for annotation
     caller_agent: Option<String>,
     /// Optional caller agent DID (issue #28). When set, this is what
@@ -203,7 +203,7 @@ pub struct A2aSendTool {
 impl A2aSendTool {
     /// Create a new A2A send tool
     #[must_use]
-    pub fn new(agent_service: Arc<StatelessAgentService>) -> Self {
+    pub fn new(agent_service: Arc<dyn AgentMessageService>) -> Self {
         Self {
             agent_service,
             caller_agent: None,
@@ -936,9 +936,54 @@ fn message_result_to_a2a_value(
 #[allow(dead_code)]
 type _UnusedA2aWaitError = A2aWaitError;
 
+/// Minimum interface `A2aSendTool` needs from a peer agent service.
+///
+/// Lives in `tunnel` (not `agents`) so `A2aSendTool::new` can take a
+/// trait object without importing the concrete `StatelessAgentService`
+/// type. Implementations convert the tunnel-owned request/response
+/// types to whatever internal shape they use.
+///
+/// Breaking cycle 5 (per PLAN §2.5).
+#[async_trait::async_trait]
+pub trait AgentMessageService: Send + Sync {
+    async fn execute_message(
+        &self,
+        req: MessageRequest,
+    ) -> Result<MessageResult>;
+}
+
+/// Construct an `Arc<dyn Tool>` for the `a2a_send` capability.
+///
+/// Replaces direct `A2aSendTool::new(...)` calls in callers that
+/// don't want to depend on the concrete `A2aSendTool` type. The
+/// caller wires the service as `Arc<dyn AgentMessageService>`; the
+/// factory wires the `caller` annotation, optional DID, and optional
+/// cross-runtime context.
+#[must_use]
+pub fn build_tool(
+    service: Arc<dyn AgentMessageService>,
+    caller: Option<&str>,
+    caller_did: Option<&str>,
+    cross_runtime: Option<Arc<CrossRuntimeA2aCtx>>,
+) -> Arc<dyn Tool> {
+    let mut tool = A2aSendTool::new(service);
+    if let Some(did) = caller_did {
+        if let Some(name) = caller {
+            tool = tool.with_caller_did(name, did);
+        }
+    } else if let Some(name) = caller {
+        tool = tool.with_caller(name);
+    }
+    if let Some(ctx) = cross_runtime {
+        tool = tool.with_cross_runtime(ctx);
+    }
+    Arc::new(tool)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::stateless_service::StatelessAgentService;
 
     #[test]
     fn test_a2a_send_args_parsing() {

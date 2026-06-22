@@ -11,11 +11,10 @@ use tracing::{debug, error, info, warn};
 /// This is a fixed UUIDv4 that acts as the namespace for UUIDv5 generation.
 const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6");
 
-use crate::agents::stateless_service::MessageRequest;
-
 use crate::auth::Principal;
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
+use crate::tunnel::a2a_message_types::A2aMessageRequest;
 
 use super::a2a_audit;
 use super::protocol::{
@@ -613,7 +612,7 @@ impl TunnelDispatcher {
             .ok();
 
         // Build message request
-        let request = MessageRequest::new(agent_name.clone(), message)
+        let request = A2aMessageRequest::new(agent_name.clone(), message)
             .with_user(caller_user)
             .with_new_session(false);
 
@@ -1153,7 +1152,7 @@ impl TunnelDispatcher {
 
         // 4 + 5. Build the request and dispatch.
         let caller_principal = Principal::Agent(caller_agent_did.clone());
-        let request = MessageRequest::new(&local_agent_name, message.clone())
+        let request = A2aMessageRequest::new(&local_agent_name, message.clone())
             .with_session_opt(session_id.clone())
             .with_team_opt(team.clone())
             .with_user("")
