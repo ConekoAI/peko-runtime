@@ -379,69 +379,13 @@ pub struct ExternalSource {
 // Compaction Configuration (ADR-022)
 // ============================================================================
 
-/// Session compaction configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactionConfig {
-    /// Enable auto-compaction
-    #[serde(default = "default_compaction_enabled")]
-    pub enabled: bool,
-    /// Auto-compaction trigger threshold as percent of context window (0-100)
-    #[serde(default = "default_auto_threshold_percent")]
-    pub auto_threshold_percent: u8,
-    /// Tokens to reserve for LLM response headroom
-    #[serde(default = "default_reserve_tokens")]
-    pub reserve_tokens: usize,
-    /// Minimum recent conversation to preserve during compaction
-    #[serde(default = "default_keep_recent_tokens")]
-    pub keep_recent_tokens: usize,
-    /// Maximum compactions per session (quota)
-    #[serde(default = "default_max_compactions_per_session")]
-    pub max_compactions_per_session: usize,
-    /// Cooldown between compactions in seconds
-    #[serde(default = "default_cooldown_seconds")]
-    pub cooldown_seconds: u64,
-    /// Per-provider/per-model context window overrides
-    #[serde(default)]
-    pub model_limits: HashMap<String, HashMap<String, usize>>,
-}
-
-fn default_compaction_enabled() -> bool {
-    true
-}
-
-fn default_auto_threshold_percent() -> u8 {
-    85
-}
-
-fn default_reserve_tokens() -> usize {
-    16_384
-}
-
-fn default_keep_recent_tokens() -> usize {
-    20_000
-}
-
-fn default_max_compactions_per_session() -> usize {
-    100
-}
-
-fn default_cooldown_seconds() -> u64 {
-    60
-}
-
-impl Default for CompactionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_compaction_enabled(),
-            auto_threshold_percent: default_auto_threshold_percent(),
-            reserve_tokens: default_reserve_tokens(),
-            keep_recent_tokens: default_keep_recent_tokens(),
-            max_compactions_per_session: default_max_compactions_per_session(),
-            cooldown_seconds: default_cooldown_seconds(),
-            model_limits: HashMap::new(),
-        }
-    }
-}
+/// Session compaction configuration (re-exported from the canonical
+/// definition in `crate::session::compaction`).
+///
+/// `PekobotConfig.compaction` keeps this name so existing TOML configs
+/// continue to round-trip. The canonical type lives next to the engine
+/// that consumes it (`engine/compaction_orchestrator`, `session/compaction/*`).
+pub use crate::session::compaction::CompactionConfig;
 
 #[cfg(test)]
 mod tests {

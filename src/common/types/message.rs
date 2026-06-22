@@ -420,7 +420,7 @@ impl MessageConverter for JsonMessageConverter {
 
 /// Context for agent execution with message history
 #[derive(Debug, Clone, Default)]
-pub struct AgentContext {
+pub struct MessageContext {
     /// All messages in the conversation (including custom)
     pub messages: Vec<AgentMessage>,
 
@@ -431,7 +431,7 @@ pub struct AgentContext {
     pub metadata: HashMap<String, Value>,
 }
 
-impl AgentContext {
+impl MessageContext {
     /// Create a new context with a system prompt
     pub fn with_system_prompt(prompt: impl Into<String>) -> Self {
         let prompt_str = prompt.into();
@@ -562,7 +562,7 @@ pub trait ContextTransformer: Send + Sync {
     /// - Context window management (pruning old messages)
     /// - Injecting external context
     /// - Summarizing conversation history
-    async fn transform(&self, context: AgentContext) -> anyhow::Result<AgentContext>;
+    async fn transform(&self, context: MessageContext) -> anyhow::Result<MessageContext>;
 }
 
 /// Default context transformer with token-based pruning
@@ -579,7 +579,7 @@ impl DefaultContextTransformer {
 
 #[async_trait::async_trait]
 impl ContextTransformer for DefaultContextTransformer {
-    async fn transform(&self, mut context: AgentContext) -> anyhow::Result<AgentContext> {
+    async fn transform(&self, mut context: MessageContext) -> anyhow::Result<MessageContext> {
         let estimated_tokens = context.estimate_tokens();
 
         if estimated_tokens > self.config.max_tokens {
@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_context_management() {
-        let mut context = AgentContext::with_system_prompt("System prompt");
+        let mut context = MessageContext::with_system_prompt("System prompt");
         context.add_message(AgentMessage::user("Hello"));
         context.add_message(AgentMessage::assistant("Hi!"));
 
