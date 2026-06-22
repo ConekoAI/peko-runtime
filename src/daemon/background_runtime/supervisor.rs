@@ -4,6 +4,11 @@ use crate::common::process::{
     graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy,
     RuntimeSpawnConfig,
 };
+// `JobObject` is only referenced from inside a `#[cfg(windows)]` field on
+// `RuntimeKind::Process` below. Gate the import so non-Windows clippy
+// stays clean while Windows compilation still resolves the type.
+#[cfg(windows)]
+use crate::common::process::JobObject;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Child;
@@ -118,7 +123,12 @@ pub async fn spawn_runtime_process(
     restart_policy: RestartPolicy,
     spawn_config: RuntimeSpawnConfig,
 ) -> anyhow::Result<ManagedRuntime> {
-    let (child, stdin, stdout, pid, _job) = spawn_process(config).await?;
+    // On Windows the returned `JobObject` is moved into `RuntimeKind::Process::job`
+    // below; on non-Windows it is discarded. Naming the binding `job` (with a
+    // `cfg_attr` allow on non-Windows) keeps the Windows struct-literal reference
+    // working without renaming tricks.
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    let (child, stdin, stdout, pid, job) = spawn_process(config).await?;
 
     Ok(ManagedRuntime {
         id: id.to_string(),

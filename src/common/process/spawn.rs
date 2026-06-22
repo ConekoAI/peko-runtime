@@ -6,6 +6,11 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tracing::{debug, trace};
+// `warn!` is only called from inside the `#[cfg(windows)]` job-object block
+// below; gate the import so non-Windows clippy stays clean while Windows
+// compilation still resolves the macro.
+#[cfg(windows)]
+use tracing::warn;
 
 use super::config::ProcessSpawnConfig;
 use super::job_object::JobObject;
