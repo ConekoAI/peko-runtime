@@ -96,8 +96,10 @@ Total: full `cargo test --lib` (no test selection needed). No external dependenc
 | [scenarios/s2_extension_registry_roundtrip.rs](../../tests/scenarios/s2_extension_registry_roundtrip.rs) | 4 | 4 | mock LLM (Phase D slice 2: author `peko ext push` → pekohub → collab `peko ext pull` → install + enable + chat; 4 round-trip scenarios incl. dependency resolution and `peko login`-less push failure) | Y |
 | [scenarios/s3_agent_registry_roundtrip.rs](../../tests/scenarios/s3_agent_registry_roundtrip.rs) | 4 | 4 | mock LLM (Phase D slice 3: author `peko agent push` (carrying ext refs) → pekohub → collab `peko agent pull` → ext auto-pulled → chat; 4 round-trip scenarios incl. no-ext baseline, auto-pull, already-present, and bad-ext graceful failure) | Y |
 | [scenarios/s4_publish_running_agent_with_permission.rs](../../tests/scenarios/s4_publish_running_agent_with_permission.rs) | 3 | 3 | mock LLM (Phase D slice 4: owner runs agent behind tunnel → owner's chat → 200; pre-seeded permitted user → 200; ungranted user → 403; no `Authorization` header → 401; 3 ACL scenarios against pekohub's `canChat` at `pekohub/backend/src/services/instances.ts:339-345`) | Y |
+| [scenarios/s5_live_permit_propagation.rs](../../tests/scenarios/s5_live_permit_propagation.rs) | 1 | 1 | mock LLM (Phase D slice 5: live `peko agent permit` / `peko agent revoke` propagation to PekoHub without daemon restart; issue #16 regression) | Y |
+| [scenarios/s6_principal_grant_revoke_roundtrip.rs](../../tests/scenarios/s6_principal_grant_revoke_roundtrip.rs) | 4 | 4 | mock LLM (Phase D slice 6: inline `Principal` grant/revoke round-trips via IPC for `Agent` / `Team` / `Public` subjects; post issue #30 replacement for the removed `s6_revoke_principal_collapse_e2e.rs`) | Y |
 
-**Totals:** 135 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 151 in `tests/`.
+**Totals:** 140 hub- or mock-LLM-gated tests (all `#[ignore]`, un-ignored by `--include-ignored`) + 16 always-on tests (10 pure Rust + 6 offline CLI) = 156 in `tests/`.
 
 The 5 files that exercise the hub directly — [packaging_integration.rs](../../tests/packaging_integration.rs), [pekohub_integration.rs](../../tests/pekohub_integration.rs), [registry_integration.rs](../../tests/registry_integration.rs), [tunnel_integration.rs](../../tests/tunnel_integration.rs), [tunnel_e2e.rs](../../tests/tunnel_e2e.rs) — share the **same dual-mode `PekohubBackend::start()` harness** in [tests/common/harness.rs](../../tests/common/harness.rs): read `PEKOHUB_URL` and reuse a running container, or spawn `node` + `tsx` against `pekohub/backend/tests/fixtures/server.ts`. The `tunnel_*` tests additionally derive `ws_url` from `PEKOHUB_URL` (`http(s)://` → `ws(s)://`, append `/v1/tunnel`). The 10 `cli_*` files ([cli_send.rs](../../tests/cli_send.rs), [cli_session.rs](../../tests/cli_session.rs), [cli_basics.rs](../../tests/cli_basics.rs), [cli_cron.rs](../../tests/cli_cron.rs), [cli_subagent.rs](../../tests/cli_subagent.rs), [cli_tools.rs](../../tests/cli_tools.rs), [cli_compaction.rs](../../tests/cli_compaction.rs), [cli_extensions.rs](../../tests/cli_extensions.rs), [cli_providers.rs](../../tests/cli_providers.rs), [cli_a2a.rs](../../tests/cli_a2a.rs) — note: `cli_compaction.rs` covers the full 6 PS scenarios + the extension test, `cli_extensions.rs` covers the L1 install/list/info/enable/disable/uninstall surface, `cli_providers.rs` covers the real-LLM minimax + kimi smoke flows, and `cli_a2a.rs` covers the real-LLM `a2a_send` blocking + async + isolation flows, see §7) also need the hub but use a different pattern: they spawn the `peko` daemon as a subprocess against the same stack and let the daemon do the hub calls. [mock_llm_sequence.rs](../../tests/mock_llm_sequence.rs) does not need PekoHub — it talks to the mock directly (plus the peko daemon for the three-call flow) — but ships in the same docker-up workflow for the dev-loop convenience.
 
@@ -106,7 +108,7 @@ The 5 files that exercise the hub directly — [packaging_integration.rs](../../
 ### Counts at a glance
 
 - Unit (`cargo test --lib`): everything in `src/**`, no network — includes the 13 subagent and 1 JWKS tests above.
-- Integration: 149 tests across 22 files in `tests/`.
+- Integration: 154 tests across 24 files in `tests/`.
 - E2E PowerShell scripts in `e2e_tests/`: 9 deferred scripts + 9 L2/L3 extension fixtures (see §7 Phase E for the list). The 41 redundant scripts and the legacy `_archive/` folder were deleted in Phase E.
 
 ---
@@ -473,9 +475,9 @@ The 3 PS scripts that were originally here: 2 (`a2a_blocking.ps1` and `a2a_isola
 
 Full spec lives in §3 above. The string and tool-call forms unblocked moving the LLM-required PowerShell tests in `e2e_tests/send/`, `e2e_tests/session/`, and the chat-dependent half of `e2e_tests/agent/` into the mock-LLM tier rather than the real-LLM tier — 24 tests have already been migrated (see Phase B). The Sequence form unblocked the remaining mock-tier migrations (`cron_agent_tool.ps1` plus the `cli_extensions` / `cli_a2a` / `cli_subagent` / `cli_tools` / `cli_compaction` slices in Phase B) — see the row flips in the Phase B table above.
 
-### Phase D — Phase-7 user-journey scenarios (D1–D4)
+### Phase D — Phase-7 user-journey scenarios (D1–D6)
 
-Four end-to-end user-journey scenarios, each its own PR and its own
+Six end-to-end user-journey scenarios, each its own PR and its own
 `tests/scenarios/sN_*.rs` file. **Mock-LLM tier** (not real-LLM
 as the prior §7 stub stated — that was wrong, this section
 supersedes it). The LLM is incidental: it provides the chat
@@ -492,6 +494,8 @@ flows are deferred to a separate follow-up.
 | D2 | [tests/scenarios/s2_extension_registry_roundtrip.rs](../../tests/scenarios/s2_extension_registry_roundtrip.rs) | Flow 3+4 — author `peko ext push` → pekohub → collab `peko ext pull` → install + enable + chat | ✅ PR-2 (4 tests) |
 | D3 | [tests/scenarios/s3_agent_registry_roundtrip.rs](../../tests/scenarios/s3_agent_registry_roundtrip.rs) | Flow 5 — author `peko agent push` (carrying ext refs) → pekohub → collab `peko agent pull` → ext auto-pulled → run | ✅ PR-3 (4 tests) |
 | D4 | [tests/scenarios/s4_publish_running_agent_with_permission.rs](../../tests/scenarios/s4_publish_running_agent_with_permission.rs) | Flow 6 — author runs agent behind tunnel → permitted user → 200; random → 403; unauth → 401 | ✅ PR-4 (3 tests) |
+| D5 | [tests/scenarios/s5_live_permit_propagation.rs](../../tests/scenarios/s5_live_permit_propagation.rs) | Flow 6b — live `peko agent permit` / `peko agent revoke` propagation to PekoHub without daemon restart (issue #16 regression) | ✅ PR-5 (1 test) |
+| D6 | [tests/scenarios/s6_principal_grant_revoke_roundtrip.rs](../../tests/scenarios/s6_principal_grant_revoke_roundtrip.rs) | Flow 6c — inline `Principal` grant/revoke round-trips via IPC for `Agent` / `Team` / `Public` subjects (post issue #30 replacement for the removed `s6_revoke_principal_collapse_e2e.rs`) | ✅ PR-6 (4 tests) |
 
 **Why mock-LLM tier, not real-LLM.** These scenarios assert on
 plumbing — the keyword echo / `MOCK_LLM_SCRIPT` payload proves
@@ -505,7 +509,7 @@ migrations used (mock LLM to drive non-decision-bound flows).
 existing CLI tests: `mod common; use common::{PekoCli, …};
 async fn scenario_X() { … }`. Tests are `#[ignore] = "requires
 mock LLM"` (D1) or `#[ignore] = "requires PekoHub + mock LLM"`
-(D2-D4). PekoHub-touching flows use `PekohubBackend::start()` +
+(D2-D6). PekoHub-touching flows use `PekohubBackend::start()` +
 `reset_pekohub()` from [tests/common/harness.rs](../../tests/common/harness.rs).
 Two-`PekoCli` scenarios (D2, D3, D4) follow the `PekoCli::new()`
 pattern from [tests/common/cli.rs:25-62](../../tests/common/cli.rs#L25-L62):
@@ -574,6 +578,8 @@ test-integration:      docker-up && \
                                     --test s2_extension_registry_roundtrip \
                                     --test s3_agent_registry_roundtrip \
                                     --test s4_publish_running_agent_with_permission \
+                                    --test s5_live_permit_propagation \
+                                    --test s6_principal_grant_revoke_roundtrip \
                                     --test mock_llm_sequence \
                                     -- --include-ignored
 
@@ -588,9 +594,9 @@ test-integration-llm:  docker-up && \
 test-all:              test && test-integration && test-integration-llm
 ```
 
-The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-cli-tools`, `test-cli-compaction`, `test-cli-extensions`, `test-cli-providers`, `test-cli-a2a`, `test-scenarios-s1` + `-s2` + `-s3` + `-s4` from §7 Phase D, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella. `test-cli-a2a` is a real-LLM tier slice (needs `MINIMAX_API_KEY`). The four `test-scenarios-sN` targets are mock-LLM tier.
+The per-test-file granular targets (`test-pekohub`, `test-tunnel`, `test-tunnel-e2e`, `test-packaging`, `test-registry`, `test-subagent`, `test-cli-send`, `test-cli-session`, `test-cli-basics`, `test-cli-cron`, `test-cli-subagent`, `test-cli-tools`, `test-cli-compaction`, `test-cli-extensions`, `test-cli-providers`, `test-cli-a2a`, `test-scenarios-s1` + `-s2` + `-s3` + `-s4` + `-s5` + `-s6` from §7 Phase D, `test-mock-llm-sequence`) survive as one-file slices for change-isolated dev loops — each enforces the same `env -u MINIMAX_API_KEY` rule as the umbrella. `test-cli-a2a` is a real-LLM tier slice (needs `MINIMAX_API_KEY`). The six `test-scenarios-sN` targets are mock-LLM tier.
 
-> **Why `--include-ignored`, not `--ignored`.** All 133 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
+> **Why `--include-ignored`, not `--ignored`.** All 140 hub- or mock-LLM-gated tests are `#[ignore]`, but the 16 always-on tests (10 pure-Rust in `team_integration.rs` + `extension_packaging.rs`, plus 6 offline CLI tests in `cli_basics.rs`) are not. `cargo test … -- --ignored` would silently skip those 16. `--include-ignored` runs both — which is what we want for the umbrella targets.
 
 **How tests opt into the real-LLM tier.** Use a runtime skip at the top of the test:
 

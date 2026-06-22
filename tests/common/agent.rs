@@ -62,7 +62,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 /// the entry with the same values.
 pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
     use pekobot::providers::catalog::{
-        ApiFormat, ModelInfo, ProviderCatalogFile, ProviderCatalogEntry,
+        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;
 

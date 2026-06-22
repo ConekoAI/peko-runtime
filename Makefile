@@ -18,6 +18,7 @@
         test-cli-subagent test-cli-tools test-cli-compaction \
         test-cli-extensions test-cli-providers test-cli-a2a \
         test-scenarios-s1 test-scenarios-s2 test-scenarios-s3 test-scenarios-s4 \
+        test-scenarios-s5 test-scenarios-s6 \
         test-mock-llm-sequence \
         ci
 
@@ -32,6 +33,8 @@ INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      s2_extension_registry_roundtrip \
                      s3_agent_registry_roundtrip \
                      s4_publish_running_agent_with_permission \
+                     s5_live_permit_propagation \
+                     s6_principal_grant_revoke_roundtrip \
                      mock_llm_sequence
 CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
 
@@ -292,6 +295,18 @@ test-scenarios-s3: docker-up
 test-scenarios-s4: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test s4_publish_running_agent_with_permission -- --include-ignored
+
+# D5: Live `peko agent permit` / `peko agent revoke` propagation to
+# PekoHub without daemon restart (issue #16 regression).
+test-scenarios-s5: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test s5_live_permit_propagation -- --include-ignored
+
+# D6: Inline `Principal` grant/revoke round-trips via IPC (ADR-039,
+# post issue #30). Replaces the removed s6_revoke_principal_collapse_e2e.
+test-scenarios-s6: docker-up
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test s6_principal_grant_revoke_roundtrip -- --include-ignored
 
 # ── CI entry ─────────────────────────────────────────────────────────────
 
