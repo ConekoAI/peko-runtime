@@ -166,7 +166,7 @@ fn write_agent_with_perm(
     let agent_dir = cli.peko_dir().join("agents").join(agent_name);
     std::fs::create_dir_all(&agent_dir).expect("create agent dir");
 
-    let base_url = mock_llm_url.trim_end_matches('/');
+    let _base_url = mock_llm_url.trim_end_matches('/');
 
     // The `[[permissions]]` block is at the top level of the agent
     // config; the runtime's `AgentConfig::permissions` deserializer

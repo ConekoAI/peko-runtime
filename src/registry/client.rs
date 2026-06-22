@@ -24,6 +24,7 @@ pub struct RegistryClient {
 /// Progress events during pull/push operations
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ProgressEvent {
     /// Resolving the image reference
     Resolving { r#ref: String },

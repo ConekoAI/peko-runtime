@@ -33,9 +33,11 @@ use tokio::net::UnixDatagram;
 use tracing::debug;
 
 use super::{
-    default_pid_path, default_socket_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST,
+    default_socket_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST,
     DEFAULT_PORT,
 };
+#[cfg(test)]
+use super::default_pid_path;
 #[cfg(windows)]
 use super::{default_pipe_name, DAEMON_PIPE_ENV};
 
@@ -281,15 +283,6 @@ impl ConnectionManager {
         anyhow::bail!("No daemon found")
     }
 
-    /// Connect via Unix domain socket
-    ///
-    /// # Errors
-    /// Returns error on Unix if socket doesn't exist or connection fails
-    #[cfg(unix)]
-    async fn connect_unix(path: &str) -> anyhow::Result<ConnectionHandle> {
-        Self::connect_unix_with_timeout(path, Duration::from_secs(2)).await
-    }
-
     #[cfg(unix)]
     async fn connect_unix_with_timeout(
         path: &str,
@@ -434,7 +427,7 @@ struct NamedPipeHandle {
     name: String,
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(unix)))]
 struct NamedPipeHandle {}
 
 /// Stub for non-Unix platforms

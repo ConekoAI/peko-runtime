@@ -122,7 +122,7 @@ async fn authenticate_tunnel(
     // 1. RuntimeHello
     let mut nonce_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = BASE64.encode(&nonce_bytes);
+    let nonce = BASE64.encode(nonce_bytes);
     let signature = sign_nonce(signing_key, &nonce);
 
     let hello = TunnelMessage::RuntimeHello {
@@ -245,7 +245,7 @@ async fn test_tunnel_rejects_invalid_signature() {
     let hello = TunnelMessage::RuntimeHello {
         runtime_id: did,
         nonce: "nonce".to_string(),
-        signature: BASE64.encode(&[0u8; 64]),
+        signature: BASE64.encode([0u8; 64]),
     };
     write
         .send(Message::Binary(hello.to_bytes().unwrap()))

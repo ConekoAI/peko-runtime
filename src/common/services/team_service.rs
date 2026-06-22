@@ -725,7 +725,7 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| {
             let dt = chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
-                .unwrap_or_else(|| chrono::Utc::now());
+                .unwrap_or_else(chrono::Utc::now);
             dt.to_rfc3339()
         })
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
@@ -734,7 +734,7 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         name: team_name.to_string(),
         description: None,
         created_at,
-        host_runtime_id: "".to_string(),
+        host_runtime_id: String::new(),
         owner: crate::auth::principal::Principal::User(String::new()),
         owner_id: None,
         permissions: Vec::new(),

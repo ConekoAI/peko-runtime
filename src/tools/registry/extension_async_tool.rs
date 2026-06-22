@@ -80,7 +80,7 @@ impl Tool for ExtensionAsyncTool {
         // Wait for the task to complete
         let result = self
             .adapter
-            .wait_for_completion(&receipt.task_id, std::time::Duration::from_secs(300))
+            .wait_for_completion(&receipt.task_id, std::time::Duration::from_mins(5))
             .await?;
 
         match result {

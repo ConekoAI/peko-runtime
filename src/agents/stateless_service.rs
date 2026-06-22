@@ -407,7 +407,7 @@ impl StatelessAgentService {
     ) -> Result<Self> {
         let service = Self {
             config_service,
-            default_timeout: Duration::from_secs(300), // 5 minutes default
+            default_timeout: Duration::from_mins(5), // 5 minutes default
             metrics: RwLock::new(ExecutionMetrics::default()),
             path_resolver,
             resolver,

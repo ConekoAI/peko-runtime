@@ -424,10 +424,10 @@ impl ProviderCatalog {
         }
 
         // 2. persisted default.
-        let (default_pid, default_mid) = self.get_default().await;
+        let (default_pid, default_model_id) = self.get_default().await;
         if let Some(pid) = default_pid {
             if let Some(entry) = self.get_enabled(&pid).await {
-                let model = resolve_model_on(&entry, default_mid.as_deref())?;
+                let model = resolve_model_on(&entry, default_model_id.as_deref())?;
                 return Ok((entry, model));
             }
             warn!(

@@ -136,7 +136,7 @@ fn agent_create_json_output() {
 #[test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 fn agent_move_renames_agent() {
-    let Some(mock_url) = mock_llm_url() else {
+    let Some(_mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };

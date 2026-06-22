@@ -28,7 +28,6 @@ use std::io;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
 
 use super::server::PeerAddr;
@@ -119,7 +118,7 @@ impl ResponseSink for PipeSink<'_> {
 /// at the call site instead of a panic deep in the handler.
 pub fn sink_for_unix_or_udp(
     socket: &super::server::ServerSocket,
-    peer: &PeerAddr,
+    peer: &super::server::PeerAddr,
 ) -> io::Result<Box<dyn ResponseSink>> {
     match (socket, peer) {
         #[cfg(unix)]

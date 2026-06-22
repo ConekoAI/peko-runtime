@@ -124,7 +124,6 @@ impl ProviderRegistry {
     }
 
     /// Iterate over all providers (including aliases)
-    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = (&String, &ProviderMetadata)> + '_ {
         self.providers.iter().map(|(k, v)| (k, *v))
     }

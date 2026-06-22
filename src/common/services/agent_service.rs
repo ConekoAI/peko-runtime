@@ -12,7 +12,6 @@ use crate::common::identifiers::{
     parse_agent_identifier_with_override, validate_agent_name, ValidationError,
 };
 use crate::common::paths::PathResolver;
-use crate::common::services::TeamService;
 use crate::common::types::agent::{
     AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult,
     AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult, AgentInfo,
@@ -21,10 +20,9 @@ use crate::common::types::agent::{
 use crate::common::types::membership::AgentMemberships;
 use crate::identity::Identity;
 use crate::registry::packaging::{
-    self, ExportOptions as PortableExportOptions, ExtensionRef, ImportOptions as PortableImportOptions,
+    ExportOptions as PortableExportOptions, ExtensionRef, ImportOptions as PortableImportOptions,
 };
 use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
-use crate::common::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -218,55 +216,6 @@ async fn build_embedded_extensions(
 #[derive(Debug, Clone)]
 pub struct AgentService {
     resolver: PathResolver,
-    team_service: TeamService,
-}
-
-// Helper functions for building default agent config (previously in deprecated agent_config_builder)
-
-fn parse_provider_type(provider: &str) -> ProviderType {
-    match provider.to_lowercase().as_str() {
-        "openai" => ProviderType::OpenAI,
-        "anthropic" => ProviderType::Anthropic,
-        "ollama" => ProviderType::Ollama,
-        "moonshot" => ProviderType::Moonshot,
-        "kimi" => ProviderType::Kimi,
-        "kimi_code" | "kimi-code" => ProviderType::Kimi,
-        "minimax" => ProviderType::Minimax,
-        _ => ProviderType::OpenAI,
-    }
-}
-
-fn default_model_name(provider_type: ProviderType) -> String {
-    match provider_type {
-        ProviderType::OpenAI => "gpt-4o-mini".to_string(),
-        ProviderType::Anthropic => "claude-3-sonnet".to_string(),
-        ProviderType::Ollama => "llama3.2".to_string(),
-        ProviderType::OpenAICompatible => "default".to_string(),
-        ProviderType::Moonshot => "kimi-k2.5".to_string(),
-        ProviderType::Kimi => "k2p5".to_string(),
-        ProviderType::Minimax => "MiniMax-M2.7".to_string(),
-    }
-}
-
-fn api_key_env_var(provider_type: ProviderType) -> Option<String> {
-    match provider_type {
-        ProviderType::OpenAI => Some("OPENAI_API_KEY".to_string()),
-        ProviderType::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
-        ProviderType::Moonshot => Some("MOONSHOT_API_KEY".to_string()),
-        ProviderType::Kimi => Some("KIMI_API_KEY".to_string()),
-        ProviderType::Minimax => Some("MINIMAX_API_KEY".to_string()),
-        _ => None,
-    }
-}
-
-fn base_url(provider_type: ProviderType) -> Option<String> {
-    match provider_type {
-        ProviderType::Ollama => Some("http://localhost:11434".to_string()),
-        ProviderType::Moonshot => Some("https://api.moonshot.cn/v1".to_string()),
-        ProviderType::Kimi => Some("https://api.kimi.com/coding".to_string()),
-        ProviderType::Minimax => Some("https://api.minimaxi.com/anthropic".to_string()),
-        _ => None,
-    }
 }
 
 fn build_default_agent_config(name: &str, provider: &str, model: Option<String>) -> AgentConfig {
@@ -296,11 +245,7 @@ impl AgentService {
     /// Create a new agent service with the given path resolver
     #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
-        let team_service = TeamService::new(resolver.clone());
-        Self {
-            resolver,
-            team_service,
-        }
+        Self { resolver }
     }
 
     // ========================================================================
@@ -508,7 +453,7 @@ impl AgentService {
             .await?;
 
         Ok(AgentCreationResult {
-            name: name.to_string(),
+            name: name.clone(),
             config_path,
             provider: request.provider,
         })

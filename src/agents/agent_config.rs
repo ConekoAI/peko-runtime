@@ -1,7 +1,6 @@
 //! Agent configuration (lifted from `src/types/agent.rs` in issue #31e)
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::auth::principal::Principal;
@@ -169,7 +168,7 @@ impl Default for AgentConfig {
             default_timeout_seconds: 300,
             workspace: None,
             prompt: None,
-            host_runtime_id: "".to_string(),
+            host_runtime_id: String::new(),
             owner: default_owner(),
             permissions: Vec::new(),
             // Issue #28: back-filled on first `Agent::new()`.

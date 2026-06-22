@@ -320,7 +320,7 @@ impl ExtensionValidationService {
     fn semantic_check_server_json(
         _path: &Path,
         manifest: &serde_json::Value,
-        errors: &mut Vec<String>,
+        _errors: &mut Vec<String>,
         warnings: &mut Vec<String>,
         _verbose: bool,
     ) {

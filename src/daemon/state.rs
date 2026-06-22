@@ -1094,7 +1094,7 @@ impl AppState {
             signing_key,
             caller_runtime_id: cred.runtime_id.clone(),
             tunnel: self.tunnel_handle_slot(),
-            response_timeout: Duration::from_secs(60),
+            response_timeout: Duration::from_mins(1),
         });
 
         // 4. Register on the `ExtensionServices`. The per-agent

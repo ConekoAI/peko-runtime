@@ -151,7 +151,7 @@ pub fn check_permission(
     }
 
     // 2. Look up explicit grants for this subject, plus `Public` wildcard.
-    for grant in resource.permissions().iter() {
+    for grant in resource.permissions() {
         if !grant.permission.covers(&action) {
             continue;
         }

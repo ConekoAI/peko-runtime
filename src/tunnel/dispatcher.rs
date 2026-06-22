@@ -671,7 +671,7 @@ impl TunnelDispatcher {
                                     seq,
                                     chunk.to_string().into_bytes(),
                                 );
-                                seq += 1;
+                                seq = seq.saturating_add(1);
                             }
                             // Send done marker
                             let done = serde_json::json!({ "done": true });
@@ -714,7 +714,7 @@ impl TunnelDispatcher {
                     seq,
                     chunk.to_string().into_bytes(),
                 );
-                seq += 1;
+                seq = seq.saturating_add(1);
             }
         }
 
@@ -726,7 +726,6 @@ impl TunnelDispatcher {
             });
             let _ =
                 handle.send_stream_chunk(request_id.clone(), seq, chunk.to_string().into_bytes());
-            seq += 1;
         }
         // Ensure stream end is sent even if the event loop exited unexpectedly
         let _ = handle.send_stream_end(request_id.clone());
@@ -927,9 +926,8 @@ impl TunnelDispatcher {
             if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
                 warn!("Failed to send exposure update for {}: {}", agent_name, e);
                 return Err(e.into());
-            } else {
-                debug!("Sent exposure update for {}: {:?}", agent_name, exposure);
             }
+            debug!("Sent exposure update for {}: {:?}", agent_name, exposure);
         } else {
             debug!(
                 "No tunnel handle, exposure update for {} is dropped (will be re-announced on next TunnelReady)",

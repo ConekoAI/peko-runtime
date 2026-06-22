@@ -161,8 +161,8 @@ async fn handle_search_query(
 
     // Print table header
     println!(
-        "{:<30} {:<10} {:<12} {:<8} {:<8} {}",
-        "NAME", "VERSION", "TYPE", "PULLS", "STARS", "DESCRIPTION"
+        "{:<30} {:<10} {:<12} {:<8} {:<8} DESCRIPTION",
+        "NAME", "VERSION", "TYPE", "PULLS", "STARS"
     );
     println!("{}", "-".repeat(100));
 

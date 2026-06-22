@@ -119,9 +119,9 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 fn write_a2a_agent(
     home: &Path,
     name: &str,
-    mock_or_real_url: &str,
-    provider_type: &str,
-    api_key: &str,
+    _mock_or_real_url: &str,
+    _provider_type: &str,
+    _api_key: &str,
     extra_tools: &[&str], // extra bare names to enable (besides core ones)
 ) -> std::io::Result<()> {
     use std::fs;
@@ -882,7 +882,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
         &["send", caller_a, &prompt_a1, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_a1.as_str(), &err, &status);
+    assert_ok(prompt_a1.as_str(), &err, &status);
 
     // Caller B
     let prompt_b = format!(
@@ -896,7 +896,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
         &["send", caller_b, &prompt_b, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_b.as_str(), &err, &status);
+    assert_ok(prompt_b.as_str(), &err, &status);
 
     // Capture caller A's session_id before the second call.
     let (out, _err, status) = run(
@@ -929,7 +929,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
         &["send", caller_a, &prompt_a2, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_a2.as_str(), &err, &status);
+    assert_ok(prompt_a2.as_str(), &err, &status);
 
     // Lenient: pass if either:
     //   (a) The structural resumption invariant holds (2 sessions
@@ -1038,7 +1038,7 @@ async fn a2a_isolation_t5_message_counts() {
         &["send", caller_a, &prompt_a, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_a.as_str(), &err, &status);
+    assert_ok(prompt_a.as_str(), &err, &status);
 
     // Caller B
     let prompt_b = format!(
@@ -1052,7 +1052,7 @@ async fn a2a_isolation_t5_message_counts() {
         &["send", caller_b, &prompt_b, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_b.as_str(), &err, &status);
+    assert_ok(prompt_b.as_str(), &err, &status);
 
     // Caller A second
     let prompt_a2 = format!(
@@ -1066,7 +1066,7 @@ async fn a2a_isolation_t5_message_counts() {
         &["send", caller_a, &prompt_a2, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_a2.as_str(), &err, &status);
+    assert_ok(prompt_a2.as_str(), &err, &status);
 
     // Lenient: pass if all 3 LLMs reported done OR the message
     // counts are populated. Real LLMs sometimes skip a tool_call;

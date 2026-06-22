@@ -63,7 +63,7 @@ impl ApiKeyStore {
             bytes
         };
 
-        let full_key = format!("{API_KEY_PREFIX}{}", URL_SAFE_NO_PAD.encode(&random_bytes));
+        let full_key = format!("{API_KEY_PREFIX}{}", URL_SAFE_NO_PAD.encode(random_bytes));
         let key_id = format!(
             "{API_KEY_PREFIX}{}",
             &full_key[API_KEY_PREFIX.len()..API_KEY_PREFIX.len() + 8]

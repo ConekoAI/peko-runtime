@@ -38,7 +38,7 @@ impl DidResolver {
         Self {
             local_storage: Some(storage),
             cache: Arc::new(RwLock::new(HashMap::new())),
-            cache_ttl: Duration::from_secs(3600), // 1 hour
+            cache_ttl: Duration::from_hours(1), // 1 hour
         }
     }
 
@@ -48,7 +48,7 @@ impl DidResolver {
         Self {
             local_storage: None,
             cache: Arc::new(RwLock::new(HashMap::new())),
-            cache_ttl: Duration::from_secs(3600),
+            cache_ttl: Duration::from_hours(1),
         }
     }
 

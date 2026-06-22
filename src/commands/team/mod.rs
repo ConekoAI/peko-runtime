@@ -8,7 +8,6 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::services::CredentialsService;
-use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
 use crate::extensions::framework::core::global_core;
 use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
 use crate::registry::AgentRegistry;
@@ -741,7 +740,7 @@ async fn handle_team_push(
     }
 
     // ── 6. Build RegistryManifest with kind="team" ──────────────────────
-    let mut manifest = RegistryManifest::new(name.to_string(), "1.0.0".to_string())
+    let mut manifest = RegistryManifest::new(name.clone(), "1.0.0".to_string())
         .with_kind("team")
         .with_ref(&registry_ref)
         .with_bundle_type("team");

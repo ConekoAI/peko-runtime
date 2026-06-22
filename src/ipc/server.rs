@@ -42,10 +42,11 @@ use crate::daemon::state::AppState;
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
 #[derive(Clone)]
-pub(crate) enum ServerSocket {
+pub enum ServerSocket {
     #[cfg(unix)]
     Unix {
         socket: Arc<UnixDatagram>,
+        #[allow(dead_code)]
         path: Arc<std::path::PathBuf>,
     },
     Udp {
@@ -69,7 +70,7 @@ pub(crate) enum ServerSocket {
 /// connection-oriented and have no per-message peer address — the
 /// `Local` variant represents a connection that is local by construction.
 #[derive(Debug, Clone)]
-pub(crate) enum PeerAddr {
+pub enum PeerAddr {
     #[cfg(unix)]
     Unix(std::path::PathBuf),
     Ip(std::net::SocketAddr),
@@ -421,7 +422,15 @@ impl IpcServer {
                                                 return;
                                             }
                                         };
-                                        if let Err(e) = Self::handle_request(envelope.packet, caller, state, &*sink, &peer).await {
+                                        #[allow(clippy::large_futures)]
+                                        let request_fut = Self::handle_request(
+                                            envelope.packet,
+                                            caller,
+                                            state,
+                                            &*sink,
+                                            &peer,
+                                        );
+                                        if let Err(e) = Box::pin(request_fut).await {
                                             error!("Error handling request {}: {}", request_id, e);
                                         }
                                     });
@@ -682,6 +691,7 @@ impl IpcServer {
     /// captures the peer address from `recv_from`; Windows call sites
     /// construct a `PipeSink` over the per-connection `&mut
     /// NamedPipeServer`. See `response_sink.rs` for the full design.
+    #[allow(clippy::large_futures)]
     async fn handle_request(
         request: RequestPacket,
         caller: CallerContext,
@@ -1677,7 +1687,7 @@ impl IpcServer {
                 );
                 let session_peer = crate::auth::principal::Principal::User(user);
                 match manager.switch_session(&session_peer, &session_id).await {
-                    Ok(_) => {
+                    Ok(()) => {
                         let response = ResponsePacket::SessionSwitched {
                             request_id,
                             session_id,
@@ -2097,8 +2107,8 @@ impl IpcServer {
 
                 let scope = scope.as_deref().unwrap_or("all");
 
-                if scope == "all" || scope == "cache" {
-                    if cache_dir.exists() {
+                if (scope == "all" || scope == "cache")
+                    && cache_dir.exists() {
                         match std::fs::read_dir(cache_dir) {
                             Ok(entries) => {
                                 for entry in entries.flatten() {
@@ -2125,7 +2135,6 @@ impl IpcServer {
                             }
                         }
                     }
-                }
 
                 let response = ResponsePacket::SystemCleaned {
                     request_id,
@@ -2515,7 +2524,7 @@ impl IpcServer {
                 let manager = state.extension_manager().read().await;
                 let ext_ids: Vec<_> = ids
                     .iter()
-                    .map(|id| crate::extensions::framework::types::ExtensionId::new(id))
+                    .map(crate::extensions::framework::types::ExtensionId::new)
                     .collect();
                 match manager.create_bundle(ext_ids, &name) {
                     Ok(bundle) => {
@@ -3350,7 +3359,7 @@ impl IpcServer {
         user: String,
         state: AppState,
         sink: &dyn ResponseSink,
-        peer: &PeerAddr,
+        _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         use crate::agents::stateless_service::MessageRequest;
         use crate::engine::{AgenticEvent, LifecyclePhase};

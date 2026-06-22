@@ -43,7 +43,7 @@ impl RateLimiter {
             api_key_limit,
             jwt_burst,
             api_key_burst,
-            window: Duration::from_secs(60),
+            window: Duration::from_mins(1),
         }
     }
 

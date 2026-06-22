@@ -141,7 +141,7 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
     }
 
     println!("Provider catalog ({} entries):\n", entries.len());
-    let (default_pid, default_mid) = cat.get_default().await;
+    let (default_pid, default_model_id) = cat.get_default().await;
 
     for e in &entries {
         let status = if e.enabled { "✓" } else { "✗" };
@@ -180,14 +180,14 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
             println!(
                 "      models ({}){}:",
                 e.models.len(),
-                if Some(&e.default_model_id) == default_mid.as_ref() {
+                if Some(&e.default_model_id) == default_model_id.as_ref() {
                     " — * = runtime default"
                 } else {
                     ""
                 }
             );
             for m in &e.models {
-                let star = if Some(&m.id) == default_mid.as_ref() {
+                let star = if Some(&m.id) == default_model_id.as_ref() {
                     " *"
                 } else {
                     ""

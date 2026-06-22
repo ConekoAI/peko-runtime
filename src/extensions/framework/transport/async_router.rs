@@ -207,8 +207,8 @@ impl AsyncExecutionRouter {
         use crate::extensions::framework::async_exec::executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
-            default_sync_timeout: Duration::from_secs(120),
-            default_async_timeout: Duration::from_secs(300),
+            default_sync_timeout: Duration::from_mins(2),
+            default_async_timeout: Duration::from_mins(5),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),
         }
     }
@@ -229,8 +229,8 @@ impl AsyncExecutionRouter {
     #[must_use]
     pub fn with_transport(transport: std::sync::Arc<dyn AsyncTaskTransport>) -> Self {
         Self {
-            default_sync_timeout: Duration::from_secs(120),
-            default_async_timeout: Duration::from_secs(300),
+            default_sync_timeout: Duration::from_mins(2),
+            default_async_timeout: Duration::from_mins(5),
             transport,
         }
     }
@@ -241,8 +241,8 @@ impl AsyncExecutionRouter {
         async_executor: crate::extensions::framework::async_exec::executor::AsyncExecutor,
     ) -> Self {
         Self {
-            default_sync_timeout: Duration::from_secs(120),
-            default_async_timeout: Duration::from_secs(300),
+            default_sync_timeout: Duration::from_mins(2),
+            default_async_timeout: Duration::from_mins(5),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(async_executor)),
         }
     }

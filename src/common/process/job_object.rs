@@ -6,7 +6,6 @@
 //! including grandchildren.  This solves the classic "orphan process" problem
 //! on Windows where `child.kill()` only kills the immediate child.
 
-use tracing::warn;
 
 /// A handle to a Windows Job Object.
 ///

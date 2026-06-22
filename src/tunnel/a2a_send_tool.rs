@@ -29,12 +29,9 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::RwLock;
 
 use crate::agents::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::auth::principal::Principal;
@@ -43,9 +40,14 @@ use crate::tunnel::a2a_audit;
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentDirectory, DirectoryError, ResolvedExposure};
-use crate::tunnel::{
-    A2aWaitError, PendingA2aResponses, TunnelHandle, TunnelMessage,
-};
+use crate::tunnel::{A2aWaitError, TunnelMessage};
+
+#[cfg(test)]
+use crate::tunnel::TunnelHandle;
+#[cfg(test)]
+use std::time::Duration;
+#[cfg(test)]
+use tokio::sync::RwLock;
 
 /// Where an `a2a_send` call is routed. Issue #29 (Slice A — wire shape).
 ///

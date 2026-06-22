@@ -1,7 +1,7 @@
 //! Runtime supervisor — manages the lifecycle of individual runtimes
 
 use crate::common::process::{
-    graceful_shutdown, spawn_process, JobObject, ProcessSpawnConfig, RestartPolicy,
+    graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy,
     RuntimeSpawnConfig,
 };
 use std::sync::Arc;
@@ -118,7 +118,7 @@ pub async fn spawn_runtime_process(
     restart_policy: RestartPolicy,
     spawn_config: RuntimeSpawnConfig,
 ) -> anyhow::Result<ManagedRuntime> {
-    let (child, stdin, stdout, pid, job) = spawn_process(config).await?;
+    let (child, stdin, stdout, pid, _job) = spawn_process(config).await?;
 
     Ok(ManagedRuntime {
         id: id.to_string(),

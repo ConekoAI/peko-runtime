@@ -27,7 +27,7 @@ impl MaintenanceScheduler {
         Self {
             config: MaintenanceConfig::default(),
             agents_dir,
-            interval: Duration::from_secs(3600), // Run every hour by default
+            interval: Duration::from_hours(1), // Run every hour by default
         }
     }
 

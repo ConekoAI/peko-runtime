@@ -677,7 +677,7 @@ impl Unpackager {
                         std::collections::HashMap<String, serde_json::Value>,
                     >(content)
                     {
-                        for (_, session_val) in sessions.iter_mut() {
+                        for session_val in sessions.values_mut() {
                             if let Some(obj) = session_val.as_object_mut() {
                                 if let Some(agent_name_val) = obj.get_mut("agent_name") {
                                     *agent_name_val =

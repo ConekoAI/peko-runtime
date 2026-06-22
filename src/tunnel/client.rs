@@ -281,8 +281,8 @@ impl TunnelClient {
     /// Run the tunnel client with a cancellation token
     pub async fn run_cancellable(self, cancel: tokio_util::sync::CancellationToken) {
         tokio::select! {
-            _ = self.run() => {},
-            _ = cancel.cancelled() => {
+            () = self.run() => {},
+            () = cancel.cancelled() => {
                 info!("Tunnel client cancelled");
             }
         }
@@ -599,7 +599,7 @@ impl TunnelClient {
     fn build_runtime_hello(&self) -> Result<TunnelMessage, TunnelError> {
         let mut nonce_bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = BASE64.encode(&nonce_bytes);
+        let nonce = BASE64.encode(nonce_bytes);
 
         let private_key_b64 = self
             .resolve_private_key()

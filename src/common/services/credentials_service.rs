@@ -45,8 +45,8 @@ impl CredentialsService {
     /// Get registry credentials.
     pub fn get_registry_token(&self) -> Result<Option<RegistryCredential>> {
         Ok(self.vault.get_registry_token().map(|t| RegistryCredential {
-            token: t.token.to_string(),
-            registry_host: t.host.to_string(),
+            token: t.token.clone(),
+            registry_host: t.host.clone(),
             user_namespace: t.namespace.map(String::from),
         }))
     }

@@ -143,8 +143,6 @@ pub mod engine;
 /// Session storage (JSONL)
 pub mod session;
 
-/// Orchestration layer (event router, file watcher, webhooks)
-
 // ============================================================================
 // External Interfaces
 // ============================================================================

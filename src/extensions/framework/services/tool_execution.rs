@@ -75,7 +75,7 @@ impl ToolExecutionService {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            default_timeout: Duration::from_secs(120),
+            default_timeout: Duration::from_mins(2),
         }
     }
 

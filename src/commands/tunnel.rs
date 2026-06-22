@@ -143,13 +143,12 @@ async fn handle_tunnel_setup(
                 let status = r.status();
                 let body = r.text().await.unwrap_or_default();
                 anyhow::bail!("PekoHub rejected runtime registration: HTTP {status}. {body}");
-            } else {
-                eprintln!(
-                    "   ⚠️  Runtime registration failed: HTTP {}. The credential was saved; \
-                     re-run `peko tunnel setup` once PekoHub is reachable to complete registration.",
-                    r.status()
-                );
             }
+            eprintln!(
+                "   ⚠️  Runtime registration failed: HTTP {}. The credential was saved; \
+                 re-run `peko tunnel setup` once PekoHub is reachable to complete registration.",
+                r.status()
+            );
         }
         Err(e) => {
             eprintln!(
@@ -203,7 +202,7 @@ pub async fn handle_tunnel(
                 Some(c) => c,
                 None => {
                     let path = cred_path.map_or_else(
-                        || crate::tunnel::PekoHubCredential::default_path(),
+                        crate::tunnel::PekoHubCredential::default_path,
                         PathBuf::from,
                     );
                     anyhow::bail!(

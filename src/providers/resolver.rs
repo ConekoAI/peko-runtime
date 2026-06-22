@@ -36,9 +36,9 @@ use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::providers::catalog::{ApiFormat, ModelInfo, ProviderCatalog, ProviderCatalogEntry};
+use crate::providers::catalog::{ModelInfo, ProviderCatalog, ProviderCatalogEntry};
 use crate::providers::core::Provider;
-use crate::providers::registry::{create_provider_for_entry, default_model_for_entry};
+use crate::providers::registry::create_provider_for_entry;
 use crate::common::secret_store::SecretStore;
 
 /// Inputs to `LlmResolver::resolve`.
@@ -176,10 +176,10 @@ impl LlmResolver {
         }
 
         // 4. Runtime default.
-        let (default_pid, default_mid) = self.catalog.get_default().await;
+        let (default_pid, default_model_id) = self.catalog.get_default().await;
         if let Some(pid) = default_pid {
             if let Some(entry) = self.catalog.get_enabled(&pid).await {
-                let model = resolve_model_on(&entry, default_mid.as_deref())?;
+                let model = resolve_model_on(&entry, default_model_id.as_deref())?;
                 return Ok(ResolvedChoice {
                     entry,
                     model,
