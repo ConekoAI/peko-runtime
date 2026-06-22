@@ -336,7 +336,7 @@ pub async fn handle_session(
                             )
                         );
                     } else {
-                        let report = crate::compaction::cli::DryRunReport {
+                        let report = crate::session::compaction::cli::DryRunReport {
                             estimated_tokens,
                             context_window,
                             percent,

@@ -8,7 +8,7 @@
 //! - Structured summary format with file operations
 //! - Cache validation and invalidation
 
-use crate::compaction::{
+use crate::session::compaction::{
     registry::ModelContextRegistry,
     summary_format::{
         extract_file_ops_from_messages, format_summary_with_file_ops, CompactionDetails,

@@ -1083,7 +1083,7 @@ pub enum ResponsePacket {
 
     /// Dry-run preview of a compaction (no JSONL mutation).
     ///
-    /// Carries the full [`crate::compaction::cli::DryRunReport`] fields
+    /// Carries the full [`crate::session::compaction::cli::DryRunReport`] fields
     /// directly so the wire format is not overloaded with the real
     /// `SessionCompacted` response (whose `messages_compacted` means
     /// "messages folded into the summary", not "messages in the
