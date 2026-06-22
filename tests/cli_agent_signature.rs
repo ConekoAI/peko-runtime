@@ -11,7 +11,7 @@
 //!   6. green: `--allow-unsigned-agent` permits an unsigned import
 //!
 //! These tests run without a daemon or registry — they call the
-//! [`pekobot::portable::Unpackager`] directly against an in-memory file
+//! [`pekobot::registry::packaging::Unpackager`] directly against an in-memory file
 //! map, which is exactly the path the CLI's `agent import` command
 //! eventually reaches through the daemon IPC.
 //!
@@ -20,9 +20,9 @@
 use base64::Engine;
 use pekobot::identity::keys::KeyPair;
 use pekobot::identity::{DIDDocument, Identity, VerificationMethod};
-use pekobot::portable::manifest::AgentManifest;
-use pekobot::portable::validation::ValidationResult;
-use pekobot::portable::{ImportOptions, Unpackager};
+use pekobot::registry::packaging::manifest::AgentManifest;
+use pekobot::registry::packaging::validation::ValidationResult;
+use pekobot::registry::packaging::{ImportOptions, Unpackager};
 use std::collections::HashMap;
 use std::path::Path;
 use tempfile::TempDir;
@@ -130,7 +130,7 @@ fn build_signed_manifest(
 
     // Reconstruct the signed bytes (signature field zeroed).
     let manifest_for_signing = AgentManifest {
-        signatures: pekobot::portable::manifest::Signatures {
+        signatures: pekobot::registry::packaging::manifest::Signatures {
             manifest: String::new(),
             algorithm: "ed25519".to_string(),
         },
@@ -179,7 +179,7 @@ fn import_options(allow_unsigned: bool, force: bool) -> ImportOptions {
 }
 
 async fn run_import(files: &HashMap<String, Vec<u8>>, opts: ImportOptions) -> Result<
-    pekobot::portable::ImportResult,
+    pekobot::registry::packaging::ImportResult,
     anyhow::Error,
 > {
     // Write the files map to a tar.gz, point the Unpackager at it,
@@ -414,7 +414,7 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
         }
         buf
     }
-    use pekobot::portable::types::compute_digest;
+    use pekobot::registry::packaging::types::compute_digest;
     let mut config_files = std::collections::BTreeMap::new();
     config_files.insert("agent.toml".to_string(), config_bytes.clone());
     let config_tar = build_layer_tarball(&config_files);
@@ -435,7 +435,7 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
     manifest.add_file("identity/did.json", &did_json);
     manifest.add_file("config/agent.toml", &config_bytes);
     manifest.add_file("identity/keys.enc", &keys_bytes);
-    use pekobot::portable::manifest::AgentLayers;
+    use pekobot::registry::packaging::manifest::AgentLayers;
     manifest.layers = Some(AgentLayers {
         config: Some(config_digest.clone()),
         identity: Some(identity_digest.clone()),
@@ -444,7 +444,7 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
 
     // Sign the manifest.
     let manifest_for_signing = AgentManifest {
-        signatures: pekobot::portable::manifest::Signatures {
+        signatures: pekobot::registry::packaging::manifest::Signatures {
             manifest: String::new(),
             algorithm: "ed25519".to_string(),
         },
@@ -494,13 +494,13 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
     // The unpackager's verifier reconstructs the canonical signed
     // bytes from the exported manifest. Both must match the
     // signed bytes from the original.
-    let status = pekobot::portable::signature::verify_manifest_signature(
+    let status = pekobot::registry::packaging::signature::verify_manifest_signature(
         &exported_bytes,
         &did_json,
         false,
     )
     .expect("exported signature must verify");
-    assert_eq!(status, pekobot::portable::signature::SignatureStatus::Verified);
+    assert_eq!(status, pekobot::registry::packaging::signature::SignatureStatus::Verified);
 }
 
 #[test]
@@ -605,7 +605,7 @@ fn build_signed_manifest_pinned(
     manifest.add_file("identity/keys.enc", keys_bytes);
 
     let manifest_for_signing = AgentManifest {
-        signatures: pekobot::portable::manifest::Signatures {
+        signatures: pekobot::registry::packaging::manifest::Signatures {
             manifest: String::new(),
             algorithm: "ed25519".to_string(),
         },

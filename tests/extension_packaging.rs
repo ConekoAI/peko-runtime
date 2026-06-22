@@ -2,9 +2,9 @@
 //!
 //! End-to-end: install → export → install from `.ext`
 
-use pekobot::extension::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
-use pekobot::extension::manager::ExtensionManager;
-use pekobot::extension::types::ExtensionId;
+use pekobot::extensions::framework::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
+use pekobot::extensions::framework::manager::ExtensionManager;
+use pekobot::extensions::framework::types::ExtensionId;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -210,11 +210,11 @@ archive_format = "tar"
     );
 }
 
-use pekobot::extension::core::HookPoint;
-use pekobot::extension::types::{HookInput, HookOutput, HookResult};
+use pekobot::extensions::framework::core::HookPoint;
+use pekobot::extensions::framework::types::{HookInput, HookOutput, HookResult};
 use pekobot::extensions::skill::SkillAdapter;
 use pekobot::extensions::universal::UniversalToolAdapter;
-use pekobot::types::agent::ExtensionConfig;
+use pekobot::common::types::agent_legacy::ExtensionConfig;
 
 fn create_test_tool_extension(temp: &TempDir, id: &str) -> PathBuf {
     let ext_dir = temp.path().join(id);

@@ -23,7 +23,7 @@ use std::collections::HashSet;
 /// ```
 /// use serde_json::json;
 /// use std::collections::HashSet;
-/// use pekobot::extension::protocols::shared::filter_reserved_params;
+/// use pekobot::extensions::framework::protocols::shared::filter_reserved_params;
 ///
 /// let schema = json!({
 ///     "type": "object",

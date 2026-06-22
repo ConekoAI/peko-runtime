@@ -18,7 +18,7 @@
 //! Run in container:
 //!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test registry_integration -- --ignored
 
-use pekobot::portable::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
+use pekobot::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
 use pekobot::registry::AgentRegistry;
 use pekobot::registry::client::ResourceType;
 use pekobot::registry::{
@@ -94,7 +94,7 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
 async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,
-    digest: &pekobot::portable::types::ImageDigest,
+    digest: &pekobot::registry::packaging::types::ImageDigest,
 ) {
     let image_dir = registry
         .root_path()
