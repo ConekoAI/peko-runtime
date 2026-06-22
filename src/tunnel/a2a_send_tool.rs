@@ -1415,20 +1415,6 @@ mod tests {
         }
     }
 
-    /// Drain a single `AgentToAgentRequest` from the tunnel send sink
-    /// and assert on its wire shape. Returns the parsed envelope.
-    fn assert_one_request(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<TunnelMessage>,
-    ) -> TunnelMessage {
-        let msg = rx.try_recv().expect("expected one request on the tunnel");
-        // Each test sends exactly one request.
-        assert!(
-            rx.try_recv().is_err(),
-            "expected exactly one request, got more"
-        );
-        msg
-    }
-
     /// The cross-runtime path requires the `cross_runtime` ctx to be
     /// set. Without it, `execute_remote` errors with a clear
     /// "not configured" message rather than panicking.
@@ -1504,7 +1490,7 @@ mod tests {
     /// rather than a panic or a hang.
     #[tokio::test]
     async fn test_execute_remote_directory_not_found_surfaces_structured_error() {
-        use crate::tunnel::hub_directory::{DirectoryErrorKind, FakeAgentDirectory};
+        use crate::tunnel::hub_directory::DirectoryErrorKind;
 
         let service = build_test_service().await;
         let (ctx, _rx, dir) = build_test_ctx(Duration::from_secs(1));

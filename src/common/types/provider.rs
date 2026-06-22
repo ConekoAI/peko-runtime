@@ -241,7 +241,7 @@ mod tests {
     fn test_model_config() {
         let config = ModelConfig::default();
         assert_eq!(config.name, "gpt-4o-mini");
-        assert_eq!(config.temperature, 0.7);
+        assert!((config.temperature - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]

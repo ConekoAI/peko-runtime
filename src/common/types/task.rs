@@ -441,13 +441,13 @@ mod tests {
     fn test_task_progress() {
         let mut task = Task::new("test", "did:peko:local:test");
         task.set_progress(0.5);
-        assert_eq!(task.progress, 0.5);
+        assert!((task.progress - 0.5).abs() < f32::EPSILON);
 
         task.set_progress(1.5); // Should clamp to 1.0
-        assert_eq!(task.progress, 1.0);
+        assert!((task.progress - 1.0).abs() < f32::EPSILON);
 
         task.set_progress(-0.5); // Should clamp to 0.0
-        assert_eq!(task.progress, 0.0);
+        assert!(task.progress.abs() < f32::EPSILON);
     }
 
     #[test]

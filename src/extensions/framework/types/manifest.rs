@@ -169,11 +169,11 @@ mod tests {
         manifest.migrate_legacy_dependencies();
         assert_eq!(manifest.dependencies.len(), 2);
         assert_eq!(manifest.dependencies[0].package, "pekohub.com/ext/a");
-        assert_eq!(manifest.dependencies[0].required, true);
+        assert!(manifest.dependencies[0].required);
         assert_eq!(manifest.dependencies[0].version, None);
         assert_eq!(manifest.dependencies[1].package, "pekohub.com/ext/b");
         // Should be removed from metadata
-        assert!(manifest.metadata.get("dependencies").is_none());
+        assert!(!manifest.metadata.contains_key("dependencies"));
     }
 
     #[test]

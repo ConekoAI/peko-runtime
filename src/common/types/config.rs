@@ -432,6 +432,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(non_snake_case)]
     fn test_PEKO_config_with_compaction() {
         let config = PekobotConfig::default();
         assert!(config.compaction.enabled);
