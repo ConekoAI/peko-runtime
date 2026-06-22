@@ -232,8 +232,8 @@ async fn build_caller(
 /// dominates), so the service can be empty. Uses a tempdir +
 /// `PathResolver` + `ConfigAuthorityImpl` like the existing
 /// `build_test_service` helper in `a2a_send.rs`.
-async fn build_minimal_service() -> Arc<crate::agent::stateless_service::StatelessAgentService> {
-    use crate::agent::stateless_service::StatelessAgentService;
+async fn build_minimal_service() -> Arc<crate::agents::stateless_service::StatelessAgentService> {
+    use crate::agents::stateless_service::StatelessAgentService;
     use crate::common::paths::PathResolver;
     use crate::common::services::config_authority::ConfigAuthorityImpl;
 

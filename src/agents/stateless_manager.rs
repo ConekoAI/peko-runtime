@@ -5,8 +5,8 @@
 //! a pool of running agents, it manages agent configurations and executes
 //! agents statelessly on-demand.
 
-use crate::agent::lifecycle::LifecycleManager;
-use crate::agent::stateless_service::{ExecutionRequest, ExecutionResult, StatelessAgentService};
+use crate::agents::lifecycle::LifecycleManager;
+use crate::agents::stateless_service::{ExecutionRequest, ExecutionResult, StatelessAgentService};
 use crate::common::paths::PathResolver;
 use crate::common::services::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl};
 use anyhow::{Context, Result};
@@ -252,12 +252,12 @@ impl StatelessAgentManager {
     }
 
     /// Get current execution metrics
-    pub async fn metrics(&self) -> crate::agent::stateless_service::ExecutionMetrics {
+    pub async fn metrics(&self) -> crate::agents::stateless_service::ExecutionMetrics {
         self.agent_service.metrics().await
     }
 
     /// List active executions
-    pub async fn active_executions(&self) -> Vec<crate::agent::lifecycle::ExecutionRecord> {
+    pub async fn active_executions(&self) -> Vec<crate::agents::lifecycle::ExecutionRecord> {
         self.lifecycle.active_executions().await
     }
 

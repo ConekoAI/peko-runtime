@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::agent::subagent_error::SpawnError;
-use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
+use crate::agents::subagent_error::SpawnError;
+use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::extension::async_exec::executor::TaskMetadata;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::core::Tool;

@@ -11,9 +11,9 @@
 //! - Background compaction works for both streaming and blocking modes
 //! - Event semantics are uniform across all consumers
 
-use crate::agent::Agent;
+use crate::agents::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase};
-use crate::prompt::SystemPromptService;
+use crate::agents::prompt::SystemPromptService;
 use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
 use crate::session::Session;
 use crate::types::message::{ContentBlock, LlmMessage};
@@ -823,7 +823,7 @@ impl AgenticLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::Agent;
+    use crate::agents::Agent;
     use crate::extension::core::{global_core, init_global_core, ExtensionCore};
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;

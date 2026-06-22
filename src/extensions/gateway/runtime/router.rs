@@ -1,6 +1,6 @@
 //! GatewayRouter — routes incoming messages from gateways to agents
 
-use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
+use crate::agents::stateless_service::{MessageRequest, StatelessAgentService};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;

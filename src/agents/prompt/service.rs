@@ -3,10 +3,10 @@
 //! Encapsulates system prompt construction and skill loading,
 //! keeping prompt-layer concerns out of the engine.
 
-use crate::agent::Agent;
+use crate::agents::Agent;
 use crate::extension::ExtensionCore;
 use crate::extensions::skill::{register_skills_with_core, SkillAdapter};
-use crate::prompt::{PromptMode, SystemPromptBuilder};
+use crate::agents::prompt::{PromptMode, SystemPromptBuilder};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;

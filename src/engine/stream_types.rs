@@ -41,7 +41,7 @@ pub struct ChannelOutput {
     /// Final text response
     pub final_text: String,
     /// Tool calls made during execution
-    pub tool_calls: Vec<crate::agent::stateless_service::ToolCallInfo>,
+    pub tool_calls: Vec<crate::agents::stateless_service::ToolCallInfo>,
     /// Token usage statistics
     pub usage: crate::providers::TokenUsage,
     /// Session ID

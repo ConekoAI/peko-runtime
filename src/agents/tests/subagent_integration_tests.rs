@@ -7,8 +7,8 @@
 //! - Status checking
 //! - List functionality
 
-use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::agent::subagent_types::SubagentStatus;
+use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
+use crate::agents::subagent_types::SubagentStatus;
 use crate::common::paths::PathResolver;
 use crate::session::manager::SessionManager;
 use crate::auth::principal::Principal;
@@ -221,7 +221,7 @@ async fn test_spawn_depth_limit() {
     let child_key = {
         let registry_guard = registry.read().await;
         let entry = registry_guard.get(&run_id1).unwrap();
-        let view = crate::agent::subagent_types::SubagentRunView::from_entry(entry)
+        let view = crate::agents::subagent_types::SubagentRunView::from_entry(entry)
             .expect("Should be a subagent entry");
         assert_eq!(view.depth, 1, "First run should be at depth 1");
         view.child_session_key.clone()
@@ -355,9 +355,9 @@ async fn test_isolated_vs_shared_session() {
     );
 
     // Verify child session keys are different
-    let isolated_view = crate::agent::subagent_types::SubagentRunView::from_entry(isolated_entry)
+    let isolated_view = crate::agents::subagent_types::SubagentRunView::from_entry(isolated_entry)
         .expect("Should be a subagent entry");
-    let shared_view = crate::agent::subagent_types::SubagentRunView::from_entry(shared_entry)
+    let shared_view = crate::agents::subagent_types::SubagentRunView::from_entry(shared_entry)
         .expect("Should be a subagent entry");
     assert_ne!(isolated_view.child_session_key, shared_view.child_session_key);
 }
@@ -408,7 +408,7 @@ async fn test_result_format_in_registry() {
     // Check the result format
     let registry_guard = registry.read().await;
     let entry = registry_guard.get(&run_id).unwrap();
-    let view = crate::agent::subagent_types::SubagentRunView::from_entry(entry)
+    let view = crate::agents::subagent_types::SubagentRunView::from_entry(entry)
         .expect("Should be a subagent entry");
 
     assert!(view.result.is_some());
@@ -470,7 +470,7 @@ async fn test_list_runs_functionality() {
     let all_entries = registry_guard.list_tasks(None);
     let all_runs: Vec<_> = all_entries
         .iter()
-        .filter_map(|e| crate::agent::subagent_types::SubagentRunView::from_entry(e))
+        .filter_map(|e| crate::agents::subagent_types::SubagentRunView::from_entry(e))
         .collect();
     assert_eq!(all_runs.len(), 3);
 
@@ -568,9 +568,9 @@ async fn test_cleanup_policy_tracking() {
     let keep_entry = registry_guard.get(&keep_run_id).unwrap();
     let delete_entry = registry_guard.get(&delete_run_id).unwrap();
 
-    let keep_view = crate::agent::subagent_types::SubagentRunView::from_entry(keep_entry)
+    let keep_view = crate::agents::subagent_types::SubagentRunView::from_entry(keep_entry)
         .expect("Should be a subagent entry");
-    let delete_view = crate::agent::subagent_types::SubagentRunView::from_entry(delete_entry)
+    let delete_view = crate::agents::subagent_types::SubagentRunView::from_entry(delete_entry)
         .expect("Should be a subagent entry");
 
     assert_eq!(keep_view.cleanup, SpawnCleanupPolicy::Keep);
@@ -622,7 +622,7 @@ async fn test_parent_child_relationship() {
 
     let registry_guard = registry.read().await;
     let entry = registry_guard.get(&run_id).unwrap();
-    let view = crate::agent::subagent_types::SubagentRunView::from_entry(entry)
+    let view = crate::agents::subagent_types::SubagentRunView::from_entry(entry)
         .expect("Should be a subagent entry");
 
     assert_eq!(view.parent_session_key, parent_key);

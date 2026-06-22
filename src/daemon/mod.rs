@@ -12,7 +12,7 @@ pub mod background_runtime;
 pub mod cron_engine;
 pub mod state;
 
-use crate::agent::stateless_service::StatelessAgentService;
+use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::paths::PathResolver;
 use crate::cron::events::SystemEvent;
 use crate::daemon::cron_engine::CronEngine;

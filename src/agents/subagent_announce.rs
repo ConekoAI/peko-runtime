@@ -3,7 +3,7 @@
 //! Handles announcing subagent results back to parent sessions.
 //! When a subagent completes, its result is added as a message to the parent's base session.
 
-use crate::agent::subagent_types::{SubagentRunView, SubagentStatus};
+use crate::agents::subagent_types::{SubagentRunView, SubagentStatus};
 use crate::session::manager::SessionHandle;
 use anyhow::{Context, Result};
 
@@ -205,7 +205,7 @@ pub async fn on_subagent_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
+    use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
     use chrono::Utc;
 
     fn make_test_view(status: SubagentStatus, result: Option<SubagentResult>) -> SubagentRunView {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-use crate::agent::subagent_executor::{AnnouncementReceiver, SubagentExecutor};
+use crate::agents::subagent_executor::{AnnouncementReceiver, SubagentExecutor};
 use crate::session::manager::SessionManager;
 
 /// Service for announcing subagent results to parent sessions
@@ -74,7 +74,7 @@ impl AnnouncementService {
                 Some(handle) => {
                     // Announce to parent
                     if let Err(e) =
-                        crate::agent::subagent_announce::announce_to_parent(&handle, &run).await
+                        crate::agents::subagent_announce::announce_to_parent(&handle, &run).await
                     {
                         error!(
                             "Failed to announce to parent: run_id={} error={}",
@@ -261,7 +261,7 @@ mod tests {
     #[tokio::test]
     async fn test_announcement_service_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let executor = Arc::new(crate::agent::subagent_executor::SubagentExecutor::new(
+        let executor = Arc::new(crate::agents::subagent_executor::SubagentExecutor::new(
             manager.clone(),
             "test",
             5,

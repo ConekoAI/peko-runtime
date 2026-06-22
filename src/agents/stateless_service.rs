@@ -12,7 +12,7 @@
 //! - Agent is dropped after execution (stateless)
 //! - Session state is persisted separately
 
-use crate::agent::Agent;
+use crate::agents::Agent;
 use crate::auth::principal::Principal;
 use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
