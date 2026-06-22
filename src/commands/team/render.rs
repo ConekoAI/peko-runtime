@@ -163,7 +163,10 @@ pub(super) fn render_team_deleted(result: &TeamDeletionResult, json: bool) {
     }
 }
 
-pub(super) fn render_team_exported(result: &crate::common::types::team::TeamExportResult, json: bool) {
+pub(super) fn render_team_exported(
+    result: &crate::common::types::team::TeamExportResult,
+    json: bool,
+) {
     if json {
         println!(
             "{}",
@@ -181,7 +184,10 @@ pub(super) fn render_team_exported(result: &crate::common::types::team::TeamExpo
     }
 }
 
-pub(super) fn render_team_imported(result: &crate::common::types::team::TeamImportResult, json: bool) {
+pub(super) fn render_team_imported(
+    result: &crate::common::types::team::TeamImportResult,
+    json: bool,
+) {
     if json {
         println!(
             "{}",
@@ -212,4 +218,251 @@ pub(super) fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bo
     std::io::stdin().read_line(&mut input)?;
 
     Ok(input.trim().eq_ignore_ascii_case("y"))
+}
+
+pub(super) fn confirm_team_move(
+    old_name: &str,
+    new_name: &str,
+    agent_count: usize,
+) -> Result<bool> {
+    println!("⚠️  This will rename team '{old_name}' to '{new_name}'.");
+    if agent_count > 0 {
+        println!("   It contains {agent_count} agent(s) that will be moved.");
+    }
+    print!("   Continue? [y/N] ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+
+    Ok(input.trim().eq_ignore_ascii_case("y"))
+}
+
+pub(super) fn render_team_pushed(result: &crate::common::types::team::TeamPushResult, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "team_name": result.name,
+                "registry_ref": result.registry_ref,
+                "manifest": {
+                    "name": result.manifest_name,
+                    "version": result.manifest_version,
+                    "digest": result.manifest_digest,
+                    "kind": result.kind,
+                    "layers": result.layers,
+                    "total_size": result.total_size,
+                }
+            })
+        );
+    } else {
+        println!("Pushed team '{}' to {}", result.name, result.registry_ref);
+        println!("  Manifest: {} ({})", result.manifest_digest, result.kind);
+        println!("  Layers: {}", result.layers);
+    }
+}
+
+pub(super) fn render_team_pull_progress(event: &crate::registry::client::ProgressEvent) {
+    match event {
+        crate::registry::client::ProgressEvent::Resolving { .. } => {
+            println!("  Resolving...");
+        }
+        crate::registry::client::ProgressEvent::Pulling {
+            layer,
+            bytes_received,
+            bytes_total,
+        } => {
+            if bytes_received == bytes_total && bytes_received != &Some(0) {
+                println!("  Layer {}  ✓ downloaded", &layer[..19.min(layer.len())]);
+            } else if bytes_received == &Some(0) {
+                println!("  Layer {}  → downloading", &layer[..19.min(layer.len())]);
+            }
+        }
+        crate::registry::client::ProgressEvent::Verifying { layer } => {
+            println!("  Verifying {layer}...");
+        }
+        crate::registry::client::ProgressEvent::Done { .. } => {
+            println!("Done.");
+        }
+        crate::registry::client::ProgressEvent::Error { code, message } => {
+            eprintln!("  Error: {code} - {message}");
+        }
+        _ => {}
+    }
+}
+
+pub(super) fn render_team_pull_report(
+    result: &crate::common::types::team::TeamPullResult,
+    extension_results: &crate::common::types::team::TeamExtensionPullResult,
+    json: bool,
+) {
+    if json {
+        let output = serde_json::json!({
+            "success": true,
+            "registry_ref": result.registry_ref,
+            "name": result.name,
+            "path": result.path.display().to_string(),
+            "agents_imported": result.agents_imported,
+            "extensions": {
+                "pulled": extension_results.pulled,
+                "already_present": extension_results.already_present,
+                "failed": extension_results.failed.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            },
+            "manifest": {
+                "name": result.manifest_name,
+                "version": result.manifest_version,
+                "digest": result.manifest_digest,
+                "kind": result.manifest_kind,
+                "layers": result.manifest_layers,
+                "total_size": result.manifest_total_size,
+            }
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
+    } else {
+        println!("📥 Imported team '{}'", result.name);
+        println!("   Agents: {}", result.agents_imported);
+        println!("   Path: {}", result.path.display());
+        if !extension_results.pulled.is_empty() {
+            println!("   Extensions pulled: {}", extension_results.pulled.len());
+            for ext in &extension_results.pulled {
+                println!("     ✓ {}", ext);
+            }
+        }
+        if !extension_results.already_present.is_empty() {
+            println!(
+                "   Extensions already present: {}",
+                extension_results.already_present.len()
+            );
+            for ext in &extension_results.already_present {
+                println!("     ✓ {}", ext);
+            }
+        }
+    }
+}
+
+pub(super) fn render_team_pull_extension_warnings(failed: &[(String, String)]) {
+    if failed.is_empty() {
+        return;
+    }
+    eprintln!();
+    eprintln!(
+        "Warning: {} extension(s) could not be pulled:",
+        failed.len()
+    );
+    for (ext_id, err) in failed {
+        eprintln!("  - {}: {}", ext_id, err);
+    }
+}
+
+pub(super) fn render_cancelled(json: bool) {
+    if json {
+        println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
+    } else {
+        println!("Cancelled.");
+    }
+}
+
+pub(super) fn render_team_moved(old_name: &str, new_name: &str, agents_moved: usize, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "old_name": old_name,
+                "new_name": new_name,
+                "agents_moved": agents_moved,
+            })
+        );
+    } else {
+        println!("Moved team '{}' -> '{}'", old_name, new_name);
+    }
+}
+
+pub(super) fn render_team_transfer_success(name: &str, new_owner: &str, json: bool) {
+    if json {
+        println!("{{\"success\": true, \"team\": \"{name}\", \"new_owner\": \"{new_owner}\"}}");
+    } else {
+        println!("✅ Transferred ownership of team '{name}' to {new_owner}");
+    }
+}
+
+pub(super) fn render_permission_change(team: &str, subject: &str, action: &str, json: bool) {
+    if json {
+        println!("{{\"success\": true, \"team\": \"{team}\", \"subject\": \"{subject}\"}}");
+    } else {
+        println!("✅ {action} permission on team '{team}' for {subject}");
+    }
+}
+
+pub(super) fn render_team_permissions(
+    name: &str,
+    metadata: &crate::common::types::team::TeamMetadata,
+    json: bool,
+) {
+    if json {
+        let grants: Vec<_> = metadata
+            .permissions
+            .iter()
+            .map(|g| {
+                serde_json::json!({
+                    "subject": g.subject.to_string(),
+                    "permission": g.permission,
+                    "granted_at": g.granted_at,
+                    "granted_by": g.granted_by.to_string(),
+                })
+            })
+            .collect();
+        println!(
+            "{{\"team\": \"{name}\", \"owner\": \"{}\", \"permissions\": {}}}",
+            metadata.owner,
+            serde_json::to_string(&grants).unwrap_or_default()
+        );
+    } else {
+        println!("📁 Team: {}", name);
+        println!("   Owner: {}", metadata.owner);
+        if metadata.permissions.is_empty() {
+            println!("   Permissions: none");
+        } else {
+            println!("   Permissions:");
+            for g in &metadata.permissions {
+                println!(
+                    "     - {} ({}): {:?} (by {} at {})",
+                    g.subject,
+                    g.subject.kind(),
+                    g.permission,
+                    g.granted_by,
+                    g.granted_at
+                );
+            }
+        }
+    }
+}
+
+pub(super) fn render_team_push_progress(event: &crate::registry::client::ProgressEvent) {
+    match event {
+        crate::registry::client::ProgressEvent::Resolving { .. } => {}
+        crate::registry::client::ProgressEvent::Pushing {
+            layer,
+            bytes_sent,
+            bytes_total,
+        } => {
+            if bytes_sent == bytes_total && bytes_sent != &Some(0) {
+                println!("  Layer {}  ✓ uploaded", &layer[..19.min(layer.len())]);
+            } else if bytes_sent == &Some(0) {
+                println!("  Layer {}  → uploading", &layer[..19.min(layer.len())]);
+            }
+        }
+        crate::registry::client::ProgressEvent::Done { .. } => {
+            println!("  Manifest         pushed");
+            println!("Done.");
+        }
+        crate::registry::client::ProgressEvent::Error { code, message } => {
+            eprintln!("  Error: {code} - {message}");
+        }
+        _ => {}
+    }
 }

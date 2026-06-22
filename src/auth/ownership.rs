@@ -4,9 +4,10 @@
 //! code path for local IPC and remote access.
 //!
 //! After ADR-039, the canonical actor is `crate::auth::principal::Principal`.
-//! `SubjectType` is retained as the IPC wire-side tag for back-compat
-//! (see `RequestPacket`); the in-memory `PermissionGrant` collapses
-//! `subject_id + subject_type` into a single `subject: Principal`.
+//! The legacy `SubjectType` enum and `principal_from_wire` helper were
+//! removed in issue #30; the IPC wire format now carries a single
+//! `subject: Principal` on grant/revoke packets. `PermissionGrant` stores
+//! that `Principal` directly.
 
 use serde::{Deserialize, Serialize};
 
@@ -50,9 +51,8 @@ impl Permission {
 
 /// A single permission grant on a resource.
 ///
-/// After ADR-039, the subject is a full `Principal`. The IPC wire still
-/// carries `(subject_id, subject_type)` for back-compat — the bridge is
-/// in `ipc/server.rs`.
+/// After ADR-039, the subject is a full `Principal`. The IPC wire carries
+/// the same `Principal` directly; see `ipc::packet::RequestPacket`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionGrant {
     /// The subject this grant applies to.
@@ -499,7 +499,7 @@ mod tests {
         assert!(check_permission(&resource, Permission::Chat, &caller).is_err());
     }
 
-    // -- `principal_from_wire` removed in issue #30; the IPC resolver
-//    no longer needs a wire-side bridge since every grant/revoke
-//    packet carries a `Principal` directly. --
+    // `principal_from_wire` was removed in issue #30; the IPC resolver
+    // no longer needs a wire-side bridge because every grant/revoke
+    // packet carries a `Principal` directly.
 }

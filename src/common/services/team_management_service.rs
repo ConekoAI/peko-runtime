@@ -18,8 +18,9 @@ use crate::common::services::TeamService;
 use crate::common::types::membership::{MembershipRole, TeamJoinResult, TeamLeaveResult};
 use crate::common::types::team::{
     TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo,
-    TeamMoveResult,
+    TeamMoveResult, TeamPullResult, TeamPushResult,
 };
+use crate::registry::client::ProgressEvent;
 use anyhow::Result;
 
 /// Unified team management service
@@ -146,6 +147,39 @@ impl TeamManagementService {
         self.config_service.move_team(old_name, new_name).await
     }
 
+    /// Push a team snapshot to a registry
+    pub async fn push_team<F>(
+        &self,
+        name: &str,
+        registry_ref: &str,
+        cli_registry: Option<&str>,
+        on_progress: F,
+    ) -> Result<TeamPushResult>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        self.config_service
+            .push_team(name, registry_ref, cli_registry, on_progress)
+            .await
+    }
+
+    /// Pull a team snapshot from a registry
+    pub async fn pull_team<F>(
+        &self,
+        registry_ref: &str,
+        new_name: Option<&str>,
+        force: bool,
+        cli_registry: Option<&str>,
+        on_progress: F,
+    ) -> Result<TeamPullResult>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        self.config_service
+            .pull_team(registry_ref, new_name, force, cli_registry, on_progress)
+            .await
+    }
+
     /// Add an agent to a team
     pub async fn join_team(
         &self,
@@ -248,8 +282,14 @@ mod tests {
     async fn test_list_teams_sorted() {
         let (_temp, service) = test_service();
 
-        service.create_team("alpha", None, None, None).await.unwrap();
-        service.create_team("default", None, None, None).await.unwrap();
+        service
+            .create_team("alpha", None, None, None)
+            .await
+            .unwrap();
+        service
+            .create_team("default", None, None, None)
+            .await
+            .unwrap();
         service.create_team("beta", None, None, None).await.unwrap();
 
         let teams = service.list_teams().await.unwrap();
@@ -263,7 +303,10 @@ mod tests {
     async fn test_join_and_leave_team() {
         let (_temp, service) = test_service();
 
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
         create_test_agent(&service, "alice");
 
         let join = service
@@ -288,7 +331,10 @@ mod tests {
     async fn test_delete_team_removes_members_but_keeps_agents() {
         let (_temp, service) = test_service();
 
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
         create_test_agent(&service, "alice");
         service
             .join_team("engineering", "alice", MembershipRole::Member)
@@ -306,7 +352,10 @@ mod tests {
     async fn test_move_team() {
         let (_temp, service) = test_service();
 
-        service.create_team("engineering", None, None, None).await.unwrap();
+        service
+            .create_team("engineering", None, None, None)
+            .await
+            .unwrap();
         create_test_agent(&service, "alice");
         service
             .join_team("engineering", "alice", MembershipRole::Member)
@@ -339,7 +388,10 @@ mod tests {
     async fn test_cannot_delete_default_team() {
         let (_temp, service) = test_service();
 
-        service.create_team("default", None, None, None).await.unwrap();
+        service
+            .create_team("default", None, None, None)
+            .await
+            .unwrap();
         let result = service.delete_team("default").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Cannot delete"));

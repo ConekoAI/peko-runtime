@@ -9,7 +9,7 @@
 //!
 //! # Module Boundaries
 //!
-//! This module (`src/extension/`) must NOT import from:
+//! This module (`src/extensions/framework/`) must NOT import from:
 //! - `crate::extensions` (extension type implementations)
 //! - `crate::mcp` (absorbed into `crate::extensions::mcp`)
 //! - `crate::daemon` (daemon-specific code)

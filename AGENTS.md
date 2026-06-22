@@ -68,54 +68,42 @@ Key style notes from `clippy.toml`:
 
 ```
 src/
-├── agent/          # Agent management (stateless manager, config, lifecycle)
-├── commands/       # CLI command implementations
-├── common/         # Shared services (AgentService, AgentConfigService, etc.)
-├── compaction/     # Session compaction / context summarization
-├── cron/           # Cron job scheduling and persistence
-├── daemon/         # HTTP daemon (Axum-based), health, info endpoints
-│   └── background_runtime/  # Generic process supervision (manager, supervisor, adapter traits)
-├── engine/         # Core agentic loop execution engine
-├── extension/      # Extension Framework (singular) — generic, zero external deps
-│   ├── adapters/   # ExtensionTypeAdapter trait, ManifestFormat, BuiltInAdapters, parsing utilities
-│   ├── async_exec/ # Async task execution framework (migrated from tools::framework)
-│   ├── core/       # ExtensionCore — 22 hook-point registry
-│   ├── integration/# Extension integration layer
-│   ├── manager/    # ExtensionManager — lifecycle (install, enable, disable)
-│   ├── protocols/  # Shared protocol utilities (process transport, validation, schema filter)
-│   ├── services/   # Extension services (tool execution, reserved params)
-│   ├── transport/  # Extension transport layer
-│   └── types/      # Extension type definitions (ExtensionManifest, HookResult, etc.)
-├── extensions/     # Extension Type Implementations (plural) — MCP, Gateway, Skill, Builtin, General, Universal
-│   ├── builtin/    # Built-in tool adapter
-│   ├── gateway/    # Gateway adapter, runtime, protocol
-│   ├── general/    # General extension adapter
-│   ├── mcp/        # MCP adapter, runtime, protocol (absorbed src/mcp/)
-│   ├── migration/  # Legacy extension migration utilities
-│   ├── skill/      # Skill adapter
-│   └── universal/  # Universal tool adapter and protocol
-├── identity/       # DID identity system, ed25519 keys
-├── image/          # Agent image manifest, build, registry client
-├── ipc/            # Inter-process communication
-├── observability/  # Metrics, logging, tracing
-├── portable/       # OCI-inspired image packaging (.agent packages)
-├── prompt/         # Prompt assembly (markdown files, skills injection)
-├── providers/      # LLM provider integrations (v3: catalog + resolver)
-│   ├── adapters/   # OpenAI / Anthropic / openai-compatible ApiAdapters
-│   ├── catalog.rs  # ProviderCatalog — runtime-owned, persisted to `~/.peko/providers.toml`
-│   ├── templates.rs# Built-in preset templates with curated model lists
-│   ├── resolver.rs # LlmResolver — precedence: override > session > agent > default > first
-│   └── core.rs     # Unified Provider type
-├── registry/       # Image registry push/pull with auth
-├── runtime/        # Runtime configuration and state
-├── session/        # Session JSONL management, branching, indexing
-├── team/           # Team composition, shared services, event bus
-├── tools/          # Built-in tools and tool factory
-│   ├── builtin/    # Built-in tool implementations
-│   ├── core/       # Tool trait definitions (Tool, ToolContext, ToolResult)
-│   └── registry/   # Tool factory and creation helpers
-├── types/          # Core type definitions shared across modules
-└── main.rs         # CLI entry point (clap-based)
+├── agents/                 # Agent management (stateless manager, config, lifecycle, prompts)
+├── auth/                   # Authentication and authorization (principal, ownership, JWT, API keys)
+├── commands/               # CLI command implementations
+├── common/                 # Shared services and core types (AgentService, config authority, vault, KV, types)
+├── cron/                   # Cron job scheduling and persistence
+├── daemon/                 # HTTP daemon (Axum-based), health, info endpoints, AppState composition root
+│   └── background_runtime/ # Generic process supervision (manager, supervisor, adapter traits)
+├── engine/                 # Core agentic loop execution engine
+├── extensions/             # Extension framework + type implementations
+│   ├── framework/          # Generic extension framework (ADR-017) — core, types, manager, async_exec, transport, services, protocols/shared
+│   ├── builtin/            # Built-in tool adapter
+│   ├── gateway/            # Gateway adapter, runtime, protocol
+│   ├── general/            # General extension adapter
+│   ├── mcp/                # MCP adapter, runtime, protocol
+│   ├── skill/              # Skill adapter
+│   └── universal/          # Universal tool adapter and protocol
+├── identity/               # DID identity system, ed25519 keys, key storage, runtime identity
+├── ipc/                    # Inter-process communication
+├── observability/          # Metrics, logging, tracing, audit
+├── providers/              # LLM provider integrations (v3: catalog + resolver)
+│   ├── adapters/           # OpenAI / Anthropic / openai-compatible ApiAdapters
+│   ├── catalog.rs          # ProviderCatalog — runtime-owned, persisted to `~/.peko/providers.toml`
+│   ├── templates.rs        # Built-in preset templates with curated model lists
+│   ├── resolver.rs         # LlmResolver — precedence: override > session > agent > default > first
+│   └── core.rs             # Unified Provider type
+├── registry/               # Local packaging/export/import and remote registry push/pull
+│   ├── packaging/          # OCI-inspired .agent/.team/.ext archive handling
+│   └── client.rs           # HTTP registry client
+├── session/                # Session JSONL management, branching, indexing, compaction
+├── tools/                  # Built-in tools and tool factory
+│   ├── builtin/            # Built-in tool implementations
+│   ├── core/               # Tool trait definitions
+│   └── registry/           # Tool factory and creation helpers
+├── tunnel/                 # Tunnel / network layer — Pekohub A2A protocol, dispatcher, known runtimes
+├── main.rs                 # CLI entry point (clap-based)
+└── lib.rs                  # Library surface (public domains + re-exports)
 ```
 
 ---
@@ -124,18 +112,20 @@ src/
 
 | Module | Purpose |
 |--------|---------|
-| `agent` | Agent instance lifecycle, stateless manager, registration |
-| `daemon` | Axum HTTP server, REST API, WebSocket, SSE streaming |
+| `agents` | Agent instance lifecycle, stateless manager, registration, prompts |
+| `auth` | Principal ownership, permission grants, API keys, JWT, rate limiting |
+| `commands` | Clap argument parsing and command handlers (still transitioning to thin service delegation) |
+| `common` | Shared services (`AgentService`, `SessionService`, `ConfigAuthority`, `Vault`, etc.) and core types |
+| `daemon` | Axum HTTP server, REST API, WebSocket, SSE streaming, `AppState` composition root |
 | `engine` | Turn-based agentic loop: input → LLM → tools → response |
-| `extension` | Generic extension framework (ADR-017) — hook points, registries, types, managers, and shared services. Zero dependencies on extension type implementations. |
-| `extensions` | Extension type implementations (MCP, Gateway, Skill, Builtin, General, Universal). Each type lives in its own directory. |
-| `portable` | Unified packaging layer — `.agent` packages (build from directory, export, import), `.team` packages (export/import with checksums), `.ext` packages (extension export), local `AgentRegistry` with content-addressable layer storage. Merged from former `src/image/`. |
-| `session` | JSONL persistence, atomic writes, branching, `.index.json` sidecars |
-| `team` | Multi-agent teams, shared bus, shared MCPs, file workspace |
-| `tools` | Built-in tool implementations (filesystem, process, cron, spawn, etc.). Tool traits and factory only — frameworks moved to `extensions`. |
+| `extensions::framework` | Generic extension framework (ADR-017) — hook points, registries, types, managers, and shared services. Zero dependencies on concrete extension type implementations. |
+| `extensions` (sibling submodules) | Extension type implementations (MCP, Gateway, Skill, Builtin, General, Universal). Each type lives in its own directory. |
+| `identity` | DID identity, keychain, key storage, resolver, runtime identity |
+| `registry` | Local packaging/export/import (`AgentRegistry`, `.agent`/`.team`/`.ext` archives) and remote registry client |
+| `session` | JSONL persistence, atomic writes, branching, `.index.json` sidecars, compaction |
+| `tools` | Built-in tool implementations and tool trait surface |
 | `providers` | LLM client abstractions (chat completions, streaming, tool calling) |
-| `portable` | Unified packaging layer — `.agent` build/export/import, `.team` export/import, `.ext` export, local `AgentRegistry` with content-addressable layer storage |
-| `registry` | HTTP client for push/pull to remote registries with bearer/basic auth |
+| `tunnel` | Pekohub tunnel protocol, A2A dispatcher, runtime discovery |
 | `cron` | Persistent cron jobs (`cron.json`), missed-job recovery on restart |
 
 ---
@@ -145,9 +135,9 @@ src/
 - **Unit tests** are co-located in `#[cfg(test)]` modules within source files.
 - **Integration tests** live in `tests/`; the legacy `e2e_tests/` PowerShell scripts are being dismantled per `docs/integration/TESTING.md` §7.
 - **New CLI integration tests** (Phase B migration):
-  - `tests/cli_send.rs` — `peko send` with mock LLM (8 tests: default response, keyword echo, --file, --stdin, --new, --session, error cases)
-  - `tests/cli_session.rs` — `peko session` with mock LLM (8 tests: list, show, branch, switch, remove, user isolation)
-  - `tests/cli_basics.rs` — Offline agent/team/config commands (12 tests: create/list/show/remove/move, config get/set/path/defaults)
+  - `tests/cli_send.rs` — `peko send` with mock LLM
+  - `tests/cli_session.rs` — `peko session` with mock LLM
+  - `tests/cli_basics.rs` — Offline agent/team/config commands
 - **Benchmarks** live in `benches/`.
 - Tests cover critical paths: extension lifecycle, agent lifecycle, provider operations, session operations, tool operations.
 - The project targets 80%+ test coverage.
@@ -161,10 +151,10 @@ The workflow runs a path-aware, six-tier pipeline. Doc-only PRs (only
 | Tier | Trigger | Wall-clock (warm) | Make target |
 |---|---|---|---|
 | `smoke` | `src/**` or `tests/**` changed | < 6 min | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` |
-| `lint` | `src/**` changed (advisory) | < 1 min | `bash scripts/check_module_boundaries.sh` |
+| `lint` | `src/**` changed | < 1 min | `bash scripts/check_module_boundaries.sh` |
 | `unit-linux` | `src/**` or `tests/**` changed | ~3 min | `cargo test --lib` |
 | `unit-windows` | Windows-specific paths or `[windows]` keyword / schedule / manual | ~5 min | `cargo test --lib` |
-| `integration` | `tests/**`, `docker/**`, `Dockerfile*`, or `workflow` changed; or schedule / manual | ~10-15 min | `make docker-up` + `make test-integration` |
+| `integration` | `tests/**`, `docker/**`, `Dockerfile*`, or workflow changed; or schedule / manual | ~10-15 min | `make docker-up` + `make test-integration` |
 | `integration-llm` | `src/**` or `tests/**` changed AND `[llm]` keyword / schedule / manual | ~5 min extra | `make test-integration-llm` |
 
 ### Local quick feedback loop
@@ -207,17 +197,13 @@ cargo test --all-features
 - **Daemon default bind:** `127.0.0.1:11435`. Binding to `0.0.0.0` requires explicit config and prints a warning.
 - **Session durability:** JSONL is the source of truth; SQLite (`state.db`) is a rebuildable index.
 - **Credential isolation:** API keys are never passed to tool subprocesses. The `process` tool strips `*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`.
-- **Module Boundaries (Issue 014 / Issue 015 / Issue 016):** After the Issue 015 type-oriented restructure and Issue 016 boundary cleanup:
-  - `src/extension/` (singular) contains the **generic extension framework** — core, types, manager, async_exec, transport, services, protocols/shared, and the new adapters module. It has **zero dependencies** on `crate::extensions`, `crate::mcp`, `crate::daemon`, or `crate::tools`.
-  - `src/extensions/` (plural) contains **extension type implementations** — each type (mcp, gateway, skill, builtin, general, universal) lives in its own directory with its adapter, runtime, and protocol code.
-  - `src/extensions/mcp/protocol/` absorbed the former `src/mcp/` module (client, transport, types, config, discovery, manager). `src/mcp/` no longer exists.
-  - `src/extensions/mcp/runtime/` contains MCP runtime adapters, tool proxies, and starters (migrated from `src/extensions/runtime/` and `src/mcp/`).
-  - `src/extensions/gateway/runtime/` contains Gateway runtime adapters, router, and starters (migrated from `src/extensions/runtime/` and `src/daemon/background_runtime/`).
-  - `src/daemon/background_runtime/` contains only generic process supervision code (traits, manager, supervisor, starter registry).
-  - `src/tools/framework/` has been removed.
-  - `src/extension/core/` has zero dependencies on `crate::extensions`, `crate::mcp`, `crate::daemon`, or `crate::tools`.
-  - **Execution primitives** (`ToolContext`, `ToolError`, `AbortSignal`, `ToolResult`, `ToolWithContext`, `ToolContextAdapter`) live in `extension::types::tool_exec` so the generic framework can use them without depending on `crate::tools`. `tools::core` re-exports them for convenience.
-  - **Dependency direction:** `extension` → (no tools deps). `tools::core` → imports execution primitives from `extension::types`. `tools::builtin` may import `async_exec` from `extension` (acceptable: tools depends on extension). The bidirectional loop is broken.
+- **Module Boundaries (Issue 014 / Issue 015 / Issue 016):**
+  - `src/extensions/framework/` contains the **generic extension framework** — core, types, manager, async_exec, transport, services, protocols/shared, and adapters. It has **zero dependencies** on concrete extension type implementations under `src/extensions/<type>/`.
+  - `src/extensions/<type>/` (builtin, gateway, general, mcp, skill, universal) contains **extension type implementations**. Each type lives in its own directory and should not import from sibling extension types.
+  - `src/extensions/framework/core/` has zero dependencies on `crate::extensions::<type>`, `crate::daemon`, or `crate::tools`.
+  - **Execution primitives** (`ToolContext`, `ToolError`, `AbortSignal`, `ToolResult`, `ToolWithContext`, `ToolContextAdapter`) live in `extensions::framework::types::tool_exec` so the generic framework can use them without depending on `crate::tools`. `tools::core` re-exports them for convenience.
+  - **Dependency direction:** `extensions::framework` → (no concrete extension deps). `tools::core` imports execution primitives from `extensions::framework::types`. `tools::builtin` may import `async_exec` from `extensions::framework` (acceptable: tools depends on framework). The bidirectional loop is broken.
+  - The boundary-check script (`scripts/check_module_boundaries.sh`) is being updated to enforce the new `extensions/framework/` paths; until then it still references the old singular `src/extension/` path.
 
 ---
 

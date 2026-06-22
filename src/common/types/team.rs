@@ -101,6 +101,43 @@ pub struct TeamImportResult {
     pub agents_imported: usize,
 }
 
+/// Team push result
+#[derive(Debug, Clone)]
+pub struct TeamPushResult {
+    pub name: String,
+    pub registry_ref: String,
+    pub manifest_name: String,
+    pub manifest_version: String,
+    pub manifest_digest: String,
+    pub kind: String,
+    pub layers: usize,
+    pub total_size: u64,
+}
+
+/// Team pull result
+#[derive(Debug, Clone)]
+pub struct TeamPullResult {
+    pub registry_ref: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub agents_imported: usize,
+    pub manifest_name: String,
+    pub manifest_version: String,
+    pub manifest_digest: String,
+    pub manifest_kind: String,
+    pub manifest_layers: usize,
+    pub manifest_total_size: u64,
+    pub extension_refs: Vec<crate::registry::packaging::types::ExtensionRef>,
+}
+
+/// Result of ensuring extensions for a pulled team.
+#[derive(Debug, Default)]
+pub struct TeamExtensionPullResult {
+    pub pulled: Vec<String>,
+    pub already_present: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
 /// Team extension configuration (extensions.toml)
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TeamExtConfig {

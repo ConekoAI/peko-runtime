@@ -1,300 +1,285 @@
 # `peko-runtime` Architectural Cleanup & CI Refactor — Plan
 
-> **Status:** Draft. Authored by automated exploration on 2026-06-21.
-> **Branch:** `refactor/runtime-cleanup-20260621`
-> **Goal:** Establish clean domain boundaries, remove legacy/backward-compat code, and shrink CI to a fast feedback loop. We are at the dev stage and may break the public API.
+> **Status:** In progress.  
+> **Branch:** `refactor/clippy-cleanup-rust196`  
+> **PR:** #62  
+> **Goal:** Establish clean domain boundaries, remove legacy/backward-compat code, and shrink CI to a fast feedback loop. We are at the dev stage and may break the public API.  
 
 ---
 
 ## 1. Approach
 
-This plan is split into **two horizons**:
+This plan originally split work into two horizons:
 
-- **Horizon A (this PR / draft):** Safe, mechanical, low-risk changes that ship today — dead-code deletion, CI restructuring, documentation alignment, and unused-script wiring. Each commit is independently buildable; `cargo check`, `cargo clippy -- -D warnings`, and `cargo test --lib` stay green throughout.
-- **Horizon B (follow-up PRs):** Larger structural moves that are described in §6 but **deferred** to keep the initial diff small, reviewable, and reversible. Each Horizon B item will become its own task list once Horizon A is merged.
+- **Horizon A:** Safe, mechanical, low-risk changes — dead-code deletion, CI restructuring, documentation alignment, and unused-script wiring.
+- **Horizon B:** Larger structural moves that were initially deferred to keep the diff reviewable.
 
-The full target 9-domain layout is laid out in §4. The Horizon A scope is the safer subset of changes that does not require renaming any module that is `pub`-re-exported or that ships CLI subcommands.
+**PR #62 enacts both Horizon A and the bulk of Horizon B in a single branch.** The combined refactor was chosen to avoid a long chain of stacked module renames (`agent → agents`, `extension → extensions/framework`, `portable → registry/packaging`, etc.) that each conflict with the next. Horizon A items remain included; anything not yet done is listed in §9 as the remaining backlog.
+
+The full target 9-domain layout is laid out in §4. The moves already performed are documented in §5.
 
 ---
 
-## 2. Inventory Snapshot (from exploration)
+## 2. Inventory Snapshot
 
-These come from three parallel reads of the tree on 2026-06-21.
+### 2.1 Top-level `src/` directories after the refactor (16 total)
 
-### 2.1 Top-level `src/` directories (21 total)
+`agents`, `auth`, `commands`, `common`, `cron`, `daemon`, `engine`, `extensions`, `identity`, `ipc`, `observability`, `providers`, `registry`, `session`, `tools`, `tunnel` — plus `lib.rs` / `main.rs`.
 
-`agent`, `auth`, `commands`, `common`, `compaction`, `cron`, `daemon`, `engine`, `extension`, `extensions`, `identity`, `ipc`, `observability`, `portable`, `prompt`, `providers`, `registry`, `runtime`, `session`, `team`, `tools`, `tunnel`, `types` — plus `lib.rs` / `main.rs`.
+Deleted/merged roots:
+- `agent/` → `agents/`
+- `compaction/` → `session/compaction/`
+- `extension/` → `extensions/framework/`
+- `portable/` → `registry/packaging/`
+- `prompt/` → `agents/prompt/`
+- `runtime/` → split into `identity/runtime.rs`, `engine/tool_runtime.rs`, `tunnel/known_runtimes.rs`
+- `team/` → `common/types/team.rs` + `registry/packaging/`
+- `types/` → `common/types/`
 
-### 2.2 Public surface (`src/lib.rs:1-220`)
+### 2.2 Public surface (`src/lib.rs`)
 
-19 `pub mod`s + 1 `pub(crate) mod cron` + 1 `pub(crate) mod prompt` + 1 `pub(crate) mod compaction`. The crate root re-exports `Agent`, `AgenticEvent`, `LifecyclePhase`, and `VERSION`.
+16 `pub mod` domain roots + `pub(crate) mod cron` + `pub mod daemon` (under `test-utils`). The crate root re-exports `Agent`, `AgenticEvent`, `LifecyclePhase`, and `VERSION`.
 
-### 2.3 Confirmed dead code (Horizon A targets)
+### 2.3 Dead code removed in PR #62
 
 | Path / Symbol | Justification |
 |---|---|
-| `Cargo.toml:122` — `mcp = []` feature | Zero `cfg(feature = "mcp")` references anywhere in the tree; no workflow sets `--features mcp`. |
-| `src/types/agent.rs:229-230` — `pub type BootstrapFileConfig = SystemFileConfig;` | Zero callers; comment marks it deprecated. |
-| `e2e_tests_archive/**/*.ps1` (15 PowerShell scripts) and `reset.ps1` | No `cargo test`, Makefile, or CI workflow invokes them; only YAML/Python/JS fixtures under `e2e_tests_archive/extensions/**` are reached (by `cli_extensions.rs`). |
-| `tests/common/mock_configure.rs` — `configure_url` helper | Internal-only; only consumed inside the same file by `configure_mock`. |
-| `src/extension/types/async_types.rs:48` — `pub use crate::extension::async_exec::executor::AsyncTaskStatus;` | Duplicated by `extension/types/mod.rs:7`. |
+| `Cargo.toml:122` — `mcp = []` feature | Zero `cfg(feature = "mcp")` references anywhere; no workflow sets `--features mcp`. |
+| `src/types/agent.rs:229-230` — `pub type BootstrapFileConfig = SystemFileConfig;` | Zero callers; comment marked it deprecated. |
+| `e2e_tests_archive/**/*.ps1` (19 PowerShell scripts) and `reset.ps1` | No `cargo test`, Makefile, or CI workflow invokes them; only YAML/Python/JS fixtures under `e2e_tests_archive/extensions/**` are reached. |
+| `tests/common/mock_configure.rs` — `configure_url` helper | Internal-only; consumed inside the same file. |
 | `src/lib.rs:196` — commented-out `// pub mod hooks;` | Stale comment referencing removed Issue 001 module. |
-| Stale references to nonexistent `runtime/migration.rs` (3 places) | `src/auth/principal.rs:49`, `src/types/agent.rs:133`, `src/common/services/config_authority/implementation.rs:257` — dead doc comments. |
+| Stale references to nonexistent `runtime/migration.rs` | `src/auth/principal.rs`, `src/common/services/config_authority/implementation.rs` — dead doc comments. |
+| `SubjectType` enum + `principal_from_wire` | Deprecated; removed in issue #30. |
+| `Peer` type alias + `Principal::{id, peer_type, is_user, is_agent}` | Deprecated; removed in issues #25/#30. |
+| `tests/principal_back_compat.rs` | Legacy wire-format test; removed alongside `SubjectType`. |
+| `tests/scenarios/s6_revoke_principal_collapse_e2e.rs` | Never wired in `Cargo.toml`; coverage moved to unit tests in `src/ipc/packet.rs`. |
 
-### 2.4 Legacy / backward-compat code (Horizon B targets)
+### 2.4 Legacy / backward-compat code still present (remaining backlog)
 
-Documented for future work, **not removed in this PR**:
+| Path / Symbol | Justification |
+|---|---|
+| `src/identity/storage.rs` — `LegacyStoredIdentity` + `migrate_legacy` | Pending coordinated removal. |
+| `src/extensions/framework/types/manifest.rs` — `migrate_legacy_dependencies` | Pending coordinated removal. |
+| `src/commands/credential.rs` — `peko credential migrate` | One-shot OS-keychain → vault migration; remove once migration window closes. |
+| `src/tunnel/a2a_send_tool.rs` — `A2aSendArgs::target_agent` legacy field | Pending removal from tool schema. |
+| `src/daemon/state.rs` — `AppState` | Still the daemon composition root; lift to a dedicated composition domain or keep in `daemon`. |
 
-- `src/auth/ownership.rs:46-103` — `SubjectType` enum + `principal_from_wire` (both `#[deprecated]`). Bounded by ADR-039 wire-field collapse.
-- `src/auth/principal.rs:258-306` — `principal_from_string` / `principal_from_string_with_default_user` helpers. Bounded by `AgentConfig`/`TeamMetadata` direct-`owner: Principal` migration.
-- `src/session/types.rs:19-21` — `pub type Peer = Principal;` + `PeerUser/PeerAgent` re-exports; compat methods on `Principal` (`id`, `peer_type`, `is_user`, `is_agent`).
-- `src/identity/storage.rs:42-51, 207-216, 269-333, 349, 542-579` — `LegacyStoredIdentity` + `migrate_legacy`.
-- `src/extension/types/manifest.rs:92-112` — `migrate_legacy_dependencies`.
-- `src/commands/credential.rs:62-163` — `peko credential migrate` (one-shot OS-keychain → vault migration).
-- `src/tools/builtin/messaging/a2a_send.rs:124-156` — `A2aSendArgs::target_agent` legacy field.
-- `tests/principal_back_compat.rs` — regression-prevention suite for the above. Will be deleted when `SubjectType` and the legacy parser helpers are gone.
-
-### 2.5 Circular dependency inventory (Horizon B targets)
+### 2.5 Circular dependency status
 
 Strong cycles identified by exploration:
 
-1. **`portable ↔ identity`** via `src/identity/keychain.rs:13` (`use crate::portable::crypto`) ↔ `src/portable/{packager,unpackager,team_packager,signature}.rs` (`use crate::identity::*`).
-2. **`tools ↔ tunnel`** via `src/tools/builtin/messaging/a2a_send.rs:42-48` ↔ `src/tunnel/dispatcher.rs:30`.
-3. **`extension::types ↔ engine`** via `src/extension/types/tool_exec.rs:16` (`use crate::engine::AgenticEvent`) ↔ `src/engine/{compaction_orchestrator,tool_executor}.rs` (use `extension::core`).
-4. **`tools::core ↔ extension::types`** via `src/tools/core/traits.rs:3-4` ↔ `src/extension/core/async_bridge.rs` (re-implements `Tool`).
-5. **`tunnel → tools → agent → session → engine`** indirect cycle via `tunnel::dispatcher::use crate::tools::builtin::messaging::a2a_send`, `tools::builtin::messaging::a2a_send::use crate::agent::stateless_service`, `agent::stateless_service::use crate::session::manager::SessionManager`.
-6. **`commands::team → portable + registry + extension`** leak. CLI doing portable-layer orchestration that should live in `TeamService`.
+1. **`portable ↔ identity`** — **Broken** by creating `src/identity/crypto.rs` and deleting `src/portable/`.
+2. **`tools ↔ tunnel`** — **Broken** by moving `a2a_send` from `tools/builtin/messaging/` to `tunnel/a2a_send_tool.rs`.
+3. **`extension::types ↔ engine`** — **Broken** by moving `tool_exec.rs` into `extensions/framework/types/` and removing the `crate::engine::AgenticEvent` import.
+4. **`tools::core ↔ extension::types`** — **Broken**; execution primitives now live in `extensions::framework::types` and are re-exported by `tools::core`.
+5. **`tunnel → tools → agent → session → engine`** indirect cycle — **Broken** as a side effect of the `a2a_send` move and `agent → agents` restructure.
+6. **`commands::team → portable + registry + extension`** leak — **Partially addressed** by deleting `portable/` and moving packaging into `registry/`, but `commands::team` still orchestrates registry/packaging directly. Remaining work.
 
-### 2.6 CI inventory (Horizon A scope)
+### 2.6 CI inventory
 
-`.github/workflows/integration.yml` runs 4 jobs:
-- `unit-linux` — `cargo test --lib`, ~3 min warm.
-- `unit-windows` — `cargo test --lib` on Windows runner, gated by `[windows]` keyword/branch. ~5 min cold.
-- `integration` — Docker compose (PekoHub + mock-LLM), 23 integration test binaries serially, ~10-15 min.
-- `integration-llm` — Same plus real `MINIMAX_API_KEY` / `KIMI_API_KEY`. Gated.
+`.github/workflows/integration.yml` runs a path-aware pipeline:
 
-Issues: no fast smoke tier, integration always runs on PR (even for doc-only changes), no path filtering beyond `src/**`+`tests/**`+`Makefile`+`.github/docker/**`+workflow itself.
+- `smoke` — fmt (advisory), clippy `-D warnings`, `cargo test --lib`.
+- `lint` — `scripts/check_module_boundaries.sh` (hard gate).
+- `unit-linux` — `cargo test --lib`.
+- `unit-windows` — `cargo test --lib` on Windows runner, gated by Windows paths/`[windows]`/schedule/manual.
+- `integration` — Docker compose (PekoHub + mock-LLM), gated by test/docker/workflow changes.
+- `integration-llm` — Real LLM keys, gated by `[llm]`/schedule/manual.
 
-### 2.7 Scripts (`scripts/`) not wired into CI
+### 2.7 Scripts (`scripts/`)
 
-Four local-only scripts (0 of 4 referenced from any workflow):
-- `check_module_boundaries.sh` — enforces Issue 015 boundary rules (e.g. `src/extension/` must not import `src/extensions/`).
-- `check_module_boundaries.ps1` — Windows variant with `-Strict` mode.
-- `check_service_layer.ps1` — enforces Issue 020 service-layer rules (commands must not import low-level persistence).
-- `code_quality_check.sh` — advisory clippy / fmt / dead-code reporter.
+- `check_module_boundaries.sh` — wired into CI `lint` job. Currently checks obsolete `src/extension/` paths; needs update to `src/extensions/framework/`.
+- `check_module_boundaries.ps1` — Windows variant; same update needed.
+- `check_service_layer.ps1` — not wired into CI.
+- `code_quality_check.sh` — not wired into CI.
 
 ---
 
 ## 3. Public API Changes
 
-### Horizon A (this PR)
+### Already landed in PR #62
 
-- **Removals** (all of these are unused):
-  - `Cargo.toml[features].mcp = []` — delete the empty feature.
-  - `crate::types::agent::BootstrapFileConfig` (deprecated alias).
-  - `crate::extension::types::async_types::AsyncTaskStatus` (duplicate re-export).
-  - `pub fn configure_url` from `tests/common/mock_configure.rs` (test-only).
+- **Removals:**
+  - `Cargo.toml[features].mcp = []` — empty feature.
+  - `crate::types::agent::BootstrapFileConfig` — deprecated alias.
+  - `crate::extension::types::async_types::AsyncTaskStatus` — duplicate re-export.
+  - `pub fn configure_url` from `tests/common/mock_configure.rs` — test-only helper.
   - PowerShell scripts under `e2e_tests_archive/`.
+  - `crate::auth::ownership::SubjectType` enum.
+  - `crate::auth::ownership::principal_from_wire`.
+  - `crate::auth::principal::Peer` type alias.
+  - `Principal::{id, peer_type, is_user, is_agent}` compat methods.
+  - Public modules `agent`, `extension`, `portable`, `runtime`, `team`, `types` from `src/lib.rs`.
 
-- **Additions**: none.
+- **Renames:**
+  - `crate::agent` → `crate::agents`.
+  - `crate::extension` → `crate::extensions::framework`.
+  - `crate::portable` → `crate::registry::packaging`.
+  - `crate::types` → `crate::common::types`.
+  - `crate::compaction` → `crate::session::compaction`.
+  - `crate::prompt` → `crate::agents::prompt`.
 
-- **Renames**: none.
+### Remaining backlog
 
-### Horizon B (documented for follow-up)
-
-- Drop `SubjectType` enum from `crate::auth::ownership` and the corresponding wire fields on `RequestPacket`.
-- Drop `Peer` type alias and `Principal::{id, peer_type, is_user, is_agent}` compat methods.
-- Drop `principal_from_string*` helpers; force `owner: Principal` on `AgentConfig` / `TeamMetadata`.
-- Drop `LegacyStoredIdentity`, `migrate_legacy`, `migrate_legacy_dependencies`, and `peko credential migrate`.
-- Drop `A2aSendArgs::target_agent` and the LLM-facing tool description that references it.
+- Drop `LegacyStoredIdentity`, `migrate_legacy`, `migrate_legacy_dependencies`, `peko credential migrate`.
+- Drop `A2aSendArgs::target_agent`.
+- Decide final home for `AppState` and move if appropriate.
 
 ---
 
-## 4. Target Module Layout (full 9-domain map)
-
-Final tree after **both** horizons:
+## 4. Target Module Layout (current state)
 
 ```
 src/
-├── common/                 # Common / infrastructure (paths, vault, crypto, kv, secret_store, time, types, windows)
+├── common/                 # Common / infrastructure (services, vault, crypto, types, paths, process)
 ├── identity/               # Identity & auth (DIDs, keys, keychain, storage, resolver, runtime, crypto)
 ├── auth/                   # Identity & auth (api_key, caller, config, jwt, ownership, permissions, principal, rate_limit)
-├── agents/                 # Agents & team (renamed from agent/, absorbs runtime/tool_runtime + prompt/ + team/config)
-├── engine/                 # Core runtime (agentic_loop, events, state, stream_*, tool_*, compaction/, app_state)
-├── session/                # Core runtime (jsonl, manager, key, lock, message, overlay, spawn, …)
-├── cron/                   # Core runtime (engine absorbed from daemon)
-├── daemon/                 # Core runtime (thin: process lifecycle + background_runtime lifted to extensions)
+├── agents/                 # Agents & team (agent, agent_config, prompt, stateless manager/service, subagent logic)
+├── engine/                 # Core runtime (agentic_loop, events, state, stream_*, tool_*, compaction_orchestrator, tool_runtime)
+├── session/                # Core runtime (jsonl, manager, key, lock, message, overlay, spawn, compaction/)
+├── cron/                   # Core runtime (scheduling)
+├── daemon/                 # Core runtime (HTTP daemon, background_runtime, cron_engine, AppState composition root)
 ├── ipc/                    # Core runtime (client, server, packet, stream)
-├── extensions/             # Extensions & tools (framework: core, adapters, manager, types, transport, services, protocols, scaffold, async_exec)
-├── extensions/impls/       # (renamed from extensions/) MCP, Gateway, Skill, Builtin, General, Universal
-├── tools/                  # Extensions & tools (core trait, builtin/, skill/, factory)
-├── providers/              # Providers (catalog, resolver, adapters, transport, mock, templates, types, registry)
-├── registry/               # Registry / packaging (remote client + local store + .agent/.team packaging; absorbs portable/)
+├── extensions/             # Extensions & tools
+│   ├── framework/          # Generic extension framework (core, adapters, manager, types, transport, services, protocols, async_exec, scaffold)
+│   ├── builtin/            # Built-in tool adapter
+│   ├── gateway/            # Gateway adapter
+│   ├── general/            # General extension adapter
+│   ├── mcp/                # MCP adapter
+│   ├── skill/              # Skill adapter
+│   └── universal/          # Universal tool adapter
+├── tools/                  # Tool trait surface and built-in tool implementations
+├── providers/              # LLM provider integrations
+├── registry/               # Registry / packaging (remote client + local packaging)
 ├── tunnel/                 # Tunnel / network (client, dispatcher, hub_directory, a2a_*, known_runtimes, a2a_send_tool)
-├── commands/               # CLI / commands (thin: only argument parsing + service delegation)
-├── observability/          # Observability (audit, metrics, tracer, performance, async_tool_metrics, a2a_audit)
-├── compaction/             # (deleted; merged into session/)
-├── prompt/                 # (deleted; merged into agents/)
-├── runtime/                # (deleted; split into identity/, engine/, tunnel/)
-├── team/                   # (deleted; merged into agents/team_config.rs)
-├── portable/               # (deleted; merged into registry/packaging/)
-└── types/                  # (deleted; merged into common/types/)
+├── commands/               # CLI / commands (argument parsing + service delegation)
+├── observability/          # Observability (audit, metrics, tracer, performance, async_tool_metrics)
+└── lib.rs / main.rs
 ```
-
-The rename `agent → agents`, `engine` (kept), and the consolidation of `portable/`+`registry/` into a single `registry/` with sub-modules are the headline moves in Horizon B.
 
 ---
 
-## 5. Files / Modules to Move (Horizon B backlog)
+## 5. Files / Modules Moved in PR #62
 
 | From | To | Notes |
 |---|---|---|
-| `src/extension/types/tool_exec.rs` | `src/extensions/framework/types/` (or split into a smaller event type that lives in the framework) | Drop the `use crate::engine::AgenticEvent` — break cycle 3. |
-| `src/identity/keychain.rs` (`use crate::portable::crypto`) | `src/identity/crypto.rs` (or `src/common/crypto.rs`) | Move encryption helpers here to break cycle 1. |
-| `src/tools/builtin/messaging/a2a_send.rs` | `src/tunnel/a2a_send_tool.rs` | Tool depends on tunnel anyway — invert the cycle 2. |
-| `src/runtime/{identity,metadata,registry,tool_runtime}.rs` | split into `src/identity/runtime.rs`, `src/engine/tool_runtime.rs`, `src/tunnel/known_runtimes.rs` | `src/runtime/` becomes empty → delete. |
-| `src/compaction/` | merge into `src/session/compaction/` | Domain unification. |
-| `src/prompt/` | merge into `src/agents/prompt.rs` | Domain unification. |
-| `src/team/config.rs` | merge into `src/agents/team_config.rs` + `src/common/types/team.rs` | Single source of truth. |
-| `src/portable/` (renamed `packaging/`) + `src/registry/` | unified `src/registry/` (with `packaging/` + `local.rs`) | Resolve duplicate "registry" naming. |
-| `src/commands/team.rs` (heavy) | keep in `src/commands/team.rs` but **slimmed** — only argument parsing + `TeamService` calls | Break leak 6. |
-| `src/daemon/state.rs::AppState` | `src/engine/app_state.rs` (wiring lifted out of daemon) | Reduce `daemon` to process lifecycle. |
-| `src/daemon/cron_engine/` | `src/cron/engine.rs` | Domain unification. |
-| `src/tunnel/a2a_audit.rs` | `src/observability/a2a_audit.rs` | Domain unification. |
-| `src/types/agent.rs` (`AgentConfig`) | `src/agents/agent_config.rs` | Single source of truth (engine has `AgentState`). |
+| `src/agent/` | `src/agents/` | Renamed; absorbed `prompt/`. |
+| `src/prompt/` | `src/agents/prompt/` | Domain unification. |
+| `src/types/agent.rs` (`AgentConfig`) | `src/agents/agent_config.rs` | Single source of truth. |
+| `src/types/` | `src/common/types/` | Merged. |
+| `src/compaction/` | `src/session/compaction/` | Domain unification. |
+| `src/team/config.rs` | `src/common/types/team.rs` + `src/registry/packaging/` | Team metadata + packaging split. |
+| `src/portable/` | `src/registry/packaging/` | Unified with registry. |
+| `src/registry.rs` | `src/registry/mod.rs` + `src/registry/agent_registry.rs` | Registry surface reorganised. |
+| `src/extension/` | `src/extensions/framework/` | Framework moved under plural `extensions/`. |
+| `src/extensions/builtin/adapter.rs` validation logic | `src/extensions/validation.rs` | Break Issue-015 boundary leak. |
+| `src/runtime/identity.rs` | `src/identity/runtime.rs` | Runtime identity. |
+| `src/runtime/metadata.rs` | `src/identity/runtime_metadata.rs` | Runtime metadata. |
+| `src/runtime/registry.rs` | `src/tunnel/known_runtimes.rs` | Known runtime registry. |
+| `src/runtime/tool_runtime.rs` | `src/engine/tool_runtime.rs` | Tool runtime. |
+| `src/tools/builtin/messaging/a2a_send.rs` | `src/tunnel/a2a_send_tool.rs` | Break `tools ↔ tunnel` cycle. |
+| `src/portable/crypto.rs` | `src/identity/crypto.rs` | Break `portable ↔ identity` cycle. |
+| `src/commands/team.rs` | `src/commands/team/mod.rs` + `src/commands/team/render.rs` | Structural split; further slim-down is backlog. |
 
 ---
 
 ## 6. Risk Areas
 
 ### High risk
-- **Cycle breaks** (cycles 1-5) require renaming types or introducing trait objects. Each needs its own task list with buildable steps.
-- **Wire-format changes** (dropping `SubjectType` fields from `RequestPacket`) require coordinated updates across `src/ipc/packet.rs`, `src/auth/ownership.rs`, `src/session/*`, and CLI serialization. The `tests/principal_back_compat.rs` suite is the safety net.
+
+- **Wire-format changes** — Dropping `SubjectType` fields from `RequestPacket` and removing `tests/principal_back_compat.rs` means the legacy `(subject_id, subject_type)` pair is gone. Old CLI binaries or persisted grant data using that shape will not deserialize correctly. The protocol version should be bumped and the change documented.
+- **Public API breakage** — Downstream crates using `pekobot::agent`, `pekobot::extension`, `pekobot::portable`, etc. will break. Provide migration guidance or re-export aliases if backward compatibility is required.
 
 ### Medium risk
-- **Unifying `portable` + `registry`** doubles the number of imports touched (`src/registry/*` already imports from `portable::*`).
-- **`commands::team.rs` slim-down** requires `TeamService` to be feature-complete (today `TeamService::update_owner` already calls the same helpers we want to centralize, so the work is mostly deletion plus delegating one or two more cases).
-- **`AppState` extraction** touches `src/daemon/state.rs` and every test that constructs `AppState` directly (search `tests/` for `AppState::new`).
 
-### Low risk (Horizon A)
-- Dead-code deletion (no callers).
-- CI YAML edits.
-- Doc edits.
-- Wiring `scripts/check_module_boundaries.sh` into a new `lint` job.
+- **`commands::team` slim-down** — Still embeds packaging/registry orchestration. Centralising in `TeamService` is remaining work.
+- **`AppState` extraction** — Still in `daemon::state`. Moving it incorrectly could create a god module.
+- **Formatting debt** — 149 files fail `cargo fmt --check`. The CI smoke tier keeps fmt advisory until a one-time sweep lands.
+
+### Low risk
+
+- Remaining dead-code deletion (`LegacyStoredIdentity`, credential migrate).
+- Final boundary-script update to new paths.
 
 ---
 
-## 7. CI Tier Changes (Horizon A)
+## 7. CI Tier Changes (current state)
 
-### New tier: `smoke` — runs on every PR
+### `smoke` — runs on every PR that touches `src/**` or `tests/**`
 
-`cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib --no-fail-fast`. Target: **< 8 min warm**.
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib --no-fail-fast`. Target: **< 6 min warm**.
 
-Path filter: triggers on any change to `src/**`, `tests/**`, `Cargo.*`, `Makefile`, `clippy.toml`, `.github/docker/**`, `scripts/check_*.sh`, `scripts/check_*.ps1`, `.github/workflows/integration.yml`.
+`cargo fmt --check` is advisory until the one-time fmt sweep.
 
-### Existing `unit-linux` job
+### `lint` — runs on every PR that touches `src/**`
 
-Unchanged; continues to run on every PR after `smoke`.
+`bash scripts/check_module_boundaries.sh`. Hard gate once the script is updated to new paths; currently passes against obsolete rules.
 
-### Existing `unit-windows` job
+### `unit-linux` — unchanged
 
-Keep the existing keyword/branch/schedule gate; additionally gate on paths that touch Windows-specific code (`src/common/process/job_object.rs`, `src/ipc/pipe_security.rs`, `src/common/process/*` on Windows, etc.).
+Continues to run on every PR after `smoke`.
 
-### Existing `integration` job
+### `unit-windows` — gated
 
-Keep, but **add a `changes` job** upstream that detects whether the diff actually requires the Docker stack:
-- Run if any of: `src/**`, `tests/**` (excluding `principal_back_compat.rs`, `cli_agent_signature.rs`, `extension_packaging.rs`, `team_integration.rs` which are pure-Rust), `Cargo.*`, `Makefile`, `.github/docker/**`, `.github/workflows/integration.yml`.
-- Skip if the PR is docs-only (`*.md`, `PLAN.md`, `CHANGES.md`, `docs/**`).
+Existing keyword/branch/schedule gate plus path filter on Windows-specific code.
 
-### Existing `integration-llm` job
+### `integration` — path-aware
 
-Unchanged; stays opt-in (`[llm]` keyword / nightly / manual). No path filtering change.
+Runs only when `tests/**`, docker assets, workflow, `Dockerfile*`, or `docker-compose*.yml` change, or on schedule/manual.
 
-### New `lint` job
+### `integration-llm` — opt-in
 
-Runs `scripts/check_module_boundaries.sh` on every PR that touches `src/**`. Fails the PR if any Issue-015 boundary rule is violated.
+Unchanged; gated by `[llm]` keyword/schedule/manual plus path outputs.
 
 ### Caching
 
-Use `Swatinem/rust-cache@v2` (already in `unit-linux`) consistently across all jobs; replace the `actions/cache@v4` in `integration` (line 113).
-
-### Cost / timing targets after Horizon A
-
-| Tier | Trigger | Wall-clock (warm cache) |
-|---|---|---|
-| `smoke` (new) | every PR | < 8 min |
-| `lint` (new) | every PR with `src/**` change | < 1 min |
-| `unit-linux` | every PR | ~3 min |
-| `unit-windows` | `[windows]` / nightly / manual | ~5 min |
-| `integration` | PR touching integration-relevant paths | ~10-15 min |
-| `integration-llm` | `[llm]` / nightly / manual | ~5 min extra |
-
-For pure doc-only or refactor PRs: only `smoke` + `lint` + `unit-linux` run.
+`Swatinem/rust-cache@v2` used consistently across all jobs.
 
 ---
 
 ## 8. Execution Order
 
-Horizon A is structured as six small commits:
+PR #62 was delivered as a series of incremental commits rather than the original six-commit Horizon A plan. Key commit themes:
 
-1. **`chore: delete dead code (mcp feature, BootstrapFileConfig, orphan ps1 scripts)`** — touches only `Cargo.toml`, `src/types/agent.rs`, `e2e_tests_archive/**/*.ps1`, `tests/common/mock_configure.rs`, `src/extension/types/async_types.rs`. `cargo check` green.
-2. **`docs: align AGENTS.md and README.md with current commands`** — doc-only.
-3. **`ci: add smoke tier and path-aware integration gate`** — `.github/workflows/integration.yml` only.
-4. **`ci: add lint job running scripts/check_module_boundaries.sh`** — `.github/workflows/integration.yml` + workflow permissions.
-5. **`chore: add CHANGES.md describing the refactor roadmap`** — new file.
-6. **`docs: PLAN.md`** — new file (this document).
+1. **Dead-code deletion** — `mcp` feature, `BootstrapFileConfig`, orphan `.ps1` scripts.
+2. **CI restructuring** — smoke tier, lint tier, path-aware integration gate.
+3. **Boundary fix** — break Issue-015 leak, promote lint job to hard gate.
+4. **Auth cleanup** — inline `principal_from_string`, drop `SubjectType`/`principal_from_wire`, drop `Peer`/`Principal` compat methods.
+5. **Module renames** — `agent → agents`, `extension → extensions/framework`, `types → common/types`, `compaction → session/compaction`, `portable → registry/packaging`, `runtime` split, `team` deletion.
+6. **Cycle breaks** — `a2a_send` → tunnel, `crypto` → identity, `tool_exec` → extensions/framework.
+7. **Clippy debt sweep** — clean up pre-existing warnings so `-D warnings` passes.
+8. **Documentation** — update `PLAN.md`, `CHANGES.md`, `AGENTS.md` and stale doc comments.
 
-Each commit ends with `cargo check && cargo fmt --check && cargo clippy -- -D warnings && cargo test --lib` green.
+Each intermediate commit was kept buildable; `cargo check`, `cargo test --lib`, and finally `cargo clippy --all-targets -- -D warnings` are green at the branch tip.
 
 ---
 
 ## 9. Definition of Done
 
-### Horizon A (this PR)
+### PR #62
 
-- [x] Branch `refactor/runtime-cleanup-20260621` created from `master`.
-- [x] All Horizon A commits pushed (10 commits on the branch; see `git log refactor/runtime-cleanup-20260621 ^master`).
-- [x] `cargo test --lib` green: 1530 tests pass. `cargo clippy --all-targets` produces only pre-existing warnings (none new from this PR). `cargo fmt --check` flagged advisory in the smoke tier — ~494 files of accumulated fmt diffs pre-date this refactor; tracked as a one-time `cargo fmt` sweep follow-up.
-- [x] `.github/workflows/integration.yml` adds the `smoke` and `lint` jobs; documents each tier in the file. Six tiers total: changes, smoke, lint, unit-linux, unit-windows, integration, integration-llm.
-- [x] `AGENTS.md` reflects current CI commands and the dead-code removal; "CI tiers" subsection added.
-- [x] `CHANGES.md` summarises the cleanup and points at the Horizon B backlog.
-- [x] Draft PR #47 opened against `master` (not merged).
+- [x] Branch `refactor/clippy-cleanup-rust196` created from `master`.
+- [x] Horizon A items landed (dead-code removal, CI restructure, docs).
+- [x] Horizon B module moves landed (`agent → agents`, `extension → extensions/framework`, `portable → registry/packaging`, `types → common/types`, `compaction → session/compaction`, `prompt → agents/prompt`, `runtime` split, `team` deletion).
+- [x] Cycles 1–5 broken.
+- [x] `SubjectType`, `principal_from_wire`, `Peer` alias, and `Principal` compat methods removed.
+- [x] `cargo test --lib` green: 1522 tests pass.
+- [x] `cargo clippy --all-targets -- -D warnings` green.
+- [x] `.github/workflows/integration.yml` adds `smoke` and `lint` jobs; path-aware tiers documented.
+- [x] `AGENTS.md` and `CHANGES.md` updated to reflect actual scope.
+- [x] Stale doc comments in `src/auth/ownership.rs`, `src/auth/principal.rs`, `src/extensions/framework/mod.rs` updated.
+- [ ] Open PR #62 against `master`.
 
-### Horizon B (per-item follow-up PRs)
+### Remaining backlog (follow-up PRs)
 
-Each major module move or cycle break is its own branch + PR:
-
-- [ ] Break cycle 1 (`portable ↔ identity`).
-- [ ] Break cycle 3 (`extension::types ↔ engine`).
-- [ ] Break cycle 2 (`tools ↔ tunnel`).
-- [ ] Drop `SubjectType` + `principal_from_wire`. **Audit notes:** these
-      are load-bearing for the legacy IPC wire format used by
-      `RequestPacket::resolved_subject()` in `src/ipc/packet.rs:699-836`.
-      Removing them requires updating the wire-format resolver,
-      dropping the `subject_id`/`subject_type` fields from
-      `RequestPacket`, and bumping the CLI protocol version. The
-      `tests/principal_back_compat.rs` suite pins the legacy behavior
-      and must be kept until a coordinated CLI bump lands.
-- [ ] Delete `tests/principal_back_compat.rs` once the IPC wire
-      format drops the legacy `(subject_id, subject_type)` pair.
-- [ ] Rename `Peer` → `Principal` everywhere. **Audit notes:** `Peer`
-      is `pub type Peer = Principal;` and is referenced via
-      `Peer::User(...)` / `Peer::Agent(...)` in 30+ files across
-      `src/portable/`, `src/compaction/`, `src/agent/`, `src/session/`,
-      `src/daemon/`, and `tests/`. Pure mechanical rename; do this as
-      a single PR with `sed -i 's/\bPeer::/Principal::/g'` + grep verify.
-- [x] `principal_from_string(s, default_kind)` (the parametrized
-      variant) deleted; logic inlined into
-      `principal_from_string_with_default_user`. Landed as commit
-      `3b9ac74`.
-- [ ] Drop `Principal::{id, peer_type, is_user, is_agent}` compat
-      methods after the `Peer` rename. **Audit notes:** these mirror
-      the old `Peer::{id, peer_type, is_user, is_agent}` API. Once
-      `Peer` is gone, callers should match on `Principal` variants
-      directly. Verify no callers remain via
-      `grep -rn '\.id()\|\.peer_type()\|\.is_user()\|\.is_agent()'`.
-- [ ] Unify `portable` + `registry` into a single `src/registry/` tree.
-- [ ] Slim `commands::team.rs` to call only `TeamService`.
-- [ ] Lift `daemon::state::AppState` into `engine::app_state`.
-- [ ] Merge `compaction/`, `prompt/`, `team/`, `runtime/` into their target domains.
-- [ ] Reorganize tools/extensions: move `builtin/` and `skill/` to live next to the framework that owns them.
+- [ ] Update `scripts/check_module_boundaries.sh` / `.ps1` to enforce new `extensions/framework/` boundaries.
+- [x] Slim `commands::team` to argument parsing + `TeamService`/`TeamManagementService`
+  delegation. Push/pull orchestration moved into `TeamService`; `commands::team/mod.rs`
+  is now a thin dispatcher.
+- [ ] Decide final home for `AppState` and move if appropriate.
+- [ ] Move `daemon/cron_engine/` to `cron/engine.rs`.
+- [ ] Move `tunnel/a2a_audit.rs` to `observability/a2a_audit.rs`.
+- [ ] Drop `LegacyStoredIdentity`, `migrate_legacy`, `migrate_legacy_dependencies`, `peko credential migrate`.
+- [ ] Drop `A2aSendArgs::target_agent` legacy field.
+- [ ] Run one-time `cargo fmt` sweep and promote fmt check to hard gate.

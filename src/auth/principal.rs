@@ -7,9 +7,9 @@
 //! - `SubjectType::{User, Team, Public}` — no `Agent` variant.
 //! - `AgentConfig::owner_id: String` — free-form, default `""`.
 //!
-//! `Principal` unifies them into a single value type. `Principal` is now a
-//! type alias for `Principal`, and `SubjectType` is kept as the IPC
-//! wire-side tag.
+//! `Principal` unifies them into a single value type. The legacy `SubjectType`
+//! enum and `Peer` type alias were removed in issues #25 and #30; `Principal`
+//! is the only remaining actor representation in code and on the wire.
 //!
 //! Display format: `"user:{id}" | "agent:{id}" | "team:{id}" | "public"`.
 //! FromStr is the inverse. Round-trips are byte-stable.
@@ -27,10 +27,8 @@ use serde::{Deserialize, Serialize};
 /// See `Principal::is_session_peer`.
 ///
 /// Wire format: `{ "kind": "user" | "agent" | "team" | "public", "id": "..." }`
-/// via `#[serde(tag = "kind", content = "id")]`. The legacy
-/// `owner_id = "string"` form is handled by the two-field
-/// `owner` + `owner_id` shim on `AgentConfig` / `TeamMetadata` (see
-/// ADR-039).
+/// via `#[serde(tag = "kind", content = "id")]`. `AgentConfig` and
+/// `TeamMetadata` store the owner as a `Principal` directly (see ADR-039).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "lowercase")]
 pub enum Principal {
