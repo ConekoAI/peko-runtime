@@ -76,10 +76,10 @@ pub fn format_summary_with_file_ops(summary: &str, details: &CompactionDetails) 
 /// Scans tool calls for `read_file`, `write_file`, `edit_file`, etc.
 /// This is a best-effort heuristic — exact tracking depends on tool naming.
 pub fn extract_file_ops_from_messages(
-    messages: &[crate::types::message::LlmMessage],
+    messages: &[crate::common::types::message::LlmMessage],
 ) -> CompactionDetails {
     use crate::providers::MessageRole;
-    use crate::types::message::ContentBlock;
+    use crate::common::types::message::ContentBlock;
 
     let mut read = Vec::new();
     let mut modified = Vec::new();
@@ -147,7 +147,7 @@ fn extract_path_from_args(args: &serde_json::Value) -> Option<String> {
 /// Build a cumulative details from previous details and new messages.
 pub fn compute_cumulative_details(
     previous: Option<&CompactionDetails>,
-    new_messages: &[crate::types::message::LlmMessage],
+    new_messages: &[crate::common::types::message::LlmMessage],
 ) -> CompactionDetails {
     let mut details = previous.cloned().unwrap_or_default();
     let new_ops = extract_file_ops_from_messages(new_messages);
@@ -159,8 +159,8 @@ pub fn compute_cumulative_details(
 mod tests {
     use super::*;
     use crate::providers::MessageRole;
-    use crate::types::message::ContentBlock;
-    use crate::types::message::LlmMessage;
+    use crate::common::types::message::ContentBlock;
+    use crate::common::types::message::LlmMessage;
 
     #[test]
     fn test_format_summary_with_file_ops() {

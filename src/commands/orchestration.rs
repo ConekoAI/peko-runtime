@@ -6,7 +6,7 @@ use clap::Subcommand;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-use crate::types::config::{
+use crate::common::types::config::{
     ExternalSource, FileWatchConfig, PekobotConfig, SourceDetection, WebhookRouteConfig,
 };
 

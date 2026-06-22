@@ -83,7 +83,7 @@ impl AgentValidator {
 mod tests {
     use super::*;
     use crate::common::paths::PathResolver;
-    use crate::types::agent::AgentConfig;
+    use crate::agents::agent_config::AgentConfig;
     use tempfile::TempDir;
 
     async fn create_test_validator() -> (AgentValidator, TempDir) {

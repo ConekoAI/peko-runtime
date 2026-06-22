@@ -30,7 +30,7 @@ use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::auth::principal::Principal;
 use crate::session::types::{ SpawnCleanupPolicy};
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 
 /// Channel for announcing completed subagent runs
 pub type AnnouncementSender = mpsc::Sender<CompletedRun>;

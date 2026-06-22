@@ -4,7 +4,7 @@
 //! This trait provides a clean interface for testing and dependency injection.
 
 use super::entry::AgentConfigEntry;
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use async_trait::async_trait;
 use std::path::PathBuf;
 

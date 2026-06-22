@@ -97,7 +97,7 @@ impl ConfigCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::agent::AgentConfig;
+    use crate::agents::agent_config::AgentConfig;
     use std::path::PathBuf;
 
     #[tokio::test]

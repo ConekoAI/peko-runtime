@@ -12,7 +12,7 @@ use crate::portable::{
 };
 use crate::session::key::derive_base_session_key;
 use crate::auth::principal::Principal;
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;

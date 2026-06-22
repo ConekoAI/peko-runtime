@@ -95,7 +95,7 @@ impl TeamManagementService {
     pub async fn get_team_agents(
         &self,
         name: &str,
-    ) -> Result<Vec<(String, crate::types::agent::AgentConfig)>> {
+    ) -> Result<Vec<(String, crate::agents::agent_config::AgentConfig)>> {
         self.config_service.get_team_agents(name).await
     }
 

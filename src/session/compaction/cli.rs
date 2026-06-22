@@ -6,7 +6,7 @@
 use crate::session::compaction::{CompactionEntry, Compactor};
 use crate::providers::MessageRole;
 use crate::session::unified::Session;
-use crate::types::message::{ContentBlock, LlmMessage};
+use crate::common::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
 
 /// Result of a CLI compaction operation

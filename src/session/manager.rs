@@ -303,7 +303,7 @@ impl SessionHandle {
     }
 
     /// Load conversation history
-    pub async fn load_history(&self) -> Result<Vec<crate::types::message::LlmMessage>> {
+    pub async fn load_history(&self) -> Result<Vec<crate::common::types::message::LlmMessage>> {
         let base = self.base.read().await;
         base.load_history().await
     }
@@ -2127,7 +2127,7 @@ async fn copy_session_context(
     child: &Arc<RwLock<Session>>,
 ) -> Result<()> {
     use crate::providers::MessageRole;
-    use crate::types::message::ContentBlock;
+    use crate::common::types::message::ContentBlock;
 
     // Load parent's conversation history
     let parent_history = {

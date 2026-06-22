@@ -23,7 +23,7 @@ use crate::common::types::team::{
 };
 use crate::identity::Identity;
 use crate::portable::{self, TeamExportOptions, TeamImportOptions};
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 

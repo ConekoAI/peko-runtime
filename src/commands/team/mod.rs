@@ -294,7 +294,7 @@ pub async fn handle_team(
                 team_filter: Some(name.clone()),
             };
             let agents_response = ipc_request(agents_packet).await?;
-            let agents: Vec<(String, crate::types::agent::AgentConfig)> = match agents_response {
+            let agents: Vec<(String, crate::agents::agent_config::AgentConfig)> = match agents_response {
                 crate::ipc::ResponsePacket::AgentList { agents, .. } => {
                     agents.into_iter().map(|a| (a.name, a.config)).collect()
                 }
@@ -860,7 +860,7 @@ async fn collect_extension_refs_from_team_files(
     files: &std::collections::HashMap<String, Vec<u8>>,
     paths: &GlobalPaths,
 ) -> anyhow::Result<Vec<ExtensionRef>> {
-    use crate::types::agent::AgentConfig;
+    use crate::agents::agent_config::AgentConfig;
 
     let core = match global_core() {
         Some(c) => c,

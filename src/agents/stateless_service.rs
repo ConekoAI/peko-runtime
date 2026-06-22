@@ -20,9 +20,9 @@ use crate::engine::AgenticEvent;
 use crate::providers::TokenUsage;
 use crate::session::manager::SessionManager;
 use crate::session::types::ChannelType;
-use crate::types::message::LlmMessage;
+use crate::common::types::message::LlmMessage;
 // Note: Session storage uses jsonl module directly
-use crate::types::message::ContentBlock;
+use crate::common::types::message::ContentBlock;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -445,7 +445,7 @@ impl StatelessAgentService {
     async fn build_agent(
         &self,
         agent_name: &str,
-        config: crate::types::agent::AgentConfig,
+        config: crate::agents::agent_config::AgentConfig,
     ) -> Result<Agent> {
         if let Some(resolver) = self.resolver.as_ref() {
             Agent::new_with_resolver(config, resolver.clone())

@@ -88,7 +88,7 @@ pub(super) fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
 
 pub(super) fn render_team_show(
     team: &TeamInfo,
-    agents: &[(String, crate::types::agent::AgentConfig)],
+    agents: &[(String, crate::agents::agent_config::AgentConfig)],
     json: bool,
 ) {
     if json {

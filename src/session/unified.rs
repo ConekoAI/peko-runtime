@@ -29,8 +29,8 @@ use crate::session::message_conversion::{
 use crate::session::metadata_controller::MetadataController;
 use crate::auth::principal::Principal;
 use crate::session::NormalizedEntry;
-use crate::types::message::LlmMessage;
-use crate::types::ContentBlock;
+use crate::common::types::message::LlmMessage;
+use crate::common::types::message::ContentBlock;
 use anyhow::Result;
 use chrono::Utc;
 use tracing::warn;
@@ -450,8 +450,8 @@ impl Session {
                     id: generate_event_id(),
                     ts: Utc::now(),
                 },
-                message: crate::types::message::LlmMessage {
-                    role: crate::types::message::MessageRole::User,
+                message: crate::common::types::message::LlmMessage {
+                    role: crate::common::types::message::MessageRole::User,
                     content: final_content_blocks,
                     timestamp: Utc::now(),
                     metadata: std::collections::HashMap::new(),
@@ -464,12 +464,12 @@ impl Session {
             },
             "assistant" => {
                 let token_usage = usage.as_ref().map_or(
-                    crate::types::message::TokenUsage {
+                    crate::common::types::message::TokenUsage {
                         input: 0,
                         output: 0,
                         total: 0,
                     },
-                    |u| crate::types::message::TokenUsage {
+                    |u| crate::common::types::message::TokenUsage {
                         input: u.input,
                         output: u.output,
                         total: u.input + u.output,
@@ -895,7 +895,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_history_preserves_tool_calls_and_results() {
-        use crate::types::message::ContentBlock;
+        use crate::common::types::message::ContentBlock;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -952,7 +952,7 @@ mod tests {
         let assistant = &history[0];
         assert!(matches!(
             assistant.role,
-            crate::types::message::MessageRole::Assistant
+            crate::common::types::message::MessageRole::Assistant
         ));
         assert_eq!(
             assistant.content.len(),
@@ -979,7 +979,7 @@ mod tests {
         let tool = &history[1];
         assert!(matches!(
             tool.role,
-            crate::types::message::MessageRole::Tool
+            crate::common::types::message::MessageRole::Tool
         ));
         assert_eq!(tool.content.len(), 1);
         if let ContentBlock::ToolResult {
@@ -1076,7 +1076,7 @@ mod tests {
         );
         assert_eq!(context[0].role, crate::providers::MessageRole::System);
         let summary_text = match &context[0].content[0] {
-            crate::types::ContentBlock::Text { text } => text.as_str(),
+            crate::common::types::message::ContentBlock::Text { text } => text.as_str(),
             _ => "",
         };
         assert!(summary_text.contains("Summary of old messages"));
@@ -1250,7 +1250,7 @@ mod tests {
             "First message should be summary"
         );
         let summary_text = match &context_after[0].content[0] {
-            crate::types::ContentBlock::Text { text } => text.as_str(),
+            crate::common::types::message::ContentBlock::Text { text } => text.as_str(),
             _ => "",
         };
         assert!(

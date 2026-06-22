@@ -5,7 +5,7 @@
 //!   peko agent config get my-agent tools.enabled
 //!   peko agent config set my-agent tools.enabled '["shell","read_file"]'
 
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use anyhow::{Context, Result};
 
 /// Get a value from `AgentConfig` by dot-separated path.

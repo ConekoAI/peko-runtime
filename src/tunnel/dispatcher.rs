@@ -271,7 +271,7 @@ impl TunnelDispatcher {
     /// TODO(#16): re-derive from `Principal::User` and surface
     /// `Principal::Agent` subjects to the hub once PekoHub accepts the
     /// agent principal (post #11).
-    fn compute_allowed_user_ids(config: &crate::types::agent::AgentConfig) -> Option<Vec<String>> {
+    fn compute_allowed_user_ids(config: &crate::agents::agent_config::AgentConfig) -> Option<Vec<String>> {
         use crate::auth::principal::{Principal, SubjectKind};
         let ids: Vec<String> = config
             .permissions

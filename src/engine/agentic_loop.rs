@@ -16,7 +16,7 @@ use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::agents::prompt::SystemPromptService;
 use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
 use crate::session::Session;
-use crate::types::message::{ContentBlock, LlmMessage};
+use crate::common::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -380,13 +380,13 @@ impl AgenticLoop {
                     .content
                     .iter()
                     .map(|b| match b {
-                        crate::types::message::ContentBlock::Text { text } => {
+                        crate::common::types::message::ContentBlock::Text { text } => {
                             format!("[Text: {}]", text.chars().take(50).collect::<String>())
                         }
-                        crate::types::message::ContentBlock::ToolCall { id, name, .. } => {
+                        crate::common::types::message::ContentBlock::ToolCall { id, name, .. } => {
                             format!("[ToolCall: {name} ({id})]")
                         }
-                        crate::types::message::ContentBlock::ToolResult {
+                        crate::common::types::message::ContentBlock::ToolResult {
                             tool_call_id,
                             name,
                             ..
@@ -828,8 +828,8 @@ mod tests {
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;
     use crate::auth::principal::Principal;
-    use crate::types::agent::AgentConfig;
-    use crate::types::provider::{ProviderConfig, ProviderType};
+    use crate::agents::agent_config::AgentConfig;
+    use crate::common::types::provider::{ProviderConfig, ProviderType};
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use tokio::sync::RwLock;
@@ -852,7 +852,7 @@ mod tests {
             name: name.to_string(),
             preferred_provider_id: Some("openai".into()),
             preferred_model_id: Some("default".into()),
-            extensions: Some(crate::types::agent::ExtensionConfig {
+            extensions: Some(crate::common::types::agent_legacy::ExtensionConfig {
                 enabled: vec!["*".to_string()],
                 ..Default::default()
             }),

@@ -144,7 +144,7 @@ impl StatelessAgentManager {
     ) -> Result<AgentConfigEntry> {
         // TODO: Implement image-based config extraction using ImageRegistry
         // For now, create a default config
-        let config = crate::types::agent::AgentConfig::default();
+        let config = crate::agents::agent_config::AgentConfig::default();
         let _team = team_id.as_deref().unwrap_or("default");
 
         // Save config using ConfigAuthorityImpl

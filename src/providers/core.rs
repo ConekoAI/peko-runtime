@@ -9,7 +9,7 @@ use crate::providers::transport::HttpClient;
 use crate::providers::types::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
 };
-use crate::types::provider::ProviderConfig;
+use crate::common::types::provider::ProviderConfig;
 use futures::StreamExt;
 use std::pin::Pin;
 use tokio::sync::mpsc;

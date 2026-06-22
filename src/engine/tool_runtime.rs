@@ -181,7 +181,7 @@ impl ToolRuntime {
             .iter()
             .map(|t| format!("builtin:tool:{}", t.name()))
             .collect();
-        let ext_config = crate::types::agent::ExtensionConfig {
+        let ext_config = crate::common::types::agent_legacy::ExtensionConfig {
             enabled: ext_ids,
             http: None,
             custom: None,

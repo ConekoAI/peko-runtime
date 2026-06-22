@@ -18,7 +18,7 @@ use crate::extension::types::{HookInput, HookOutput, HookResult, SessionSnapshot
 use crate::extension::ExtensionCore;
 use crate::providers::Provider;
 use crate::session::Session;
-use crate::types::message::LlmMessage;
+use crate::common::types::message::LlmMessage;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,7 +47,7 @@ impl CompactionOrchestrator {
     /// `agent_config` is consulted only for legacy model-context
     /// overrides; the provider/model identity comes from the resolved
     /// `Provider` itself (v3 `LlmResolver` output).
-    pub fn new(provider: Arc<Provider>, agent_config: &crate::types::AgentConfig) -> Self {
+    pub fn new(provider: Arc<Provider>, agent_config: &crate::agents::agent_config::AgentConfig) -> Self {
         let config = load_compaction_config();
         let mut registry = ModelContextRegistry::new();
         let override_registry = ModelContextRegistry {

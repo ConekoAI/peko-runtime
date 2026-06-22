@@ -350,9 +350,9 @@ impl StreamOrchestrator {
     fn handle_tool_end(
         &mut self,
         _index: usize,
-        tool_call: crate::types::message::ContentBlock,
+        tool_call: crate::common::types::message::ContentBlock,
     ) -> Vec<AgenticEvent> {
-        if let crate::types::message::ContentBlock::ToolCall {
+        if let crate::common::types::message::ContentBlock::ToolCall {
             id,
             name,
             arguments,

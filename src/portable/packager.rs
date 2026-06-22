@@ -15,7 +15,7 @@
 use crate::identity::Identity;
 use crate::portable::manifest::{AgentLayers, AgentManifest};
 use crate::portable::types::{compute_digest, ExtensionRef, LayerType};
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use anyhow::Context;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;

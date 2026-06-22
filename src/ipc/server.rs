@@ -1244,7 +1244,7 @@ impl IpcServer {
                         let config_path = result.config_path.clone();
                         if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
                             if let Ok(mut config) =
-                                toml::from_str::<crate::types::agent::AgentConfig>(&content)
+                                toml::from_str::<crate::agents::agent_config::AgentConfig>(&content)
                             {
                                 config.host_runtime_id =
                                     state.runtime_identity().runtime_did.clone();
@@ -2614,7 +2614,7 @@ impl IpcServer {
                                             tokio::fs::read_to_string(&config_path).await
                                         {
                                             if let Ok(mut config) =
-                                                toml::from_str::<crate::types::agent::AgentConfig>(
+                                                toml::from_str::<crate::agents::agent_config::AgentConfig>(
                                                     &content,
                                                 )
                                             {

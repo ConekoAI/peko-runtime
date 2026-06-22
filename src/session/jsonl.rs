@@ -7,7 +7,7 @@
 
 use crate::session::events::SessionEvent;
 use crate::session::lock::FileLock;
-use crate::types::message::LlmMessage;
+use crate::common::types::message::LlmMessage;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -362,7 +362,7 @@ impl SessionStorage {
     /// Convert Event Format to `NormalizedEntry`
     fn normalize_event(event: SessionEvent) -> Option<NormalizedEntry> {
         use crate::session::events::SessionEvent::{SessionCreated, ToolResult};
-        use crate::types::message::MessageRole;
+        use crate::common::types::message::MessageRole;
 
         // Try unified message conversion first
         if let Some(msg) = event.as_message() {
@@ -395,7 +395,7 @@ impl SessionStorage {
                         .content
                         .iter()
                         .find_map(|block| {
-                            if let crate::types::message::ContentBlock::ToolResult {
+                            if let crate::common::types::message::ContentBlock::ToolResult {
                                 name, ..
                             } = block
                             {
@@ -845,8 +845,8 @@ mod tests {
         storage.create_session("cache_test", None).await.unwrap();
 
         let messages = vec![
-            crate::types::message::LlmMessage::system("You are a helpful assistant."),
-            crate::types::message::LlmMessage::user("Hello"),
+            crate::common::types::message::LlmMessage::system("You are a helpful assistant."),
+            crate::common::types::message::LlmMessage::user("Hello"),
         ];
 
         let checksum = storage.compute_jsonl_checksum("cache_test").await.unwrap();
@@ -878,7 +878,7 @@ mod tests {
 
         storage.create_session("cache_test", None).await.unwrap();
 
-        let messages = vec![crate::types::message::LlmMessage::user("Hello")];
+        let messages = vec![crate::common::types::message::LlmMessage::user("Hello")];
 
         let checksum = storage.compute_jsonl_checksum("cache_test").await.unwrap();
         let entry_count = storage.count_jsonl_entries("cache_test").await.unwrap();
@@ -904,7 +904,7 @@ mod tests {
 
         storage.create_session("cache_test", None).await.unwrap();
 
-        let messages = vec![crate::types::message::LlmMessage::user("Hello")];
+        let messages = vec![crate::common::types::message::LlmMessage::user("Hello")];
 
         let checksum = storage.compute_jsonl_checksum("cache_test").await.unwrap();
         let entry_count = storage.count_jsonl_entries("cache_test").await.unwrap();
@@ -943,7 +943,7 @@ mod tests {
 
         storage.create_session("cache_test", None).await.unwrap();
 
-        let messages = vec![crate::types::message::LlmMessage::user("Hello")];
+        let messages = vec![crate::common::types::message::LlmMessage::user("Hello")];
 
         let checksum = storage.compute_jsonl_checksum("cache_test").await.unwrap();
         let entry_count = storage.count_jsonl_entries("cache_test").await.unwrap();

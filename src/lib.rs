@@ -170,9 +170,6 @@ pub mod extensions;
 // Data & State
 // ============================================================================
 
-/// Type definitions
-pub mod types;
-
 /// Configuration management
 /// Agent identity and key management
 pub mod identity;

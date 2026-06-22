@@ -10,7 +10,7 @@
 
 use crate::session::compaction::registry::should_auto_compact;
 use crate::session::compaction::{CompactionConfig, CompactionResult, Compactor};
-use crate::types::message::LlmMessage;
+use crate::common::types::message::LlmMessage;
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Instant;

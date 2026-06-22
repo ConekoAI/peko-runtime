@@ -4,7 +4,7 @@
 //! CLI commands and API routes for consistent agent data representation.
 
 use crate::auth::principal::Principal;
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
