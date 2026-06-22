@@ -18,8 +18,8 @@ pub mod turn_boundaries;
 mod integration_tests;
 
 use crate::providers::MessageRole;
-use crate::types::message::ContentBlock;
-use crate::types::message::LlmMessage;
+use crate::common::types::message::ContentBlock;
+use crate::common::types::message::LlmMessage;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

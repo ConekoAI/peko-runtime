@@ -5,8 +5,8 @@
 //! Never cut at: tool results (they must stay paired with their tool call).
 
 use crate::providers::MessageRole;
-use crate::types::message::ContentBlock;
-use crate::types::message::LlmMessage;
+use crate::common::types::message::ContentBlock;
+use crate::common::types::message::LlmMessage;
 
 /// A message classification for boundary decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

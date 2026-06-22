@@ -579,10 +579,10 @@ impl SessionService {
                 // Use unified SessionMessage format
                 HistoryEvent::Message {
                     role: match msg.role() {
-                        crate::types::message::MessageRole::User => "user",
-                        crate::types::message::MessageRole::Assistant => "assistant",
-                        crate::types::message::MessageRole::System => "system",
-                        crate::types::message::MessageRole::Tool => "tool",
+                        crate::common::types::message::MessageRole::User => "user",
+                        crate::common::types::message::MessageRole::Assistant => "assistant",
+                        crate::common::types::message::MessageRole::System => "system",
+                        crate::common::types::message::MessageRole::Tool => "tool",
                     }
                     .to_string(),
                     content: msg.text_content(),

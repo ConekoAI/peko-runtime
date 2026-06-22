@@ -10,7 +10,7 @@
 use crate::engine::AgenticEvent;
 use crate::extension::ExtensionCore;
 use crate::session::Session;
-use crate::types::message::{ContentBlock, LlmMessage};
+use crate::common::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;

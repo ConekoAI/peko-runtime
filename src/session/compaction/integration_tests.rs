@@ -18,7 +18,7 @@ use crate::session::compaction::{
     },
     CompactionConfig, CompactionEntry, Compactor,
 };
-use crate::types::message::{ContentBlock, LlmMessage, MessageRole};
+use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole};
 
 // ============================================================================
 // Success Criterion: Built-in compactor triggers using dual-threshold

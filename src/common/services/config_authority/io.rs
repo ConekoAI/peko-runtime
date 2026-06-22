@@ -2,7 +2,7 @@
 //!
 //! Provides `ConfigIo`: TOML file read/write operations with atomic writes.
 
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tokio::fs;

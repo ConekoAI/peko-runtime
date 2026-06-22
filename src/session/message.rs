@@ -11,7 +11,7 @@
 //! role-specific concerns while reusing the existing `LlmMessage` from `types::message`.
 
 use crate::session::events::EventEnvelope;
-use crate::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
+use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

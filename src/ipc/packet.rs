@@ -2037,7 +2037,7 @@ mod tests {
             request_id: 600,
             agents: vec![crate::common::types::agent::AgentSummary {
                 name: "test-agent".to_string(),
-                config: crate::types::agent::AgentConfig {
+                config: crate::agents::agent_config::AgentConfig {
                     name: "test-agent".to_string(),
                     ..Default::default()
                 },
@@ -2063,7 +2063,7 @@ mod tests {
             request_id: 601,
             agent: Some(crate::common::types::agent::AgentInfo {
                 name: "test-agent".to_string(),
-                config: crate::types::agent::AgentConfig {
+                config: crate::agents::agent_config::AgentConfig {
                     name: "test-agent".to_string(),
                     ..Default::default()
                 },

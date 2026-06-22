@@ -7,7 +7,7 @@ use super::cache::ConfigCache;
 use super::entry::{AgentConfigEntry, ConfigSource};
 use super::io::ConfigIo;
 use crate::common::paths::PathResolver;
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::path::PathBuf;

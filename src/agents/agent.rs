@@ -9,7 +9,8 @@ use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::auth::principal::Principal;
 use crate::session::types::{ChannelType};
 use crate::tools::builtin::messaging::agent_spawn::DynamicSessionKeyProvider;
-use crate::types::agent::{AgentConfig, AgentState};
+use crate::agents::agent_config::AgentConfig;
+use crate::common::types::agent_legacy::AgentState;
 use anyhow::{Context, Result};
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
@@ -606,7 +607,7 @@ pub async fn new_with_session_manager(
         &self,
         prompt: &str,
         session: Arc<tokio::sync::RwLock<crate::session::Session>>,
-        history: Option<Vec<crate::types::message::LlmMessage>>,
+        history: Option<Vec<crate::common::types::message::LlmMessage>>,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
     ) -> Result<crate::engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
@@ -706,7 +707,7 @@ pub async fn new_with_session_manager(
         &self,
         prompt: &str,
         session: std::sync::Arc<tokio::sync::RwLock<crate::session::Session>>,
-        history: Option<Vec<crate::types::message::LlmMessage>>,
+        history: Option<Vec<crate::common::types::message::LlmMessage>>,
         caller_id: Option<String>,
         on_event: F,
     ) -> Result<crate::engine::AgenticResult>
@@ -1311,13 +1312,13 @@ pub async fn new_with_session_manager(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::agent::AgentConfig;
+    use crate::agents::agent_config::AgentConfig;
 
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_creation() {
         use crate::extension::core::ExtensionCore;
-        use crate::types::provider::{ProviderConfig, ProviderType};
+        use crate::common::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale (Windows-headless
@@ -1345,7 +1346,7 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_has_session_manager() {
         use crate::extension::core::ExtensionCore;
-        use crate::types::provider::{ProviderConfig, ProviderType};
+        use crate::common::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1374,7 +1375,7 @@ mod tests {
         use crate::extension::core::ExtensionCore;
         use crate::auth::principal::Principal;
 use crate::session::types::{ChannelType};
-        use crate::types::provider::{ProviderConfig, ProviderType};
+        use crate::common::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1408,7 +1409,7 @@ use crate::session::types::{ChannelType};
         use crate::extension::core::ExtensionCore;
         use crate::auth::principal::Principal;
 use crate::session::types::{ChannelType};
-        use crate::types::provider::{ProviderConfig, ProviderType};
+        use crate::common::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1440,7 +1441,7 @@ use crate::session::types::{ChannelType};
     async fn test_agent_spawn_session() {
         use crate::extension::core::ExtensionCore;
         use crate::auth::principal::Principal;
-        use crate::types::provider::{ProviderConfig, ProviderType};
+        use crate::common::types::provider::{ProviderConfig, ProviderType};
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1492,7 +1493,7 @@ use crate::session::types::{ChannelType};
     #[serial_test::serial(core)]
     async fn test_two_runtimes_same_name_different_did() {
         use crate::extension::core::ExtensionCore;
-        use crate::types::provider::{ProviderConfig, ProviderType};
+        use crate::common::types::provider::{ProviderConfig, ProviderType};
         use tempfile::TempDir;
 
         // Force the encrypted-file identity fallback (Windows-headless

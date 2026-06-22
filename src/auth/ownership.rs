@@ -201,7 +201,7 @@ pub fn check_permission(
 
 /// Build a `Resource::Agent` from an `AgentConfig` and name.
 #[must_use]
-pub fn agent_resource(name: &str, config: &crate::types::agent::AgentConfig) -> Resource {
+pub fn agent_resource(name: &str, config: &crate::agents::agent_config::AgentConfig) -> Resource {
     Resource::Agent {
         name: name.to_string(),
         owner: config.owner.clone(),

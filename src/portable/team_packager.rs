@@ -5,7 +5,7 @@
 use crate::identity::Identity;
 use crate::portable::types::ExtensionRef;
 use crate::portable::{ExportOptions as AgentExportOptions, Packager};
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use anyhow::Context;
 use std::collections::HashMap;
 use std::path::Path;

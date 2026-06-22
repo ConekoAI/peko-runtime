@@ -74,7 +74,7 @@ impl ExtensionCore {
     }
 
     /// Set the tool configuration (whitelist, etc.)
-    pub async fn set_tool_config(&self, config: crate::types::agent::ExtensionConfig) {
+    pub async fn set_tool_config(&self, config: crate::common::types::agent_legacy::ExtensionConfig) {
         self.tool_registry.set_tool_config(config).await;
     }
 
@@ -749,7 +749,7 @@ mod tests {
         });
 
         // Register the tool with empty whitelist (all tools disabled)
-        let tool_config = crate::types::agent::ToolConfig {
+        let tool_config = crate::common::types::agent_legacy::ToolConfig {
             enabled: vec![], // Empty whitelist = all tools disabled
             ..Default::default()
         };
@@ -810,7 +810,7 @@ mod tests {
         .unwrap();
 
         // Configure whitelist to enable the tool
-        let tool_config = crate::types::agent::ToolConfig {
+        let tool_config = crate::common::types::agent_legacy::ToolConfig {
             enabled: vec!["enabled_tool".to_string()],
             ..Default::default()
         };
@@ -857,7 +857,7 @@ mod tests {
             .unwrap();
 
         // Set empty whitelist (would block tools, but shouldn't affect ToolRegister)
-        let tool_config = crate::types::agent::ToolConfig {
+        let tool_config = crate::common::types::agent_legacy::ToolConfig {
             enabled: vec![],
             ..Default::default()
         };

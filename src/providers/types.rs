@@ -4,7 +4,7 @@
 //! It contains NO type definitions — only re-exports from canonical sources.
 
 // Domain types (canonical source: `types::message`)
-pub use crate::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
+pub use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
 
 // Provider interface types (canonical source: `providers::traits`)
 pub use crate::providers::traits::{
@@ -13,7 +13,7 @@ pub use crate::providers::traits::{
 };
 
 // Configuration types
-pub use crate::types::provider::ProviderConfig;
+pub use crate::common::types::provider::ProviderConfig;
 
 // Transport types
 pub use crate::providers::transport::AuthConfig;

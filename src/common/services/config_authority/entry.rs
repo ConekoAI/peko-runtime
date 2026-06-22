@@ -4,7 +4,7 @@
 //! the agent configuration system. It replaces the duplicate definitions
 //! previously found in `AgentConfigService` and `ConfigRegistry`.
 
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

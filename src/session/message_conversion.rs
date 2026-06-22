@@ -19,8 +19,8 @@ use crate::session::events::SessionEvent;
 #[cfg(test)]
 use crate::session::events::SessionMessage;
 use crate::session::NormalizedEntry;
-use crate::types::message::{LlmMessage, MessageRole};
-use crate::types::ContentBlock;
+use crate::common::types::message::{LlmMessage, MessageRole};
+use crate::common::types::message::ContentBlock;
 
 /// Convert a `SessionEvent` to an `LlmMessage`
 ///

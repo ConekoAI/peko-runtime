@@ -23,8 +23,8 @@ use crate::identity::Identity;
 use crate::portable::{
     self, ExportOptions as PortableExportOptions, ExtensionRef, ImportOptions as PortableImportOptions,
 };
-use crate::types::agent::{AgentConfig, PromptConfig, SystemFileConfig};
-use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
+use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
+use crate::common::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

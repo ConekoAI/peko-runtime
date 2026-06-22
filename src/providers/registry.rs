@@ -15,7 +15,7 @@ use crate::providers::{
     adapters::{AnthropicAdapter, AnyAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
     core::Provider,
 };
-use crate::types::provider::{ProviderConfig, ProviderType};
+use crate::common::types::provider::{ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -428,7 +428,7 @@ pub fn create_provider_by_name(name: &str) -> Result<Arc<Provider>> {
     let mut models = std::collections::HashMap::new();
     models.insert(
         "default".to_string(),
-        crate::types::provider::ModelConfig {
+        crate::common::types::provider::ModelConfig {
             name: metadata.default_model.to_string(),
             max_tokens: 4096,
             temperature: 0.7,
@@ -551,7 +551,7 @@ pub fn create_provider_for_entry(
     let mut models = std::collections::HashMap::new();
     models.insert(
         entry.default_model_id.clone(),
-        crate::types::provider::ModelConfig {
+        crate::common::types::provider::ModelConfig {
             name: model.id.clone(),
             ..Default::default()
         },
