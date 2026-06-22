@@ -5,7 +5,7 @@ use pekobot::commands::{
     registry, runtime, search, send, session, system, team, tunnel, update, Cli, Commands,
     GlobalPaths,
 };
-use pekobot::types::config::PekobotConfig;
+use pekobot::common::types::config::PekobotConfig;
 
 /// Pekobot - Lightweight Multi-Agent Runtime
 #[tokio::main]
@@ -54,8 +54,8 @@ async fn main() {
 ///   so that async tools fail fast with a clear error instead of falling back to
 ///   in-process execution that would be dropped on CLI exit (ADR-020).
 async fn init_extension_core(command: &Commands) {
-    use pekobot::extension::core::{init_global_core, ExtensionCore, ExtensionServices};
-    use pekobot::extension::services::AsyncExecutionRouter;
+    use pekobot::extensions::framework::core::{init_global_core, ExtensionCore, ExtensionServices};
+    use pekobot::extensions::framework::services::AsyncExecutionRouter;
     use std::sync::Arc;
 
     let is_daemon_cmd = matches!(command, Commands::Daemon(_));
@@ -63,16 +63,16 @@ async fn init_extension_core(command: &Commands) {
     let router = if is_daemon_cmd {
         tracing::info!("Initializing ExtensionCore with LocalAsyncTransport (daemon mode)");
         AsyncExecutionRouter::with_transport(
-            pekobot::extension::services::async_transport::create_local_transport(),
+            pekobot::extensions::framework::services::async_transport::create_local_transport(),
         )
     } else {
         tracing::info!("Auto-detecting async transport for CLI mode");
-        match pekobot::extension::services::async_transport::create_transport().await {
+        match pekobot::extensions::framework::services::async_transport::create_transport().await {
             Ok(transport) => AsyncExecutionRouter::with_transport(transport),
             Err(_) => {
                 // Daemon does not auto-start; user must start it manually.
                 AsyncExecutionRouter::with_transport(std::sync::Arc::new(
-                    pekobot::extension::services::async_transport::UnavailableAsyncTransport::new(
+                    pekobot::extensions::framework::services::async_transport::UnavailableAsyncTransport::new(
                         "peko daemon is not running. Async tool execution requires the daemon.\n\
                          Start it with: peko daemon start\n\
                          Or use sync mode (remove _async: true from the tool call).",

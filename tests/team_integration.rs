@@ -2,10 +2,10 @@
 //!
 //! End-to-end: export team → verify checksums → import → verify data
 
-use pekobot::portable::{
+use pekobot::registry::packaging::{
     export_team, import_team_with_base_dir, inspect_team, TeamExportOptions, TeamImportOptions,
 };
-use pekobot::types::agent::AgentConfig;
+use pekobot::agents::agent_config::AgentConfig;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
@@ -301,7 +301,7 @@ async fn test_team_import_fails_on_checksum_mismatch() {
 
     // Tamper with a file
     let manifest_bytes = files.get("team/manifest.toml").unwrap().clone();
-    let _manifest: pekobot::portable::TeamManifest =
+    let _manifest: pekobot::registry::packaging::TeamManifest =
         toml::from_str(std::str::from_utf8(&manifest_bytes).unwrap()).unwrap();
 
     // Modify a file but keep the old checksum
@@ -390,7 +390,7 @@ async fn test_team_import_warns_without_checksums() {
 
     // Modify manifest to remove packaging
     let manifest_bytes = files.get("team/manifest.toml").unwrap().clone();
-    let mut manifest: pekobot::portable::TeamManifest =
+    let mut manifest: pekobot::registry::packaging::TeamManifest =
         toml::from_str(std::str::from_utf8(&manifest_bytes).unwrap()).unwrap();
     manifest.packaging = None;
 

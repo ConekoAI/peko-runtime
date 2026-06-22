@@ -12,15 +12,15 @@
 //!   cargo test --test packaging_integration -- --ignored
 
 use pekobot::identity::{did::DIDScope, Identity};
-use pekobot::portable::manifest::AgentLayers;
-use pekobot::portable::{
+use pekobot::registry::packaging::manifest::AgentLayers;
+use pekobot::registry::packaging::{
     export_team, import_team_with_base_dir, inspect_team, AgentManifest, ExportOptions,
     ImportOptions, Packager, TeamExportOptions, TeamImportOptions,
 };
 use pekobot::registry::{
     AgentRegistry, RegistryClient, RegistryConfig, RegistryManifest, RegistrySource,
 };
-use pekobot::types::agent::AgentConfig;
+use pekobot::agents::agent_config::AgentConfig;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
@@ -127,7 +127,7 @@ async fn build_agent_package_from_dir(
     let _path = packager.export(export_opts).await?;
 
     // Inspect to get the manifest (with layers computed)
-    let (manifest, _validation) = pekobot::portable::inspect_agent(output_path, None).await?;
+    let (manifest, _validation) = pekobot::registry::packaging::inspect_agent(output_path, None).await?;
     Ok(manifest)
 }
 
@@ -169,30 +169,30 @@ fn build_registry_manifest(
             // tarball we stored under that digest — see
             // `store_agent_layers_in_registry` for the encoder.
             reg_manifest = reg_manifest.with_config(digest.clone(), 0_u64, None::<String>);
-            reg_manifest.add_layer(pekobot::portable::Layer::new(
+            reg_manifest.add_layer(pekobot::registry::packaging::Layer::new(
                 digest.clone(),
-                pekobot::portable::LayerType::Config,
+                pekobot::registry::packaging::LayerType::Config,
                 0,
             ));
         }
         if let Some(digest) = &layers.identity {
-            reg_manifest.add_layer(pekobot::portable::Layer::new(
+            reg_manifest.add_layer(pekobot::registry::packaging::Layer::new(
                 digest.clone(),
-                pekobot::portable::LayerType::Identity,
+                pekobot::registry::packaging::LayerType::Identity,
                 0,
             ));
         }
         if let Some(digest) = &layers.skills {
-            reg_manifest.add_layer(pekobot::portable::Layer::new(
+            reg_manifest.add_layer(pekobot::registry::packaging::Layer::new(
                 digest.clone(),
-                pekobot::portable::LayerType::Skills,
+                pekobot::registry::packaging::LayerType::Skills,
                 0,
             ));
         }
         if let Some(digest) = &layers.workspace {
-            reg_manifest.add_layer(pekobot::portable::Layer::new(
+            reg_manifest.add_layer(pekobot::registry::packaging::Layer::new(
                 digest.clone(),
-                pekobot::portable::LayerType::Workspace,
+                pekobot::registry::packaging::LayerType::Workspace,
                 0,
             ));
         }
@@ -206,7 +206,7 @@ async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,
 ) -> anyhow::Result<()> {
-    let digest = pekobot::portable::ImageDigest::new(&manifest.digest)?;
+    let digest = pekobot::registry::packaging::ImageDigest::new(&manifest.digest)?;
     let reg_manifests_dir = registry
         .root_path()
         .join("registry_manifests")
@@ -282,7 +282,7 @@ async fn store_agent_layers_in_registry(
         }
 
         // Verify digest matches
-        let computed_digest = pekobot::portable::types::compute_digest(&buf);
+        let computed_digest = pekobot::registry::packaging::types::compute_digest(&buf);
         if computed_digest != *expected_digest {
             anyhow::bail!(
                 "Layer digest mismatch for {prefix}: expected {expected_digest}, got {computed_digest}"
@@ -411,7 +411,7 @@ async fn test_full_packaging_pipeline() {
     let import_base = base_dir.join("imported_agents");
     tokio::fs::create_dir_all(&import_base).await.unwrap();
 
-    let unpackager = pekobot::portable::Unpackager::new(&package_path).with_base_dir(&import_base);
+    let unpackager = pekobot::registry::packaging::Unpackager::new(&package_path).with_base_dir(&import_base);
 
     let import_options = ImportOptions {
         new_name: Some("imported-agent".to_string()),

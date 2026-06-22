@@ -28,7 +28,7 @@
 //! Extensions use the Unified Extension Architecture (ADR-017):
 //!
 //! ```rust,ignore
-//! use pekobot::extension::{
+//! use pekobot::extensions::framework::{
 //!     ExtensionManager, ExtensionManifest,
 //! };
 //! use pekobot::extensions::gateway::adapter::GatewayAdapter;
