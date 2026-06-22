@@ -2726,7 +2726,7 @@ impl IpcServer {
                     &runtime_id,
                     &display_name,
                     None,
-                    crate::runtime::registry::TrustLevel::Untrusted,
+                    crate::tunnel::known_runtimes::TrustLevel::Untrusted,
                 );
                 let resolver = crate::common::paths::PathResolver::with_dirs(
                     state.config_dir.clone(),
@@ -2758,7 +2758,7 @@ impl IpcServer {
                 let mut registry = state.known_runtimes().write().await;
                 match registry.trust(
                     &runtime_id,
-                    crate::runtime::registry::TrustLevel::Authorized,
+                    crate::tunnel::known_runtimes::TrustLevel::Authorized,
                 ) {
                     Ok(()) => {
                         let resolver = crate::common::paths::PathResolver::with_dirs(

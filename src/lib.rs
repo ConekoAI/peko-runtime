@@ -136,9 +136,6 @@ pub mod common;
 /// Agent runtime, lifecycle, and multi-agent management (absorbed `prompt/`)
 pub mod agents;
 
-/// Shared runtime components (tool runtime, etc.)
-pub mod runtime;
-
 /// Execution engine and state machine
 pub mod engine;
 
