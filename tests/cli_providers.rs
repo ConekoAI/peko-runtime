@@ -29,29 +29,30 @@
 //! `provider.api_key_env` lookup reads; `KIMI_API_KEY` is the same
 //! path for Kimi.
 //!
-//! ## Why direct config.toml writes
+//! ## v3 provider catalog setup
 //!
-//! Each test writes the agent's `config.toml` directly with the
-//! provider-specific `api_key`, `base_url`, and `default_model`. This
-//! bypasses `peko auth set` + `peko agent create --provider <p>` — both
-//! of which are exercised by other test paths and would re-do
-//! filesystem work we don't need to re-verify here. It also matches
-//! the dual-mode pattern at `tunnel_e2e.rs::create_test_workspace`
-//! (writes the api_key into the agent config directly, reads the key
-//! from the relevant env var at test start).
+//! In the v3 provider model, agents only carry soft hints
+//! (`preferred_provider_id` / `preferred_model_id`). The actual provider
+//! metadata lives in `~/.peko/providers.toml`, and API keys live in the
+//! OS keychain (or fall back to env vars under
+//! `PEKO_TEST_RESOLVER_BOOTSTRAP=1` in CI).
 //!
-//! **Important: `PekoCli::cmd()` removes `MINIMAX_API_KEY` from the
-//! daemon's env** (see [tests/common/cli.rs:115](tests/common/cli.rs#L115))
-//! to safeguard the mock-tier tests. This is fine here because the
-//! tests write the api_key directly into the agent config rather than
-//! relying on env-var inheritance.
+//! Each test:
+//! 1. Creates a `PekoCli` with [`PekoCli::allow_real_llm_keys`] so the
+//!    daemon keeps `MINIMAX_API_KEY` / `KIMI_API_KEY` and enables the
+//!    env-var bootstrap.
+//! 2. Seeds `providers.toml` with the minimax or kimi catalog entry.
+//! 3. Writes the agent config with `preferred_provider_id` pointing at
+//!    that entry.
+//!
+//! This bypasses `peko auth set` + `peko provider add`, both of which
+//! are exercised by other test paths.
 //!
 //! ## Provider specifics
 //!
-//! From `src/common/services/agent_service.rs:226-270`:
-//! - **kimi**: `provider_type = Kimi`, `base_url = "https://api.kimi.com/coding"`,
-//!   `default_model = "k2p5"`, env var = `KIMI_API_KEY`.
-//! - **minimax**: `provider_type = Minimax`,
+//! - **kimi**: catalog id `kimi`, `base_url = "https://api.kimi.com/coding"`,
+//!   `default_model = "kimi-for-coding"`, env var = `KIMI_API_KEY`.
+//! - **minimax**: catalog id `minimax`,
 //!   `base_url = "https://api.minimaxi.com/anthropic"`,
 //!   `default_model = "MiniMax-M2.7"`, env var = `MINIMAX_API_KEY`.
 
@@ -114,24 +115,11 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
-/// Write an agent config.toml that talks to a real LLM provider.
-///
-/// `provider_type`, `base_url`, `default_model`, and `api_key` are all
-/// baked in directly so the test bypasses the env-var / auth-store
-/// indirection and exercises the same wire path as `peko agent create
-/// --provider <p>` followed by an API call.
-///
-/// The test pre-creates the agent's config.toml in the same layout
-/// that `peko agent create` would write, so the daemon's existing
-/// agent-discovery path picks it up unchanged.
-fn write_provider_agent(
-    home: &Path,
-    name: &str,
-    _provider_type: &str,
-    _base_url: &str,
-    _default_model: &str,
-    _api_key: &str,
-) -> std::io::Result<()> {
+/// Write an agent config.toml that references a v3 provider catalog
+/// entry. The actual provider metadata (base_url, default_model) and
+/// API key live in `~/.peko/providers.toml` and are seeded separately
+/// before the daemon starts.
+fn write_provider_agent(home: &Path, name: &str, provider_id: &str) -> std::io::Result<()> {
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
     let config_toml = format!(
@@ -140,7 +128,7 @@ name = "{name}"
 description = "CLI integration test agent for the real-LLM provider smoke"
 auto_accept_trusted = false
 
-preferred_provider_id = "mock-llm"
+preferred_provider_id = "{provider_id}"
 preferred_model_id = "default"
 default_timeout_seconds = 60
 
@@ -173,24 +161,15 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn cli_providers_minimax_smoke() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let agent_name = "providers_minimax_smoke";
-    write_provider_agent(
-        cli.home(),
-        agent_name,
-        // ProviderType::Minimax as a string. The provider dispatcher
-        // uses the `base_url` to pick the right HTTP adapter.
-        "minimax",
-        "https://api.minimaxi.com/anthropic",
-        "MiniMax-M2.7",
-        &api_key,
-    )
-    .expect("write minimax agent");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    write_provider_agent(cli.home(), agent_name, "minimax").expect("write minimax agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // PS script: `peko send <agent> "Hello, can you tell me a short joke?"`
@@ -220,24 +199,15 @@ async fn cli_providers_minimax_smoke() {
 #[tokio::test]
 #[ignore = "requires KIMI_API_KEY and peko daemon"]
 async fn cli_providers_kimi_smoke() {
-    let Some(api_key) = kimi_api_key() else {
+    let Some(_api_key) = kimi_api_key() else {
         eprintln!("KIMI_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let agent_name = "providers_kimi_smoke";
-    write_provider_agent(
-        cli.home(),
-        agent_name,
-        // ProviderType::Kimi as a string. The Kimi adapter uses
-        // `api_key` as a bearer token against api.kimi.com.
-        "kimi",
-        "https://api.kimi.com/coding",
-        "k2p5",
-        &api_key,
-    )
-    .expect("write kimi agent");
+    common::agent::seed_kimi_provider_in_catalog(cli.home());
+    write_provider_agent(cli.home(), agent_name, "kimi").expect("write kimi agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // PS script: `peko send <agent> "Hi"`

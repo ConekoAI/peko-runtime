@@ -423,12 +423,18 @@ Reference implementation: [`tests/cli_extensions_l3.rs`](../../tests/cli_extensi
 | Rust test | Maps to PS script | What it asserts |
 |---|---|---|
 | `cli_providers_minimax_smoke` | `minimax.ps1` | `peko send <agent> "Hello, can you tell me a short joke?" --no-stream` returns a non-empty response from the real MiniMax (Anthropic-compatible) provider at `https://api.minimaxi.com/anthropic` with the configured `MiniMax-M2.7` model. Skips if `MINIMAX_API_KEY` is unset. |
-| `cli_providers_kimi_smoke` | `kimi.ps1` | `peko send <agent> "Hi" --no-stream` returns a non-empty response from the real Kimi provider at `https://api.kimi.com/coding` with the configured `k2p5` model. Skips if `KIMI_API_KEY` is unset. |
+| `cli_providers_kimi_smoke` | `kimi.ps1` | `peko send <agent> "Hi" --no-stream` returns a non-empty response from the real Kimi provider at `https://api.kimi.com/coding` with the configured `kimi-for-coding` model. Skips if `KIMI_API_KEY` is unset. |
 
-**Two structural facts this migration surfaces (and works around, without code changes):**
+**v3 provider catalog setup:**
 
-1. **`PekoCli::cmd()` removes `MINIMAX_API_KEY` from the daemon's env** — see [tests/common/cli.rs:115](../../tests/common/cli.rs#L115). The safeguard exists so a leaking env can't switch mock-tier tests to the real provider mid-run. For the providers test, this means env-var inheritance to the daemon doesn't work for the minimax test. The tests work around it by writing the `api_key` *directly into the agent's config.toml* (same dual-mode pattern as [tunnel_e2e.rs:78-96](../../tests/tunnel_e2e.rs#L78-L96)) rather than relying on env-var lookup at the agent-config-build step. `KIMI_API_KEY` is NOT removed by `PekoCli::cmd()`, but we use the same direct-config pattern for both tests for symmetry.
-2. **Provider-specific base_url / default_model are baked into the test's `write_provider_agent` helper** (per [`src/common/services/agent_service.rs:239-269`](../../pekobot/peko-runtime/src/common/services/agent_service.rs#L239-L269)): minimax uses `https://api.minimaxi.com/anthropic` + `MiniMax-M2.7`; kimi uses `https://api.kimi.com/coding` + `k2p5`. Bypassing `peko agent create --provider <p>` (which is what the PS scripts do) means we hard-code these into the test fixture rather than going through the agent-service helper.
+In the v3 provider model, agents only carry soft hints (`preferred_provider_id` / `preferred_model_id`). The actual provider metadata lives in `~/.peko/providers.toml`, and API keys live in the OS keychain (or fall back to env vars under `PEKO_TEST_RESOLVER_BOOTSTRAP=1` in CI).
+
+Each test:
+1. Creates a `PekoCli` with `allow_real_llm_keys()` so the daemon keeps `MINIMAX_API_KEY` / `KIMI_API_KEY` and enables the env-var bootstrap.
+2. Seeds `providers.toml` with a minimax or kimi catalog entry (`tests/common/agent.rs`).
+3. Writes the agent config with `preferred_provider_id` pointing at that entry.
+
+Provider fixtures: minimax uses `https://api.minimaxi.com/anthropic` + `MiniMax-M2.7`; kimi uses `https://api.kimi.com/coding` + `kimi-for-coding`.
 
 **CI plumbing:** the providers tests run under the `Integration (real LLM)` job in [.github/workflows/integration.yml](../../.github/workflows/integration.yml), which fires on nightly cron (`0 2 * * *`), manual `workflow_dispatch`, or commit messages containing `[llm]`. The workflow passes both `MINIMAX_API_KEY` and `KIMI_API_KEY` as `secrets.*` env, and the Makefile recipe unsets `MOCK_LLM_URL` so the dual-mode rule at [tunnel_e2e.rs:63-76](../../tests/tunnel_e2e.rs#L63-L76) (and our own `kimi_api_key()` / `minimax_api_key()` env checks) falls through to the real provider.
 
@@ -456,7 +462,7 @@ The 2 PS scripts (`e2e_tests/providers/kimi.ps1` and `minimax.ps1`) **were delet
 
 **Why lenient assertions:** real LLMs are non-deterministic — even a clear "reply exactly A2A_SUCCESS" instruction may not be followed verbatim. The PS scripts' "PASS" verdict falls through to a structural check (e.g. "the worker session was created") when the LLM doesn't emit the literal sentinel. The Rust tests mirror this: an LLM-output sentinel match is a sufficient pass, but a structural side-effect (worker session count increased, peer_id matches, session_id unchanged) is also a pass. Tests that pass via the LLM-output fallback log a `WARN:` so CI logs can show how often the lenient branch fires.
 
-**Why direct config.toml writes:** same as `cli_providers.rs` — `PekoCli::cmd()` removes `MINIMAX_API_KEY` from the daemon's env to safeguard mock-tier tests, so the tests bake the `api_key` into each agent's `config.toml` directly rather than going through the `peko auth set` + `peko agent create --provider minimax` flow.
+**v3 provider catalog setup:** same as `cli_providers.rs` — each test uses `PekoCli::allow_real_llm_keys()`, seeds a minimax catalog entry, and writes the agent config with `preferred_provider_id = "minimax"`. The API key is read from `MINIMAX_API_KEY` via the daemon's env-var bootstrap path because CI runners have no OS keychain.
 
 The 3 PS scripts that were originally here: 2 (`a2a_blocking.ps1` and `a2a_isolation.ps1`) **were deleted in Phase E** as redundant with `tests/cli_a2a.rs` (4 blocking + 5 isolation tests). The 3rd, `a2a_async.ps1`, **stayed in place after Phase E** because the async path is not yet wired in production (`a2a_send` tool schema doesn't expose `_async`). The `a2a_all.ps1` meta-runner was also deleted (no longer useful with 2 of its 3 children gone).
 

@@ -29,6 +29,11 @@ pub struct PekoCli {
     /// Windows-only: per-test unique named pipe. `None` on Unix.
     #[cfg(windows)]
     pipe_name: String,
+    /// If true, do not strip `MINIMAX_API_KEY` / `KIMI_API_KEY` from the
+    /// daemon's environment and enable `PEKO_TEST_RESOLVER_BOOTSTRAP=1`
+    /// so real-LLM tests can resolve API keys without an OS keychain.
+    /// Default false keeps mock-tier tests safe from leaking env vars.
+    allow_real_llm_keys: bool,
 }
 
 impl PekoCli {
@@ -74,7 +79,19 @@ impl PekoCli {
             vault_passphrase,
             #[cfg(windows)]
             pipe_name,
+            allow_real_llm_keys: false,
         }
+    }
+
+    /// Allow real-LLM API keys to flow through to spawned subprocesses.
+    ///
+    /// Call this for tests that intentionally exercise minimax/kimi. It
+    /// enables the daemon's env-var keychain bootstrap and prevents
+    /// `PekoCli::cmd` from stripping `MINIMAX_API_KEY` / `KIMI_API_KEY`.
+    #[must_use]
+    pub fn allow_real_llm_keys(mut self) -> Self {
+        self.allow_real_llm_keys = true;
+        self
     }
 
     /// Absolute path to the isolated `HOME`.
@@ -143,12 +160,16 @@ impl PekoCli {
     ///
     /// Sets `HOME`, `USERPROFILE` (Windows), `PEKO_HOME`, the
     /// platform-specific IPC override (`PEKO_DAEMON_SOCK` on Unix,
-    /// `PEKO_DAEMON_PIPE` on Windows), unsets `MINIMAX_API_KEY` so a
-    /// leaking env can't switch the test to the real provider mid-run,
-    /// and changes the subprocess current working directory to the isolated
-    /// `HOME`. The CWD isolation prevents commands like `config init`
-    /// (which writes `peko.toml` relative to CWD) from polluting the
-    /// project root and causing flaky environmental failures.
+    /// `PEKO_DAEMON_PIPE` on Windows), and changes the subprocess current
+    /// working directory to the isolated `HOME`. The CWD isolation prevents
+    /// commands like `config init` (which writes `peko.toml` relative to
+    /// CWD) from polluting the project root and causing flaky environmental
+    /// failures.
+    ///
+    /// By default `MINIMAX_API_KEY` / `KIMI_API_KEY` are stripped so a
+    /// leaking env can't switch a mock-tier test to a paid provider.
+    /// Call [`Self::allow_real_llm_keys`] for tests that intentionally
+    /// exercise real providers.
     pub fn cmd(&self) -> Command {
         let bin = env!("CARGO_BIN_EXE_peko");
         let mut c = Command::new(bin);
@@ -156,25 +177,31 @@ impl PekoCli {
             .env("USERPROFILE", self.home.path())
             .env("PEKO_HOME", self.peko_dir())
             .env("PEKO_MASTER_PASSPHRASE", &self.vault_passphrase)
-            .env_remove("MINIMAX_API_KEY")
             .current_dir(self.home.path());
 
-        // v3 mock-LLM bootstrap: when `MOCK_LLM_URL` is set, the
-        // daemon needs to find the catalog entry `mock-llm` (seeded
-        // by `seed_mock_provider_in_catalog` before spawn) and look
-        // up the API key. Production OS-keychain access doesn't work
-        // in CI / headless test runners, so we flip two env vars:
+        // v3 provider key bootstrap: in CI / headless test runners the
+        // OS keychain isn't available, so the daemon can fall back to
+        // conventional `*_API_KEY` env vars when
+        // `PEKO_TEST_RESOLVER_BOOTSTRAP=1` is set.
         //
-        //   PEKO_TEST_RESOLVER_BOOTSTRAP=1   — turn on env-var fallback
-        //   MOCK_LLM_API_KEY=mock-llm-test-key  — match the literal key
-        //     that the test harness writes into the catalog for
-        //     catalog entries with id `mock-llm`.
+        // Mock-LLM tests: `MOCK_LLM_URL` is set; we seed the catalog with
+        // a `mock-llm` entry and export the matching `MOCK_LLM_API_KEY`.
         //
-        // Both env vars are no-ops if the daemon's `MOCK_LLM_URL`
-        // is unset (i.e., the test isn't a mock-LLM test).
+        // Real-LLM tests: `allow_real_llm_keys` is true; we keep
+        // `MINIMAX_API_KEY` / `KIMI_API_KEY` in the env and flip the
+        // bootstrap flag so the daemon can read them.
         if std::env::var_os("MOCK_LLM_URL").is_some() {
             c.env("PEKO_TEST_RESOLVER_BOOTSTRAP", "1");
             c.env("MOCK_LLM_API_KEY", "mock-llm-test-key");
+        } else if self.allow_real_llm_keys {
+            c.env("PEKO_TEST_RESOLVER_BOOTSTRAP", "1");
+        }
+
+        if !self.allow_real_llm_keys {
+            // Strip real-LLM keys so a leaking env can't switch a mock-tier
+            // test to a paid provider mid-run.
+            c.env_remove("MINIMAX_API_KEY");
+            c.env_remove("KIMI_API_KEY");
         }
 
         // Platform-specific IPC endpoint override.
