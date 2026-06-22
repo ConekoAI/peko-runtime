@@ -44,6 +44,9 @@ pub mod sync;
 pub mod types;
 pub mod unified;
 
+// Context compaction (absorbed from src/compaction/ in issue #31b)
+pub mod compaction;
+
 // Re-export Session (replaces both BaseSession and SimpleSession)
 pub use context::SessionContext;
 pub use events::{

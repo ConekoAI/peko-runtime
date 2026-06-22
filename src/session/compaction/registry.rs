@@ -158,7 +158,7 @@ impl Default for ModelContextRegistry {
 pub fn should_auto_compact(
     estimated_tokens: usize,
     context_window: usize,
-    config: &crate::compaction::CompactionConfig,
+    config: &crate::session::compaction::CompactionConfig,
 ) -> bool {
     if !config.enabled {
         return false;
@@ -173,7 +173,7 @@ pub fn should_auto_compact(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compaction::CompactionConfig;
+    use crate::session::compaction::CompactionConfig;
 
     #[test]
     fn test_registry_defaults() {

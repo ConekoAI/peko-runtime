@@ -200,7 +200,7 @@ pub enum HookInput {
         /// Previous compaction summary (for cumulative updates)
         previous_summary: Option<String>,
         /// File operations extracted from messages
-        file_ops: crate::compaction::summary_format::CompactionDetails,
+        file_ops: crate::session::compaction::summary_format::CompactionDetails,
         /// Estimated tokens in the current context
         estimated_tokens: usize,
         /// Threshold tokens that triggered compaction
@@ -208,7 +208,7 @@ pub enum HookInput {
         /// Model context window limit
         model_context_limit: usize,
         /// Compaction settings
-        settings: crate::compaction::CompactionConfig,
+        settings: crate::session::compaction::CompactionConfig,
     },
 
     /// Compaction result data (post-compaction hook)
@@ -224,7 +224,7 @@ pub enum HookInput {
         /// Compaction number (1st, 2nd, etc.)
         compaction_number: usize,
         /// Tracked file operations from compacted messages
-        details: Option<crate::compaction::summary_format::CompactionDetails>,
+        details: Option<crate::session::compaction::summary_format::CompactionDetails>,
         /// Messages after compaction (summary + kept messages)
         messages_after: Vec<LlmMessage>,
     },

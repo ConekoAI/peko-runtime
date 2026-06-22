@@ -7,7 +7,7 @@
 //! - Post-compaction hook invocation
 //! - Session recording and cache updates
 
-use crate::compaction::{
+use crate::session::compaction::{
     background::{BackgroundCompactor, CompactionResponse},
     registry::ModelContextRegistry,
     CompactionConfig, CompactionResult,
@@ -94,7 +94,7 @@ impl CompactionOrchestrator {
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
         run_id: &str,
     ) -> Result<bool> {
-        let estimated_tokens = crate::compaction::Compactor::estimate_tokens(messages);
+        let estimated_tokens = crate::session::compaction::Compactor::estimate_tokens(messages);
 
         // Start background compaction if needed and not already running
         if self.pending_compaction.is_none()
@@ -172,14 +172,14 @@ impl CompactionOrchestrator {
         let _ = threshold_tokens;
 
         let (messages_to_summarize, _messages_to_keep, is_split_turn) =
-            crate::compaction::turn_boundaries::select_messages_respecting_boundaries(
+            crate::session::compaction::turn_boundaries::select_messages_respecting_boundaries(
                 messages,
                 keep_recent_tokens,
             );
 
         let turn_prefix_messages = if is_split_turn {
             let split_point = messages_to_summarize.len();
-            crate::compaction::turn_boundaries::extract_turn_prefix(messages, split_point)
+            crate::session::compaction::turn_boundaries::extract_turn_prefix(messages, split_point)
                 .unwrap_or_default()
         } else {
             vec![]
@@ -190,7 +190,7 @@ impl CompactionOrchestrator {
             s.load_previous_compaction_summary().await.ok().flatten()
         };
 
-        let file_ops = crate::compaction::summary_format::extract_file_ops_from_messages(
+        let file_ops = crate::session::compaction::summary_format::extract_file_ops_from_messages(
             &messages_to_summarize,
         );
 
@@ -330,7 +330,7 @@ impl CompactionOrchestrator {
             HookInput::SessionState(SessionSnapshot {
                 session_id,
                 message_count: messages.len(),
-                context_tokens: crate::compaction::Compactor::estimate_tokens(messages),
+                context_tokens: crate::session::compaction::Compactor::estimate_tokens(messages),
                 metadata: HashMap::new(),
             })
         };

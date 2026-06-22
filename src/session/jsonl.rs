@@ -201,7 +201,7 @@ impl SessionStorage {
         tokens_before: usize,
         tokens_after: usize,
         compaction_number: usize,
-        details: Option<&crate::compaction::summary_format::CompactionDetails>,
+        details: Option<&crate::session::compaction::summary_format::CompactionDetails>,
     ) -> Result<String> {
         use crate::session::events::{EventEnvelope, SystemEvent};
 

@@ -2278,7 +2278,7 @@ impl IpcServer {
                         return Ok(());
                     }
                 };
-                let compactor = crate::compaction::cli::SessionCompactor::new();
+                let compactor = crate::session::compaction::cli::SessionCompactor::new();
                 if dry_run {
                     match compactor.dry_run(&session, instruction).await {
                         Ok(report) => {
