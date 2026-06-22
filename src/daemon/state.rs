@@ -420,6 +420,11 @@ impl AppState {
         // This prevents a race where main.rs sets an empty core and AppState's
         // tool-filled core gets discarded by the OnceLock.
         //
+        // Trait-object clone for the framework (avoids a framework → agents
+        // dependency while keeping the concrete arc for other consumers).
+        let agent_service_dyn: Arc<dyn crate::common::types::a2a::AgentMessageService> =
+            agent_service.clone();
+
         // For tests, always create a fresh core to avoid shared mutable state
         // between concurrent tests.
         let global_core = if for_test {
@@ -430,7 +435,7 @@ impl AppState {
             );
             let services = ExtensionServices::with_async_router_and_agent_service(
                 router,
-                Arc::clone(&agent_service),
+                Arc::clone(&agent_service_dyn),
             );
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
         } else if let Some(existing) = crate::extensions::framework::core::global_core() {
@@ -444,7 +449,7 @@ impl AppState {
             );
             let services = ExtensionServices::with_async_router_and_agent_service(
                 router,
-                Arc::clone(&agent_service),
+                Arc::clone(&agent_service_dyn),
             );
             let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
             init_global_core(Arc::clone(&core));
@@ -455,7 +460,7 @@ impl AppState {
         // If we reused an existing global core, it may not have the agent service yet.
         global_core
             .services()
-            .set_agent_service(Arc::clone(&agent_service));
+            .set_agent_service(Arc::clone(&agent_service_dyn));
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
@@ -1096,6 +1101,9 @@ impl AppState {
             tunnel: self.tunnel_handle_slot(),
             response_timeout: Duration::from_mins(1),
         });
+        // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
+        // to avoid a framework → tunnel dependency.
+        let ctx: Arc<dyn std::any::Any + Send + Sync + 'static> = ctx;
 
         // 4. Register on the `ExtensionServices`. The per-agent
         //    `A2aSendTool` constructor in `agent.rs` consults

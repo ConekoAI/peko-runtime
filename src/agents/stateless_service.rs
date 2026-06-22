@@ -31,11 +31,10 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{debug, info, instrument, warn};
 
-// One-commit compat shim. The MessageRequest/MessageResult types
-// are now defined in tunnel::a2a_message_types. The local names
-// here are re-export aliases. Removed in the follow-up commit; all
-// internal callers will then use the tunnel path directly.
-pub use crate::tunnel::a2a_message_types::{
+// The MessageRequest/MessageResult types and AgentMessageService trait
+// now live in common::types::a2a. The local names here are re-export
+// aliases for internal ergonomics.
+pub use crate::common::types::a2a::{
     A2aMessageRequest as MessageRequest, A2aMessageResponse as MessageResult, ToolCallInfo,
 };
 
@@ -218,25 +217,22 @@ pub struct StatelessAgentService {
 }
 
 // Cycle 5 (refactor/clippy-cleanup-rust196): implement the
-// `AgentMessageService` trait defined in `tunnel::a2a_send_tool` so
-// the tool can be constructed via the trait-object factory without
+// `AgentMessageService` trait defined in `common::types::a2a` so the
+// tool can be constructed via the trait-object factory without
 // depending on the concrete type. Delegates to the existing
 // `execute_message` method; no behavior change. The trait lives in
-// `tunnel` and the impl lives in `agents` so the dependency arrow
-// goes `agents → tunnel` (one-way), breaking the cycle that would
-// otherwise form via the concrete-type dependency.
+// `common::types` and the impl lives in `agents` so the dependency
+// arrow goes `agents → common` (one-way), breaking the cycle that
+// would otherwise form via the concrete-type dependency.
 #[async_trait::async_trait]
-impl crate::tunnel::a2a_send_tool::AgentMessageService for StatelessAgentService {
+impl crate::common::types::a2a::AgentMessageService for StatelessAgentService {
     async fn execute_message(
         &self,
-        req: crate::tunnel::a2a_message_types::A2aMessageRequest,
-    ) -> Result<crate::tunnel::a2a_message_types::A2aMessageResponse> {
-        // The local `MessageRequest`/`MessageResult` aliases (from the
-        // re-export shim added in Task 4) are the same types as
-        // `A2aMessageRequest`/`A2aMessageResponse` — the shim is
-        // `pub use ... as MessageRequest`. The compiler monomorphizes
-        // both signatures to the same call, so we can forward `req`
-        // directly without an `.into()`.
+        req: crate::common::types::a2a::A2aMessageRequest,
+    ) -> Result<crate::common::types::a2a::A2aMessageResponse> {
+        // The local `MessageRequest`/`MessageResult` aliases are the
+        // same types as `A2aMessageRequest`/`A2aMessageResponse`, so
+        // we can forward `req` directly without an `.into()`.
         StatelessAgentService::execute_message(self, req).await
     }
 }

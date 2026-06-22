@@ -65,6 +65,7 @@ VIOLATIONS_1B=$(grep -r "crate::extensions::" src/extensions/framework/ --includ
     | grep -vE ':[[:space:]]*://' \
     | grep -vE ':[[:space:]]*//' \
     | grep -vE ':[[:space:]]*///?' \
+    | grep -vE '^[[:space:]]*//' \
     || true)
 
 if [ -n "$VIOLATIONS_1B" ]; then
@@ -219,8 +220,6 @@ echo "Rule 5: src/extensions/framework/ must NOT import from src/agents/, src/tu
 echo ""
 
 VIOLATIONS_5A=$(grep -rE "crate::(agents|tunnel|daemon)::" src/extensions/framework/ --include="*.rs" 2>/dev/null || true)
-# Exclude self-references to src/extensions/framework/ (e.g. in error messages)
-VIOLATIONS_5A=$(echo "$VIOLATIONS_5A" | grep -v "src/extensions/framework/" || true)
 
 if [ -n "$VIOLATIONS_5A" ]; then
     echo "  ❌ FAIL: src/extensions/framework/ imports from agents/tunnel/daemon"
@@ -243,7 +242,11 @@ echo "Summary"
 echo "=========================================="
 
 if [ "$EXIT_CODE" -eq 0 ]; then
-    echo "✓ All module boundary checks passed"
+    if [ "$RULE4_FAILED" -eq 1 ]; then
+        echo "✓ All hard boundary checks passed; advisory warnings remain"
+    else
+        echo "✓ All module boundary checks passed"
+    fi
 else
     echo "❌ Module boundary violations detected"
     echo ""

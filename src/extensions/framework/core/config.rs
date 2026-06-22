@@ -28,19 +28,21 @@ pub struct ExtensionServices {
     /// Async execution router
     async_router: crate::extensions::framework::transport::AsyncExecutionRouter,
 
-    /// Stateless agent service for A2A messaging (set by AppState after initialization)
-    agent_service: std::sync::RwLock<Option<Arc<crate::agents::StatelessAgentService>>>,
+    /// Stateless agent service for A2A messaging (set by AppState after initialization).
+    /// Held as a trait object to avoid a framework → agents dependency.
+    agent_service: std::sync::RwLock<Option<Arc<dyn crate::common::types::a2a::AgentMessageService>>>,
 
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
     /// `HubAgentDirectoryClient` is ready. `None` on runtimes that
     /// haven't run `peko tunnel setup` (no PekoHub credential) or
-    /// are running offline. The `A2aSendTool::with_cross_runtime`
-    /// builder consults this slot when registering the tool per
-    /// agent; tools built without a ctx fall back to the local-only
-    /// path.
+    /// are running offline.
+    ///
+    /// Stored as `Arc<dyn Any + Send + Sync>` so the framework does
+    /// not depend on the concrete `tunnel::CrossRuntimeA2aCtx` type.
+    /// Consumers downcast to the concrete type when building tools.
     cross_runtime_a2a_ctx:
-        std::sync::RwLock<Option<Arc<crate::tunnel::CrossRuntimeA2aCtx>>>,
+        std::sync::RwLock<Option<Arc<dyn std::any::Any + Send + Sync + 'static>>>,
 }
 
 impl std::fmt::Debug for ExtensionServices {
@@ -52,8 +54,8 @@ impl std::fmt::Debug for ExtensionServices {
             .field("config", &self.config)
             .field("telemetry", &self.telemetry)
             .field("async_router", &self.async_router)
-            .field("agent_service", &"<RwLock<Option<Arc<StatelessAgentService>>>>")
-            .field("cross_runtime_a2a_ctx", &"<RwLock<Option<Arc<CrossRuntimeA2aCtx>>>>")
+            .field("agent_service", &"<RwLock<Option<Arc<dyn AgentMessageService>>>>")
+            .field("cross_runtime_a2a_ctx", &"<RwLock<Option<Arc<dyn Any + Send + Sync>>>>")
             .finish_non_exhaustive()
     }
 }
@@ -69,7 +71,7 @@ impl ExtensionServices {
     #[must_use]
     pub fn with_async_router_and_agent_service(
         async_router: crate::extensions::framework::transport::AsyncExecutionRouter,
-        agent_service: Arc<crate::agents::StatelessAgentService>,
+        agent_service: Arc<dyn crate::common::types::a2a::AgentMessageService>,
     ) -> Self {
         let s = Self::with_async_router(async_router);
         s.set_agent_service(agent_service);
@@ -123,7 +125,10 @@ impl ExtensionServices {
     }
 
     /// Set the stateless agent service (for A2A messaging)
-    pub fn set_agent_service(&self, service: Arc<crate::agents::StatelessAgentService>) {
+    pub fn set_agent_service(
+        &self,
+        service: Arc<dyn crate::common::types::a2a::AgentMessageService>,
+    ) {
         if let Ok(mut guard) = self.agent_service.write() {
             *guard = Some(service);
         }
@@ -131,7 +136,7 @@ impl ExtensionServices {
 
     /// Get the stateless agent service (for A2A messaging)
     #[must_use]
-    pub fn agent_service(&self) -> Option<Arc<crate::agents::StatelessAgentService>> {
+    pub fn agent_service(&self) -> Option<Arc<dyn crate::common::types::a2a::AgentMessageService>> {
         self.agent_service.read().ok().and_then(|g| g.clone())
     }
 
@@ -142,7 +147,7 @@ impl ExtensionServices {
     /// and injects the ctx into each `A2aSendTool` it builds.
     pub fn set_cross_runtime_a2a_ctx(
         &self,
-        ctx: Arc<crate::tunnel::CrossRuntimeA2aCtx>,
+        ctx: Arc<dyn std::any::Any + Send + Sync + 'static>,
     ) {
         if let Ok(mut guard) = self.cross_runtime_a2a_ctx.write() {
             *guard = Some(ctx);
@@ -155,7 +160,9 @@ impl ExtensionServices {
     /// a PekoHub credential, runtimes before this PR's bootstrap
     /// follow-up).
     #[must_use]
-    pub fn cross_runtime_a2a_ctx(&self) -> Option<Arc<crate::tunnel::CrossRuntimeA2aCtx>> {
+    pub fn cross_runtime_a2a_ctx(
+        &self,
+    ) -> Option<Arc<dyn std::any::Any + Send + Sync + 'static>> {
         self.cross_runtime_a2a_ctx
             .read()
             .ok()

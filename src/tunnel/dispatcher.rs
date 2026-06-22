@@ -14,7 +14,7 @@ const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d
 use crate::auth::Principal;
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
-use crate::tunnel::a2a_message_types::A2aMessageRequest;
+use crate::common::types::a2a::A2aMessageRequest;
 
 use super::a2a_audit;
 use super::protocol::{

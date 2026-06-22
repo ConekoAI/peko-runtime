@@ -136,12 +136,15 @@ impl Agent {
             // trait object so the tool is constructed through the
             // `build_tool` factory rather than directly binding to the
             // concrete `StatelessAgentService` type.
-            let dyn_service: Arc<dyn crate::tunnel::a2a_send_tool::AgentMessageService> =
+            let dyn_service: Arc<dyn crate::common::types::a2a::AgentMessageService> =
                 agent_service;
             let cross_ctx = self
                 .extension_core
                 .services()
-                .cross_runtime_a2a_ctx();
+                .cross_runtime_a2a_ctx()
+                .and_then(|ctx| {
+                    Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok()
+                });
             let tool = crate::tunnel::a2a_send_tool::build_tool(
                 dyn_service,
                 Some(&self.config.name),

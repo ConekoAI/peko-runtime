@@ -36,7 +36,9 @@ use std::sync::Arc;
 use crate::auth::principal::Principal;
 use crate::tools::core::Tool;
 use crate::tunnel::a2a_audit;
-use crate::tunnel::a2a_message_types::{A2aMessageRequest as MessageRequest, A2aMessageResponse as MessageResult};
+use crate::common::types::a2a::{
+    A2aMessageRequest as MessageRequest, A2aMessageResponse as MessageResult, AgentMessageService,
+};
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentDirectory, DirectoryError, ResolvedExposure};
@@ -880,7 +882,7 @@ pub struct HubA2AErrorResponse {
 /// behavior) and any future code path that needs the same shape can
 /// share the conversion.
 fn message_result_to_a2a_value(
-    result: Result<crate::agents::stateless_service::MessageResult>,
+    result: Result<MessageResult>,
 ) -> serde_json::Value {
     match result {
         Ok(msg_result) => {
@@ -935,22 +937,6 @@ fn message_result_to_a2a_value(
 // without a `use crate::tunnel::a2a_pending::...` mouthful.
 #[allow(dead_code)]
 type _UnusedA2aWaitError = A2aWaitError;
-
-/// Minimum interface `A2aSendTool` needs from a peer agent service.
-///
-/// Lives in `tunnel` (not `agents`) so `A2aSendTool::new` can take a
-/// trait object without importing the concrete `StatelessAgentService`
-/// type. Implementations convert the tunnel-owned request/response
-/// types to whatever internal shape they use.
-///
-/// Breaking cycle 5 (per PLAN §2.5).
-#[async_trait::async_trait]
-pub trait AgentMessageService: Send + Sync {
-    async fn execute_message(
-        &self,
-        req: MessageRequest,
-    ) -> Result<MessageResult>;
-}
 
 /// Construct an `Arc<dyn Tool>` for the `a2a_send` capability.
 ///

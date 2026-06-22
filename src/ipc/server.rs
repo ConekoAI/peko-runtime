@@ -3362,7 +3362,7 @@ impl IpcServer {
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         use crate::engine::{AgenticEvent, LifecyclePhase};
-        use crate::tunnel::a2a_message_types::A2aMessageRequest;
+        use crate::common::types::a2a::A2aMessageRequest;
 
         tracing::info!(
             "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}, session_id={:?}, new_session={}",
