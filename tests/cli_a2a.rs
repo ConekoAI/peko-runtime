@@ -150,8 +150,8 @@ description = "CLI integration test agent for a2a_send"
 auto_accept_trusted = false
 
 preferred_provider_id = "minimax"
-preferred_model_id = "default"
-default_timeout_seconds = 60
+preferred_model_id = "MiniMax-M2.7"
+default_timeout_seconds = 300
 
 [extensions]
 enabled = [
@@ -327,7 +327,7 @@ async fn a2a_blocking_t2_blocking_execution() {
     let (out, err, status) = run(
         &cli,
         &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&out, &err, &status);
 
@@ -372,7 +372,7 @@ async fn a2a_blocking_t3_session_resumption() {
     let (out1, err1, status1) = run(
         &cli,
         &["send", delegator, &prompt1, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&out1, &err1, &status1);
     let count_after_first = worker_session_count(&cli, worker);
@@ -388,7 +388,7 @@ async fn a2a_blocking_t3_session_resumption() {
     let (out2, err2, status2) = run(
         &cli,
         &["send", delegator, &prompt2, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&out2, &err2, &status2);
     let count_after_second = worker_session_count(&cli, worker);
@@ -435,7 +435,7 @@ async fn a2a_blocking_t4_caller_annotation() {
     let (out, err, status) = run(
         &cli,
         &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&out, &err, &status);
 
@@ -521,7 +521,7 @@ async fn a2a_isolation_t1_caller_a_session() {
     let (out, err, status) = run(
         &cli,
         &["send", caller_a, &prompt, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&out, &err, &status);
 
@@ -576,7 +576,7 @@ async fn a2a_isolation_t2_caller_b_session() {
     let (out_a, err_a, status_a) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&out_a, &err_a, &status_a);
 
@@ -590,7 +590,7 @@ async fn a2a_isolation_t2_caller_b_session() {
     let (out_b, err_b, status_b) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&out_b, &err_b, &status_b);
 
@@ -638,7 +638,7 @@ async fn a2a_isolation_t3_peer_id_isolation() {
     let (_, err_a, status_a) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&prompt_a, &err_a, &status_a);
 
@@ -651,7 +651,7 @@ async fn a2a_isolation_t3_peer_id_isolation() {
     let (out_b, err_b, status_b) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(&out_b, &err_b, &status_b);
 
@@ -746,7 +746,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
     let (out_a1, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a1, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(prompt_a1.as_str(), &err, &status);
 
@@ -760,7 +760,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
     let (out_b, err, status) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(prompt_b.as_str(), &err, &status);
 
@@ -793,7 +793,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
     let (out_a2, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a2, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(prompt_a2.as_str(), &err, &status);
 
@@ -879,7 +879,7 @@ async fn a2a_isolation_t5_message_counts() {
     let (out_a, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(prompt_a.as_str(), &err, &status);
 
@@ -893,7 +893,7 @@ async fn a2a_isolation_t5_message_counts() {
     let (out_b, err, status) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(prompt_b.as_str(), &err, &status);
 
@@ -907,7 +907,7 @@ async fn a2a_isolation_t5_message_counts() {
     let (out_a2, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a2, "--no-stream"],
-        Duration::from_secs(60),
+        Duration::from_secs(180),
     );
     assert_ok(prompt_a2.as_str(), &err, &status);
 

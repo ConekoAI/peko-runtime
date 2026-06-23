@@ -35,7 +35,7 @@ pub struct ProviderConfig {
 }
 
 fn default_timeout() -> u64 {
-    60
+    300
 }
 
 fn default_retries() -> u32 {
@@ -68,7 +68,7 @@ impl Default for ProviderConfig {
             base_url: None,
             default_model: "default".to_string(),
             models,
-            timeout_seconds: 60,
+            timeout_seconds: default_timeout(),
             max_retries: 3,
             retry_delay_ms: 1000,
         }
@@ -233,7 +233,7 @@ mod tests {
     fn test_default_config() {
         let config = ProviderConfig::default();
         assert_eq!(config.provider_type, ProviderType::OpenAI);
-        assert_eq!(config.timeout_seconds, 60);
+        assert_eq!(config.timeout_seconds, 300);
         assert_eq!(config.max_retries, 3);
     }
 
