@@ -384,7 +384,7 @@ Examples:
 
         // Build execution config with defaults
         let config = ExecutionConfig {
-            timeout_seconds: 300, // Default timeout, can be overridden by framework _timeout
+            timeout_seconds: 300, // 5-min default; the framework auto-detaches on timeout
             cleanup,
             label: args.label.clone(),
             announce_completion: true,
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_async_mode_error_response_formatting() {
+    async fn test_error_response_formatting() {
         // Test typed depth error
         let depth_err = anyhow::anyhow!(SpawnError::DepthLimitExceeded { current: 4, max: 3 });
         let response = AgentSpawnTool::format_error_response(&depth_err).unwrap();
