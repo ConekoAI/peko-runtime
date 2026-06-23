@@ -279,11 +279,17 @@ impl AsyncExecutionRouter {
                 Some(AsyncTaskStatus::TimedOut { error }) => {
                     return Err(anyhow::anyhow!(error));
                 }
-                _ => {
+                Some(AsyncTaskStatus::Pending) | Some(AsyncTaskStatus::Running) => {
                     if tokio::time::Instant::now() >= deadline {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Task {} not found in transport registry after spawn",
+                        task_id
+                    ));
                 }
             }
         }
