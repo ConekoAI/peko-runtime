@@ -4,10 +4,11 @@
 //! Coverage mirrors the `e2e_tests/providers/*.ps1` PowerShell scripts
 //! that previously exercised this surface outside CI:
 //!
-//! | PS script          | Rust test                  | Provider  |
-//! |--------------------|----------------------------|-----------|
-//! | `minimax.ps1`      | `cli_providers_minimax_smoke` | minimax |
-//! | `kimi.ps1`         | `cli_providers_kimi_smoke`    | kimi    |
+//! | PS script          | Rust test                                       | Provider  |
+//! |--------------------|-------------------------------------------------|-----------|
+//! | `minimax.ps1`      | `cli_providers_minimax_smoke`                   | minimax   |
+//! | `kimi.ps1`         | `cli_providers_kimi_smoke`                      | kimi      |
+//! | `minimax_tools.ps1`| `cli_providers_minimax_anthropic_native_tool_call` | minimax |
 //!
 //! ## Tier: real-LLM
 //!
@@ -120,8 +121,32 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 /// API key live in `~/.peko/providers.toml` and are seeded separately
 /// before the daemon starts.
 fn write_provider_agent(home: &Path, name: &str, provider_id: &str) -> std::io::Result<()> {
+    write_tool_agent(home, name, provider_id, &[])
+}
+
+/// Write an agent config.toml that references a v3 provider catalog
+/// entry and whitelists a set of tools (bare names + canonical
+/// `builtin:tool:<name>` IDs).
+fn write_tool_agent(
+    home: &Path,
+    name: &str,
+    provider_id: &str,
+    extra_tools: &[&str],
+) -> std::io::Result<()> {
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
+
+    let mut enabled = vec![
+        "builtin:tool:read_file".to_string(),
+        "read_file".to_string(),
+    ];
+    enabled.extend(extra_tools.iter().map(|s| s.to_string()));
+    let enabled_toml = enabled
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     let config_toml = format!(
         r#"version = "3.0"
 name = "{name}"
@@ -130,10 +155,10 @@ auto_accept_trusted = false
 
 preferred_provider_id = "{provider_id}"
 preferred_model_id = "default"
-default_timeout_seconds = 60
+default_timeout_seconds = 300
 
 [extensions]
-enabled = []
+enabled = [{enabled_toml}]
 
 [channels]
 cli = true
@@ -220,5 +245,51 @@ async fn cli_providers_kimi_smoke() {
     assert!(
         !out.trim().is_empty(),
         "expected non-empty response from kimi, got: stdout={out:?} stderr={err:?}",
+    );
+}
+
+/// Anthropic-format native tool calling smoke test.
+///
+/// MiniMax exposes an Anthropic-compatible chat-completion endpoint at
+/// `https://api.minimaxi.com/anthropic`. This test drives the full
+/// agentic loop with a real MiniMax model and asserts that the model
+/// emits a native Anthropic-format `tool_use`/`tool_result` exchange,
+/// executing `read_file` and surfacing the file content in its final
+/// answer.
+///
+/// Skips when `MINIMAX_API_KEY` is unset.
+#[tokio::test]
+#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+async fn cli_providers_minimax_anthropic_native_tool_call() {
+    let Some(_api_key) = minimax_api_key() else {
+        eprintln!("MINIMAX_API_KEY not set; skipping");
+        return;
+    };
+
+    let cli = PekoCli::new().allow_real_llm_keys();
+    let agent_name = "providers_minimax_anthropic_tool_call";
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    write_tool_agent(cli.home(), agent_name, "minimax", &[]).expect("write minimax tool agent");
+
+    // The daemon's `read_file` resolves relative paths against the shared
+    // workspaces root, so place the sentinel file there.
+    let workspace = cli.peko_dir().join("data").join("workspaces");
+    std::fs::create_dir_all(&workspace).expect("create workspaces root");
+    std::fs::write(workspace.join("tool_test.txt"), "TOOL_TEST_SECRET_123")
+        .expect("write sentinel file");
+
+    let _daemon = DaemonGuard::spawn(&cli);
+
+    let prompt = "Read the file tool_test.txt in your workspace and report its exact contents.";
+    let (out, err, status) = run(
+        &cli,
+        &["send", agent_name, prompt, "--no-stream"],
+        Duration::from_secs(120),
+    );
+    assert_ok(&out, &err, &status);
+    assert!(
+        out.contains("TOOL_TEST_SECRET_123"),
+        "expected the LLM to call read_file and report the secret; \
+         stdout={out:?} stderr={err:?}",
     );
 }

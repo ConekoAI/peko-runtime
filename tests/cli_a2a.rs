@@ -1,5 +1,10 @@
 //! CLI integration tests for the `a2a_send` built-in tool
-//! (Phase B slice per `docs/integration/TESTING.md` §7).
+//! (mock-LLM tier).
+//!
+//! These tests exercise the runtime mechanics of `a2a_send` — tool
+//! dispatch, session creation/resumption, caller annotation, peer_id
+//! isolation, and message counts — using a deterministic mock LLM so
+//! they can run in the PR gate instead of the nightly real-LLM job.
 //!
 //! Coverage mirrors the `e2e_tests/a2a/*.ps1` PowerShell scripts that
 //! previously exercised this surface outside CI:
@@ -18,49 +23,36 @@
 //!
 //! `a2a_all.ps1` is the meta-runner; not migrated.
 //! `a2a_async.ps1` is deferred — the `a2a_send` tool's parameter
-//! schema at [`src/tools/builtin/messaging/a2a_send.rs:148-171`](src/tools/builtin/messaging/a2a_send.rs#L148-L171)
-//! does not expose `_async`, so the LLM cannot drive the async path.
-//! The async migration is a follow-up when the schema is fixed.
+//! schema does not expose `_async`, so the LLM cannot drive the async path.
 //!
-//! ## Tier: real-LLM (2-LLM-call flows)
+//! ## Tier: mock-LLM (CI PR gate)
 //!
-//! All 9 tests early-return if `MINIMAX_API_KEY` is unset, so a
-//! bare `cargo test` on a checkout without real-LLM credentials
-//! still passes. Each test drives a real LLM call to drive the
-//! `a2a_send` tool, and most tests drive a second real LLM call
-//! (on the worker side) to actually process the A2A message. Total
-//! wall clock is ~3-5 min for the full suite.
+//! All 9 tests early-return if `MOCK_LLM_URL` is unset, so a bare
+//! `cargo test` on a checkout without the docker-compose stack still
+//! passes. Each test drives one or more deterministic mock-LLM turns
+//! to exercise the `a2a_send` path end-to-end.
 //!
-//! The `Integration (real LLM)` job in
-//! [`.github/workflows/integration.yml`](../pekobot/peko-runtime/.github/workflows/integration.yml)
-//! fires on nightly cron / `[llm]` commit tag / `workflow_dispatch`,
-//! and unsets `MOCK_LLM_URL` so the dual-mode rule at
-//! [`tunnel_e2e.rs:63-76`](tests/tunnel_e2e.rs#L63-L76) falls through
-//! to the real provider.
+//! The `Integration` job in `.github/workflows/integration.yml`
+//! runs the mock-LLM tier with `MOCK_LLM_URL` set. The nightly
+//! `Integration (real LLM)` job unsets `MOCK_LLM_URL`, so these tests
+//! are skipped there.
 //!
-//! ## v3 provider catalog setup (same as cli_providers)
+//! ## Mock-LLM scripting
 //!
-//! Each test creates a `PekoCli` with [`PekoCli::allow_real_llm_keys`],
-//! seeds `~/.peko/providers.toml` with a minimax entry, and writes the
-//! agent config with `preferred_provider_id = "minimax"`. The API key is
-//! read from `MINIMAX_API_KEY` via the daemon's env-var bootstrap path
-//! (`PEKO_TEST_RESOLVER_BOOTSTRAP=1`) because CI runners have no OS
-//! keychain.
+//! Each test installs a per-speaker scripted dialog via
+//! `POST /_test/configure` on the mock LLM. The delegator prompt
+//! contains a unique parent needle; the `a2a_send` message contains a
+//! unique child needle so the worker's LLM call can be scripted
+//! independently. See `tests/cli_subagent.rs` for the same pattern.
 //!
-//! ## Lenient assertions (match the PS scripts' fallback pattern)
-//!
-//! Real LLMs are non-deterministic — even a clear "reply exactly
-//! A2A_SUCCESS" instruction may not be followed verbatim. The PS
-//! scripts' "PASS" verdict falls through to a structural check
-//! (e.g. "the worker session was created, so the A2A call
-//! dispatched") when the LLM doesn't emit the literal sentinel.
-//! The Rust tests mirror this: an LLM-output sentinel match is a
-//! sufficient pass, but a structural side-effect (worker session
-//! count increased, task file written, peer_id matches) is also a
-//! pass.
+//! Every test is `#[serial]` because the mock's per-substring counter
+//! is global state across test binaries; configuring the mock at the
+//! start of each test resets the counters, but serial execution avoids
+//! one test overwriting another's active script.
 
 mod common;
-use common::{run_with_timeout, DaemonGuard, PekoCli};
+use common::{configure_mock, run_with_timeout, DaemonGuard, PekoCli};
+use serial_test::serial;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -69,15 +61,15 @@ use std::time::Duration;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Read `MINIMAX_API_KEY` env, return Some(key) if set and non-empty, None
+/// Read `MOCK_LLM_URL` env, return Some(url) if set and non-empty, None
 /// otherwise. Tests early-return on None so `cargo test` on a bare
 /// checkout still passes.
-fn minimax_api_key() -> Option<String> {
-    let k = std::env::var("MINIMAX_API_KEY").ok()?;
-    if k.is_empty() {
+fn mock_llm_url() -> Option<String> {
+    let url = std::env::var("MOCK_LLM_URL").ok()?;
+    if url.is_empty() {
         return None;
     }
-    Some(k)
+    Some(url)
 }
 
 /// Run a `peko …` command and return (stdout, stderr, status).
@@ -109,7 +101,7 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
-/// Write a minimax-pointed agent with the given tool whitelist
+/// Write a mock-llm-pointed agent with the given tool whitelist
 /// (bare names + canonical `builtin:tool:<name>` IDs).
 ///
 /// The whitelist pattern must include BOTH forms of every enabled
@@ -117,10 +109,6 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 /// canonical ID (so the dispatcher's `is_tool_enabled` check at
 /// execution time matches). See the gotcha documented in
 /// `cli_subagent.rs::write_subagent_agent` and `cli_tools.rs::write_builtin_agent`.
-///
-/// The agent only carries the soft hint `preferred_provider_id = "minimax"`;
-/// the caller must seed `~/.peko/providers.toml` with the minimax entry
-/// before spawning the daemon.
 fn write_a2a_agent(home: &Path, name: &str, extra_tools: &[&str]) -> std::io::Result<()> {
     use std::fs;
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
@@ -149,9 +137,9 @@ name = "{name}"
 description = "CLI integration test agent for a2a_send"
 auto_accept_trusted = false
 
-preferred_provider_id = "minimax"
-preferred_model_id = "MiniMax-M3"
-default_timeout_seconds = 300
+preferred_provider_id = "mock-llm"
+preferred_model_id = "default"
+default_timeout_seconds = 60
 
 [extensions]
 enabled = [
@@ -169,12 +157,62 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     Ok(())
 }
 
+/// Build the JSON string passed to `configure_mock` for a two-turn
+/// delegator dialog (tool_call then final text).
+fn delegator_script(
+    needle: &str,
+    tool_name: &str,
+    arguments: serde_json::Value,
+    final_text: &str,
+) -> String {
+    serde_json::json!({
+        needle: [
+            { "tool_call": { "name": tool_name, "arguments": arguments.to_string() } },
+            final_text,
+        ]
+    })
+    .to_string()
+}
+
+/// Build the JSON string passed to `configure_mock` for a worker that
+/// performs one tool call and then emits a final text response.
+fn worker_tool_script(
+    needle: &str,
+    tool_name: &str,
+    arguments: serde_json::Value,
+    final_text: &str,
+) -> String {
+    serde_json::json!({
+        needle: [
+            { "tool_call": { "name": tool_name, "arguments": arguments.to_string() } },
+            final_text,
+        ]
+    })
+    .to_string()
+}
+
+/// Merge two mock-LLM script objects (parent + child needles).
+fn merge_scripts(a: &str, b: &str) -> String {
+    let mut a: serde_json::Value = serde_json::from_str(a).expect("script a is valid json");
+    let b: serde_json::Value = serde_json::from_str(b).expect("script b is valid json");
+    if let (Some(a_obj), Some(b_obj)) = (a.as_object_mut(), b.as_object()) {
+        for (k, v) in b_obj {
+            a_obj.insert(k.clone(), v.clone());
+        }
+    }
+    a.to_string()
+}
+
 /// Worker session count. Returns 0 if the worker has no sessions
 /// (e.g. `peko session list` returns a non-JSON error).
+///
+/// A2A worker sessions are created in the target agent's *personal*
+/// team context (the `StatelessAgentService` does not receive a team
+/// from the caller), so the query must use `--team personal`.
 fn worker_session_count(cli: &PekoCli, worker: &str) -> usize {
     let (out, _err, status) = run(
         cli,
-        &["session", "list", worker, "--json"],
+        &["session", "list", worker, "--team", "personal", "--json"],
         Duration::from_secs(10),
     );
     if !status.success() {
@@ -189,10 +227,13 @@ fn worker_session_count(cli: &PekoCli, worker: &str) -> usize {
 
 /// Find the most-recent worker session ID and dump its history as
 /// JSON. Returns None on any failure.
+///
+/// A2A worker sessions live in the personal team; both the list and
+/// show queries target that team.
 fn worker_session_history(cli: &PekoCli, worker: &str) -> Option<(String, serde_json::Value)> {
     let (out, _err, status) = run(
         cli,
-        &["session", "list", worker, "--json"],
+        &["session", "list", worker, "--team", "personal", "--json"],
         Duration::from_secs(10),
     );
     if !status.success() {
@@ -209,6 +250,8 @@ fn worker_session_history(cli: &PekoCli, worker: &str) -> Option<(String, serde_
             worker,
             "--session-id",
             &session_id,
+            "--team",
+            "personal",
             "--history",
             "--json",
         ],
@@ -227,23 +270,10 @@ fn worker_session_history(cli: &PekoCli, worker: &str) -> Option<(String, serde_
 /// on this file, so the test can prove the worker got the message
 /// and read it.
 ///
-/// **Important: the daemon's `read_file` resolves relative paths
-/// against the SHARED workspaces root, not the per-agent subdir.**
-/// See [`tests/cli_tools.rs:108-115`](tests/cli_tools.rs#L108-L115) for
-/// the full explanation — `ToolRuntime::register_builtins` sets the
-/// per-tool `workspace_dir` to `path_resolver.agent_workspace(".",
-/// None).parent()`, which resolves to `<peko_dir>/data/workspaces`
-/// (the shared root, with no agent name in the path). The PS scripts
-/// write to `$env:APPDATA/peko/workspaces/default/$worker/...` (per-
-/// agent subdir) which is a different path — but the worker's
-/// `read_file("test_a2a.txt")` resolves to the SHARED root and
-/// fails to find the file there. The PS scripts "pass" via the
-/// structural fallback (worker session was created → a2a_send
-/// dispatched). For Rust tests we want a real read, so we write
-/// to the shared root. Each test uses a unique `file_name`
-/// (containing the test name as a needle) so cross-test collisions
-/// don't occur.
-fn write_sentinel_file(cli: &PekoCli, _worker: &str, file_name: &str, content: &str) {
+/// The daemon's `read_file` resolves relative paths against the SHARED
+/// workspaces root, not the per-agent subdir. See `ToolRuntime::register_builtins`
+/// and `tests/cli_tools.rs:108-115` for the full explanation.
+fn write_sentinel_file(cli: &PekoCli, file_name: &str, content: &str) {
     let workspace = cli.peko_dir().join("data").join("workspaces");
     std::fs::create_dir_all(&workspace).expect("create workspaces root");
     std::fs::write(workspace.join(file_name), content).expect("write sentinel file");
@@ -255,90 +285,107 @@ fn write_sentinel_file(cli: &PekoCli, _worker: &str, file_name: &str, content: &
 
 /// `a2a_blocking.ps1` T1: assert that the `a2a_send` tool is in the
 /// delegator's tool list.
-///
-/// Real LLM drives the prompt; we accept either the literal
-/// `A2A_AVAILABLE` sentinel OR any non-empty response that contains
-/// the substring "a2a_send" (i.e. the LLM echoed the tool name).
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_blocking_t1_tool_available() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let delegator = "a2a_blocking_t1_delegator";
+    let needle = "a2a_blocking_t1_needle";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    // Script the mock to confirm the agent sees the tool.
+    let script = serde_json::json!({ needle: "A2A_AVAILABLE" }).to_string();
+    configure_mock(&mock_url, &script).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
         "Check your available tools. If you have a tool named 'a2a_send', \
-         reply exactly A2A_AVAILABLE. If you do not have it, reply exactly A2A_MISSING. \
-         (needle={delegator})"
+         reply exactly A2A_AVAILABLE. (needle={needle})"
     );
     let (out, err, status) = run(
         &cli,
         &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
-    let passes = out.contains("A2A_AVAILABLE") || out.contains("a2a_send");
     assert!(
-        passes,
-        "expected A2A_AVAILABLE or a2a_send mention; got: {out:?} stderr: {err:?}",
+        out.contains("A2A_AVAILABLE"),
+        "expected A2A_AVAILABLE; got: {out:?} stderr: {err:?}",
     );
 }
 
 /// `a2a_blocking.ps1` T2: blocking A2A send — delegator uses
 /// `a2a_send` to ask the worker to read a sentinel file, then
-/// reports the result. The worker creates a session. Pass criteria:
-/// the worker session count increased.
+/// reports the result. The worker creates a session.
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_blocking_t2_blocking_execution() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let delegator = "a2a_blocking_t2_delegator";
     let worker = "a2a_blocking_t2_worker";
+    let parent_needle = "a2a_blocking_t2_parent";
+    let child_needle = "a2a_blocking_t2_child";
+    let file_name = "test_a2a_t2.txt";
+    let file_content = "A2A_TEST_SECRET_42";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
     write_a2a_agent(cli.home(), worker, &["read_file"]).expect("write worker");
-    write_sentinel_file(&cli, worker, "test_a2a.txt", "A2A_TEST_SECRET_42");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    write_sentinel_file(&cli, file_name, file_content);
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    let a2a_message = format!(
+        "Read the file {file_name} in your workspace and report its exact contents. \
+         (needle={child_needle})"
+    );
+    let delegator_script = delegator_script(
+        parent_needle,
+        "a2a_send",
+        serde_json::json!({"target_agent": worker, "message": a2a_message}),
+        "A2A_SUCCESS",
+    );
+    let worker_script = worker_tool_script(
+        child_needle,
+        "read_file",
+        serde_json::json!({"path": file_name}),
+        file_content,
+    );
+    configure_mock(&mock_url, &merge_scripts(&delegator_script, &worker_script)).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
     let before = worker_session_count(&cli, worker);
 
     let prompt = format!(
-        "You have a tool called a2a_send. Use it to send the following \
-         message to agent '{worker}': Read the file test_a2a.txt in your \
-         workspace and report its exact contents. After you receive the \
-         response from the worker agent, if the response contains the \
-         text A2A_TEST_SECRET_42, reply exactly A2A_SUCCESS followed by \
-         the content. If the call fails or the response does not contain \
-         the expected text, reply exactly A2A_FAILED. \
-         (needle=a2a_blocking_t2)"
+        "Use a2a_send to ask agent '{worker}' to read {file_name} and report its contents. \
+         When you get the answer, reply A2A_SUCCESS. (needle={parent_needle})"
     );
     let (out, err, status) = run(
         &cli,
         &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(&out, &err, &status);
 
     let after = worker_session_count(&cli, worker);
-    let llm_success = out.contains("A2A_SUCCESS");
-    let structural = after > before;
     assert!(
-        llm_success || structural,
-        "a2a_send did not complete: llm-sent-A2A_SUCCESS={llm_success} \
-         worker-session-increased={structural} (before={before}, after={after}); \
-         stdout={out:?} stderr={err:?}",
+        out.contains("A2A_SUCCESS") && after > before,
+        "a2a_send did not complete: stdout={out:?} stderr={err:?} \
+         before={before} after={after}",
     );
 }
 
@@ -346,140 +393,162 @@ async fn a2a_blocking_t2_blocking_execution() {
 /// the same delegator to the same worker reuses the existing worker
 /// session. Pass criteria: worker session count unchanged.
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_blocking_t3_session_resumption() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let delegator = "a2a_blocking_t3_delegator";
     let worker = "a2a_blocking_t3_worker";
+    let parent_needle1 = "a2a_blocking_t3_parent1";
+    let parent_needle2 = "a2a_blocking_t3_parent2";
+    let child_needle = "a2a_blocking_t3_child";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
-    write_a2a_agent(cli.home(), worker, &["read_file"]).expect("write worker");
-    write_sentinel_file(&cli, worker, "test_a2a.txt", "A2A_TEST_SECRET_42");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    write_a2a_agent(cli.home(), worker, &[]).expect("write worker");
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    // First turn: a2a_send without session_id creates the worker session.
+    let script1 = serde_json::json!({
+        parent_needle1: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": worker, "message": format!("First call. (needle={child_needle})")}).to_string() } },
+            "A2A_DONE1",
+        ],
+        child_needle: "A2A_WORKER_REPLY1",
+    })
+    .to_string();
+    configure_mock(&mock_url, &script1).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // First call: creates the worker session.
     let prompt1 = format!(
-        "You MUST call the a2a_send tool with target_agent='{worker}' and \
-         message='Read the file test_a2a.txt and report its exact contents.' \
-         Do not describe the action; actually emit the tool_call. After \
-         receiving the response, reply exactly A2A_DONE1. \
-         (needle=a2a_blocking_t3_first)"
+        "Send a message to agent '{worker}' using a2a_send. When done, reply A2A_DONE1. \
+         (needle={parent_needle1})"
     );
     let (out1, err1, status1) = run(
         &cli,
         &["send", delegator, &prompt1, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(&out1, &err1, &status1);
+    assert!(
+        out1.contains("A2A_DONE1"),
+        "first send failed: {out1:?} {err1:?}"
+    );
+
     let count_after_first = worker_session_count(&cli, worker);
+    assert!(
+        count_after_first > 0,
+        "first a2a_send did not create a worker session"
+    );
 
-    // If the first a2a_send never created a worker session, the test
-    // premise is invalid: we can't verify resumption if there is no
-    // session to resume. Real LLMs occasionally skip the tool_call
-    // even with MUST phrasing — treat that as inconclusive rather
-    // than a hard failure, matching the lenient pattern in t1/t2.
-    if count_after_first == 0 {
-        eprintln!(
-            "WARN: a2a_blocking_t3_session_resumption skipped: first \
-             a2a_send did not create a worker session (LLM may have \
-             skipped the tool call). out1={out1:?} err1={err1:?}"
+    // Discover the worker session created by the first send so the second
+    // a2a_send can pass session_id and force resumption.
+    let worker_session_id = {
+        let (out, _err, status) = run(
+            &cli,
+            &["session", "list", worker, "--team", "personal", "--json"],
+            Duration::from_secs(10),
         );
-        return;
-    }
+        assert_ok(&out, &_err, &status);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("session list json");
+        v.get("sessions")
+            .and_then(|s| s.as_array())
+            .and_then(|a| a.first())
+            .and_then(|s| s.get("session_id"))
+            .and_then(|s| s.as_str())
+            .map(String::from)
+            .expect("worker session id")
+    };
 
-    // Second call: should reuse the same worker session.
+    // Second turn: a2a_send with the known session_id must resume the same
+    // worker session. Use `--new` on the second `peko send` so the delegator
+    // starts a fresh session; otherwise the mock server (which matches on the
+    // first user message in the conversation) would still see parent_needle1.
+    let script2 = serde_json::json!({
+        parent_needle2: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": worker, "message": format!("Second call should resume the same session. (needle={child_needle})"), "session_id": &worker_session_id}).to_string() } },
+            "A2A_DONE2",
+        ],
+        child_needle: "A2A_WORKER_REPLY2",
+    })
+    .to_string();
+    configure_mock(&mock_url, &script2).await;
+
     let prompt2 = format!(
-        "You MUST call the a2a_send tool with target_agent='{worker}' and \
-         message='What was the name of the file you just read?'. After \
-         receiving the response, if it mentions test_a2a.txt, reply exactly \
-         A2A_RESUME_OK. Otherwise reply A2A_RESUME_FAIL. \
-         (needle=a2a_blocking_t3_second)"
+        "Send another message to agent '{worker}' using a2a_send. When done, reply A2A_DONE2. \
+         (needle={parent_needle2})"
     );
     let (out2, err2, status2) = run(
         &cli,
-        &["send", delegator, &prompt2, "--no-stream"],
-        Duration::from_secs(300),
+        &["send", delegator, &prompt2, "--new", "--no-stream"],
+        Duration::from_secs(60),
     );
     assert_ok(&out2, &err2, &status2);
-    let count_after_second = worker_session_count(&cli, worker);
-
-    let llm_resume = out2.contains("A2A_RESUME_OK");
-    let structural = count_after_first == count_after_second && count_after_first > 0;
     assert!(
-        llm_resume || structural,
-        "session not resumed: llm-said-resume={llm_resume} \
-         count-unchanged-and-nonzero={structural} (after_first={count_after_first}, \
-         after_second={count_after_second}); stdout={out2:?} stderr={err2:?}",
+        out2.contains("A2A_DONE2"),
+        "second send failed: {out2:?} {err2:?}"
+    );
+
+    let count_after_second = worker_session_count(&cli, worker);
+    assert_eq!(
+        count_after_first, count_after_second,
+        "worker session count changed after second a2a_send: before={count_after_first} after={count_after_second}"
     );
 }
 
 /// `a2a_blocking.ps1` T4: caller annotation in the target session's
-/// history. After the previous a2a_send calls, the worker's session
-/// should contain a user message prefixed with
-/// `[Message from agent: <delegator>]` (see
-/// `a2a_send.rs:99-104`).
+/// history. After an a2a_send call, the worker's session should
+/// contain a user message prefixed with `[Message from agent: <delegator>]`.
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_blocking_t4_caller_annotation() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let delegator = "a2a_blocking_t4_delegator";
     let worker = "a2a_blocking_t4_worker";
+    let parent_needle = "a2a_blocking_t4_parent";
+    let child_needle = "a2a_blocking_t4_child";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
-    write_a2a_agent(cli.home(), worker, &["read_file"]).expect("write worker");
-    write_sentinel_file(&cli, worker, "test_a2a.txt", "A2A_TEST_SECRET_42");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    write_a2a_agent(cli.home(), worker, &[]).expect("write worker");
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    let script = serde_json::json!({
+        parent_needle: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": worker, "message": format!("Hello worker. (needle={child_needle})")}).to_string() } },
+            "A2A_DONE",
+        ],
+        child_needle: "A2A_WORKER_REPLY",
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Drive one a2a_send to create the worker session.
     let prompt = format!(
-        "You MUST call the a2a_send tool with target_agent='{worker}' and \
-         message='Read the file test_a2a.txt and report its exact contents.' \
-         Do not describe the action; actually emit the tool_call. After \
-         receiving the response, reply exactly A2A_DONE. (needle=a2a_blocking_t4)"
+        "Send a message to agent '{worker}' using a2a_send. When done, reply A2A_DONE. \
+         (needle={parent_needle})"
     );
     let (out, err, status) = run(
         &cli,
         &["send", delegator, &prompt, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(&out, &err, &status);
+    assert!(out.contains("A2A_DONE"), "send failed: {out:?} {err:?}");
 
-    // Lenient: pass if the LLM reported the call done OR we can
-    // find the annotation in the worker session history. Some real
-    // LLM runs skip the tool_call and just describe the action in
-    // prose; the PS scripts' lenient structural fallback accepted
-    // that as a pass too.
-    let llm_done = out.contains("A2A_DONE");
-
-    // The worker should now have a session. Inspect its history for
-    // the caller annotation.
-    let hist_pair = worker_session_history(&cli, worker);
-    let (sid, history) = match hist_pair {
-        Some(pair) => pair,
-        None => {
-            // No worker session — fall back to LLM-output check.
-            assert!(
-                llm_done,
-                "no worker session after a2a_send and LLM did not report A2A_DONE; \
-                 stdout={out:?} stderr={err:?}"
-            );
-            eprintln!(
-                "WARN: a2a_blocking_t4_caller_annotation passed via LLM-said-done \
-                 fallback (no worker session was created)"
-            );
-            return;
-        }
-    };
+    let (sid, history) =
+        worker_session_history(&cli, worker).expect("worker should have a session after a2a_send");
     let expected_marker = format!("[Message from agent: {delegator}]");
     let history_arr = history
         .get("history")
@@ -493,14 +562,10 @@ async fn a2a_blocking_t4_caller_annotation() {
             .map(|s| s.contains(&expected_marker))
             .unwrap_or(false)
     });
-    // Lenient: pass if either the annotation is in the history OR
-    // the LLM reported A2A_DONE. The PS scripts' lenient
-    // structural fallback accepts the LLM-output sentinel.
     assert!(
-        annotation_found || llm_done,
+        annotation_found,
         "caller annotation {expected_marker:?} not found in worker session \
-         history (session_id={sid}, {} entries); llm-said-done={llm_done}; \
-         stdout={out:?}",
+         history (session_id={sid}, {} entries)",
         history_arr.len(),
     );
 }
@@ -512,175 +577,214 @@ async fn a2a_blocking_t4_caller_annotation() {
 /// `a2a_isolation.ps1` T1: caller A sends to target, target gets
 /// exactly 1 session.
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_isolation_t1_caller_a_session() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t1_a";
     let target = "a2a_iso_t1_target";
+    let parent_needle = "a2a_iso_t1_parent";
+    let child_needle = "a2a_iso_t1_child";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
     write_a2a_agent(cli.home(), target, &[]).expect("write target");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    let script = serde_json::json!({
+        parent_needle: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Call from caller A. (needle={child_needle})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle: "A2A_TARGET_REPLY",
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISOLATION_TEST_CALLER_A'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t1)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle})"
     );
     let (out, err, status) = run(
         &cli,
         &["send", caller_a, &prompt, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(&out, &err, &status);
+    assert!(
+        out.contains("A2A_TEST_DONE"),
+        "send failed: {out:?} {err:?}"
+    );
 
     let after = worker_session_count(&cli, target);
-    // Lenient: pass if the LLM reported the call completed OR a
-    // target session was actually created. Real LLMs occasionally
-    // skip the tool_call and just describe the action in prose;
-    // we accept that as a pass (matches the PS scripts' structural
-    // fallback behavior).
-    let llm_done = out.contains("A2A_TEST_DONE");
-    assert!(
-        llm_done || after == 1,
-        "caller A's a2a_send did not land: llm-said-done={llm_done} \
-         worker-sessions={after} (expected 1); stdout={out:?} stderr={err:?}",
+    assert_eq!(
+        after, 1,
+        "target should have exactly 1 session, got {after}"
     );
-    if !llm_done {
-        eprintln!(
-            "WARN: a2a_isolation_t1_caller_a_session passed via structural \
-             fallback (LLM did not emit a2a_send tool_call)"
-        );
-    }
 }
 
 /// `a2a_isolation.ps1` T2: caller B sends to the same target,
-/// target gets exactly 2 sessions (one per caller, isolated by
-/// peer_id).
+/// target gets exactly 2 sessions (one per caller, isolated by peer_id).
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_isolation_t2_caller_b_session() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t2_a";
     let caller_b = "a2a_iso_t2_b";
     let target = "a2a_iso_t2_target";
+    let parent_needle_a = "a2a_iso_t2_parent_a";
+    let parent_needle_b = "a2a_iso_t2_parent_b";
+    let child_needle_a = "a2a_iso_t2_child_a";
+    let child_needle_b = "a2a_iso_t2_child_b";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
     write_a2a_agent(cli.home(), caller_b, &[]).expect("write caller B");
     write_a2a_agent(cli.home(), target, &[]).expect("write target");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    let script = serde_json::json!({
+        parent_needle_a: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Call from A. (needle={child_needle_a})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_a: "A2A_TARGET_REPLY_A",
+        parent_needle_b: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Call from B. (needle={child_needle_b})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_b: "A2A_TARGET_REPLY_B",
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Caller A first
     let prompt_a = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISOLATION_TEST_CALLER_A'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t2_a)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_a})"
     );
     let (out_a, err_a, status_a) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(&out_a, &err_a, &status_a);
+    assert!(
+        out_a.contains("A2A_TEST_DONE"),
+        "caller A send failed: {out_a:?} {err_a:?}"
+    );
 
-    // Then caller B
     let prompt_b = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISOLATION_TEST_CALLER_B'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t2_b)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_b})"
     );
     let (out_b, err_b, status_b) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(&out_b, &err_b, &status_b);
-
-    // Lenient: pass if BOTH LLMs reported the call completed (the
-    // target sessions are the structural artifact of those calls).
-    // We do not require exactly 2 sessions here because real LLMs
-    // occasionally skip a tool_call; the per-caller semantic
-    // (isolation via peer_id) is verified in t3.
-    let both_done = out_a.contains("A2A_TEST_DONE") && out_b.contains("A2A_TEST_DONE");
-    let after = worker_session_count(&cli, target);
     assert!(
-        both_done || after == 2,
-        "caller A and B a2a_sends did not both land: both-done={both_done} \
-         target-sessions={after} (expected 2); out_a={out_a:?} out_b={out_b:?}",
+        out_b.contains("A2A_TEST_DONE"),
+        "caller B send failed: {out_b:?} {err_b:?}"
+    );
+
+    let after = worker_session_count(&cli, target);
+    assert_eq!(
+        after, 2,
+        "target should have exactly 2 sessions, got {after}"
     );
 }
 
 /// `a2a_isolation.ps1` T3: each target session has a distinct
 /// peer_id matching its caller. Inspect the session list and verify
-/// callerA and callerB both appear as peer_ids.
+/// callerA and callerB both appear as peer_ids, and that the
+/// peer_type is "agent".
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_isolation_t3_peer_id_isolation() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t3_a";
     let caller_b = "a2a_iso_t3_b";
     let target = "a2a_iso_t3_target";
+    let parent_needle_a = "a2a_iso_t3_parent_a";
+    let parent_needle_b = "a2a_iso_t3_parent_b";
+    let child_needle_a = "a2a_iso_t3_child_a";
+    let child_needle_b = "a2a_iso_t3_child_b";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
     write_a2a_agent(cli.home(), caller_b, &[]).expect("write caller B");
     write_a2a_agent(cli.home(), target, &[]).expect("write target");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    let script = serde_json::json!({
+        parent_needle_a: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Call from A. (needle={child_needle_a})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_a: "A2A_TARGET_REPLY_A",
+        parent_needle_b: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Call from B. (needle={child_needle_b})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_b: "A2A_TARGET_REPLY_B",
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Drive both callers' a2a_send (same as t1+t2 above but bundled).
     let prompt_a = format!(
-        "Use a2a_send to send this exact message to agent '{target}': \
-         A2A_ISO_T3_CALLER_A. After receiving the response, reply \
-         exactly A2A_TEST_DONE. (needle=a2a_iso_t3_a)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_a})"
     );
-    let (_, err_a, status_a) = run(
+    let (out_a, err_a, status_a) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
-    assert_ok(&prompt_a, &err_a, &status_a);
+    assert_ok(&out_a, &err_a, &status_a);
+    assert!(
+        out_a.contains("A2A_TEST_DONE"),
+        "caller A send failed: {out_a:?} {err_a:?}"
+    );
 
     let prompt_b = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISO_T3_CALLER_B'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t3_b)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_b})"
     );
     let (out_b, err_b, status_b) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(&out_b, &err_b, &status_b);
+    assert!(
+        out_b.contains("A2A_TEST_DONE"),
+        "caller B send failed: {out_b:?} {err_b:?}"
+    );
 
-    // Lenient: pass if the structural isolation invariant is
-    // observed. We don't require 2 distinct peer_ids because
-    // sometimes a single LLM call is the only one that lands; what
-    // we DO require is that EITHER we see two distinct peer_ids
-    // (caller_a and caller_b), OR both LLMs reported the call done
-    // and the test runner's structural path is in the lenient
-    // fallback. The strict "exactly 2 sessions" check is what
-    // isolates the test failure mode from the LLM call itself.
     let (out, _err, status) = run(
         &cli,
-        &["session", "list", target, "--json"],
+        &["session", "list", target, "--team", "personal", "--json"],
         Duration::from_secs(10),
     );
     assert_ok(&out, &_err, &status);
@@ -694,9 +798,6 @@ async fn a2a_isolation_t3_peer_id_isolation() {
                 .collect()
         })
         .unwrap_or_default();
-    // Issue #24: a2a_send now attributes sessions to `Principal::Agent(caller)`
-    // (not `Principal::User(caller)`). The session list must reflect the new
-    // attribution: every a2a-spawned session entry has `peer_type == "agent"`.
     let peer_types: Vec<String> = v
         .get("sessions")
         .and_then(|s| s.as_array())
@@ -710,117 +811,140 @@ async fn a2a_isolation_t3_peer_id_isolation() {
                 .collect()
         })
         .unwrap_or_default();
-    let a2a_sessions = peer_types.iter().filter(|t| t.as_str() == "agent").count();
-    let has_a = peer_ids.iter().any(|p| p == caller_a);
-    let has_b = peer_ids.iter().any(|p| p == caller_b);
-    let both_llm_done =
-        prompt_a.contains("A2A_TEST_DONE") && (out_b.contains("A2A_TEST_DONE") || err_b.is_empty());
+
     assert!(
-        (has_a && has_b && a2a_sessions >= 2) || both_llm_done,
-        "isolation invariant not observed: peer_id-a={has_a} peer_id-b={has_b} \
-         a2a-attributed={a2a_sessions} both-llm-done={both_llm_done}; \
-         peer_ids={peer_ids:?} peer_types={peer_types:?}",
+        peer_ids.iter().any(|p| p == caller_a),
+        "caller A peer_id not found: {peer_ids:?}"
+    );
+    assert!(
+        peer_ids.iter().any(|p| p == caller_b),
+        "caller B peer_id not found: {peer_ids:?}"
+    );
+    assert!(
+        peer_types.iter().all(|t| t == "agent"),
+        "all a2a-spawned sessions should have peer_type=agent, got {peer_types:?}"
     );
 }
 
-// Workaround helper closures removed — the test bodies use
-// `let (_, err, status) =` for intermediate calls and pass the
-// prompt string itself as the (trivially-true) "stdout" arg to
-// `assert_ok`. We only care about exit status on intermediate
-// calls; the per-call output is discarded.
-
 /// `a2a_isolation.ps1` T4: a second a2a_send from caller A resumes
 /// caller A's own session (not caller B's). Pass criteria: target
-/// session count is still 2 (unchanged from t2), and the session
-/// whose peer_id == caller_a has the same session_id as before the
-/// second call.
+/// session count is still 2, and the session whose peer_id == caller_a
+/// has the same session_id as before the second call.
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_isolation_t4_caller_a_resumes() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t4_a";
     let caller_b = "a2a_iso_t4_b";
     let target = "a2a_iso_t4_target";
+    let parent_needle_a1 = "a2a_iso_t4_parent_a1";
+    let parent_needle_a2 = "a2a_iso_t4_parent_a2";
+    let parent_needle_b = "a2a_iso_t4_parent_b";
+    let child_needle_a1 = "a2a_iso_t4_child_a1";
+    let child_needle_a2 = "a2a_iso_t4_child_a2";
+    let child_needle_b = "a2a_iso_t4_child_b";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
     write_a2a_agent(cli.home(), caller_b, &[]).expect("write caller B");
     write_a2a_agent(cli.home(), target, &[]).expect("write target");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    let script = serde_json::json!({
+        parent_needle_a1: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("First call from A. (needle={child_needle_a1})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_a1: "A2A_TARGET_REPLY_A1",
+        parent_needle_b: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Call from B. (needle={child_needle_b})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_b: "A2A_TARGET_REPLY_B",
+        parent_needle_a2: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Second call from A should resume. (needle={child_needle_a2})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_a2: "A2A_TARGET_REPLY_A2",
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Caller A first
     let prompt_a1 = format!(
-        "Use a2a_send to send this exact message to agent '{target}': \
-         A2A_ISO_T4_CALLER_A. After receiving the response, reply \
-         exactly A2A_TEST_DONE. (needle=a2a_iso_t4_a1)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_a1})"
     );
     let (out_a1, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a1, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(prompt_a1.as_str(), &err, &status);
+    assert!(
+        out_a1.contains("A2A_TEST_DONE"),
+        "caller A first send failed: {out_a1:?} {err:?}"
+    );
 
-    // Caller B
     let prompt_b = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISO_T4_CALLER_B'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t4_b)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_b})"
     );
     let (out_b, err, status) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(prompt_b.as_str(), &err, &status);
-
-    // Capture caller A's session_id before the second call.
-    let (out, _err, status) = run(
-        &cli,
-        &["session", "list", target, "--json"],
-        Duration::from_secs(10),
+    assert!(
+        out_b.contains("A2A_TEST_DONE"),
+        "caller B send failed: {out_b:?} {err:?}"
     );
-    assert_ok(&out, &_err, &status);
-    let v: serde_json::Value = serde_json::from_str(&out).expect("session list json");
-    let caller_a_session_id_before: Option<String> = v
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .and_then(|a| {
-            a.iter()
-                .find(|s| s.get("peer_id").and_then(|p| p.as_str()) == Some(caller_a))
-        })
-        .and_then(|s| s.get("session_id"))
-        .and_then(|s| s.as_str())
-        .map(String::from);
 
-    // Caller A second call
+    let caller_a_session_id_before = {
+        let (out, _err, status) = run(
+            &cli,
+            &["session", "list", target, "--team", "personal", "--json"],
+            Duration::from_secs(10),
+        );
+        assert_ok(&out, &_err, &status);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("session list json");
+        v.get("sessions")
+            .and_then(|s| s.as_array())
+            .and_then(|a| {
+                a.iter()
+                    .find(|s| s.get("peer_id").and_then(|p| p.as_str()) == Some(caller_a))
+            })
+            .and_then(|s| s.get("session_id"))
+            .and_then(|s| s.as_str())
+            .map(String::from)
+    }
+    .expect("caller A should have a session after the first send");
+
     let prompt_a2 = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISO_T4_CALLER_A_SECOND'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t4_a2)"
+        "Send another message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_a2})"
     );
     let (out_a2, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a2, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(prompt_a2.as_str(), &err, &status);
+    assert!(
+        out_a2.contains("A2A_TEST_DONE"),
+        "caller A second send failed: {out_a2:?} {err:?}"
+    );
 
-    // Lenient: pass if either:
-    //   (a) The structural resumption invariant holds (2 sessions
-    //       after the second call, caller A's session_id unchanged)
-    //   (b) All 3 LLMs reported the call done (the resumption
-    //       semantic was likely observed; LLM non-determinism
-    //       prevented the structural check)
     let (out, _err, status) = run(
         &cli,
-        &["session", "list", target, "--json"],
+        &["session", "list", target, "--team", "personal", "--json"],
         Duration::from_secs(10),
     );
     assert_ok(&out, &_err, &status);
@@ -829,115 +953,124 @@ async fn a2a_isolation_t4_caller_a_resumes() {
         .get("sessions")
         .and_then(|s| s.as_array())
         .expect("sessions");
-    let caller_a_session_id_after: Option<String> = sessions
+    let caller_a_session_id_after = sessions
         .iter()
         .find(|s| s.get("peer_id").and_then(|p| p.as_str()) == Some(caller_a))
         .and_then(|s| s.get("session_id"))
         .and_then(|s| s.as_str())
         .map(String::from);
-    // Issue #24: a2a_send now keys the receiving agent's session under
-    // `agent:{caller}` (was `user:{caller}`). The resumption invariant
-    // — caller A's second call resumes caller A's own session — still
-    // holds because the principal-aware `derive_base_session_key`
-    // (ADR-039) keeps the byte-stable v2 format and the active-session
-    // lookup is principal-keyed.
-    let structural = sessions.len() == 2
-        && caller_a_session_id_after.is_some()
-        && caller_a_session_id_after == caller_a_session_id_before;
-    let all_llm_done = out_a1.contains("A2A_TEST_DONE")
-        && out_b.contains("A2A_TEST_DONE")
-        && out_a2.contains("A2A_TEST_DONE");
-    assert!(
-        structural || all_llm_done,
-        "resumption invariant not observed: structural={structural} \
-         all-llm-done={all_llm_done} (sessions={}, caller_a_before={caller_a_session_id_before:?}, \
-         caller_a_after={caller_a_session_id_after:?})",
+
+    assert_eq!(
         sessions.len(),
+        2,
+        "target should still have exactly 2 sessions, got {}",
+        sessions.len()
     );
-    if !structural && all_llm_done {
-        eprintln!(
-            "WARN: a2a_isolation_t4_caller_a_resumes passed via LLM-said-done \
-             fallback (structural check did not observe the invariant)"
-        );
-    }
+    assert_eq!(
+        caller_a_session_id_after,
+        Some(caller_a_session_id_before),
+        "caller A's session_id changed after second send"
+    );
 }
 
 /// `a2a_isolation.ps1` T5: message counts per session. After
-/// t1+t2+t4 (caller A's two calls + caller B's one call), both
-/// sessions should have at least 3 messages (system + user +
-/// assistant for the first turn; more for subsequent).
+/// caller A's two calls and caller B's one call, both sessions should
+/// have at least 3 messages.
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
 async fn a2a_isolation_t5_message_counts() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t5_a";
     let caller_b = "a2a_iso_t5_b";
     let target = "a2a_iso_t5_target";
+    let parent_needle_a = "a2a_iso_t5_parent_a";
+    let parent_needle_a2 = "a2a_iso_t5_parent_a2";
+    let parent_needle_b = "a2a_iso_t5_parent_b";
+    let child_needle_a = "a2a_iso_t5_child_a";
+    let child_needle_a2 = "a2a_iso_t5_child_a2";
+    let child_needle_b = "a2a_iso_t5_child_b";
+
+    let cli = PekoCli::new();
     write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
     write_a2a_agent(cli.home(), caller_b, &[]).expect("write caller B");
     write_a2a_agent(cli.home(), target, &[]).expect("write target");
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
+    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
+
+    let script = serde_json::json!({
+        parent_needle_a: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("First call from A. (needle={child_needle_a})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_a: "A2A_TARGET_REPLY_A",
+        parent_needle_b: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Call from B. (needle={child_needle_b})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_b: "A2A_TARGET_REPLY_B",
+        parent_needle_a2: [
+            { "tool_call": { "name": "a2a_send", "arguments": serde_json::json!({"target_agent": target, "message": format!("Second call from A. (needle={child_needle_a2})")}).to_string() } },
+            "A2A_TEST_DONE",
+        ],
+        child_needle_a2: "A2A_TARGET_REPLY_A2",
+    })
+    .to_string();
+    configure_mock(&mock_url, &script).await;
+
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Caller A
     let prompt_a = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISO_T5_CALLER_A'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t5_a)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_a})"
     );
     let (out_a, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(prompt_a.as_str(), &err, &status);
+    assert!(
+        out_a.contains("A2A_TEST_DONE"),
+        "caller A first send failed: {out_a:?} {err:?}"
+    );
 
-    // Caller B
     let prompt_b = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISO_T5_CALLER_B'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t5_b)"
+        "Send a message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_b})"
     );
     let (out_b, err, status) = run(
         &cli,
         &["send", caller_b, &prompt_b, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(prompt_b.as_str(), &err, &status);
+    assert!(
+        out_b.contains("A2A_TEST_DONE"),
+        "caller B send failed: {out_b:?} {err:?}"
+    );
 
-    // Caller A second
     let prompt_a2 = format!(
-        "You MUST call the a2a_send tool with target_agent='{target}' and \
-         message='A2A_ISO_T5_CALLER_A_SECOND'. After receiving the response, \
-         reply exactly A2A_TEST_DONE. Do not describe the action; actually \
-         emit the tool_call. (needle=a2a_iso_t5_a2)"
+        "Send another message to agent '{target}' using a2a_send. When done, reply A2A_TEST_DONE. \
+         (needle={parent_needle_a2})"
     );
     let (out_a2, err, status) = run(
         &cli,
         &["send", caller_a, &prompt_a2, "--no-stream"],
-        Duration::from_secs(300),
+        Duration::from_secs(60),
     );
     assert_ok(prompt_a2.as_str(), &err, &status);
+    assert!(
+        out_a2.contains("A2A_TEST_DONE"),
+        "caller A second send failed: {out_a2:?} {err:?}"
+    );
 
-    // Lenient: pass if all 3 LLMs reported done OR the message
-    // counts are populated. Real LLMs sometimes skip a tool_call;
-    // we accept the LLM's "A2A_TEST_DONE" output as a pass on
-    // the semantic intent even if the daemon-side count is 0.
-    let all_llm_done = out_a.contains("A2A_TEST_DONE")
-        && out_b.contains("A2A_TEST_DONE")
-        && out_a2.contains("A2A_TEST_DONE");
-
-    // Inspect message counts.
     let (out, _err, status) = run(
         &cli,
-        &["session", "list", target, "--json"],
+        &["session", "list", target, "--team", "personal", "--json"],
         Duration::from_secs(10),
     );
     assert_ok(&out, &_err, &status);
@@ -946,6 +1079,7 @@ async fn a2a_isolation_t5_message_counts() {
         .get("sessions")
         .and_then(|s| s.as_array())
         .expect("sessions");
+
     let mut count_a: i64 = 0;
     let mut count_b: i64 = 0;
     for s in sessions {
@@ -958,8 +1092,7 @@ async fn a2a_isolation_t5_message_counts() {
         }
     }
     assert!(
-        (count_a >= 3 && count_b >= 3) || all_llm_done,
-        "both sessions should have >= 3 messages OR all 3 LLMs reported done; \
-         got caller_a={count_a}, caller_b={count_b}, all-llm-done={all_llm_done}",
+        count_a >= 3 && count_b >= 3,
+        "both sessions should have >= 3 messages; got caller_a={count_a}, caller_b={count_b}"
     );
 }

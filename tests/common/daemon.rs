@@ -42,11 +42,15 @@ impl DaemonGuard {
             super::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url.to_string_lossy());
         }
 
+        let debug_out =
+            std::fs::File::create("/tmp/peko-daemon-debug.out").expect("create daemon debug out");
+        let debug_err =
+            std::fs::File::create("/tmp/peko-daemon-debug.err").expect("create daemon debug err");
         let child = cli
             .cmd()
-            .args(["daemon", "start", "--foreground"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .args(["daemon", "start", "--foreground", "-vv"])
+            .stdout(Stdio::from(debug_out))
+            .stderr(Stdio::from(debug_err))
             .spawn()
             .expect("spawn peko daemon start --foreground");
 
