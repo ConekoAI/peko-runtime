@@ -1460,4 +1460,121 @@ mod tests {
             "events from a different session must be filtered out"
         );
     }
+
+    // ===================================================================
+    // End-to-end: push a CompletionEvent to the queue → synthetic user
+    // message reaches the LLM on the next iteration.
+    //
+    // This is the central promise of the tool async refactor: an async
+    // task's completion must surface to the agentic loop as a synthetic
+    // user-role message. This test pins down the wiring end-to-end:
+    //   1. Construct an AgenticLoop with `with_async_completion_queue`.
+    //   2. Push a CompletionEvent whose parent_session_key matches the
+    //      session the loop is running on.
+    //   3. Run one iteration; the loop drains the queue at start.
+    //   4. Assert the synthetic user message arrived at the mock LLM.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_e2e_async_completion_reaches_llm_real() {
+        use crate::extensions::framework::async_exec::executor::{
+            AsyncTaskCompletionQueue, AsyncTaskStatus, SharedAsyncTaskCompletionQueue,
+        };
+        use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
+        use chrono::Utc;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Got the completion.");
+
+        let config = test_agent_config("e2e-completion-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+
+        // Build the queue the same way `Agent::build_agentic_loop` does:
+        // shared between the executor and the agentic loop.
+        let queue: SharedAsyncTaskCompletionQueue =
+            std::sync::Arc::new(AsyncTaskCompletionQueue::new());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+            .await
+            .with_async_completion_queue(queue.clone());
+
+        // Push a completion event BEFORE the loop runs. The first
+        // iteration will drain it at start and inject the synthetic
+        // user-role message.
+        let session = test_session("e2e-completion-agent", temp_dir.path()).await;
+        let session_id = session.read().await.id.clone();
+
+        queue.push(CompletionEvent {
+            task_id: "shell:e2e-test".to_string(),
+            tool_name: "shell".to_string(),
+            result: serde_json::json!({"exit_code": 0, "stdout": "done"}),
+            status: AsyncTaskStatus::Completed {
+                result: crate::tools::core::ToolResult::success(
+                    serde_json::json!({"exit_code": 0, "stdout": "done"}),
+                ),
+            },
+            completed_at: Utc::now(),
+            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
+            parent_session_key: session_id.clone(),
+        });
+
+        let result = loop_
+            .run_with_resume("Trigger completion drain", |_| {}, session, None)
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "agentic loop should succeed: {:?}",
+            result.err()
+        );
+        let recorded = mock.recorded_requests();
+        assert!(!recorded.is_empty(), "mock should have recorded at least one request");
+
+        // The recorded messages should contain the synthetic user-role
+        // message we synthesized from the completion event. The first
+        // request includes [system, user_prompt, synthetic_user]; the
+        // synthetic block must be present.
+        let req = &recorded[0];
+        let synthetic_msg: Option<&LlmMessage> = req.messages.iter().find(|m| {
+            matches!(m.role, MessageRole::User)
+                && m.content.iter().any(|b| {
+                    if let CB::Text { text } = b {
+                        text.contains("Async task results")
+                    } else {
+                        false
+                    }
+                })
+        });
+        assert!(
+            synthetic_msg.is_some(),
+            "expected a synthetic user-role message with the Async task results header in: {:?}",
+            req.messages
+                .iter()
+                .map(|m| format!("{:?} -> {:?}", m.role, m.content))
+                .collect::<Vec<_>>()
+        );
+
+        // The synthetic message should also carry a ToolResult block
+        // whose tool_call_id is `synthetic:<task_id>`.
+        let synthetic = synthetic_msg.unwrap();
+        let has_tool_result = synthetic.content.iter().any(|b| {
+            if let CB::ToolResult {
+                tool_call_id,
+                name,
+                ..
+            } = b
+            {
+                tool_call_id == "synthetic:shell:e2e-test" && name == "shell"
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_tool_result,
+            "synthetic message must carry a ToolResult with tool_call_id=synthetic:shell:e2e-test"
+        );
+    }
 }

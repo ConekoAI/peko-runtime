@@ -11,8 +11,11 @@ use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::core::hook_registry::HookRegistry;
 use crate::extensions::framework::core::tool_registry::ToolRegistry;
 use crate::extensions::framework::types::{ExtensionId, HookId, HookInput, HookResult, ToolMetadata};
+use crate::tools::core::Tool;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, instrument, trace, warn};
 
 // Re-export types from sub-registries for backward compatibility
@@ -24,7 +27,6 @@ pub use crate::extensions::framework::core::hook_registry::{BuiltinExtensionInfo
 /// a unified interface for hook and tool management. All hook-related
 /// operations are delegated to `HookRegistry`, and all tool index/policy
 /// operations are delegated to `ToolRegistry`.
-#[derive(Debug)]
 pub struct ExtensionCore {
     /// Hook registry
     hook_registry: Arc<HookRegistry>,
@@ -34,6 +36,29 @@ pub struct ExtensionCore {
 
     /// Extension services shared across all handlers
     services: Arc<ExtensionServices>,
+
+    /// Side-table of `Arc<dyn Tool>` keyed by tool name. Populated by
+    /// `BuiltinToolAdapter::register_tool` and consulted by
+    /// `get_tool` so callers (e.g., `TaskTool::spawn`) can invoke the
+    /// underlying tool directly without going through the hook layer.
+    tool_instances: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
+
+    /// Current session key, set by the agent before each `execute_*`
+    /// call so tools that need a parent_session_key (e.g.,
+    /// `TaskTool::spawn`) can read it from the core.
+    session_key: Arc<RwLock<Option<String>>>,
+}
+
+impl std::fmt::Debug for ExtensionCore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtensionCore")
+            .field("hook_registry", &self.hook_registry)
+            .field("tool_registry", &self.tool_registry)
+            .field("services", &self.services)
+            .field("tool_instances", &"<Arc<RwLock<HashMap<Arc<dyn Tool>>>>>")
+            .field("session_key", &"<Arc<RwLock<Option<String>>>>")
+            .finish()
+    }
 }
 
 impl ExtensionCore {
@@ -45,6 +70,8 @@ impl ExtensionCore {
             hook_registry: Arc::new(HookRegistry::with_services(services.clone())),
             tool_registry: Arc::new(ToolRegistry::new()),
             services,
+            tool_instances: Arc::new(RwLock::new(HashMap::new())),
+            session_key: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -54,6 +81,8 @@ impl ExtensionCore {
             hook_registry: Arc::new(HookRegistry::with_services(services.clone())),
             tool_registry: Arc::new(ToolRegistry::new()),
             services,
+            tool_instances: Arc::new(RwLock::new(HashMap::new())),
+            session_key: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -435,6 +464,10 @@ impl ExtensionCore {
     pub async fn unregister_tool(&self, tool_name: &str) -> Result<()> {
         let hook_id = self.tool_registry.unregister_tool(tool_name).await?;
 
+        // Mirror the side-table: drop the Arc<dyn Tool> so callers that
+        // already hold a weak ref observe the removal on next lookup.
+        self.remove_tool_instance(tool_name).await;
+
         if let Some(primary_hook_id) = hook_id {
             // Unregister companion hooks stored in the primary registration's metadata
             let companion_ids: Vec<HookId> = {
@@ -472,28 +505,51 @@ impl ExtensionCore {
     /// Returns `Some(Arc<dyn Tool>)` if a tool with this name is registered,
     /// `None` otherwise.
     ///
-    /// NOTE: as of the task-tool refactor (commit 2), this is a stub that
-    /// always returns `None`. The unified registry stores tools as
-    /// `Arc<dyn HookHandler>` (e.g., `BuiltinExecuteHandler`), so recovering
-    /// the underlying `Arc<dyn Tool>` requires either downcasting or a
-    /// dedicated `Arc<dyn Tool>` side-table. Commit 3 is expected to wire
-    /// the real lookup; until then, `TaskTool::spawn` will report
-    /// "tool not found" for every name.
+    /// The unified registry stores tool adapters as `Arc<dyn HookHandler>`
+    /// (e.g., `BuiltinExecuteHandler`), so recovering the underlying
+    /// `Arc<dyn Tool>` for direct invocation requires a side-table.
+    /// `BuiltinToolAdapter::register_tool` populates this side-table; this
+    /// method reads from it.
     #[allow(dead_code)]
     pub async fn get_tool(&self, name: &str) -> Option<Arc<dyn crate::tools::core::Tool>> {
-        let _ = name;
-        None
+        let instances = self.tool_instances.read().await;
+        instances.get(name).cloned()
+    }
+
+    /// Insert a tool instance into the side-table. Called by
+    /// `BuiltinToolAdapter::register_tool` so `get_tool` can find the
+    /// `Arc<dyn Tool>` for direct invocation (e.g., `TaskTool::spawn`).
+    pub(crate) async fn insert_tool_instance(&self, name: String, tool: Arc<dyn Tool>) {
+        let mut instances = self.tool_instances.write().await;
+        instances.insert(name, tool);
+    }
+
+    /// Remove a tool instance from the side-table. Called when a tool
+    /// is unregistered so stale references don't leak.
+    pub(crate) async fn remove_tool_instance(&self, name: &str) {
+        let mut instances = self.tool_instances.write().await;
+        instances.remove(name);
     }
 
     /// Return the current session key, if one is associated with this core.
     ///
-    /// NOTE: as of the task-tool refactor (commit 2), this is a stub that
-    /// always returns `None`. Commit 3 is expected to thread a real
-    /// session-key accessor through the core; until then, `TaskTool::spawn`
-    /// falls back to the literal `"unknown"` session key.
-    #[allow(dead_code)]
+    /// The agent calls `set_session_key` before `execute_*` so tools that
+    /// need a parent_session_key (e.g., `TaskTool::spawn`) can read it
+    /// from the core.
     pub fn current_session_key(&self) -> Option<String> {
-        None
+        // Blocking read against a `tokio::sync::RwLock` is a soft-fail: if
+        // a writer is mid-flight, return None rather than panic. The
+        // session_key is set before tool invocation begins, so a
+        // transient read lock during `spawn` would be unusual.
+        self.session_key.try_read().ok().and_then(|g| g.clone())
+    }
+
+    /// Set the current session key for this core. Used by the agent to
+    /// inject the active session before invoking tools that need a
+    /// `parent_session_key` (e.g., `TaskTool::spawn`).
+    pub async fn set_session_key(&self, key: Option<String>) {
+        let mut guard = self.session_key.write().await;
+        *guard = key;
     }
 }
 

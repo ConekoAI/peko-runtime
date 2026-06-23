@@ -82,6 +82,13 @@ impl BuiltinToolAdapter {
     /// `ExtensionCore::register_tool()` auto-generates all companion hooks
     /// (prompt, async, status, cancel) from the metadata; this method only
     /// supplies the execution handler.
+    ///
+    /// In addition to the hook-based registration, this method also
+    /// populates the `ExtensionCore` side-table of `Arc<dyn Tool>`
+    /// instances keyed by tool name. The side-table is what
+    /// `ExtensionCore::get_tool` reads from so direct callers (e.g.,
+    /// `TaskTool::spawn`) can obtain an `Arc<dyn Tool>` without going
+    /// through the hook layer.
     pub async fn register_tool(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
         let tool_name = tool.name().to_string();
         let ext_id = ExtensionId::new(format!("builtin:tool:{tool_name}"));
@@ -94,7 +101,12 @@ impl BuiltinToolAdapter {
             ToolSource::BuiltIn,
         );
 
-        // Create execution handler
+        // Side-table: keep a clone of the Arc<dyn Tool> for direct
+        // invocation paths (TaskTool::spawn calls core.get_tool). Clone
+        // BEFORE moving the original into the execute handler below.
+        core.insert_tool_instance(tool_name.clone(), tool.clone()).await;
+
+        // Create execution handler (consumes the original `tool` Arc).
         let exec_handler = Arc::new(BuiltinExecuteHandler::new(tool));
 
         // Register with unified registry (auto-generates all companion hooks)
@@ -116,13 +128,32 @@ impl BuiltinToolAdapter {
     /// This is the single entry point for registering built-in tools.
     /// All tools are registered as hooks in `ExtensionCore`, making them
     /// discoverable via `ToolRegister` hook and executable via `ToolExecute` hook.
+    ///
+    /// The `task` tool is **NOT** registered here. It depends on a
+    /// per-agent `AsyncExecutor` and `ExtensionCore` reference (for the
+    /// spawn side-table and session key), so it is registered per-agent
+    /// by `register_task_tool` once the agent has constructed its
+    /// executor and queue. The pre-refactor global registration has
+    /// been removed; the per-agent path is the only production path.
     pub async fn register_all(
+        core: &ExtensionCore,
+        config: &BuiltinToolRegistrarConfig,
+    ) -> Result<()> {
+        Self::register_globals(core, config).await
+    }
+
+    /// Register global built-in tools (everything except the `task` tool).
+    ///
+    /// `task` is excluded because it requires per-agent wiring (an
+    /// `AsyncExecutor` and an `ExtensionCore` reference). Callers that
+    /// need the `task` tool must use `register_task_tool` per-agent.
+    pub async fn register_globals(
         core: &ExtensionCore,
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::{
             CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
-            TaskTool, WriteFileTool,
+            WriteFileTool,
         };
 
         let disabled_set: HashSet<String> = config
@@ -187,15 +218,32 @@ impl BuiltinToolAdapter {
             Self::register_tool(core, tool).await?;
         }
 
-        // Universal task management tool (global registration)
-        // Registered globally so it's available even before an agent is created.
-        // It searches across all per-agent registries at runtime.
-        if config.enable_task_management && !disabled_set.contains("task") {
-            let tool = Arc::new(TaskTool::global());
-            Self::register_tool(core, tool).await?;
-        }
+        // NB: the `task` tool is intentionally NOT registered here.
+        // It depends on per-agent state (AsyncExecutor + ExtensionCore
+        // for spawn-side lookups), so each agent registers its own via
+        // `BuiltinToolAdapter::register_task_tool` after constructing
+        // its executor and completion queue.
 
         Ok(())
+    }
+
+    /// Register the `task` tool with per-agent wiring.
+    ///
+    /// `task` requires an `AsyncExecutor` (for `spawn` and `output`
+    /// actions) and an `ExtensionCore` reference (so the spawn arm can
+    /// look up the target tool by name and read the current session
+    /// key). Each agent calls this once during initialization so its
+    /// spawns land in its own completion queue and are drained by its
+    /// own agentic loop iteration.
+    ///
+    /// If `task` was previously registered on this core, it is
+    /// unregistered first (the `register_tool` path is idempotent),
+    /// so this function can safely be re-invoked.
+    pub async fn register_task_tool(
+        core: &ExtensionCore,
+        task_tool: Arc<crate::tools::builtin::TaskTool>,
+    ) -> Result<()> {
+        Self::register_tool(core, task_tool).await
     }
 
     /// Get list of globally-registered built-in tool names.
