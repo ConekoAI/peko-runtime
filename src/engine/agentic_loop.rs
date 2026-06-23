@@ -14,6 +14,9 @@
 use crate::agents::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::agents::prompt::SystemPromptService;
+use crate::extensions::framework::async_exec::executor::{
+    CompletionEvent, SharedAsyncTaskCompletionQueue,
+};
 use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
 use crate::session::Session;
 use crate::common::types::message::{ContentBlock, LlmMessage};
@@ -61,6 +64,10 @@ pub struct AgenticLoop {
     /// on every tool invocation so downstream permission checks and audit
     /// logging can attribute the call to a real user — see issue #17.
     caller_id: Option<String>,
+    /// Per-session queue of completed async tasks, drained at the start
+    /// of each `run_inner` iteration. Surfaced to the LLM as a
+    /// synthetic user-role message containing all queued completions.
+    async_completion_queue: Option<SharedAsyncTaskCompletionQueue>,
 }
 
 impl AgenticLoop {
@@ -84,6 +91,7 @@ impl AgenticLoop {
             system_prompt,
             extension_core,
             caller_id: None,
+            async_completion_queue: None,
         }
     }
 
@@ -94,6 +102,19 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_caller_id(mut self, caller_id: Option<String>) -> Self {
         self.caller_id = caller_id;
+        self
+    }
+
+    /// Inject a per-session async task completion queue. When set, the
+    /// agentic loop drains the queue at the start of each iteration
+    /// and synthesizes a single user-role message containing all
+    /// completions since the last iteration.
+    #[must_use]
+    pub fn with_async_completion_queue(
+        mut self,
+        queue: SharedAsyncTaskCompletionQueue,
+    ) -> Self {
+        self.async_completion_queue = Some(queue);
         self
     }
 
@@ -276,7 +297,7 @@ impl AgenticLoop {
         use futures::StreamExt;
 
         // Get session_id once at start
-        let _session_id = {
+        let session_id = {
             let s = session.read().await;
             s.id.clone()
         };
@@ -318,6 +339,19 @@ impl AgenticLoop {
             iteration += 1;
             let mut iteration_usage = TokenUsage::default();
             info!("Agent loop: iteration {}", iteration);
+
+            // NEW: drain completed async tasks for this session and
+            // inject them as a synthetic user-role message. Runs at
+            // the start of every iteration, so completions that arrive
+            // mid-iteration wait for the next one.
+            if let Some(ref queue) = self.async_completion_queue {
+                let events = queue.drain().await;
+                if let Some(msg) =
+                    build_async_completion_message(&events, &session_id)
+                {
+                    messages.push(msg);
+                }
+            }
 
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
             let tool_defs = self.build_tool_definitions().await;
@@ -820,6 +854,52 @@ impl AgenticLoop {
     }
 }
 
+/// Build a synthetic user-role `LlmMessage` from a list of completed
+/// async-task events. Filters to events whose `parent_session_key`
+/// matches the current session. Returns `None` if no events belong
+/// to this session.
+///
+/// The synthetic message contains:
+/// - One `Text` header summarizing how many tasks completed.
+/// - One `ToolResult` block per event, with `tool_call_id` of the
+///   form `synthetic:<task_id>` so the model can reference a
+///   specific completed task in its next tool call.
+fn build_async_completion_message(
+    events: &[CompletionEvent],
+    session_id: &str,
+) -> Option<LlmMessage> {
+    let for_session: Vec<&CompletionEvent> = events
+        .iter()
+        .filter(|e| e.parent_session_key == session_id)
+        .collect();
+    if for_session.is_empty() {
+        return None;
+    }
+
+    let n = for_session.len();
+    let mut content = vec![ContentBlock::Text {
+        text: format!("[Async task results — {n} completed since last turn]"),
+    }];
+    for event in for_session {
+        content.push(ContentBlock::ToolResult {
+            tool_call_id: format!("synthetic:{}", event.task_id),
+            name: event.tool_name.clone(),
+            content: vec![ContentBlock::Text {
+                text: event.result.to_string(),
+            }],
+            is_error: false,
+        });
+    }
+
+    Some(LlmMessage {
+        role: MessageRole::User,
+        content,
+        timestamp: Utc::now(),
+        metadata: HashMap::new(),
+        tool_call_id: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1266,6 +1346,118 @@ mod tests {
             result.iterations >= 1,
             "Should complete at least 1 iteration, got {}",
             result.iterations
+        );
+    }
+
+    // ===================================================================
+    // Synthetic-message builder tests (sub-task 3.1)
+    // ===================================================================
+
+    fn make_completion_event(
+        task_id: &str,
+        tool_name: &str,
+        session_key: &str,
+    ) -> CompletionEvent {
+        CompletionEvent {
+            task_id: task_id.to_string(),
+            tool_name: tool_name.to_string(),
+            result: serde_json::json!({"exit_code": 0, "stdout": "hello"}),
+            status: crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Completed {
+                result: crate::tools::core::ToolResult::success(
+                    serde_json::json!({"exit_code": 0, "stdout": "hello"}),
+                ),
+            },
+            completed_at: chrono::Utc::now(),
+            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
+            parent_session_key: session_key.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_build_async_completion_message_no_events() {
+        let events: Vec<CompletionEvent> = vec![];
+        let msg = build_async_completion_message(&events, "session_a");
+        assert!(msg.is_none(), "Zero events should return None");
+    }
+
+    #[test]
+    fn test_build_async_completion_message_one_matching_event() {
+        let events = vec![make_completion_event("shell:x", "shell", "session_a")];
+        let msg = build_async_completion_message(&events, "session_a");
+        let msg = msg.expect("one matching event should produce Some(msg)");
+
+        assert!(matches!(msg.role, MessageRole::User));
+
+        // First content block must be the header text.
+        match &msg.content[0] {
+            ContentBlock::Text { text } => {
+                assert_eq!(text, "[Async task results — 1 completed since last turn]");
+            }
+            other => panic!("expected Text header, got {other:?}"),
+        }
+
+        // Second block must be a ToolResult with synthetic:<task_id>.
+        match &msg.content[1] {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                name,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_call_id, "synthetic:shell:x");
+                assert_eq!(name, "shell");
+                assert!(!(*is_error));
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ContentBlock::Text { text } => {
+                        // Full raw result JSON, not truncated.
+                        assert!(text.contains("exit_code"));
+                    }
+                    other => panic!("expected Text inside ToolResult, got {other:?}"),
+                }
+            }
+            other => panic!("expected ToolResult block, got {other:?}"),
+        }
+
+        assert_eq!(msg.content.len(), 2);
+    }
+
+    #[test]
+    fn test_build_async_completion_message_two_matching_events() {
+        let events = vec![
+            make_completion_event("shell:x", "shell", "session_a"),
+            make_completion_event("shell:y", "shell", "session_a"),
+        ];
+        let msg = build_async_completion_message(&events, "session_a");
+        let msg = msg.expect("two matching events should produce Some(msg)");
+
+        match &msg.content[0] {
+            ContentBlock::Text { text } => {
+                assert_eq!(text, "[Async task results — 2 completed since last turn]");
+            }
+            other => panic!("expected Text header, got {other:?}"),
+        }
+
+        assert_eq!(msg.content.len(), 3, "header + 2 tool result blocks");
+        // Sanity-check the two tool_call_id values.
+        let mut ids: Vec<String> = Vec::new();
+        for block in &msg.content[1..] {
+            if let ContentBlock::ToolResult { tool_call_id, .. } = block {
+                ids.push(tool_call_id.clone());
+            } else {
+                panic!("expected only ToolResult blocks after header, got {block:?}");
+            }
+        }
+        assert_eq!(ids, vec!["synthetic:shell:x", "synthetic:shell:y"]);
+    }
+
+    #[test]
+    fn test_build_async_completion_message_filters_other_sessions() {
+        let events = vec![make_completion_event("shell:x", "shell", "session_b")];
+        let msg = build_async_completion_message(&events, "session_a");
+        assert!(
+            msg.is_none(),
+            "events from a different session must be filtered out"
         );
     }
 }
