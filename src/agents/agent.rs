@@ -589,12 +589,18 @@ pub async fn new_with_session_manager(
         }
 
         let agent_arc = Arc::new(self.clone());
+        // Fresh per-call async-completion queue. Tasks spawned during
+        // this loop land here; the loop drains them at iteration start.
+        let async_completion_queue = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncTaskCompletionQueue::new(),
+        );
         let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
             agent_arc,
             provider,
             self.extension_core(),
         )
-        .await;
+        .await
+        .with_async_completion_queue(async_completion_queue);
 
         let result = match loop_.run(prompt, on_event).await {
             Ok(result) => Ok(result),
@@ -642,12 +648,18 @@ pub async fn new_with_session_manager(
         }
 
         let agent_arc = Arc::new(self.clone());
+        // Fresh per-call async-completion queue. Tasks spawned during
+        // this loop land here; the loop drains them at iteration start.
+        let async_completion_queue = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncTaskCompletionQueue::new(),
+        );
         let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
             agent_arc,
             provider,
             self.extension_core(),
         )
-        .await;
+        .await
+        .with_async_completion_queue(async_completion_queue);
 
         let result = match loop_
             .run_with_resume(prompt, on_event, session, history)
@@ -685,9 +697,13 @@ pub async fn new_with_session_manager(
         let extension_core = self.extension_core();
 
         tokio::task::spawn_local(async move {
+            let async_completion_queue = Arc::new(
+                crate::extensions::framework::async_exec::executor::AsyncTaskCompletionQueue::new(),
+            );
             let loop_ =
                 crate::engine::agentic_loop::AgenticLoop::new(agent_arc, provider, extension_core)
-                    .await;
+                    .await
+                    .with_async_completion_queue(async_completion_queue);
 
             let _result = loop_
                 .run(&prompt, move |event| {
@@ -741,13 +757,19 @@ pub async fn new_with_session_manager(
         self.prepare_execution().await?;
 
         let agent_arc = Arc::new(self.clone());
+        // Fresh per-call async-completion queue. Tasks spawned during
+        // this loop land here; the loop drains them at iteration start.
+        let async_completion_queue = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncTaskCompletionQueue::new(),
+        );
         let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
             agent_arc,
             provider,
             self.extension_core(),
         )
         .await
-        .with_caller_id(caller_id);
+        .with_caller_id(caller_id)
+        .with_async_completion_queue(async_completion_queue);
 
         let streaming_config = crate::engine::OrchestratorConfig::live();
 
