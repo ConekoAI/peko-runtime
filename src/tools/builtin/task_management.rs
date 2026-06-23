@@ -200,14 +200,14 @@ impl TaskTool {
         }
     }
 
-    fn build_output_response(task: &TaskView) -> serde_json::Value {
+    fn build_output_response(task: &TaskView, tail_lines: u64) -> serde_json::Value {
         let mut base = json!({
             "task_id": task.task_id,
             "status": task.status.as_str(),
             "is_terminal": task.is_terminal(),
         });
         if let Some(ref result) = task.result {
-            base["result"] = result.clone();
+            base["result"] = apply_tail_lines(result, tail_lines);
         }
         if let Some(completed_at) = task.completed_at {
             base["completed_at"] = json!(completed_at.to_rfc3339());
@@ -217,6 +217,34 @@ impl TaskTool {
         }
         base
     }
+}
+
+/// Apply `tail_lines` filtering to a tool result value. Returns the
+/// filtered value. Recognizes two shapes: a JSON string (truncate lines
+/// directly) and a JSON object with a string `stdout` field (truncate
+/// that field, leave the rest). Other shapes pass through unchanged.
+fn apply_tail_lines(result: &serde_json::Value, tail_lines: u64) -> serde_json::Value {
+    if tail_lines == 0 {
+        return result.clone();
+    }
+    let last_n = |s: &str| -> String {
+        let mut lines: Vec<&str> = s.lines().collect();
+        if lines.len() > tail_lines as usize {
+            lines = lines.split_off(lines.len() - tail_lines as usize);
+        }
+        lines.join("\n")
+    };
+    if let Some(s) = result.as_str() {
+        return serde_json::Value::String(last_n(s));
+    }
+    if let Some(obj) = result.as_object() {
+        if let Some(stdout) = obj.get("stdout").and_then(|v| v.as_str()) {
+            let mut new_obj = obj.clone();
+            new_obj.insert("stdout".to_string(), serde_json::Value::String(last_n(stdout)));
+            return serde_json::Value::Object(new_obj);
+        }
+    }
+    result.clone()
 }
 
 #[async_trait]
@@ -433,7 +461,7 @@ Returns structured data appropriate to the action.
                     .get("blocking")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let _tail_lines = params
+                let tail_lines = params
                     .get("tail_lines")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
@@ -473,10 +501,10 @@ Returns structured data appropriate to the action.
                             }));
                         }
                     };
-                    return Ok(Self::build_output_response(&task));
+                    return Ok(Self::build_output_response(&task, tail_lines));
                 }
 
-                Ok(Self::build_output_response(&task))
+                Ok(Self::build_output_response(&task, tail_lines))
             }
         }
     }
@@ -692,5 +720,173 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["error"], "output action requires TaskTool to be constructed with an AsyncExecutor");
+    }
+
+    /// Build a TaskTool wired with a fresh isolated registry AND a
+    /// fresh AsyncExecutor. The Output arm requires both (the executor
+    /// is checked first and short-circuits with an error otherwise).
+    fn make_tool_with_registry_and_executor(
+        registry: SharedAsyncTaskRegistry,
+    ) -> (TaskTool, Arc<crate::extensions::framework::async_exec::executor::AsyncExecutor>) {
+        let executor = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+        );
+        let tool = TaskTool {
+            registry: Some(registry),
+            executor: Some(executor.clone()),
+            extension_core: None,
+        };
+        (tool, executor)
+    }
+
+    #[tokio::test]
+    async fn test_task_output_tail_lines_string_result() {
+        let registry = Arc::new(tokio::sync::RwLock::new(
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
+        ));
+        let result_value = json!("line1\nline2\nline3\nline4\nline5");
+        {
+            let mut reg = registry.write().await;
+            let mut entry = AsyncTaskEntry::new(
+                "shell:string-result".to_string(),
+                "shell".to_string(),
+                json!({"command": "echo"}),
+                "session_1".to_string(),
+                AsyncToolConfig::default(),
+            );
+            entry.set_result(result_value);
+            entry.status = AsyncTaskStatus::Completed {
+                result: crate::tools::ToolResult::success(json!({})),
+            };
+            entry.completed_at = Some(chrono::Utc::now());
+            reg.register(entry);
+        }
+
+        let (tool, _exec) = make_tool_with_registry_and_executor(registry);
+        let result = tool
+            .execute(json!({
+                "action": "output",
+                "task_id": "shell:string-result",
+                "tail_lines": 2
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(result["result"], "line4\nline5");
+    }
+
+    #[tokio::test]
+    async fn test_task_output_tail_lines_object_with_stdout() {
+        let registry = Arc::new(tokio::sync::RwLock::new(
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
+        ));
+        let result_value = json!({
+            "stdout": "line1\nline2\nline3",
+            "exit_code": 0
+        });
+        {
+            let mut reg = registry.write().await;
+            let mut entry = AsyncTaskEntry::new(
+                "shell:obj-result".to_string(),
+                "shell".to_string(),
+                json!({"command": "echo"}),
+                "session_1".to_string(),
+                AsyncToolConfig::default(),
+            );
+            entry.set_result(result_value);
+            entry.status = AsyncTaskStatus::Completed {
+                result: crate::tools::ToolResult::success(json!({})),
+            };
+            entry.completed_at = Some(chrono::Utc::now());
+            reg.register(entry);
+        }
+
+        let (tool, _exec) = make_tool_with_registry_and_executor(registry);
+        let result = tool
+            .execute(json!({
+                "action": "output",
+                "task_id": "shell:obj-result",
+                "tail_lines": 2
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(result["result"]["stdout"], "line2\nline3");
+        assert_eq!(result["result"]["exit_code"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_task_output_tail_lines_unknown_shape_passthrough() {
+        let registry = Arc::new(tokio::sync::RwLock::new(
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
+        ));
+        let result_value = json!({"count": 42});
+        {
+            let mut reg = registry.write().await;
+            let mut entry = AsyncTaskEntry::new(
+                "shell:unknown-shape".to_string(),
+                "shell".to_string(),
+                json!({"command": "echo"}),
+                "session_1".to_string(),
+                AsyncToolConfig::default(),
+            );
+            entry.set_result(result_value);
+            entry.status = AsyncTaskStatus::Completed {
+                result: crate::tools::ToolResult::success(json!({})),
+            };
+            entry.completed_at = Some(chrono::Utc::now());
+            reg.register(entry);
+        }
+
+        let (tool, _exec) = make_tool_with_registry_and_executor(registry);
+        let result = tool
+            .execute(json!({
+                "action": "output",
+                "task_id": "shell:unknown-shape",
+                "tail_lines": 10
+            }))
+            .await
+            .unwrap();
+
+        // Graceful degradation: unrecognized shape passes through
+        // unchanged even though tail_lines > 0.
+        assert_eq!(result["result"], json!({"count": 42}));
+    }
+
+    #[tokio::test]
+    async fn test_task_output_tail_lines_zero_passthrough() {
+        let registry = Arc::new(tokio::sync::RwLock::new(
+            crate::extensions::framework::async_exec::executor::AsyncTaskRegistry::new(),
+        ));
+        let result_value = json!("line1\nline2\nline3\nline4\nline5");
+        {
+            let mut reg = registry.write().await;
+            let mut entry = AsyncTaskEntry::new(
+                "shell:zero".to_string(),
+                "shell".to_string(),
+                json!({"command": "echo"}),
+                "session_1".to_string(),
+                AsyncToolConfig::default(),
+            );
+            entry.set_result(result_value);
+            entry.status = AsyncTaskStatus::Completed {
+                result: crate::tools::ToolResult::success(json!({})),
+            };
+            entry.completed_at = Some(chrono::Utc::now());
+            reg.register(entry);
+        }
+
+        let (tool, _exec) = make_tool_with_registry_and_executor(registry);
+        let result = tool
+            .execute(json!({
+                "action": "output",
+                "task_id": "shell:zero"
+                // tail_lines omitted → defaults to 0
+            }))
+            .await
+            .unwrap();
+
+        // tail_lines=0 returns the full string unchanged.
+        assert_eq!(result["result"], "line1\nline2\nline3\nline4\nline5");
     }
 }
