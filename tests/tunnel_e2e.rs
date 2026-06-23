@@ -304,6 +304,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     //    fall back to the test default.
     let vault_passphrase = std::env::var("PEKO_MASTER_PASSPHRASE")
         .unwrap_or_else(|_| "peko-test-vault-passphrase".to_string());
+    std::env::set_var("PEKO_MASTER_PASSPHRASE", &vault_passphrase);
     let private_key_b64 = BASE64.encode(signing_key.to_bytes());
     let vault_path = workspace_path.join("config").join("vault.enc");
     tokio::fs::create_dir_all(vault_path.parent().unwrap())
