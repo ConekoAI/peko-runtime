@@ -29,19 +29,19 @@ pub struct CompletionEvent {
 /// at the next agentic loop iteration.
 #[derive(Debug)]
 pub struct AsyncTaskCompletionQueue {
-    inner: Mutex<VecDeque<CompletionEvent>>,
+    inner: Arc<Mutex<VecDeque<CompletionEvent>>>,
     /// Wakes any future code that wants to wait for "at least one
     /// completion" — currently unused by the agentic loop (it polls
     /// at iteration start) but available for follow-up work.
-    notify: Notify,
+    notify: Arc<Notify>,
 }
 
 impl AsyncTaskCompletionQueue {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(VecDeque::new()),
-            notify: Notify::new(),
+            inner: Arc::new(Mutex::new(VecDeque::new())),
+            notify: Arc::new(Notify::new()),
         }
     }
 
@@ -52,14 +52,15 @@ impl AsyncTaskCompletionQueue {
         // tokio::spawn. The common case (no contention) is in-line.
         if let Ok(mut guard) = self.inner.try_lock() {
             guard.push_back(event);
+            self.notify.notify_one();
         } else {
             let this = self.clone();
             tokio::spawn(async move {
                 let mut guard = this.inner.lock().await;
                 guard.push_back(event);
+                this.notify.notify_one();
             });
         }
-        self.notify.notify_one();
     }
 
     /// Drain all currently-queued events, leaving the queue empty.
@@ -89,14 +90,13 @@ impl Default for AsyncTaskCompletionQueue {
 
 impl Clone for AsyncTaskCompletionQueue {
     fn clone(&self) -> Self {
+        // Shares the same underlying queue via internal Arc — useful for
+        // Arc<AsyncTaskCompletionQueue> or for moving the queue into a
+        // spawned task (e.g. the contended push fallback).
         Self {
-            inner: Mutex::new(VecDeque::new()),
-            notify: Notify::new(),
+            inner: Arc::clone(&self.inner),
+            notify: Arc::clone(&self.notify),
         }
-        // Note: clone() does NOT share state. The queue is meant to be
-        // shared via Arc, not cloned. If you call clone() you get an
-        // empty independent queue. This impl exists to satisfy trait
-        // bounds that require Clone.
     }
 }
 
@@ -159,5 +159,31 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let drained = queue.drain().await;
         assert_eq!(drained.len(), 10);
+        for (i, event) in drained.iter().enumerate() {
+            assert_eq!(
+                event.task_id,
+                format!("shell:{i}"),
+                "FIFO order violated at index {i}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_under_contention_reaches_drain() {
+        use std::sync::Arc;
+        let queue = Arc::new(AsyncTaskCompletionQueue::new());
+        let mut handles = Vec::new();
+        for i in 0..100 {
+            let q = queue.clone();
+            handles.push(tokio::spawn(async move {
+                q.push(make_event(&format!("shell:{i}"), "session_1"));
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let drained = queue.drain().await;
+        assert_eq!(drained.len(), 100, "contended pushes must not be silently dropped");
     }
 }
