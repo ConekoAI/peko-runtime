@@ -75,7 +75,7 @@ async fn init_extension_core(command: &Commands) {
                     pekobot::extensions::framework::services::async_transport::UnavailableAsyncTransport::new(
                         "peko daemon is not running. Async tool execution requires the daemon.\n\
                          Start it with: peko daemon start\n\
-                         Or use sync mode (remove _async: true from the tool call).",
+                         Or wait for the task to complete via the 'task' tool's 'output' action.",
                     ),
                 ))
             }

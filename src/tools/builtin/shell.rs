@@ -5,8 +5,10 @@
 //! - No sandboxing, no command blocking, no env filtering
 //! - Security boundary is tool enablement (enabled = full access)
 //!
-//! Note: Async execution and timeout are handled by the framework-level
-//! `ToolWrapper` using `_async` and `_timeout` parameters.
+//! Note: Async execution and timeout are handled by `AsyncExecutionRouter`,
+//! which applies a constant 5-min timeout. Tools exceeding the timeout are
+//! auto-detached to background tasks; the agent retrieves results via the
+//! `task` tool's `status`/`output` actions.
 
 use anyhow::Result;
 use async_trait::async_trait;
