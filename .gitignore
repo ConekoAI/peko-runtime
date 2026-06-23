@@ -8,3 +8,4 @@ __pycache__/
 .peko/
 peko.toml
 config.toml
+.superpowers/
