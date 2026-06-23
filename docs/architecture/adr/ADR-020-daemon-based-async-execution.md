@@ -354,3 +354,4 @@ The daemon's `ToolRuntime` only registers built-in tools (`ShellTool`, `ReadFile
 - Existing API client: `src/api/client.rs`
 - E2E test contract: `e2e_tests/extensions/tools/tool_async.ps1`
 - Agent tool initialization: `src/agent/agent.rs:48`
+- ADR-040: Tool Timeout and Async Refactor (2026-06-23) — supersedes the `_async`/`_timeout` parameter-injection layer.

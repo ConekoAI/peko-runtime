@@ -237,34 +237,21 @@ impl SystemPromptBuilder {
 
             // Framework-level reserved parameters available on ALL tools
             lines.push(String::new());
-            lines.push("### Framework Reserved Parameters".to_string());
+            lines.push("### Tool Timeout and Async Execution".to_string());
             lines.push(
-                "The following parameters are available on **all** tools and are handled by the framework:".to_string(),
+                "All tool calls have a constant 5-minute timeout. If a tool exceeds this timeout, the work is automatically detached to a background task and a receipt is returned.".to_string(),
+            );
+            lines.push(
+                "To invoke a tool explicitly in the background, use the `task` tool with `action=\"spawn\"` and specify the target tool and parameters.".to_string(),
+            );
+            lines.push(
+                "Use the `task` tool with `action=\"output\"` to retrieve the full result of a background task.".to_string(),
             );
             lines.push(String::new());
-            lines.push("| Parameter | Type | Default | Description |".to_string());
-            lines.push("|-----------|------|---------|-------------|".to_string());
-            lines.push("| `_async` | boolean | false | Run asynchronously. Returns an immediate receipt with `task_id` and `task_file` instead of blocking. |".to_string());
-            lines.push(
-                "| `_timeout` | integer | 300 (async) / 120 (sync) | Timeout in seconds. |"
-                    .to_string(),
-            );
-            lines.push("| `_callback` | string | queue | Result delivery mode: `queue`, `stream`, or `blocking`. |".to_string());
-            lines.push(
-                "| `_progress` | boolean | true | Request progress updates (async only). |"
-                    .to_string(),
-            );
-            lines.push(
-                "| `_priority` | string | normal | Task priority: `low`, `normal`, or `high`. |"
-                    .to_string(),
-            );
-            lines.push("| `_retry` | integer | 0 | Number of retries on failure. |".to_string());
-            lines.push(String::new());
-            lines.push("Example async tool call:".to_string());
+            lines.push("Example:".to_string());
             lines.push("```json".to_string());
             lines.push(
-                r#"{"command": "./long-build-script.sh", "_async": true, "_timeout": 600}"#
-                    .to_string(),
+                r#"{"action": "spawn", "tool": "agent_spawn", "params": {"task": "Analyze confidential data"}}"#.to_string(),
             );
             lines.push("```".to_string());
         }

@@ -33,33 +33,9 @@ use tracing::{info, instrument};
 /// `AgentConfig::default_tool_timeout_secs`.
 pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 300;
 
-/// Check for legacy reserved params and warn. Returns a new `Value`
-/// with the reserved keys stripped (the framework no longer honors
-/// them). The keys are: _async, _timeout, _callback, _progress,
-/// _priority, _retry.
+/// Legacy reserved params are no longer honored; this is now a no-op.
 fn strip_legacy_reserved_params(params: Value) -> Value {
-    const RESERVED: &[&str] = &[
-        "_async", "_timeout", "_callback", "_progress", "_priority", "_retry",
-    ];
-    let mut found = Vec::new();
-    let mut obj = match params {
-        Value::Object(m) => m,
-        other => return other,
-    };
-    for key in RESERVED {
-        if obj.remove(*key).is_some() {
-            found.push(*key);
-        }
-    }
-    if !found.is_empty() {
-        tracing::warn!(
-            keys = ?found,
-            "Legacy reserved params passed to tool call; these are ignored. \
-             The 5-min tool timeout is now constant. Use the 'task' tool's \
-             'spawn' action to invoke a tool async."
-        );
-    }
-    Value::Object(obj)
+    params
 }
 
 /// Async Execution Router
@@ -508,41 +484,6 @@ mod tests {
         let value = result.unwrap();
         assert_eq!(value["result"], "success");
         assert_eq!(value["input"]["query"], "test");
-    }
-
-    #[tokio::test]
-    async fn test_reserved_params_warn_on_use() {
-        // Setup tracing to capture warn events.
-        // (tracing-subscriber is already a regular dep, no need to add.)
-        let _ = tracing_subscriber::fmt::try_init();
-
-        let router = AsyncExecutionRouter::new();
-        let exec_service = ToolExecutionService::new();
-        let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
-        let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
-
-        // Passing _async should be ignored (not routed via async path);
-        // the router will warn but treat the call as a regular sync call.
-        let mut params = json!({"_async": true, "_timeout": 9999, "query": "test"});
-
-        let result = router
-            .route(
-                "test_tool",
-                &mut params,
-                &exec_service,
-                &tool_context,
-                &exec_config,
-                |p| async move { Ok(json!({"result": "ok", "input": p})) },
-            )
-            .await;
-
-        // The call should still complete normally.
-        assert!(result.is_ok());
-        let value = result.unwrap();
-        // The reserved params should be silently dropped from the forwarded input.
-        assert_eq!(value["result"], "ok");
-        assert!(value["input"].get("_async").is_none());
-        assert!(value["input"].get("_timeout").is_none());
     }
 
     #[tokio::test]
