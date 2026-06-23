@@ -279,7 +279,7 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["MINIMAX_API_KEY"],
         api_type: ApiType::AnthropicMessages,
         base_url: "https://api.minimaxi.com/anthropic",
-        default_model: "MiniMax-M2.7",
+        default_model: "MiniMax-M3",
     },
 ];
 

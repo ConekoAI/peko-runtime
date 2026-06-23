@@ -783,7 +783,7 @@ max_compactions_per_session = 100
 cooldown_seconds = 0
 
 [compaction.model_limits]
-minimax = { "M2.7" = 4000 }
+minimax = { "M3" = 4000 }
 "#;
         let root = toml::from_str::<toml::Value>(toml_str).unwrap();
         let compaction_table = root
@@ -798,7 +798,7 @@ minimax = { "M2.7" = 4000 }
         assert_eq!(cfg.max_compactions_per_session, 100);
         assert_eq!(cfg.cooldown_seconds, 0);
         assert_eq!(
-            cfg.model_limits.get("minimax").unwrap().get("M2.7"),
+            cfg.model_limits.get("minimax").unwrap().get("M3"),
             Some(&4000)
         );
     }

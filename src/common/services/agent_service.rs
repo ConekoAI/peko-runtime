@@ -1492,7 +1492,7 @@ mod tests {
         if let Some(parent) = catalog_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let entries = [("minimax", ApiFormat::AnthropicMessages, "https://api.minimaxi.com/anthropic", "MiniMax-M2.7"),
+        let entries = [("minimax", ApiFormat::AnthropicMessages, "https://api.minimaxi.com/anthropic", "MiniMax-M3"),
             ("openai", ApiFormat::OpenaiCompletions, "https://api.openai.com/v1", "gpt-4o-mini"),
             ("anthropic", ApiFormat::AnthropicMessages, "https://api.anthropic.com", "claude-3-5-sonnet-latest")];
         let now = chrono::Utc::now();

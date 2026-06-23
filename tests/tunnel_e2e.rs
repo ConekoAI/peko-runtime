@@ -211,9 +211,9 @@ fn seed_minimax_catalog_entry(
         template_id: None,
         api_format: ApiFormat::AnthropicMessages,
         base_url: "https://api.minimaxi.com/anthropic".to_string(),
-        default_model_id: "MiniMax-M2.7".to_string(),
+        default_model_id: "MiniMax-M3".to_string(),
         models: vec![ModelInfo {
-            id: "MiniMax-M2.7".to_string(),
+            id: "MiniMax-M3".to_string(),
             display_name: None,
             context_length: None,
             max_output_tokens: None,

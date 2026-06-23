@@ -54,7 +54,7 @@
 //!   `default_model = "kimi-for-coding"`, env var = `KIMI_API_KEY`.
 //! - **minimax**: catalog id `minimax`,
 //!   `base_url = "https://api.minimaxi.com/anthropic"`,
-//!   `default_model = "MiniMax-M2.7"`, env var = `MINIMAX_API_KEY`.
+//!   `default_model = "MiniMax-M3"`, env var = `MINIMAX_API_KEY`.
 
 mod common;
 use common::{run_with_timeout, DaemonGuard, PekoCli};
@@ -155,7 +155,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 /// MiniMax (Anthropic-compatible) provider. Sends a short prompt and
 /// asserts the response is non-empty (a real LLM call to
 /// `https://api.minimaxi.com/anthropic` with the configured
-/// `MiniMax-M2.7` model).
+/// `MiniMax-M3` model).
 ///
 /// Skips when `MINIMAX_API_KEY` is unset.
 #[tokio::test]

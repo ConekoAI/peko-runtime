@@ -150,7 +150,7 @@ description = "CLI integration test agent for a2a_send"
 auto_accept_trusted = false
 
 preferred_provider_id = "minimax"
-preferred_model_id = "MiniMax-M2.7"
+preferred_model_id = "MiniMax-M3"
 default_timeout_seconds = 300
 
 [extensions]
