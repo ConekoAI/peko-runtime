@@ -328,7 +328,7 @@ peko ext enable <mcp-extension>
 ## Next Steps
 
 - Read the [CLI Reference](CLI_REFERENCE.md) for all commands
-- Read the [Architecture Guide](../dev/ARCHITECTURE.md) to understand internals
+- Read the [Extension System](../architecture/EXTENSION_SYSTEM.md) to understand how capabilities plug in
 - Read the [Tutorial: Building Your First Agent](../getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md)
 
 ---

@@ -1,7 +1,7 @@
 # Public API Surface Documentation
 
-> **Version:** 0.1.0 (Post-ADR-017)  
-> **Last Updated:** 2026-04-11  
+> **Version:** 0.1.0 (Post-ADR-017, Post-v3 provider catalog)  
+> **Last Updated:** 2026-06-23  
 
 This document defines the public API surface for Pekobot, including the new Unified Extension Architecture (ADR-017) APIs.
 
@@ -684,11 +684,10 @@ The following operations must be tested:
 
 ## Related Documentation
 
-- [Architecture Overview](docs/architecture/OVERVIEW.md)
 - [Extension System](docs/architecture/EXTENSION_SYSTEM.md)
 - [ADR-017: Unified Extension Architecture](docs/architecture/adr/ADR-017.md)
 - [Data Model](DATA_MODEL.md)
 
 ---
 
-*Version 0.1.0 · Post-ADR-017 · Post-Issue-015 · 2026-05-05*
+*Version 0.1.0 · Post-ADR-017 · Post-Issue-015 · 2026-06-23*

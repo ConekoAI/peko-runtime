@@ -125,8 +125,8 @@ The `owner_id` and `subject_id` fields use the following namespaces:
 | Prefix | Example | Meaning |
 |--------|---------|---------|
 | `user:` | `user:123` | A pekohub user account |
-| `did:` | `did:pekobot:local:default:alice` | A pekobot DID (decentralized identifier) |
-| `local:` | `local:did:pekobot:local:default:runtime` | A local pseudo-user before pekohub linking |
+| `did:` | `did:peko:local:default:alice` | A peko-runtime DID (decentralized identifier) |
+| `local:` | `local:did:peko:local:default:runtime` | A local pseudo-user before pekohub linking |
 | `public` | `public` | Special sentinel for unauthenticated access |
 
 **Local pseudo-user**: When an agent or team is created before the runtime is linked to pekohub, the owner is `local:{runtime_did}`. After linking, the owner can be updated to the pekohub user ID via an explicit ownership-transfer operation (which requires local proof).

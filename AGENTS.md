@@ -133,14 +133,18 @@ src/
 ## Testing Approach
 
 - **Unit tests** are co-located in `#[cfg(test)]` modules within source files.
-- **Integration tests** live in `tests/`; the legacy `e2e_tests/` PowerShell scripts are being dismantled per `docs/integration/TESTING.md` §7.
+- **Integration tests** live in `tests/`; the legacy PowerShell `e2e_tests/` tree was renamed to `e2e_tests_archive/` and now serves as a fixture source for the new Rust integration tests.
 - **New CLI integration tests** (Phase B migration):
   - `tests/cli_send.rs` — `peko send` with mock LLM
   - `tests/cli_session.rs` — `peko session` with mock LLM
   - `tests/cli_basics.rs` — Offline agent/team/config commands
+  - `tests/cli_extensions.rs`, `tests/cli_extensions_l3.rs`, `tests/cli_compaction.rs` — Extension system and session compaction
+- **Scenario tests** live in `tests/scenarios/` (registered explicitly in `Cargo.toml`):
+  - `s1_local_agent_with_extensions` through `s6_principal_grant_revoke_roundtrip`
+  - `tunnel_security` — Tunnel protocol security checks
+- **Fixtures** for scenario tests live in `e2e_tests_archive/` (legacy PowerShell e2e tree, kept as a fixture source).
 - **Benchmarks** live in `benches/`.
 - Tests cover critical paths: extension lifecycle, agent lifecycle, provider operations, session operations, tool operations.
-- The project targets 80%+ test coverage.
 
 ### CI tiers (see `.github/workflows/integration.yml`)
 
@@ -185,7 +189,7 @@ cargo test --all-features
 1. **Identify the domain** — Is this an agent feature? A tool? A provider? An extension?
 2. **Add code in the appropriate `src/<module>/`** — Follow existing module structure.
 3. **Update tests** — Add unit tests in `#[cfg(test)]` and integration tests if needed.
-4. **Update documentation** — If the change affects public APIs, update `API_SURFACE.md`, `API_CONTRACT.md`, `DATA_MODEL.md`, or `CAPABILITY_INTERFACE.md` as appropriate.
+4. **Update documentation** — If the change affects public APIs, update `API_SURFACE.md` and `DATA_MODEL.md` as appropriate.
 5. **Run the full test suite** — `cargo test` and `cargo clippy` must pass.
 6. **Update `CHANGELOG.md`** — Add an entry under the current version (0.1.0).
 
@@ -269,10 +273,8 @@ peko agent push my-agent:v1.0 custom.registry.com/peko/agents/my-agent:v1.0
 ## Related Documentation
 
 - `README.md` — Human-facing quick start and feature overview
-- `API_CONTRACT.md` — HTTP API contract
 - `API_SURFACE.md` — Public Rust API surface
 - `DATA_MODEL.md` — On-disk and in-memory data formats
-- `CAPABILITY_INTERFACE.md` — Built-in tools, sandbox model, cron lifecycle
-- `REQUIREMENTS_SPEC.md` — Testable requirements by domain
 - `CHANGELOG.md` — Version history
-- `docs/architecture/` — Architecture overviews and ADRs
+- `docs/README.md` — Documentation index
+- `docs/architecture/adr/` — Architecture Decision Records (ADR-001 through ADR-039)

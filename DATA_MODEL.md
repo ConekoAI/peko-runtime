@@ -1,9 +1,9 @@
 # Pekobot — Data Model Specification
 
 **Version:** 0.1.0
-**Date:** 2026-04-26
-**Status:** Draft
-**Companion docs:** `UNIFIED_ARCHITECTURE_SPEC.md` v4.0, `API_CONTRACT.md` v1.0
+**Date:** 2026-06-23 (review pass)
+**Status:** Current
+**Companion docs:** [`AGENTS.md`](AGENTS.md) (build & module rules), [`API_SURFACE.md`](API_SURFACE.md) (public Rust API), [`docs/architecture/adr/`](docs/architecture/adr/) (decisions)
 
 This document defines every on-disk and in-memory data format used by the Pekobot runtime. It is the authoritative reference for anyone implementing the filesystem loader, session manager, image builder, or any component that reads or writes Pekobot data. All formats described here must be treated as stable contracts — breaking changes require a version increment.
 
@@ -283,7 +283,7 @@ require_webhook_tokens = false  # Default: false (development)
 
 The daemon's own configuration. Lives at the runtime root.
 
-**Location:** `.pekobot/config.toml` (project-level) or `~/.pekobot/config.toml` (global)
+**Location:** `.peko/config.toml` (project-level) or `~/.peko/config.toml` (global)
 
 ### 3.1 Full Schema
 
@@ -295,7 +295,7 @@ port        = 11435               # Optional. Default: 11435
 host        = "127.0.0.1"        # Optional. Default: 127.0.0.1 (localhost only)
 log_level   = "info"             # Optional. "error"|"warn"|"info"|"debug"|"trace". Default: "info"
 log_format  = "text"             # Optional. "text"|"json". Default: "text"
-pid_file    = ".pekobot/run/daemon.pid"  # Optional. Default: as shown
+pid_file    = ".peko/run/daemon.pid"  # Optional. Default: as shown
 
 # ── Registry ───────────────────────────────────────────────────────────────
 
@@ -323,17 +323,17 @@ openai_api_key_env    = "OPENAI_API_KEY"       # Optional. Default: "OPENAI_API_
 
 [capabilities]
 auto_install    = false           # Optional. Default: false (safe for prod)
-install_dir     = "~/.pekobot/capabilities"  # Optional. Default: as shown
+install_dir     = "~/.peko/capabilities"  # Optional. Default: as shown
 
 # ── Team defaults ──────────────────────────────────────────────────────────
 
 [teams]
-workspace_root  = ".pekobot/teams"  # Optional. Default: as shown
+workspace_root  = ".peko/teams"  # Optional. Default: as shown
 
 # ── Agents defaults ────────────────────────────────────────────────────────
 
 [agents]
-workspace_root  = ".pekobot/agents" # Optional. Default: as shown
+workspace_root  = ".peko/agents" # Optional. Default: as shown
 ```
 
 ### 3.2 Auth Types for Registry Sources
@@ -350,7 +350,7 @@ workspace_root  = ".pekobot/agents" # Optional. Default: as shown
 
 Defines the agents, scaling, shared services, and bus configuration for a team.
 
-**Location:** `.pekobot/teams/<team-name>/config.toml`
+**Location:** `.peko/teams/<team-name>/config.toml`
 
 ### 4.1 Full Schema
 
@@ -394,7 +394,7 @@ persist = true                    # Optional. Default: true
 
 [shared.files]
 enabled = true                    # Optional. Default: true
-path    = ".pekobot/teams/research-team/shared/files"  # Optional. Default: as shown
+path    = ".peko/teams/research-team/shared/files"  # Optional. Default: as shown
 
 # ── Shared MCPs ────────────────────────────────────────────────────────────
 # These are started once and proxied to all agents in the team.
@@ -456,7 +456,7 @@ Sessions are stored as JSONL (newline-delimited JSON) files. Each line is exactl
 
 **Location:** `<instance-workspace>/sessions/<session-id>.jsonl`
 
-**Example:** `.pekobot/teams/research-team/agents/researcher-1/sessions/sess_9nrwbf1v.jsonl`
+**Example:** `.peko/teams/research-team/agents/researcher-1/sessions/sess_9nrwbf1v.jsonl`
 
 ### 5.1 File Conventions
 
@@ -879,7 +879,7 @@ Alongside each `.jsonl` file is an optional `.context.cache` file. It is a **der
 **Format:**
 
 ```text
-# pekobot-context-cache v1
+# peko-context-cache v1
 # checksum: <blake3 hash of .jsonl content>
 # entries: <number of lines in .jsonl>
 [<array of ChatMessage>]
@@ -908,7 +908,7 @@ Alongside each `.jsonl` file is an optional `.context.cache` file. It is a **der
 
 ### 5.6 Compaction
 
-Compaction is the process of summarizing old conversation history to stay within the LLM's context window. It is triggered automatically when token usage crosses a configurable threshold, or manually via `pekobot session compact`.
+Compaction is the process of summarizing old conversation history to stay within the LLM's context window. It is triggered automatically when token usage crosses a configurable threshold, or manually via `peko session compact`.
 
 #### 5.6.1 Trigger Conditions
 
@@ -1033,8 +1033,8 @@ version = "1.0.0"
 description = "A web research agent"
 created_at = "2026-05-08T10:00:00Z"
 export_format = "1.1"
-did = "did:pekobot:local:researcher:abc123"
-pekobot_version = "0.1.0"
+did = "did:peko:local:researcher:abc123"
+peko_version = "0.1.0"
 
 [identity]
 key_algorithm = "ed25519"
@@ -1119,7 +1119,7 @@ name = "research-squad"
 description = "A team of research agents"
 agent_count = 2
 created_at = "2026-05-08T10:00:00Z"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [packaging]
 files = [
@@ -1240,7 +1240,7 @@ docker-skill.ext (gzip-compressed tar)
 ```toml
 [format]
 version = "1.0"
-pekobot_version = "0.1.0"
+peko_version = "0.1.0"
 
 [extension]
 id = "docker-skill"
@@ -1268,7 +1268,7 @@ The local registry is a content-addressable store for `.agent` layers and manife
 ### 9.1 Storage Layout
 
 ```
-~/.pekobot/registry/
+~/.peko/registry/
 ├── layers/
 │   └── sha256-abc123.../
 │       └── layer.tar.gz
@@ -1311,7 +1311,7 @@ Used for HTTP push/pull protocol. Converted to/from `AgentManifest` at the bound
 
 Runtime state for a running or stopped instance. Stored in SQLite.
 
-**Location:** `.pekobot/run/state.db`
+**Location:** `.peko/run/state.db`
 
 This is not a user-editable file. It is the daemon's working state — sessions, instance metadata, team membership. It is rebuilt from the filesystem if deleted. The JSONL session files are the source of truth; the SQLite file is a read-optimised index over them.
 
@@ -1432,7 +1432,7 @@ Declares MCP servers available to the agent. The runtime starts these processes 
       }
     },
     "vector-memory": {
-      "command": "pekobot-mcp-proxy",
+      "command": "peko-mcp-proxy",
       "args": ["vector-store-memory"],
       "env": {}
     }
@@ -1471,7 +1471,7 @@ The runtime spawns the tool as a subprocess and writes a single JSON object to i
   "context": {
     "instance_id": "inst_7k2mxp3q",
     "session_id":  "sess_9nrwbf1v",
-    "workspace":   "/home/user/project/.pekobot/agents/researcher-1/workspace"
+    "workspace":   "/home/user/project/.peko/agents/researcher-1/workspace"
   }
 }
 ```
@@ -1573,7 +1573,7 @@ Skill content in Markdown...
 ### 14.3 Extension Package Layout
 
 ```
-~/.pekobot/extensions/
+~/.peko/extensions/
 ├── skill/
 │   └── docker-skill/
 │       ├── SKILL.md
@@ -1621,7 +1621,7 @@ library     = "libsession_lossless.so"  # Shared library implementing SessionPlu
 ### 11.2 Installed Capability Layout
 
 ```
-~/.pekobot/capabilities/
+~/.peko/capabilities/
 ├── tools/
 │   └── web-browser@1.2.0/
 │       ├── capability.toml

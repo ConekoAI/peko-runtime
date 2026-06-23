@@ -107,7 +107,8 @@ You'll see the agent's response streamed to your terminal.
 |----------|-------------|
 | [Tutorial: Building Your First Agent](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive |
 | [CLI Reference](../user-guide/CLI_REFERENCE.md) | All commands explained |
-| [Architecture Overview](../dev/ARCHITECTURE.md) | How Pekobot works |
+| [Extension System](../architecture/EXTENSION_SYSTEM.md) | Unified extension architecture |
+| [User's Guide](../user-guide/USERS_GUIDE.md) | Sessions, teams, extensions, troubleshooting |
 
 ---
 

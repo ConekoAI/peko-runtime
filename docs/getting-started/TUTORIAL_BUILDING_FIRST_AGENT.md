@@ -266,17 +266,20 @@ peko ext enable <capability>
 
 ### 2. Configure Authentication
 
-Manage API keys centrally:
+Manage provider API keys centrally. As of v3, keys live in the OS keychain and the runtime owns a `~/.peko/providers.toml` catalog:
 
 ```bash
-# Set an API key (you will be prompted for the value)
-peko auth set openai
+# Add a provider entry to the runtime catalog
+peko provider add openai --template openai
 
-# List credentials
-peko auth list
+# Store the API key in the OS keychain (prompts for the value)
+peko credential set openai
 
-# Test a credential
-peko auth test openai
+# List which providers have a stored key
+peko credential list
+
+# Format-only check on a stored key
+peko credential test openai
 ```
 
 ### 3. Export and Share Agents
@@ -306,7 +309,7 @@ peko system clean
 
 - [User Guide](../user-guide/USERS_GUIDE.md) — Comprehensive guide to Pekobot
 - [CLI Reference](../user-guide/CLI_REFERENCE.md) — Command-line documentation
-- [Architecture Guide](../dev/ARCHITECTURE.md) — How Pekobot works
+- [Extension System](../architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
 
 ---
 

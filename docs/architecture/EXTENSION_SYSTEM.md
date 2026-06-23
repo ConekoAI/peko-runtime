@@ -1,8 +1,8 @@
 # Pekobot Extension System
 
-**Version:** 2.0  
-**Date:** 2026-04-11  
-**Status:** Current (Post-ADR-017 Implementation)  
+**Version:** 0.1.0 (Post-ADR-017 Implementation)
+**Date:** 2026-06-23 (review pass)
+**Status:** Current  
 
 ---
 
@@ -475,12 +475,12 @@ Migration is automatic on first run.
 
 ## Related Documentation
 
-- [Architecture Overview](OVERVIEW.md)
-- [Hook Points Reference](HOOK_POINTS.md)
-- [Migration Guide](../planning/migration/)
-- [ADR-017: Unified Extension Architecture](../adr/ADR-017.md)
-- [API Contract](../../API_CONTRACT.md)
+- [ADR-017: Unified Extension Architecture](adr/ADR-017.md)
+- [ADR-018a/b/c: Tool execution unification, registry, naming](adr/ADR-018a-tool-execution-unification.md)
+- [ADR-024: Unified Extension Manifest](adr/ADR-024-unified-extension-manifest.md)
+- [ADR-036: `peko ext init` and semantic validation](adr/ADR-036-extension-developer-experience.md)
+- [User's Guide: Extensions section](../user-guide/USERS_GUIDE.md#extensions)
 
 ---
 
-*Version 2.0 · Unified Extension Architecture · 2026-04-11*
+*Version 0.1.0 · Unified Extension Architecture · 2026-06-23*

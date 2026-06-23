@@ -30,8 +30,8 @@ Pekobot is a Rust-based multi-agent runtime that supports local multi-agent orch
 ### Tools & Capabilities
 - ✅ **MCP Support** — Model Context Protocol for external tool integration
 - ✅ **Skills System** — Documentation-driven agent capabilities (SKILL.md)
-- ✅ **18 Built-in Tools** — Filesystem, shell, cron, session, messaging, and more
-- ✅ **Unified Extension Architecture** — 22 hook points for maximum composability
+- ✅ **Built-in Tools** — Filesystem, shell, cron, session, messaging, task management
+- ✅ **Unified Extension Architecture** — Hook-based extension points for maximum composability
 
 ### Memory & Persistence
 - ✅ **SQLite Memory** — Persistent memory with semantic search
@@ -70,31 +70,31 @@ cd pekobot
 cargo build --release
 
 # The binary will be at:
-./target/release/pekobot
+./target/release/peko
 ```
 
 ### Basic Usage
 
 ```bash
 # Create an agent (default provider is minimax)
-./target/release/pekobot agent create myagent --provider kimi
+./target/release/peko agent create myagent --provider kimi
 
 # Send a message to an agent (primary interaction method)
-./target/release/pekobot send myagent "Hello, what can you do?"
+./target/release/peko send myagent "Hello, what can you do?"
 
 # Send from a file or stdin
-echo "Hello" | ./target/release/pekobot send myagent --stdin
-./target/release/pekobot send myagent --file prompt.txt
+echo "Hello" | ./target/release/peko send myagent --stdin
+./target/release/peko send myagent --file prompt.txt
 
 # Check version
-./target/release/pekobot --version
+./target/release/peko --version
 ```
 
 ---
 
 ## CLI Reference
 
-Pekobot uses a hierarchical command structure (`pekobot <noun> <verb>`).
+Pekobot uses a hierarchical command structure (`peko <noun> <verb>`).
 
 ### Global Flags
 
@@ -113,152 +113,152 @@ Pekobot uses a hierarchical command structure (`pekobot <noun> <verb>`).
 
 #### Agent Management
 ```bash
-pekobot agent create <NAME> --provider <PROVIDER>   # Create an agent
-pekobot agent list [--long]                          # List all agents
-pekobot agent show <NAME>                            # Show agent details
-pekobot agent remove <NAME> [--force]                # Remove an agent
-pekobot agent move <NAME> --team <TEAM>              # Move agent to team
-pekobot agent export <NAME> [--output <PATH>]        # Export to .agent package
-pekobot agent import <FILE> [--name <NEW_NAME>]      # Import from .agent package
-pekobot agent inspect <FILE>                         # Inspect package without importing
-pekobot agent config <NAME>                          # Edit agent configuration
+peko agent create <NAME> --provider <PROVIDER>   # Create an agent
+peko agent list [--long]                          # List all agents
+peko agent show <NAME>                            # Show agent details
+peko agent remove <NAME> [--force]                # Remove an agent
+peko agent move <NAME> --team <TEAM>              # Move agent to team
+peko agent export <NAME> [--output <PATH>]        # Export to .agent package
+peko agent import <FILE> [--name <NEW_NAME>]      # Import from .agent package
+peko agent inspect <FILE>                         # Inspect package without importing
+peko agent config <NAME>                          # Edit agent configuration
 ```
 
-> **Note:** There is no `pekobot agent start` command. Use `pekobot send` to interact with agents.
+> **Note:** There is no `peko agent start` command. Use `peko send` to interact with agents.
 
 #### Team Management
 ```bash
-pekobot team create <NAME>                           # Create a team
-pekobot team list                                    # List all teams
-pekobot team show <NAME>                             # Show team details
-pekobot team remove <NAME> [--force]                 # Remove a team
-pekobot team move <NAME> --to <TEAM>                 # Move team
-pekobot team export <NAME> [--output <PATH>]         # Export team
-pekobot team import <FILE> [--name <NEW_NAME>]       # Import team
+peko team create <NAME>                           # Create a team
+peko team list                                    # List all teams
+peko team show <NAME>                             # Show team details
+peko team remove <NAME> [--force]                 # Remove a team
+peko team move <NAME> --to <TEAM>                 # Move team
+peko team export <NAME> [--output <PATH>]         # Export team
+peko team import <FILE> [--name <NEW_NAME>]       # Import team
 ```
 
 #### Send Messages (Primary Interaction)
 ```bash
-pekobot send <AGENT> [MESSAGE]                       # Send message to agent
-pekobot send <AGENT> --file <PATH>                   # Send message from file
-pekobot send <AGENT> --stdin                         # Read message from stdin
-pekobot send <AGENT> "Hello" --session <ID>          # Send to specific session
+peko send <AGENT> [MESSAGE]                       # Send message to agent
+peko send <AGENT> --file <PATH>                   # Send message from file
+peko send <AGENT> --stdin                         # Read message from stdin
+peko send <AGENT> "Hello" --session <ID>          # Send to specific session
 ```
 
 #### Authentication (v3: catalog + keychain)
 ```bash
 # 1. Add a provider entry to the runtime catalog (`~/.peko/providers.toml`)
-pekobot provider add openai --template openai
-pekobot provider add my-local --api-format openai_completions --base-url http://localhost:8080
+peko provider add openai --template openai
+peko provider add my-local --api-format openai_completions --base-url http://localhost:8080
 
 # 2. Store the API key in the OS keychain (one per provider)
-pekobot credential set openai            # prompts for the key
-pekobot credential set my-local --key $MY_KEY
+peko credential set openai            # prompts for the key
+peko credential set my-local --key $MY_KEY
 
 # 3. Create an agent — the provider id references the catalog entry
-pekobot agent create alice --preferred-provider openai --preferred-model gpt-4o-mini
+peko agent create alice --preferred-provider openai --preferred-model gpt-4o-mini
 
 # Inspect / manage the catalog
-pekobot provider list
-pekobot provider set-default openai
-pekobot credential list
-pekobot credential test openai
+peko provider list
+peko provider set-default openai
+peko credential list
+peko credential test openai
 
 # PekoHub registry token (separate flow)
-pekobot login --api-key ph_xxx --registry https://hub.example.com
-pekobot logout
+peko login --api-key ph_xxx --registry https://hub.example.com
+peko logout
 ```
 
 #### Extension Management
 ```bash
-pekobot ext install <PATH|URL>                       # Install an extension
-pekobot ext list                                     # List installed extensions
-pekobot ext enable <ID>                              # Enable an extension
-pekobot ext disable <ID>                             # Disable an extension
-pekobot ext uninstall <ID>                           # Uninstall an extension
-pekobot ext info <ID>                                # Show extension info
-pekobot ext bundle <PATH> [--output <PATH>]          # Bundle extension
-pekobot ext config <ID>                              # Configure extension
-pekobot ext validate <PATH>                          # Validate extension manifest
+peko ext install <PATH|URL>                       # Install an extension
+peko ext list                                     # List installed extensions
+peko ext enable <ID>                              # Enable an extension
+peko ext disable <ID>                             # Disable an extension
+peko ext uninstall <ID>                           # Uninstall an extension
+peko ext info <ID>                                # Show extension info
+peko ext bundle <PATH> [--output <PATH>]          # Bundle extension
+peko ext config <ID>                              # Configure extension
+peko ext validate <PATH>                          # Validate extension manifest
 ```
 
 #### Session Management
 ```bash
-pekobot session list <AGENT>                         # List sessions for agent
-pekobot session show <ID>                            # Show session details
-pekobot session branch <ID> --name <NAME>            # Branch a session
-pekobot session remove <ID> [--force]                # Remove a session
-pekobot session switch <AGENT> <ID>                  # Switch active session
-pekobot session compact <ID>                         # Compact session (remove old turns)
+peko session list <AGENT>                         # List sessions for agent
+peko session show <ID>                            # Show session details
+peko session branch <ID> --name <NAME>            # Branch a session
+peko session remove <ID> [--force]                # Remove a session
+peko session switch <AGENT> <ID>                  # Switch active session
+peko session compact <ID>                         # Compact session (remove old turns)
 ```
 
 #### Configuration
 ```bash
-pekobot config validate [FILE]                       # Validate config file
-pekobot config init [--output <FILE>]                # Generate a new config file
-pekobot config defaults                              # Show default values
-pekobot config path                                  # Show config paths
-pekobot config get <KEY>                             # Get config value
-pekobot config set <KEY> <VALUE>                     # Set config value
+peko config validate [FILE]                       # Validate config file
+peko config init [--output <FILE>]                # Generate a new config file
+peko config defaults                              # Show default values
+peko config path                                  # Show config paths
+peko config get <KEY>                             # Get config value
+peko config set <KEY> <VALUE>                     # Set config value
 ```
 
 #### System
 ```bash
-pekobot system status                                # Show system status
-pekobot system info                                  # Show system info
-pekobot system doctor                                # Run health check
-pekobot system clean                                 # Clean up cache/logs
-pekobot system update                                # Check for updates
+peko system status                                # Show system status
+peko system info                                  # Show system info
+peko system doctor                                # Run health check
+peko system clean                                 # Clean up cache/logs
+peko system update                                # Check for updates
 ```
 
-> **Note:** There is no `pekobot status` top-level command. Use `pekobot system status`.
+> **Note:** There is no `peko status` top-level command. Use `peko system status`.
 
 #### Daemon
 ```bash
-pekobot daemon start [--foreground]                  # Start the daemon
-pekobot daemon stop                                  # Stop the daemon
-pekobot daemon status                                # Check daemon status
-pekobot daemon restart                               # Restart the daemon
-pekobot daemon check                                 # Trigger immediate check
+peko daemon start [--foreground]                  # Start the daemon
+peko daemon stop                                  # Stop the daemon
+peko daemon status                                # Check daemon status
+peko daemon restart                               # Restart the daemon
+peko daemon check                                 # Trigger immediate check
 ```
 
 #### Cron Jobs
 ```bash
-pekobot cron list                                    # List all cron jobs
-pekobot cron add --name <NAME> --schedule <CRON> --message <MSG>   # Add recurring job
-pekobot cron at --name <NAME> --at <TIME> --message <MSG>          # One-shot job
-pekobot cron every --name <NAME> --interval <INTERVAL> --message <MSG>  # Interval job
-pekobot cron remove <ID>                             # Remove a job
-pekobot cron history <ID>                            # View job history
-pekobot cron run <ID>                                # Run job immediately
+peko cron list                                    # List all cron jobs
+peko cron add --name <NAME> --schedule <CRON> --message <MSG>   # Add recurring job
+peko cron at --name <NAME> --at <TIME> --message <MSG>          # One-shot job
+peko cron every --name <NAME> --interval <INTERVAL> --message <MSG>  # Interval job
+peko cron remove <ID>                             # Remove a job
+peko cron history <ID>                            # View job history
+peko cron run <ID>                                # Run job immediately
 ```
 
 #### Orchestration
 ```bash
-pekobot orchestration event-router                   # Manage event router
-pekobot orchestration webhook                        # Manage webhooks
-pekobot orchestration watch                          # Manage file watchers
+peko orchestration event-router                   # Manage event router
+peko orchestration webhook                        # Manage webhooks
+peko orchestration watch                          # Manage file watchers
 ```
 
-> **Note:** There is no `pekobot orchestrate` top-level command. Use `pekobot orchestration`.
+> **Note:** There is no `peko orchestrate` top-level command. Use `peko orchestration`.
 
 #### Provider Management
 ```bash
-pekobot provider list                                # List available providers
+peko provider list                                # List available providers
 ```
 
 #### Update
 ```bash
-pekobot update                                       # Update Pekobot
-pekobot update --check                               # Check for updates only
+peko update                                       # Update Pekobot
+peko update --check                               # Check for updates only
 ```
 
 #### Shell Completions
 ```bash
-pekobot completions bash                             # Bash completions
-pekobot completions zsh                              # Zsh completions
-pekobot completions fish                             # Fish completions
-pekobot completions powershell                       # PowerShell completions
+peko completions bash                             # Bash completions
+peko completions zsh                              # Zsh completions
+peko completions fish                             # Fish completions
+peko completions powershell                       # PowerShell completions
 ```
 
 ---
@@ -283,20 +283,20 @@ All capabilities — tools, skills, MCP servers, channels, and gateways — are 
 
 ```bash
 # Install any extension type (auto-detected)
-pekobot ext install ./my-skill
-pekobot ext install ./mcp-server.json
-pekobot ext install ./discord-gateway
+peko ext install ./my-skill
+peko ext install ./mcp-server.json
+peko ext install ./discord-gateway
 
 # List all extensions
-pekobot ext list
+peko ext list
 # ID           TYPE      STATUS   HOOKS
 # docker       skill     enabled  prompt:skills
 # filesystem   mcp       enabled  prompt:tools, tool:*
 # discord      gateway   enabled  channel:*, event:*
 
 # Enable/disable
-pekobot ext enable docker
-pekobot ext disable docker
+peko ext enable docker
+peko ext disable docker
 ```
 
 ### The 22 Hook Points
@@ -320,13 +320,13 @@ Export agents as `.agent` packages and import them on other machines:
 
 ```bash
 # Export an agent to a .agent package
-pekobot agent export my-agent --output ./my-agent.agent
+peko agent export my-agent --output ./my-agent.agent
 
 # Import an agent
-pekobot agent import ./my-agent.agent --name imported-agent
+peko agent import ./my-agent.agent --name imported-agent
 
 # Inspect a package without importing
-pekobot agent inspect ./my-agent.agent
+peko agent inspect ./my-agent.agent
 ```
 
 **Package Contents:**
@@ -350,34 +350,34 @@ Pekobot includes a full cron system for scheduling tasks with a daemon mode for 
 
 ```bash
 # List all cron jobs
-pekobot cron list
+peko cron list
 
 # Add a recurring cron job
-pekobot cron add \
+peko cron add \
   --name "daily-report" \
   --schedule "0 9 * * *" \
   --message "Generate daily sales report"
 
 # Add an interval-based job (every 5 minutes)
-pekobot cron every \
+peko cron every \
   --name "heartbeat" \
   --interval "5m" \
   --message "Check system status"
 
 # Add a one-shot job at specific time
-pekobot cron at \
+peko cron at \
   --name "reminder" \
   --at "2026-03-01T09:00:00Z" \
   --message "Meeting in 1 hour"
 
 # Remove a job
-pekobot cron remove <ID>
+peko cron remove <ID>
 
 # View job history
-pekobot cron history <ID>
+peko cron history <ID>
 
 # Run a job immediately (manual trigger)
-pekobot cron run <ID>
+peko cron run <ID>
 ```
 
 ### Daemon Mode
@@ -386,26 +386,26 @@ The daemon is a long-running process that polls for due jobs and executes them a
 
 ```bash
 # Start the daemon (foreground mode)
-pekobot daemon start --foreground
+peko daemon start --foreground
 
 # Check daemon status
-pekobot daemon status
+peko daemon status
 
 # Trigger immediate cron check
-pekobot daemon check
+peko daemon check
 
 # Stop the daemon gracefully
-pekobot daemon stop
+peko daemon stop
 
 # Restart the daemon
-pekobot daemon restart
+peko daemon restart
 ```
 
 ---
 
 ## Configuration
 
-Create a `pekobot.toml` file:
+Create a `peko.toml` file:
 
 ```toml
 [agent]
@@ -437,28 +437,31 @@ temperature = 0.7
 
 ```
 src/
-├── agent/              # Agent runtime, lifecycle, registry, subagent execution
-├── commands/           # CLI command handlers
-├── common/             # Shared utilities, registry, services, time, identifiers
-├── compaction/         # Session compaction
-├── cron/               # Scheduling system
-├── daemon/             # Daemon process management
-├── engine/             # Agentic loop, event processing, streaming, state machine
-├── extensions/         # Unified Extension Architecture (core, adapters, manager, services, transport)
-├── identity/           # DID identity, keys, resolver, storage
-├── image/              # Agent image building
+├── agents/             # Agent management (stateless manager, config, lifecycle, prompts)
+├── auth/               # Authentication, authorization, principal, ownership, JWT, API keys
+├── commands/           # CLI command implementations (clap-based)
+├── common/             # Shared services and core types (AgentService, vault, KV, types)
+├── cron/               # Cron job scheduling and persistence
+├── daemon/             # HTTP daemon (Axum-based), health, info endpoints
+├── engine/             # Core agentic loop execution engine
+├── extensions/         # Extension framework + type implementations
+│   ├── framework/      # Generic extension framework (ADR-017)
+│   ├── builtin/        # Built-in tool adapter
+│   ├── gateway/        # Gateway adapter
+│   ├── general/        # General extension adapter
+│   ├── mcp/            # MCP adapter
+│   ├── skill/          # Skill adapter
+│   └── universal/      # Universal tool adapter
+├── identity/           # DID identity system, ed25519 keys, key storage, runtime identity
 ├── ipc/                # Inter-process communication
-├── mcp/                # Model Context Protocol support
-├── observability/      # Logging, metrics
-├── portable/           # Portable agent packages
-├── prompt/             # Prompt construction
-├── providers/          # LLM provider integrations (15+ providers)
-├── registry/           # Tool registry
-├── runtime/            # Shared runtime components
-├── session/            # Session storage, overlays, JSONL
-├── team/               # Multi-agent team runtime
-├── tools/              # Tool framework (core, builtin, framework, registry)
-└── types/              # Core type definitions
+├── observability/      # Metrics, logging, tracing, audit
+├── providers/          # LLM provider integrations (v3 catalog + resolver)
+├── registry/           # Packaging/export/import (.agent/.team/.ext) and remote registry client
+├── session/            # JSONL persistence, branching, indexing, compaction
+├── tools/              # Tool framework (core, builtin, registry, factory)
+├── tunnel/             # Pekohub tunnel protocol, A2A dispatcher, runtime discovery
+├── main.rs             # CLI entry point
+└── lib.rs              # Library surface (public domains + re-exports)
 ```
 
 ### Key Architectural Decisions
@@ -508,11 +511,16 @@ MIT
 
 ## Documentation
 
-- [Executive Summary](docs/executive/EXECUTIVE_SUMMARY.md) — Overview and value proposition
-- [Architecture Overview](docs/architecture/OVERVIEW.md) — Technical architecture
+- [Getting Started](docs/getting-started/GETTING_STARTED.md) — Build and run your first agent
+- [Tutorial: Building Your First Agent](docs/getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md) — Step-by-step walkthrough
+- [User's Guide](docs/user-guide/USERS_GUIDE.md) — Concepts, sessions, teams, extensions
+- [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Every `peko` command and flag
 - [Extension System](docs/architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
-- [Getting Started](docs/getting-started/GETTING_STARTED.md) — Installation and first steps
-- [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Command reference
+- [Architecture Decision Records](docs/architecture/adr/) — ADR-001 through ADR-039
+- [MCP Overview](docs/mcp/MCP.md) — Model Context Protocol integration
+- [Agent Guide](AGENTS.md) — Build, test, code-style rules for contributors
+- [API Surface](API_SURFACE.md) — Public Rust API contracts
+- [Data Model](DATA_MODEL.md) — On-disk and in-memory data formats
 
 ---
 

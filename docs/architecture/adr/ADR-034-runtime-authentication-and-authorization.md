@@ -13,7 +13,7 @@
 
 ## Context
 
-The pekobot daemon currently listens on `localhost:11435` (UDP) or a Unix domain socket with **no authentication**. This was acceptable for local single-user use (ADR-021) but is a blocker for:
+The peko-runtime daemon currently listens on a Unix domain socket (Unix) or Windows named pipe (per ADR-038) — historically UDP on Windows before ADR-038 — with **no authentication**. This was acceptable for local single-user use (ADR-021) but is a blocker for:
 
 - **Remote management**: The owner managing agents from a phone or web interface.
 - **Private exposure**: Allowed users chatting with agents from other devices on the same network.
