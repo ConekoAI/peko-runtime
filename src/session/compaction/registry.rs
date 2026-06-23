@@ -32,7 +32,7 @@ impl ModelContextRegistry {
         limits
             .entry("minimax".to_string())
             .or_insert_with(HashMap::new)
-            .insert("M2.7".to_string(), 204_800);
+            .insert("M3".to_string(), 512_000);
 
         // kimi
         limits
@@ -180,7 +180,7 @@ mod tests {
         let reg = ModelContextRegistry::new();
         assert_eq!(reg.get("openai", "gpt-4o"), 128_000);
         assert_eq!(reg.get("kimi", "K2.6"), 262_144);
-        assert_eq!(reg.get("minimax", "M2.7"), 204_800);
+        assert_eq!(reg.get("minimax", "M3"), 512_000);
         assert_eq!(reg.get("unknown", "unknown"), 128_000); // fallback
     }
 

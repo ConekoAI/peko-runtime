@@ -410,13 +410,13 @@ pub const BUILT_IN_TEMPLATES: &[ProviderTemplate] = &[
         base_url: "https://api.minimaxi.com/anthropic",
         requires_key: true,
         models: &[ModelTemplate {
-            id: "MiniMax-M2.7",
-            display_name: Some("MiniMax M2.7"),
-            context_length: Some(128_000),
+            id: "MiniMax-M3",
+            display_name: Some("MiniMax M3"),
+            context_length: Some(512_000),
             max_output_tokens: None,
             capabilities: &[crate::providers::catalog::ModelCapability::ToolUse],
         }],
-        default_model: "MiniMax-M2.7",
+        default_model: "MiniMax-M3",
         headers: &[],
     },
 ];

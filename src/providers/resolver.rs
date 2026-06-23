@@ -330,12 +330,16 @@ pub struct KeyProbeReport {
 }
 
 /// Resolve a model on a given entry. `model_id == None` falls back
-/// to the entry's declared default.
+/// to the entry's declared default. The literal string `"default"` is
+/// treated as a sentinel meaning "use the provider's default model" —
+/// this matches the convention used in agent configs that predate the
+/// v3 provider catalog (e.g. `preferred_model_id = "default"`).
 fn resolve_model_on(
     entry: &ProviderCatalogEntry,
     model_id: Option<&str>,
 ) -> Result<ModelInfo> {
-    if let Some(mid) = model_id {
+    let mid = model_id.filter(|m| !m.is_empty() && *m != "default");
+    if let Some(mid) = mid {
         if let Some(m) = entry.model(mid) {
             return Ok(m.clone());
         }
@@ -513,6 +517,23 @@ mod tests {
             .unwrap();
         assert_eq!(choice.entry.id, "anthropic");
         assert_eq!(choice.model.id, "claude-3-5-haiku-latest");
+        assert_eq!(choice.source, ResolveSource::AgentPreference);
+    }
+
+    #[tokio::test]
+    async fn agent_model_default_sentinel_falls_back_to_provider_default() {
+        let (_d, cat) = seeded_catalog().await;
+        let r = resolver(cat);
+        let choice = r
+            .resolve(ResolveRequest {
+                agent_provider: Some("anthropic"),
+                agent_model: Some("default"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(choice.entry.id, "anthropic");
+        assert_eq!(choice.model.id, "claude-sonnet-4-5");
         assert_eq!(choice.source, ResolveSource::AgentPreference);
     }
 

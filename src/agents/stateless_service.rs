@@ -921,6 +921,7 @@ impl StatelessAgentService {
         // Spawn task on main runtime (NOT spawn_blocking)
         // This ensures session writes complete before completion signal
         let extension_core = agent.extension_core();
+        let event_tx_for_error = event_tx.clone();
         tokio::spawn(async move {
             let on_event = move |event: AgenticEvent| {
                 tracing::info!(
@@ -942,7 +943,7 @@ impl StatelessAgentService {
                 "" | "anonymous" => None,
                 other => Some(other.to_string()),
             };
-            let _result = agent
+            let result = agent
                 .execute_streaming_with_session(
                     &prompt,
                     session,
@@ -951,6 +952,17 @@ impl StatelessAgentService {
                     on_event,
                 )
                 .await;
+
+            // Surface hard agent-loop failures (e.g. no provider configured)
+            // as a stream error instead of silently returning success.
+            if let Err(e) = result {
+                let run_id = agent.name().to_string();
+                let _ = event_tx_for_error.try_send(crate::engine::AgenticEvent::Lifecycle {
+                    run_id,
+                    phase: crate::engine::LifecyclePhase::Error,
+                    error: Some(format!("Agent execution failed: {e:#}")),
+                });
+            }
 
             // Invoke ChannelOutput hook — extensions may process or log the result
             // Note: For streaming, the response has already been sent via events.
