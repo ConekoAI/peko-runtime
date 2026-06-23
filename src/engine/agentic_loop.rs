@@ -302,6 +302,22 @@ impl AgenticLoop {
             s.id.clone()
         };
 
+        // Push the resolved session id onto the core so `TaskTool::spawn`
+        // can stamp `parent_session_key` on any task issued from this
+        // loop. This is the only place that *always* knows the real id
+        // (the `Agent::execute*` callers have already pushed it for the
+        // `_with_session` paths, but `Agent::execute` — one-shot CLI
+        // mode — pushes `None` because the session is born here, inside
+        // `run_inner`). Doing it here means every entry into the loop
+        // — regardless of which `execute_*` path called us — ends up
+        // with a real session key on the core before iteration 1
+        // begins, so even the first `task spawn` issued mid-iteration
+        // sees a real `parent_session_key` rather than the `"unknown"`
+        // fallback in `task_management.rs`.
+        self.extension_core
+            .set_session_key(Some(session_id.clone()))
+            .await;
+
         // Resolve model id once at start — threaded through every
         // `provider.chat_with_tools` / `stream_with_tools` call so the
         // adapter no longer needs to bake one in.
@@ -1497,7 +1513,7 @@ mod tests {
         // shared between the executor and the agentic loop.
         let queue: SharedAsyncTaskCompletionQueue =
             std::sync::Arc::new(AsyncTaskCompletionQueue::new());
-        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core.clone())
             .await
             .with_async_completion_queue(queue.clone());
 
@@ -1575,6 +1591,20 @@ mod tests {
         assert!(
             has_tool_result,
             "synthetic message must carry a ToolResult with tool_call_id=synthetic:shell:e2e-test"
+        );
+
+        // Session-key flow fix: once `run_inner` is past its bootstrap,
+        // the core's session key must equal the real session id — not
+        // `None` and not the `"unknown"` fallback. This guards the fix
+        // in `run_inner` that pushes `session_id` onto the core for
+        // every entry into the loop (covers the `Agent::execute` one-shot
+        // CLI path, where the session is born inside `run_inner` and the
+        // caller's `build_agentic_loop` would have pushed `None`).
+        let core_key = extension_core.current_session_key();
+        assert_eq!(
+            core_key,
+            Some(session_id.clone()),
+            "core's session key must match the loop's session id after run_inner bootstrap"
         );
     }
 }
