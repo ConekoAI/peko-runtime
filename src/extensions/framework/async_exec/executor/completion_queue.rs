@@ -144,11 +144,15 @@ mod tests {
     #[tokio::test]
     async fn test_fifo_ordering_under_concurrent_push() {
         use std::sync::Arc;
+        use tokio::sync::Barrier;
         let queue = Arc::new(AsyncTaskCompletionQueue::new());
+        let barrier = Arc::new(Barrier::new(10));
         let mut handles = Vec::new();
         for i in 0..10 {
             let q = queue.clone();
+            let b = barrier.clone();
             handles.push(tokio::spawn(async move {
+                b.wait().await;
                 q.push(make_event(&format!("shell:{i}"), "session_1"));
             }));
         }
@@ -159,13 +163,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let drained = queue.drain().await;
         assert_eq!(drained.len(), 10);
-        for (i, event) in drained.iter().enumerate() {
-            assert_eq!(
-                event.task_id,
-                format!("shell:{i}"),
-                "FIFO order violated at index {i}"
-            );
-        }
+        // Verify all events are present (set membership), not strict FIFO,
+        // because concurrent push order is non-deterministic.
+        let ids: std::collections::HashSet<String> =
+            drained.iter().map(|e| e.task_id.clone()).collect();
+        let expected: std::collections::HashSet<String> =
+            (0..10).map(|i| format!("shell:{i}")).collect();
+        assert_eq!(ids, expected, "all events must be present");
     }
 
     #[tokio::test]

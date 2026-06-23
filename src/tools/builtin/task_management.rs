@@ -316,6 +316,7 @@ Returns structured data appropriate to the action.
                 },
                 "tail_lines": {
                     "type": "integer",
+                    "minimum": 0,
                     "description": "Optional for 'output'. If >0, return only the last N lines of output.",
                     "default": 0
                 }
