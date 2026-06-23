@@ -11,6 +11,7 @@
 //! - Agent-side: `agents/{agent}/memberships.toml`
 //! - Team-side: `teams/{team}/members.toml`
 
+use crate::agents::agent_config::AgentConfig;
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::types::membership::{
@@ -19,12 +20,24 @@ use crate::common::types::membership::{
 };
 use crate::common::types::team::{
     TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo,
-    TeamMetadata, TeamMoveResult,
+    TeamMetadata, TeamMoveResult, TeamPullResult, TeamPushResult,
 };
+use crate::common::vault::Vault;
+use crate::extensions::framework::core::global_core;
+use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
 use crate::identity::Identity;
-use crate::portable::{self, TeamExportOptions, TeamImportOptions};
-use crate::types::agent::AgentConfig;
+use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
+use crate::registry::config::{RegistryConfig, RegistrySource};
+use crate::registry::manifest::RegistryManifest;
+use crate::registry::packaging::team_layer_builder::{
+    build_team_config_layer, decompose_team_archive,
+};
+use crate::registry::packaging::team_layer_reconstructor::reconstruct_team;
+use crate::registry::packaging::types::{ExtensionRef, ImageDigest, Layer, LayerType};
+use crate::registry::packaging::{self, TeamExportOptions, TeamImportOptions};
+use crate::registry::AgentRegistry;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Service for managing teams on the filesystem
@@ -78,7 +91,6 @@ impl TeamService {
             owner: owner
                 .cloned()
                 .unwrap_or_else(|| crate::auth::principal::Principal::User(String::new())),
-            owner_id: None,
             permissions: Vec::new(),
         };
 
@@ -480,7 +492,7 @@ impl TeamService {
     pub async fn transfer_team_owner(
         &self,
         name: &str,
-        new_owner_id: &str,
+        new_owner: crate::auth::principal::Principal,
         caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let team_dir = self.resolver.team_dir(name);
@@ -496,7 +508,7 @@ impl TeamService {
             anyhow::bail!("Permission denied: only the owner can transfer ownership");
         }
 
-        meta.owner = crate::auth::principal::principal_from_string_with_default_user(new_owner_id);
+        meta.owner = new_owner;
         let updated = toml::to_string_pretty(&meta)?;
         tokio::fs::write(&meta_path, updated).await?;
         Ok(())
@@ -524,8 +536,7 @@ impl TeamService {
 
         let grant_disc = std::mem::discriminant(&grant.permission);
         meta.permissions.retain(|g| {
-            !(g.subject == grant.subject
-                && std::mem::discriminant(&g.permission) == grant_disc)
+            !(g.subject == grant.subject && std::mem::discriminant(&g.permission) == grant_disc)
         });
         meta.permissions.push(grant);
 
@@ -615,7 +626,7 @@ impl TeamService {
 
         // Export the team
         let config_dir = self.resolver.config_dir().to_path_buf();
-        let output_path = portable::export_team_with_config_dir(
+        let output_path = packaging::export_team_with_config_dir(
             name,
             None,
             &base_dir,
@@ -678,7 +689,7 @@ impl TeamService {
         let config_dir = self.resolver.config_dir();
         let result_team_dir = self.resolver.team_dir(team_name);
 
-        let result = portable::import_team_with_base_dir(&path, &config_dir, import_opts)
+        let result = packaging::import_team_with_base_dir(&path, &config_dir, import_opts)
             .await
             .with_context(|| format!("Failed to import team from '{file_path}'"))?;
 
@@ -704,6 +715,500 @@ impl TeamService {
             agents_imported: result.agent_count,
         })
     }
+
+    // ============================================================================
+    // Registry Push / Pull
+    // ============================================================================
+
+    /// Push a team snapshot to a registry.
+    ///
+    /// Exports the team to a temporary archive, decomposes it into
+    /// content-addressable layers, stores them locally, and pushes the
+    /// manifest via `RegistryClient`.
+    pub async fn push_team<F>(
+        &self,
+        name: &str,
+        registry_ref: &str,
+        cli_registry: Option<&str>,
+        on_progress: F,
+    ) -> Result<TeamPushResult>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        // 1. Export team to a temp .team file
+        let temp_dir = std::env::temp_dir().join("PEKO_team_push");
+        tokio::fs::create_dir_all(&temp_dir).await?;
+        let temp_path = temp_dir.join(format!("{name}.team"));
+
+        let export_result = self
+            .export_team(
+                name,
+                Some(temp_path.to_string_lossy().to_string()),
+                false,
+                false,
+                false,
+            )
+            .await?;
+
+        // 2. Extract .team archive in-memory
+        let archive_bytes = tokio::fs::read(&export_result.output_path).await?;
+        let files = self.extract_team_archive_bytes(&archive_bytes)?;
+
+        // 3. Collect extension references from agent configs
+        let extension_refs = self.collect_extension_refs_from_team_files(&files).await?;
+
+        // 4. Decompose into content-addressable layers
+        let mut decomposed = decompose_team_archive(&files)?;
+        decomposed.extensions = extension_refs;
+
+        // Rebuild the TeamConfig layer with extension refs included
+        let team_manifest = {
+            let manifest_bytes = files
+                .get("team/manifest.toml")
+                .ok_or_else(|| anyhow::anyhow!("Missing team/manifest.toml in package"))?;
+            let manifest_str = std::str::from_utf8(manifest_bytes)?;
+            crate::registry::packaging::team_packager::TeamManifest::from_toml(manifest_str)?
+        };
+        let team_toml = files.get("team/team.toml").cloned();
+        let rebuilt_team_config = build_team_config_layer(
+            &team_manifest,
+            &decomposed.agent_index,
+            team_toml.as_ref(),
+            &decomposed.extensions,
+        )?;
+        decomposed.team_config_layer = rebuilt_team_config;
+
+        // 5. Store layers in AgentRegistry
+        let registry = AgentRegistry::new(AgentRegistry::default_path());
+        registry.init().await?;
+
+        registry
+            .store_layer(
+                &decomposed.team_config_layer.digest,
+                &decomposed.team_config_layer.bytes,
+            )
+            .await?;
+
+        let mut all_layers: Vec<(String, LayerType, u64)> = Vec::new();
+        all_layers.push((
+            decomposed.team_config_layer.digest.clone(),
+            LayerType::TeamConfig,
+            decomposed.team_config_layer.size,
+        ));
+
+        for layers in decomposed.agent_layers.values() {
+            for (layer_type, layer_bytes) in layers {
+                registry
+                    .store_layer(&layer_bytes.digest, &layer_bytes.bytes)
+                    .await?;
+                all_layers.push((layer_bytes.digest.clone(), *layer_type, layer_bytes.size));
+            }
+        }
+
+        // 6. Build RegistryManifest with kind="team"
+        let mut manifest = RegistryManifest::new(name.to_string(), "1.0.0".to_string())
+            .with_kind("team")
+            .with_ref(registry_ref)
+            .with_bundle_type("team");
+
+        if let Ok(Some(team_info)) = self.get_team(name).await {
+            if let Some(desc) = &team_info.metadata.description {
+                manifest = manifest.with_description(desc.clone());
+            }
+        }
+
+        for (digest, layer_type, size) in all_layers {
+            manifest.add_layer(Layer::new(digest, layer_type, size));
+        }
+
+        let manifest_json = manifest.to_json()?;
+        let manifest_digest = ImageDigest::from_bytes(manifest_json.as_bytes());
+        manifest.digest = manifest_digest.as_str().to_string();
+
+        // Store manifest for RegistryClient
+        store_registry_manifest_for_client(&registry, &manifest).await?;
+
+        // 7. Push via RegistryClient
+        let reg_ref = RegistryRef::parse_with_default(
+            registry_ref,
+            cli_registry.or(Some(&self.registry_config().default)),
+            Some(ResourceType::Team),
+        )?;
+        let config = self
+            .resolve_registry_config(cli_registry, &reg_ref.host)
+            .await?;
+
+        let client = RegistryClient::new(config, registry);
+        let resolved_ref = reg_ref.full_ref();
+
+        let result = client
+            .push(&manifest_digest, &resolved_ref, on_progress)
+            .await?;
+
+        // Clean up temp file
+        let _ = tokio::fs::remove_file(&export_result.output_path).await;
+
+        let total_size = result.total_size_bytes();
+        Ok(TeamPushResult {
+            name: name.to_string(),
+            registry_ref: registry_ref.to_string(),
+            manifest_name: result.name,
+            manifest_version: result.version,
+            manifest_digest: result.digest,
+            kind: result.kind,
+            layers: result.layers.len(),
+            total_size,
+        })
+    }
+
+    /// Pull a team snapshot from a registry and reconstruct it locally.
+    pub async fn pull_team<F>(
+        &self,
+        registry_ref: &str,
+        new_name: Option<&str>,
+        force: bool,
+        cli_registry: Option<&str>,
+        on_progress: F,
+    ) -> Result<TeamPullResult>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        // 1. Pull manifest and layers from registry
+        let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
+        agent_registry.init().await?;
+
+        let reg_ref = RegistryRef::parse_with_default(
+            registry_ref,
+            cli_registry.or(Some(&self.registry_config().default)),
+            Some(ResourceType::Team),
+        )?;
+        let config = self
+            .resolve_registry_config(cli_registry, &reg_ref.host)
+            .await?;
+
+        let client = RegistryClient::new(config, agent_registry.clone());
+        let resolved_ref = reg_ref.full_ref();
+
+        let manifest = client.pull(&resolved_ref, on_progress).await?;
+
+        if manifest.kind != "team" {
+            anyhow::bail!("Expected manifest kind 'team', got '{}'", manifest.kind);
+        }
+
+        // 2. Find TeamConfig layer
+        let team_config_layer = manifest
+            .layers
+            .iter()
+            .find(|l| l.layer_type == LayerType::TeamConfig)
+            .ok_or_else(|| anyhow::anyhow!("Team manifest missing TeamConfig layer"))?;
+
+        // 3. Reconstruct team from layers
+        let reconstructed = reconstruct_team(&agent_registry, &team_config_layer.digest)
+            .await
+            .context("Failed to reconstruct team from layers")?;
+
+        let team_name = new_name
+            .map(String::from)
+            .unwrap_or_else(|| reconstructed.team_info.team.name.clone());
+
+        // 4. Create team directory and write team.toml
+        let team_dir = self.resolver.config_dir().join("teams").join(&team_name);
+
+        if team_dir.exists() && !force {
+            anyhow::bail!("Team '{team_name}' already exists. Use --force to overwrite.");
+        }
+
+        if team_dir.exists() && force {
+            tokio::fs::remove_dir_all(&team_dir).await?;
+        }
+
+        tokio::fs::create_dir_all(&team_dir).await?;
+
+        if let Some(team_toml) = reconstructed.team_toml {
+            tokio::fs::write(team_dir.join("team.toml"), team_toml).await?;
+        }
+
+        // 5. Import each agent directly from reconstructed files
+        let mut imported_agents = Vec::new();
+        for (agent_name, files) in &reconstructed.agent_files {
+            let result = self
+                .import_agent_from_files(agent_name, files, &team_name, &team_dir)
+                .await
+                .with_context(|| format!("Failed to import agent: {agent_name}"))?;
+            imported_agents.push(result);
+        }
+
+        Ok(TeamPullResult {
+            registry_ref: registry_ref.to_string(),
+            name: team_name,
+            path: team_dir,
+            agents_imported: imported_agents.len(),
+            manifest_name: manifest.name.clone(),
+            manifest_version: manifest.version.clone(),
+            manifest_digest: manifest.digest.clone(),
+            manifest_kind: manifest.kind.clone(),
+            manifest_layers: manifest.layers.len(),
+            manifest_total_size: manifest.total_size_bytes(),
+            extension_refs: reconstructed.team_info.extensions.clone(),
+        })
+    }
+
+    // ============================================================================
+    // Registry helpers
+    // ============================================================================
+
+    /// Resolve registry configuration for push/pull operations.
+    async fn resolve_registry_config(
+        &self,
+        cli_registry: Option<&str>,
+        host: &str,
+    ) -> Result<RegistryConfig> {
+        let mut config = crate::registry::config::load_from_config_dir(self.resolver.config_dir());
+
+        if let Some(url) = cli_registry {
+            config.default = url.to_string();
+            if config.get_source(url).is_none() {
+                config.add_source(RegistrySource {
+                    url: url.to_string(),
+                    priority: 0,
+                    auth: None,
+                    token: None,
+                });
+            }
+        }
+
+        let vault = Vault::load(self.resolver.vault())
+            .with_context(|| "failed to load credential vault")?;
+        let token = vault.get_registry_token().map(|t| t.token);
+
+        if token.is_none() {
+            anyhow::bail!(
+                "No registry authentication found.\n\
+                 Run: peko login --api-key <key>"
+            );
+        }
+
+        config.add_source(RegistrySource {
+            url: host.to_string(),
+            priority: 1,
+            auth: None,
+            token,
+        });
+
+        Ok(config)
+    }
+
+    fn registry_config(&self) -> RegistryConfig {
+        crate::registry::config::load_from_config_dir(self.resolver.config_dir())
+    }
+
+    /// Extract a `.team` tar.gz archive into a map of file paths to bytes.
+    fn extract_team_archive_bytes(
+        &self,
+        data: &[u8],
+    ) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+        use std::collections::HashMap;
+        use std::io::Read;
+
+        let tar = flate2::read::GzDecoder::new(data);
+        let mut archive = tar::Archive::new(tar);
+
+        let mut files = HashMap::new();
+
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_string_lossy().to_string();
+
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)?;
+
+            files.insert(path, content);
+        }
+
+        Ok(files)
+    }
+
+    /// Collect extension registry references from agent configs within a .team archive.
+    async fn collect_extension_refs_from_team_files(
+        &self,
+        files: &std::collections::HashMap<String, Vec<u8>>,
+    ) -> Result<Vec<ExtensionRef>> {
+        let core = match global_core() {
+            Some(c) => c,
+            None => {
+                tracing::warn!(
+                    "Global ExtensionCore not initialized; skipping extension collection"
+                );
+                return Ok(Vec::new());
+            }
+        };
+
+        let storage = ExtensionStorage::with_dir(self.resolver.data_dir().join("extensions"));
+        let mut manager = ExtensionManager::with_core(core);
+        manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
+
+        // Register adapters
+        use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+        use crate::extensions::gateway::GatewayAdapter;
+        use crate::extensions::general::GeneralExtensionAdapter;
+        use crate::extensions::mcp::McpAdapter;
+        use crate::extensions::skill::SkillAdapter;
+        use crate::extensions::universal::UniversalToolAdapter;
+        let _ = BuiltinToolAdapter::register_all(
+            &manager.core_arc(),
+            &BuiltinToolRegistrarConfig::default(),
+        )
+        .await;
+        manager.register_adapter(Box::new(SkillAdapter::new()));
+        manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+        manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+        manager.register_adapter(Box::new(GatewayAdapter::new(manager.core_arc())));
+        manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+
+        if let Err(e) = manager.load_all().await {
+            tracing::warn!("Failed to load extensions for push: {}", e);
+        }
+
+        let mut seen = HashSet::new();
+        let mut extension_refs = Vec::new();
+
+        for (path, content) in files {
+            let Some(rest) = path.strip_prefix("agents/") else {
+                continue;
+            };
+            let Some((agent_name, file_path)) = rest.split_once('/') else {
+                continue;
+            };
+            if file_path != "config.toml" {
+                continue;
+            }
+
+            let config_str = match std::str::from_utf8(content) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let config: AgentConfig = match toml::from_str(config_str) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("Failed to parse agent config for '{}': {}", agent_name, e);
+                    continue;
+                }
+            };
+
+            let ext_config = match config.extensions {
+                Some(e) => e,
+                None => continue,
+            };
+
+            for tool_name in &ext_config.enabled {
+                if tool_name.ends_with('*') {
+                    continue;
+                }
+
+                match manager.resolve_tool_name(tool_name) {
+                    Some(resolution) => {
+                        if let Some(registry_ref) = resolution.registry_ref {
+                            let key = format!("{}:{}", resolution.id, registry_ref);
+                            if seen.insert(key) {
+                                extension_refs.push(ExtensionRef {
+                                    id: resolution.id,
+                                    registry_ref,
+                                });
+                            }
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        Ok(extension_refs)
+    }
+
+    /// Import a single agent from in-memory reconstructed files.
+    async fn import_agent_from_files(
+        &self,
+        name: &str,
+        files: &std::collections::HashMap<String, Vec<u8>>,
+        team_name: &str,
+        team_dir: &std::path::Path,
+    ) -> Result<crate::registry::packaging::team_unpackager::AgentImportSummary> {
+        use crate::registry::packaging::unpackager::{ImportOptions, Unpackager};
+
+        let unpackager = Unpackager::new("dummy.agent")
+            .with_base_dir(team_dir)
+            .with_team(team_name);
+
+        let mut files = files.clone();
+        if !files.contains_key("manifest.toml") {
+            let manifest = self.build_minimal_manifest(name, &files)?;
+            let manifest_toml = manifest.to_toml()?;
+            files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
+        }
+
+        let agent_opts = ImportOptions {
+            new_name: Some(name.to_string()),
+            passphrase: None,
+            rotate_keys: true,
+            import_sessions: true,
+            import_workspace: true,
+            skip_validation: false,
+            force: true,
+            team: Some(team_name.to_string()),
+            allow_unsigned: false,
+        };
+
+        let result = unpackager.import_from_files(files, agent_opts).await?;
+
+        Ok(
+            crate::registry::packaging::team_unpackager::AgentImportSummary {
+                name: result.name,
+                did: result.did,
+                keys_rotated: result.keys_rotated,
+            },
+        )
+    }
+
+    /// Build a minimal AgentManifest from reconstructed files for import validation.
+    fn build_minimal_manifest(
+        &self,
+        name: &str,
+        files: &std::collections::HashMap<String, Vec<u8>>,
+    ) -> Result<crate::registry::packaging::manifest::AgentManifest> {
+        use crate::registry::packaging::manifest::AgentManifest;
+
+        let did = if let Some(did_bytes) = files.get("identity/did.json") {
+            let did_doc: crate::identity::DIDDocument = serde_json::from_slice(did_bytes)?;
+            did_doc.id
+        } else {
+            format!("did:peko:local:{name}")
+        };
+
+        let mut manifest = AgentManifest::new(name, "1.0.0", &did);
+
+        for (path, content) in files {
+            manifest.add_file(path, content);
+        }
+
+        Ok(manifest)
+    }
+}
+
+/// Store a `RegistryManifest` in the format expected by `RegistryClient`.
+async fn store_registry_manifest_for_client(
+    registry: &AgentRegistry,
+    manifest: &RegistryManifest,
+) -> Result<ImageDigest> {
+    let digest = ImageDigest::new(&manifest.digest)?;
+    let image_dir = registry
+        .root_path()
+        .join("registry_manifests")
+        .join(digest.dir_name());
+    tokio::fs::create_dir_all(&image_dir).await?;
+    let manifest_path = image_dir.join("manifest.json");
+    let json = manifest.to_json()?;
+    tokio::fs::write(&manifest_path, json).await?;
+    Ok(digest)
 }
 
 /// Load team metadata from team.toml
@@ -725,7 +1230,7 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| {
             let dt = chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
-                .unwrap_or_else(|| chrono::Utc::now());
+                .unwrap_or_else(chrono::Utc::now);
             dt.to_rfc3339()
         })
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
@@ -734,9 +1239,8 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         name: team_name.to_string(),
         description: None,
         created_at,
-        host_runtime_id: "".to_string(),
+        host_runtime_id: String::new(),
         owner: crate::auth::principal::Principal::User(String::new()),
-        owner_id: None,
         permissions: Vec::new(),
     }
 }

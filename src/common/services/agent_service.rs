@@ -12,21 +12,39 @@ use crate::common::identifiers::{
     parse_agent_identifier_with_override, validate_agent_name, ValidationError,
 };
 use crate::common::paths::PathResolver;
-use crate::common::services::TeamService;
+use crate::common::services::ExtensionManagementService;
 use crate::common::types::agent::{
     AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult,
-    AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult, AgentInfo,
-    AgentRenameResult, AgentSummary, AgentUpdateRequest,
+    AgentExportOptions, AgentExportResult, AgentExtensionPullResult, AgentImportOptions,
+    AgentImportResult, AgentInfo, AgentPullResult, AgentPushResult, AgentRenameResult,
+    AgentSummary, AgentUpdateRequest,
 };
 use crate::common::types::membership::AgentMemberships;
+use crate::common::vault::Vault;
+use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
+use crate::extensions::framework::core::global_core;
+use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
+use crate::extensions::framework::types::ExtensionId;
+use crate::extensions::gateway::GatewayAdapter;
+use crate::extensions::general::GeneralExtensionAdapter;
+use crate::extensions::mcp::McpAdapter;
+use crate::extensions::skill::SkillAdapter;
+use crate::extensions::universal::UniversalToolAdapter;
 use crate::identity::Identity;
-use crate::portable::{
-    self, ExportOptions as PortableExportOptions, ExtensionRef, ImportOptions as PortableImportOptions,
+use crate::registry::AgentRegistry;
+use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
+use crate::registry::config::RegistryConfig;
+use crate::registry::manifest::RegistryManifest;
+use crate::registry::packaging::manifest::{AgentLayers, AgentManifest};
+use crate::registry::packaging::types::{ImageDigest, Layer, LayerType};
+use crate::registry::packaging::{get_package_info, PackageInfo};
+use crate::registry::packaging::{
+    ExportOptions as PortableExportOptions, ExtensionRef, ImportOptions as PortableImportOptions,
 };
-use crate::types::agent::{AgentConfig, PromptConfig, SystemFileConfig};
-use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
+use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Resolve extension references from an agent's enabled extensions.
@@ -37,8 +55,8 @@ async fn resolve_extension_refs(
     config: &AgentConfig,
     extensions_dir: &std::path::Path,
 ) -> Vec<ExtensionRef> {
-    use crate::extension::core::global_core;
-    use crate::extension::manager::{ExtensionManager, ExtensionStorage};
+    use crate::extensions::framework::core::global_core;
+    use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
     use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::gateway::GatewayAdapter;
     use crate::extensions::general::GeneralExtensionAdapter;
@@ -129,11 +147,11 @@ async fn build_embedded_extensions(
     extension_refs: &[ExtensionRef],
     extensions_dir: &std::path::Path,
 ) -> HashMap<String, Vec<u8>> {
-    use crate::extension::core::global_core;
-    use crate::extension::manager::{
+    use crate::extensions::framework::core::global_core;
+    use crate::extensions::framework::manager::{
         packaging::ExtensionPackager, ExtensionManager, ExtensionStorage,
     };
-    use crate::extension::types::ExtensionId;
+    use crate::extensions::framework::types::ExtensionId;
     use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::gateway::GatewayAdapter;
     use crate::extensions::general::GeneralExtensionAdapter;
@@ -218,55 +236,6 @@ async fn build_embedded_extensions(
 #[derive(Debug, Clone)]
 pub struct AgentService {
     resolver: PathResolver,
-    team_service: TeamService,
-}
-
-// Helper functions for building default agent config (previously in deprecated agent_config_builder)
-
-fn parse_provider_type(provider: &str) -> ProviderType {
-    match provider.to_lowercase().as_str() {
-        "openai" => ProviderType::OpenAI,
-        "anthropic" => ProviderType::Anthropic,
-        "ollama" => ProviderType::Ollama,
-        "moonshot" => ProviderType::Moonshot,
-        "kimi" => ProviderType::Kimi,
-        "kimi_code" | "kimi-code" => ProviderType::Kimi,
-        "minimax" => ProviderType::Minimax,
-        _ => ProviderType::OpenAI,
-    }
-}
-
-fn default_model_name(provider_type: ProviderType) -> String {
-    match provider_type {
-        ProviderType::OpenAI => "gpt-4o-mini".to_string(),
-        ProviderType::Anthropic => "claude-3-sonnet".to_string(),
-        ProviderType::Ollama => "llama3.2".to_string(),
-        ProviderType::OpenAICompatible => "default".to_string(),
-        ProviderType::Moonshot => "kimi-k2.5".to_string(),
-        ProviderType::Kimi => "k2p5".to_string(),
-        ProviderType::Minimax => "MiniMax-M2.7".to_string(),
-    }
-}
-
-fn api_key_env_var(provider_type: ProviderType) -> Option<String> {
-    match provider_type {
-        ProviderType::OpenAI => Some("OPENAI_API_KEY".to_string()),
-        ProviderType::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
-        ProviderType::Moonshot => Some("MOONSHOT_API_KEY".to_string()),
-        ProviderType::Kimi => Some("KIMI_API_KEY".to_string()),
-        ProviderType::Minimax => Some("MINIMAX_API_KEY".to_string()),
-        _ => None,
-    }
-}
-
-fn base_url(provider_type: ProviderType) -> Option<String> {
-    match provider_type {
-        ProviderType::Ollama => Some("http://localhost:11434".to_string()),
-        ProviderType::Moonshot => Some("https://api.moonshot.cn/v1".to_string()),
-        ProviderType::Kimi => Some("https://api.kimi.com/coding".to_string()),
-        ProviderType::Minimax => Some("https://api.minimaxi.com/anthropic".to_string()),
-        _ => None,
-    }
 }
 
 fn build_default_agent_config(name: &str, provider: &str, model: Option<String>) -> AgentConfig {
@@ -296,11 +265,7 @@ impl AgentService {
     /// Create a new agent service with the given path resolver
     #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
-        let team_service = TeamService::new(resolver.clone());
-        Self {
-            resolver,
-            team_service,
-        }
+        Self { resolver }
     }
 
     // ========================================================================
@@ -486,13 +451,12 @@ impl AgentService {
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
         // Build config with workspace set
-        let owner_principal = request.owner();
         let mut config = build_default_agent_config(name, &request.provider, request.model);
         config.workspace = Some(workspace_dir.clone());
         if let Some(ref host_id) = request.host_runtime_id {
             config.host_runtime_id = host_id.clone();
         }
-        if let Some(owner) = owner_principal {
+        if let Some(owner) = request.owner {
             config.owner = owner;
         }
         let toml = toml::to_string_pretty(&config)?;
@@ -508,7 +472,7 @@ impl AgentService {
             .await?;
 
         Ok(AgentCreationResult {
-            name: name.to_string(),
+            name: name.clone(),
             config_path,
             provider: request.provider,
         })
@@ -753,7 +717,7 @@ impl AgentService {
             tools_dir: None,
         };
 
-        let packager = portable::Packager::new(config, identity, None)
+        let packager = crate::registry::packaging::Packager::new(config, identity, None)
             .with_workspace_dir(&workspace_dir)
             .with_sessions_dir(&sessions_dir)
             .with_extension_refs(extension_refs)
@@ -808,7 +772,7 @@ impl AgentService {
         // Phase D3 flow 5 is the first end-to-end test that exercised
         // this code path and surfaced the regression.
         let config_dir = self.resolver.agents_root_dir().parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.resolver.agents_root_dir());
-        let unpackager = portable::Unpackager::new(file_path).with_base_dir(&config_dir);
+        let unpackager = crate::registry::packaging::Unpackager::new(file_path).with_base_dir(&config_dir);
 
         // Import the package
         let result = match unpackager.import(import_opts).await {
@@ -831,6 +795,178 @@ impl AgentService {
         Ok(AgentImportResult {
             name: result.name,
             config_path: result.config_path,
+        })
+    }
+
+    /// Inspect an agent package and return lightweight metadata.
+    pub async fn inspect_agent_package(
+        &self,
+        file_path: impl AsRef<Path>,
+    ) -> Result<PackageInfo> {
+        let file_path = file_path.as_ref();
+        if !file_path.exists() {
+            anyhow::bail!("File not found: {}", file_path.display());
+        }
+        get_package_info(file_path).await
+    }
+
+    /// Push an agent to a registry.
+    pub async fn push_agent<F>(
+        &self,
+        local_tag: &str,
+        registry_ref: &str,
+        file: Option<&str>,
+        cli_registry: Option<&str>,
+        on_progress: F,
+    ) -> Result<AgentPushResult>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        let registry = AgentRegistry::new(AgentRegistry::default_path());
+        registry.init().await?;
+
+        let agent_manifest = if let Some(file_path) = file {
+            self.load_agent_file_into_registry(file_path, &registry).await?
+        } else {
+            registry
+                .get_manifest_by_tag(local_tag)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to load local tag '{local_tag}': {e}"))?
+        };
+
+        let reg_ref = RegistryRef::parse_with_default(
+            registry_ref,
+            cli_registry.or(Some(&self.registry_config().default)),
+            Some(ResourceType::Agent),
+        )?;
+        let config = self.resolve_registry_config(cli_registry, &reg_ref.host).await?;
+
+        let registry_manifest = self
+            .agent_to_registry_manifest(&agent_manifest, &registry, registry_ref)
+            .await?;
+        let digest = ImageDigest::new(&registry_manifest.digest)?;
+
+        let client = RegistryClient::new(config, registry.clone());
+
+        self.store_registry_manifest_for_client(&registry, &registry_manifest).await?;
+
+        let push_tag = if file.is_some() {
+            "<file>".to_string()
+        } else {
+            local_tag.to_string()
+        };
+
+        let resolved_ref = reg_ref.full_ref();
+        let result = client.push(&digest, &resolved_ref, on_progress).await?;
+        let total_size = result.total_size_bytes();
+
+        Ok(AgentPushResult {
+            local_tag: push_tag,
+            registry_ref: resolved_ref,
+            name: result.name,
+            version: result.version,
+            digest: result.digest,
+            layers: result.layers.len(),
+            total_size,
+        })
+    }
+
+    /// Pull an agent from a registry and import it locally.
+    pub async fn pull_agent<F>(
+        &self,
+        registry_ref: &str,
+        name: Option<&str>,
+        output: Option<&str>,
+        force: bool,
+        allow_unsigned: bool,
+        cli_registry: Option<&str>,
+        on_progress: F,
+    ) -> Result<AgentPullResult>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        let agent_registry = AgentRegistry::new(AgentRegistry::default_path());
+        agent_registry.init().await?;
+
+        let reg_ref = RegistryRef::parse_with_default(
+            registry_ref,
+            cli_registry.or(Some(&self.registry_config().default)),
+            Some(ResourceType::Agent),
+        )?;
+        let config = self.resolve_registry_config(cli_registry, &reg_ref.host).await?;
+
+        let client = RegistryClient::new(config, agent_registry.clone());
+        let resolved_ref = reg_ref.full_ref();
+
+        let manifest = client.pull(&resolved_ref, on_progress).await?;
+
+        // Store in AgentRegistry format as well
+        let agent_manifest = self.registry_to_agent_manifest(&manifest, &agent_registry);
+        let tag = format!("{}:{}", manifest.name, reg_ref.tag);
+        agent_registry
+            .store_manifest(&agent_manifest, Some(&tag))
+            .await?;
+
+        // If --output was specified, export the pulled package to a .agent file
+        if let Some(output_path) = output {
+            agent_registry.export_package(&tag, output_path).await?;
+            return Ok(AgentPullResult {
+                name: manifest.name.clone(),
+                version: manifest.version.clone(),
+                tag: reg_ref.tag.clone(),
+                output_path: Some(PathBuf::from(output_path)),
+                config_path: None,
+                manifest_digest: manifest.digest.clone(),
+                manifest_layers: manifest.layers.len(),
+                manifest_total_size: manifest.total_size_bytes(),
+                extension_results: AgentExtensionPullResult::default(),
+            });
+        }
+
+        // Otherwise: register the pulled agent locally by exporting from registry
+        // to a temp .agent file and importing it
+        let temp_path = std::env::temp_dir().join(format!(
+            "peko-pull-{}-{}.agent",
+            manifest.name,
+            std::process::id()
+        ));
+
+        agent_registry.export_package(&tag, &temp_path).await?;
+
+        let cleanup = scopeguard::guard(temp_path.clone(), |p| {
+            let _ = std::fs::remove_file(&p);
+        });
+
+        // Inspect the temp package to read manifest extensions before import.
+        let (agent_manifest, _) = crate::registry::packaging::inspect_agent(&temp_path, None).await?;
+        let extension_refs = agent_manifest.extensions;
+
+        let import_opts = AgentImportOptions {
+            name: name.map(String::from),
+            force,
+            allow_unsigned,
+        };
+        let result = self.import_agent(&temp_path, import_opts).await?;
+
+        drop(cleanup);
+
+        let extension_results = if extension_refs.is_empty() {
+            AgentExtensionPullResult::default()
+        } else {
+            self.ensure_extensions_for_agent(&extension_refs, &result.name, cli_registry)
+                .await
+        };
+
+        Ok(AgentPullResult {
+            name: result.name,
+            version: manifest.version.clone(),
+            tag: reg_ref.tag.clone(),
+            output_path: None,
+            config_path: Some(result.config_path),
+            manifest_digest: manifest.digest.clone(),
+            manifest_layers: manifest.layers.len(),
+            manifest_total_size: manifest.total_size_bytes(),
+            extension_results,
         })
     }
 
@@ -858,7 +994,7 @@ impl AgentService {
     pub async fn transfer_agent_owner(
         &self,
         name: &str,
-        new_owner_id: &str,
+        new_owner: crate::auth::principal::Principal,
         caller: &crate::auth::principal::Principal,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
@@ -875,7 +1011,7 @@ impl AgentService {
             anyhow::bail!("Permission denied: only the owner can transfer ownership");
         }
 
-        config.owner = crate::auth::principal::principal_from_string_with_default_user(new_owner_id);
+        config.owner = new_owner;
         let updated = toml::to_string_pretty(&config)?;
         tokio::fs::write(&config_path, updated).await?;
         Ok(())
@@ -980,6 +1116,319 @@ cron.json
 
         Ok(())
     }
+
+    /// Load a `.agent` file into the local registry, storing layers and returning the manifest.
+    async fn load_agent_file_into_registry(
+        &self,
+        file_path: &str,
+        registry: &AgentRegistry,
+    ) -> Result<AgentManifest> {
+        let file = std::fs::File::open(file_path)?;
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(decoder);
+
+        let mut files = std::collections::HashMap::new();
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+            let path_str = path.to_string_lossy().to_string();
+
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)?;
+            files.insert(path_str, content);
+        }
+
+        let manifest_bytes = files
+            .get("manifest.toml")
+            .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml in package"))?;
+        let manifest_str = std::str::from_utf8(manifest_bytes)?;
+        let manifest = AgentManifest::from_toml(manifest_str)?;
+
+        // Store each layer in the registry
+        if let Some(ref layers) = manifest.layers {
+            let layer_types = [
+                (layers.config.as_ref(), LayerType::Config),
+                (layers.identity.as_ref(), LayerType::Identity),
+                (layers.skills.as_ref(), LayerType::Skills),
+                (layers.workspace.as_ref(), LayerType::Workspace),
+                (layers.sessions.as_ref(), LayerType::Sessions),
+                (layers.mcp.as_ref(), LayerType::Mcp),
+            ];
+
+            for (digest_opt, layer_type) in layer_types {
+                if let Some(digest) = digest_opt {
+                    let prefix = layer_type.dir_name();
+                    let mut layer_files: std::collections::BTreeMap<String, Vec<u8>> =
+                        std::collections::BTreeMap::new();
+                    for (path, content) in &files {
+                        if path.starts_with(&format!("{prefix}/")) {
+                            let layer_path = path.strip_prefix(&format!("{prefix}/")).unwrap_or(path);
+                            layer_files.insert(layer_path.to_string(), content.clone());
+                        }
+                    }
+
+                    if !layer_files.is_empty() {
+                        let mut buf = Vec::new();
+                        {
+                            let enc =
+                                flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+                            let mut tar = tar::Builder::new(enc);
+                            for (path, content) in layer_files {
+                                let mut header = tar::Header::new_gnu();
+                                header.set_path(&path)?;
+                                header.set_size(content.len() as u64);
+                                header.set_mode(0o644);
+                                header.set_cksum();
+                                tar.append(&header, content.as_slice())?;
+                            }
+                            tar.finish()?;
+                        }
+                        registry.store_layer(digest, &buf).await?;
+                    }
+                }
+            }
+        }
+
+        Ok(manifest)
+    }
+
+    /// Convert an `AgentManifest` to a `RegistryManifest`
+    async fn agent_to_registry_manifest(
+        &self,
+        agent_manifest: &AgentManifest,
+        registry: &AgentRegistry,
+        reg_ref: &str,
+    ) -> Result<RegistryManifest> {
+        let mut manifest = RegistryManifest::new(
+            agent_manifest.agent.name.clone(),
+            agent_manifest.agent.version.clone(),
+        )
+        .with_ref(reg_ref)
+        .with_bundle_type("agent");
+
+        if let Some(desc) = &agent_manifest.agent.description {
+            manifest = manifest.with_description(desc.clone());
+        }
+
+        manifest.extensions = agent_manifest.extensions.clone();
+
+        if !agent_manifest.signatures.manifest.is_empty() {
+            manifest.signatures = Some(agent_manifest.signatures.clone());
+        }
+
+        if let Some(layers) = &agent_manifest.layers {
+            if let Some(digest) = &layers.config {
+                let size = self.layer_size(registry, digest).await?;
+                manifest.add_layer(Layer::new(digest.clone(), LayerType::Config, size));
+            }
+            if let Some(digest) = &layers.identity {
+                let size = self.layer_size(registry, digest).await?;
+                manifest.add_layer(Layer::new(digest.clone(), LayerType::Identity, size));
+            }
+            if let Some(digest) = &layers.skills {
+                let size = self.layer_size(registry, digest).await?;
+                manifest.add_layer(Layer::new(digest.clone(), LayerType::Skills, size));
+            }
+            if let Some(digest) = &layers.workspace {
+                let size = self.layer_size(registry, digest).await?;
+                manifest.add_layer(Layer::new(digest.clone(), LayerType::Workspace, size));
+            }
+            if let Some(digest) = &layers.sessions {
+                let size = self.layer_size(registry, digest).await?;
+                manifest.add_layer(Layer::new(digest.clone(), LayerType::Sessions, size));
+            }
+            if let Some(digest) = &layers.mcp {
+                let size = self.layer_size(registry, digest).await?;
+                manifest.add_layer(Layer::new(digest.clone(), LayerType::Mcp, size));
+            }
+            if let Some(digest) = &layers.extensions {
+                let size = self.layer_size(registry, digest).await?;
+                manifest.add_layer(Layer::new(digest.clone(), LayerType::Extensions, size));
+            }
+        }
+
+        let agent_manifest_toml = agent_manifest.to_toml()?;
+        let config_json = serde_json::to_string(&serde_json::json!({
+            "name": agent_manifest.agent.name,
+            "version": agent_manifest.agent.version,
+            "kind": "agent",
+            "agent_manifest_toml": agent_manifest_toml,
+        }))?;
+        let config_digest = ImageDigest::from_bytes(config_json.as_bytes());
+        registry
+            .store_layer(config_digest.as_str(), config_json.as_bytes())
+            .await?;
+        manifest.config = crate::registry::manifest::ConfigDescriptor {
+            media_type: "application/vnd.oci.image.config.v1+json".to_string(),
+            digest: config_digest.as_str().to_string(),
+            size: config_json.len() as u64,
+        };
+
+        let json = manifest.to_json()?;
+        let digest = ImageDigest::from_bytes(json.as_bytes());
+        manifest.digest = digest.as_str().to_string();
+
+        Ok(manifest)
+    }
+
+    /// Convert a `RegistryManifest` to an `AgentManifest`.
+    fn registry_to_agent_manifest(
+        &self,
+        registry_manifest: &RegistryManifest,
+        registry: &AgentRegistry,
+    ) -> AgentManifest {
+        if !registry_manifest.config.digest.is_empty() {
+            let config_path = registry.layer_path(&registry_manifest.config.digest);
+            if let Ok(bytes) = std::fs::read(&config_path) {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if let Some(toml_str) = json.get("agent_manifest_toml").and_then(|v| v.as_str()) {
+                        if let Ok(manifest) = AgentManifest::from_toml(toml_str) {
+                            return manifest;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut agent_manifest = AgentManifest::new(
+            &registry_manifest.name,
+            &registry_manifest.version,
+            "did:peko:pulled",
+        );
+
+        let mut layers = AgentLayers::default();
+        for layer in &registry_manifest.layers {
+            match layer.layer_type {
+                LayerType::Config => layers.config = Some(layer.digest.clone()),
+                LayerType::Identity => layers.identity = Some(layer.digest.clone()),
+                LayerType::Skills => layers.skills = Some(layer.digest.clone()),
+                LayerType::Workspace => layers.workspace = Some(layer.digest.clone()),
+                LayerType::Sessions => layers.sessions = Some(layer.digest.clone()),
+                LayerType::Mcp => layers.mcp = Some(layer.digest.clone()),
+                LayerType::Extensions => layers.extensions = Some(layer.digest.clone()),
+                LayerType::TeamConfig => {}
+            }
+        }
+        agent_manifest.layers = Some(layers);
+        agent_manifest.extensions = registry_manifest.extensions.clone();
+
+        if let Some(sig) = registry_manifest.signatures.clone() {
+            agent_manifest.signatures = sig;
+        }
+
+        agent_manifest
+    }
+
+    /// Get the size of a layer from the `AgentRegistry`
+    async fn layer_size(&self, registry: &AgentRegistry, digest: &str) -> Result<u64> {
+        let path = registry.layer_path(digest);
+        let metadata = tokio::fs::metadata(&path).await?;
+        Ok(metadata.len())
+    }
+
+    /// Store a `RegistryManifest` in the format expected by `RegistryClient`
+    async fn store_registry_manifest_for_client(
+        &self,
+        registry: &AgentRegistry,
+        manifest: &RegistryManifest,
+    ) -> Result<ImageDigest> {
+        let digest = ImageDigest::new(&manifest.digest)?;
+        let image_dir = registry
+            .root_path()
+            .join("registry_manifests")
+            .join(digest.dir_name());
+        tokio::fs::create_dir_all(&image_dir).await?;
+        let manifest_path = image_dir.join("manifest.json");
+        let json = manifest.to_json()?;
+        tokio::fs::write(&manifest_path, json).await?;
+        Ok(digest)
+    }
+
+    /// Resolve registry configuration for push/pull operations
+    async fn resolve_registry_config(
+        &self,
+        cli_registry: Option<&str>,
+        host: &str,
+    ) -> Result<RegistryConfig> {
+        let config = crate::registry::config::load_from_config_dir(self.resolver.config_dir());
+        let vault = Vault::load(self.resolver.vault())
+            .with_context(|| "failed to load credential vault")?;
+        let token = vault.get_registry_token().map(|t| t.token);
+        crate::registry::config::resolve_registry_config(config, cli_registry, host, token)
+    }
+
+    fn registry_config(&self) -> RegistryConfig {
+        crate::registry::config::load_from_config_dir(self.resolver.config_dir())
+    }
+
+    /// Ensure all extensions referenced by an agent manifest are installed.
+    async fn ensure_extensions_for_agent(
+        &self,
+        extensions: &[ExtensionRef],
+        agent_name: &str,
+        cli_registry: Option<&str>,
+    ) -> AgentExtensionPullResult {
+        let mut result = AgentExtensionPullResult::default();
+
+        let core = match global_core() {
+            Some(c) => c,
+            None => {
+                tracing::warn!(
+                    "Global ExtensionCore not initialized; skipping extension ensure for agent '{}'",
+                    agent_name
+                );
+                for ext in extensions {
+                    result
+                        .failed
+                        .push((ext.id.clone(), "ExtensionCore not initialized".to_string()));
+                }
+                return result;
+            }
+        };
+
+        let extensions_dir = self.resolver.data_dir().join("extensions");
+        let storage = ExtensionStorage::with_dir(extensions_dir);
+        let mut manager = ExtensionManager::with_core(core);
+        manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
+
+        let _ = BuiltinToolAdapter::register_all(
+            &manager.core_arc(),
+            &BuiltinToolRegistrarConfig::default(),
+        )
+        .await;
+        manager.register_adapter(Box::new(SkillAdapter::new()));
+        manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+        manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+        manager.register_adapter(Box::new(GatewayAdapter::new(manager.core_arc())));
+        manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
+
+        if let Err(e) = manager.load_all().await {
+            tracing::warn!("Failed to load extensions during agent pull: {}", e);
+        }
+
+        let ext_service = ExtensionManagementService::new(self.resolver.clone());
+
+        for ext_ref in extensions {
+            let ext_id = ExtensionId::new(&ext_ref.id);
+
+            if manager.get_extension(&ext_id).is_some() {
+                result.already_present.push(ext_ref.id.clone());
+            } else {
+                match ext_service
+                    .pull_extension(&ext_ref.registry_ref, cli_registry, false, |_| {})
+                    .await
+                {
+                    Ok(_) => result.pulled.push(ext_ref.id.clone()),
+                    Err(e) => {
+                        tracing::warn!("Failed to pull extension '{}': {}", ext_ref.id, e);
+                        result.failed.push((ext_ref.id.clone(), e.to_string()));
+                    }
+                }
+            }
+        }
+
+        result
+    }
 }
 
 /// Map validation error to anyhow error with descriptive message
@@ -1043,11 +1492,9 @@ mod tests {
         if let Some(parent) = catalog_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let entries = vec![
-            ("minimax", ApiFormat::AnthropicMessages, "https://api.minimaxi.com/anthropic", "MiniMax-M2.7"),
+        let entries = [("minimax", ApiFormat::AnthropicMessages, "https://api.minimaxi.com/anthropic", "MiniMax-M2.7"),
             ("openai", ApiFormat::OpenaiCompletions, "https://api.openai.com/v1", "gpt-4o-mini"),
-            ("anthropic", ApiFormat::AnthropicMessages, "https://api.anthropic.com", "claude-3-5-sonnet-latest"),
-        ];
+            ("anthropic", ApiFormat::AnthropicMessages, "https://api.anthropic.com", "claude-3-5-sonnet-latest")];
         let now = chrono::Utc::now();
         let provider_entries: std::collections::BTreeMap<String, ProviderCatalogEntry> = entries
             .iter()
@@ -1331,7 +1778,7 @@ mod tests {
                 "alice",
                 None,
                 AgentUpdateRequest {
-                    system_prompt: Some("".to_string()),
+                    system_prompt: Some(String::new()),
                     ..Default::default()
                 },
             )

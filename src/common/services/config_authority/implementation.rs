@@ -7,7 +7,7 @@ use super::cache::ConfigCache;
 use super::entry::{AgentConfigEntry, ConfigSource};
 use super::io::ConfigIo;
 use crate::common::paths::PathResolver;
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::path::PathBuf;
@@ -254,7 +254,7 @@ impl ConfigAuthorityImpl {
     /// `api_key` / `base_url` / `provider_type` when the catalog resolver
     /// is not in use), producing empty stdout from `peko send`. Using a
     /// targeted `toml::Value` edit preserves the legacy block during the
-    /// v1→v3 migration window (see `runtime::migration_v3`).
+    /// v1→v3 migration window.
     pub fn enable_tool_sync(&self, agent_name: &str, tool_name: &str) -> anyhow::Result<()> {
         let config_path = self.config_path(agent_name);
         if !config_path.exists() {
@@ -556,9 +556,7 @@ cli = true
 
         let updated = update_extensions_enabled(v1_with_provider, |existing| {
             assert!(existing.is_empty());
-            let mut next = Vec::new();
-            next.push("calculator-skill".to_string());
-            Some(next)
+            Some(vec!["calculator-skill".to_string()])
         })
         .expect("update succeeds");
 

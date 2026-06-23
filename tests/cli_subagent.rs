@@ -131,12 +131,11 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
 fn write_subagent_agent(
     home: &std::path::Path,
     name: &str,
-    mock_llm_url: &str,
+    _mock_llm_url: &str,
 ) -> std::io::Result<()> {
     use std::path::Path;
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
-    let base_url = mock_llm_url.trim_end_matches('/');
     let config_toml = format!(
         r#"version = "3.0"
 name = "{name}"

@@ -36,7 +36,7 @@ use crate::tunnel::hub_directory::{
     AgentDirectory, AgentResolution, FakeAgentDirectory, ResolvedExposure,
 };
 use crate::tunnel::{PendingA2aResponses, TunnelHandle, TunnelMessage};
-use crate::tools::builtin::messaging::a2a_send::{
+use crate::tunnel::a2a_send_tool::{
     A2aSendArgs, A2aSendResult, A2aSendTool, HubA2AErrorResponse, TargetSpec,
 };
 
@@ -220,11 +220,11 @@ async fn build_caller(
     // needs an async constructor.
     let service = build_minimal_service().await;
 
-    let tool = A2aSendTool::new(service.clone())
-        .with_caller_did("caller-agent", &caller_agent_did)
-        .with_cross_runtime(ctx);
+    
 
-    tool
+    A2aSendTool::new(service.clone())
+        .with_caller_did("caller-agent", &caller_agent_did)
+        .with_cross_runtime(ctx)
 }
 
 /// Cheaply-construct a `StatelessAgentService` for the test
@@ -232,8 +232,8 @@ async fn build_caller(
 /// dominates), so the service can be empty. Uses a tempdir +
 /// `PathResolver` + `ConfigAuthorityImpl` like the existing
 /// `build_test_service` helper in `a2a_send.rs`.
-async fn build_minimal_service() -> Arc<crate::agent::stateless_service::StatelessAgentService> {
-    use crate::agent::stateless_service::StatelessAgentService;
+async fn build_minimal_service() -> Arc<crate::agents::stateless_service::StatelessAgentService> {
+    use crate::agents::stateless_service::StatelessAgentService;
     use crate::common::paths::PathResolver;
     use crate::common::services::config_authority::ConfigAuthorityImpl;
 

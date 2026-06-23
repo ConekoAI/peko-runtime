@@ -17,8 +17,8 @@
 //! session_id = { source = "runtime", field = "session_id" }
 //! ```
 
-use crate::extension::protocols::shared::proxy_utils::execute_with_context_handling;
-use crate::extension::services::ReservedParamsConfig;
+use crate::extensions::framework::protocols::shared::proxy_utils::execute_with_context_handling;
+use crate::extensions::framework::services::ReservedParamsConfig;
 use crate::extensions::mcp::protocol::types::Tool as McpTool;
 use crate::extensions::mcp::runtime::tool_proxy::McpToolProxy;
 use crate::tools::{Tool, ToolContext};
@@ -120,7 +120,7 @@ impl InjectableMcpToolProxy {
     ///
     /// Uses the shared schema filter for consistency with Universal Tools.
     fn filter_schema(schema: &Value, reserved: &ReservedParamsConfig) -> Value {
-        use crate::extension::protocols::shared::filter_reserved_params;
+        use crate::extensions::framework::protocols::shared::filter_reserved_params;
         use std::collections::HashSet;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();

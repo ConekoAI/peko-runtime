@@ -17,9 +17,7 @@ pub mod task_management;
 
 pub use cron::CronTool;
 pub use fs::{GlobTool, GrepTool, ReadFileTool, StrReplaceFileTool, WriteFileTool};
-pub use messaging::{
-    A2aSendTool, AgentSpawnTool, ChannelType, MessageConfig, MessageResult, MessageTool,
-};
+pub use messaging::{AgentSpawnTool, ChannelType, MessageConfig, MessageResult, MessageTool};
 pub use session::{
     SessionCache, SessionInfo, SessionIntrospector,
     SessionRegistry as SessionIntrospectionRegistry, SessionTool,

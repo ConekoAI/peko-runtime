@@ -225,7 +225,7 @@ impl super::ApiAdapter for OpenAiAdapter {
         })
     }
 
-    fn parse_sse_event(&self, model_id: &str, data: &str) -> Result<Option<StreamEvent>> {
+    fn parse_sse_event(&self, _model_id: &str, data: &str) -> Result<Option<StreamEvent>> {
         if data.trim() == "[DONE]" {
             // Clear accumulator when stream ends
             self.tool_call_accumulator.reset();

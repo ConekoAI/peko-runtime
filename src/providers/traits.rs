@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::message::{ContentBlock, TokenUsage};
+use crate::common::types::message::{ContentBlock, TokenUsage};
 
 /// Unique content block ID for streaming correlation
 pub type ContentBlockId = String;
@@ -112,7 +112,7 @@ pub enum StreamEvent {
         /// Index in the content array
         content_index: usize,
         /// Complete tool call
-        tool_call: crate::types::message::ContentBlock,
+        tool_call: crate::common::types::message::ContentBlock,
     },
     /// Stream completed
     Done {

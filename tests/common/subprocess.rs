@@ -38,7 +38,9 @@ pub fn run_with_timeout<F>(
 where
     F: FnOnce() -> Command,
 {
-    run_inner(make_cmd, extra_args, timeout, /*panic_on_timeout=*/ true)
+    run_inner(
+        make_cmd, extra_args, timeout, /*panic_on_timeout=*/ true,
+    )
 }
 
 /// Soft variant: returns `Err(captured_output_message)` on timeout instead
@@ -55,7 +57,9 @@ pub fn try_run_with_timeout<F>(
 where
     F: FnOnce() -> Command,
 {
-    run_inner(make_cmd, extra_args, timeout, /*panic_on_timeout=*/ false)
+    run_inner(
+        make_cmd, extra_args, timeout, /*panic_on_timeout=*/ false,
+    )
 }
 
 fn run_inner<F>(

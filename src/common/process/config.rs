@@ -211,11 +211,11 @@ mod tests {
         let policy = RestartPolicy::default();
 
         // First restart: base * 2^0 = 1000ms
-        assert_eq!(policy.backoff_for(0), Duration::from_millis(1_000));
+        assert_eq!(policy.backoff_for(0), Duration::from_secs(1));
         // Second restart: base * 2^1 = 2000ms
-        assert_eq!(policy.backoff_for(1), Duration::from_millis(2_000));
+        assert_eq!(policy.backoff_for(1), Duration::from_secs(2));
         // Third restart: base * 2^2 = 4000ms
-        assert_eq!(policy.backoff_for(2), Duration::from_millis(4_000));
+        assert_eq!(policy.backoff_for(2), Duration::from_secs(4));
     }
 
     #[test]
@@ -233,6 +233,6 @@ mod tests {
         };
 
         // Should cap at max
-        assert_eq!(policy.backoff_for(100), Duration::from_millis(10_000));
+        assert_eq!(policy.backoff_for(100), Duration::from_secs(10));
     }
 }

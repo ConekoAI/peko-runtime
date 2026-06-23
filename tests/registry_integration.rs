@@ -18,7 +18,8 @@
 //! Run in container:
 //!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test registry_integration -- --ignored
 
-use pekobot::portable::{manifest::AgentLayers, AgentManifest, AgentRegistry, Layer, LayerType};
+use pekobot::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
+use pekobot::registry::AgentRegistry;
 use pekobot::registry::client::ResourceType;
 use pekobot::registry::{
     media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,
@@ -93,7 +94,7 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
 async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,
-    digest: &pekobot::portable::types::ImageDigest,
+    digest: &pekobot::registry::packaging::types::ImageDigest,
 ) {
     let image_dir = registry
         .root_path()
@@ -396,7 +397,7 @@ async fn test_registry_client_push_and_pull() {
         .no_proxy()
         .build()
         .unwrap();
-    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, _ns) = create_test_user(&client, &backend.url, "ns").await;
 
     let host = backend.url.strip_prefix("http://").unwrap();
 
@@ -505,7 +506,7 @@ async fn test_registry_client_skips_existing_layers() {
         .no_proxy()
         .build()
         .unwrap();
-    let (_id, ns) = create_test_user(&client, &backend.url, "ns").await;
+    let (_id, _ns) = create_test_user(&client, &backend.url, "ns").await;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let registry = AgentRegistry::new(temp_dir.path());

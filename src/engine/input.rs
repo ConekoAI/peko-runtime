@@ -5,9 +5,9 @@
 //! - Hook triggers (cron, webhook, file watch, event)
 //! - A2A bus messages (agent-to-agent communication)
 
-use crate::types::message::LlmMessage;
+use crate::common::types::message::LlmMessage;
 #[cfg(test)]
-use crate::types::message::{ContentBlock, MessageRole};
+use crate::common::types::message::{ContentBlock, MessageRole};
 use serde::{Deserialize, Serialize};
 
 /// Input source for the agentic loop

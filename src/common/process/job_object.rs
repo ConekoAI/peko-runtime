@@ -6,7 +6,12 @@
 //! including grandchildren.  This solves the classic "orphan process" problem
 //! on Windows where `child.kill()` only kills the immediate child.
 
+// `tracing::warn!` is only called from inside `#[cfg(windows)]` blocks below.
+// Gate the import so Linux clippy doesn't flag it as unused while Windows
+// compilation still resolves the macro.
+#[cfg(windows)]
 use tracing::warn;
+
 
 /// A handle to a Windows Job Object.
 ///

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 /// Re-export unified message types
 pub use crate::session::message::{MessageSource, RoleMetadata, SessionMessage};
-pub use crate::types::message::TokenUsage;
+pub use crate::common::types::message::TokenUsage;
 
 /// Event envelope - every line in JSONL shares this structure
 ///
@@ -460,7 +460,7 @@ impl SessionEvent {
     #[must_use]
     pub fn is_assistant_message(&self) -> bool {
         match self {
-            SessionEvent::MessageV2(m) => m.role() == crate::types::message::MessageRole::Assistant,
+            SessionEvent::MessageV2(m) => m.role() == crate::common::types::message::MessageRole::Assistant,
             _ => false,
         }
     }
@@ -470,7 +470,7 @@ impl SessionEvent {
     pub fn assistant_content(&self) -> Option<String> {
         match self {
             SessionEvent::MessageV2(m)
-                if m.role() == crate::types::message::MessageRole::Assistant =>
+                if m.role() == crate::common::types::message::MessageRole::Assistant =>
             {
                 Some(m.text_content())
             }
@@ -500,10 +500,10 @@ impl SessionEvent {
         match self {
             SessionEvent::SessionCreated(_) => "session.created",
             SessionEvent::MessageV2(m) => match m.role() {
-                crate::types::message::MessageRole::User => "user",
-                crate::types::message::MessageRole::Assistant => "assistant",
-                crate::types::message::MessageRole::System => "system",
-                crate::types::message::MessageRole::Tool => "tool",
+                crate::common::types::message::MessageRole::User => "user",
+                crate::common::types::message::MessageRole::Assistant => "assistant",
+                crate::common::types::message::MessageRole::System => "system",
+                crate::common::types::message::MessageRole::Tool => "tool",
             },
             SessionEvent::Thinking(_) => "thinking",
             SessionEvent::ToolCall(_) => "tool.call",

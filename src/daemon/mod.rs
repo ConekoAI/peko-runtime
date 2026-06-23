@@ -12,7 +12,7 @@ pub mod background_runtime;
 pub mod cron_engine;
 pub mod state;
 
-use crate::agent::stateless_service::StatelessAgentService;
+use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::paths::PathResolver;
 use crate::cron::events::SystemEvent;
 use crate::daemon::cron_engine::CronEngine;
@@ -58,7 +58,7 @@ impl Default for DaemonConfig {
             config_dir,
             data_dir,
             enable_isolated_execution: true,
-            maintenance_interval: Duration::from_secs(3600), // 1 hour default
+            maintenance_interval: Duration::from_hours(1), // 1 hour default
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
         }
     }
@@ -236,8 +236,8 @@ impl Daemon {
         // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);
         let mut maintenance_tick = interval(self.config.maintenance_interval);
-        let mut idle_check_tick = interval(Duration::from_secs(60));
-        let mut janitor_tick = interval(Duration::from_secs(3600));
+        let mut idle_check_tick = interval(Duration::from_mins(1));
+        let mut janitor_tick = interval(Duration::from_hours(1));
 
         // Subscribe to shutdown signals from AppState
         let mut shutdown_rx = app_state.subscribe_shutdown();
@@ -293,7 +293,7 @@ impl Daemon {
                 // Periodic async task janitor (ADR-020 Phase 6)
                 _ = janitor_tick.tick() => {
                     let executor = &app_state.async_task_executor;
-                    match executor.run_janitor(Duration::from_secs(24 * 3600)).await {
+                    match executor.run_janitor(Duration::from_hours(24)).await {
                         Ok((files, registry)) => {
                             if files > 0 || registry > 0 {
                                 info!("Async task janitor cleaned {} task files and {} registry entries", files, registry);
@@ -401,7 +401,7 @@ mod tests {
             config_dir: tmp.path().join("config"),
             data_dir: tmp.path().join("data"),
             enable_isolated_execution: false,
-            maintenance_interval: Duration::from_secs(60),
+            maintenance_interval: Duration::from_mins(1),
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
         };
 

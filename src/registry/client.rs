@@ -3,8 +3,8 @@
 //! HTTP client for pushing and pulling images from remote registries.
 //! Implements OCI-inspired distribution protocol.
 
-use crate::portable::registry::AgentRegistry;
-use crate::portable::types::{ImageDigest, Layer};
+use crate::registry::AgentRegistry;
+use crate::registry::packaging::types::{ImageDigest, Layer};
 use crate::registry::config::{RegistryConfig, RegistrySource, ResolvedAuth};
 use crate::registry::manifest::RegistryManifest;
 use crate::registry::media_types;
@@ -24,6 +24,7 @@ pub struct RegistryClient {
 /// Progress events during pull/push operations
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ProgressEvent {
     /// Resolving the image reference
     Resolving { r#ref: String },
@@ -384,7 +385,7 @@ impl RegistryClient {
         if !manifest.config.digest.is_empty() {
             let config_layer = Layer::new(
                 manifest.config.digest.clone(),
-                crate::portable::types::LayerType::Config,
+                crate::registry::packaging::types::LayerType::Config,
                 manifest.config.size,
             );
             if !self.registry.has_layer(&manifest.config.digest) {

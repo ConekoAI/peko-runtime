@@ -4,7 +4,9 @@
 //! enabling remote access to locally-hosted agents behind NAT/firewall.
 
 pub mod a2a_audit;
+pub mod a2a_message_types;
 pub mod a2a_pending;
+pub mod a2a_send_tool;
 pub mod a2a_signature;
 pub mod backoff;
 pub mod client;
@@ -13,6 +15,7 @@ pub mod cross_runtime;
 pub mod did_key;
 pub mod dispatcher;
 pub mod hub_directory;
+pub mod known_runtimes;
 pub mod protocol;
 
 pub use a2a_pending::{A2aResponsePayload, A2aWaitError, PendingA2aResponses};

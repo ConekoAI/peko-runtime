@@ -10,7 +10,7 @@
 //! to the appropriate starter based on the extension's manifest.
 
 use super::manager::BackgroundRuntimeManager;
-use crate::agent::stateless_service::StatelessAgentService;
+use crate::agents::stateless_service::StatelessAgentService;
 use crate::extensions::gateway::runtime::GatewayRouter;
 use crate::extensions::mcp::runtime::McpClientRegistry;
 use std::path::PathBuf;

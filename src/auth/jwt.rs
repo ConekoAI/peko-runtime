@@ -107,7 +107,7 @@ impl JwksCache {
         Self {
             jwks: Some(jwks),
             fetched_at: Some(Instant::now()),
-            ttl: Duration::from_secs(300),
+            ttl: Duration::from_mins(5),
             url,
         }
     }

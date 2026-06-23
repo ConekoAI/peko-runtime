@@ -7,14 +7,13 @@
 //!
 //! # Module Boundary Note
 //!
-//! Execution primitives (`ToolContext`, `ToolError`, `AbortSignal`, `ToolResult`,
-//! `ToolWithContext`) have been moved to `extension::types::tool_exec` so the
-//! generic extension framework can use them without depending on `crate::tools`.
-//! This module re-exports them for convenience.
+//! `tools::core` is the canonical home for the execution primitives and the
+//! `ContextSource` trait. There are no re-exports anywhere else in the crate.
 
+pub mod context_source;
+pub mod exec;
 pub mod traits;
 
-pub use crate::extension::types::{
-    AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolResult, ToolWithContext,
-};
+pub use context_source::ContextSource;
+pub use exec::{AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolProgressEvent, ToolResult, ToolWithContext};
 pub use traits::Tool;

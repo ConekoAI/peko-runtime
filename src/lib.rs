@@ -28,7 +28,7 @@
 //! Extensions use the Unified Extension Architecture (ADR-017):
 //!
 //! ```rust,ignore
-//! use pekobot::extension::{
+//! use pekobot::extensions::framework::{
 //!     ExtensionManager, ExtensionManifest,
 //! };
 //! use pekobot::extensions::gateway::adapter::GatewayAdapter;
@@ -133,11 +133,8 @@ pub mod common;
 // Core Runtime
 // ============================================================================
 
-/// Agent runtime, lifecycle, and multi-agent management
-pub mod agent;
-
-/// Shared runtime components (tool runtime, etc.)
-pub mod runtime;
+/// Agent runtime, lifecycle, and multi-agent management (absorbed `prompt/`)
+pub mod agents;
 
 /// Execution engine and state machine
 pub mod engine;
@@ -146,10 +143,6 @@ pub mod engine;
 /// Session storage (JSONL)
 pub mod session;
 
-/// Orchestration layer (event router, file watcher, webhooks)
-/// Team runtime (multi-agent teams, event bus, shared services)
-pub mod team;
-
 // ============================================================================
 // External Interfaces
 // ============================================================================
@@ -157,26 +150,17 @@ pub mod team;
 /// LLM provider integrations
 pub mod providers;
 
-/// Extension Framework (generic, no external deps)
+/// Extension Framework and Type Implementations (MCP, Gateway, Skill,
+/// Builtin, General, Universal).
 ///
-/// Contains the unified extension architecture: hook points, registries,
-/// types, managers, and shared services. Zero dependencies on extension
-/// type implementations.
-pub mod extension;
-
-/// Extension Type Implementations (MCP, Gateway, Skill, Builtin, General, Universal)
-///
-/// Each extension type lives in its own directory with its adapter,
-/// runtime, and protocol code. Depends on `crate::extension` for the
-/// generic framework.
+/// Contains the generic extension framework (under `crate::extensions::framework`)
+/// and the extension type implementations (sibling submodules). The framework
+/// is dependency-free; type adapters depend on it.
 pub mod extensions;
 
 // ============================================================================
 // Data & State
 // ============================================================================
-
-/// Type definitions
-pub mod types;
 
 /// Configuration management
 /// Agent identity and key management
@@ -192,8 +176,6 @@ pub mod auth;
 /// Cron job scheduling
 pub(crate) mod cron;
 
-// / Hook registry and management (Milestone 8 — deprecated, see Issue 001)
-// pub mod hooks; // Removed per Issue 001 — use extensions::core instead
 /// Daemon mode for background execution (internal, exposed for integration tests)
 #[cfg(not(feature = "test-utils"))]
 pub(crate) mod daemon;
@@ -228,24 +210,16 @@ pub mod tools;
 /// CLI command handlers
 pub mod commands;
 
-/// Prompt generation and bootstrap
-pub(crate) mod prompt;
-
 // ============================================================================
 // Utilities
 // ============================================================================
 
-/// Portable agent packaging (export/import/build/push/pull)
-pub mod portable;
-
-/// Remote registry client (push/pull)
+/// Remote registry client (push/pull) and local packaging
+/// (export/import/build/push/pull of `.agent` / `.team` archives).
 pub mod registry;
 
 /// Runtime-Pekohub tunnel protocol (ADR-035)
 pub mod tunnel;
-
-/// Compaction and transcript management
-pub(crate) mod compaction;
 
 // ============================================================================
 // Development / Experimental
@@ -255,7 +229,7 @@ pub(crate) mod compaction;
 // ============================================================================
 // Public API
 // ============================================================================
-pub use agent::Agent;
+pub use agents::Agent;
 
 // Re-export event types for tool monitoring and streaming
 pub use engine::{AgenticEvent, LifecyclePhase};

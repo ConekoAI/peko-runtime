@@ -42,10 +42,11 @@ use crate::daemon::state::AppState;
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
 #[derive(Clone)]
-pub(crate) enum ServerSocket {
+pub enum ServerSocket {
     #[cfg(unix)]
     Unix {
         socket: Arc<UnixDatagram>,
+        #[allow(dead_code)]
         path: Arc<std::path::PathBuf>,
     },
     Udp {
@@ -62,14 +63,14 @@ pub(crate) enum ServerSocket {
     },
 }
 
-/// Peer address returned by `ServerSocket::recv_from` and threaded through
+/// Principal address returned by `ServerSocket::recv_from` and threaded through
 /// the request handlers so they can `send_to` the response back. Unix domain
 /// datagram sockets return the sender's filesystem path; UDP returns a
 /// `std::net::SocketAddr`. Windows named pipes (ADR-038) are
 /// connection-oriented and have no per-message peer address — the
 /// `Local` variant represents a connection that is local by construction.
 #[derive(Debug, Clone)]
-pub(crate) enum PeerAddr {
+pub enum PeerAddr {
     #[cfg(unix)]
     Unix(std::path::PathBuf),
     Ip(std::net::SocketAddr),
@@ -421,7 +422,15 @@ impl IpcServer {
                                                 return;
                                             }
                                         };
-                                        if let Err(e) = Self::handle_request(envelope.packet, caller, state, &*sink, &peer).await {
+                                        #[allow(clippy::large_futures)]
+                                        let request_fut = Self::handle_request(
+                                            envelope.packet,
+                                            caller,
+                                            state,
+                                            &*sink,
+                                            &peer,
+                                        );
+                                        if let Err(e) = Box::pin(request_fut).await {
                                             error!("Error handling request {}: {}", request_id, e);
                                         }
                                     });
@@ -682,6 +691,7 @@ impl IpcServer {
     /// captures the peer address from `recv_from`; Windows call sites
     /// construct a `PipeSink` over the per-connection `&mut
     /// NamedPipeServer`. See `response_sink.rs` for the full design.
+    #[allow(clippy::large_futures)]
     async fn handle_request(
         request: RequestPacket,
         caller: CallerContext,
@@ -699,7 +709,7 @@ impl IpcServer {
         // `&request.resolved_subject()` from inside the arms — compute
         // it here while `request` is still accessible. The borrow
         // released by the time the match starts (NLL).
-        let pre_resolved_subject: Option<anyhow::Result<crate::auth::principal::Principal>> =
+        let pre_resolved_subject: Option<crate::auth::principal::Principal> =
             match &request {
                 RequestPacket::AgentGrantPermission { .. }
                 | RequestPacket::AgentRevokePermission { .. }
@@ -714,24 +724,14 @@ impl IpcServer {
         /// `Ok(principal)` on success. Defined inside `handle_request`
         /// to avoid threading `sink` through a free-function signature.
         async fn take_resolved_subject(
-            pre_resolved: Option<&anyhow::Result<crate::auth::principal::Principal>>,
-            request_id: u64,
-            sink: &dyn crate::ipc::response_sink::ResponseSink,
+            pre_resolved: Option<&crate::auth::principal::Principal>,
+            _request_id: u64,
+            _sink: &dyn crate::ipc::response_sink::ResponseSink,
         ) -> Result<crate::auth::principal::Principal, ()> {
-            let Some(result) = pre_resolved else {
+            let Some(p) = pre_resolved else {
                 unreachable!("take_resolved_subject called for a non-grant/revoke variant")
             };
-            match result {
-                Ok(p) => Ok(p.clone()),
-                Err(e) => {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("{e}"),
-                    };
-                    let _ = IpcServer::send_sink(sink, response).await;
-                    Err(())
-                }
-            }
+            Ok(p.clone())
         }
 
         match request {
@@ -1055,8 +1055,8 @@ impl IpcServer {
                 if request.host_runtime_id.is_none() {
                     request.host_runtime_id = Some(state.runtime_identity().runtime_did.clone());
                 }
-                if request.owner_id.is_none() {
-                    request.owner_id = Some(caller.subject_id());
+                if request.owner.is_none() {
+                    request.owner = Some(caller.subject());
                 }
                 let agent_name = request.name.clone();
                 match service.create_agent(request).await {
@@ -1254,7 +1254,7 @@ impl IpcServer {
                         let config_path = result.config_path.clone();
                         if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
                             if let Ok(mut config) =
-                                toml::from_str::<crate::types::agent::AgentConfig>(&content)
+                                toml::from_str::<crate::agents::agent_config::AgentConfig>(&content)
                             {
                                 config.host_runtime_id =
                                     state.runtime_identity().runtime_did.clone();
@@ -1542,7 +1542,7 @@ impl IpcServer {
                 match agent {
                     Some(agent_name) => {
                         let session_peer =
-                            crate::session::types::Peer::User("default".to_string());
+                            crate::auth::principal::Principal::User("default".to_string());
                         match service
                             .list_sessions_with_active(&agent_name, team.as_deref(), &session_peer)
                             .await
@@ -1685,9 +1685,9 @@ impl IpcServer {
                     team.as_deref(),
                     &user,
                 );
-                let session_peer = crate::session::Peer::User(user);
+                let session_peer = crate::auth::principal::Principal::User(user);
                 match manager.switch_session(&session_peer, &session_id).await {
-                    Ok(_) => {
+                    Ok(()) => {
                         let response = ResponsePacket::SessionSwitched {
                             request_id,
                             session_id,
@@ -1894,7 +1894,7 @@ impl IpcServer {
                 id,
                 target,
             } => {
-                let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
+                let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
                     || id.starts_with("builtin:");
 
                 // Build canonical extension ID for whitelist entries.
@@ -1924,7 +1924,7 @@ impl IpcServer {
                                 "Built-in capability '{capability}' enabled globally"
                             ))
                         } else {
-                            let ext_id = crate::extension::types::ExtensionId::new(&id);
+                            let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                             match manager.enable(&ext_id).await {
                                 Ok(()) => Ok(format!("Extension '{id}' enabled globally")),
                                 Err(e) => Err(e),
@@ -2000,7 +2000,7 @@ impl IpcServer {
                 id,
                 target,
             } => {
-                let is_builtin = crate::extensions::builtin::BuiltinToolAdapter::is_builtin(&id)
+                let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
                     || id.starts_with("builtin:");
 
                 let canonical_id = if is_builtin {
@@ -2029,7 +2029,7 @@ impl IpcServer {
                                 "Built-in capability '{capability}' disabled globally"
                             ))
                         } else {
-                            let ext_id = crate::extension::types::ExtensionId::new(&id);
+                            let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                             match manager.disable(&ext_id).await {
                                 Ok(()) => Ok(format!("Extension '{id}' disabled globally")),
                                 Err(e) => Err(e),
@@ -2107,8 +2107,8 @@ impl IpcServer {
 
                 let scope = scope.as_deref().unwrap_or("all");
 
-                if scope == "all" || scope == "cache" {
-                    if cache_dir.exists() {
+                if (scope == "all" || scope == "cache")
+                    && cache_dir.exists() {
                         match std::fs::read_dir(cache_dir) {
                             Ok(entries) => {
                                 for entry in entries.flatten() {
@@ -2135,7 +2135,6 @@ impl IpcServer {
                             }
                         }
                     }
-                }
 
                 let response = ResponsePacket::SystemCleaned {
                     request_id,
@@ -2288,7 +2287,7 @@ impl IpcServer {
                         return Ok(());
                     }
                 };
-                let compactor = crate::compaction::cli::SessionCompactor::new();
+                let compactor = crate::session::compaction::cli::SessionCompactor::new();
                 if dry_run {
                     match compactor.dry_run(&session, instruction).await {
                         Ok(report) => {
@@ -2372,7 +2371,7 @@ impl IpcServer {
 
             RequestPacket::ExtensionUninstall { request_id, id } => {
                 let mut manager = state.extension_manager().write().await;
-                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
 
                 match manager.uninstall(&ext_id).await {
                     Ok(()) => {
@@ -2400,11 +2399,11 @@ impl IpcServer {
                 semantic,
             } => {
                 let depth = if semantic {
-                    crate::extension::adapters::ValidationDepth::Semantic
+                    crate::extensions::validation::ValidationDepth::Semantic
                 } else {
-                    crate::extension::adapters::ValidationDepth::Static
+                    crate::extensions::validation::ValidationDepth::Static
                 };
-                match crate::extension::adapters::ExtensionValidationService::validate_with_depth(
+                match crate::extensions::validation::ExtensionValidationService::validate_with_depth(
                     std::path::Path::new(&path),
                     verbose,
                     depth,
@@ -2432,7 +2431,7 @@ impl IpcServer {
 
             RequestPacket::ExtensionDebug { request_id, id } => {
                 let manager = state.extension_manager().read().await;
-                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                 match manager.get_extension(&ext_id) {
                     Some(ext) => {
                         let info = serde_json::json!({
@@ -2462,7 +2461,7 @@ impl IpcServer {
 
             RequestPacket::ExtensionInfo { request_id, id } => {
                 let manager = state.extension_manager().read().await;
-                let ext_id = crate::extension::types::ExtensionId::new(&id);
+                let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                 match manager.get_extension(&ext_id) {
                     Some(ext) => {
                         let info = serde_json::json!({
@@ -2495,8 +2494,8 @@ impl IpcServer {
                 output,
             } => {
                 let manager = state.extension_manager().read().await;
-                let ext_id = crate::extension::types::ExtensionId::new(&id);
-                match crate::extension::manager::packaging::ExtensionPackager::export(
+                let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
+                match crate::extensions::framework::manager::packaging::ExtensionPackager::export(
                     &manager, &ext_id, &output,
                 ) {
                     Ok(_) => {
@@ -2525,7 +2524,7 @@ impl IpcServer {
                 let manager = state.extension_manager().read().await;
                 let ext_ids: Vec<_> = ids
                     .iter()
-                    .map(|id| crate::extension::types::ExtensionId::new(id))
+                    .map(crate::extensions::framework::types::ExtensionId::new)
                     .collect();
                 match manager.create_bundle(ext_ids, &name) {
                     Ok(bundle) => {
@@ -2577,8 +2576,8 @@ impl IpcServer {
                     });
                 }
 
-                let agent_registry = crate::portable::registry::AgentRegistry::new(
-                    crate::portable::registry::AgentRegistry::default_path(),
+                let agent_registry = crate::registry::AgentRegistry::new(
+                    crate::registry::AgentRegistry::default_path(),
                 );
                 if let Err(e) = agent_registry.init().await {
                     let response = ResponsePacket::Error {
@@ -2624,7 +2623,7 @@ impl IpcServer {
                                             tokio::fs::read_to_string(&config_path).await
                                         {
                                             if let Ok(mut config) =
-                                                toml::from_str::<crate::types::agent::AgentConfig>(
+                                                toml::from_str::<crate::agents::agent_config::AgentConfig>(
                                                     &content,
                                                 )
                                             {
@@ -2736,7 +2735,7 @@ impl IpcServer {
                     &runtime_id,
                     &display_name,
                     None,
-                    crate::runtime::registry::TrustLevel::Untrusted,
+                    crate::tunnel::known_runtimes::TrustLevel::Untrusted,
                 );
                 let resolver = crate::common::paths::PathResolver::with_dirs(
                     state.config_dir.clone(),
@@ -2768,7 +2767,7 @@ impl IpcServer {
                 let mut registry = state.known_runtimes().write().await;
                 match registry.trust(
                     &runtime_id,
-                    crate::runtime::registry::TrustLevel::Authorized,
+                    crate::tunnel::known_runtimes::TrustLevel::Authorized,
                 ) {
                     Ok(()) => {
                         let resolver = crate::common::paths::PathResolver::with_dirs(
@@ -3085,12 +3084,12 @@ impl IpcServer {
             RequestPacket::AgentTransferOwner {
                 request_id,
                 agent,
-                new_owner_id,
+                new_owner,
             } => {
                 let service = state.agent_mgmt_service();
                 let caller_principal = caller.subject();
                 match service
-                    .transfer_agent_owner(&agent, &new_owner_id, &caller_principal)
+                    .transfer_agent_owner(&agent, new_owner, &caller_principal)
                     .await
                 {
                     Ok(()) => {
@@ -3228,14 +3227,14 @@ impl IpcServer {
             RequestPacket::TeamTransferOwner {
                 request_id,
                 team,
-                new_owner_id,
+                new_owner,
             } => {
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
                 let caller_principal = caller.subject();
                 match service
-                    .transfer_team_owner(&team, &new_owner_id, &caller_principal)
+                    .transfer_team_owner(&team, new_owner, &caller_principal)
                     .await
                 {
                     Ok(()) => {
@@ -3360,10 +3359,10 @@ impl IpcServer {
         user: String,
         state: AppState,
         sink: &dyn ResponseSink,
-        peer: &PeerAddr,
+        _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
-        use crate::agent::stateless_service::MessageRequest;
         use crate::engine::{AgenticEvent, LifecyclePhase};
+        use crate::common::types::a2a::A2aMessageRequest;
 
         tracing::info!(
             "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}, session_id={:?}, new_session={}",
@@ -3377,7 +3376,7 @@ impl IpcServer {
 
         let agent_service = state.agent_service().clone();
 
-        let request = MessageRequest::new(&agent, message)
+        let request = A2aMessageRequest::new(&agent, message)
             .with_team(&team)
             .with_session_opt(session_id)
             .with_new_session(new_session)
@@ -3556,7 +3555,7 @@ impl IpcServer {
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
-        use crate::extension::async_exec::executor::{AsyncTaskId, AsyncToolConfig};
+        use crate::extensions::framework::async_exec::executor::{AsyncTaskId, AsyncToolConfig};
 
         let tool_runtime = state.tool_runtime.clone();
         let executor = state.async_task_executor.clone();

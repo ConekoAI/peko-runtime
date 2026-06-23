@@ -15,7 +15,7 @@
 //! - `index`: Unified session index (sessions.json + peers.json) management
 //! - `key`: Session key derivation for scoping
 //! - `jsonl`: JSONL storage format (Pekobot format)
-//! - `types`: Core types (Peer, ChannelType, OverlayType)
+//! - `types`: Core types (Principal, ChannelType, OverlayType)
 //! - `overlay`: Session overlay trait and ChannelOverlay
 //! - `spawn`: Spawn overlay for subagent isolation
 //! - `base`: Base session (shared conversation context)
@@ -44,6 +44,9 @@ pub mod sync;
 pub mod types;
 pub mod unified;
 
+// Context compaction (absorbed from src/compaction/ in issue #31b)
+pub mod compaction;
+
 // Re-export Session (replaces both BaseSession and SimpleSession)
 pub use context::SessionContext;
 pub use events::{
@@ -70,7 +73,7 @@ pub use metadata_controller::{ConsistencyStatus, MetadataController};
 pub use unified::Session;
 
 // Re-export overlay architecture types
-pub use types::{ChannelType, OverlayType, Peer, SpawnCleanupPolicy};
+pub use types::{ChannelType, OverlayType, SpawnCleanupPolicy};
 
 pub use overlay::{ChannelContext, ChannelOverlay, ChannelOverlayData, SessionOverlay};
 
@@ -96,11 +99,12 @@ pub use subagent_key::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::principal::Principal;
 
     #[test]
     fn test_peer_re_export() {
-        let peer = Peer::User("test".to_string());
-        assert_eq!(peer.id(), "test");
+        let peer = Principal::User("test".to_string());
+        assert_eq!(peer.subject_id(), "test");
     }
 
     #[test]
@@ -120,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_derive_base_session_key_re_export() {
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
         let key = derive_base_session_key("test", &peer);
         assert!(key.contains("peer:user:alice"));
     }

@@ -395,13 +395,13 @@ feature.
 
 - New `TunnelDispatcher::refresh_instance_allowed_users(agent_name)`
   in `src/tunnel/dispatcher.rs` re-derives `allowed_user_ids` from
-  the live `AgentConfig.permissions` and sends an `exposure_update`
+  the live `AgentConfig.permissions` and re-announces the instance
   to PekoHub, but only if the agent's current exposure is `Private`
   (Public/Unexposed don't carry an `allowed_users` list, and we must
   not silently flip the exposure as a side effect of a permit call).
   No-op if the agent has no cached `instance_state` (tunnel not
-  connected) or no live tunnel handle — the next `announce_instances`
-  after `TunnelReady` will pick up the latest config.
+  connected) — the next `announce_instances` after `TunnelReady` will
+  pick up the latest config.
 - `AgentGrantPermission` and `AgentRevokePermission` IPC handlers
   in `src/ipc/server.rs` call `refresh_instance_allowed_users`
   after a successful local config write. The call is best-effort

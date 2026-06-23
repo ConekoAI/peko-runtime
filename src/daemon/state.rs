@@ -9,16 +9,16 @@ use crate::daemon::background_runtime::{
 use crate::extensions::gateway::runtime::{GatewayRouter, GatewayRuntimeStarter};
 use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
-use crate::agent::lifecycle::LifecycleManager;
-use crate::agent::stateless_service::StatelessAgentService;
+use crate::agents::lifecycle::LifecycleManager;
+use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::services::{
     AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService, TeamManagementService,
     TeamService,
 };
-use crate::extension::async_exec::executor::AsyncExecutor;
+use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
-use crate::runtime::ToolRuntime;
+use crate::engine::tool_runtime::ToolRuntime;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -97,10 +97,10 @@ pub struct AppState {
     runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
 
     /// Extension manager for installed extensions (ADR-030 Tier 1)
-    extension_manager: Arc<tokio::sync::RwLock<crate::extension::manager::ExtensionManager>>,
+    extension_manager: Arc<tokio::sync::RwLock<crate::extensions::framework::manager::ExtensionManager>>,
 
     /// Extension services for built-in extension operations
-    extension_services: Arc<crate::extension::services::Services>,
+    extension_services: Arc<crate::extensions::framework::services::Services>,
 
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
@@ -109,14 +109,14 @@ pub struct AppState {
     inner: Arc<RwLock<AppStateInner>>,
 
     /// Runtime identity (ADR-032)
-    pub runtime_identity: crate::runtime::identity::RuntimeIdentity,
+    pub runtime_identity: crate::identity::runtime::RuntimeIdentity,
 
     /// Runtime metadata (ADR-032)
-    pub runtime_metadata: crate::runtime::metadata::RuntimeMetadata,
+    pub runtime_metadata: crate::identity::runtime_metadata::RuntimeMetadata,
 
     /// Known runtimes registry (ADR-032)
     pub known_runtimes:
-        std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>>,
+        std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>>,
 
     /// Auth configuration (ADR-034)
     auth_config: crate::auth::config::AuthConfig,
@@ -349,18 +349,18 @@ impl AppState {
 
         // ADR-032: Initialize runtime identity, metadata, and registry
         let runtime_identity =
-            crate::runtime::identity::RuntimeIdentity::generate_or_load(&path_resolver, &vault)?;
-        let runtime_metadata = crate::runtime::metadata::RuntimeMetadata::load_or_create(
+            crate::identity::runtime::RuntimeIdentity::generate_or_load(&path_resolver, &vault)?;
+        let runtime_metadata = crate::identity::runtime_metadata::RuntimeMetadata::load_or_create(
             &path_resolver,
             &runtime_identity.runtime_did,
         )?;
         let mut known_runtimes =
-            crate::runtime::registry::KnownRuntimes::load_or_create(&path_resolver)?;
+            crate::tunnel::known_runtimes::KnownRuntimes::load_or_create(&path_resolver)?;
         known_runtimes.register(
             &runtime_identity.runtime_did,
             &runtime_metadata.display_name,
             None,
-            crate::runtime::registry::TrustLevel::SelfRuntime,
+            crate::tunnel::known_runtimes::TrustLevel::SelfRuntime,
         );
         let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
 
@@ -420,31 +420,36 @@ impl AppState {
         // This prevents a race where main.rs sets an empty core and AppState's
         // tool-filled core gets discarded by the OnceLock.
         //
+        // Trait-object clone for the framework (avoids a framework → agents
+        // dependency while keeping the concrete arc for other consumers).
+        let agent_service_dyn: Arc<dyn crate::common::types::a2a::AgentMessageService> =
+            agent_service.clone();
+
         // For tests, always create a fresh core to avoid shared mutable state
         // between concurrent tests.
         let global_core = if for_test {
-            use crate::extension::core::{ExtensionCore, ExtensionServices};
-            use crate::extension::services::AsyncExecutionRouter;
+            use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
+            use crate::extensions::framework::services::AsyncExecutionRouter;
             let router = AsyncExecutionRouter::with_transport(
-                crate::extension::services::async_transport::create_local_transport(),
+                crate::extensions::framework::services::async_transport::create_local_transport(),
             );
             let services = ExtensionServices::with_async_router_and_agent_service(
                 router,
-                Arc::clone(&agent_service),
+                Arc::clone(&agent_service_dyn),
             );
             Arc::new(ExtensionCore::with_services(Arc::new(services)))
-        } else if let Some(existing) = crate::extension::core::global_core() {
+        } else if let Some(existing) = crate::extensions::framework::core::global_core() {
             tracing::info!("Reusing global ExtensionCore initialized by main.rs");
             existing
         } else {
-            use crate::extension::core::{init_global_core, ExtensionCore, ExtensionServices};
-            use crate::extension::services::AsyncExecutionRouter;
+            use crate::extensions::framework::core::{init_global_core, ExtensionCore, ExtensionServices};
+            use crate::extensions::framework::services::AsyncExecutionRouter;
             let router = AsyncExecutionRouter::with_transport(
-                crate::extension::services::async_transport::create_local_transport(),
+                crate::extensions::framework::services::async_transport::create_local_transport(),
             );
             let services = ExtensionServices::with_async_router_and_agent_service(
                 router,
-                Arc::clone(&agent_service),
+                Arc::clone(&agent_service_dyn),
             );
             let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
             init_global_core(Arc::clone(&core));
@@ -455,7 +460,7 @@ impl AppState {
         // If we reused an existing global core, it may not have the agent service yet.
         global_core
             .services()
-            .set_agent_service(Arc::clone(&agent_service));
+            .set_agent_service(Arc::clone(&agent_service_dyn));
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
@@ -493,9 +498,9 @@ impl AppState {
 
         // ADR-030: Initialize ExtensionManager for IPC extension operations
         let ext_storage =
-            crate::extension::manager::ExtensionStorage::with_dir(data_dir.join("extensions"));
+            crate::extensions::framework::manager::ExtensionStorage::with_dir(data_dir.join("extensions"));
         let mut ext_manager =
-            crate::extension::manager::ExtensionManager::with_core(Arc::clone(&global_core))
+            crate::extensions::framework::manager::ExtensionManager::with_core(Arc::clone(&global_core))
                 .with_storage_dir(ext_storage.dir().unwrap().to_path_buf());
 
         // Register adapters (same as CLI create_manager_with_adapters)
@@ -520,7 +525,7 @@ impl AppState {
         }
 
         let extension_manager = Arc::new(tokio::sync::RwLock::new(ext_manager));
-        let extension_services = Arc::new(crate::extension::services::Services::with_core(
+        let extension_services = Arc::new(crate::extensions::framework::services::Services::with_core(
             Arc::clone(&global_core),
         ));
 
@@ -775,13 +780,13 @@ impl AppState {
     #[must_use]
     pub fn extension_manager(
         &self,
-    ) -> &Arc<tokio::sync::RwLock<crate::extension::manager::ExtensionManager>> {
+    ) -> &Arc<tokio::sync::RwLock<crate::extensions::framework::manager::ExtensionManager>> {
         &self.extension_manager
     }
 
     /// Get the extension services
     #[must_use]
-    pub fn extension_services(&self) -> &Arc<crate::extension::services::Services> {
+    pub fn extension_services(&self) -> &Arc<crate::extensions::framework::services::Services> {
         &self.extension_services
     }
 
@@ -831,13 +836,13 @@ impl AppState {
 
     /// Get the runtime identity (ADR-032)
     #[must_use]
-    pub fn runtime_identity(&self) -> &crate::runtime::identity::RuntimeIdentity {
+    pub fn runtime_identity(&self) -> &crate::identity::runtime::RuntimeIdentity {
         &self.runtime_identity
     }
 
     /// Get the runtime metadata (ADR-032)
     #[must_use]
-    pub fn runtime_metadata(&self) -> &crate::runtime::metadata::RuntimeMetadata {
+    pub fn runtime_metadata(&self) -> &crate::identity::runtime_metadata::RuntimeMetadata {
         &self.runtime_metadata
     }
 
@@ -845,7 +850,7 @@ impl AppState {
     #[must_use]
     pub fn known_runtimes(
         &self,
-    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::runtime::registry::KnownRuntimes>> {
+    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
         &self.known_runtimes
     }
 
@@ -1094,8 +1099,11 @@ impl AppState {
             signing_key,
             caller_runtime_id: cred.runtime_id.clone(),
             tunnel: self.tunnel_handle_slot(),
-            response_timeout: Duration::from_secs(60),
+            response_timeout: Duration::from_mins(1),
         });
+        // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
+        // to avoid a framework → tunnel dependency.
+        let ctx: Arc<dyn std::any::Any + Send + Sync + 'static> = ctx;
 
         // 4. Register on the `ExtensionServices`. The per-agent
         //    `A2aSendTool` constructor in `agent.rs` consults
@@ -1379,11 +1387,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_init_preserves_pre_registered_tools() {
-        use crate::agent::Agent;
-        use crate::extension::core::init_global_core;
-        use crate::extension::{HookInput, HookPoint};
-        use crate::types::agent::AgentConfig;
-        use crate::types::provider::{ProviderConfig, ProviderType};
+        use crate::agents::Agent;
+        use crate::extensions::framework::core::init_global_core;
+        use crate::extensions::framework::{HookInput, HookPoint};
+        use crate::agents::agent_config::AgentConfig;
+        
 
         let state = create_test_state().await;
         let global_core = state.tool_runtime.extension_core().clone();
@@ -1406,7 +1414,7 @@ mod tests {
 
         // Tools should still be available after agent init
         let core = agent.extension_core();
-        let tools: Vec<crate::extension::types::ToolMetadata> = core.list_tools().await;
+        let tools: Vec<crate::extensions::framework::types::ToolMetadata> = core.list_tools().await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(
             tool_names.contains(&"shell".to_string()),

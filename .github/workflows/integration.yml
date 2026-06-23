@@ -1,9 +1,22 @@
 name: Integration Tests
 
-# Three-tier CI per docs/integration/TESTING.md §9:
-#   unit              every PR — fast, no Docker, no LLM
-#   integration       every PR — Docker + PekoHub + mock LLM
-#   integration-llm   nightly + commits tagged [llm] — adds real-LLM tests
+# Tiered CI per docs/integration/TESTING.md §9 and PLAN.md §7:
+#
+# Tier        Trigger                               Wall-clock (warm)  Notes
+# ──────────── ──────────────────────────────────── ─────────────────── ─────────────────────
+# smoke        every PR that touches CI-relevant    < 6 min             fmt + clippy + --lib
+# lint         every PR that touches src/           < 1 min             scripts/check_*.sh
+# unit-linux   every PR that triggers the workflow  ~3 min              cargo test --lib
+# unit-windows `[windows]` / nightly / manual       ~5 min              gated; expensive runner
+# integration  PR that touches integration paths    ~10-15 min          docker compose + PekoHub
+# integration-llm `[llm]` / nightly / manual        ~5 min extra        real LLM cost
+#
+# Doc-only PRs (only *.md, PLAN.md, CHANGES.md, docs/**) DO NOT trigger
+# this workflow at all — see the workflow-level `paths` filter below.
+#
+# The `changes` job uses dorny/paths-filter to decide per-job whether
+# Docker-backed integration is actually needed for the PR's diff. Pure
+# refactors (src/** only) skip the integration tier.
 #
 # MINIMAX_API_KEY is a repo secret read ONLY by integration-llm. The
 # integration job runs with the secret unset — that's how we guarantee
@@ -15,16 +28,26 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'Makefile'
+      - 'clippy.toml'
       - '.github/docker/**'
+      - 'scripts/check_*.sh'
+      - 'scripts/check_*.ps1'
       - '.github/workflows/integration.yml'
   pull_request:
     branches: [main, master]
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'Makefile'
+      - 'clippy.toml'
       - '.github/docker/**'
+      - 'scripts/check_*.sh'
+      - 'scripts/check_*.ps1'
       - '.github/workflows/integration.yml'
   schedule:
     - cron: '0 2 * * *'       # nightly integration-llm
@@ -36,22 +59,102 @@ env:
   PEKO_MASTER_PASSPHRASE: ci-test-passphrase-do-not-use-in-production
 
 jobs:
-  # ── Tier 0: Unit tests (no Docker, no LLM) ──────────────────────────────
-  # Linux unit tests run on every PR (fast, ~3 min). Windows unit tests
-  # run ONLY when the keyword `[windows]` is in the PR title, PR body,
-  # commit message, or branch name (or on the nightly schedule /
-  # manual `workflow_dispatch`). This keeps CI cheap for routine PRs
-  # while still catching Windows-specific regressions when someone
-  # explicitly asks for it. The `unit (windows-latest)` job takes ~5
-  # minutes on cold cache and is the dominant cost driver.
-  #
-  # Uses `Swatinem/rust-cache@v2` instead of `actions/cache@v4` because
-  # the latter doesn't expand `~/.cargo/...` on Windows runners. Calls
-  # `cargo test --lib` directly because Windows runner images don't
-  # ship GNU make.
+  # ── Path-aware change detector ────────────────────────────────────────
+  # Output keys:
+  #   src            — src/** changed
+  #   tests          — tests/** changed
+  #   docker         — .github/docker/** changed
+  #   dockerfile     — Dockerfile* / docker-compose*.yml changed
+  #   workflow       — this file changed
+  #   windows_code   — windows-specific code paths changed
+  # Always runs on any trigger so downstream jobs can branch on its outputs.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.filter.outputs.src }}
+      tests: ${{ steps.filter.outputs.tests }}
+      docker: ${{ steps.filter.outputs.docker }}
+      dockerfile: ${{ steps.filter.outputs.dockerfile }}
+      workflow: ${{ steps.filter.outputs.workflow }}
+      windows_code: ${{ steps.filter.outputs.windows_code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            src:
+              - 'src/**'
+            tests:
+              - 'tests/**'
+            docker:
+              - '.github/docker/**'
+            dockerfile:
+              - 'Dockerfile*'
+              - 'docker-compose*.yml'
+              - 'tests/docker/**'
+            workflow:
+              - '.github/workflows/integration.yml'
+            windows_code:
+              - 'src/common/process/**'
+              - 'src/ipc/pipe_security.rs'
+              - 'tests/common/cli.rs'
+
+  # ── Tier 0a: Smoke — fmt + clippy + lib tests, every PR ──────────────
+  # `cargo fmt --check` is `continue-on-error: true` for now because
+  # master has ~494 files with accumulated fmt diffs that pre-date
+  # this refactor. The smoke job still runs fmt and reports the diff
+  # to the PR; promote to a hard gate once a one-time `cargo fmt`
+  # sweep lands (tracked as a follow-up to PLAN.md).
+  smoke:
+    name: Smoke (fmt + clippy + lib)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.src == 'true' || needs.changes.outputs.tests == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          shared-key: peko-runtime-rust
+      - name: cargo fmt --check (advisory)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+      - name: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test --lib
+        run: cargo test --lib
+
+  # ── Tier 0b: Lint — Issue-015 boundary rules, every PR ───────────────
+  # HARD GATE. `scripts/check_module_boundaries.sh` enforces the three
+  # rules from Issue 015: framework code (`src/extension/`) must not
+  # depend on extension type implementations (`src/extensions/`),
+  # extension types must not depend on each other, and
+  # `src/extension/core/` must not depend on `daemon/` or `tools/`.
+  # Regressions trip this job and block the PR.
+  lint:
+    name: Lint (module boundaries)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.src == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run boundary check
+        run: bash scripts/check_module_boundaries.sh
+
+  # ── Tier 0c: Linux unit tests, every PR ───────────────────────────────
+  # Always on warm cache ~3 min. `Swatinem/rust-cache@v2` is used because
+  # `actions/cache@v4` doesn't expand `~/.cargo/...` on Windows runners;
+  # we standardize on it across all jobs for cache-hit consistency.
   unit-linux:
     name: Unit Tests (ubuntu-latest)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.src == 'true' || needs.changes.outputs.tests == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -62,24 +165,24 @@ jobs:
       - name: Run unit tests
         run: cargo test --lib
 
+  # ── Tier 0d: Windows unit tests, gated ───────────────────────────────
+  # Gates (existing):
+  #   - `[windows]` in PR title, body, commit message, or branch name
+  #   - nightly schedule
+  #   - manual workflow_dispatch
+  # Additionally gate on changes to Windows-specific code paths so a
+  # Linux-only refactor doesn't accidentally trigger this expensive job.
   unit-windows:
     name: Unit Tests (windows-latest)
     runs-on: windows-latest
-    # Windows unit tests are gated — they only run when:
-    # - the PR title or commit message contains [windows]
-    # - the branch name contains [windows] or starts with windows/
-    # - on the nightly schedule
-    # - via manual workflow_dispatch
-    # Linux unit tests above always run; this gate keeps CI cheap
-    # for routine PRs while still catching Windows regressions when
-    # someone explicitly asks for it. The Windows job takes ~5
-    # minutes on cold cache and was the dominant CI cost driver.
+    needs: changes
     if: >-
-      github.event_name == 'schedule'
-      || github.event_name == 'workflow_dispatch'
-      || contains(github.event.head_commit.message, '[windows]')
-      || contains(github.ref_name, '[windows]')
-      || startsWith(github.ref_name, 'windows/')
+      (needs.changes.outputs.windows_code == 'true'
+       || github.event_name == 'schedule'
+       || github.event_name == 'workflow_dispatch'
+       || contains(github.event.head_commit.message, '[windows]')
+       || contains(github.ref_name, '[windows]')
+       || startsWith(github.ref_name, 'windows/'))
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -88,13 +191,25 @@ jobs:
           workspaces: .
           shared-key: peko-runtime-rust
       - name: Run unit tests
+        # Windows runner images don't ship GNU make, so call cargo
+        # directly instead of `make test`.
         run: cargo test --lib
 
-  # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ───────────────────────
+  # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ─────────────────────
+  # Path-aware gate: only run when src/, tests/, Cargo.*, Makefile, or
+  # Docker assets changed. Pure refactors (src/** only) skip this tier
+  # but still run smoke + lint + unit-linux.
   integration:
     name: Integration (mock LLM)
     runs-on: ubuntu-latest
-    needs: unit-linux
+    needs: [changes, unit-linux]
+    if: >-
+      (needs.changes.outputs.tests == 'true'
+       || needs.changes.outputs.docker == 'true'
+       || needs.changes.outputs.dockerfile == 'true'
+       || needs.changes.outputs.workflow == 'true'
+       || github.event_name == 'schedule'
+       || github.event_name == 'workflow_dispatch')
     steps:
       - name: Checkout peko-runtime
         uses: actions/checkout@v4
@@ -110,13 +225,10 @@ jobs:
           path: pekohub
       - uses: docker/setup-buildx-action@v3
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            peko-runtime/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('peko-runtime/**/Cargo.lock') }}
+          workspaces: peko-runtime
+          shared-key: peko-runtime-rust
       - name: Start test stack
         working-directory: peko-runtime
         run: make docker-up
@@ -153,15 +265,20 @@ jobs:
         working-directory: peko-runtime
         run: make docker-down
 
-  # ── Tier 2: Real-LLM tests (nightly + [llm] commit tag) ─────────────────
+  # ── Tier 2: Real-LLM tests (nightly + [llm] commit tag) ───────────────
+  # Path-aware gate: only run when the diff could plausibly affect
+  # provider/CLI plumbing, plus the existing event/schedule/manual gates.
   integration-llm:
     name: Integration (real LLM)
     runs-on: ubuntu-latest
-    needs: integration
+    needs: [changes, integration]
     if: >-
-      github.event_name == 'schedule'
-      || github.event_name == 'workflow_dispatch'
-      || contains(github.event.head_commit.message, '[llm]')
+      (needs.changes.outputs.src == 'true'
+       || needs.changes.outputs.tests == 'true'
+       || needs.changes.outputs.workflow == 'true')
+      && (github.event_name == 'schedule'
+          || github.event_name == 'workflow_dispatch'
+          || contains(github.event.head_commit.message, '[llm]'))
     steps:
       - name: Checkout peko-runtime
         uses: actions/checkout@v4
@@ -174,13 +291,10 @@ jobs:
           path: pekohub
       - uses: docker/setup-buildx-action@v3
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            peko-runtime/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('peko-runtime/**/Cargo.lock') }}
+          workspaces: peko-runtime
+          shared-key: peko-runtime-rust
       - name: Start test stack
         working-directory: peko-runtime
         run: make docker-up

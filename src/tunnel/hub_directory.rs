@@ -271,7 +271,7 @@ impl AgentDirectory for HubAgentDirectoryClient {
 /// it.
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fake {
-    use super::*;
+    use super::{async_trait, AgentResolution, DirectoryError, AgentDirectory};
     use std::collections::HashMap;
     use std::sync::Mutex;
 

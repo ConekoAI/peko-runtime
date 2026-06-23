@@ -10,7 +10,7 @@ use secrecy::{ExposeSecret, SecretString};
 use std::path::Path;
 use tracing::{debug, info, warn};
 
-use crate::portable::crypto::{
+use crate::identity::crypto::{
     decrypt_with_passphrase, deserialize_encrypted, encrypt_with_passphrase, serialize_encrypted,
 };
 

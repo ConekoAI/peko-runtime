@@ -3,6 +3,7 @@
 //! These types represent team entities and are used by both
 //! CLI commands and API routes for consistent data representation.
 
+pub use crate::registry::packaging::types::ExtensionRef;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -19,37 +20,14 @@ pub struct TeamMetadata {
     pub host_runtime_id: String,
     /// Owner identity for ownership and permission model (ADR-033, ADR-039).
     ///
-    /// Canonical form is `owner = { kind, id }` (a `Principal`). The
-    /// legacy `owner_id` field is also accepted for back-compat with
-    /// on-disk configs written before ADR-039. If both are present,
-    /// `owner` wins.
+    /// Canonical form is `owner = { kind, id }` (a `Principal`).
     #[serde(default)]
     pub owner: Principal,
-    /// Legacy owner-id string (ADR-033, pre-039). The service layer
-    /// folds this into `owner` if `owner` is still the default
-    /// `Principal::User("")`. New configs should set `owner` only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_id: Option<String>,
     /// Explicit permission grants on this team (ADR-033)
     #[serde(default)]
     pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
 }
 
-impl TeamMetadata {
-    /// Resolve the effective `Principal` owner, taking the legacy
-    /// `owner_id` string into account if `owner` is still the default
-    /// "no owner" sentinel. Used by the service layer on load.
-    pub fn resolved_owner(&self) -> Principal {
-        use crate::auth::principal::principal_from_string_with_default_user;
-        let legacy_empty = matches!(&self.owner, Principal::User(s) if s.is_empty());
-        if legacy_empty {
-            if let Some(ref id) = self.owner_id {
-                return principal_from_string_with_default_user(id);
-            }
-        }
-        self.owner.clone()
-    }
-}
 
 /// Team information for listing and display
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +77,43 @@ pub struct TeamImportResult {
     pub name: String,
     pub path: PathBuf,
     pub agents_imported: usize,
+}
+
+/// Team push result
+#[derive(Debug, Clone)]
+pub struct TeamPushResult {
+    pub name: String,
+    pub registry_ref: String,
+    pub manifest_name: String,
+    pub manifest_version: String,
+    pub manifest_digest: String,
+    pub kind: String,
+    pub layers: usize,
+    pub total_size: u64,
+}
+
+/// Team pull result
+#[derive(Debug, Clone)]
+pub struct TeamPullResult {
+    pub registry_ref: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub agents_imported: usize,
+    pub manifest_name: String,
+    pub manifest_version: String,
+    pub manifest_digest: String,
+    pub manifest_kind: String,
+    pub manifest_layers: usize,
+    pub manifest_total_size: u64,
+    pub extension_refs: Vec<crate::registry::packaging::types::ExtensionRef>,
+}
+
+/// Result of ensuring extensions for a pulled team.
+#[derive(Debug, Default)]
+pub struct TeamExtensionPullResult {
+    pub pulled: Vec<String>,
+    pub already_present: Vec<String>,
+    pub failed: Vec<(String, String)>,
 }
 
 /// Team extension configuration (extensions.toml)

@@ -27,10 +27,10 @@ use crate::session::message_conversion::{
     entries_to_context_text, event_to_llm_message, normalized_entry_to_llm_message,
 };
 use crate::session::metadata_controller::MetadataController;
-use crate::session::types::Peer;
+use crate::auth::principal::Principal;
 use crate::session::NormalizedEntry;
-use crate::types::message::LlmMessage;
-use crate::types::ContentBlock;
+use crate::common::types::message::LlmMessage;
+use crate::common::types::message::ContentBlock;
 use anyhow::Result;
 use chrono::Utc;
 use tracing::warn;
@@ -52,7 +52,7 @@ pub struct Session {
     /// Session key for peer-based lookup
     pub session_key: String,
     /// The peer this session belongs to
-    pub peer: Peer,
+    pub peer: Principal,
     /// Storage backend for JSONL files
     storage: SessionStorage,
     /// Last message ID (for chaining)
@@ -85,7 +85,7 @@ impl Session {
         session_id: String,
         agent_name: String,
         session_key: String,
-        peer: Peer,
+        peer: Principal,
         storage: SessionStorage,
     ) -> Self {
         Self {
@@ -124,12 +124,12 @@ impl Session {
     /// * `session_id` - The session ID
     /// * `sessions_dir` - The sessions directory
     /// * `peer` - Optional peer info. If provided, restores session identity from this peer.
-    ///            If None, defaults to `Peer::User("default`")
+    ///            If None, defaults to `Principal::User("default`")
     pub async fn open_by_id(
         agent_name: &str,
         session_id: &str,
         sessions_dir: impl AsRef<std::path::Path>,
-        peer: Option<&Peer>,
+        peer: Option<&Principal>,
     ) -> Result<Self> {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
@@ -141,7 +141,7 @@ impl Session {
         // The legacy `"default"` literal is no longer used as a fallback
         // user-attribution placeholder; empty is distinguishable from
         // a real, resolved caller.
-        let peer = peer.cloned().unwrap_or_else(|| Peer::User(String::new()));
+        let peer = peer.cloned().unwrap_or_else(|| Principal::User(String::new()));
         let session_key = crate::session::key::derive_base_session_key(agent_name, &peer);
 
         Self::from_entries(
@@ -165,7 +165,7 @@ impl Session {
         session_id: String,
         agent_name: String,
         session_key: String,
-        peer: Peer,
+        peer: Principal,
         storage: SessionStorage,
         entries: Vec<NormalizedEntry>,
     ) -> Result<Self> {
@@ -450,8 +450,8 @@ impl Session {
                     id: generate_event_id(),
                     ts: Utc::now(),
                 },
-                message: crate::types::message::LlmMessage {
-                    role: crate::types::message::MessageRole::User,
+                message: crate::common::types::message::LlmMessage {
+                    role: crate::common::types::message::MessageRole::User,
                     content: final_content_blocks,
                     timestamp: Utc::now(),
                     metadata: std::collections::HashMap::new(),
@@ -464,12 +464,12 @@ impl Session {
             },
             "assistant" => {
                 let token_usage = usage.as_ref().map_or(
-                    crate::types::message::TokenUsage {
+                    crate::common::types::message::TokenUsage {
                         input: 0,
                         output: 0,
                         total: 0,
                     },
-                    |u| crate::types::message::TokenUsage {
+                    |u| crate::common::types::message::TokenUsage {
                         input: u.input,
                         output: u.output,
                         total: u.input + u.output,
@@ -653,7 +653,7 @@ impl Session {
         tokens_before: usize,
         tokens_after: usize,
         compaction_number: usize,
-        details: Option<&crate::compaction::summary_format::CompactionDetails>,
+        details: Option<&crate::session::compaction::summary_format::CompactionDetails>,
     ) -> Result<()> {
         self.storage
             .append_compaction(
@@ -884,23 +884,23 @@ mod tests {
 
     #[test]
     fn test_derive_session_key() {
-        let peer = Peer::User("alice".to_string());
+        let peer = Principal::User("alice".to_string());
         let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:user:alice");
 
-        let peer = Peer::Agent("helper".to_string());
+        let peer = Principal::Agent("helper".to_string());
         let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
     }
 
     #[tokio::test]
     async fn test_load_history_preserves_tool_calls_and_results() {
-        use crate::types::message::ContentBlock;
+        use crate::common::types::message::ContentBlock;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::session::types::Peer::User("default".to_string());
+        let peer = crate::auth::principal::Principal::User("default".to_string());
         let session_id = "test-session-123";
 
         // Create a session
@@ -952,7 +952,7 @@ mod tests {
         let assistant = &history[0];
         assert!(matches!(
             assistant.role,
-            crate::types::message::MessageRole::Assistant
+            crate::common::types::message::MessageRole::Assistant
         ));
         assert_eq!(
             assistant.content.len(),
@@ -979,7 +979,7 @@ mod tests {
         let tool = &history[1];
         assert!(matches!(
             tool.role,
-            crate::types::message::MessageRole::Tool
+            crate::common::types::message::MessageRole::Tool
         ));
         assert_eq!(tool.content.len(), 1);
         if let ContentBlock::ToolResult {
@@ -1011,7 +1011,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::session::types::Peer::User("default".to_string());
+        let peer = crate::auth::principal::Principal::User("default".to_string());
         let session_id = "test-build-context";
 
         // Create session and add messages
@@ -1038,7 +1038,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::session::types::Peer::User("default".to_string());
+        let peer = crate::auth::principal::Principal::User("default".to_string());
         let session_id = "test-build-context-compact";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1076,7 +1076,7 @@ mod tests {
         );
         assert_eq!(context[0].role, crate::providers::MessageRole::System);
         let summary_text = match &context[0].content[0] {
-            crate::types::ContentBlock::Text { text } => text.as_str(),
+            crate::common::types::message::ContentBlock::Text { text } => text.as_str(),
             _ => "",
         };
         assert!(summary_text.contains("Summary of old messages"));
@@ -1089,7 +1089,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::session::types::Peer::User("default".to_string());
+        let peer = crate::auth::principal::Principal::User("default".to_string());
         let session_id = "test-fast-context";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1120,7 +1120,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::session::types::Peer::User("default".to_string());
+        let peer = crate::auth::principal::Principal::User("default".to_string());
         let session_id = "test-fast-context-invalidate";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1151,7 +1151,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::session::types::Peer::User("default".to_string());
+        let peer = crate::auth::principal::Principal::User("default".to_string());
         let session_id = "test-update-cache";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1201,7 +1201,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::session::types::Peer::User("default".to_string());
+        let peer = crate::auth::principal::Principal::User("default".to_string());
         let session_id = "test-full-compaction";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1250,7 +1250,7 @@ mod tests {
             "First message should be summary"
         );
         let summary_text = match &context_after[0].content[0] {
-            crate::types::ContentBlock::Text { text } => text.as_str(),
+            crate::common::types::message::ContentBlock::Text { text } => text.as_str(),
             _ => "",
         };
         assert!(
@@ -1292,7 +1292,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::session::types::Peer::User("default".to_string());
+        let peer = crate::auth::principal::Principal::User("default".to_string());
         let session_id = "test-append-event";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());

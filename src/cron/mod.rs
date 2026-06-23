@@ -590,7 +590,7 @@ mod tests {
         let future_job = CronJob {
             id: Uuid::new_v4().to_string(),
             name: "Future Job".to_string(),
-            schedule: ScheduleKind::Every { every_ms: 3600000 },
+            schedule: ScheduleKind::Every { every_ms: 3_600_000 },
             target: ExecutionTarget::Main,
             agent_id: None,
             message: "Test".to_string(),
@@ -640,7 +640,7 @@ mod tests {
         // Should be about 60 seconds after `after`
         let diff = (next_run - after).num_milliseconds().abs();
         assert!(
-            diff >= 59000 && diff <= 61000,
+            (59000..=61000).contains(&diff),
             "Expected ~60s, got {}ms",
             diff
         );

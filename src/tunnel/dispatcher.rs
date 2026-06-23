@@ -11,11 +11,10 @@ use tracing::{debug, error, info, warn};
 /// This is a fixed UUIDv4 that acts as the namespace for UUIDv5 generation.
 const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6");
 
-use crate::agent::stateless_service::MessageRequest;
-
 use crate::auth::Principal;
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
+use crate::common::types::a2a::A2aMessageRequest;
 
 use super::a2a_audit;
 use super::protocol::{
@@ -27,7 +26,7 @@ use super::{
     a2a_signature::{verify_request, SignedFields},
     did_key::did_key_to_verifying_key,
 };
-use crate::tools::builtin::messaging::a2a_send::{A2aSendResult, HubA2AErrorResponse};
+use crate::tunnel::a2a_send_tool::{A2aSendResult, HubA2AErrorResponse};
 
 use crate::auth::ownership::Permission;
 
@@ -264,14 +263,19 @@ impl TunnelDispatcher {
     /// Compute allowed user IDs from an agent's permission grants.
     ///
     /// Filters for `Chat` permission grants where `subject` is a `User`
-    /// principal, returning the bare user id (with `user:` prefix
-    /// stripped if present). Non-User subjects (Agent/Team/Public) are
-    /// filtered out — they cannot be expressed as a hub user_id.
+    /// principal, returning the bare user ids (with `user:` prefix
+    /// stripped if present) as `Some(vec![...])`. Non-User subjects
+    /// (Agent/Team/Public) are filtered out — they cannot be expressed
+    /// as a hub user_id.
+    ///
+    /// An empty vector is returned as `Some(vec![])` rather than `None`
+    /// so that re-announcing an instance clears PekoHub's `allowedUsers`
+    /// when the last user grant is revoked.
     ///
     /// TODO(#16): re-derive from `Principal::User` and surface
     /// `Principal::Agent` subjects to the hub once PekoHub accepts the
     /// agent principal (post #11).
-    fn compute_allowed_user_ids(config: &crate::types::agent::AgentConfig) -> Option<Vec<String>> {
+    fn compute_allowed_user_ids(config: &crate::agents::agent_config::AgentConfig) -> Option<Vec<String>> {
         use crate::auth::principal::{Principal, SubjectKind};
         let ids: Vec<String> = config
             .permissions
@@ -291,11 +295,7 @@ impl TunnelDispatcher {
                 _ => None,
             })
             .collect();
-        if ids.is_empty() {
-            None
-        } else {
-            Some(ids)
-        }
+        Some(ids)
     }
 
     /// Send initial instance announcements for all local agents
@@ -613,7 +613,7 @@ impl TunnelDispatcher {
             .ok();
 
         // Build message request
-        let request = MessageRequest::new(agent_name.clone(), message)
+        let request = A2aMessageRequest::new(agent_name.clone(), message)
             .with_user(caller_user)
             .with_new_session(false);
 
@@ -671,7 +671,7 @@ impl TunnelDispatcher {
                                     seq,
                                     chunk.to_string().into_bytes(),
                                 );
-                                seq += 1;
+                                seq = seq.saturating_add(1);
                             }
                             // Send done marker
                             let done = serde_json::json!({ "done": true });
@@ -714,7 +714,7 @@ impl TunnelDispatcher {
                     seq,
                     chunk.to_string().into_bytes(),
                 );
-                seq += 1;
+                seq = seq.saturating_add(1);
             }
         }
 
@@ -726,7 +726,6 @@ impl TunnelDispatcher {
             });
             let _ =
                 handle.send_stream_chunk(request_id.clone(), seq, chunk.to_string().into_bytes());
-            seq += 1;
         }
         // Ensure stream end is sent even if the event loop exited unexpectedly
         let _ = handle.send_stream_end(request_id.clone());
@@ -840,13 +839,19 @@ impl TunnelDispatcher {
         self.send_exposure_update(agent_name, exposure).await
     }
 
-    /// Re-push the current exposure for an instance to PekoHub with an
-    /// `allowed_user_ids` list freshly derived from the on-disk agent
-    /// config. Used by the permit/revoke IPC paths (issue #16) so that
-    /// PekoHub's `canChat` ACL and the runtime's defense-in-depth
+    /// Re-push the current allow-list for an instance to PekoHub by
+    /// re-announcing the instance. The `allowed_users` list is freshly
+    /// derived from the on-disk `AgentConfig.permissions`. Used by the
+    /// permit/revoke IPC paths (issue #16) so that PekoHub's `canChat`
+    /// ACL and the runtime's defense-in-depth
     /// `instance_state.allowed_users` cache are kept in sync with the
-    /// local `AgentConfig.permissions` without requiring a daemon
-    /// restart or a new `instance_announce`.
+    /// local config without requiring a daemon restart.
+    ///
+    /// PekoHub ignores runtime-originated `exposure_update` control
+    /// messages (they are hub-to-runtime only), so we use
+    /// `instance_announce` which the hub treats as an upsert and which
+    /// updates both the hub-side allow-list and the runtime's local
+    /// cache.
     ///
     /// No-ops if:
     /// - the agent has no cached `instance_state` (tunnel not yet
@@ -857,7 +862,6 @@ impl TunnelDispatcher {
     ///   agents don't carry an `allowed_users` list, and we must not
     ///   silently flip the exposure as a side effect of a permit
     ///   call).
-    /// - there is no live tunnel handle.
     pub async fn refresh_instance_allowed_users(&self, agent_name: &str) -> anyhow::Result<()> {
         let instance_id = self.instance_id(agent_name);
         let exposure = {
@@ -867,8 +871,8 @@ impl TunnelDispatcher {
                 .get(&instance_id)
                 .map(|s| s.exposure.clone())
         };
-        let exposure = match exposure {
-            Some(e) if e == InstanceExposure::Private => e,
+        match exposure {
+            Some(e) if e == InstanceExposure::Private => {}
             Some(e) => {
                 debug!(
                     "Skipping allowed_users refresh for {}: exposure is {:?}, not Private",
@@ -885,7 +889,7 @@ impl TunnelDispatcher {
                 return Ok(());
             }
         };
-        self.send_exposure_update(agent_name, exposure).await
+        self.announce_single_instance(agent_name).await
     }
 
     /// Build and send an `ExposureUpdate` for the given agent, with
@@ -927,9 +931,8 @@ impl TunnelDispatcher {
             if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
                 warn!("Failed to send exposure update for {}: {}", agent_name, e);
                 return Err(e.into());
-            } else {
-                debug!("Sent exposure update for {}: {:?}", agent_name, exposure);
             }
+            debug!("Sent exposure update for {}: {:?}", agent_name, exposure);
         } else {
             debug!(
                 "No tunnel handle, exposure update for {} is dropped (will be re-announced on next TunnelReady)",
@@ -1155,7 +1158,7 @@ impl TunnelDispatcher {
 
         // 4 + 5. Build the request and dispatch.
         let caller_principal = Principal::Agent(caller_agent_did.clone());
-        let request = MessageRequest::new(&local_agent_name, message.clone())
+        let request = A2aMessageRequest::new(&local_agent_name, message.clone())
             .with_session_opt(session_id.clone())
             .with_team_opt(team.clone())
             .with_user("")

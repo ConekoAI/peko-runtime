@@ -1,9 +1,12 @@
 //! DID Identity management
 
+pub mod crypto;
 pub mod did;
 pub mod keys;
 pub mod keychain;
 pub mod resolver;
+pub mod runtime;
+pub mod runtime_metadata;
 pub mod storage;
 
 pub use did::{DIDDocument, DIDScope, Identity, ParsedDID, Service, VerificationMethod};

@@ -3,8 +3,7 @@
 //! These types represent agent entities and are used by both
 //! CLI commands and API routes for consistent agent data representation.
 
-use crate::auth::principal::Principal;
-use crate::types::agent::AgentConfig;
+use crate::agents::agent_config::AgentConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -58,9 +57,9 @@ pub struct AgentCreateRequest {
     pub force: bool,
     #[serde(default)]
     pub host_runtime_id: Option<String>,
-    /// Owner subject ID (e.g., `local:{runtime_did}`, `user:123`)
+    /// Owner principal (e.g., `Principal::User("local:{runtime_did}")`).
     #[serde(default)]
-    pub owner_id: Option<String>,
+    pub owner: Option<crate::auth::principal::Principal>,
 }
 
 impl AgentCreateRequest {
@@ -72,7 +71,7 @@ impl AgentCreateRequest {
             description: None,
             force: false,
             host_runtime_id: None,
-            owner_id: None,
+            owner: None,
         }
     }
 
@@ -98,18 +97,6 @@ impl AgentCreateRequest {
         self
     }
 
-    /// Resolve the `owner_id` wire string to a `Principal` (ADR-039).
-    ///
-    /// Tries `Principal::from_str` first; on failure, treats the string
-    /// as a `Principal::User` (the legacy default kind). An empty or
-    /// missing value resolves to `Principal::User("")` (the legacy
-    /// "no owner" sentinel).
-    #[must_use]
-    pub fn owner(&self) -> Option<Principal> {
-        self.owner_id
-            .as_deref()
-            .map(crate::auth::principal::principal_from_string_with_default_user)
-    }
 }
 
 /// Agent deletion options
@@ -166,7 +153,7 @@ pub struct AgentImportOptions {
     pub name: Option<String>,
     pub force: bool,
     /// Allow importing an unsigned `.agent` package (issue #14).
-    /// See [`crate::portable::ImportOptions::allow_unsigned`].
+    /// See [`crate::registry::packaging::ImportOptions::allow_unsigned`].
     #[serde(default)]
     pub allow_unsigned: bool,
 }
@@ -176,4 +163,38 @@ pub struct AgentImportOptions {
 pub struct AgentImportResult {
     pub name: String,
     pub config_path: PathBuf,
+}
+
+/// Agent push result
+#[derive(Debug, Clone)]
+pub struct AgentPushResult {
+    pub local_tag: String,
+    pub registry_ref: String,
+    pub name: String,
+    pub version: String,
+    pub digest: String,
+    pub layers: usize,
+    pub total_size: u64,
+}
+
+/// Agent pull result
+#[derive(Debug, Clone)]
+pub struct AgentPullResult {
+    pub name: String,
+    pub version: String,
+    pub tag: String,
+    pub output_path: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
+    pub manifest_digest: String,
+    pub manifest_layers: usize,
+    pub manifest_total_size: u64,
+    pub extension_results: AgentExtensionPullResult,
+}
+
+/// Result of pulling extensions for an agent
+#[derive(Debug, Clone, Default)]
+pub struct AgentExtensionPullResult {
+    pub pulled: Vec<String>,
+    pub already_present: Vec<String>,
+    pub failed: Vec<(String, String)>,
 }

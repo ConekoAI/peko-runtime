@@ -38,13 +38,14 @@
 //! [`tunnel_e2e.rs:63-76`](tests/tunnel_e2e.rs#L63-L76) falls through
 //! to the real provider.
 //!
-//! ## Why direct config.toml writes (same as cli_providers)
+//! ## v3 provider catalog setup (same as cli_providers)
 //!
-//! `PekoCli::cmd()` removes `MINIMAX_API_KEY` from the daemon's env
-//! to safeguard mock-tier tests. The tests work around this by
-//! writing `api_key` directly into each agent's `config.toml` (same
-//! dual-mode pattern as [`tunnel_e2e.rs:78-96`](tests/tunnel_e2e.rs#L78-L96)
-//! and `cli_providers.rs`).
+//! Each test creates a `PekoCli` with [`PekoCli::allow_real_llm_keys`],
+//! seeds `~/.peko/providers.toml` with a minimax entry, and writes the
+//! agent config with `preferred_provider_id = "minimax"`. The API key is
+//! read from `MINIMAX_API_KEY` via the daemon's env-var bootstrap path
+//! (`PEKO_TEST_RESOLVER_BOOTSTRAP=1`) because CI runners have no OS
+//! keychain.
 //!
 //! ## Lenient assertions (match the PS scripts' fallback pattern)
 //!
@@ -108,7 +109,7 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
-/// Write a mock-LLM-pointed agent with the given tool whitelist
+/// Write a minimax-pointed agent with the given tool whitelist
 /// (bare names + canonical `builtin:tool:<name>` IDs).
 ///
 /// The whitelist pattern must include BOTH forms of every enabled
@@ -116,14 +117,11 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 /// canonical ID (so the dispatcher's `is_tool_enabled` check at
 /// execution time matches). See the gotcha documented in
 /// `cli_subagent.rs::write_subagent_agent` and `cli_tools.rs::write_builtin_agent`.
-fn write_a2a_agent(
-    home: &Path,
-    name: &str,
-    mock_or_real_url: &str,
-    provider_type: &str,
-    api_key: &str,
-    extra_tools: &[&str], // extra bare names to enable (besides core ones)
-) -> std::io::Result<()> {
+///
+/// The agent only carries the soft hint `preferred_provider_id = "minimax"`;
+/// the caller must seed `~/.peko/providers.toml` with the minimax entry
+/// before spawning the daemon.
+fn write_a2a_agent(home: &Path, name: &str, extra_tools: &[&str]) -> std::io::Result<()> {
     use std::fs;
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     fs::create_dir_all(&agent_dir)?;
@@ -151,7 +149,7 @@ name = "{name}"
 description = "CLI integration test agent for a2a_send"
 auto_accept_trusted = false
 
-preferred_provider_id = "mock-llm"
+preferred_provider_id = "minimax"
 preferred_model_id = "default"
 default_timeout_seconds = 60
 
@@ -264,22 +262,15 @@ fn write_sentinel_file(cli: &PekoCli, _worker: &str, file_name: &str, content: &
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_blocking_t1_tool_available() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let delegator = "a2a_blocking_t1_delegator";
-    write_a2a_agent(
-        cli.home(),
-        delegator,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[], // a2a_send only
-    )
-    .expect("write delegator");
+    write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -307,33 +298,18 @@ async fn a2a_blocking_t1_tool_available() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_blocking_t2_blocking_execution() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let delegator = "a2a_blocking_t2_delegator";
     let worker = "a2a_blocking_t2_worker";
-    write_a2a_agent(
-        cli.home(),
-        delegator,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[], // a2a_send only
-    )
-    .expect("write delegator");
-    write_a2a_agent(
-        cli.home(),
-        worker,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &["read_file"], // a2a_send + read_file
-    )
-    .expect("write worker");
+    write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
+    write_a2a_agent(cli.home(), worker, &["read_file"]).expect("write worker");
     write_sentinel_file(&cli, worker, "test_a2a.txt", "A2A_TEST_SECRET_42");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     let before = worker_session_count(&cli, worker);
@@ -372,33 +348,18 @@ async fn a2a_blocking_t2_blocking_execution() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_blocking_t3_session_resumption() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let delegator = "a2a_blocking_t3_delegator";
     let worker = "a2a_blocking_t3_worker";
-    write_a2a_agent(
-        cli.home(),
-        delegator,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write delegator");
-    write_a2a_agent(
-        cli.home(),
-        worker,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &["read_file"],
-    )
-    .expect("write worker");
+    write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
+    write_a2a_agent(cli.home(), worker, &["read_file"]).expect("write worker");
     write_sentinel_file(&cli, worker, "test_a2a.txt", "A2A_TEST_SECRET_42");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     // First call: creates the worker session.
@@ -450,33 +411,18 @@ async fn a2a_blocking_t3_session_resumption() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_blocking_t4_caller_annotation() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let delegator = "a2a_blocking_t4_delegator";
     let worker = "a2a_blocking_t4_worker";
-    write_a2a_agent(
-        cli.home(),
-        delegator,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write delegator");
-    write_a2a_agent(
-        cli.home(),
-        worker,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &["read_file"],
-    )
-    .expect("write worker");
+    write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
+    write_a2a_agent(cli.home(), worker, &["read_file"]).expect("write worker");
     write_sentinel_file(&cli, worker, "test_a2a.txt", "A2A_TEST_SECRET_42");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Drive one a2a_send to create the worker session.
@@ -553,32 +499,17 @@ async fn a2a_blocking_t4_caller_annotation() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_isolation_t1_caller_a_session() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t1_a";
     let target = "a2a_iso_t1_target";
-    write_a2a_agent(
-        cli.home(),
-        caller_a,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller A");
-    write_a2a_agent(
-        cli.home(),
-        target,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write target");
+    write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
+    write_a2a_agent(cli.home(), target, &[]).expect("write target");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -620,42 +551,19 @@ async fn a2a_isolation_t1_caller_a_session() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_isolation_t2_caller_b_session() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t2_a";
     let caller_b = "a2a_iso_t2_b";
     let target = "a2a_iso_t2_target";
-    write_a2a_agent(
-        cli.home(),
-        caller_a,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller A");
-    write_a2a_agent(
-        cli.home(),
-        caller_b,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller B");
-    write_a2a_agent(
-        cli.home(),
-        target,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write target");
+    write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
+    write_a2a_agent(cli.home(), caller_b, &[]).expect("write caller B");
+    write_a2a_agent(cli.home(), target, &[]).expect("write target");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Caller A first
@@ -706,42 +614,19 @@ async fn a2a_isolation_t2_caller_b_session() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_isolation_t3_peer_id_isolation() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t3_a";
     let caller_b = "a2a_iso_t3_b";
     let target = "a2a_iso_t3_target";
-    write_a2a_agent(
-        cli.home(),
-        caller_a,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller A");
-    write_a2a_agent(
-        cli.home(),
-        caller_b,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller B");
-    write_a2a_agent(
-        cli.home(),
-        target,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write target");
+    write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
+    write_a2a_agent(cli.home(), caller_b, &[]).expect("write caller B");
+    write_a2a_agent(cli.home(), target, &[]).expect("write target");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Drive both callers' a2a_send (same as t1+t2 above but bundled).
@@ -802,15 +687,19 @@ async fn a2a_isolation_t3_peer_id_isolation() {
         .and_then(|s| s.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|s| s.get("peer_type").and_then(|p| p.as_str()).map(String::from))
+                .filter_map(|s| {
+                    s.get("peer_type")
+                        .and_then(|p| p.as_str())
+                        .map(String::from)
+                })
                 .collect()
         })
         .unwrap_or_default();
     let a2a_sessions = peer_types.iter().filter(|t| t.as_str() == "agent").count();
     let has_a = peer_ids.iter().any(|p| p == caller_a);
     let has_b = peer_ids.iter().any(|p| p == caller_b);
-    let both_llm_done = prompt_a.contains("A2A_TEST_DONE")
-        && (out_b.contains("A2A_TEST_DONE") || err_b.is_empty());
+    let both_llm_done =
+        prompt_a.contains("A2A_TEST_DONE") && (out_b.contains("A2A_TEST_DONE") || err_b.is_empty());
     assert!(
         (has_a && has_b && a2a_sessions >= 2) || both_llm_done,
         "isolation invariant not observed: peer_id-a={has_a} peer_id-b={has_b} \
@@ -833,42 +722,19 @@ async fn a2a_isolation_t3_peer_id_isolation() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_isolation_t4_caller_a_resumes() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t4_a";
     let caller_b = "a2a_iso_t4_b";
     let target = "a2a_iso_t4_target";
-    write_a2a_agent(
-        cli.home(),
-        caller_a,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller A");
-    write_a2a_agent(
-        cli.home(),
-        caller_b,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller B");
-    write_a2a_agent(
-        cli.home(),
-        target,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write target");
+    write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
+    write_a2a_agent(cli.home(), caller_b, &[]).expect("write caller B");
+    write_a2a_agent(cli.home(), target, &[]).expect("write target");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Caller A first
@@ -882,7 +748,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
         &["send", caller_a, &prompt_a1, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_a1.as_str(), &err, &status);
+    assert_ok(prompt_a1.as_str(), &err, &status);
 
     // Caller B
     let prompt_b = format!(
@@ -896,7 +762,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
         &["send", caller_b, &prompt_b, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_b.as_str(), &err, &status);
+    assert_ok(prompt_b.as_str(), &err, &status);
 
     // Capture caller A's session_id before the second call.
     let (out, _err, status) = run(
@@ -929,7 +795,7 @@ async fn a2a_isolation_t4_caller_a_resumes() {
         &["send", caller_a, &prompt_a2, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_a2.as_str(), &err, &status);
+    assert_ok(prompt_a2.as_str(), &err, &status);
 
     // Lenient: pass if either:
     //   (a) The structural resumption invariant holds (2 sessions
@@ -988,42 +854,19 @@ async fn a2a_isolation_t4_caller_a_resumes() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and peko daemon"]
 async fn a2a_isolation_t5_message_counts() {
-    let Some(api_key) = minimax_api_key() else {
+    let Some(_api_key) = minimax_api_key() else {
         eprintln!("MINIMAX_API_KEY not set; skipping");
         return;
     };
 
-    let cli = PekoCli::new();
+    let cli = PekoCli::new().allow_real_llm_keys();
     let caller_a = "a2a_iso_t5_a";
     let caller_b = "a2a_iso_t5_b";
     let target = "a2a_iso_t5_target";
-    write_a2a_agent(
-        cli.home(),
-        caller_a,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller A");
-    write_a2a_agent(
-        cli.home(),
-        caller_b,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write caller B");
-    write_a2a_agent(
-        cli.home(),
-        target,
-        "https://api.minimaxi.com/anthropic",
-        "minimax",
-        &api_key,
-        &[],
-    )
-    .expect("write target");
+    write_a2a_agent(cli.home(), caller_a, &[]).expect("write caller A");
+    write_a2a_agent(cli.home(), caller_b, &[]).expect("write caller B");
+    write_a2a_agent(cli.home(), target, &[]).expect("write target");
+    common::agent::seed_minimax_provider_in_catalog(cli.home());
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Caller A
@@ -1038,7 +881,7 @@ async fn a2a_isolation_t5_message_counts() {
         &["send", caller_a, &prompt_a, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_a.as_str(), &err, &status);
+    assert_ok(prompt_a.as_str(), &err, &status);
 
     // Caller B
     let prompt_b = format!(
@@ -1052,7 +895,7 @@ async fn a2a_isolation_t5_message_counts() {
         &["send", caller_b, &prompt_b, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_b.as_str(), &err, &status);
+    assert_ok(prompt_b.as_str(), &err, &status);
 
     // Caller A second
     let prompt_a2 = format!(
@@ -1066,7 +909,7 @@ async fn a2a_isolation_t5_message_counts() {
         &["send", caller_a, &prompt_a2, "--no-stream"],
         Duration::from_secs(60),
     );
-    assert_ok(&prompt_a2.as_str(), &err, &status);
+    assert_ok(prompt_a2.as_str(), &err, &status);
 
     // Lenient: pass if all 3 LLMs reported done OR the message
     // counts are populated. Real LLMs sometimes skip a tool_call;

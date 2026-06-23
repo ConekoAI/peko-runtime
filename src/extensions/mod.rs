@@ -1,14 +1,15 @@
-//! Extensions module — Extension Type Implementations
+//! Extensions module — Extension Framework + Type Implementations
 //!
-//! This module contains **extension type implementations** (MCP, Gateway, Skill,
-//! Builtin, General, Universal). The generic framework lives in `crate::extension`
-//! (singular).
+//! Contains both the **generic extension framework** (under `framework/`)
+//! and the **extension type implementations** (MCP, Gateway, Skill, Builtin,
+//! General, Universal). The framework is generic and dependency-free; type
+//! implementations sit beside it and depend on the framework.
 //!
 //! # Module Boundaries
 //!
 //! Each extension type lives in its own directory with its adapter, runtime,
 //! and protocol code. Cross-extension dependencies should go through the
-//! framework (`crate::extension`), not directly between extension types.
+//! framework (`crate::extensions::framework`), not directly between extension types.
 //!
 //! Extension types must NOT be added to this module's submodules without
 //! also providing an `ExtensionTypeAdapter` implementation.
@@ -17,6 +18,7 @@
 //!
 //! ```text
 //! src/extensions/
+//! ├── framework/   # Generic framework: core, adapters, manager, types, transport, services, protocols, scaffold, async_exec
 //! ├── builtin/     # Built-in tool adapter
 //! ├── gateway/     # Gateway adapter, protocol, runtime
 //! ├── general/     # General extension adapter
@@ -24,6 +26,16 @@
 //! ├── skill/       # Skill adapter
 //! └── universal/   # Universal tool adapter and protocol
 //! ```
+
+// ============================================================================
+// Framework
+// ============================================================================
+
+/// Generic extension framework (core, adapters, manager, types, transport,
+/// services, protocols, scaffold, async_exec). Zero dependencies on
+/// extension type implementations. Extension type adapters depend on this;
+/// this module must not depend on its sibling extension type submodules.
+pub mod framework;
 
 // ============================================================================
 // Extension Type Submodules
@@ -47,6 +59,13 @@ pub mod skill;
 /// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
 
+/// Manifest validation service — walks an extension directory, detects its
+/// type (Tier 1 ecosystem standard or Tier 2 unified manifest), and runs
+/// optional semantic checks (ADR-036). Lives here next to the extension
+/// types it inspects rather than in the framework, so the framework can
+/// stay free of `crate::extensions::*` dependencies.
+pub mod validation;
+
 // ============================================================================
 // Utilities
 // ============================================================================
@@ -68,13 +87,13 @@ impl BuiltInAdapters {
         Self
     }
 
-    pub fn adapters(&self) -> Vec<Box<dyn crate::extension::adapters::ExtensionTypeAdapter>> {
+    pub fn adapters(&self) -> Vec<Box<dyn crate::extensions::framework::adapters::ExtensionTypeAdapter>> {
         vec![
             Box::new(skill::adapter::SkillAdapter::new()),
             Box::new(universal::adapter::UniversalToolAdapter::new()),
             Box::new(mcp::adapter::McpAdapter::with_default_manager()),
             Box::new(gateway::adapter::GatewayAdapter::new(Arc::new(
-                crate::extension::core::ExtensionCore::new(),
+                crate::extensions::framework::core::ExtensionCore::new(),
             ))),
             Box::new(general::adapter::GeneralExtensionAdapter::new()),
         ]

@@ -130,6 +130,6 @@ mod tests {
             Duration::from_millis(50),
         )
         .await;
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 }

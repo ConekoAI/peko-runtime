@@ -70,10 +70,11 @@
 //!    the `AgentGrantPermission` and `AgentRevokePermission` IPC
 //!    handlers call
 //!    [`TunnelDispatcher::refresh_instance_allowed_users`](../src/tunnel/dispatcher.rs)
-//!    after the local config write, which sends an `exposure_update`
+//!    after the local config write, which re-announces the instance
 //!    to PekoHub with `allowed_user_ids` re-derived from the new
-//!    `AgentConfig.permissions`. PekoHub's `canChat` ACL (and the
-//!    runtime's defense-in-depth cache) refreshes from that. The
+//!    `AgentConfig.permissions`. PekoHub treats `instance_announce`
+//!    as an upsert and refreshes `allowedUsers`; the runtime's
+//!    defense-in-depth cache is updated in the same round-trip. The
 //!    D4 test still pre-seeds the config before daemon start, but
 //!    the live `permit`/`revoke` path is now covered by
 //!    `tests/scenarios/s5_*.rs` (regression for #16).
@@ -166,7 +167,7 @@ fn write_agent_with_perm(
     let agent_dir = cli.peko_dir().join("agents").join(agent_name);
     std::fs::create_dir_all(&agent_dir).expect("create agent dir");
 
-    let base_url = mock_llm_url.trim_end_matches('/');
+    let _base_url = mock_llm_url.trim_end_matches('/');
 
     // The `[[permissions]]` block is at the top level of the agent
     // config; the runtime's `AgentConfig::permissions` deserializer

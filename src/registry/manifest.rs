@@ -4,8 +4,8 @@
 //! Wire format follows OCI Image Manifest v1.1 spec for interoperability.
 //! The canonical on-disk format remains TOML (`AgentManifest`).
 
-use crate::portable::manifest::Signatures;
-use crate::portable::types::{ExtensionRef, Layer};
+use crate::registry::packaging::manifest::Signatures;
+use crate::registry::packaging::types::{ExtensionRef, Layer};
 use serde::{Deserialize, Serialize};
 
 /// OCI Image Manifest media type
@@ -466,7 +466,7 @@ impl RegistryManifest {
     /// Extract fields from annotations map for pull-side reconstruction.
     fn apply_annotations(
         &mut self,
-        annotations: &Option<serde_json::Map<String, serde_json::Value>>,
+        annotations: Option<&serde_json::Map<String, serde_json::Value>>,
     ) {
         if let Some(map) = annotations {
             // Identity fields
@@ -612,13 +612,14 @@ impl RegistryManifest {
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
         let mut manifest: Self = serde_json::from_str(json)
             .map_err(|e| anyhow::anyhow!("Failed to parse manifest: {e}"))?;
-        manifest.apply_annotations(&manifest.annotations.clone());
+        let annotations = manifest.annotations.clone();
+        manifest.apply_annotations(annotations.as_ref());
         Ok(manifest)
     }
 
     /// Get layer by type
     #[must_use]
-    pub fn get_layer(&self, layer_type: crate::portable::types::LayerType) -> Option<&Layer> {
+    pub fn get_layer(&self, layer_type: crate::registry::packaging::types::LayerType) -> Option<&Layer> {
         self.layers.iter().find(|l| l.layer_type == layer_type)
     }
 }
@@ -626,7 +627,7 @@ impl RegistryManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portable::types::LayerType;
+    use crate::registry::packaging::types::LayerType;
 
     #[test]
     fn test_registry_manifest_oci_serialization() {

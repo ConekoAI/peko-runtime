@@ -15,7 +15,7 @@ use crate::providers::{
     adapters::{AnthropicAdapter, AnyAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
     core::Provider,
 };
-use crate::types::provider::{ProviderConfig, ProviderType};
+use crate::common::types::provider::{ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -124,7 +124,6 @@ impl ProviderRegistry {
     }
 
     /// Iterate over all providers (including aliases)
-    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = (&String, &ProviderMetadata)> + '_ {
         self.providers.iter().map(|(k, v)| (k, *v))
     }
@@ -428,7 +427,7 @@ pub fn create_provider_by_name(name: &str) -> Result<Arc<Provider>> {
     let mut models = std::collections::HashMap::new();
     models.insert(
         "default".to_string(),
-        crate::types::provider::ModelConfig {
+        crate::common::types::provider::ModelConfig {
             name: metadata.default_model.to_string(),
             max_tokens: 4096,
             temperature: 0.7,
@@ -473,46 +472,6 @@ pub fn list_providers() -> Vec<&'static ProviderMetadata> {
     BUILT_IN_PROVIDERS.iter().collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_provider_registry() {
-        let registry = ProviderRegistry::new();
-
-        // Test canonical lookup
-        assert!(registry.has("openai"));
-        assert!(registry.has("anthropic"));
-
-        // Test alias lookup
-        assert!(registry.has("moonshot"));
-        assert!(registry.has("claude"));
-    }
-
-    #[test]
-    fn test_provider_metadata_anthropic_groq() {
-        let registry = ProviderRegistry::new();
-
-        let anthropic = registry.get("anthropic").unwrap();
-        assert_eq!(anthropic.id, "anthropic");
-        assert_eq!(anthropic.api_type, ApiType::AnthropicMessages);
-
-        let groq = registry.get("groq").unwrap();
-        assert_eq!(groq.id, "groq");
-        assert_eq!(groq.api_type, ApiType::OpenAICompletions);
-        assert!(groq.base_url.contains("groq"));
-    }
-
-    #[test]
-    fn test_list_providers_includes_canonical_ids() {
-        let providers = list_providers();
-        assert!(!providers.is_empty());
-        assert!(providers.iter().any(|p| p.id == "openai"));
-        assert!(providers.iter().any(|p| p.id == "anthropic"));
-    }
-}
-
 /// Build an `Arc<Provider>` from a catalog entry plus an API key and
 /// the chosen model.
 ///
@@ -551,7 +510,7 @@ pub fn create_provider_for_entry(
     let mut models = std::collections::HashMap::new();
     models.insert(
         entry.default_model_id.clone(),
-        crate::types::provider::ModelConfig {
+        crate::common::types::provider::ModelConfig {
             name: model.id.clone(),
             ..Default::default()
         },
@@ -569,4 +528,44 @@ pub fn default_model_for_entry(
     entry: &crate::providers::catalog::ProviderCatalogEntry,
 ) -> &str {
     &entry.default_model_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_provider_registry() {
+        let registry = ProviderRegistry::new();
+
+        // Test canonical lookup
+        assert!(registry.has("openai"));
+        assert!(registry.has("anthropic"));
+
+        // Test alias lookup
+        assert!(registry.has("moonshot"));
+        assert!(registry.has("claude"));
+    }
+
+    #[test]
+    fn test_provider_metadata_anthropic_groq() {
+        let registry = ProviderRegistry::new();
+
+        let anthropic = registry.get("anthropic").unwrap();
+        assert_eq!(anthropic.id, "anthropic");
+        assert_eq!(anthropic.api_type, ApiType::AnthropicMessages);
+
+        let groq = registry.get("groq").unwrap();
+        assert_eq!(groq.id, "groq");
+        assert_eq!(groq.api_type, ApiType::OpenAICompletions);
+        assert!(groq.base_url.contains("groq"));
+    }
+
+    #[test]
+    fn test_list_providers_includes_canonical_ids() {
+        let providers = list_providers();
+        assert!(!providers.is_empty());
+        assert!(providers.iter().any(|p| p.id == "openai"));
+        assert!(providers.iter().any(|p| p.id == "anthropic"));
+    }
 }

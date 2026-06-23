@@ -134,14 +134,11 @@ fn handle_api_key_command(cmd: ApiKeyCommands, paths: &GlobalPaths) -> Result<()
         }
         ApiKeyCommands::Revoke { key_id } => {
             let store = crate::auth::api_key::ApiKeyStore::load(&resolver)?;
-            match rt.block_on(store.revoke_key(&key_id))? {
-                true => {
-                    println!("✓ API key {key_id} revoked");
-                    Ok(())
-                }
-                false => {
-                    anyhow::bail!("API key {key_id} not found");
-                }
+            if rt.block_on(store.revoke_key(&key_id))? {
+                println!("✓ API key {key_id} revoked");
+                Ok(())
+            } else {
+                anyhow::bail!("API key {key_id} not found");
             }
         }
     }
@@ -195,9 +192,6 @@ pub fn handle_login(paths: &GlobalPaths, host: &str, api_key: Option<String>) ->
 /// Handle top-level `peko logout` command
 pub fn handle_logout(paths: &GlobalPaths, host: &str) -> Result<()> {
     let service = CredentialsService::new(paths.clone())?;
-    match service.clear_registry_token(host)? {
-        true => println!("✓ Logged out from {host}"),
-        false => println!("✗ Not logged in to {host}"),
-    }
+    if service.clear_registry_token(host)? { println!("✓ Logged out from {host}") } else { println!("✗ Not logged in to {host}") }
     Ok(())
 }

@@ -192,6 +192,46 @@ pub fn load_from_config_dir(config_dir: impl AsRef<std::path::Path>) -> Registry
     }
 }
 
+/// Resolve registry configuration for push/pull operations.
+///
+/// Applies the CLI `--registry` override, wires in the authentication token for
+/// the target host, and returns a config ready for `RegistryClient`.
+pub fn resolve_registry_config(
+    mut config: RegistryConfig,
+    cli_registry: Option<&str>,
+    host: &str,
+    token: Option<String>,
+) -> anyhow::Result<RegistryConfig> {
+    // Apply CLI --registry override
+    if let Some(url) = cli_registry {
+        config.default = url.to_string();
+        if config.get_source(url).is_none() {
+            config.add_source(RegistrySource {
+                url: url.to_string(),
+                priority: 0,
+                auth: None,
+                token: None,
+            });
+        }
+    }
+
+    if token.is_none() {
+        anyhow::bail!(
+            "No registry authentication found.\n\
+             Run: peko login --api-key <key>"
+        );
+    }
+
+    config.add_source(RegistrySource {
+        url: host.to_string(),
+        priority: 1,
+        auth: None,
+        token,
+    });
+
+    Ok(config)
+}
+
 /// Parse registry configuration from runtime.toml content
 fn parse_runtime_toml(content: &str) -> RegistryConfig {
     // Parse the full TOML to extract just the registry section

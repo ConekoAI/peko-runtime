@@ -11,12 +11,12 @@
 //! - Background compaction works for both streaming and blocking modes
 //! - Event semantics are uniform across all consumers
 
-use crate::agent::Agent;
+use crate::agents::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase};
-use crate::prompt::SystemPromptService;
+use crate::agents::prompt::SystemPromptService;
 use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
 use crate::session::Session;
-use crate::types::message::{ContentBlock, LlmMessage};
+use crate::common::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -55,7 +55,7 @@ pub struct AgenticLoop {
     max_iterations: usize,
     system_prompt: String,
     /// Extension core for skill loading and tool registration.
-    extension_core: Arc<crate::extension::ExtensionCore>,
+    extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     /// Resolved caller identity (pekohub sub, API key id, or `None` for
     /// local CLI invocations). Propagated to `HookInput::ToolCall::caller_id`
     /// on every tool invocation so downstream permission checks and audit
@@ -73,7 +73,7 @@ impl AgenticLoop {
     pub async fn new(
         agent: Arc<Agent>,
         provider: Arc<crate::providers::Provider>,
-        extension_core: Arc<crate::extension::ExtensionCore>,
+        extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
         let system_prompt = SystemPromptService::build(&agent, &extension_core).await;
 
@@ -106,7 +106,7 @@ impl AgenticLoop {
 
     /// Get the extension core
     #[must_use]
-    pub fn extension_core(&self) -> &Arc<crate::extension::ExtensionCore> {
+    pub fn extension_core(&self) -> &Arc<crate::extensions::framework::ExtensionCore> {
         &self.extension_core
     }
 
@@ -236,7 +236,7 @@ impl AgenticLoop {
     ) -> Result<AgenticResult> {
         use crate::common::paths::PathResolver;
         use crate::session::manager::SessionManager;
-        use crate::session::types::Peer;
+        use crate::auth::principal::Principal;
 
         // Create session via SessionManager. Issue #17: use the resolved
         // caller identity (set via `with_caller_id`) as the session's
@@ -251,8 +251,8 @@ impl AgenticLoop {
         let peer = self
             .caller_id
             .as_deref()
-            .map(|c| Peer::User(c.to_string()))
-            .unwrap_or_else(|| Peer::User("local".to_string()));
+            .map(|c| Principal::User(c.to_string()))
+            .unwrap_or_else(|| Principal::User("local".to_string()));
         let session = session_manager
             .get_or_create_base(self.agent.name(), &peer)
             .await?;
@@ -380,13 +380,13 @@ impl AgenticLoop {
                     .content
                     .iter()
                     .map(|b| match b {
-                        crate::types::message::ContentBlock::Text { text } => {
+                        crate::common::types::message::ContentBlock::Text { text } => {
                             format!("[Text: {}]", text.chars().take(50).collect::<String>())
                         }
-                        crate::types::message::ContentBlock::ToolCall { id, name, .. } => {
+                        crate::common::types::message::ContentBlock::ToolCall { id, name, .. } => {
                             format!("[ToolCall: {name} ({id})]")
                         }
-                        crate::types::message::ContentBlock::ToolResult {
+                        crate::common::types::message::ContentBlock::ToolResult {
                             tool_call_id,
                             name,
                             ..
@@ -823,13 +823,13 @@ impl AgenticLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::Agent;
-    use crate::extension::core::{global_core, init_global_core, ExtensionCore};
+    use crate::agents::Agent;
+    use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;
-    use crate::session::types::Peer;
-    use crate::types::agent::AgentConfig;
-    use crate::types::provider::{ProviderConfig, ProviderType};
+    use crate::auth::principal::Principal;
+    use crate::agents::agent_config::AgentConfig;
+    use crate::common::types::provider::{ProviderConfig, ProviderType};
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use tokio::sync::RwLock;
@@ -852,7 +852,7 @@ mod tests {
             name: name.to_string(),
             preferred_provider_id: Some("openai".into()),
             preferred_model_id: Some("default".into()),
-            extensions: Some(crate::types::agent::ExtensionConfig {
+            extensions: Some(crate::common::types::agent_legacy::ExtensionConfig {
                 enabled: vec!["*".to_string()],
                 ..Default::default()
             }),
@@ -865,7 +865,7 @@ mod tests {
         let mut manager = SessionManager::new()
             .with_sessions_dir_internal(temp_dir.join("data").join("sessions"))
             .with_agent_name(agent_name);
-        let peer = Peer::User("default".to_string());
+        let peer = Principal::User("default".to_string());
         let handle = manager
             .create_session(
                 agent_name,
@@ -1015,7 +1015,7 @@ mod tests {
         let (provider, mock) = mock_provider();
         mock.queue_text("Quick response");
 
-        let mut config = test_agent_config("rt003-agent");
+        let config = test_agent_config("rt003-agent");
         // v3: timeout is no longer on the per-agent `[provider]`
         // block. The agentic loop consults the resolved Provider's
         // own timeout. Default timeout in tests is sufficient.

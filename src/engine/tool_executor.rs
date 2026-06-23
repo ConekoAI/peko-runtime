@@ -8,9 +8,9 @@
 //! - Duration tracking
 
 use crate::engine::AgenticEvent;
-use crate::extension::ExtensionCore;
+use crate::extensions::framework::ExtensionCore;
 use crate::session::Session;
-use crate::types::message::{ContentBlock, LlmMessage};
+use crate::common::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -86,7 +86,7 @@ impl ToolExecutor {
         };
 
         let (tool_result_str, tool_result_json, success) =
-            match crate::runtime::execute_tool_via_core_with_context(
+            match crate::engine::tool_runtime::execute_tool_via_core_with_context(
                 extension_core,
                 name,
                 arguments.clone(),

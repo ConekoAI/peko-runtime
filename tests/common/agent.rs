@@ -47,14 +47,8 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     Ok(())
 }
 
-/// Backward-compat alias used by code that hasn't migrated to the v3
-/// catalog-seeding flow yet. New code should call `write_v3_mock_agent`
-/// + `seed_mock_provider_in_catalog` from `tests/common/harness.rs` (or
-/// its own setup).
-///
 /// (Removed: the v3 rename already happened, so callers should use
 /// `write_v3_mock_agent` directly. The deprecated alias is removed.)
-
 /// Seed a `mock-llm` catalog entry pointing at `mock_llm_url`. The
 /// test harness invokes this before spawning the daemon so the
 /// daemon's `LlmResolver` finds the entry on first lookup.
@@ -68,7 +62,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 /// the entry with the same values.
 pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
     use pekobot::providers::catalog::{
-        ApiFormat, ModelInfo, ProviderCatalogFile, ProviderCatalogEntry,
+        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;
 
@@ -101,6 +95,100 @@ pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
     };
     let mut entries = BTreeMap::new();
     entries.insert("mock-llm".to_string(), entry);
+    let file = ProviderCatalogFile {
+        version: "3.0".to_string(),
+        entries,
+        default_provider_id: None,
+        default_model_id: None,
+    };
+    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
+    std::fs::write(&catalog_path, toml).expect("write catalog");
+}
+
+/// Seed a `minimax` catalog entry pointing at the production MiniMax
+/// (Anthropic-compatible) endpoint. The API key is read from the
+/// `MINIMAX_API_KEY` env var via `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
+pub fn seed_minimax_provider_in_catalog(home: &Path) {
+    use pekobot::providers::catalog::{
+        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
+    };
+    use std::collections::BTreeMap;
+
+    let peko_dir = home.join(".peko");
+    let catalog_path = peko_dir.join("providers.toml");
+    if let Some(parent) = catalog_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let now = chrono::Utc::now();
+    let entry = ProviderCatalogEntry {
+        id: "minimax".to_string(),
+        display_name: "MiniMax".to_string(),
+        template_id: None,
+        api_format: ApiFormat::AnthropicMessages,
+        base_url: "https://api.minimaxi.com/anthropic".to_string(),
+        default_model_id: "MiniMax-M2.7".to_string(),
+        models: vec![ModelInfo {
+            id: "MiniMax-M2.7".to_string(),
+            display_name: None,
+            context_length: None,
+            max_output_tokens: None,
+            capabilities: vec![],
+        }],
+        headers: BTreeMap::new(),
+        requires_key: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    let mut entries = BTreeMap::new();
+    entries.insert("minimax".to_string(), entry);
+    let file = ProviderCatalogFile {
+        version: "3.0".to_string(),
+        entries,
+        default_provider_id: None,
+        default_model_id: None,
+    };
+    let toml = toml::to_string_pretty(&file).expect("serialize catalog");
+    std::fs::write(&catalog_path, toml).expect("write catalog");
+}
+
+/// Seed a `kimi` catalog entry pointing at the Kimi Code API endpoint.
+/// The API key is read from the `KIMI_API_KEY` env var via
+/// `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
+pub fn seed_kimi_provider_in_catalog(home: &Path) {
+    use pekobot::providers::catalog::{
+        ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
+    };
+    use std::collections::BTreeMap;
+
+    let peko_dir = home.join(".peko");
+    let catalog_path = peko_dir.join("providers.toml");
+    if let Some(parent) = catalog_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let now = chrono::Utc::now();
+    let entry = ProviderCatalogEntry {
+        id: "kimi".to_string(),
+        display_name: "Kimi (Kimi Code API)".to_string(),
+        template_id: None,
+        api_format: ApiFormat::AnthropicMessages,
+        base_url: "https://api.kimi.com/coding".to_string(),
+        default_model_id: "kimi-for-coding".to_string(),
+        models: vec![ModelInfo {
+            id: "kimi-for-coding".to_string(),
+            display_name: None,
+            context_length: None,
+            max_output_tokens: None,
+            capabilities: vec![],
+        }],
+        headers: BTreeMap::new(),
+        requires_key: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    let mut entries = BTreeMap::new();
+    entries.insert("kimi".to_string(), entry);
     let file = ProviderCatalogFile {
         version: "3.0".to_string(),
         entries,

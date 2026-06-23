@@ -112,7 +112,7 @@ mod tests {
         assert!(encoded.ends_with('\n'));
 
         // Gateway side would decode as packet
-        let decoded: GatewayPacket = decode_packet(&encoded.trim()).unwrap();
+        let decoded: GatewayPacket = decode_packet(encoded.trim()).unwrap();
         match decoded {
             GatewayPacket::Ping { request_id } => assert_eq!(request_id, 42),
             _ => panic!("Expected Ping"),
@@ -124,7 +124,7 @@ mod tests {
         let response = GatewayResponse::Pong { request_id: 42 };
         let encoded = encode_packet(&response).unwrap();
 
-        let decoded = decode_response(&encoded.trim()).unwrap();
+        let decoded = decode_response(encoded.trim()).unwrap();
         match decoded {
             GatewayResponse::Pong { request_id } => assert_eq!(request_id, 42),
             _ => panic!("Expected Pong"),
@@ -179,7 +179,7 @@ mod tests {
         };
 
         let encoded = encode_packet(&response).unwrap();
-        let decoded = decode_response(&encoded.trim()).unwrap();
+        let decoded = decode_response(encoded.trim()).unwrap();
         match decoded {
             GatewayResponse::Error {
                 request_id,

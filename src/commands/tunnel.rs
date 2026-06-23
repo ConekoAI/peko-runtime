@@ -72,7 +72,7 @@ async fn handle_tunnel_setup(
     let private_key_bytes = keypair.private_key_bytes();
 
     // Create did:key from public key
-    let runtime_did = crate::runtime::identity::public_key_to_did_key(&public_key_bytes);
+    let runtime_did = crate::identity::runtime::public_key_to_did_key(&public_key_bytes);
 
     // Determine hub URL
     let hub_url = url.unwrap_or_else(|| "wss://pekohub.org/v1/tunnel".to_string());
@@ -143,13 +143,12 @@ async fn handle_tunnel_setup(
                 let status = r.status();
                 let body = r.text().await.unwrap_or_default();
                 anyhow::bail!("PekoHub rejected runtime registration: HTTP {status}. {body}");
-            } else {
-                eprintln!(
-                    "   ⚠️  Runtime registration failed: HTTP {}. The credential was saved; \
-                     re-run `peko tunnel setup` once PekoHub is reachable to complete registration.",
-                    r.status()
-                );
             }
+            eprintln!(
+                "   ⚠️  Runtime registration failed: HTTP {}. The credential was saved; \
+                 re-run `peko tunnel setup` once PekoHub is reachable to complete registration.",
+                r.status()
+            );
         }
         Err(e) => {
             eprintln!(
@@ -203,7 +202,7 @@ pub async fn handle_tunnel(
                 Some(c) => c,
                 None => {
                     let path = cred_path.map_or_else(
-                        || crate::tunnel::PekoHubCredential::default_path(),
+                        crate::tunnel::PekoHubCredential::default_path,
                         PathBuf::from,
                     );
                     anyhow::bail!(

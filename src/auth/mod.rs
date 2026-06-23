@@ -21,7 +21,7 @@ pub use config::{AuthConfig, RateLimitConfig};
 pub use jwt::{JwtValidator, ValidatedJwt};
 pub use ownership::{
     agent_resource, check_permission as check_ownership_permission, team_resource, Permission,
-    PermissionDenied, PermissionGrant, Resource as OwnedResource, SubjectType,
+    PermissionDenied, PermissionGrant, Resource as OwnedResource,
 };
 pub use permissions::{check_permission, Action, AuthError, Resource};
 pub use principal::{Principal, PrincipalParseError, SubjectKind};

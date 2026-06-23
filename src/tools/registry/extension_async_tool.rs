@@ -7,7 +7,7 @@
 //! it implements the `Tool` trait — a tool-world concept. The generic extension
 //! framework must not depend on `crate::tools` per ADR-017.
 
-use crate::extension::core::ExtensionAsyncAdapter;
+use crate::extensions::framework::core::ExtensionAsyncAdapter;
 use crate::tools::core::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -80,20 +80,20 @@ impl Tool for ExtensionAsyncTool {
         // Wait for the task to complete
         let result = self
             .adapter
-            .wait_for_completion(&receipt.task_id, std::time::Duration::from_secs(300))
+            .wait_for_completion(&receipt.task_id, std::time::Duration::from_mins(5))
             .await?;
 
         match result {
-            crate::extension::async_exec::executor::WaitResult::Completed { result } => {
+            crate::extensions::framework::async_exec::executor::WaitResult::Completed { result } => {
                 Ok(result.to_json())
             }
-            crate::extension::async_exec::executor::WaitResult::Failed { error } => {
+            crate::extensions::framework::async_exec::executor::WaitResult::Failed { error } => {
                 Err(anyhow::anyhow!("Async execution failed: {error}"))
             }
-            crate::extension::async_exec::executor::WaitResult::Cancelled => {
+            crate::extensions::framework::async_exec::executor::WaitResult::Cancelled => {
                 Err(anyhow::anyhow!("Async execution was cancelled"))
             }
-            crate::extension::async_exec::executor::WaitResult::Timeout => {
+            crate::extensions::framework::async_exec::executor::WaitResult::Timeout => {
                 Err(anyhow::anyhow!("Async execution timed out"))
             }
         }
@@ -103,7 +103,7 @@ impl Tool for ExtensionAsyncTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extension::ExtensionCore;
+    use crate::extensions::framework::ExtensionCore;
     use std::sync::Arc;
 
     #[test]

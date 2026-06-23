@@ -652,7 +652,11 @@ mod tests {
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
         // Create file with many matches
-        let content: String = (0..100).map(|i| format!("line{i}\n")).collect();
+        let content: String = (0..100).fold(String::new(), |mut acc, i| {
+            use std::fmt::Write;
+            let _ = writeln!(acc, "line{i}");
+            acc
+        });
         fs::write(temp_dir.path().join("test.txt"), content)
             .await
             .unwrap();

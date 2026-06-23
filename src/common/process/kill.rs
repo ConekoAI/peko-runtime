@@ -58,7 +58,7 @@ pub async fn kill_by_pid(pid: u32, force: bool) -> Result<()> {
     {
         let signal = if force { "-9" } else { "-15" };
         tokio::process::Command::new("kill")
-            .args(&[signal, &pid.to_string()])
+            .args([signal, &pid.to_string()])
             .output()
             .await?;
     }
@@ -115,7 +115,7 @@ pub async fn graceful_shutdown(
     mut child: Child,
     kill_timeout: Duration,
     pid: u32,
-    job: Option<JobObject>,
+    #[allow(unused_variables)] job: Option<JobObject>,
 ) -> Result<()> {
     // Take stdin to close it and signal EOF to the process
     drop(child.stdin.take());
@@ -126,7 +126,8 @@ pub async fn graceful_shutdown(
             debug!("Process[{}] exited gracefully: {:?}", pid, status);
             // Explicitly close the job handle so the OS cleans up any
             // surviving descendants (should be a no-op if already exited).
-            drop(job);
+            // drop(job) is a no-op: JobObject has no Drop impl.
+            // The handle is released on process exit.
             Ok(())
         }
         Ok(Err(e)) => {
@@ -136,7 +137,8 @@ pub async fn graceful_shutdown(
             // then wait for the child handle to resolve.
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = timeout(Duration::from_secs(2), child.wait()).await;
-            drop(job);
+            // drop(job) is a no-op: JobObject has no Drop impl.
+            // The handle is released on process exit.
             Ok(())
         }
         Err(_) => {
@@ -149,7 +151,8 @@ pub async fn graceful_shutdown(
             // then wait for the child handle to resolve.
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = timeout(Duration::from_secs(2), child.wait()).await;
-            drop(job);
+            // drop(job) is a no-op: JobObject has no Drop impl.
+            // The handle is released on process exit.
             Ok(())
         }
     }

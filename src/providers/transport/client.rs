@@ -37,7 +37,7 @@ impl HttpClient {
             .timeout(Duration::from_secs(timeout_secs))
             .pool_max_idle_per_host(10)
             .pool_idle_timeout(Duration::from_secs(30))
-            .tcp_keepalive(Duration::from_secs(60))
+            .tcp_keepalive(Duration::from_mins(1))
             .http1_only() // Force HTTP/1.1 to avoid HTTP/2 issues with some providers
             .build()?;
 
@@ -65,7 +65,7 @@ impl HttpClient {
             .timeout(Duration::from_secs(timeout_secs))
             .pool_max_idle_per_host(10)
             .pool_idle_timeout(Duration::from_secs(30))
-            .tcp_keepalive(Duration::from_secs(60))
+            .tcp_keepalive(Duration::from_mins(1))
             .http1_only()
             .build()?;
 

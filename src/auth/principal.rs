@@ -3,13 +3,13 @@
 //! Before this module, the runtime had three different ways to model
 //! "who is this?" that disagreed on the universe of subjects:
 //!
-//! - `Peer::{User, Agent}` — no `Team` variant.
+//! - `Principal::{User, Agent}` — no `Team` variant.
 //! - `SubjectType::{User, Team, Public}` — no `Agent` variant.
-//! - `AgentConfig::owner_id: String` — free-form, default `""`.
+//! - Free-form ownership strings — default `""`.
 //!
-//! `Principal` unifies them into a single value type. `Peer` is now a
-//! type alias for `Principal`, and `SubjectType` is kept as the IPC
-//! wire-side tag.
+//! `Principal` unifies them into a single value type. The legacy `SubjectType`
+//! enum and `Peer` type alias were removed in issues #25 and #30; `Principal`
+//! is the only remaining actor representation in code and on the wire.
 //!
 //! Display format: `"user:{id}" | "agent:{id}" | "team:{id}" | "public"`.
 //! FromStr is the inverse. Round-trips are byte-stable.
@@ -27,10 +27,8 @@ use serde::{Deserialize, Serialize};
 /// See `Principal::is_session_peer`.
 ///
 /// Wire format: `{ "kind": "user" | "agent" | "team" | "public", "id": "..." }`
-/// via `#[serde(tag = "kind", content = "id")]`. The legacy
-/// `owner_id = "string"` form is handled by the two-field
-/// `owner` + `owner_id` shim on `AgentConfig` / `TeamMetadata` (see
-/// ADR-039).
+/// via `#[serde(tag = "kind", content = "id")]`. `AgentConfig` and
+/// `TeamMetadata` store the owner as a `Principal` directly (see ADR-039).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "lowercase")]
 pub enum Principal {
@@ -45,9 +43,8 @@ pub enum Principal {
 }
 
 impl Default for Principal {
-    /// Default is `Principal::User("")` (the legacy "no owner" sentinel
-    /// used in `runtime/migration.rs:170-171, 234-235`). This is
-    /// required so `#[serde(default)]` on the `owner` field works.
+    /// Default is `Principal::User("")` (the legacy "no owner" sentinel).
+    /// This is required so `#[serde(default)]` on the `owner` field works.
     fn default() -> Self {
         Principal::User(String::new())
     }
@@ -109,44 +106,14 @@ impl Principal {
         matches!(self, Self::User(_) | Self::Agent(_))
     }
 
-    // -- Compatibility shim for the old `Peer` API --
+    // -- Compatibility shim removed (issue #25) --
     //
-    // These methods mirror `Peer::{id, peer_type, is_user, is_agent}` so
-    // the 25 call sites that used the old enum keep compiling through
-    // the `pub type Peer = Principal;` alias. `peer_type` is kept for
-    // backwards compatibility but the new `kind()` is preferred.
-
-    /// Get the peer's ID string (mirrors `Peer::id`).
-    #[must_use]
-    pub fn id(&self) -> &str {
-        self.subject_id()
-    }
-
-    /// Get the peer type as a string (mirrors `Peer::peer_type`).
-    ///
-    /// Returns `"user" | "agent" | "team" | "public"`. Existing callers
-    /// that only inspect `"user"` or `"agent"` are unaffected.
-    #[must_use]
-    pub fn peer_type(&self) -> &'static str {
-        match self {
-            Self::User(_) => "user",
-            Self::Agent(_) => "agent",
-            Self::Team(_) => "team",
-            Self::Public => "public",
-        }
-    }
-
-    /// Check if this principal is a user (mirrors `Peer::is_user`).
-    #[must_use]
-    pub fn is_user(&self) -> bool {
-        matches!(self, Self::User(_))
-    }
-
-    /// Check if this principal is an agent (mirrors `Peer::is_agent`).
-    #[must_use]
-    pub fn is_agent(&self) -> bool {
-        matches!(self, Self::Agent(_))
-    }
+    // The `id`, `peer_type`, `is_user`, and `is_agent` methods were
+    // carried over from the old `Peer` enum during the ADR-039
+    // migration. After the stacked Peer→Principal rename, every
+    // call site uses the canonical surface: `subject_id()`,
+    // `kind().to_string()`, and `matches!(p, Principal::User(_))` /
+    // `matches!(p, Principal::Agent(_))`.
 
     /// Project a tunnel-bridge user string (the value returned by
     /// `resolve_bridge_caller`) into a `Principal` (issue #26).
@@ -255,54 +222,32 @@ impl FromStr for Principal {
     }
 }
 
-/// Build a `Principal` from a wire-format string with a fallback kind.
+/// Parse a CLI ownership string into a `Principal`.
 ///
-/// This is the defensive parser for legacy data where the kind is
-/// implicit (e.g. a bare `owner_id = "user:abc"` → `Principal::User`).
-/// Tries `Principal::from_str` first; on failure, treats the string as
-/// an id of the supplied kind. An empty string always resolves to
-/// `Principal::User("")` (the legacy "no owner" sentinel).
+/// This is a CLI-level convenience parser: it tries `Principal::from_str`
+/// first and falls back to `Principal::User(s)` for bare strings (the
+/// common case for `peko agent transfer --to alice`). An empty string
+/// resolves to `Principal::User("")` (the "no owner" sentinel).
+///
+/// **Asymmetric prefix handling (intentional):**
+/// - `"user:alice"` → `Principal::User("alice")` (the `user:` prefix is
+///   stripped)
+/// - `"agent:helper"` / `"team:eng"` / `"public"` → resolved via
+///   `Principal::from_str` (the full string is the kind:id pair)
+/// - bare `"alice"` → `Principal::User("alice")` (fallback when the
+///   string has no `:` separator)
+///
+/// On-disk configs should set `owner = { kind, id }` directly; this helper
+/// is only for CLI arguments that arrive as plain strings.
 #[must_use]
-pub fn principal_from_string(s: &str, default_kind: SubjectKind) -> Principal {
+pub fn principal_from_string_with_default_user(s: &str) -> Principal {
     if s.is_empty() {
         return Principal::User(String::new());
     }
     if let Ok(p) = Principal::from_str(s) {
         return p;
     }
-    match default_kind {
-        SubjectKind::User => Principal::User(s.to_string()),
-        SubjectKind::Agent => Principal::Agent(s.to_string()),
-        SubjectKind::Team => Principal::Team(s.to_string()),
-        SubjectKind::Public => Principal::Public,
-    }
-}
-
-/// Convenience: parse an `owner_id` string as a `Principal::User`
-/// (the legacy default kind for ownership strings).
-///
-/// Tries `Principal::from_str` first; on failure, treats the string as
-/// a `Principal::User` id. An empty string always resolves to
-/// `Principal::User("")` (the legacy "no owner" sentinel).
-///
-/// **Asymmetric prefix handling (intentional, but worth flagging):**
-/// - `"user:alice"` → `Principal::User("alice")` (the `user:` prefix is
-///   stripped as a legacy normalization)
-/// - `"agent:helper"` / `"team:eng"` / `"public"` → resolved via
-///   `Principal::from_str` (prefix-agnostic — the full string is the
-///   kind:id pair)
-/// - bare `"alice"` → `Principal::User("alice")` (the legacy fallback
-///   when the string has no `:` separator)
-///
-/// This means a typo like `owner_id = "use:alice"` silently becomes
-/// `Principal::User("use:alice")` rather than being normalized. That
-/// matches the pre-ADR-039 behavior (the legacy `subject_id` field was
-/// always treated as a user identifier), so the asymmetry is
-/// backward-compatible. New configs should set `owner = { kind, id }`
-/// explicitly.
-#[must_use]
-pub fn principal_from_string_with_default_user(s: &str) -> Principal {
-    principal_from_string(s, SubjectKind::User)
+    Principal::User(s.to_string())
 }
 
 #[cfg(test)]
@@ -392,21 +337,15 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_compat_methods() {
-        let p = Principal::User("alice".into());
-        assert_eq!(p.id(), "alice");
-        assert_eq!(p.peer_type(), "user");
-        assert!(p.is_user());
-        assert!(!p.is_agent());
-
-        let p = Principal::Agent("helper".into());
-        assert_eq!(p.id(), "helper");
-        assert_eq!(p.peer_type(), "agent");
-        assert!(p.is_agent());
-        assert!(!p.is_user());
-
-        assert_eq!(Principal::Public.peer_type(), "public");
-        assert_eq!(Principal::Team("eng".into()).peer_type(), "team");
+    fn test_kind_display() {
+        // The canonical replacement for the dropped `peer_type()`
+        // method: `kind().to_string()` produces the same lowercase
+        // string for every variant. Pin the contract here so any
+        // future change to `SubjectKind`'s Display impl surfaces.
+        assert_eq!(Principal::User("alice".into()).kind().to_string(), "user");
+        assert_eq!(Principal::Agent("helper".into()).kind().to_string(), "agent");
+        assert_eq!(Principal::Team("eng".into()).kind().to_string(), "team");
+        assert_eq!(Principal::Public.kind().to_string(), "public");
     }
 
     /// Issue #26: the tunnel dispatcher stamps audit events with a

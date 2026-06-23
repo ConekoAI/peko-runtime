@@ -4,7 +4,8 @@
 //! delivery, and audit logging. Keeps the daemon's main loop focused on
 //! lifecycle and shutdown.
 
-use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
+use crate::agents::stateless_service::StatelessAgentService;
+use crate::common::types::a2a::MessageRequest;
 use crate::auth::caller::CallerContext;
 use crate::common::json_utils::json_subset;
 use crate::cron::events::SystemEvent;
@@ -415,7 +416,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn engine_from_tmp(tmp: &TempDir) -> CronEngine {
-        let scheduler = Arc::new(CronScheduler::new(&tmp.path().join("cron.json")).unwrap());
+        let scheduler = Arc::new(CronScheduler::new(tmp.path().join("cron.json")).unwrap());
         let idle = Arc::new(IdleDetector::new());
         let obs = Arc::new(Observability::new("daemon"));
         CronEngine::new(scheduler, idle, obs, tmp.path().join("data"), false)

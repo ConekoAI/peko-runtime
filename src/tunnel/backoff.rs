@@ -69,8 +69,8 @@ mod tests {
         assert_eq!(backoff.next(), Duration::from_secs(8));
         assert_eq!(backoff.next(), Duration::from_secs(16));
         assert_eq!(backoff.next(), Duration::from_secs(32));
-        assert_eq!(backoff.next(), Duration::from_secs(60));
-        assert_eq!(backoff.next(), Duration::from_secs(60)); // capped
+        assert_eq!(backoff.next(), Duration::from_mins(1));
+        assert_eq!(backoff.next(), Duration::from_mins(1)); // capped
     }
 
     #[test]
