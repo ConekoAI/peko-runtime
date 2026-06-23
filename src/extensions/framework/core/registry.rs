@@ -466,6 +466,35 @@ impl ExtensionCore {
     pub async fn tool_count(&self) -> usize {
         self.tool_registry.tool_count().await
     }
+
+    /// Look up a registered tool by name.
+    ///
+    /// Returns `Some(Arc<dyn Tool>)` if a tool with this name is registered,
+    /// `None` otherwise.
+    ///
+    /// NOTE: as of the task-tool refactor (commit 2), this is a stub that
+    /// always returns `None`. The unified registry stores tools as
+    /// `Arc<dyn HookHandler>` (e.g., `BuiltinExecuteHandler`), so recovering
+    /// the underlying `Arc<dyn Tool>` requires either downcasting or a
+    /// dedicated `Arc<dyn Tool>` side-table. Commit 3 is expected to wire
+    /// the real lookup; until then, `TaskTool::spawn` will report
+    /// "tool not found" for every name.
+    #[allow(dead_code)]
+    pub async fn get_tool(&self, name: &str) -> Option<Arc<dyn crate::tools::core::Tool>> {
+        let _ = name;
+        None
+    }
+
+    /// Return the current session key, if one is associated with this core.
+    ///
+    /// NOTE: as of the task-tool refactor (commit 2), this is a stub that
+    /// always returns `None`. Commit 3 is expected to thread a real
+    /// session-key accessor through the core; until then, `TaskTool::spawn`
+    /// falls back to the literal `"unknown"` session key.
+    #[allow(dead_code)]
+    pub fn current_session_key(&self) -> Option<String> {
+        None
+    }
 }
 
 impl Default for ExtensionCore {

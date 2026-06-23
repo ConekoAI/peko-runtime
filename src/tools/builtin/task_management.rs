@@ -6,7 +6,6 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
-#[cfg(test)]
 use std::sync::Arc;
 
 use crate::extensions::framework::async_exec::executor::{
@@ -26,6 +25,8 @@ enum TaskAction {
     Status,
     List,
     Cancel,
+    Spawn,
+    Output,
 }
 
 // ------------------------------------------------------------------------------
@@ -35,6 +36,8 @@ enum TaskAction {
 /// Unified task management tool.
 pub struct TaskTool {
     registry: Option<SharedAsyncTaskRegistry>,
+    executor: Option<Arc<crate::extensions::framework::async_exec::executor::AsyncExecutor>>,
+    extension_core: Option<std::sync::Weak<crate::extensions::framework::core::ExtensionCore>>,
 }
 
 impl TaskTool {
@@ -42,12 +45,33 @@ impl TaskTool {
     pub fn with_registry(registry: SharedAsyncTaskRegistry) -> Self {
         Self {
             registry: Some(registry),
+            executor: None,
+            extension_core: None,
         }
     }
 
     #[must_use]
     pub fn global() -> Self {
-        Self { registry: None }
+        Self {
+            registry: None,
+            executor: None,
+            extension_core: None,
+        }
+    }
+
+    /// Construct with executor + extension core. Required for `spawn` and
+    /// `output` actions; read-only actions (`status`, `list`, `cancel`)
+    /// still work without them.
+    #[must_use]
+    pub fn with_executor_and_core(
+        executor: Arc<crate::extensions::framework::async_exec::executor::AsyncExecutor>,
+        extension_core: std::sync::Weak<crate::extensions::framework::core::ExtensionCore>,
+    ) -> Self {
+        Self {
+            registry: None,
+            executor: Some(executor),
+            extension_core: Some(extension_core),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -175,6 +199,24 @@ impl TaskTool {
             }),
         }
     }
+
+    fn build_output_response(task: &TaskView) -> serde_json::Value {
+        let mut base = json!({
+            "task_id": task.task_id,
+            "status": task.status.as_str(),
+            "is_terminal": task.is_terminal(),
+        });
+        if let Some(ref result) = task.result {
+            base["result"] = result.clone();
+        }
+        if let Some(completed_at) = task.completed_at {
+            base["completed_at"] = json!(completed_at.to_rfc3339());
+        }
+        if let Some(duration) = task.duration() {
+            base["elapsed_seconds"] = json!(duration.num_seconds());
+        }
+        base
+    }
 }
 
 #[async_trait]
@@ -184,17 +226,29 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> String {
-        r"Manage async tasks: check status, list tasks, or cancel a running task.
+        r"Manage async tasks: check status, list tasks, cancel, spawn, or read output.
 
 Works for ALL async tasks: shell, grep, agent_spawn, a2a_send, etc.
 
-Parameters:
-- action: 'status', 'list', or 'cancel' (required)
-- task_id: Required for 'status' and 'cancel' — the task ID from the async receipt
-- status_filter: Optional for 'list' — filter by status
-- tool_filter: Optional for 'list' — filter by tool name
+Actions:
+- status: get one task by id
+- list: query tasks (optionally filter by status or tool name)
+- cancel: stop a running task
+- spawn: invoke any tool asynchronously, returns a task receipt
+- output: read a task's output (optionally wait for completion)
 
-Returns structured data appropriate to the action."
+Parameters:
+- action: 'status', 'list', 'cancel', 'spawn', or 'output' (required)
+- task_id: required for 'status', 'cancel', 'output' — the task ID from the receipt
+- tool: required for 'spawn' — the tool name to invoke
+- params: required for 'spawn' — parameters to pass to the tool
+- status_filter: optional for 'list' — filter by status
+- tool_filter: optional for 'list' — filter by tool name
+- blocking: optional for 'output' — if true, wait until task reaches terminal state
+- tail_lines: optional for 'output' — if >0, return only the last N lines
+
+Returns structured data appropriate to the action.
+'spawn' and 'output' require TaskTool to be constructed with an AsyncExecutor."
             .to_string()
     }
 
@@ -204,12 +258,20 @@ Returns structured data appropriate to the action."
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "list", "cancel"],
-                    "description": "What to do: status (get one task), list (query tasks), cancel (stop a task)"
+                    "enum": ["status", "list", "cancel", "spawn", "output"],
+                    "description": "What to do: status, list, cancel, spawn, or output"
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "Required for 'status' and 'cancel'. The task ID from the async receipt (e.g., 'shell:abc-123')"
+                    "description": "Required for 'status', 'cancel', 'output'. The task ID from the async receipt (e.g., 'shell:abc-123')"
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "Required for 'spawn'. The tool name to invoke (e.g., 'shell', 'fs_write')"
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Required for 'spawn'. Parameters to pass to the tool (forwarded verbatim)"
                 },
                 "status_filter": {
                     "type": "string",
@@ -218,6 +280,16 @@ Returns structured data appropriate to the action."
                 "tool_filter": {
                     "type": "string",
                     "description": "Optional filter for 'list': shell, agent_spawn, a2a_send, etc."
+                },
+                "blocking": {
+                    "type": "boolean",
+                    "description": "Optional for 'output'. If true, wait for the task to reach a terminal state before returning.",
+                    "default": false
+                },
+                "tail_lines": {
+                    "type": "integer",
+                    "description": "Optional for 'output'. If >0, return only the last N lines of output.",
+                    "default": 0
                 }
             },
             "required": ["action"]
@@ -261,6 +333,150 @@ Returns structured data appropriate to the action."
                     .ok_or_else(|| anyhow::anyhow!("'cancel' action requires 'task_id'"))?;
                 let result = self.cancel_task(task_id).await;
                 Ok(Self::build_cancel_response(result, task_id))
+            }
+            TaskAction::Spawn => {
+                let executor = match self.executor.as_ref() {
+                    Some(e) => e,
+                    None => {
+                        return Ok(json!({
+                            "error": "spawn action requires TaskTool to be constructed with an AsyncExecutor"
+                        }));
+                    }
+                };
+                let core_weak = match self.extension_core.as_ref() {
+                    Some(w) => w,
+                    None => {
+                        return Ok(json!({
+                            "error": "spawn action requires TaskTool to be constructed with an ExtensionCore"
+                        }));
+                    }
+                };
+                let core = match core_weak.upgrade() {
+                    Some(c) => c,
+                    None => {
+                        return Ok(json!({
+                            "error": "ExtensionCore has been dropped; cannot spawn"
+                        }));
+                    }
+                };
+
+                let tool_name = params
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("'spawn' action requires 'tool'"))?;
+                let tool_params = params
+                    .get("params")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("'spawn' action requires 'params'"))?;
+
+                let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
+                let session_key = core
+                    .current_session_key()
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                let config = crate::extensions::framework::async_exec::executor::AsyncToolConfig {
+                    // u64::MAX effectively disables the executor's timeout
+                    // (~584M years). The 5-min cap is applied by the
+                    // router on the *spawning* call, not on the spawned
+                    // task's lifetime. The task runs to completion (or
+                    // until cancelled via `task cancel`).
+                    timeout_secs: u64::MAX,
+                    ..Default::default()
+                };
+
+                // Resolve the tool from the ExtensionCore.
+                let tool = match core.get_tool(tool_name).await {
+                    Some(t) => t,
+                    None => {
+                        return Ok(json!({
+                            "error": format!("tool '{tool_name}' not found"),
+                            "tool_name": tool_name,
+                        }));
+                    }
+                };
+
+                // Clone `tool_params` so we can move one copy into the
+                // executor closure (which must be 'static) while still
+                // being able to reference the original afterwards.
+                let tool_params_for_closure = tool_params.clone();
+                let receipt = executor
+                    .execute(
+                        task_id.clone(),
+                        tool_name,
+                        tool_params,
+                        session_key,
+                        config,
+                        move || async move { tool.execute(tool_params_for_closure).await },
+                    )
+                    .await?;
+
+                Ok(json!({
+                    "task_id": receipt.task_id,
+                    "status": "running",
+                    "tool_name": tool_name,
+                }))
+            }
+            TaskAction::Output => {
+                let executor = match self.executor.as_ref() {
+                    Some(e) => e,
+                    None => {
+                        return Ok(json!({
+                            "error": "output action requires TaskTool to be constructed with an AsyncExecutor"
+                        }));
+                    }
+                };
+                let task_id = params
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("'output' action requires 'task_id'"))?;
+                let blocking = params
+                    .get("blocking")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let _tail_lines = params
+                    .get("tail_lines")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                // Look up the task
+                let task = match self.lookup_task(task_id).await {
+                    Some(t) => t,
+                    None => {
+                        return Ok(json!({
+                            "error": "Task not found",
+                            "task_id": task_id,
+                        }));
+                    }
+                };
+
+                if !task.is_terminal() {
+                    if !blocking {
+                        return Ok(json!({
+                            "task_id": task_id,
+                            "status": task.status.as_str(),
+                            "is_terminal": false,
+                            "result": null,
+                        }));
+                    }
+                    // blocking=true: wait for completion via executor.
+                    let timeout = std::time::Duration::from_secs(300);
+                    let _ = executor
+                        .wait_for_completion(&task_id.to_string(), timeout)
+                        .await;
+                    // Re-read after waiting.
+                    let task = match self.lookup_task(task_id).await {
+                        Some(t) => t,
+                        None => {
+                            return Ok(json!({
+                                "error": "Task not found",
+                                "task_id": task_id,
+                            }));
+                        }
+                    };
+                    return Ok(Self::build_output_response(&task));
+                }
+
+                Ok(Self::build_output_response(&task))
             }
         }
     }
@@ -454,5 +670,27 @@ mod tests {
 
         assert_eq!(result["success"], false);
         assert_eq!(result["message"], "Task not found");
+    }
+
+    #[tokio::test]
+    async fn test_task_spawn_missing_tool_returns_error() {
+        // TaskTool without executor: spawn should error cleanly.
+        let tool = TaskTool::global();
+        let result = tool
+            .execute(json!({"action": "spawn", "tool": "definitely_not_a_tool", "params": {}}))
+            .await
+            .unwrap();
+        // Without an executor wired, spawn is unsupported.
+        assert_eq!(result["error"], "spawn action requires TaskTool to be constructed with an AsyncExecutor");
+    }
+
+    #[tokio::test]
+    async fn test_task_output_missing_executor_returns_error() {
+        let tool = TaskTool::global();
+        let result = tool
+            .execute(json!({"action": "output", "task_id": "shell:x"}))
+            .await
+            .unwrap();
+        assert_eq!(result["error"], "output action requires TaskTool to be constructed with an AsyncExecutor");
     }
 }
