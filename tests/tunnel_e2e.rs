@@ -247,11 +247,13 @@ fn seed_minimax_catalog_entry(
 #[ignore = "requires PekoHub backend and LLM (MINIMAX_API_KEY or MOCK_LLM_URL)"]
 async fn test_e2e_tunnel_chat_with_llm() {
     // v3 headless bootstrap: this test builds an in-process AppState that
-    // uses the OS keychain by default. In CI there is no keychain, so when
-    // MOCK_LLM_URL is set we enable the env-var API-key fallback that
-    // `PekoCli::cmd` normally exports for the CLI-based integration suites.
+    // uses the OS keychain by default. In CI there is no keychain, so we
+    // ALWAYS enable the env-var API-key fallback (for both MOCK and real
+    // LLM modes). Without it, `LlmResolver::build_provider` returns Ok(None)
+    // and the agent runs without a provider — see `daemon/state.rs:387`
+    // for the bootstrap read path.
+    std::env::set_var("PEKO_TEST_RESOLVER_BOOTSTRAP", "1");
     if std::env::var_os("MOCK_LLM_URL").is_some() {
-        std::env::set_var("PEKO_TEST_RESOLVER_BOOTSTRAP", "1");
         std::env::set_var("MOCK_LLM_API_KEY", "mock-llm-test-key");
     }
 
