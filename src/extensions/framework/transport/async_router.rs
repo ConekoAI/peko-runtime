@@ -133,12 +133,12 @@ impl AsyncExecutionRouter {
     /// # Returns
     /// Tool execution result, or a `task_id` receipt if the work was
     /// detached because it exceeded [`DEFAULT_TOOL_TIMEOUT_SECS`].
-    #[instrument(skip(self, params, exec_service, sync_executor), level = "debug")]
+    #[instrument(skip(self, params, _exec_service, sync_executor), level = "debug")]
     pub async fn route<F, Fut>(
         &self,
         tool_name: &str,
         params: &mut Value,
-        exec_service: &ToolExecutionService,
+        _exec_service: &ToolExecutionService,
         tool_context: &ToolExecutionContext,
         exec_config: &ToolExecutionConfig,
         sync_executor: F,
@@ -163,9 +163,7 @@ impl AsyncExecutionRouter {
         self.execute_with_timeout(
             tool_name,
             cleaned,
-            exec_service,
             tool_context,
-            exec_config,
             sync_executor,
         )
         .await
@@ -177,14 +175,12 @@ impl AsyncExecutionRouter {
     /// then polled for completion up to the timeout. If the timeout fires
     /// before the task completes, a receipt is returned and the work
     /// continues running in the background.
-    #[instrument(skip(self, params, _exec_service, sync_executor), level = "debug")]
+    #[instrument(skip(self, params, sync_executor), level = "debug")]
     async fn execute_with_timeout<F, Fut>(
         &self,
         tool_name: &str,
         params: Value,
-        _exec_service: &ToolExecutionService,
         tool_context: &ToolExecutionContext,
-        _exec_config: &ToolExecutionConfig,
         sync_executor: F,
     ) -> Result<Value>
     where
@@ -235,6 +231,7 @@ impl AsyncExecutionRouter {
 
         // Poll for completion up to the timeout.
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut backoff = Duration::from_millis(50);
         loop {
             match self.transport.get_status(&task_id).await? {
                 Some(AsyncTaskStatus::Completed { result }) => {
@@ -256,10 +253,15 @@ impl AsyncExecutionRouter {
                     return Err(anyhow::anyhow!(error));
                 }
                 Some(AsyncTaskStatus::Pending) | Some(AsyncTaskStatus::Running) => {
-                    if tokio::time::Instant::now() >= deadline {
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
                         break;
                     }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let remaining = deadline - now;
+                    let sleep_duration = std::cmp::min(backoff, remaining);
+                    tokio::time::sleep(sleep_duration).await;
+                    // Double the backoff, capping at 1s.
+                    backoff = std::cmp::min(backoff * 2, Duration::from_secs(1));
                 }
                 None => {
                     return Err(anyhow::anyhow!(

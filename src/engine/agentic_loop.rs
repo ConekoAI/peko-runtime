@@ -897,13 +897,19 @@ fn build_async_completion_message(
         text: format!("[Async task results — {n} completed since last turn]"),
     }];
     for event in for_session {
+        let is_error = matches!(
+            event.status,
+            crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Failed { .. }
+                | crate::extensions::framework::async_exec::executor::AsyncTaskStatus::TimedOut { .. }
+                | crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Cancelled
+        );
         content.push(ContentBlock::ToolResult {
             tool_call_id: format!("synthetic:{}", event.task_id),
             name: event.tool_name.clone(),
             content: vec![ContentBlock::Text {
                 text: event.result.to_string(),
             }],
-            is_error: false,
+            is_error,
         });
     }
 
@@ -1369,24 +1375,38 @@ mod tests {
     // Synthetic-message builder tests (sub-task 3.1)
     // ===================================================================
 
-    fn make_completion_event(
+    fn make_completion_event_with_status(
         task_id: &str,
         tool_name: &str,
         session_key: &str,
+        status: crate::extensions::framework::async_exec::executor::AsyncTaskStatus,
     ) -> CompletionEvent {
         CompletionEvent {
             task_id: task_id.to_string(),
             tool_name: tool_name.to_string(),
             result: serde_json::json!({"exit_code": 0, "stdout": "hello"}),
-            status: crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Completed {
-                result: crate::tools::core::ToolResult::success(
-                    serde_json::json!({"exit_code": 0, "stdout": "hello"}),
-                ),
-            },
+            status,
             completed_at: chrono::Utc::now(),
             output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
             parent_session_key: session_key.to_string(),
         }
+    }
+
+    fn make_completion_event(
+        task_id: &str,
+        tool_name: &str,
+        session_key: &str,
+    ) -> CompletionEvent {
+        make_completion_event_with_status(
+            task_id,
+            tool_name,
+            session_key,
+            crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Completed {
+                result: crate::tools::core::ToolResult::success(
+                    serde_json::json!({"exit_code": 0, "stdout": "hello"}),
+                ),
+            },
+        )
     }
 
     #[test]
@@ -1465,6 +1485,82 @@ mod tests {
             }
         }
         assert_eq!(ids, vec!["synthetic:shell:x", "synthetic:shell:y"]);
+    }
+
+    #[test]
+    fn test_build_async_completion_message_error_statuses() {
+        use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
+        use crate::tools::core::ToolResult;
+
+        // Failed
+        let events = vec![make_completion_event_with_status(
+            "shell:f",
+            "shell",
+            "session_a",
+            AsyncTaskStatus::Failed {
+                error: "oops".to_string(),
+            },
+        )];
+        let msg = build_async_completion_message(&events, "session_a");
+        let msg = msg.expect("failed event should produce Some(msg)");
+        match &msg.content[1] {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert!(*is_error, "Failed status should set is_error=true");
+            }
+            other => panic!("expected ToolResult block, got {other:?}"),
+        }
+
+        // TimedOut
+        let events = vec![make_completion_event_with_status(
+            "shell:t",
+            "shell",
+            "session_a",
+            AsyncTaskStatus::TimedOut {
+                error: "timed out".to_string(),
+            },
+        )];
+        let msg = build_async_completion_message(&events, "session_a");
+        let msg = msg.expect("timed-out event should produce Some(msg)");
+        match &msg.content[1] {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert!(*is_error, "TimedOut status should set is_error=true");
+            }
+            other => panic!("expected ToolResult block, got {other:?}"),
+        }
+
+        // Cancelled
+        let events = vec![make_completion_event_with_status(
+            "shell:c",
+            "shell",
+            "session_a",
+            AsyncTaskStatus::Cancelled,
+        )];
+        let msg = build_async_completion_message(&events, "session_a");
+        let msg = msg.expect("cancelled event should produce Some(msg)");
+        match &msg.content[1] {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert!(*is_error, "Cancelled status should set is_error=true");
+            }
+            other => panic!("expected ToolResult block, got {other:?}"),
+        }
+
+        // Completed (success)
+        let events = vec![make_completion_event_with_status(
+            "shell:ok",
+            "shell",
+            "session_a",
+            AsyncTaskStatus::Completed {
+                result: ToolResult::success(serde_json::json!({"ok": true})),
+            },
+        )];
+        let msg = build_async_completion_message(&events, "session_a");
+        let msg = msg.expect("completed event should produce Some(msg)");
+        match &msg.content[1] {
+            ContentBlock::ToolResult { is_error, .. } => {
+                assert!(!(*is_error), "Completed status should set is_error=false");
+            }
+            other => panic!("expected ToolResult block, got {other:?}"),
+        }
     }
 
     #[test]
