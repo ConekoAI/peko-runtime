@@ -274,8 +274,8 @@ impl AsyncExecutor {
 
             // Map outcome to status and update registry
             let status = match &outcome {
-                TaskOutcome::Success(_) => AsyncTaskStatus::Completed {
-                    result: ToolResult::success(serde_json::json!({"completed": true})),
+                TaskOutcome::Success(value) => AsyncTaskStatus::Completed {
+                    result: ToolResult::success(value.clone()),
                 },
                 TaskOutcome::Failure(e) => AsyncTaskStatus::Failed {
                     error: e.to_string(),

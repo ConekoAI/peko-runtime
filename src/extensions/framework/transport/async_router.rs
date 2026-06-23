@@ -16,7 +16,7 @@
 //! ```
 
 use crate::extensions::framework::async_exec::executor::{
-    AsyncResultDeliveryMode, AsyncToolConfig, DeliveryTarget,
+    AsyncResultDeliveryMode, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget,
 };
 use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
@@ -197,21 +197,23 @@ impl AsyncExecutionRouter {
 
     /// Execute synchronously with the constant default timeout.
     ///
-    /// On timeout, the work is detached via [`Self::execute_async_detached`]
-    /// and a `task_id` receipt is returned (same shape as `task spawn`).
-    #[instrument(skip(self, params, exec_service, sync_executor), level = "debug")]
+    /// The work is spawned as a background task via the transport first,
+    /// then polled for completion up to the timeout. If the timeout fires
+    /// before the task completes, a receipt is returned and the work
+    /// continues running in the background.
+    #[instrument(skip(self, params, _exec_service, sync_executor), level = "debug")]
     async fn execute_with_timeout<F, Fut>(
         &self,
         tool_name: &str,
         params: Value,
-        exec_service: &ToolExecutionService,
+        _exec_service: &ToolExecutionService,
         tool_context: &ToolExecutionContext,
-        exec_config: &ToolExecutionConfig,
+        _exec_config: &ToolExecutionConfig,
         sync_executor: F,
     ) -> Result<Value>
     where
         F: FnOnce(Value) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<Value>> + Send,
+        Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
     {
         let timeout = self.default_tool_timeout;
         let timeout_secs = timeout.as_secs();
@@ -222,92 +224,83 @@ impl AsyncExecutionRouter {
             "Executing tool with default timeout"
         );
 
-        // Build the context for parameter injection
-        let abort_signal = crate::tools::core::AbortSignal::new();
-        let ctx = abort_signal
-            .create_context(&tool_context.run_id, "tool_exec", "async_router")
-            .with_agent_id(&tool_context.agent_id)
-            .with_session_id(&tool_context.session_id)
-            .with_workspace(&tool_context.workspace);
-
-        // Execute with isolation and timeout. If the future completes within
-        // the timeout we return the result; otherwise we detach to a background
-        // task and return a `task_id` receipt.
-        match tokio::time::timeout(
-            timeout,
-            exec_service.execute_with_isolation(
-                params,
-                exec_config,
-                Some(&ctx),
-                Some(timeout),
-                sync_executor,
-            ),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_elapsed) => {
-                tracing::warn!(
-                    tool_name = tool_name,
-                    timeout_secs = timeout_secs,
-                    "Tool exceeded default timeout; detaching to background task"
-                );
-                self.execute_async_detached(tool_name, tool_context).await
-            }
-        }
-    }
-
-    /// Detach a tool execution to a background task and return a receipt.
-    ///
-    /// Used by [`Self::execute_with_timeout`] when the tool exceeded the
-    /// default timeout. The receipt mirrors the shape returned by the
-    /// `task spawn` action.
-    #[instrument(skip(self), level = "debug")]
-    async fn execute_async_detached(
-        &self,
-        tool_name: &str,
-        tool_context: &ToolExecutionContext,
-    ) -> Result<Value> {
-        let timeout_secs = self.default_tool_timeout.as_secs();
         let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
         let session_key = format!("{}_{}", tool_context.agent_id, tool_context.session_id);
+
+        // The background task's hard timeout is the default 300s regardless of
+        // the router's polling timeout (which may be shorter in tests).
+        let task_hard_timeout_secs = DEFAULT_TOOL_TIMEOUT_SECS;
 
         let config = AsyncToolConfig {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: Some(DeliveryTarget::AsyncQueue),
-            timeout_secs,
+            timeout_secs: task_hard_timeout_secs,
             cleanup_after_delivery: true,
             label: Some(tool_name.to_string()),
         };
 
-        // Spawn a no-op future so the task file exists and the agent can
-        // poll for status / output. The actual work that timed out continues
-        // running on its own task handle; the receipt is what the agent sees
-        // immediately.
+        // Build a boxed execution closure that captures params and runs the tool.
+        let execution_fn: crate::extensions::framework::transport::async_transport::BoxedExecutionFn =
+            Box::new(move || Box::pin(sync_executor(params)));
+
+        // Spawn the real work as a background task via the transport.
         let receipt = self
             .transport
             .spawn_task_boxed(
                 task_id.clone(),
                 tool_name.to_string(),
-                Value::Null,
+                Value::Null, // params already captured in the closure
                 session_key,
                 std::path::PathBuf::from(&tool_context.workspace),
                 config,
-                Box::new(|| {
-                    Box::pin(async move {
-                        Ok(serde_json::json!({
-                            "status": "detached",
-                            "note": "Tool exceeded the default timeout; the original future continues running."
-                        }))
-                    })
-                }),
+                execution_fn,
             )
             .await?;
+
+        // Poll for completion up to the timeout.
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match self.transport.get_status(&task_id).await? {
+                Some(AsyncTaskStatus::Completed { result }) => {
+                    if result.success {
+                        return Ok(result.data.unwrap_or(Value::Null));
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            result.error.unwrap_or_else(|| "Tool execution failed".to_string())
+                        ));
+                    }
+                }
+                Some(AsyncTaskStatus::Failed { error }) => {
+                    return Err(anyhow::anyhow!(error));
+                }
+                Some(AsyncTaskStatus::Cancelled) => {
+                    return Err(anyhow::anyhow!("Task was cancelled"));
+                }
+                Some(AsyncTaskStatus::TimedOut { error }) => {
+                    return Err(anyhow::anyhow!(error));
+                }
+                _ => {
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+
+        // Timeout fired — the task is still running in the background.
+        // Return an honest receipt.
+        tracing::warn!(
+            tool_name = tool_name,
+            timeout_secs = timeout_secs,
+            "Tool exceeded default timeout; returning receipt while work continues in background"
+        );
 
         Ok(serde_json::json!({
             "_async_status": "queued",
             "task_id": receipt.task_id,
-            "status": receipt.status,
+            "status": "running",
+            "tool_name": tool_name,
             "task_file": receipt.task_file,
             "timeout_requested": timeout_secs,
             "reason": "timeout",
@@ -544,5 +537,66 @@ mod tests {
         assert_eq!(value["result"], "ok");
         assert!(value["input"].get("_async").is_none());
         assert!(value["input"].get("_timeout").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_router_fast_tool_returns_inline_result() {
+        let router = AsyncExecutionRouter::new();
+        let exec_service = ToolExecutionService::new();
+        let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
+        let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
+
+        let mut params = json!({"query": "test"});
+
+        let result = router
+            .route(
+                "fast_tool",
+                &mut params,
+                &exec_service,
+                &tool_context,
+                &exec_config,
+                |p| async move { Ok(json!({"result": "inline", "input": p})) },
+            )
+            .await;
+
+        assert!(result.is_ok());
+        let value = result.unwrap();
+        // Fast tools should return their result directly, not a receipt.
+        assert_eq!(value["result"], "inline");
+        assert_eq!(value["input"]["query"], "test");
+        assert!(value.get("task_id").is_none());
+        assert!(value.get("status").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_router_timeout_returns_receipt_with_tool_name() {
+        let router = AsyncExecutionRouter::with_default_tool_timeout(1);
+        let exec_service = ToolExecutionService::new();
+        let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
+        let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
+
+        let mut params = json!({"query": "slow"});
+
+        let result = router
+            .route(
+                "slow_tool",
+                &mut params,
+                &exec_service,
+                &tool_context,
+                &exec_config,
+                |_p| async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Ok(json!({"result": "should_never_see_this"}))
+                },
+            )
+            .await;
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let value = result.unwrap();
+        // Should be a receipt, not the tool result.
+        assert!(value.get("task_id").is_some());
+        assert_eq!(value["status"], "running");
+        assert_eq!(value["tool_name"], "slow_tool");
+        assert_eq!(value["reason"], "timeout");
     }
 }
