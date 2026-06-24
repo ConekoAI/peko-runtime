@@ -471,25 +471,75 @@ impl SessionService {
     /// Cross-agent session metadata lookup by id. Used by IPC handlers
     /// that don't know the agent name (e.g. `SessionSteer` which
     /// only carries `session_id` and `content`).
+    ///
+    /// Walks the `{data_dir}/sessions/` tree, trying each
+    /// `{agent}/personal` and `{agent}/{team}` directory until it
+    /// finds one whose metadata index has the session id. Returns the
+    /// first match (session ids are globally unique by UUID).
     pub async fn get_session_metadata(
         &self,
         session_id: &str,
     ) -> Result<crate::session::metadata::SessionMetadata> {
-        // `SessionManager::get_session_metadata` walks every agent's
-        // sessions dir to find the metadata. We use a "personal" team
-        // namespace; team metadata, if it differs, lives in a sibling
-        // directory keyed by team name, but the global index is keyed
-        // by session_id alone.
-        let manager = SessionManager::for_cli(
-            self.path_resolver.clone(),
-            "",
-            None,
-            "",
-        );
-        manager
-            .get_session_metadata(session_id)
-            .await
-            .with_context(|| format!("Session '{session_id}' not found"))
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let sessions_root = self.path_resolver.sessions_root();
+        let mut last_err: Option<anyhow::Error> = None;
+
+        let agent_dirs = match std::fs::read_dir(&sessions_root) {
+            Ok(rd) => rd,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "could not read sessions root {}: {e}",
+                    sessions_root.display()
+                ));
+            }
+        };
+
+        for agent_entry in agent_dirs.flatten() {
+            let agent_path = agent_entry.path();
+            if !agent_path.is_dir() {
+                continue;
+            }
+            let agent_name = match agent_entry.file_name().into_string() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Enumerate team subdirectories under each agent dir.
+            // `personal` and any explicit team name (e.g. "engineering")
+            // are both candidates.
+            let subdirs = match std::fs::read_dir(&agent_path) {
+                Ok(rd) => rd,
+                Err(_) => continue,
+            };
+            for sub_entry in subdirs.flatten() {
+                let sub_path = sub_entry.path();
+                if !sub_path.is_dir() {
+                    continue;
+                }
+                let controller =
+                    Arc::new(RwLock::new(MetadataController::new(sub_path.clone())));
+                let mut guard = controller.write().await;
+                match guard.get_metadata(session_id, false).await {
+                    Ok(Some(m)) => {
+                        debug!(
+                            "get_session_metadata: found {session_id} under agent='{agent_name}'"
+                        );
+                        return Ok(m);
+                    }
+                    Ok(None) => continue,
+                    Err(e) => {
+                        last_err = Some(e);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            anyhow::anyhow!("Session '{session_id}' not found")
+        }))
     }
 
     /// Resolve a session ID, falling back to the active session if none provided
