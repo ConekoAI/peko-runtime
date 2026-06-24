@@ -38,6 +38,17 @@ pub struct TaskTool {
     registry: Option<SharedAsyncTaskRegistry>,
     executor: Option<Arc<crate::extensions::framework::async_exec::executor::AsyncExecutor>>,
     extension_core: Option<std::sync::Weak<crate::extensions::framework::core::ExtensionCore>>,
+    /// Agent identity (DID) used to look up this agent's session key on
+    /// the shared `ExtensionCore` for `parent_session_key` stamping.
+    /// `None` means the tool was constructed without per-agent context
+    /// (e.g., `with_registry`, `global`); spawn then falls back to the
+    /// literal `"unknown"` for backwards compatibility.
+    ///
+    /// Carrying the agent_id here (instead of fishing it out of the
+    /// core) is the per-agent-safe fix for issue #68: a single shared
+    /// `ExtensionCore` services every agent in the daemon, but each
+    /// per-agent `TaskTool` instance knows which agent it belongs to.
+    agent_id: Option<String>,
 }
 
 impl TaskTool {
@@ -47,6 +58,7 @@ impl TaskTool {
             registry: Some(registry),
             executor: None,
             extension_core: None,
+            agent_id: None,
         }
     }
 
@@ -56,21 +68,30 @@ impl TaskTool {
             registry: None,
             executor: None,
             extension_core: None,
+            agent_id: None,
         }
     }
 
     /// Construct with executor + extension core. Required for `spawn` and
     /// `output` actions; read-only actions (`status`, `list`, `cancel`)
     /// still work without them.
+    ///
+    /// `agent_id` is this tool's owning agent (typically the
+    /// `Agent::identity.did`). It is used to look up the *correct*
+    /// session key on the shared `ExtensionCore` so concurrent agents
+    /// in daemon mode do not stamp each other's `parent_session_key`
+    /// (issue #68).
     #[must_use]
     pub fn with_executor_and_core(
         executor: Arc<crate::extensions::framework::async_exec::executor::AsyncExecutor>,
         extension_core: std::sync::Weak<crate::extensions::framework::core::ExtensionCore>,
+        agent_id: Option<String>,
     ) -> Self {
         Self {
             registry: None,
             executor: Some(executor),
             extension_core: Some(extension_core),
+            agent_id,
         }
     }
 
@@ -399,9 +420,17 @@ Returns structured data appropriate to the action.
                     .ok_or_else(|| anyhow::anyhow!("'spawn' action requires 'params'"))?;
 
                 let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
-                let session_key = core
-                    .current_session_key()
-                    .unwrap_or_else(|| "unknown".to_string());
+                // Look up the session key for *this* tool's owning
+                // agent (issue #68). The per-agent `TaskTool` carries
+                // its agent_id at construction; tools built without one
+                // (e.g., `global()`) fall back to the literal
+                // `"unknown"` for backwards compatibility.
+                let session_key = match self.agent_id.as_deref() {
+                    Some(agent_id) => core
+                        .current_session_key(agent_id)
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    None => "unknown".to_string(),
+                };
 
                 let config = crate::extensions::framework::async_exec::executor::AsyncToolConfig {
                     // `None` means no timeout: the spawned task runs to
@@ -735,6 +764,7 @@ mod tests {
             registry: Some(registry),
             executor: Some(executor.clone()),
             extension_core: None,
+            agent_id: None,
         };
         (tool, executor)
     }
@@ -888,5 +918,139 @@ mod tests {
 
         // tail_lines=0 returns the full string unchanged.
         assert_eq!(result["result"], "line1\nline2\nline3\nline4\nline5");
+    }
+
+    // ==================== Issue #68: per-agent session key on TaskTool ====================
+
+    /// Minimal stub tool used only to register an entry in the
+    /// ExtensionCore side-table so `TaskTool::spawn` can resolve it.
+    struct StubTool;
+
+    #[async_trait::async_trait]
+    impl crate::tools::core::Tool for StubTool {
+        fn name(&self) -> &str {
+            "stub_tool"
+        }
+        fn description(&self) -> String {
+            "stub tool for tests".to_string()
+        }
+        async fn execute(
+            &self,
+            _params: serde_json::Value,
+        ) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_task_tool_with_executor_and_core_stores_agent_id() {
+        // Build a TaskTool the same way `Agent::build_agentic_loop`
+        // does: executor + Weak<ExtensionCore> + agent_id.
+        let core = std::sync::Arc::new(
+            crate::extensions::framework::core::ExtensionCore::new(),
+        );
+        let executor = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+        );
+        let core_weak = std::sync::Arc::downgrade(&core);
+        let tool = TaskTool::with_executor_and_core(
+            executor,
+            core_weak,
+            Some("did:peko:agent:Z".to_string()),
+        );
+        assert_eq!(tool.agent_id.as_deref(), Some("did:peko:agent:Z"));
+    }
+
+    #[tokio::test]
+    async fn test_task_tool_spawn_stamps_correct_agent_session_key() {
+        // End-to-end regression test for issue #68: a per-agent
+        // TaskTool must read its *own* agent's session key from the
+        // shared ExtensionCore, not whatever was set last by a
+        // concurrent agent.
+        let core = std::sync::Arc::new(
+            crate::extensions::framework::core::ExtensionCore::new(),
+        );
+
+        // Register the stub tool in the core's side-table so the
+        // spawn action can resolve it.
+        core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
+            .await;
+
+        // Two agents share the same core, with distinct session keys.
+        let agent_a = "did:peko:agent:A";
+        let agent_b = "did:peko:agent:B";
+        core.set_session_key(agent_a, Some("sess-A".to_string())).await;
+        core.set_session_key(agent_b, Some("sess-B".to_string())).await;
+
+        // Construct a per-agent TaskTool bound to the shared core.
+        let executor = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+        );
+        let core_weak = std::sync::Arc::downgrade(&core);
+        let tool_a = TaskTool::with_executor_and_core(
+            executor.clone(),
+            core_weak.clone(),
+            Some(agent_a.to_string()),
+        );
+
+        // Spawn a task from agent A's perspective.
+        let result = tool_a
+            .execute(json!({
+                "action": "spawn",
+                "tool": "stub_tool",
+                "params": {"x": 1},
+            }))
+            .await
+            .unwrap();
+        // The receipt itself does not include parent_session_key;
+        // verify the spawned task is registered under the *correct*
+        // agent's session key by reading it back from the executor's
+        // registry.
+        let task_id = result["task_id"].as_str().expect("task_id present");
+        assert!(
+            task_id.starts_with("stub_tool:"),
+            "task_id should be {{tool}}:{{uuid}}, got {task_id}"
+        );
+        let registry = executor.registry();
+        let reg = registry.read().await;
+        let entry = reg
+            .get(&task_id.to_string())
+            .expect("spawned task should be in the executor's registry");
+        assert_eq!(
+            entry.parent_session_key, "sess-A",
+            "spawn must stamp the spawning agent's session key, not a peer's"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_task_tool_spawn_without_agent_id_falls_back_to_unknown() {
+        // TaskTool built without an agent_id (legacy `global()` or
+        // `with_registry`) must still work — it just falls back to
+        // "unknown" for parent_session_key.
+        let core = std::sync::Arc::new(
+            crate::extensions::framework::core::ExtensionCore::new(),
+        );
+        core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
+            .await;
+
+        let executor = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+        );
+        let core_weak = std::sync::Arc::downgrade(&core);
+        let tool = TaskTool::with_executor_and_core(executor.clone(), core_weak, None);
+
+        let result = tool
+            .execute(json!({
+                "action": "spawn",
+                "tool": "stub_tool",
+                "params": {"x": 1},
+            }))
+            .await
+            .unwrap();
+        let task_id = result["task_id"].as_str().expect("task_id present");
+        let registry = executor.registry();
+        let reg = registry.read().await;
+        let entry = reg.get(&task_id.to_string()).expect("task registered");
+        assert_eq!(entry.parent_session_key, "unknown");
     }
 }
