@@ -28,7 +28,6 @@ pub struct TeamMetadata {
     pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
 }
 
-
 /// Team information for listing and display
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamInfo {

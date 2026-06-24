@@ -241,7 +241,7 @@ fn write_pekohub_credential(
     // created by PekoCli with its own passphrase, so load it explicitly
     // rather than creating a new one with a different passphrase.
     let vault_path = cli.peko_dir().join("vault.enc");
-    let vault = pekobot::common::vault::Vault::load_with_passphrase(
+    let vault = peko::common::vault::Vault::load_with_passphrase(
         &vault_path,
         &SecretString::new(cli.vault_passphrase().into()),
     )
@@ -250,7 +250,7 @@ fn write_pekohub_credential(
         .set_tunnel_private_key(did, &private_key_b64)
         .expect("store tunnel private key in vault");
 
-    let cred = pekobot::tunnel::PekoHubCredential {
+    let cred = peko::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
     };
@@ -410,8 +410,7 @@ async fn permit_owner_can_chat() {
         .unwrap();
 
     // 1. Create owner user in pekohub.
-    let (owner_id, owner_ns) =
-        create_test_user(&client, &backend.url, "s4_owner_a").await;
+    let (owner_id, owner_ns) = create_test_user(&client, &backend.url, "s4_owner_a").await;
     let owner_jwt = jwt_for_user(owner_id, &owner_ns);
     let owner_key = mint_api_key(&client, &backend.url, &owner_jwt, "s4-owner-key").await;
 
@@ -433,9 +432,14 @@ async fn permit_owner_can_chat() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     // 6. Wait for the announced instance to land in pekohub's DB.
-    let instance_id =
-        wait_for_announced_instance(&client, &backend.url, &owner_jwt, &did, Duration::from_secs(30))
-            .await;
+    let instance_id = wait_for_announced_instance(
+        &client,
+        &backend.url,
+        &owner_jwt,
+        &did,
+        Duration::from_secs(30),
+    )
+    .await;
 
     // 7. Owner (with JWT) chats → 200 + non-empty body.
     let (status, body) = post_chat(&client, &backend.url, &instance_id, Some(&owner_jwt)).await;
@@ -491,12 +495,10 @@ async fn permit_granted_user_chats_ungranted_forbidden() {
         .unwrap();
 
     // 1. Create three users: owner + granted + ungranted.
-    let (owner_id, owner_ns) =
-        create_test_user(&client, &backend.url, "s4_owner_b").await;
+    let (owner_id, owner_ns) = create_test_user(&client, &backend.url, "s4_owner_b").await;
     let owner_jwt = jwt_for_user(owner_id, &owner_ns);
 
-    let (granted_id, granted_ns) =
-        create_test_user(&client, &backend.url, "s4_granted").await;
+    let (granted_id, granted_ns) = create_test_user(&client, &backend.url, "s4_granted").await;
     let granted_jwt = jwt_for_user(granted_id, &granted_ns);
 
     let (ungranted_id, ungranted_ns) =
@@ -528,13 +530,17 @@ async fn permit_granted_user_chats_ungranted_forbidden() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     // 6. Wait for the announced instance.
-    let instance_id =
-        wait_for_announced_instance(&client, &backend.url, &owner_jwt, &did, Duration::from_secs(30))
-            .await;
+    let instance_id = wait_for_announced_instance(
+        &client,
+        &backend.url,
+        &owner_jwt,
+        &did,
+        Duration::from_secs(30),
+    )
+    .await;
 
     // 7. Granted user → 200 (in allowedUsers).
-    let (status, body) =
-        post_chat(&client, &backend.url, &instance_id, Some(&granted_jwt)).await;
+    let (status, body) = post_chat(&client, &backend.url, &instance_id, Some(&granted_jwt)).await;
     assert_eq!(
         status, 200,
         "granted user should be allowed (in allowedUsers): body={body}"
@@ -545,8 +551,7 @@ async fn permit_granted_user_chats_ungranted_forbidden() {
     );
 
     // 8. Ungranted user → 403 (not owner, not in allowedUsers).
-    let (status, body) =
-        post_chat(&client, &backend.url, &instance_id, Some(&ungranted_jwt)).await;
+    let (status, body) = post_chat(&client, &backend.url, &instance_id, Some(&ungranted_jwt)).await;
     assert_eq!(
         status, 403,
         "ungranted user should be forbidden: body={body}"
@@ -586,8 +591,7 @@ async fn no_auth_returns_401() {
         .build()
         .unwrap();
 
-    let (owner_id, owner_ns) =
-        create_test_user(&client, &backend.url, "s4_owner_c").await;
+    let (owner_id, owner_ns) = create_test_user(&client, &backend.url, "s4_owner_c").await;
     let owner_jwt = jwt_for_user(owner_id, &owner_ns);
 
     let (did, signing_key) = generate_runtime_identity();
@@ -599,16 +603,18 @@ async fn no_auth_returns_401() {
     write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
 
     let _daemon = DaemonGuard::spawn(&cli);
-    let instance_id =
-        wait_for_announced_instance(&client, &backend.url, &owner_jwt, &did, Duration::from_secs(30))
-            .await;
+    let instance_id = wait_for_announced_instance(
+        &client,
+        &backend.url,
+        &owner_jwt,
+        &did,
+        Duration::from_secs(30),
+    )
+    .await;
 
     // No auth header → 401.
     let (status, body) = post_chat(&client, &backend.url, &instance_id, None).await;
-    assert_eq!(
-        status, 401,
-        "no-auth chat should be 401: body={body}"
-    );
+    assert_eq!(status, 401, "no-auth chat should be 401: body={body}");
     // The pekohub chat route returns `{ error: "Authentication required" }`
     // on 401 (see `pekohub/backend/src/routes/api/instances.ts:566`).
     assert!(
@@ -624,8 +630,5 @@ async fn no_auth_returns_401() {
         Some("not-a-valid-jwt-or-api-key"),
     )
     .await;
-    assert_eq!(
-        status, 401,
-        "garbage token should be 401: body={body}"
-    );
+    assert_eq!(status, 401, "garbage token should be 401: body={body}");
 }

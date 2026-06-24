@@ -19,8 +19,12 @@ use crate::extensions::framework::async_exec::executor::{
     AsyncResultDeliveryMode, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget,
 };
 use crate::extensions::framework::core::context::HookContext;
-use crate::extensions::framework::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
-use crate::extensions::framework::transport::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
+use crate::extensions::framework::services::tool_execution::{
+    ToolExecutionConfig, ToolExecutionService,
+};
+use crate::extensions::framework::transport::async_transport::{
+    AsyncTaskTransport, LocalAsyncTransport,
+};
 use crate::extensions::framework::types::{HookOutput, HookResult};
 use anyhow::Result;
 use serde_json::Value;
@@ -160,13 +164,8 @@ impl AsyncExecutionRouter {
 
         // Single code path: execute with constant timeout. On Elapsed,
         // detach to AsyncExecutor (existing path).
-        self.execute_with_timeout(
-            tool_name,
-            cleaned,
-            tool_context,
-            sync_executor,
-        )
-        .await
+        self.execute_with_timeout(tool_name, cleaned, tool_context, sync_executor)
+            .await
     }
 
     /// Execute synchronously with the constant default timeout.
@@ -237,11 +236,10 @@ impl AsyncExecutionRouter {
                 Some(AsyncTaskStatus::Completed { result }) => {
                     if result.success {
                         return Ok(result.data.unwrap_or(Value::Null));
-                    } else {
-                        return Err(anyhow::anyhow!(
-                            result.error.unwrap_or_else(|| "Tool execution failed".to_string())
-                        ));
                     }
+                    return Err(anyhow::anyhow!(result
+                        .error
+                        .unwrap_or_else(|| "Tool execution failed".to_string())));
                 }
                 Some(AsyncTaskStatus::Failed { error }) => {
                     return Err(anyhow::anyhow!(error));
@@ -252,7 +250,7 @@ impl AsyncExecutionRouter {
                 Some(AsyncTaskStatus::TimedOut { error }) => {
                     return Err(anyhow::anyhow!(error));
                 }
-                Some(AsyncTaskStatus::Pending) | Some(AsyncTaskStatus::Running) => {
+                Some(AsyncTaskStatus::Pending | AsyncTaskStatus::Running) => {
                     let now = tokio::time::Instant::now();
                     if now >= deadline {
                         break;
@@ -358,24 +356,25 @@ impl AsyncExecutionRouter {
         let exec_service = ctx.services.tool_execution();
 
         // 4. Build execution context
-        let tool_ctx =
-            match ctx.get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context") {
-                Some(tc) => ToolExecutionContext::new(
-                    tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                    tc.session_id
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    tc.run_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                )
-                .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
-                None => {
-                    let ctx = ToolExecutionContext::new("unknown", "unknown", "unknown");
-                    match workspace {
-                        Some(ws) => ctx.with_workspace(ws),
-                        None => ctx,
-                    }
+        let tool_ctx = match ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+        {
+            Some(tc) => ToolExecutionContext::new(
+                tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.session_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                tc.run_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            )
+            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
+            None => {
+                let ctx = ToolExecutionContext::new("unknown", "unknown", "unknown");
+                match workspace {
+                    Some(ws) => ctx.with_workspace(ws),
+                    None => ctx,
                 }
-            };
+            }
+        };
 
         // 5. Run preprocessor if provided
         if let Some(pre) = preprocessor {

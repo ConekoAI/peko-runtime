@@ -309,7 +309,10 @@ pub fn render_switch_success(team: &str, agent: &str, session_id: &str) {
 }
 
 /// Render compact dry-run
-pub fn render_compact_dry_run(session_id: &str, report: &crate::session::compaction::cli::DryRunReport) {
+pub fn render_compact_dry_run(
+    session_id: &str,
+    report: &crate::session::compaction::cli::DryRunReport,
+) {
     println!("📊 Dry-run compaction for session '{session_id}'");
     println!(
         "   Estimated tokens: {} / {} ({}%)",

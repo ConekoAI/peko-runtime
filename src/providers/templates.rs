@@ -466,7 +466,12 @@ mod tests {
     fn template_ids_are_unique_and_lowercase() {
         let mut seen = std::collections::HashSet::new();
         for t in BUILT_IN_TEMPLATES {
-            assert_eq!(t.id, t.id.to_lowercase(), "template id '{}' not lowercase", t.id);
+            assert_eq!(
+                t.id,
+                t.id.to_lowercase(),
+                "template id '{}' not lowercase",
+                t.id
+            );
             assert!(seen.insert(t.id), "duplicate template id '{}'", t.id);
         }
     }

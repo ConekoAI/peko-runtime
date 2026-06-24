@@ -2,16 +2,16 @@
 
 pub mod crypto;
 pub mod did;
-pub mod keys;
 pub mod keychain;
+pub mod keys;
 pub mod resolver;
 pub mod runtime;
 pub mod runtime_metadata;
 pub mod storage;
 
 pub use did::{DIDDocument, DIDScope, Identity, ParsedDID, Service, VerificationMethod};
-pub use keys::{KeyPair, KeyPairExport, PublicKey};
 pub use keychain::{EncryptedKeyStorage, KeyStorageRef, KeychainStorage};
+pub use keys::{KeyPair, KeyPairExport, PublicKey};
 pub use resolver::{resolve_local_sync, verify_signature, DidResolver};
 pub use storage::KeyStorage;
 

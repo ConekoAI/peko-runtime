@@ -1,6 +1,6 @@
 //! Built-in tool implementations
 //!
-//! This module contains all built-in tools that ship with Pekobot:
+//! This module contains all built-in tools that ship with Peko:
 //! - `fs`: Filesystem tools (read_file, write_file, glob, grep, str_replace_file)
 //! - `messaging`: Messaging tools (agent_spawn, a2a_send, message_tool)
 //! - `shell`: Shell execution

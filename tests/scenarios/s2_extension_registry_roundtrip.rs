@@ -291,7 +291,8 @@ async fn ext_push_succeeds_with_pekohub_test() {
     // (see `src/registry/client.rs:107-114` — the bare `host:port`
     // form is what `full_ref` emits). Compare against the
     // scheme-stripped version of our input ref.
-    let host_only = backend.url
+    let host_only = backend
+        .url
         .strip_prefix("http://")
         .or_else(|| backend.url.strip_prefix("https://"))
         .unwrap_or(&backend.url);

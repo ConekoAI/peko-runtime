@@ -561,9 +561,9 @@ impl McpManager {
         all_tools
     }
 
-    /// Get all tools as Pekobot Tool trait objects
+    /// Get all tools as Peko Tool trait objects
     ///
-    /// This allows MCP tools to be used seamlessly with Pekobot's agent system.
+    /// This allows MCP tools to be used seamlessly with Peko's agent system.
     /// The tools are wrapped in `McpToolProxy` or `InjectableMcpToolProxy` (if the
     /// server has `reserved_parameters` configured) which implement the Tool trait.
     ///

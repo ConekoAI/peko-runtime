@@ -14,7 +14,7 @@
 ///
 /// # Example
 /// ```
-/// # use pekobot::common::time::format_timestamp;
+/// # use peko::common::time::format_timestamp;
 /// let local_time = format_timestamp("2026-03-17T10:30:00+00:00");
 /// ```
 #[must_use]
@@ -39,7 +39,7 @@ pub fn format_timestamp(ts: &str) -> String {
 ///
 /// # Example
 /// ```
-/// # use pekobot::common::time::format_timestamp_ms;
+/// # use peko::common::time::format_timestamp_ms;
 /// let local_time = format_timestamp_ms(1_712_200_200_000);
 /// ```
 #[must_use]

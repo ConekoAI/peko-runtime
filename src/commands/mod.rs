@@ -1,6 +1,6 @@
 //! CLI Command Module
 //!
-//! This module contains all CLI subcommands for Pekobot.
+//! This module contains all CLI subcommands for Peko.
 //! Each submodule handles a specific command category:
 //!
 //! - `agent`: Agent lifecycle management
@@ -184,7 +184,7 @@ pub enum Commands {
         registry: Option<String>,
     },
 
-    /// Update Pekobot to the latest version
+    /// Update Peko to the latest version
     Update {
         /// Only check for updates, don't install
         #[arg(long)]

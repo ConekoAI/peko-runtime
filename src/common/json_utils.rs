@@ -1,4 +1,4 @@
-//! Generic JSON utilities shared across Pekobot
+//! Generic JSON utilities shared across Peko
 
 /// Check if `target` JSON contains all fields from `filter` with matching values.
 ///

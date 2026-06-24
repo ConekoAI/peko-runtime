@@ -1,7 +1,7 @@
 //! Extension packaging for creating portable `.ext` packages
 //!
 //! Exports installed extensions to `.ext` files (gzip-compressed tar archives)
-//! that can be shared and installed on other Pekobot instances.
+//! that can be shared and installed on other Peko instances.
 
 use crate::extensions::framework::manager::ExtensionManager;
 use crate::extensions::framework::types::ExtensionId;
@@ -240,7 +240,11 @@ impl ExtensionPackager {
             if let Some(dep_ext) = manager.get_extension(dep_id) {
                 let dep_path = &dep_ext.path;
                 if dep_path.exists() {
-                    Self::collect_files_recursive(dep_path, &format!("deps/{}", dep_id), &mut all_files)?;
+                    Self::collect_files_recursive(
+                        dep_path,
+                        &format!("deps/{}", dep_id),
+                        &mut all_files,
+                    )?;
                     dep_manifests.push(DepInfo {
                         id: dep_id.to_string(),
                         name: dep_ext.manifest.name.clone(),

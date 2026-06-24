@@ -5,9 +5,9 @@
 //! lifecycle and shutdown.
 
 use crate::agents::stateless_service::StatelessAgentService;
-use crate::common::types::a2a::MessageRequest;
 use crate::auth::caller::CallerContext;
 use crate::common::json_utils::json_subset;
+use crate::common::types::a2a::MessageRequest;
 use crate::cron::events::SystemEvent;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
 use crate::observability::Observability;

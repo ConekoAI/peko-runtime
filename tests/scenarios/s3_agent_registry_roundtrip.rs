@@ -282,11 +282,7 @@ fn write_ext_source(cli: &PekoCli, ext_id: &str, registry_ref: &str) {
 /// daemon up (it IPC-installs via
 /// `DaemonClient::connect()` at
 /// [`src/commands/ext.rs:594`](../../src/commands/ext.rs#L594)).
-fn round_trip_extension_through_registry(
-    cli: &PekoCli,
-    ext_id: &str,
-    pushed_ref: &str,
-) {
+fn round_trip_extension_through_registry(cli: &PekoCli, ext_id: &str, pushed_ref: &str) {
     // Install (daemon-driven).
     install_local_skill(cli);
     // Push (no daemon needed; OCI client).
@@ -467,7 +463,11 @@ async fn agent_push_with_no_extensions_round_trip() {
     let v: serde_json::Value = serde_json::from_str(&out)
         .unwrap_or_else(|e| panic!("push --json did not emit JSON: {e}; stdout={out}"));
     assert_eq!(v["success"], serde_json::json!(true), "push JSON: {v}");
-    let expected_ref = format!("{}/{}/{author_agent}:v1.0", host_only(&backend.url), author_ns);
+    let expected_ref = format!(
+        "{}/{}/{author_agent}:v1.0",
+        host_only(&backend.url),
+        author_ns
+    );
     assert_eq!(v["registry_ref"], expected_ref, "push JSON: {v}");
     // Manifest layers: 2 (config + identity) for the
     // `write_v3_mock_agent` shape — the config layer is `agent.toml`,
@@ -497,7 +497,11 @@ async fn agent_push_with_no_extensions_round_trip() {
     assert_ok(&out, &err, &status);
     let pull: serde_json::Value = serde_json::from_str(extract_json(&out))
         .unwrap_or_else(|e| panic!("pull --json did not emit JSON: {e}; stdout={out}"));
-    assert_eq!(pull["success"], serde_json::json!(true), "pull JSON: {pull}");
+    assert_eq!(
+        pull["success"],
+        serde_json::json!(true),
+        "pull JSON: {pull}"
+    );
     assert_eq!(
         pull["name"],
         serde_json::json!(author_agent),
@@ -635,7 +639,11 @@ async fn agent_pull_auto_pulls_declared_extension() {
     assert_ok(&out, &err, &status);
     let pull: serde_json::Value = serde_json::from_str(extract_json(&out))
         .unwrap_or_else(|e| panic!("pull --json did not emit JSON: {e}; stdout={out}"));
-    assert_eq!(pull["success"], serde_json::json!(true), "pull JSON: {pull}");
+    assert_eq!(
+        pull["success"],
+        serde_json::json!(true),
+        "pull JSON: {pull}"
+    );
     assert_eq!(
         pull["extensions"]["pulled"],
         serde_json::json!([ext_id]),
@@ -754,7 +762,11 @@ async fn agent_pull_already_present_ext_no_repull() {
     assert_ok(&out, &err, &status);
     let pull: serde_json::Value = serde_json::from_str(extract_json(&out))
         .unwrap_or_else(|e| panic!("pull --json did not emit JSON: {e}; stdout={out}"));
-    assert_eq!(pull["success"], serde_json::json!(true), "pull JSON: {pull}");
+    assert_eq!(
+        pull["success"],
+        serde_json::json!(true),
+        "pull JSON: {pull}"
+    );
     assert_eq!(
         pull["extensions"]["pulled"],
         serde_json::json!([]),
@@ -872,7 +884,11 @@ async fn agent_pull_failed_ext_does_not_block_pull() {
     assert_ok(&out, &err, &status);
     let pull: serde_json::Value = serde_json::from_str(extract_json(&out))
         .unwrap_or_else(|e| panic!("pull --json did not emit JSON: {e}; stdout={out}"));
-    assert_eq!(pull["success"], serde_json::json!(true), "pull JSON: {pull}");
+    assert_eq!(
+        pull["success"],
+        serde_json::json!(true),
+        "pull JSON: {pull}"
+    );
     // Failed list contains the ext id (not the registry_ref) — see
     // the `failed` field mapping at
     // `src/commands/agent/handlers.rs:1038`.

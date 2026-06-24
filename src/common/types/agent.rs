@@ -96,7 +96,6 @@ impl AgentCreateRequest {
         self.host_runtime_id = Some(host_runtime_id.into());
         self
     }
-
 }
 
 /// Agent deletion options

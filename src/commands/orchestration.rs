@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 use crate::common::types::config::{
-    ExternalSource, FileWatchConfig, PekobotConfig, SourceDetection, WebhookRouteConfig,
+    ExternalSource, FileWatchConfig, PekoConfig, SourceDetection, WebhookRouteConfig,
 };
 
 /// Orchestration management commands
@@ -151,7 +151,7 @@ pub enum OrchestrationCommands {
 /// Run orchestration command
 pub async fn run(
     cmd: OrchestrationCommands,
-    config: &PekobotConfig,
+    config: &PekoConfig,
     config_path: &PathBuf,
 ) -> anyhow::Result<()> {
     match cmd {

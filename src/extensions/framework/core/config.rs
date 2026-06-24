@@ -30,7 +30,8 @@ pub struct ExtensionServices {
 
     /// Stateless agent service for A2A messaging (set by AppState after initialization).
     /// Held as a trait object to avoid a framework → agents dependency.
-    agent_service: std::sync::RwLock<Option<Arc<dyn crate::common::types::a2a::AgentMessageService>>>,
+    agent_service:
+        std::sync::RwLock<Option<Arc<dyn crate::common::types::a2a::AgentMessageService>>>,
 
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
@@ -54,8 +55,14 @@ impl std::fmt::Debug for ExtensionServices {
             .field("config", &self.config)
             .field("telemetry", &self.telemetry)
             .field("async_router", &self.async_router)
-            .field("agent_service", &"<RwLock<Option<Arc<dyn AgentMessageService>>>>")
-            .field("cross_runtime_a2a_ctx", &"<RwLock<Option<Arc<dyn Any + Send + Sync>>>>")
+            .field(
+                "agent_service",
+                &"<RwLock<Option<Arc<dyn AgentMessageService>>>>",
+            )
+            .field(
+                "cross_runtime_a2a_ctx",
+                &"<RwLock<Option<Arc<dyn Any + Send + Sync>>>>",
+            )
             .finish_non_exhaustive()
     }
 }
@@ -64,7 +71,9 @@ impl ExtensionServices {
     /// Create new extension services with default local transport
     #[must_use]
     pub fn new() -> Self {
-        Self::with_async_router(crate::extensions::framework::transport::AsyncExecutionRouter::new())
+        Self::with_async_router(
+            crate::extensions::framework::transport::AsyncExecutionRouter::new(),
+        )
     }
 
     /// Create with a custom async execution router and agent service
@@ -115,7 +124,9 @@ impl ExtensionServices {
     }
 
     /// Get reserved parameters service
-    pub fn reserved_params(&self) -> &crate::extensions::framework::services::ReservedParamsService {
+    pub fn reserved_params(
+        &self,
+    ) -> &crate::extensions::framework::services::ReservedParamsService {
         &self.reserved_params
     }
 
@@ -145,10 +156,7 @@ impl ExtensionServices {
     /// the `HubAgentDirectoryClient` is wired; the per-agent tool
     /// constructor in `agent.rs` reads via `cross_runtime_a2a_ctx`
     /// and injects the ctx into each `A2aSendTool` it builds.
-    pub fn set_cross_runtime_a2a_ctx(
-        &self,
-        ctx: Arc<dyn std::any::Any + Send + Sync + 'static>,
-    ) {
+    pub fn set_cross_runtime_a2a_ctx(&self, ctx: Arc<dyn std::any::Any + Send + Sync + 'static>) {
         if let Ok(mut guard) = self.cross_runtime_a2a_ctx.write() {
             *guard = Some(ctx);
         }
@@ -160,9 +168,7 @@ impl ExtensionServices {
     /// a PekoHub credential, runtimes before this PR's bootstrap
     /// follow-up).
     #[must_use]
-    pub fn cross_runtime_a2a_ctx(
-        &self,
-    ) -> Option<Arc<dyn std::any::Any + Send + Sync + 'static>> {
+    pub fn cross_runtime_a2a_ctx(&self) -> Option<Arc<dyn std::any::Any + Send + Sync + 'static>> {
         self.cross_runtime_a2a_ctx
             .read()
             .ok()

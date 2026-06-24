@@ -33,9 +33,7 @@ pub use catalog::{
 pub use core::Provider;
 pub use mock::{MockAdapter, MockResponse};
 pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
-pub use resolver::{
-    KeyProbeReport, LlmResolver, ResolvedChoice, ResolveRequest, ResolveSource,
-};
+pub use resolver::{KeyProbeReport, LlmResolver, ResolveRequest, ResolveSource, ResolvedChoice};
 pub use templates::{find_template, iter_templates, ModelTemplate, ProviderTemplate};
 pub use transport::{AuthConfig, HttpClient, SseParser};
 pub use types::{

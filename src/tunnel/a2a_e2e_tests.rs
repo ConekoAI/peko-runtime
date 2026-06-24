@@ -30,15 +30,15 @@ use tokio::sync::mpsc;
 
 use crate::identity::keys::KeyPair;
 use crate::tools::core::Tool;
+use crate::tunnel::a2a_send_tool::{
+    A2aSendArgs, A2aSendResult, A2aSendTool, HubA2AErrorResponse, TargetSpec,
+};
 use crate::tunnel::a2a_signature::{verify_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{
     AgentDirectory, AgentResolution, FakeAgentDirectory, ResolvedExposure,
 };
 use crate::tunnel::{PendingA2aResponses, TunnelHandle, TunnelMessage};
-use crate::tunnel::a2a_send_tool::{
-    A2aSendArgs, A2aSendResult, A2aSendTool, HubA2AErrorResponse, TargetSpec,
-};
 
 /// Synthesize a target-runtime response by hand. Mirrors what a
 /// real `TunnelDispatcher::handle_inbound_agent_to_agent_request`
@@ -77,8 +77,7 @@ fn synthesize_target_response(
                 "no local agent has agent_did={target_agent_did} (request_id={request_id})"
             ),
         };
-        return serde_json::to_vec(&err)
-            .map_err(|e| format!("serialize error: {e}"));
+        return serde_json::to_vec(&err).map_err(|e| format!("serialize error: {e}"));
     }
 
     // Verify the signature. This is the real signature check
@@ -148,13 +147,12 @@ async fn run_test_hub(
                     }
                 };
 
-                let request_id = if let TunnelMessage::AgentToAgentRequest { ref request_id, .. } =
-                    msg
-                {
-                    request_id.clone()
-                } else {
-                    unreachable!()
-                };
+                let request_id =
+                    if let TunnelMessage::AgentToAgentRequest { ref request_id, .. } = msg {
+                        request_id.clone()
+                    } else {
+                        unreachable!()
+                    };
                 let _ = caller_pending.complete(&request_id, payload);
             }
             // The caller never sends an AgentToAgentResponse; this
@@ -219,8 +217,6 @@ async fn build_caller(
     // #[tokio::test] we have a current runtime; the service
     // needs an async constructor.
     let service = build_minimal_service().await;
-
-    
 
     A2aSendTool::new(service.clone())
         .with_caller_did("caller-agent", &caller_agent_did)
@@ -325,12 +321,16 @@ async fn test_cross_runtime_a2a_full_round_trip() {
         result.error
     );
     assert!(
-        result.response.contains("echo from did:peko:agent:target-keyhash"),
+        result
+            .response
+            .contains("echo from did:peko:agent:target-keyhash"),
         "response must contain the hub-synthesized echo; got: {}",
         result.response
     );
     assert!(result.response.contains("looks good"));
-    assert!(result.session_id.starts_with("agent:target-agent:session:e2e-"));
+    assert!(result
+        .session_id
+        .starts_with("agent:target-agent:session:e2e-"));
     assert_eq!(result.iterations, Some(1));
 
     // Hub must have completed the caller's oneshot; the

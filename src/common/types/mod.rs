@@ -1,7 +1,7 @@
 //! Common types shared across CLI and API
 //!
 //! This module provides data structures that represent entities
-//! in the Pekobot system, used by both CLI commands and API routes.
+//! in the Peko system, used by both CLI commands and API routes.
 //!
 //! The `src/types/` directory was merged into this module in issue #31e.
 

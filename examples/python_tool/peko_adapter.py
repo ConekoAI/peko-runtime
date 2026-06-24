@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Pekobot Universal Tool Adapter for Python
+Peko Universal Tool Adapter for Python
 
 SRP: Handles JSON-RPC protocol so users only write business logic.
 
 Usage:
-    from pekobot_adapter import tool
+    from peko_adapter import tool
 
     @tool(
         name="my_tool",
@@ -30,7 +30,7 @@ from functools import wraps
 
 @dataclass
 class ExecutionContext:
-    """Runtime context injected by Pekobot"""
+    """Runtime context injected by Peko"""
     session_id: str
     agent_id: str
     workspace: str

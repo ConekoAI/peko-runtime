@@ -28,9 +28,7 @@
 use serde_json::json;
 use tracing::info;
 
-use crate::session::events::{
-    A2aMessageType, A2aReceivedEvent, A2aSentEvent, EventEnvelope,
-};
+use crate::session::events::{A2aMessageType, A2aReceivedEvent, A2aSentEvent, EventEnvelope};
 
 /// Construct an `A2aSentEvent` for the outbound side — emitted
 /// after `A2aSendTool::execute_remote` has successfully sent
@@ -255,9 +253,15 @@ mod tests {
             "review this PR",
         );
         assert_eq!(event.caller_did.as_deref(), Some("did:peko:agent:caller"));
-        assert_eq!(event.runtime_id_caller.as_deref(), Some("did:key:zCallerRuntime"));
+        assert_eq!(
+            event.runtime_id_caller.as_deref(),
+            Some("did:key:zCallerRuntime")
+        );
         assert_eq!(event.target_did.as_deref(), Some("did:peko:agent:target"));
-        assert_eq!(event.runtime_id_target.as_deref(), Some("did:key:zTargetRuntime"));
+        assert_eq!(
+            event.runtime_id_target.as_deref(),
+            Some("did:key:zTargetRuntime")
+        );
         assert_eq!(event.request_id.as_deref(), Some("req-1"));
         assert!(event.topic.is_empty());
         assert!(event.to.is_empty());
@@ -307,10 +311,16 @@ mod tests {
         // The local agent is the "caller" of the response (it's
         // initiating the response send).
         assert_eq!(sent.caller_did.as_deref(), Some("did:peko:agent:target"));
-        assert_eq!(sent.runtime_id_caller.as_deref(), Some("did:key:zTargetRuntime"));
+        assert_eq!(
+            sent.runtime_id_caller.as_deref(),
+            Some("did:key:zTargetRuntime")
+        );
         // The original caller is the "target" of the response.
         assert_eq!(sent.target_did.as_deref(), Some("did:peko:agent:caller"));
-        assert_eq!(sent.runtime_id_target.as_deref(), Some("did:key:zCallerRuntime"));
+        assert_eq!(
+            sent.runtime_id_target.as_deref(),
+            Some("did:key:zCallerRuntime")
+        );
     }
 
     /// Long messages are truncated in the audit payload with an
@@ -328,7 +338,10 @@ mod tests {
             &long,
         );
         let payload_str = event.payload.to_string();
-        assert!(payload_str.contains("…"), "long message must be truncated with ellipsis");
+        assert!(
+            payload_str.contains("…"),
+            "long message must be truncated with ellipsis"
+        );
         assert!(
             !payload_str.contains(&"x".repeat(300)),
             "truncated preview must not include the full message body"

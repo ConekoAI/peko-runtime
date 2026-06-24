@@ -11,18 +11,18 @@
 //!   6. green: `--allow-unsigned-agent` permits an unsigned import
 //!
 //! These tests run without a daemon or registry — they call the
-//! [`pekobot::registry::packaging::Unpackager`] directly against an in-memory file
+//! [`peko::registry::packaging::Unpackager`] directly against an in-memory file
 //! map, which is exactly the path the CLI's `agent import` command
 //! eventually reaches through the daemon IPC.
 //!
 //! See: <https://github.com/ConekoAI/peko-runtime/issues/14>
 
 use base64::Engine;
-use pekobot::identity::keys::KeyPair;
-use pekobot::identity::{DIDDocument, Identity, VerificationMethod};
-use pekobot::registry::packaging::manifest::AgentManifest;
-use pekobot::registry::packaging::validation::ValidationResult;
-use pekobot::registry::packaging::{ImportOptions, Unpackager};
+use peko::identity::keys::KeyPair;
+use peko::identity::{DIDDocument, Identity, VerificationMethod};
+use peko::registry::packaging::manifest::AgentManifest;
+use peko::registry::packaging::validation::ValidationResult;
+use peko::registry::packaging::{ImportOptions, Unpackager};
 use std::collections::HashMap;
 use std::path::Path;
 use tempfile::TempDir;
@@ -58,7 +58,10 @@ fn fresh_identity() -> (KeyPair, DIDDocument, String) {
 
 /// Build the file contents that go in the package, returned with
 /// the data needed to wire them into the manifest (DID string).
-fn build_file_contents(signer: &KeyPair, did_doc: &DIDDocument) -> (Vec<u8>, Vec<u8>, Vec<u8>, String) {
+fn build_file_contents(
+    signer: &KeyPair,
+    did_doc: &DIDDocument,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, String) {
     let did_json = serde_json::to_vec_pretty(did_doc).unwrap();
 
     let config_toml = r#"
@@ -130,7 +133,7 @@ fn build_signed_manifest(
 
     // Reconstruct the signed bytes (signature field zeroed).
     let manifest_for_signing = AgentManifest {
-        signatures: pekobot::registry::packaging::manifest::Signatures {
+        signatures: peko::registry::packaging::manifest::Signatures {
             manifest: String::new(),
             algorithm: "ed25519".to_string(),
         },
@@ -178,10 +181,10 @@ fn import_options(allow_unsigned: bool, force: bool) -> ImportOptions {
     }
 }
 
-async fn run_import(files: &HashMap<String, Vec<u8>>, opts: ImportOptions) -> Result<
-    pekobot::registry::packaging::ImportResult,
-    anyhow::Error,
-> {
+async fn run_import(
+    files: &HashMap<String, Vec<u8>>,
+    opts: ImportOptions,
+) -> Result<peko::registry::packaging::ImportResult, anyhow::Error> {
     // Write the files map to a tar.gz, point the Unpackager at it,
     // and import. (import_from_files is pub(crate) and not reachable
     // from external integration tests.)
@@ -227,10 +230,15 @@ fn tamper_agent_name(manifest_bytes: &mut [u8]) {
 #[tokio::test]
 async fn signed_manifest_imports_successfully() {
     let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&signer, &did_doc);
-    let manifest_bytes =
-        build_signed_manifest(&signer, "sig-test", &did, &did_json, &config_bytes, &keys_bytes);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
     let result = run_import(&files, import_options(false, false))
@@ -242,10 +250,15 @@ async fn signed_manifest_imports_successfully() {
 #[tokio::test]
 async fn tampered_manifest_byte_fails_signature_check() {
     let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&signer, &did_doc);
-    let mut manifest_bytes =
-        build_signed_manifest(&signer, "sig-test", &did, &did_json, &config_bytes, &keys_bytes);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let mut manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
     tamper_agent_name(&mut manifest_bytes);
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
@@ -262,8 +275,7 @@ async fn tampered_manifest_byte_fails_signature_check() {
 #[tokio::test]
 async fn stripped_signature_fails_when_not_allowed() {
     let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&signer, &did_doc);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
 
     // Build a manifest that was never signed (signatures.manifest is
     // empty by default). Add real checksums so validation can pass
@@ -305,8 +317,7 @@ async fn wrong_key_signature_is_rejected() {
     // the package DID doc both claim `imposter_did`, but the public
     // key in the DID doc is actually `author`'s. The signature won't
     // verify against the advertised public key.
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&imposter, &imposter_did_doc);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&imposter, &imposter_did_doc);
     let manifest_bytes = build_signed_manifest(
         &imposter,
         "sig-test",
@@ -330,10 +341,15 @@ async fn wrong_key_signature_is_rejected() {
 #[tokio::test]
 async fn force_flag_does_not_bypass_signature() {
     let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&signer, &did_doc);
-    let mut manifest_bytes =
-        build_signed_manifest(&signer, "sig-test", &did, &did_json, &config_bytes, &keys_bytes);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let mut manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
     tamper_agent_name(&mut manifest_bytes);
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
@@ -351,8 +367,7 @@ async fn force_flag_does_not_bypass_signature() {
 #[tokio::test]
 async fn allow_unsigned_permits_unsigned_import() {
     let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&signer, &did_doc);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
 
     // Build an unsigned manifest (signatures.manifest is empty).
     let mut manifest = AgentManifest::new("sig-test", "1.0.0", &did);
@@ -380,11 +395,10 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
     // the bytes the unpackager verifies against are byte-identical
     // to the bytes the packager signed. This is the real CI
     // failure surface (s3_agent_registry_roundtrip).
-    use pekobot::registry::AgentRegistry;
+    use peko::registry::AgentRegistry;
 
     let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&signer, &did_doc);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
 
     // Push the .agent file into a fresh AgentRegistry. This is
     // what `peko agent push --file <file>` does.
@@ -395,9 +409,7 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
     // Build a layer tarball per layer the manifest references,
     // mirroring `load_agent_file_into_registry` in
     // `src/commands/agent/handlers.rs:772`.
-    fn build_layer_tarball(
-        layer_files: &std::collections::BTreeMap<String, Vec<u8>>,
-    ) -> Vec<u8> {
+    fn build_layer_tarball(layer_files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<u8> {
         let mut buf = Vec::new();
         {
             let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
@@ -414,7 +426,7 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
         }
         buf
     }
-    use pekobot::registry::packaging::types::compute_digest;
+    use peko::registry::packaging::types::compute_digest;
     let mut config_files = std::collections::BTreeMap::new();
     config_files.insert("agent.toml".to_string(), config_bytes.clone());
     let config_tar = build_layer_tarball(&config_files);
@@ -435,7 +447,7 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
     manifest.add_file("identity/did.json", &did_json);
     manifest.add_file("config/agent.toml", &config_bytes);
     manifest.add_file("identity/keys.enc", &keys_bytes);
-    use pekobot::registry::packaging::manifest::AgentLayers;
+    use peko::registry::packaging::manifest::AgentLayers;
     manifest.layers = Some(AgentLayers {
         config: Some(config_digest.clone()),
         identity: Some(identity_digest.clone()),
@@ -444,7 +456,7 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
 
     // Sign the manifest.
     let manifest_for_signing = AgentManifest {
-        signatures: pekobot::registry::packaging::manifest::Signatures {
+        signatures: peko::registry::packaging::manifest::Signatures {
             manifest: String::new(),
             algorithm: "ed25519".to_string(),
         },
@@ -458,8 +470,14 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
     manifest.signatures.algorithm = "ed25519".to_string();
     let _original_manifest_bytes = manifest.to_toml().unwrap().into_bytes();
 
-    registry.store_layer(&config_digest, &config_tar).await.expect("store config");
-    registry.store_layer(&identity_digest, &identity_tar).await.expect("store identity");
+    registry
+        .store_layer(&config_digest, &config_tar)
+        .await
+        .expect("store config");
+    registry
+        .store_layer(&identity_digest, &identity_tar)
+        .await
+        .expect("store identity");
     registry
         .store_manifest(&manifest, Some("sig-test:v1"))
         .await
@@ -494,13 +512,16 @@ async fn full_registry_round_trip_preserves_signed_bytes() {
     // The unpackager's verifier reconstructs the canonical signed
     // bytes from the exported manifest. Both must match the
     // signed bytes from the original.
-    let status = pekobot::registry::packaging::signature::verify_manifest_signature(
+    let status = peko::registry::packaging::signature::verify_manifest_signature(
         &exported_bytes,
         &did_json,
         false,
     )
     .expect("exported signature must verify");
-    assert_eq!(status, pekobot::registry::packaging::signature::SignatureStatus::Verified);
+    assert_eq!(
+        status,
+        peko::registry::packaging::signature::SignatureStatus::Verified
+    );
 }
 
 #[test]
@@ -516,8 +537,7 @@ fn manifest_round_trip_produces_identical_bytes() {
     // the registry (load-then-rebuild-then-write) perform, and
     // asserts the bytes are byte-identical.
     let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&signer, &did_doc);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
     let manifest_bytes = build_signed_manifest_pinned(
         &signer,
         "sig-test",
@@ -531,10 +551,9 @@ fn manifest_round_trip_produces_identical_bytes() {
     // re-serialize. This is what the registry does on
     // `get_manifest_by_tag` followed by `manifest.to_toml()` in
     // `export_package`.
-    let parsed: AgentManifest = AgentManifest::from_toml(
-        std::str::from_utf8(&manifest_bytes).expect("manifest utf-8"),
-    )
-    .expect("parse signed manifest");
+    let parsed: AgentManifest =
+        AgentManifest::from_toml(std::str::from_utf8(&manifest_bytes).expect("manifest utf-8"))
+            .expect("parse signed manifest");
     let roundtripped = parsed.to_toml().expect("re-serialize");
 
     // Strip the manifest.toml trailing newline the TOML writer
@@ -563,8 +582,7 @@ fn manifest_signing_is_byte_stable() {
     // test re-derives the canonical bytes twice (with a pinned
     // `created_at` to avoid timestamp noise) and asserts equality.
     let (signer, did_doc, did) = fresh_identity();
-    let (did_json, config_bytes, keys_bytes, _) =
-        build_file_contents(&signer, &did_doc);
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
     let m1 = build_signed_manifest_pinned(
         &signer,
         "sig-test",
@@ -582,7 +600,10 @@ fn manifest_signing_is_byte_stable() {
         &keys_bytes,
     );
     assert_eq!(m1, m2, "manifest bytes must be deterministic for signing");
-    assert!(m1.windows(20).any(|w| w.starts_with(b"sha256:")), "should contain a sha256: checksum");
+    assert!(
+        m1.windows(20).any(|w| w.starts_with(b"sha256:")),
+        "should contain a sha256: checksum"
+    );
     let _ = sha256(b"placeholder"); // sanity: helper produces a sane string
 }
 
@@ -605,7 +626,7 @@ fn build_signed_manifest_pinned(
     manifest.add_file("identity/keys.enc", keys_bytes);
 
     let manifest_for_signing = AgentManifest {
-        signatures: pekobot::registry::packaging::manifest::Signatures {
+        signatures: peko::registry::packaging::manifest::Signatures {
             manifest: String::new(),
             algorithm: "ed25519".to_string(),
         },

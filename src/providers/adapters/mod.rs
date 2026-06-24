@@ -193,11 +193,7 @@ pub trait ApiAdapter: Send + Sync {
     /// Parse SSE event data into unified stream event
     ///
     /// Returns None if the event should be skipped (e.g., keep-alive)
-    fn parse_sse_event(
-        &self,
-        model_id: &str,
-        data: &str,
-    ) -> Result<Option<StreamEvent>>;
+    fn parse_sse_event(&self, model_id: &str, data: &str) -> Result<Option<StreamEvent>>;
 
     /// Get authentication configuration
     fn auth_config(&self, api_key: &str) -> AuthConfig;
@@ -293,11 +289,7 @@ impl ApiAdapter for AnyAdapter {
         }
     }
 
-    fn parse_sse_event(
-        &self,
-        model_id: &str,
-        data: &str,
-    ) -> Result<Option<StreamEvent>> {
+    fn parse_sse_event(&self, model_id: &str, data: &str) -> Result<Option<StreamEvent>> {
         match self {
             Self::OpenAi(a) => a.parse_sse_event(model_id, data),
             Self::Anthropic(a) => a.parse_sse_event(model_id, data),

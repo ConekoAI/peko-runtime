@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Query Tool - Example Universal Tool for Pekobot
+Query Tool - Example Universal Tool for Peko
 
 This demonstrates:
-1. Using the pekobot_adapter with reserved parameter injection
+1. Using the peko_adapter with reserved parameter injection
 2. Accessing runtime context (session_id, agent_id, etc.)
 3. Returning structured results
 
 The manifest (query_tool.json) declares reserved parameters that
-Pekobot injects at runtime - the LLM never sees them.
+Peko injects at runtime - the LLM never sees them.
 """
 
 import sys
@@ -18,7 +18,7 @@ from datetime import datetime
 # Add current dir to path for the adapter
 sys.path.insert(0, __file__.rsplit('/', 1)[0])
 
-from pekobot_adapter import tool
+from peko_adapter import tool
 
 
 @tool(
@@ -55,9 +55,9 @@ def query_database(query: str, limit: int = 10, session_id: str = "", agent_id: 
     Args:
         query: Search string (from LLM)
         limit: Max results (from LLM, with default)
-        session_id: Injected by Pekobot
-        agent_id: Injected by Pekobot  
-        workspace: Injected by Pekobot
+        session_id: Injected by Peko
+        agent_id: Injected by Peko  
+        workspace: Injected by Peko
     
     Returns:
         Structured result with metadata

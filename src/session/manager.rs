@@ -47,9 +47,9 @@ use super::metadata::SessionMetadata;
 use super::metadata_controller::MetadataController;
 use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
-use crate::auth::principal::Principal;
 use super::types::{ChannelType, SpawnCleanupPolicy};
 use super::unified::Session;
+use crate::auth::principal::Principal;
 use crate::common::paths::PathResolver;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -1234,7 +1234,11 @@ impl SessionManager {
     // ====================================================================================
 
     /// Branch current session (/branch command)
-    pub async fn branch_session(&mut self, peer: &Principal, label: Option<String>) -> Result<String> {
+    pub async fn branch_session(
+        &mut self,
+        peer: &Principal,
+        label: Option<String>,
+    ) -> Result<String> {
         // Get agent name first to avoid borrow issues
         let agent = self
             .agent_name
@@ -2126,8 +2130,8 @@ async fn copy_session_context(
     parent: &Arc<RwLock<Session>>,
     child: &Arc<RwLock<Session>>,
 ) -> Result<()> {
-    use crate::providers::MessageRole;
     use crate::common::types::message::ContentBlock;
+    use crate::providers::MessageRole;
 
     // Load parent's conversation history
     let parent_history = {
@@ -2435,7 +2439,10 @@ mod tests {
 
         // But non-isolated spawn should have copied parent's context
         let history = spawn.load_history().await.unwrap();
-        assert!(!history.is_empty(), "Non-isolated spawn should copy parent context");
+        assert!(
+            !history.is_empty(),
+            "Non-isolated spawn should copy parent context"
+        );
     }
 
     #[tokio::test]

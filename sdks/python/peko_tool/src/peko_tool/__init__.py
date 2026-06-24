@@ -1,11 +1,11 @@
-"""Pekobot Tool SDK - Build Universal Tools for Pekobot agents.
+"""Peko Tool SDK - Build Universal Tools for Peko agents.
 
 This package provides the infrastructure for building tools that can be used
-by Pekobot agents. It handles the JSON-RPC protocol, reserved parameter
+by Peko agents. It handles the JSON-RPC protocol, reserved parameter
 injection, and boilerplate code.
 
 Example:
-    >>> from pekobot_tool import tool
+    >>> from peko_tool import tool
     >>>
     >>> @tool(
     ...     name="calculator",

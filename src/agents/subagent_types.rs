@@ -4,7 +4,9 @@
 //! `AsyncTaskEntry` data model. No registry storage uses these types
 //! directly — they are read-only projections constructed on demand.
 
-use crate::extensions::framework::async_exec::executor::{AsyncTaskEntry, AsyncTaskStatus, TaskMetadata};
+use crate::extensions::framework::async_exec::executor::{
+    AsyncTaskEntry, AsyncTaskStatus, TaskMetadata,
+};
 use crate::session::types::SpawnCleanupPolicy;
 use chrono::{DateTime, Utc};
 

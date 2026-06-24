@@ -588,9 +588,7 @@ pub mod builtin_tools {
     /// True iff `name` (case-insensitive) is in [`all_tool_names`].
     pub fn is_builtin_tool(name: &str) -> bool {
         let lower = name.to_lowercase();
-        all_tool_names()
-            .iter()
-            .any(|&n| n.to_lowercase() == lower)
+        all_tool_names().iter().any(|&n| n.to_lowercase() == lower)
     }
 
     /// True iff `name` (case-insensitive) is in [`AGENT_SPECIFIC_TOOL_NAMES`].

@@ -11,7 +11,7 @@
 
 ## Context
 
-Pekobot currently has a **partially implemented** session compaction subsystem:
+Peko currently has a **partially implemented** session compaction subsystem:
 
 - `src/compaction/mod.rs` — Core `Compactor` with LLM-based summarization, cumulative summary tracking, and token estimation.
 - `src/compaction/background.rs` — `BackgroundCompactor` worker with quotas and cooldowns.
@@ -31,7 +31,7 @@ All gaps identified in the original analysis have been addressed:
 | # | Gap | Status | Resolution |
 |---|-----|--------|------------|
 | 1 | `SessionCompaction` extension hook never invoked | ✅ Fixed | Hook invoked in `agentic_loop.rs` with `HookInput::CompactionPreparation` |
-| 2 | `CompactionConfig` hard-coded, no TOML integration | ✅ Fixed | `CompactionConfig` added to `PekobotConfig`/`AgentConfig` with TOML deserialization |
+| 2 | `CompactionConfig` hard-coded, no TOML integration | ✅ Fixed | `CompactionConfig` added to `PekoConfig`/`AgentConfig` with TOML deserialization |
 | 3 | Compacted summary not persisted in JSONL | ✅ Fixed | `CompactionEntry` recorded via `append_compaction()`; `build_context()` emits summary + kept messages |
 | 4 | `load_previous_compaction_summary` drops intermediate context | ✅ Fixed | Cumulative summaries via `previous_summary` chaining; only latest summary needed in context |
 | 5 | `BackgroundCompactor` recreated per run | ✅ Fixed | Background compactor lives for the duration of `run_inner()` with proper state tracking |
@@ -605,7 +605,7 @@ pub async fn handle_session_compact(args: CompactArgs) -> Result<()> {
 
 ## Configuration
 
-`CompactionConfig` moves into `PekobotConfig` and `AgentConfig`:
+`CompactionConfig` moves into `PekoConfig` and `AgentConfig`:
 
 ```toml
 # config.toml
@@ -664,7 +664,7 @@ pub struct CompactionConfig {
 | `src/engine/agentic_loop.rs` | Invoke `SessionCompaction` hook with `CompactionPreparation`; invoke `SessionCompactionPost` with `CompactionResult`; wire `ModelContextRegistry`; call `record_model_change` |
 | `src/session/unified.rs` | Add `build_context()`, `load_context_fast()`, `update_context_cache()`, `append_event()`, `record_model_change()`; single-file + cache support |
 | `src/session/jsonl.rs` | Add cache read/write with checksum validation; normalize compaction and model_change events; `append_compaction()` with details support |
-| `src/types/config.rs` | Add `CompactionConfig` to `PekobotConfig` / `AgentConfig` |
+| `src/types/config.rs` | Add `CompactionConfig` to `PekoConfig` / `AgentConfig` |
 | `src/extensions/core/hook_points.rs` | Add `SessionCompactionPost` hook point |
 | `src/extensions/types.rs` | Add `HookInput::CompactionPreparation` and `HookInput::CompactionResult` variants |
 | `src/commands/session.rs` | Add `session compact` subcommand with `--agent`, `--session-id`, `--team`, `--dry-run`, `--instruction` |

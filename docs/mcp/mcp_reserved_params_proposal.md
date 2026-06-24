@@ -35,7 +35,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // With reserved param injection
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { operation, key, value } = request.params.arguments;
-  const { agent_id, session_id } = request.params.reserved_context; // Injected by Pekobot
+  const { agent_id, session_id } = request.params.reserved_context; // Injected by Peko
   
   if (operation === "store") {
     const isolatedKey = `${agent_id}:${key}`;
@@ -80,13 +80,13 @@ interface CallToolRequest {
 
 ## Solution: Adapter Layer (No Spec Changes Required!)
 
-We can implement this entirely on the **Pekobot side** by extending our MCP integration:
+We can implement this entirely on the **Peko side** by extending our MCP integration:
 
 ### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Pekobot Agent                                                          │
+│  Peko Agent                                                          │
 │  ┌─────────────────┐    ┌──────────────────────┐    ┌───────────────┐  │
 │  │ InjectableMcp   │───▶│ McpToolProxy         │───▶│ MCP Server    │  │
 │  │ ToolProxy       │    │ (existing)           │    │ (external)    │  │
@@ -249,7 +249,7 @@ await db.query(`SELECT * FROM ${tenantTable} WHERE ...`);
 ## MCP Server Adoption
 
 ### Current State
-MCP servers don't know about Pekobot's reserved params. To support them:
+MCP servers don't know about Peko's reserved params. To support them:
 
 **Option 1: Convention (Backward Compatible)**
 MCP servers declare params but mark them optional:
@@ -330,7 +330,7 @@ server.setRequestHandler(InitializeRequestSchema, () => ({
 
 3. **Phase 3**: Propose to MCP standard (optional)
    - If proven valuable, propose `x-reserved-context` extension
-   - Or keep as Pekobot-specific enhancement
+   - Or keep as Peko-specific enhancement
 
 ## Summary
 
@@ -338,9 +338,9 @@ server.setRequestHandler(InitializeRequestSchema, () => ({
 |----------|--------|
 | Is this sensible? | ✅ Yes, enables secure multi-tenancy |
 | Does MCP support it? | ❌ No, but we can add it via adapter |
-| Requires spec changes? | ❌ No, purely Pekobot-side |
+| Requires spec changes? | ❌ No, purely Peko-side |
 | Implementation effort? | 🟢 Low (~2-3 days) |
 | Backward compatible? | ✅ Yes, opt-in feature |
 | Value to users? | 🟢 High (isolation, security, audit) |
 
-**This would be a valuable differentiator for Pekobot's MCP integration.**
+**This would be a valuable differentiator for Peko's MCP integration.**

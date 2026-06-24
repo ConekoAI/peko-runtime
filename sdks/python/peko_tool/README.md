@@ -1,11 +1,11 @@
-# Pekobot Tool SDK
+# Peko Tool SDK
 
-Python SDK for building Universal Tools for Pekobot agents.
+Python SDK for building Universal Tools for Peko agents.
 
 ## Installation
 
 ```bash
-pip install pekobot-tool
+pip install peko-tool
 ```
 
 ## Quick Start
@@ -13,7 +13,7 @@ pip install pekobot-tool
 Create a simple calculator tool:
 
 ```python
-from pekobot_tool import tool
+from peko_tool import tool
 
 @tool(
     name="calculator",
@@ -51,7 +51,7 @@ if __name__ == "__main__":
 
 ## Reserved Parameters
 
-Reserved parameters are injected at runtime by Pekobot and hidden from the LLM:
+Reserved parameters are injected at runtime by Peko and hidden from the LLM:
 
 - `session_id`: Current session identifier
 - `agent_id`: Current agent identifier
@@ -67,7 +67,7 @@ Declare them in your tool decorator:
     reserved=["session_id", "agent_id"]
 )
 def my_tool(query: str, session_id: str = "", agent_id: str = ""):
-    # session_id and agent_id are injected by Pekobot
+    # session_id and agent_id are injected by Peko
     return {"message": f"Hello {agent_id}, session {session_id}"}
 ```
 
@@ -83,7 +83,7 @@ return {"success": True, "data": {"key": "value"}}
 return {"success": False, "error": "Something went wrong"}
 
 # Or use ToolResult
-from pekobot_tool import ToolResult
+from peko_tool import ToolResult
 return ToolResult(success=True, data={"key": "value"})
 ```
 
@@ -102,7 +102,7 @@ print(result)  # {'success': True, 'result': 3.0, 'operation': 'add'}
 2. Place both files in your agent's `tools/` directory
 3. Enable the tool in your agent's `config.toml`
 
-See the [Pekobot documentation](https://github.com/ConekoAI/peko-runtime) for details.
+See the [Peko documentation](https://github.com/ConekoAI/peko-runtime) for details.
 
 ## License
 

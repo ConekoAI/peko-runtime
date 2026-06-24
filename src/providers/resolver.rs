@@ -36,10 +36,10 @@ use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::common::secret_store::SecretStore;
 use crate::providers::catalog::{ModelInfo, ProviderCatalog, ProviderCatalogEntry};
 use crate::providers::core::Provider;
 use crate::providers::registry::create_provider_for_entry;
-use crate::common::secret_store::SecretStore;
 
 /// Inputs to `LlmResolver::resolve`.
 ///
@@ -108,10 +108,7 @@ pub struct LlmResolver {
 impl LlmResolver {
     /// Create a new resolver.
     #[must_use]
-    pub fn new(
-        catalog: Arc<ProviderCatalog>,
-        secrets: Arc<dyn SecretStore>,
-    ) -> Self {
+    pub fn new(catalog: Arc<ProviderCatalog>, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
             catalog,
             secrets,
@@ -136,10 +133,7 @@ impl LlmResolver {
     /// Resolve a `(provider_id, model_id)` request per the
     /// precedence chain. Returns the catalog entry and model plus
     /// which level won.
-    pub async fn resolve(
-        &self,
-        req: ResolveRequest<'_>,
-    ) -> Result<ResolvedChoice> {
+    pub async fn resolve(&self, req: ResolveRequest<'_>) -> Result<ResolvedChoice> {
         // 1. Explicit override.
         if let Some(pid) = req.override_provider {
             let entry = self.require_enabled_entry(pid).await?;
@@ -203,10 +197,7 @@ impl LlmResolver {
 
     /// Resolve a request then immediately build a `Provider` ready to
     /// serve. This is the hot path used by `Agent::run*`.
-    pub async fn build(
-        &self,
-        req: ResolveRequest<'_>,
-    ) -> Result<(Arc<Provider>, ResolvedChoice)> {
+    pub async fn build(&self, req: ResolveRequest<'_>) -> Result<(Arc<Provider>, ResolvedChoice)> {
         let choice = self.resolve(req).await?;
         let provider = self.build_provider(&choice.entry, &choice.model).await?;
         Ok((provider, choice))
@@ -229,13 +220,13 @@ impl LlmResolver {
         create_provider_for_entry(entry, api_key.expose_secret(), model)
     }
 
-/// Internal: look up the API key for a provider.
-///
-/// Resolution order:
-/// 1. Secret store (OS keychain or test backend).
-/// 2. If `bootstrap_env_keys` is enabled, conventional `*_API_KEY`
-///    env vars (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
-fn resolve_api_key(&self, account: &str) -> Result<SecretString> {
+    /// Internal: look up the API key for a provider.
+    ///
+    /// Resolution order:
+    /// 1. Secret store (OS keychain or test backend).
+    /// 2. If `bootstrap_env_keys` is enabled, conventional `*_API_KEY`
+    ///    env vars (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+    fn resolve_api_key(&self, account: &str) -> Result<SecretString> {
         // 1. Keychain / secret store.
         match self.secrets.get(account) {
             Ok(Some(secret)) => return Ok(secret),
@@ -244,9 +235,7 @@ fn resolve_api_key(&self, account: &str) -> Result<SecretString> {
                 // Backend error (e.g. OS keychain unavailable). Only
                 // try the env fallback if explicitly enabled.
                 if !self.bootstrap_env_keys {
-                    return Err(anyhow!(
-                        "secret store backend error for '{account}': {e}"
-                    ));
+                    return Err(anyhow!("secret store backend error for '{account}': {e}"));
                 }
             }
         }
@@ -334,10 +323,7 @@ pub struct KeyProbeReport {
 /// treated as a sentinel meaning "use the provider's default model" —
 /// this matches the convention used in agent configs that predate the
 /// v3 provider catalog (e.g. `preferred_model_id = "default"`).
-fn resolve_model_on(
-    entry: &ProviderCatalogEntry,
-    model_id: Option<&str>,
-) -> Result<ModelInfo> {
+fn resolve_model_on(entry: &ProviderCatalogEntry, model_id: Option<&str>) -> Result<ModelInfo> {
     let mid = model_id.filter(|m| !m.is_empty() && *m != "default");
     if let Some(mid) = mid {
         if let Some(m) = entry.model(mid) {
@@ -642,7 +628,10 @@ mod tests {
     async fn probe_reports_storage_and_env() {
         let (_d, cat) = seeded_catalog().await;
         std::env::set_var("OPENAI_API_KEY", "sk-from-env");
-        let secrets = Arc::new(InMemorySecretStore::from_pairs(&[("openai", "sk-from-store")]));
+        let secrets = Arc::new(InMemorySecretStore::from_pairs(&[(
+            "openai",
+            "sk-from-store",
+        )]));
         let r = LlmResolver::new(cat, secrets).with_env_bootstrap();
         let probe = r.probe("openai");
         assert_eq!(probe.secret_store, Some(true));

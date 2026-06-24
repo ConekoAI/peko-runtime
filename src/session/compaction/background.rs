@@ -8,9 +8,9 @@
 //! - In-flight compaction tracking
 //! - Result notification via callback
 
+use crate::common::types::message::LlmMessage;
 use crate::session::compaction::registry::should_auto_compact;
 use crate::session::compaction::{CompactionConfig, CompactionResult, Compactor};
-use crate::common::types::message::LlmMessage;
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Instant;

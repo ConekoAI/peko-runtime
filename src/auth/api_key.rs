@@ -301,10 +301,10 @@ mod tests {
 
         // 1. Create a key with Read + Write scopes
         let (full_key, key_id) = store
-            .create_key("E2E Test Key".to_string(), vec![
-                ApiKeyScope::Read,
-                ApiKeyScope::Write,
-            ])
+            .create_key(
+                "E2E Test Key".to_string(),
+                vec![ApiKeyScope::Read, ApiKeyScope::Write],
+            )
             .await
             .unwrap();
 
@@ -315,10 +315,7 @@ mod tests {
         assert_eq!(entry.name, "E2E Test Key");
 
         // 3. Build CallerContext from verified entry
-        let caller = CallerContext::from_api_key(
-            entry.id.clone(),
-            entry.scopes.clone(),
-        );
+        let caller = CallerContext::from_api_key(entry.id.clone(), entry.scopes.clone());
 
         // 4. Permission checks
         assert!(check_permission(&caller, &Resource::System, Action::Read).is_ok());

@@ -18,10 +18,10 @@
 //! Run in container:
 //!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test registry_integration -- --ignored
 
-use pekobot::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
-use pekobot::registry::AgentRegistry;
-use pekobot::registry::client::ResourceType;
-use pekobot::registry::{
+use peko::registry::client::ResourceType;
+use peko::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
+use peko::registry::AgentRegistry;
+use peko::registry::{
     media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,
 };
 use std::time::Duration;
@@ -57,7 +57,7 @@ fn sha256_digest(data: &[u8]) -> String {
 
 /// Create a minimal AgentManifest with layers for testing
 fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
-    let mut manifest = AgentManifest::new(name, "1.0.0", "did:pekobot:test");
+    let mut manifest = AgentManifest::new(name, "1.0.0", "did:peko:test");
 
     let config_data = b"config layer content";
     let identity_data = b"identity layer content";
@@ -94,7 +94,7 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
 async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,
-    digest: &pekobot::registry::packaging::types::ImageDigest,
+    digest: &peko::registry::packaging::types::ImageDigest,
 ) {
     let image_dir = registry
         .root_path()
@@ -206,7 +206,10 @@ async fn test_pekohub_manifest_invalid_media_type_rejected() {
     // PUT manifest with invalid media type ( PekoHub only accepts OCI )
     let manifest_json = r#"{"schemaVersion":2,"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":2},"layers":[]}"#;
     let put_resp = client
-        .put(format!("{}/v2/{ns}/bad-agent/manifests/latest", backend.url))
+        .put(format!(
+            "{}/v2/{ns}/bad-agent/manifests/latest",
+            backend.url
+        ))
         .header("Content-Type", "application/json")
         .body(manifest_json)
         .send()
@@ -324,7 +327,12 @@ async fn test_pekohub_catalog_and_tags() {
             .await
             .unwrap();
         assert_eq!(post_resp.status(), 202);
-        let location = post_resp.headers().get("location").unwrap().to_str().unwrap();
+        let location = post_resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
         let upload_url = if location.starts_with("http") {
             location.to_string()
         } else {
@@ -366,7 +374,11 @@ async fn test_pekohub_catalog_and_tags() {
     let catalog: serde_json::Value = catalog_resp.json().await.unwrap();
     let repos = catalog["repositories"].as_array().unwrap();
     // Should have agent-a and agent-b
-    assert!(repos.len() >= 2, "Expected at least 2 repos, got {}", repos.len());
+    assert!(
+        repos.len() >= 2,
+        "Expected at least 2 repos, got {}",
+        repos.len()
+    );
 
     // Tags for agent-a
     let tags_resp = client
@@ -408,15 +420,24 @@ async fn test_registry_client_push_and_pull() {
     // Store some fake layers in the local registry
     let layer1_data = b"config layer content";
     let layer1_digest = sha256_digest(layer1_data);
-    registry.store_layer(&layer1_digest, layer1_data).await.unwrap();
+    registry
+        .store_layer(&layer1_digest, layer1_data)
+        .await
+        .unwrap();
 
     let layer2_data = b"identity layer content";
     let layer2_digest = sha256_digest(layer2_data);
-    registry.store_layer(&layer2_digest, layer2_data).await.unwrap();
+    registry
+        .store_layer(&layer2_digest, layer2_data)
+        .await
+        .unwrap();
 
     let layer3_data = b"skills layer content";
     let layer3_digest = sha256_digest(layer3_data);
-    registry.store_layer(&layer3_digest, layer3_data).await.unwrap();
+    registry
+        .store_layer(&layer3_digest, layer3_data)
+        .await
+        .unwrap();
 
     // Create and store a local manifest
     let (agent_manifest, layers) = create_test_manifest("test-agent");
@@ -436,8 +457,11 @@ async fn test_registry_client_push_and_pull() {
     // rejects empty digests as `Invalid digest format`. The config
     // blob was stored locally as `layer1` above — populate the
     // descriptor from it.
-    reg_manifest = reg_manifest
-        .with_config(layer1_digest.clone(), layer1_data.len() as u64, None::<String>);
+    reg_manifest = reg_manifest.with_config(
+        layer1_digest.clone(),
+        layer1_data.len() as u64,
+        None::<String>,
+    );
     store_registry_manifest_local(&registry, &reg_manifest, &manifest_digest).await;
 
     // Configure client
@@ -458,7 +482,7 @@ async fn test_registry_client_push_and_pull() {
 
     let has_done = push_events
         .iter()
-        .any(|e| matches!(e, pekobot::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Push should complete with Done event");
 
     // --- PULL ---
@@ -480,7 +504,7 @@ async fn test_registry_client_push_and_pull() {
 
     let has_done = pull_events
         .iter()
-        .any(|e| matches!(e, pekobot::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Pull should complete with Done event");
 
     // Verify layers were pulled
@@ -489,9 +513,18 @@ async fn test_registry_client_push_and_pull() {
     assert!(pull_registry.has_layer(&layer3_digest));
 
     // Verify layer content
-    assert_eq!(pull_registry.get_layer(&layer1_digest).await.unwrap(), layer1_data);
-    assert_eq!(pull_registry.get_layer(&layer2_digest).await.unwrap(), layer2_data);
-    assert_eq!(pull_registry.get_layer(&layer3_digest).await.unwrap(), layer3_data);
+    assert_eq!(
+        pull_registry.get_layer(&layer1_digest).await.unwrap(),
+        layer1_data
+    );
+    assert_eq!(
+        pull_registry.get_layer(&layer2_digest).await.unwrap(),
+        layer2_data
+    );
+    assert_eq!(
+        pull_registry.get_layer(&layer3_digest).await.unwrap(),
+        layer3_data
+    );
 }
 
 #[tokio::test]
@@ -515,14 +548,20 @@ async fn test_registry_client_skips_existing_layers() {
     // Store layers
     let layer1_data = b"config layer";
     let layer1_digest = sha256_digest(layer1_data);
-    registry.store_layer(&layer1_digest, layer1_data).await.unwrap();
+    registry
+        .store_layer(&layer1_digest, layer1_data)
+        .await
+        .unwrap();
 
     let layer2_data = b"identity layer";
     let layer2_digest = sha256_digest(layer2_data);
-    registry.store_layer(&layer2_digest, layer2_data).await.unwrap();
+    registry
+        .store_layer(&layer2_digest, layer2_data)
+        .await
+        .unwrap();
 
     // Create manifest
-    let mut agent_manifest = AgentManifest::new("skip-test", "1.0.0", "did:pekobot:test");
+    let mut agent_manifest = AgentManifest::new("skip-test", "1.0.0", "did:peko:test");
     agent_manifest.layers = Some(AgentLayers {
         config: Some(layer1_digest.to_string()),
         identity: Some(layer2_digest.to_string()),
@@ -556,8 +595,11 @@ async fn test_registry_client_skips_existing_layers() {
     // layer1 is the config blob (see `agent_manifest.layers.config`
     // assignment above) — populate the top-level OCI config
     // descriptor from it.
-    reg_manifest = reg_manifest
-        .with_config(layer1_digest.clone(), layer1_data.len() as u64, None::<String>);
+    reg_manifest = reg_manifest.with_config(
+        layer1_digest.clone(),
+        layer1_data.len() as u64,
+        None::<String>,
+    );
     store_registry_manifest_local(&registry, &reg_manifest, &manifest_digest).await;
 
     // First push
@@ -588,7 +630,7 @@ async fn test_registry_client_skips_existing_layers() {
         .await
         .unwrap();
 
-    let mut agent_manifest_v2 = AgentManifest::new("skip-test", "1.0.1", "did:pekobot:test");
+    let mut agent_manifest_v2 = AgentManifest::new("skip-test", "1.0.1", "did:peko:test");
     agent_manifest_v2.layers = Some(AgentLayers {
         config: Some(layer1_v2_digest.to_string()),
         identity: Some(layer2_digest.to_string()),
@@ -637,7 +679,7 @@ async fn test_registry_client_skips_existing_layers() {
 
     let has_done = second_push_events
         .iter()
-        .any(|e| matches!(e, pekobot::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Second push should complete");
 }
 
@@ -732,7 +774,10 @@ async fn test_registry_client_digest_verification_on_pull() {
         (layer_data.to_vec(), correct_digest.clone()),
     ] {
         let post_resp = client
-            .post(format!("{}/v2/{ns}/digest-test/blobs/uploads/", backend.url))
+            .post(format!(
+                "{}/v2/{ns}/digest-test/blobs/uploads/",
+                backend.url
+            ))
             .send()
             .await
             .unwrap();
@@ -773,7 +818,10 @@ async fn test_registry_client_digest_verification_on_pull() {
     );
 
     let manifest_put = client
-        .put(format!("{}/v2/{ns}/digest-test/manifests/v1.0", backend.url))
+        .put(format!(
+            "{}/v2/{ns}/digest-test/manifests/v1.0",
+            backend.url
+        ))
         .header("Content-Type", media_types::MANIFEST_OCI)
         .body(manifest_json)
         .send()
@@ -796,9 +844,16 @@ async fn test_registry_client_digest_verification_on_pull() {
     let reg_client = RegistryClient::new(config, registry.clone());
 
     let result = reg_client
-        .pull(&format!("{}/{ns}/digest-test:v1.0", backend.url), |_event| {})
+        .pull(
+            &format!("{}/{ns}/digest-test:v1.0", backend.url),
+            |_event| {},
+        )
         .await;
 
     // This should succeed since the manifest and blob digests match
-    assert!(result.is_ok(), "Pull with correct digest should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Pull with correct digest should succeed: {:?}",
+        result.err()
+    );
 }

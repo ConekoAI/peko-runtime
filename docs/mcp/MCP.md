@@ -1,10 +1,10 @@
 # MCP (Model Context Protocol) Support
 
-Pekobot supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), allowing you to extend agent capabilities with external tools from MCP servers.
+Peko supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), allowing you to extend agent capabilities with external tools from MCP servers.
 
 ## Overview
 
-MCP is an open protocol that standardizes how applications provide context to LLMs. With MCP support, Pekobot can:
+MCP is an open protocol that standardizes how applications provide context to LLMs. With MCP support, Peko can:
 
 - Connect to MCP servers via stdio (local) or SSE (remote)
 - Discover and invoke tools from MCP servers
@@ -41,7 +41,7 @@ peko ext list
 
 ## Managing MCP via Extensions
 
-Pekobot manages MCP servers through the Unified Extension Architecture (`peko ext`):
+Peko manages MCP servers through the Unified Extension Architecture (`peko ext`):
 
 ### Install an MCP Extension
 
@@ -181,7 +181,7 @@ For stdio servers:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Pekobot Agent                           │
+│                     Peko Agent                           │
 │                   (uses Vec<Arc<dyn Tool>>)                 │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -218,7 +218,7 @@ For stdio servers:
 
 ## Specification
 
-Pekobot implements MCP protocol version `2024-11-05`.
+Peko implements MCP protocol version `2024-11-05`.
 
 Supported features:
 - ✅ stdio transport

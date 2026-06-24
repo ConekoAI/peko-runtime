@@ -250,13 +250,11 @@ impl AsyncExecutor {
 
             // Execute the work with optional timeout enforcement.
             let outcome = match timeout_secs.map(std::time::Duration::from_secs) {
-                Some(duration) => {
-                    match tokio::time::timeout(duration, execution_fn()).await {
-                        Ok(Ok(value)) => TaskOutcome::Success(value),
-                        Ok(Err(e)) => TaskOutcome::Failure(e),
-                        Err(_) => TaskOutcome::Timeout,
-                    }
-                }
+                Some(duration) => match tokio::time::timeout(duration, execution_fn()).await {
+                    Ok(Ok(value)) => TaskOutcome::Success(value),
+                    Ok(Err(e)) => TaskOutcome::Failure(e),
+                    Err(_) => TaskOutcome::Timeout,
+                },
                 None => match execution_fn().await {
                     Ok(value) => TaskOutcome::Success(value),
                     Err(e) => TaskOutcome::Failure(e),
@@ -616,7 +614,10 @@ mod completion_queue_fan_out_tests {
         assert_eq!(drained[0].task_id, task_id);
         assert_eq!(drained[0].tool_name, "shell");
         assert_eq!(drained[0].parent_session_key, "session_1");
-        assert!(matches!(drained[0].status, AsyncTaskStatus::Completed { .. }));
+        assert!(matches!(
+            drained[0].status,
+            AsyncTaskStatus::Completed { .. }
+        ));
     }
 
     #[tokio::test]

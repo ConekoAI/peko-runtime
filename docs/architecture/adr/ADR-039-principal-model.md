@@ -194,20 +194,20 @@ Each is a separate issue once this lands:
 
 ## Test plan
 
-- `cargo test -p pekobot --lib` — 1392 unit tests pass.
-- `cargo test -p pekobot --test principal_back_compat` — 8
+- `cargo test -p peko --lib` — 1392 unit tests pass.
+- `cargo test -p peko --test principal_back_compat` — 8
   integration tests for the new `Principal` type (Display /
   FromStr round-trip, JSON wire shape, session-key byte-stability
   for User/Agent, Team/Public fallback to `peer:user:default`,
   `principal_from_string_with_default_user` legacy forms).
-- `cargo test -p pekobot --lib auth::ownership::tests` — the two
+- `cargo test -p peko --lib auth::ownership::tests` — the two
   ADR-039 acceptance-criteria tests:
   - `test_agent_caller_denied_for_user_owned_resource`
   - `test_agent_caller_allowed_for_agent_owned_resource`
   Plus `test_agent_caller_denied_for_other_agent_owned_resource`
   and `test_team_user_caller_does_not_match_agent_members` for
   the cross-kind guard.
-- `cargo test -p pekobot --test cli_basics` — 6 tests pass;
+- `cargo test -p peko --test cli_basics` — 6 tests pass;
   the 8 ignored tests are gated on external services.
 
 ## References

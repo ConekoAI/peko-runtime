@@ -84,7 +84,7 @@ peko send "run long build"
     │
     ▼ HTTP IPC (localhost:11435)
 ┌─────────────────────────────────────────┐
-│  Pekobot Daemon                         │
+│  Peko Daemon                         │
 │  ───────────────                        │
 │  ┌─────────────────────────────────┐    │
 │  │  ToolRuntime                    │    │

@@ -31,9 +31,9 @@ use tracing::{error, info, trace, warn};
 
 use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket, HEARTBEAT_INTERVAL_SECS};
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
-use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
+use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
 #[cfg(not(windows))]
 use crate::auth::config::enforce_auth_for_public_bind;
@@ -113,15 +113,12 @@ impl ServerSocket {
             #[cfg(unix)]
             Self::Unix { socket, .. } => {
                 let (len, addr) = socket.recv_from(buf).await?;
-                let path = addr
-                    .as_pathname()
-                    .map(|p| p.to_path_buf())
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "Unix peer without a filesystem path (anonymous socket?)",
-                        )
-                    })?;
+                let path = addr.as_pathname().map(|p| p.to_path_buf()).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Unix peer without a filesystem path (anonymous socket?)",
+                    )
+                })?;
                 Ok((len, PeerAddr::Unix(path)))
             }
             Self::Udp { socket } => {
@@ -186,8 +183,7 @@ impl IpcServer {
         // 2. Try Windows named pipe on Windows platforms (ADR-038)
         #[cfg(windows)]
         {
-            let pipe_name = std::env::var(DAEMON_PIPE_ENV)
-                .unwrap_or_else(|_| default_pipe_name());
+            let pipe_name = std::env::var(DAEMON_PIPE_ENV).unwrap_or_else(|_| default_pipe_name());
             match Self::bind_named_pipe(&pipe_name) {
                 Ok((listener, server_options)) => {
                     info!("IPC server bound to Windows named pipe: {}", pipe_name);
@@ -600,7 +596,10 @@ impl IpcServer {
 
         // Rate limit
         if let Some(rate_limiter) = state.rate_limiter() {
-            let is_jwt = matches!(envelope.auth.credential, super::packet::AuthCredential::Jwt(_));
+            let is_jwt = matches!(
+                envelope.auth.credential,
+                super::packet::AuthCredential::Jwt(_)
+            );
             if !rate_limiter.check(&caller.rate_limit_bucket, is_jwt).await {
                 warn!("Rate limit exceeded for {}", caller.rate_limit_bucket);
                 let response = ResponsePacket::Error {
@@ -709,14 +708,13 @@ impl IpcServer {
         // `&request.resolved_subject()` from inside the arms — compute
         // it here while `request` is still accessible. The borrow
         // released by the time the match starts (NLL).
-        let pre_resolved_subject: Option<crate::auth::principal::Principal> =
-            match &request {
-                RequestPacket::AgentGrantPermission { .. }
-                | RequestPacket::AgentRevokePermission { .. }
-                | RequestPacket::TeamGrantPermission { .. }
-                | RequestPacket::TeamRevokePermission { .. } => Some(request.resolved_subject()),
-                _ => None,
-            };
+        let pre_resolved_subject: Option<crate::auth::principal::Principal> = match &request {
+            RequestPacket::AgentGrantPermission { .. }
+            | RequestPacket::AgentRevokePermission { .. }
+            | RequestPacket::TeamGrantPermission { .. }
+            | RequestPacket::TeamRevokePermission { .. } => Some(request.resolved_subject()),
+            _ => None,
+        };
 
         /// Take the pre-resolved subject for a grant/revoke arm.
         /// Sends a `ResponsePacket::Error` and returns `Err(())` on
@@ -1064,8 +1062,13 @@ impl IpcServer {
                         // ADR-035: Announce the new instance if tunnel is connected
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
                             if dispatcher.is_ready().await {
-                                if let Err(e) = dispatcher.announce_single_instance(&agent_name).await {
-                                    warn!("Failed to announce new agent instance {}: {}", agent_name, e);
+                                if let Err(e) =
+                                    dispatcher.announce_single_instance(&agent_name).await
+                                {
+                                    warn!(
+                                        "Failed to announce new agent instance {}: {}",
+                                        agent_name, e
+                                    );
                                 }
                             }
                         }
@@ -1184,7 +1187,10 @@ impl IpcServer {
                     system_prompt,
                     config,
                 };
-                match service.update_agent(&name, team.as_deref(), update_req).await {
+                match service
+                    .update_agent(&name, team.as_deref(), update_req)
+                    .await
+                {
                     Ok(_) => {
                         let response = ResponsePacket::AgentUpdated { request_id, name };
                         Self::send_sink(sink, response).await?;
@@ -1894,8 +1900,9 @@ impl IpcServer {
                 id,
                 target,
             } => {
-                let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
-                    || id.starts_with("builtin:");
+                let is_builtin =
+                    crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
+                        || id.starts_with("builtin:");
 
                 // Build canonical extension ID for whitelist entries.
                 let canonical_id = if is_builtin {
@@ -2000,8 +2007,9 @@ impl IpcServer {
                 id,
                 target,
             } => {
-                let is_builtin = crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
-                    || id.starts_with("builtin:");
+                let is_builtin =
+                    crate::extensions::framework::adapters::builtin_tools::is_builtin_tool(&id)
+                        || id.starts_with("builtin:");
 
                 let canonical_id = if is_builtin {
                     if id.starts_with("builtin:") {
@@ -2107,34 +2115,33 @@ impl IpcServer {
 
                 let scope = scope.as_deref().unwrap_or("all");
 
-                if (scope == "all" || scope == "cache")
-                    && cache_dir.exists() {
-                        match std::fs::read_dir(cache_dir) {
-                            Ok(entries) => {
-                                for entry in entries.flatten() {
-                                    let path = entry.path();
-                                    if let Ok(meta) = entry.metadata() {
-                                        bytes_freed += meta.len();
-                                    }
-                                    if path.is_file() {
-                                        let _ = std::fs::remove_file(&path);
-                                        cleaned.push(path.to_string_lossy().to_string());
-                                    } else if path.is_dir() {
-                                        let _ = std::fs::remove_dir_all(&path);
-                                        cleaned.push(path.to_string_lossy().to_string());
-                                    }
+                if (scope == "all" || scope == "cache") && cache_dir.exists() {
+                    match std::fs::read_dir(cache_dir) {
+                        Ok(entries) => {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if let Ok(meta) = entry.metadata() {
+                                    bytes_freed += meta.len();
+                                }
+                                if path.is_file() {
+                                    let _ = std::fs::remove_file(&path);
+                                    cleaned.push(path.to_string_lossy().to_string());
+                                } else if path.is_dir() {
+                                    let _ = std::fs::remove_dir_all(&path);
+                                    cleaned.push(path.to_string_lossy().to_string());
                                 }
                             }
-                            Err(e) => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!("Failed to clean cache: {e}"),
-                                };
-                                Self::send_sink(sink, response).await?;
-                                return Ok(());
-                            }
+                        }
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("Failed to clean cache: {e}"),
+                            };
+                            Self::send_sink(sink, response).await?;
+                            return Ok(());
                         }
                     }
+                }
 
                 let response = ResponsePacket::SystemCleaned {
                     request_id,
@@ -2622,11 +2629,11 @@ impl IpcServer {
                                         if let Ok(content) =
                                             tokio::fs::read_to_string(&config_path).await
                                         {
-                                            if let Ok(mut config) =
-                                                toml::from_str::<crate::agents::agent_config::AgentConfig>(
-                                                    &content,
-                                                )
-                                            {
+                                            if let Ok(mut config) = toml::from_str::<
+                                                crate::agents::agent_config::AgentConfig,
+                                            >(
+                                                &content
+                                            ) {
                                                 config.host_runtime_id =
                                                     state.runtime_identity().runtime_did.clone();
                                                 if let Ok(updated) = toml::to_string_pretty(&config)
@@ -3000,7 +3007,9 @@ impl IpcServer {
                     other => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Invalid status '{other}'. Expected: online, offline, busy, error"),
+                            message: format!(
+                                "Invalid status '{other}'. Expected: online, offline, busy, error"
+                            ),
                         };
                         Self::send_sink(sink, response).await?;
                         return Ok(());
@@ -3008,7 +3017,10 @@ impl IpcServer {
                 };
 
                 if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                    match dispatcher.set_instance_status(&agent_name, status_enum).await {
+                    match dispatcher
+                        .set_instance_status(&agent_name, status_enum)
+                        .await
+                    {
                         Ok(()) => {
                             let response = ResponsePacket::Done {
                                 request_id,
@@ -3046,7 +3058,9 @@ impl IpcServer {
                     other => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Invalid exposure '{other}'. Expected: unexposed, private, public"),
+                            message: format!(
+                                "Invalid exposure '{other}'. Expected: unexposed, private, public"
+                            ),
                         };
                         Self::send_sink(sink, response).await?;
                         return Ok(());
@@ -3054,7 +3068,10 @@ impl IpcServer {
                 };
 
                 if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                    match dispatcher.set_instance_exposure(&agent_name, exposure_enum).await {
+                    match dispatcher
+                        .set_instance_exposure(&agent_name, exposure_enum)
+                        .await
+                    {
                         Ok(()) => {
                             let response = ResponsePacket::Done {
                                 request_id,
@@ -3115,16 +3132,13 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match take_resolved_subject(
-                    pre_resolved_subject.as_ref(),
-                    request_id,
-                    sink,
-                )
-                .await
-                {
-                    Ok(s) => s,
-                    Err(()) => return Ok(()),
-                };
+                let subject =
+                    match take_resolved_subject(pre_resolved_subject.as_ref(), request_id, sink)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(()) => return Ok(()),
+                    };
                 let service = state.agent_mgmt_service();
                 let caller_principal = caller.subject();
                 let grant = crate::auth::ownership::PermissionGrant {
@@ -3144,8 +3158,7 @@ impl IpcServer {
                         // not fail the permit — the next `announce_instances`
                         // after `TunnelReady` will pick up the latest config.
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                            if let Err(e) =
-                                dispatcher.refresh_instance_allowed_users(&agent).await
+                            if let Err(e) = dispatcher.refresh_instance_allowed_users(&agent).await
                             {
                                 warn!(
                                     agent = %agent,
@@ -3176,16 +3189,13 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match take_resolved_subject(
-                    pre_resolved_subject.as_ref(),
-                    request_id,
-                    sink,
-                )
-                .await
-                {
-                    Ok(s) => s,
-                    Err(()) => return Ok(()),
-                };
+                let subject =
+                    match take_resolved_subject(pre_resolved_subject.as_ref(), request_id, sink)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(()) => return Ok(()),
+                    };
                 let service = state.agent_mgmt_service();
                 let caller_principal = caller.subject();
                 match service
@@ -3198,8 +3208,7 @@ impl IpcServer {
                         // user loses access within ~1s, no daemon restart
                         // (issue #16). Best-effort; see note above.
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                            if let Err(e) =
-                                dispatcher.refresh_instance_allowed_users(&agent).await
+                            if let Err(e) = dispatcher.refresh_instance_allowed_users(&agent).await
                             {
                                 warn!(
                                     agent = %agent,
@@ -3260,16 +3269,13 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match take_resolved_subject(
-                    pre_resolved_subject.as_ref(),
-                    request_id,
-                    sink,
-                )
-                .await
-                {
-                    Ok(s) => s,
-                    Err(()) => return Ok(()),
-                };
+                let subject =
+                    match take_resolved_subject(pre_resolved_subject.as_ref(), request_id, sink)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(()) => return Ok(()),
+                    };
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
@@ -3307,16 +3313,13 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match take_resolved_subject(
-                    pre_resolved_subject.as_ref(),
-                    request_id,
-                    sink,
-                )
-                .await
-                {
-                    Ok(s) => s,
-                    Err(()) => return Ok(()),
-                };
+                let subject =
+                    match take_resolved_subject(pre_resolved_subject.as_ref(), request_id, sink)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(()) => return Ok(()),
+                    };
                 let service = crate::common::services::TeamService::new(
                     state.team_service().resolver().clone(),
                 );
@@ -3361,8 +3364,8 @@ impl IpcServer {
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
-        use crate::engine::{AgenticEvent, LifecyclePhase};
         use crate::common::types::a2a::A2aMessageRequest;
+        use crate::engine::{AgenticEvent, LifecyclePhase};
 
         tracing::info!(
             "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}, session_id={:?}, new_session={}",

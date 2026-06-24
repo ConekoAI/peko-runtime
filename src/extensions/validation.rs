@@ -53,10 +53,7 @@ impl ExtensionValidationService {
     /// Uses the ADR-024 two-tier detection hierarchy:
     /// Tier 1: Ecosystem standards (SKILL.md, server.json)
     /// Tier 2: Unified manifest (manifest.yaml with `extension_type`)
-    pub async fn validate(
-        path: &Path,
-        verbose: bool,
-    ) -> anyhow::Result<ValidationReport> {
+    pub async fn validate(path: &Path, verbose: bool) -> anyhow::Result<ValidationReport> {
         Self::validate_with_depth(path, verbose, ValidationDepth::Static).await
     }
 
@@ -307,7 +304,8 @@ impl ExtensionValidationService {
                 // Check for at least one heading
                 if !content.contains("# ") {
                     errors.push(
-                        "SKILL.md has no Markdown headings — add at least one # heading".to_string(),
+                        "SKILL.md has no Markdown headings — add at least one # heading"
+                            .to_string(),
                     );
                 }
             }
@@ -372,7 +370,10 @@ impl ExtensionValidationService {
                 }
             }
             Err(e) => {
-                errors.push(format!("Failed to read manifest.yaml for semantic check: {}", e));
+                errors.push(format!(
+                    "Failed to read manifest.yaml for semantic check: {}",
+                    e
+                ));
             }
         }
     }
@@ -388,9 +389,8 @@ impl ExtensionValidationService {
             Ok(content) => {
                 if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
                     if yaml.get("mcp_servers").is_none() {
-                        warnings.push(
-                            "MCP wrapper manifest missing 'mcp_servers' section".to_string(),
-                        );
+                        warnings
+                            .push("MCP wrapper manifest missing 'mcp_servers' section".to_string());
                     }
 
                     // Check commands in mcp_servers
@@ -411,7 +411,10 @@ impl ExtensionValidationService {
                 }
             }
             Err(e) => {
-                errors.push(format!("Failed to read manifest.yaml for semantic check: {}", e));
+                errors.push(format!(
+                    "Failed to read manifest.yaml for semantic check: {}",
+                    e
+                ));
             }
         }
     }
@@ -463,8 +466,10 @@ impl ExtensionValidationService {
                             }
 
                             // Check for handler file
-                            let handler_names = ["gateway.py", "gateway.js", "gateway.sh", "gateway"];
-                            let has_handler = handler_names.iter().any(|name| path.join(name).exists());
+                            let handler_names =
+                                ["gateway.py", "gateway.js", "gateway.sh", "gateway"];
+                            let has_handler =
+                                handler_names.iter().any(|name| path.join(name).exists());
                             if !has_handler {
                                 warnings.push(
                                     "No gateway handler file found (expected gateway.py, gateway.js, or gateway)"
@@ -477,8 +482,11 @@ impl ExtensionValidationService {
                     // For external, check endpoint is valid URL
                     if gateway_type == "external" {
                         if let Some(config) = yaml.get("config") {
-                            if let Some(endpoint) = config.get("endpoint").and_then(|v| v.as_str()) {
-                                if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+                            if let Some(endpoint) = config.get("endpoint").and_then(|v| v.as_str())
+                            {
+                                if !endpoint.starts_with("http://")
+                                    && !endpoint.starts_with("https://")
+                                {
                                     errors.push(format!(
                                         "External gateway endpoint '{}' must be an HTTP(S) URL",
                                         endpoint
@@ -494,7 +502,10 @@ impl ExtensionValidationService {
                 }
             }
             Err(e) => {
-                errors.push(format!("Failed to read manifest.yaml for semantic check: {}", e));
+                errors.push(format!(
+                    "Failed to read manifest.yaml for semantic check: {}",
+                    e
+                ));
             }
         }
     }
@@ -562,7 +573,10 @@ impl ExtensionValidationService {
                 }
             }
             Err(e) => {
-                errors.push(format!("Failed to read manifest.yaml for semantic check: {}", e));
+                errors.push(format!(
+                    "Failed to read manifest.yaml for semantic check: {}",
+                    e
+                ));
             }
         }
     }
@@ -625,11 +639,7 @@ mod tests {
     #[tokio::test]
     async fn test_validate_skill_semantic_missing_frontmatter() {
         let temp = TempDir::new().unwrap();
-        std::fs::write(
-            temp.path().join("SKILL.md"),
-            "# No frontmatter here\n",
-        )
-        .unwrap();
+        std::fs::write(temp.path().join("SKILL.md"), "# No frontmatter here\n").unwrap();
 
         let report = ExtensionValidationService::validate_with_depth(
             temp.path(),

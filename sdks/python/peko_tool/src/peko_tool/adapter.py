@@ -1,7 +1,7 @@
 """Universal Tool Adapter - JSON-RPC protocol handler.
 
 This module provides the core infrastructure for handling the Universal Tool
-Protocol communication with Pekobot agents.
+Protocol communication with Peko agents.
 """
 
 import json

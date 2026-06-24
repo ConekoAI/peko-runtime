@@ -1,7 +1,7 @@
 //! Tool trait
 
-use crate::tools::core::exec::{ToolContext, ToolError};
 use crate::observability::performance::GLOBAL_METRICS;
+use crate::tools::core::exec::{ToolContext, ToolError};
 use async_trait::async_trait;
 
 /// Tool trait for agent capabilities

@@ -41,7 +41,7 @@ pub struct KeychainStorage {
 }
 
 impl KeychainStorage {
-    pub const DEFAULT_SERVICE: &'static str = "pekobot-runtime";
+    pub const DEFAULT_SERVICE: &'static str = "peko-runtime";
 
     /// Create a new keychain storage with the default service name
     pub fn new() -> Self {
@@ -60,10 +60,8 @@ impl KeychainStorage {
     /// `account` is typically the DID (e.g., `did:key:z6Mk...`).
     /// Returns `KeyStorageRef::Keychain` on success.
     pub fn store_key(&self, account: &str, private_key_b64: &str) -> Result<KeyStorageRef> {
-        let entry =
-            keyring::Entry::new(&self.service_name, account).with_context(|| {
-                format!("Failed to create keychain entry for account: {account}")
-            })?;
+        let entry = keyring::Entry::new(&self.service_name, account)
+            .with_context(|| format!("Failed to create keychain entry for account: {account}"))?;
 
         entry
             .set_password(private_key_b64)
@@ -81,30 +79,29 @@ impl KeychainStorage {
     ///
     /// Returns the base64-encoded private key.
     pub fn retrieve_key(&self, account: &str) -> Result<String> {
-        let entry =
-            keyring::Entry::new(&self.service_name, account).with_context(|| {
-                format!("Failed to create keychain entry for account: {account}")
-            })?;
+        let entry = keyring::Entry::new(&self.service_name, account)
+            .with_context(|| format!("Failed to create keychain entry for account: {account}"))?;
 
-        let password = entry
-            .get_password()
-            .with_context(|| format!("Failed to retrieve key from keychain for account: {account}"))?;
+        let password = entry.get_password().with_context(|| {
+            format!("Failed to retrieve key from keychain for account: {account}")
+        })?;
 
-        debug!("Retrieved private key from keychain for account: {}", account);
+        debug!(
+            "Retrieved private key from keychain for account: {}",
+            account
+        );
 
         Ok(password)
     }
 
     /// Delete a key from the OS keychain.
     pub fn delete_key(&self, account: &str) -> Result<()> {
-        let entry =
-            keyring::Entry::new(&self.service_name, account).with_context(|| {
-                format!("Failed to create keychain entry for account: {account}")
-            })?;
+        let entry = keyring::Entry::new(&self.service_name, account)
+            .with_context(|| format!("Failed to create keychain entry for account: {account}"))?;
 
-        entry
-            .delete_password()
-            .with_context(|| format!("Failed to delete key from keychain for account: {account}"))?;
+        entry.delete_password().with_context(|| {
+            format!("Failed to delete key from keychain for account: {account}")
+        })?;
 
         info!("Deleted private key from keychain for account: {}", account);
 
@@ -116,7 +113,7 @@ impl KeychainStorage {
     /// Tries to create a dummy entry with a random account, set a dummy password,
     /// get it back, then delete it. Returns `true` if all steps succeed.
     pub fn is_available(&self) -> bool {
-        let probe_account = format!("__pekobot_probe_{}", uuid::Uuid::new_v4());
+        let probe_account = format!("__peko_probe_{}", uuid::Uuid::new_v4());
         let probe_password = "__probe_password__";
 
         let entry = match keyring::Entry::new(&self.service_name, &probe_account) {
@@ -208,10 +205,7 @@ impl EncryptedKeyStorage {
     /// Read and decrypt a private key from a file.
     ///
     /// Returns the base64-encoded private key.
-    pub fn retrieve_key(
-        file_path: &Path,
-        passphrase: &SecretString,
-    ) -> Result<String> {
+    pub fn retrieve_key(file_path: &Path, passphrase: &SecretString) -> Result<String> {
         let serialized = std::fs::read(file_path)
             .with_context(|| format!("Failed to read encrypted key file: {file_path:?}"))?;
 
@@ -221,8 +215,8 @@ impl EncryptedKeyStorage {
         let decrypted = decrypt_with_passphrase(&encrypted, passphrase.expose_secret())
             .context("Failed to decrypt private key (wrong passphrase?)")?;
 
-        let private_key_b64 = String::from_utf8(decrypted)
-            .context("Decrypted key is not valid UTF-8 (base64)")?;
+        let private_key_b64 =
+            String::from_utf8(decrypted).context("Decrypted key is not valid UTF-8 (base64)")?;
 
         debug!("Retrieved encrypted private key from: {:?}", file_path);
 
@@ -257,8 +251,7 @@ mod tests {
             other => panic!("Expected EncryptedFile, got: {:?}", other),
         }
 
-        let retrieved =
-            EncryptedKeyStorage::retrieve_key(&file_path, &passphrase).unwrap();
+        let retrieved = EncryptedKeyStorage::retrieve_key(&file_path, &passphrase).unwrap();
         assert_eq!(retrieved, private_key);
     }
 
@@ -314,7 +307,7 @@ mod tests {
     #[test]
     fn test_key_storage_ref_serialization() {
         let keychain_ref = KeyStorageRef::Keychain {
-            service: "pekobot-runtime".to_string(),
+            service: "peko-runtime".to_string(),
             account: "did:key:z6Mk...".to_string(),
         };
 
@@ -323,7 +316,7 @@ mod tests {
 
         match deserialized {
             KeyStorageRef::Keychain { service, account } => {
-                assert_eq!(service, "pekobot-runtime");
+                assert_eq!(service, "peko-runtime");
                 assert_eq!(account, "did:key:z6Mk...");
             }
             other => panic!("Expected Keychain, got: {:?}", other),
@@ -364,14 +357,17 @@ mod tests {
     #[test]
     #[ignore = "requires an OS keychain (macOS Keychain, Windows Credential Manager, etc.)"]
     fn test_keychain_storage_roundtrip() {
-        let storage = KeychainStorage::with_service("pekobot-test".to_string());
+        let storage = KeychainStorage::with_service("peko-test".to_string());
         let account = "did:key:z6MkTestAccount";
         let private_key = "dGVzdC1wcml2YXRlLWtleQ==";
 
         let storage_ref = storage.store_key(account, private_key).unwrap();
         match &storage_ref {
-            KeyStorageRef::Keychain { service, account: acc } => {
-                assert_eq!(service, "pekobot-test");
+            KeyStorageRef::Keychain {
+                service,
+                account: acc,
+            } => {
+                assert_eq!(service, "peko-test");
                 assert_eq!(acc, account);
             }
             other => panic!("Expected Keychain, got: {:?}", other),
@@ -386,7 +382,7 @@ mod tests {
     #[test]
     #[ignore = "requires an OS keychain"]
     fn test_keychain_storage_delete() {
-        let storage = KeychainStorage::with_service("pekobot-test".to_string());
+        let storage = KeychainStorage::with_service("peko-test".to_string());
         let account = "did:key:z6MkDeleteTest";
         let private_key = "dGVzdC1wcml2YXRlLWtleQ==";
 
@@ -400,7 +396,7 @@ mod tests {
     #[test]
     #[ignore = "requires an OS keychain"]
     fn test_keychain_storage_is_available() {
-        let storage = KeychainStorage::with_service("pekobot-test".to_string());
+        let storage = KeychainStorage::with_service("peko-test".to_string());
         assert!(storage.is_available());
     }
 

@@ -89,12 +89,7 @@ impl ScaffoldEngine {
     }
 
     fn scaffold_skill(output: &Path, options: &ScaffoldOptions) -> anyhow::Result<PathBuf> {
-        let vars = build_vars(
-            &options.id,
-            &options.name,
-            &options.description,
-            &[],
-        );
+        let vars = build_vars(&options.id, &options.name, &options.description, &[]);
 
         let skill_template = Template::new(include_str!("templates/skill/SKILL.md"));
         let readme_template = Template::new(include_str!("templates/shared/README.md"));
@@ -108,22 +103,23 @@ impl ScaffoldEngine {
     }
 
     fn scaffold_mcp(output: &Path, options: &ScaffoldOptions) -> anyhow::Result<PathBuf> {
-        let vars = build_vars(
-            &options.id,
-            &options.name,
-            &options.description,
-            &[],
-        );
+        let vars = build_vars(&options.id, &options.name, &options.description, &[]);
 
         let readme_template = Template::new(include_str!("templates/shared/README.md"));
         let gitignore_template = Template::new(include_str!("templates/shared/.gitignore"));
 
         if options.bare_mcp {
             let server_json_template = Template::new(include_str!("templates/mcp/server.json"));
-            std::fs::write(output.join("server.json"), server_json_template.render(&vars))?;
+            std::fs::write(
+                output.join("server.json"),
+                server_json_template.render(&vars),
+            )?;
         } else {
             let manifest_template = Template::new(include_str!("templates/mcp/manifest.yaml"));
-            std::fs::write(output.join("manifest.yaml"), manifest_template.render(&vars))?;
+            std::fs::write(
+                output.join("manifest.yaml"),
+                manifest_template.render(&vars),
+            )?;
         }
 
         std::fs::write(output.join("README.md"), readme_template.render(&vars))?;
@@ -136,14 +132,10 @@ impl ScaffoldEngine {
         output: &Path,
         options: &ScaffoldOptions,
     ) -> anyhow::Result<PathBuf> {
-        let vars = build_vars(
-            &options.id,
-            &options.name,
-            &options.description,
-            &[],
-        );
+        let vars = build_vars(&options.id, &options.name, &options.description, &[]);
 
-        let manifest_template = Template::new(include_str!("templates/universal-tool/manifest.yaml"));
+        let manifest_template =
+            Template::new(include_str!("templates/universal-tool/manifest.yaml"));
         let readme_template = Template::new(include_str!("templates/shared/README.md"));
         let gitignore_template = Template::new(include_str!("templates/shared/.gitignore"));
 
@@ -157,7 +149,10 @@ impl ScaffoldEngine {
         };
         let handler_file = format!("handler.{}", options.lang.handler_extension());
 
-        std::fs::write(output.join("manifest.yaml"), manifest_template.render(&vars))?;
+        std::fs::write(
+            output.join("manifest.yaml"),
+            manifest_template.render(&vars),
+        )?;
         std::fs::write(output.join(&handler_file), handler_content.render(&vars))?;
         std::fs::write(output.join("README.md"), readme_template.render(&vars))?;
         std::fs::write(output.join(".gitignore"), gitignore_template.render(&vars))?;
@@ -166,7 +161,10 @@ impl ScaffoldEngine {
     }
 
     fn scaffold_gateway(output: &Path, options: &ScaffoldOptions) -> anyhow::Result<PathBuf> {
-        let gateway_type = options.gateway_type.clone().unwrap_or_else(|| "out-of-process".to_string());
+        let gateway_type = options
+            .gateway_type
+            .clone()
+            .unwrap_or_else(|| "out-of-process".to_string());
         let handler_file = format!("gateway.{}", options.lang.handler_extension());
         let command = match options.lang {
             ScaffoldLang::Python => "python3",
@@ -178,27 +176,21 @@ impl ScaffoldEngine {
             ("handler_file".to_string(), handler_file.clone()),
             ("command".to_string(), command.to_string()),
         ];
-        let vars = build_vars(
-            &options.id,
-            &options.name,
-            &options.description,
-            &extra,
-        );
+        let vars = build_vars(&options.id, &options.name, &options.description, &extra);
 
         let manifest_template = Template::new(include_str!("templates/gateway/manifest.yaml"));
         let readme_template = Template::new(include_str!("templates/shared/README.md"));
         let gitignore_template = Template::new(include_str!("templates/shared/.gitignore"));
 
         let gateway_content = match options.lang {
-            ScaffoldLang::Python => {
-                Template::new(include_str!("templates/gateway/gateway.py"))
-            }
-            ScaffoldLang::JavaScript => {
-                Template::new(include_str!("templates/gateway/gateway.js"))
-            }
+            ScaffoldLang::Python => Template::new(include_str!("templates/gateway/gateway.py")),
+            ScaffoldLang::JavaScript => Template::new(include_str!("templates/gateway/gateway.js")),
         };
 
-        std::fs::write(output.join("manifest.yaml"), manifest_template.render(&vars))?;
+        std::fs::write(
+            output.join("manifest.yaml"),
+            manifest_template.render(&vars),
+        )?;
         std::fs::write(output.join(&handler_file), gateway_content.render(&vars))?;
         std::fs::write(output.join("README.md"), readme_template.render(&vars))?;
         std::fs::write(output.join(".gitignore"), gitignore_template.render(&vars))?;
@@ -207,18 +199,16 @@ impl ScaffoldEngine {
     }
 
     fn scaffold_general(output: &Path, options: &ScaffoldOptions) -> anyhow::Result<PathBuf> {
-        let vars = build_vars(
-            &options.id,
-            &options.name,
-            &options.description,
-            &[],
-        );
+        let vars = build_vars(&options.id, &options.name, &options.description, &[]);
 
         let manifest_template = Template::new(include_str!("templates/general/manifest.yaml"));
         let readme_template = Template::new(include_str!("templates/shared/README.md"));
         let gitignore_template = Template::new(include_str!("templates/shared/.gitignore"));
 
-        std::fs::write(output.join("manifest.yaml"), manifest_template.render(&vars))?;
+        std::fs::write(
+            output.join("manifest.yaml"),
+            manifest_template.render(&vars),
+        )?;
         std::fs::write(output.join("README.md"), readme_template.render(&vars))?;
         std::fs::write(output.join(".gitignore"), gitignore_template.render(&vars))?;
 

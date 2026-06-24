@@ -8,9 +8,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::providers::MessageRole;
 use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
+use crate::providers::MessageRole;
 
 /// Service for recovering meaningful output from subagent session history.
 pub struct ResultRecovery;

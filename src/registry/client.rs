@@ -3,11 +3,11 @@
 //! HTTP client for pushing and pulling images from remote registries.
 //! Implements OCI-inspired distribution protocol.
 
-use crate::registry::AgentRegistry;
-use crate::registry::packaging::types::{ImageDigest, Layer};
 use crate::registry::config::{RegistryConfig, RegistrySource, ResolvedAuth};
 use crate::registry::manifest::RegistryManifest;
 use crate::registry::media_types;
+use crate::registry::packaging::types::{ImageDigest, Layer};
+use crate::registry::AgentRegistry;
 use reqwest::Client;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -324,9 +324,7 @@ impl RegistryClient {
         // We pull it explicitly so the pull-side reconstruct path
         // can recover the full original AgentManifest from the
         // `agent_manifest_toml` field embedded in the config.
-        if !manifest.config.digest.is_empty()
-            && !self.registry.has_layer(&manifest.config.digest)
-        {
+        if !manifest.config.digest.is_empty() && !self.registry.has_layer(&manifest.config.digest) {
             self.pull_config_blob(&reg_ref, source, &auth, &manifest.config, &mut progress)
                 .await
                 .map_err(|e| {
@@ -479,7 +477,9 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(Self::format_error("Failed to fetch manifest", response).await));
+            return Err(anyhow::anyhow!(
+                Self::format_error("Failed to fetch manifest", response).await
+            ));
         }
 
         let json = response.text().await?;
@@ -523,7 +523,9 @@ impl RegistryClient {
 
         let response = req.send().await?;
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(Self::format_error("Failed to fetch config blob", response).await));
+            return Err(anyhow::anyhow!(
+                Self::format_error("Failed to fetch config blob", response).await
+            ));
         }
 
         let data = response.bytes().await?;
@@ -590,7 +592,9 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(Self::format_error("Failed to fetch layer", response).await));
+            return Err(anyhow::anyhow!(
+                Self::format_error("Failed to fetch layer", response).await
+            ));
         }
 
         let data = response.bytes().await?;
@@ -654,7 +658,9 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(Self::format_error("Failed to initiate layer upload", response).await));
+            return Err(anyhow::anyhow!(
+                Self::format_error("Failed to initiate layer upload", response).await
+            ));
         }
 
         // Get upload URL from Location header
@@ -685,7 +691,9 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(Self::format_error("Failed to upload layer", response).await));
+            return Err(anyhow::anyhow!(
+                Self::format_error("Failed to upload layer", response).await
+            ));
         }
 
         progress(ProgressEvent::Pushing {
@@ -718,7 +726,9 @@ impl RegistryClient {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(Self::format_error("Failed to push manifest", response).await));
+            return Err(anyhow::anyhow!(
+                Self::format_error("Failed to push manifest", response).await
+            ));
         }
 
         Ok(())
@@ -1095,8 +1105,8 @@ mod tests {
             ),
         ];
         for (input, expected_host, expected_path, expected_tag) in cases {
-            let r#ref = RegistryRef::parse(input)
-                .unwrap_or_else(|e| panic!("parse({input}) failed: {e}"));
+            let r#ref =
+                RegistryRef::parse(input).unwrap_or_else(|e| panic!("parse({input}) failed: {e}"));
             assert_eq!(r#ref.host, expected_host, "host for {input}");
             assert_eq!(r#ref.path, expected_path, "path for {input}");
             assert_eq!(r#ref.tag, expected_tag, "tag for {input}");

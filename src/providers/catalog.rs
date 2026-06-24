@@ -191,8 +191,7 @@ impl ProviderCatalogEntry {
         display_name: Option<String>,
     ) -> Self {
         let id = id.into();
-        let display_name =
-            display_name.unwrap_or_else(|| template.display_name.to_string());
+        let display_name = display_name.unwrap_or_else(|| template.display_name.to_string());
         let models: Vec<ModelInfo> = template
             .models
             .iter()
@@ -204,9 +203,7 @@ impl ProviderCatalogEntry {
                 capabilities: m.capabilities.to_vec(),
             })
             .collect();
-        let default_model_id = template
-            .default_model
-            .to_string();
+        let default_model_id = template.default_model.to_string();
         Self {
             id,
             display_name,
@@ -215,7 +212,11 @@ impl ProviderCatalogEntry {
             base_url: template.base_url.to_string(),
             models,
             default_model_id,
-            headers: template.headers.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect(),
+            headers: template
+                .headers
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
             requires_key: template.requires_key,
             enabled: true,
             created_at: Utc::now(),
@@ -303,10 +304,10 @@ impl ProviderCatalog {
     }
 
     fn read_file(path: &Path) -> Result<ProviderCatalogFile> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let parsed: ProviderCatalogFile = toml::from_str(&text)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let parsed: ProviderCatalogFile =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         Ok(parsed)
     }
 
@@ -382,9 +383,7 @@ impl ProviderCatalog {
                 })?;
                 if let Some(ref mid) = model_id {
                     if entry.model(mid).is_none() {
-                        anyhow::bail!(
-                            "model '{mid}' is not declared on provider '{pid}'"
-                        );
+                        anyhow::bail!("model '{mid}' is not declared on provider '{pid}'");
                     }
                 }
             }
@@ -397,7 +396,10 @@ impl ProviderCatalog {
     /// Read the runtime default.
     pub async fn get_default(&self) -> (Option<String>, Option<String>) {
         let guard = self.inner.read().await;
-        (guard.default_provider_id.clone(), guard.default_model_id.clone())
+        (
+            guard.default_provider_id.clone(),
+            guard.default_model_id.clone(),
+        )
     }
 
     /// Resolve a `(provider_id, model_id)` request using simple
@@ -452,15 +454,12 @@ impl ProviderCatalog {
             guard.clone()
         };
         if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("creating catalog parent dir {}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating catalog parent dir {}", parent.display()))?;
         }
-        let serialized =
-            toml::to_string_pretty(&snapshot).context("serializing providers.toml")?;
+        let serialized = toml::to_string_pretty(&snapshot).context("serializing providers.toml")?;
         let tmp = self.path.with_extension("toml.tmp");
-        std::fs::write(&tmp, &serialized)
-            .with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::write(&tmp, &serialized).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("renaming {} -> {}", tmp.display(), self.path.display()))?;
         info!(
@@ -548,9 +547,10 @@ mod tests {
         let entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
-        let reloaded =
-            tokio_test::block_on(ProviderCatalog::load_or_init(dir.path().join("providers.toml")))
-                .unwrap();
+        let reloaded = tokio_test::block_on(ProviderCatalog::load_or_init(
+            dir.path().join("providers.toml"),
+        ))
+        .unwrap();
         let got = tokio_test::block_on(reloaded.get("anthropic")).unwrap();
         assert_eq!(got.api_format, ApiFormat::AnthropicMessages);
         assert!(got.requires_key);
@@ -574,21 +574,15 @@ mod tests {
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
         // happy path
-        tokio_test::block_on(cat.set_default(Some("openai".into()), None))
-            .unwrap();
+        tokio_test::block_on(cat.set_default(Some("openai".into()), None)).unwrap();
 
         // unknown provider
-        assert!(tokio_test::block_on(cat.set_default(
-            Some("nope".into()),
-            None
-        ))
-        .is_err());
+        assert!(tokio_test::block_on(cat.set_default(Some("nope".into()), None)).is_err());
 
         // model not on provider
-        assert!(tokio_test::block_on(cat.set_default(
-            Some("openai".into()),
-            Some("gpt-999-not-real".into())
-        ))
+        assert!(tokio_test::block_on(
+            cat.set_default(Some("openai".into()), Some("gpt-999-not-real".into()))
+        )
         .is_err());
     }
 
@@ -600,8 +594,7 @@ mod tests {
         tokio_test::block_on(cat.upsert(entry)).unwrap();
 
         // no default, no override -> first enabled
-        let (e, m) =
-            tokio_test::block_on(cat.resolve_default(None, None)).unwrap();
+        let (e, m) = tokio_test::block_on(cat.resolve_default(None, None)).unwrap();
         assert_eq!(e.id, "openai");
         assert_eq!(m.id, e.default_model_id);
 
@@ -628,8 +621,7 @@ mod tests {
         let path = dir.path().join("providers.toml");
         std::fs::write(&path, "this is not valid toml = = =").unwrap();
 
-        let cat =
-            tokio_test::block_on(ProviderCatalog::load_or_init(&path)).unwrap();
+        let cat = tokio_test::block_on(ProviderCatalog::load_or_init(&path)).unwrap();
         let snap = tokio_test::block_on(cat.snapshot());
         assert!(snap.entries.is_empty());
 

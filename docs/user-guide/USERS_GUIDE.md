@@ -1,10 +1,10 @@
-# Pekobot User Guide
+# Peko User Guide
 
-Welcome to the Pekobot User Guide! This guide will help you understand and use Pekobot effectively.
+Welcome to the Peko User Guide! This guide will help you understand and use Peko effectively.
 
 ## Table of Contents
 
-1. [What is Pekobot?](#what-is-peko)
+1. [What is Peko?](#what-is-peko)
 2. [Installation](#installation)
 3. [Core Concepts](#core-concepts)
 4. [Running Your First Agent](#running-your-first-agent)
@@ -16,9 +16,9 @@ Welcome to the Pekobot User Guide! This guide will help you understand and use P
 
 ---
 
-## What is Pekobot?
+## What is Peko?
 
-Pekobot 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to:
+Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to:
 
 - Run autonomous AI agents locally
 - Connect agents to LLM providers (OpenAI, Anthropic, Kimi, Ollama, etc.)
@@ -52,7 +52,7 @@ Pekobot 🐱 is a lightweight multi-agent runtime written in Rust. It allows you
 
 ```bash
 # Clone the repository
-git clone https://github.com/coneko/pekobot
+git clone https://github.com/coneko/peko
 cd peko
 
 # Build in release mode
@@ -76,7 +76,7 @@ cargo build --release
 
 ### Agent
 
-An agent is the fundamental unit in Pekobot. It has:
+An agent is the fundamental unit in Peko. It has:
 
 - **Identity** — A unique DID (decentralized identifier)
 - **Configuration** — Agent settings including provider, model, etc.
@@ -333,4 +333,4 @@ peko ext enable <mcp-extension>
 
 ---
 
-*Built with 🐱 by the Pekobot team*
+*Built with 🐱 by the Peko team*

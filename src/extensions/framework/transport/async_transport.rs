@@ -345,14 +345,17 @@ pub fn create_local_transport() -> std::sync::Arc<dyn AsyncTaskTransport> {
     // Use a shared registry from the global cache so that the `task` tool can
     // find async tasks created by the router.
     let registry =
-        crate::extensions::framework::async_exec::executor::get_or_create_registry_for_agent("_global");
+        crate::extensions::framework::async_exec::executor::get_or_create_registry_for_agent(
+            "_global",
+        );
     let queue_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
         crate::extensions::framework::async_exec::executor::AsyncResultQueueManager::new(),
     ));
-    let executor = crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(
-        registry,
-        queue_manager,
-    );
+    let executor =
+        crate::extensions::framework::async_exec::executor::AsyncExecutor::with_registries(
+            registry,
+            queue_manager,
+        );
     std::sync::Arc::new(LocalAsyncTransport::from_executor(executor))
 }
 

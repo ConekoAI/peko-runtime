@@ -1,10 +1,10 @@
-//! Pekobot - Lightweight Multi-Agent Runtime
+//! Peko - Lightweight Multi-Agent Runtime
 //!
 //! A Rust-based agent runtime with unified extension support for multi-platform messaging.
 
 //! ## Architecture
 //!
-//! Pekobot uses a minimal core (~500KB-1MB) with on-demand loaded extensions:
+//! Peko uses a minimal core (~500KB-1MB) with on-demand loaded extensions:
 //!
 //! - **Core**: Agent runtime, state machine, tool registry
 //! - **Extensions**: Unified extension system (skills, tools, MCP, gateways)
@@ -28,10 +28,10 @@
 //! Extensions use the Unified Extension Architecture (ADR-017):
 //!
 //! ```rust,ignore
-//! use pekobot::extensions::framework::{
+//! use peko::extensions::framework::{
 //!     ExtensionManager, ExtensionManifest,
 //! };
-//! use pekobot::extensions::gateway::adapter::GatewayAdapter;
+//! use peko::extensions::gateway::adapter::GatewayAdapter;
 //!
 //! async fn example() {
 //!     let manager = ExtensionManager::new();
@@ -234,5 +234,5 @@ pub use agents::Agent;
 // Re-export event types for tool monitoring and streaming
 pub use engine::{AgenticEvent, LifecyclePhase};
 
-/// Pekobot version
+/// Peko version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

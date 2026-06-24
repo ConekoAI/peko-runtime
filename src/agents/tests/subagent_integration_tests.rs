@@ -9,13 +9,13 @@
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::agents::subagent_types::SubagentStatus;
-use crate::common::paths::PathResolver;
-use crate::session::manager::SessionManager;
 use crate::auth::principal::Principal;
-use crate::session::types::{ SpawnCleanupPolicy};
+use crate::common::paths::PathResolver;
 use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
 };
+use crate::session::manager::SessionManager;
+use crate::session::types::SpawnCleanupPolicy;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -72,11 +72,8 @@ impl Drop for PekoHomeFixture {
 /// Returns `(session_manager, registry, agent_name)` where `agent_name` is
 /// unique per call so each test gets its own global async-task registry.
 /// Uses a temporary `PEKO_HOME` so tests don't require `~/.peko`.
-async fn create_test_components() -> (
-    Arc<RwLock<SessionManager>>,
-    SharedAsyncTaskRegistry,
-    String,
-) {
+async fn create_test_components() -> (Arc<RwLock<SessionManager>>, SharedAsyncTaskRegistry, String)
+{
     let agent_name = format!(
         "test_agent_{}",
         TEST_AGENT_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -131,7 +128,7 @@ async fn test_e2e_spawn_and_complete() {
     // Setup executor
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -191,7 +188,7 @@ async fn test_spawn_depth_limit() {
     // Create executor with max_depth = 1 (only one level allowed)
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -258,8 +255,10 @@ async fn test_spawn_depth_limit() {
     // And spawning from a fresh, unrelated parent must still succeed —
     // there's no run with `child_session_key == that key`, so parent_depth
     // stays 0 and the spawn is allowed.
-    let other_parent_key =
-        crate::session::key::derive_base_session_key(&agent_name, &Principal::User("charlie".to_string()));
+    let other_parent_key = crate::session::key::derive_base_session_key(
+        &agent_name,
+        &Principal::User("charlie".to_string()),
+    );
     let result = executor
         .spawn_and_execute(
             "Independent task",
@@ -304,7 +303,7 @@ async fn test_isolated_vs_shared_session() {
     // Use higher max_depth since we're spawning multiple runs
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -331,7 +330,13 @@ async fn test_isolated_vs_shared_session() {
 
     // Test shared spawn
     let shared_run_id = executor
-        .spawn_and_execute("Shared task", Some(&resolved.context), false, &parent_key, config)
+        .spawn_and_execute(
+            "Shared task",
+            Some(&resolved.context),
+            false,
+            &parent_key,
+            config,
+        )
         .await
         .unwrap();
 
@@ -359,7 +364,10 @@ async fn test_isolated_vs_shared_session() {
         .expect("Should be a subagent entry");
     let shared_view = crate::agents::subagent_types::SubagentRunView::from_entry(shared_entry)
         .expect("Should be a subagent entry");
-    assert_ne!(isolated_view.child_session_key, shared_view.child_session_key);
+    assert_ne!(
+        isolated_view.child_session_key,
+        shared_view.child_session_key
+    );
 }
 
 #[tokio::test]
@@ -387,7 +395,7 @@ async fn test_result_format_in_registry() {
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -439,7 +447,7 @@ async fn test_list_runs_functionality() {
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -489,7 +497,10 @@ async fn test_list_runs_functionality() {
 
     let registry_guard = registry.read().await;
     let active_runs = registry_guard.list_subagents_for_parent(&parent_key);
-    let active_count = active_runs.iter().filter(|e| !e.status.is_terminal()).count();
+    let active_count = active_runs
+        .iter()
+        .filter(|e| !e.status.is_terminal())
+        .count();
     assert_eq!(active_count, 0, "All runs should be completed");
 
     // Verify all run_ids are present
@@ -523,7 +534,7 @@ async fn test_cleanup_policy_tracking() {
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -602,7 +613,7 @@ async fn test_parent_child_relationship() {
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -651,7 +662,7 @@ async fn test_runs_by_parent_filtering() {
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -665,24 +676,12 @@ async fn test_runs_by_parent_filtering() {
     // `spawn_and_execute`, so `None` is fine — only `parent_session_key`
     // matters for registry bookkeeping.
     let run1 = executor
-        .spawn_and_execute(
-            "Task 1",
-            None,
-            false,
-            &parent_key1,
-            config.clone(),
-        )
+        .spawn_and_execute("Task 1", None, false, &parent_key1, config.clone())
         .await
         .unwrap();
 
     let run2 = executor
-        .spawn_and_execute(
-            "Task 2",
-            None,
-            false,
-            &parent_key1,
-            config.clone(),
-        )
+        .spawn_and_execute("Task 2", None, false, &parent_key1, config.clone())
         .await
         .unwrap();
 
@@ -698,7 +697,8 @@ async fn test_runs_by_parent_filtering() {
     // Check runs for parent 1
     let runs_for_parent1 = registry_guard.list_subagents_for_parent(&parent_key1);
     assert_eq!(runs_for_parent1.len(), 2);
-    let ids1: std::collections::HashSet<_> = runs_for_parent1.iter().map(|e| e.task_id.clone()).collect();
+    let ids1: std::collections::HashSet<_> =
+        runs_for_parent1.iter().map(|e| e.task_id.clone()).collect();
     assert!(ids1.contains(&run1));
     assert!(ids1.contains(&run2));
 
@@ -734,14 +734,17 @@ async fn test_concurrent_runs_counting() {
     // Initially no active runs in registry
     {
         let registry_guard = registry.read().await;
-        let active_count = registry_guard.list_subagents_for_parent(&parent_key)
-            .iter().filter(|e| !e.status.is_terminal()).count();
+        let active_count = registry_guard
+            .list_subagents_for_parent(&parent_key)
+            .iter()
+            .filter(|e| !e.status.is_terminal())
+            .count();
         assert_eq!(active_count, 0);
     }
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -754,14 +757,23 @@ async fn test_concurrent_runs_counting() {
 
     // Create a run with long timeout
     let _run_id = executor
-        .spawn_and_execute("Long task", Some(&resolved.context), false, &parent_key, config)
+        .spawn_and_execute(
+            "Long task",
+            Some(&resolved.context),
+            false,
+            &parent_key,
+            config,
+        )
         .await
         .unwrap();
 
     // Should have at most 1 active run (immediately after spawn)
     let registry_guard = registry.read().await;
-    let active_count = registry_guard.list_subagents_for_parent(&parent_key)
-        .iter().filter(|e| !e.status.is_terminal()).count();
+    let active_count = registry_guard
+        .list_subagents_for_parent(&parent_key)
+        .iter()
+        .filter(|e| !e.status.is_terminal())
+        .count();
     assert!(
         active_count <= 1,
         "Should have at most 1 active run, got {}",
@@ -774,8 +786,11 @@ async fn test_concurrent_runs_counting() {
 
     // Should have 0 active runs
     let registry_guard = registry.read().await;
-    let active_count = registry_guard.list_subagents_for_parent(&parent_key)
-        .iter().filter(|e| !e.status.is_terminal()).count();
+    let active_count = registry_guard
+        .list_subagents_for_parent(&parent_key)
+        .iter()
+        .filter(|e| !e.status.is_terminal())
+        .count();
     assert_eq!(active_count, 0);
 }
 
@@ -804,7 +819,7 @@ async fn test_executor_get_status() {
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -858,7 +873,7 @@ async fn test_executor_get_run() {
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         5,
     ));
@@ -920,7 +935,10 @@ async fn test_executor_cancel() {
     {
         let registry_guard = registry.read().await;
         let entry = registry_guard.get(&run_id).unwrap();
-        assert!(matches!(entry.status, crate::extensions::framework::async_exec::executor::types::AsyncTaskStatus::Pending));
+        assert!(matches!(
+            entry.status,
+            crate::extensions::framework::async_exec::executor::types::AsyncTaskStatus::Pending
+        ));
     }
 
     // Cancel the run
@@ -961,7 +979,7 @@ async fn test_max_concurrent_limit() {
     // Create executor with max_concurrent = 1
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-                session_manager.clone(),
+        session_manager.clone(),
         agent_name.clone(),
         1, // Only 1 concurrent
     ));

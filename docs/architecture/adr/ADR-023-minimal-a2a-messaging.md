@@ -11,7 +11,7 @@
 
 ## Context
 
-Pekobot has a partially implemented A2A messaging subsystem that has never been fully wired into the runtime:
+Peko has a partially implemented A2A messaging subsystem that has never been fully wired into the runtime:
 
 - `src/team/bus/mod.rs` — `EventBus` trait with direct, broadcast, task, and pub/sub operations.
 - `src/team/bus/memory.rs` — `InMemoryBus` implementation with agent inboxes.
@@ -20,7 +20,7 @@ Pekobot has a partially implemented A2A messaging subsystem that has never been 
 - `src/tools/sessions_send.rs` — Stub tool that returns simulated responses; explicitly disallows agent-to-agent use within teams.
 - `docs/A2A-MIGRATION-PLAN.md` — Proposes unifying A2A with the async executor framework via `SessionMessage` variants and queue-based delivery.
 
-**The core problem**: the event-bus architecture assumes long-running agent processes with persistent inboxes. Pekobot's current architecture is **stateless cold-start** (ADR-021). Agents are spawned per-request, execute, and are dropped. There is no persistent process to own an inbox, no background task to poll the bus, and no code path to inject bus messages into the agentic loop.
+**The core problem**: the event-bus architecture assumes long-running agent processes with persistent inboxes. Peko's current architecture is **stateless cold-start** (ADR-021). Agents are spawned per-request, execute, and are dropped. There is no persistent process to own an inbox, no background task to poll the bus, and no code path to inject bus messages into the agentic loop.
 
 Building out the event bus to full functionality would require:
 1. Persistent agent processes or a background polling task per agent.
@@ -152,7 +152,7 @@ If desired, the `a2a_send` tool can prepend a lightweight system annotation (e.g
 
 ### Phase 3: Event Bus Revival (Long Term — Optional)
 
-When / if Pekobot moves to long-running agent processes:
+When / if Peko moves to long-running agent processes:
 
 1. **Agent registration** — agents register their inbox with the team bus on startup.
 2. **Background polling** — a task per agent polls `EventBus` for incoming messages.

@@ -136,7 +136,7 @@ fn write_pekohub_credential(
     // created by PekoCli with its own passphrase, so load it explicitly
     // rather than creating a new one with a different passphrase.
     let vault_path = cli.peko_dir().join("vault.enc");
-    let vault = pekobot::common::vault::Vault::load_with_passphrase(
+    let vault = peko::common::vault::Vault::load_with_passphrase(
         &vault_path,
         &SecretString::new(cli.vault_passphrase().into()),
     )
@@ -145,7 +145,7 @@ fn write_pekohub_credential(
         .set_tunnel_private_key(did, &private_key_b64)
         .expect("store tunnel private key in vault");
 
-    let cred = pekobot::tunnel::PekoHubCredential {
+    let cred = peko::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
     };
@@ -250,7 +250,10 @@ async fn post_chat(
 /// accepted the request, including the side-effect call to
 /// `refresh_instance_allowed_users`).
 fn run_peko_agent_permit(cli: &PekoCli, agent: &str, subject_id: &str, verb: &str) {
-    assert!(matches!(verb, "permit" | "revoke"), "verb must be permit|revoke");
+    assert!(
+        matches!(verb, "permit" | "revoke"),
+        "verb must be permit|revoke"
+    );
     let mut cmd = cli.cmd();
     cmd.arg("agent")
         .arg(verb)

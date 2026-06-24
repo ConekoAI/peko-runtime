@@ -15,5 +15,8 @@ pub mod exec;
 pub mod traits;
 
 pub use context_source::ContextSource;
-pub use exec::{AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolProgressEvent, ToolResult, ToolWithContext};
+pub use exec::{
+    AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolProgressEvent, ToolResult,
+    ToolWithContext,
+};
 pub use traits::Tool;

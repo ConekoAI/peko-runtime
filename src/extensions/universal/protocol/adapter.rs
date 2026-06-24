@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Adapter that wraps a universal tool for use in Pekobot
+/// Adapter that wraps a universal tool for use in Peko
 pub struct UniversalToolAdapter {
     name: String,
     manifest: Manifest,

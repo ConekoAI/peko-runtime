@@ -48,11 +48,19 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
                         println!("\n  📦 {}", agent.name);
                         println!(
                             "     Preferred provider: {}",
-                            agent.config.preferred_provider_id.as_deref().unwrap_or("<none>")
+                            agent
+                                .config
+                                .preferred_provider_id
+                                .as_deref()
+                                .unwrap_or("<none>")
                         );
                         println!(
                             "     Preferred model: {}",
-                            agent.config.preferred_model_id.as_deref().unwrap_or("<none>")
+                            agent
+                                .config
+                                .preferred_model_id
+                                .as_deref()
+                                .unwrap_or("<none>")
                         );
                         if let Some(desc) = &agent.config.description {
                             println!("     Description: {desc}");
@@ -100,11 +108,19 @@ pub async fn handle_agent_show(
                 println!("   Config: {}", agent.config_path.display());
                 println!(
                     "   Preferred provider: {}",
-                    agent.config.preferred_provider_id.as_deref().unwrap_or("<none>")
+                    agent
+                        .config
+                        .preferred_provider_id
+                        .as_deref()
+                        .unwrap_or("<none>")
                 );
                 println!(
                     "   Preferred model: {}",
-                    agent.config.preferred_model_id.as_deref().unwrap_or("<none>")
+                    agent
+                        .config
+                        .preferred_model_id
+                        .as_deref()
+                        .unwrap_or("<none>")
                 );
                 println!("   Sessions: {}", agent.session_count);
                 if let Some(desc) = &agent.config.description {
@@ -290,7 +306,11 @@ pub async fn handle_agent_inspect(
     file: String,
     json: bool,
 ) -> anyhow::Result<()> {
-    let info = paths.services().agent().inspect_agent_package(&file).await?;
+    let info = paths
+        .services()
+        .agent()
+        .inspect_agent_package(&file)
+        .await?;
 
     if json {
         let output = serde_json::json!({
@@ -622,41 +642,50 @@ pub async fn handle_agent_push(
     let result = paths
         .services()
         .agent()
-        .push_agent(&local_tag, &registry_ref, file_ref, cli_registry, move |event| {
-            if json {
-                return;
-            }
-            match event {
-                ProgressEvent::Resolving { .. } => {
-                    println!("Pushing {} to {}...", progress_local_tag, progress_registry_ref);
+        .push_agent(
+            &local_tag,
+            &registry_ref,
+            file_ref,
+            cli_registry,
+            move |event| {
+                if json {
+                    return;
                 }
-                ProgressEvent::Pushing {
-                    layer,
-                    bytes_sent,
-                    bytes_total,
-                } => {
-                    let short_digest = if layer.len() > 19 {
-                        format!("{}...", &layer[..19])
-                    } else {
-                        layer.clone()
-                    };
-
-                    if bytes_sent == bytes_total && bytes_sent != Some(0) {
-                        println!("  Layer {}  ✓ uploaded", short_digest);
-                    } else if bytes_sent == Some(0) {
-                        println!("  Layer {}  → uploading", short_digest);
+                match event {
+                    ProgressEvent::Resolving { .. } => {
+                        println!(
+                            "Pushing {} to {}...",
+                            progress_local_tag, progress_registry_ref
+                        );
                     }
+                    ProgressEvent::Pushing {
+                        layer,
+                        bytes_sent,
+                        bytes_total,
+                    } => {
+                        let short_digest = if layer.len() > 19 {
+                            format!("{}...", &layer[..19])
+                        } else {
+                            layer.clone()
+                        };
+
+                        if bytes_sent == bytes_total && bytes_sent != Some(0) {
+                            println!("  Layer {}  ✓ uploaded", short_digest);
+                        } else if bytes_sent == Some(0) {
+                            println!("  Layer {}  → uploading", short_digest);
+                        }
+                    }
+                    ProgressEvent::Done { .. } => {
+                        println!("  Manifest         pushed");
+                        println!("Done.");
+                    }
+                    ProgressEvent::Error { code, message } => {
+                        eprintln!("  Error: {code} - {message}");
+                    }
+                    _ => {}
                 }
-                ProgressEvent::Done { .. } => {
-                    println!("  Manifest         pushed");
-                    println!("Done.");
-                }
-                ProgressEvent::Error { code, message } => {
-                    eprintln!("  Error: {code} - {message}");
-                }
-                _ => {}
-            }
-        })
+            },
+        )
         .await?;
 
     if json {
@@ -785,7 +814,10 @@ pub async fn handle_agent_pull(
             println!("   Config: {}", config_path.display());
         }
         if !result.extension_results.pulled.is_empty() {
-            println!("   Extensions pulled: {}", result.extension_results.pulled.len());
+            println!(
+                "   Extensions pulled: {}",
+                result.extension_results.pulled.len()
+            );
             for ext in &result.extension_results.pulled {
                 println!("     ✓ {}", ext);
             }

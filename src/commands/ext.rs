@@ -330,7 +330,11 @@ pub async fn handle_ext_command(
         }
 
         // --- IPC commands ---
-        ExtCommands::Validate { path, verbose, semantic } => {
+        ExtCommands::Validate {
+            path,
+            verbose,
+            semantic,
+        } => {
             let client = crate::ipc::DaemonClient::connect().await?;
             let packet = crate::ipc::RequestPacket::ExtensionValidate {
                 request_id: 1,
@@ -470,17 +474,13 @@ pub async fn handle_ext_command(
             id,
             registry_ref,
             with_deps,
-        } => {
-            handle_ext_push(paths, &id, &registry_ref, json, cli_registry, with_deps).await
-        }
+        } => handle_ext_push(paths, &id, &registry_ref, json, cli_registry, with_deps).await,
 
         ExtCommands::Pull {
             registry_ref,
             json: pull_json,
             no_deps,
-        } => {
-            handle_ext_pull(paths, &registry_ref, pull_json, cli_registry, no_deps).await
-        }
+        } => handle_ext_pull(paths, &registry_ref, pull_json, cli_registry, no_deps).await,
 
         ExtCommands::Init {
             name,
@@ -507,7 +507,12 @@ pub async fn handle_ext_command(
 
             let result = ScaffoldEngine::scaffold(&r#type, &options)?;
 
-            println!("Created {} extension '{}' in {}", r#type, name, result.display());
+            println!(
+                "Created {} extension '{}' in {}",
+                r#type,
+                name,
+                result.display()
+            );
             println!();
 
             // List created files
@@ -515,7 +520,10 @@ pub async fn handle_ext_command(
             entries.sort_by_key(|e| e.file_name());
             for entry in entries {
                 let file_name = entry.file_name().to_string_lossy().to_string();
-                let marker = if file_name == "manifest.yaml" || file_name == "SKILL.md" || file_name == "server.json" {
+                let marker = if file_name == "manifest.yaml"
+                    || file_name == "SKILL.md"
+                    || file_name == "server.json"
+                {
                     "  — edit your extension metadata"
                 } else if file_name.starts_with("handler.") || file_name.starts_with("gateway.") {
                     "  — implement your logic here"
@@ -588,10 +596,12 @@ pub fn prepare_install_path(path: &std::path::Path) -> anyhow::Result<std::path:
         );
         std::fs::create_dir_all(&temp_dir)?;
         let extracted =
-            crate::extensions::framework::manager::packaging::ExtensionUnpackager::install(path, &temp_dir)
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
-                })?;
+            crate::extensions::framework::manager::packaging::ExtensionUnpackager::install(
+                path, &temp_dir,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to extract .ext package '{}': {}", path.display(), e)
+            })?;
         Ok(extracted)
     } else {
         Ok(path.to_path_buf())

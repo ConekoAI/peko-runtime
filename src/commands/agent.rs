@@ -273,15 +273,23 @@ pub async fn handle_agent(
             output,
             include_sessions,
             with_extensions,
-        } => handlers::handle_agent_export(paths, name, team, output, include_sessions, with_extensions).await,
+        } => {
+            handlers::handle_agent_export(
+                paths,
+                name,
+                team,
+                output,
+                include_sessions,
+                with_extensions,
+            )
+            .await
+        }
         AgentCommands::Import {
             file,
             name,
             team,
             allow_unsigned_agent,
-        } => {
-            handlers::handle_agent_import(paths, file, name, team, allow_unsigned_agent).await
-        }
+        } => handlers::handle_agent_import(paths, file, name, team, allow_unsigned_agent).await,
         AgentCommands::Inspect { file } => handlers::handle_agent_inspect(paths, file, json).await,
         AgentCommands::Push {
             local_tag,

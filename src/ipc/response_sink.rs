@@ -105,9 +105,8 @@ impl ResponseSink for PipeSink<'_> {
         // means we hold the only `PipeSink` referencing this server in
         // the current task. No other task can observe this `&mut`
         // because the per-connection task scope owns the server.
-        let s: &mut tokio::net::windows::named_pipe::NamedPipeServer = unsafe {
-            &mut *((self.server as *const _) as *mut _)
-        };
+        let s: &mut tokio::net::windows::named_pipe::NamedPipeServer =
+            unsafe { &mut *((self.server as *const _) as *mut _) };
         s.write_all(bytes).await
     }
 }

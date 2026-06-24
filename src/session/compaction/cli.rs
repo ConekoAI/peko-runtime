@@ -3,10 +3,10 @@
 //! Domain-specific compaction logic for the `session compact` command.
 //! This is NOT a generic service — it's the CLI flow that uses the `Compactor`.
 
-use crate::session::compaction::{CompactionEntry, Compactor};
-use crate::providers::MessageRole;
-use crate::session::unified::Session;
 use crate::common::types::message::{ContentBlock, LlmMessage};
+use crate::providers::MessageRole;
+use crate::session::compaction::{CompactionEntry, Compactor};
+use crate::session::unified::Session;
 use anyhow::Result;
 
 /// Result of a CLI compaction operation

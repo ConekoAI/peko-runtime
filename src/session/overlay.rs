@@ -4,8 +4,8 @@
 //! - `ChannelOverlay`: Channel-specific state storage
 //! - `ChannelContext`: Interface for channel-specific data
 
-use crate::auth::principal::Principal;
 use super::types::{ChannelType, OverlayType};
+use crate::auth::principal::Principal;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

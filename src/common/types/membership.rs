@@ -38,7 +38,7 @@ impl MembershipRole {
     /// # Examples
     ///
     /// ```
-    /// use pekobot::common::types::membership::MembershipRole;
+    /// use peko::common::types::membership::MembershipRole;
     ///
     /// assert!(MembershipRole::Admin.is_at_least(MembershipRole::Member));
     /// assert!(MembershipRole::Owner.is_at_least(MembershipRole::Admin));

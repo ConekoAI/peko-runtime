@@ -18,10 +18,10 @@
 //! Run in container:
 //!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test pekohub_integration -- --ignored
 
-use pekobot::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
-use pekobot::registry::AgentRegistry;
-use pekobot::registry::client::ResourceType;
-use pekobot::registry::{
+use peko::registry::client::ResourceType;
+use peko::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
+use peko::registry::AgentRegistry;
+use peko::registry::{
     media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,
 };
 use std::time::Duration;
@@ -72,7 +72,7 @@ fn test_registry_config_with_token(host: &str, token: &str) -> RegistryConfig {
 /// Create a minimal AgentManifest with layers for testing
 #[allow(dead_code)]
 fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
-    let mut manifest = AgentManifest::new(name, "1.0.0", "did:pekobot:test");
+    let mut manifest = AgentManifest::new(name, "1.0.0", "did:peko:test");
 
     let config_data = b"config layer content";
     let identity_data = b"identity layer content";
@@ -110,7 +110,7 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
 async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,
-    digest: &pekobot::registry::packaging::types::ImageDigest,
+    digest: &peko::registry::packaging::types::ImageDigest,
 ) {
     let image_dir = registry
         .root_path()

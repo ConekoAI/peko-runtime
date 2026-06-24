@@ -1,13 +1,13 @@
-//! Pekobot Session JSONL Format with Atomic Writes
+//! Peko Session JSONL Format with Atomic Writes
 //!
 //! Implements durable JSONL sessions per `DATA_MODEL.md` §5:
 //! - Atomic writes: events written to `.tmp` then renamed
 //! - Automatic cleanup of partial `.tmp` files on load
-//! - Support for Pekobot event format (13 event types)
+//! - Support for Peko event format (13 event types)
 
+use crate::common::types::message::LlmMessage;
 use crate::session::events::SessionEvent;
 use crate::session::lock::FileLock;
-use crate::common::types::message::LlmMessage;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -98,7 +98,7 @@ impl SessionStorage {
         &self.storage_dir
     }
 
-    /// Append a Pekobot event to the session atomically
+    /// Append a Peko event to the session atomically
     pub async fn append_event(&self, session_id: &str, event: &SessionEvent) -> Result<()> {
         let path = self.session_path(session_id);
         let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
@@ -283,7 +283,7 @@ impl SessionStorage {
         self.atomic_write(path, line.to_string(), true).await
     }
 
-    /// Load all Pekobot events from a session
+    /// Load all Peko events from a session
     ///
     /// Also cleans up any partial .tmp files that may exist from crashes.
     pub async fn load_events(&self, session_id: &str) -> Result<Vec<SessionEvent>> {
@@ -306,7 +306,7 @@ impl SessionStorage {
             if line.trim().is_empty() {
                 continue;
             }
-            // Parse as Pekobot event
+            // Parse as Peko event
             match serde_json::from_str::<SessionEvent>(line) {
                 Ok(event) => {
                     events.push(event);
@@ -361,8 +361,8 @@ impl SessionStorage {
 
     /// Convert Event Format to `NormalizedEntry`
     fn normalize_event(event: SessionEvent) -> Option<NormalizedEntry> {
-        use crate::session::events::SessionEvent::{SessionCreated, ToolResult};
         use crate::common::types::message::MessageRole;
+        use crate::session::events::SessionEvent::{SessionCreated, ToolResult};
 
         // Try unified message conversion first
         if let Some(msg) = event.as_message() {
@@ -396,7 +396,8 @@ impl SessionStorage {
                         .iter()
                         .find_map(|block| {
                             if let crate::common::types::message::ContentBlock::ToolResult {
-                                name, ..
+                                name,
+                                ..
                             } = block
                             {
                                 Some(name.clone())

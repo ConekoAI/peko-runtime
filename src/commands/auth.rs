@@ -192,6 +192,10 @@ pub fn handle_login(paths: &GlobalPaths, host: &str, api_key: Option<String>) ->
 /// Handle top-level `peko logout` command
 pub fn handle_logout(paths: &GlobalPaths, host: &str) -> Result<()> {
     let service = CredentialsService::new(paths.clone())?;
-    if service.clear_registry_token(host)? { println!("✓ Logged out from {host}") } else { println!("✗ Not logged in to {host}") }
+    if service.clear_registry_token(host)? {
+        println!("✓ Logged out from {host}")
+    } else {
+        println!("✗ Not logged in to {host}")
+    }
     Ok(())
 }

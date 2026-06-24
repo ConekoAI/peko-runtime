@@ -261,7 +261,10 @@ fn apply_tail_lines(result: &serde_json::Value, tail_lines: u64) -> serde_json::
     if let Some(obj) = result.as_object() {
         if let Some(stdout) = obj.get("stdout").and_then(|v| v.as_str()) {
             let mut new_obj = obj.clone();
-            new_obj.insert("stdout".to_string(), serde_json::Value::String(last_n(stdout)));
+            new_obj.insert(
+                "stdout".to_string(),
+                serde_json::Value::String(last_n(stdout)),
+            );
             return serde_json::Value::Object(new_obj);
         }
     }
@@ -516,7 +519,7 @@ Returns structured data appropriate to the action.
                         }));
                     }
                     // blocking=true: wait for completion via executor.
-                    let timeout = std::time::Duration::from_secs(300);
+                    let timeout = std::time::Duration::from_mins(5);
                     let _ = executor
                         .wait_for_completion(&task_id.to_string(), timeout)
                         .await;
@@ -738,7 +741,10 @@ mod tests {
             .await
             .unwrap();
         // Without an executor wired, spawn is unsupported.
-        assert_eq!(result["error"], "spawn action requires TaskTool to be constructed with an AsyncExecutor");
+        assert_eq!(
+            result["error"],
+            "spawn action requires TaskTool to be constructed with an AsyncExecutor"
+        );
     }
 
     #[tokio::test]
@@ -748,7 +754,10 @@ mod tests {
             .execute(json!({"action": "output", "task_id": "shell:x"}))
             .await
             .unwrap();
-        assert_eq!(result["error"], "output action requires TaskTool to be constructed with an AsyncExecutor");
+        assert_eq!(
+            result["error"],
+            "output action requires TaskTool to be constructed with an AsyncExecutor"
+        );
     }
 
     /// Build a TaskTool wired with a fresh isolated registry AND a
@@ -756,10 +765,12 @@ mod tests {
     /// is checked first and short-circuits with an error otherwise).
     fn make_tool_with_registry_and_executor(
         registry: SharedAsyncTaskRegistry,
-    ) -> (TaskTool, Arc<crate::extensions::framework::async_exec::executor::AsyncExecutor>) {
-        let executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
-        );
+    ) -> (
+        TaskTool,
+        Arc<crate::extensions::framework::async_exec::executor::AsyncExecutor>,
+    ) {
+        let executor =
+            Arc::new(crate::extensions::framework::async_exec::executor::AsyncExecutor::new());
         let tool = TaskTool {
             registry: Some(registry),
             executor: Some(executor.clone()),
@@ -934,10 +945,7 @@ mod tests {
         fn description(&self) -> String {
             "stub tool for tests".to_string()
         }
-        async fn execute(
-            &self,
-            _params: serde_json::Value,
-        ) -> anyhow::Result<serde_json::Value> {
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
             Ok(serde_json::json!({"ok": true}))
         }
     }
@@ -946,12 +954,9 @@ mod tests {
     async fn test_task_tool_with_executor_and_core_stores_agent_id() {
         // Build a TaskTool the same way `Agent::build_agentic_loop`
         // does: executor + Weak<ExtensionCore> + agent_id.
-        let core = std::sync::Arc::new(
-            crate::extensions::framework::core::ExtensionCore::new(),
-        );
-        let executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
-        );
+        let core = std::sync::Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let executor =
+            Arc::new(crate::extensions::framework::async_exec::executor::AsyncExecutor::new());
         let core_weak = std::sync::Arc::downgrade(&core);
         let tool = TaskTool::with_executor_and_core(
             executor,
@@ -967,9 +972,7 @@ mod tests {
         // TaskTool must read its *own* agent's session key from the
         // shared ExtensionCore, not whatever was set last by a
         // concurrent agent.
-        let core = std::sync::Arc::new(
-            crate::extensions::framework::core::ExtensionCore::new(),
-        );
+        let core = std::sync::Arc::new(crate::extensions::framework::core::ExtensionCore::new());
 
         // Register the stub tool in the core's side-table so the
         // spawn action can resolve it.
@@ -979,13 +982,14 @@ mod tests {
         // Two agents share the same core, with distinct session keys.
         let agent_a = "did:peko:agent:A";
         let agent_b = "did:peko:agent:B";
-        core.set_session_key(agent_a, Some("sess-A".to_string())).await;
-        core.set_session_key(agent_b, Some("sess-B".to_string())).await;
+        core.set_session_key(agent_a, Some("sess-A".to_string()))
+            .await;
+        core.set_session_key(agent_b, Some("sess-B".to_string()))
+            .await;
 
         // Construct a per-agent TaskTool bound to the shared core.
-        let executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
-        );
+        let executor =
+            Arc::new(crate::extensions::framework::async_exec::executor::AsyncExecutor::new());
         let core_weak = std::sync::Arc::downgrade(&core);
         let tool_a = TaskTool::with_executor_and_core(
             executor.clone(),
@@ -1027,15 +1031,12 @@ mod tests {
         // TaskTool built without an agent_id (legacy `global()` or
         // `with_registry`) must still work — it just falls back to
         // "unknown" for parent_session_key.
-        let core = std::sync::Arc::new(
-            crate::extensions::framework::core::ExtensionCore::new(),
-        );
+        let core = std::sync::Arc::new(crate::extensions::framework::core::ExtensionCore::new());
         core.insert_tool_instance("stub_tool".to_string(), Arc::new(StubTool))
             .await;
 
-        let executor = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
-        );
+        let executor =
+            Arc::new(crate::extensions::framework::async_exec::executor::AsyncExecutor::new());
         let core_weak = std::sync::Arc::downgrade(&core);
         let tool = TaskTool::with_executor_and_core(executor.clone(), core_weak, None);
 

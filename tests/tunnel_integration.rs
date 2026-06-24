@@ -22,7 +22,7 @@ use rand::RngCore;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use pekobot::tunnel::protocol::{
+use peko::tunnel::protocol::{
     InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload, InstanceStatus,
     InstanceType, TunnelMessage,
 };

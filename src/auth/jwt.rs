@@ -124,7 +124,11 @@ impl JwksCache {
     fn get_key(&self, kid: Option<&str>) -> Option<JwkEntry> {
         let jwks = self.jwks.as_ref()?;
         match kid {
-            Some(kid) => jwks.keys.iter().find(|k| k.kid.as_deref() == Some(kid)).cloned(),
+            Some(kid) => jwks
+                .keys
+                .iter()
+                .find(|k| k.kid.as_deref() == Some(kid))
+                .cloned(),
             None => jwks.keys.first().cloned(),
         }
     }
@@ -137,12 +141,10 @@ impl JwksCache {
             .no_proxy()
             .build()
             .map_err(|_| JwtError::KeyNotFound)?;
-        let response = client.get(&self.url).send()
-            .await
-            .map_err(|e| {
-                tracing::warn!("Failed to fetch JWKS from {}: {}", self.url, e);
-                JwtError::KeyNotFound
-            })?;
+        let response = client.get(&self.url).send().await.map_err(|e| {
+            tracing::warn!("Failed to fetch JWKS from {}: {}", self.url, e);
+            JwtError::KeyNotFound
+        })?;
 
         if !response.status().is_success() {
             tracing::warn!("JWKS endpoint returned status: {}", response.status());
@@ -323,7 +325,9 @@ impl JwtValidator {
         }
 
         let cache = self.cache.read().await;
-        let jwk = cache.get_key(header.kid.as_deref()).ok_or(JwtError::KeyNotFound)?;
+        let jwk = cache
+            .get_key(header.kid.as_deref())
+            .ok_or(JwtError::KeyNotFound)?;
         drop(cache);
 
         match header.alg.as_str() {
@@ -427,8 +431,8 @@ mod tests {
     #[tokio::test]
     async fn test_rs256_valid_token() {
         // Generate an RSA key pair using the `rsa` crate
-        use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
         use rand::rngs::OsRng;
+        use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
 
         let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
         let public_key = RsaPublicKey::from(&private_key);
@@ -457,7 +461,9 @@ mod tests {
 
         // Export private key to PKCS#8 PEM for jsonwebtoken
         use rsa::pkcs8::EncodePrivateKey;
-        let private_key_pem = private_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let private_key_pem = private_key
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap();
         let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).unwrap();
 
         let claims = serde_json::json!({
@@ -470,12 +476,7 @@ mod tests {
             "permissions": ["read", "write"],
         });
 
-        let token = encode(
-            &Header::new(Algorithm::RS256),
-            &claims,
-            &encoding_key,
-        )
-        .unwrap();
+        let token = encode(&Header::new(Algorithm::RS256), &claims, &encoding_key).unwrap();
 
         let result = validator.validate(&token).await.unwrap();
         assert_eq!(result.sub, "user123");
@@ -486,9 +487,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_rs256_invalid_signature() {
-        use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
-        use rsa::pkcs8::EncodePrivateKey;
         use rand::rngs::OsRng;
+        use rsa::pkcs8::EncodePrivateKey;
+        use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
 
         // Generate two different RSA key pairs
         let private_key1 = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
@@ -524,14 +525,11 @@ mod tests {
             "exp": chrono::Utc::now().timestamp() + 3600,
         });
 
-        let private_key_pem2 = private_key2.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let private_key_pem2 = private_key2
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap();
         let encoding_key = EncodingKey::from_rsa_pem(private_key_pem2.as_bytes()).unwrap();
-        let token = encode(
-            &Header::new(Algorithm::RS256),
-            &claims,
-            &encoding_key,
-        )
-        .unwrap();
+        let token = encode(&Header::new(Algorithm::RS256), &claims, &encoding_key).unwrap();
 
         let result = validator.validate(&token).await;
         assert_eq!(result.unwrap_err(), JwtError::InvalidSignature);
@@ -795,7 +793,9 @@ mod tests {
         .to_string();
         let token = format!(
             "{}.{}.dummy",
-            b64_encode(serde_json::json!({"alg":"RS256","typ":"JWT","kid":"missing-key"}).to_string()),
+            b64_encode(
+                serde_json::json!({"alg":"RS256","typ":"JWT","kid":"missing-key"}).to_string()
+            ),
             b64_encode(claims)
         );
 
@@ -844,9 +844,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_jwks_fetch_from_endpoint() {
-        use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
-        use rsa::pkcs8::EncodePrivateKey;
         use rand::rngs::OsRng;
+        use rsa::pkcs8::EncodePrivateKey;
+        use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
 
         let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
         let public_key = RsaPublicKey::from(&private_key);
@@ -872,7 +872,9 @@ mod tests {
             Some(format!("http://127.0.0.1:{}/.well-known/jwks.json", port)),
         );
 
-        let private_key_pem = private_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let private_key_pem = private_key
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap();
         let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).unwrap();
 
         let claims = serde_json::json!({
@@ -882,12 +884,7 @@ mod tests {
             "exp": chrono::Utc::now().timestamp() + 3600,
         });
 
-        let token = encode(
-            &Header::new(Algorithm::RS256),
-            &claims,
-            &encoding_key,
-        )
-        .unwrap();
+        let token = encode(&Header::new(Algorithm::RS256), &claims, &encoding_key).unwrap();
 
         let result = validator.validate(&token).await.unwrap();
         assert_eq!(result.sub, "fetched-user");

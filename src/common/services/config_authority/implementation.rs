@@ -6,8 +6,8 @@ use super::authority_trait::{ConfigAuthority, ConfigError, ConfigResult};
 use super::cache::ConfigCache;
 use super::entry::{AgentConfigEntry, ConfigSource};
 use super::io::ConfigIo;
-use crate::common::paths::PathResolver;
 use crate::agents::agent_config::AgentConfig;
+use crate::common::paths::PathResolver;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::path::PathBuf;
@@ -45,11 +45,7 @@ impl ConfigAuthorityImpl {
 
     /// Create from existing components (for testing)
     #[allow(dead_code)]
-    fn with_components(
-        path_resolver: PathResolver,
-        cache: ConfigCache,
-        io: ConfigIo,
-    ) -> Self {
+    fn with_components(path_resolver: PathResolver, cache: ConfigCache, io: ConfigIo) -> Self {
         Self {
             path_resolver,
             cache,

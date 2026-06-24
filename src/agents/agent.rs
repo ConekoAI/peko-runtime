@@ -1,16 +1,16 @@
 //! Agent management module
 
+use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
+use crate::auth::principal::Principal;
 use crate::common::paths::PathResolver;
-use crate::extensions::framework::core::{global_core, ExtensionCore};
+use crate::common::types::agent_legacy::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
+use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
-use crate::auth::principal::Principal;
-use crate::session::types::{ChannelType};
+use crate::session::types::ChannelType;
 use crate::tools::builtin::messaging::agent_spawn::DynamicSessionKeyProvider;
-use crate::agents::agent_config::AgentConfig;
-use crate::common::types::agent_legacy::AgentState;
 use anyhow::{Context, Result};
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
@@ -142,9 +142,7 @@ impl Agent {
                 .extension_core
                 .services()
                 .cross_runtime_a2a_ctx()
-                .and_then(|ctx| {
-                    Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok()
-                });
+                .and_then(|ctx| Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok());
             let tool = crate::tunnel::a2a_send_tool::build_tool(
                 dyn_service,
                 Some(&self.config.name),
@@ -293,11 +291,11 @@ impl Agent {
         Self::new_with_session_manager_and_resolver(config, session_manager, Some(resolver)).await
     }
 
-/// Create a new agent with an existing session manager.
-///
-/// Used for subagent execution where the child must share the parent's
-/// session manager (and therefore session storage and context).
-pub async fn new_with_session_manager(
+    /// Create a new agent with an existing session manager.
+    ///
+    /// Used for subagent execution where the child must share the parent's
+    /// session manager (and therefore session storage and context).
+    pub async fn new_with_session_manager(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
     ) -> Result<Self> {
@@ -747,12 +745,11 @@ pub async fn new_with_session_manager(
                 core_weak,
                 Some(agent_for_loop.identity.did.clone()),
             ));
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_task_tool(
-                    &extension_core_for_loop,
-                    task_tool,
-                )
-                .await
+            if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_task_tool(
+                &extension_core_for_loop,
+                task_tool,
+            )
+            .await
             {
                 warn!("Failed to register per-agent TaskTool (streaming): {}", e);
             }
@@ -901,14 +898,11 @@ pub async fn new_with_session_manager(
             .await;
 
         // 6. Construct AgenticLoop with the queue.
-        let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
-            agent_arc,
-            provider,
-            extension_core,
-        )
-        .await
-        .with_async_completion_queue(async_completion_queue)
-        .with_caller_id(caller_id);
+        let loop_ =
+            crate::engine::agentic_loop::AgenticLoop::new(agent_arc, provider, extension_core)
+                .await
+                .with_async_completion_queue(async_completion_queue)
+                .with_caller_id(caller_id);
         Ok(loop_)
     }
 
@@ -1047,7 +1041,10 @@ pub async fn new_with_session_manager(
     }
 
     /// List all sessions for a peer (/sessions command)
-    pub async fn session_list(&self, peer: &Principal) -> Result<Vec<crate::session::SessionEntry>> {
+    pub async fn session_list(
+        &self,
+        peer: &Principal,
+    ) -> Result<Vec<crate::session::SessionEntry>> {
         let mut manager = self.session_manager.write().await;
         let sessions = manager.list_sessions_for_peer(peer).await?;
         Ok(sessions)
@@ -1438,10 +1435,7 @@ pub async fn new_with_session_manager(
         };
         match r.build(req).await {
             Ok((provider, choice)) => {
-                info!(
-                    "Agent '{}' resolved provider: {}",
-                    config.name, choice
-                );
+                info!("Agent '{}' resolved provider: {}", config.name, choice);
                 Ok(Some(provider))
             }
             Err(e) => {
@@ -1482,7 +1476,6 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_creation() {
         use crate::extensions::framework::core::ExtensionCore;
-        
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale (Windows-headless
@@ -1510,7 +1503,6 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_agent_has_session_manager() {
         use crate::extensions::framework::core::ExtensionCore;
-        
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1536,10 +1528,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
-        use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
-use crate::session::types::{ChannelType};
-        
+        use crate::extensions::framework::core::ExtensionCore;
+        use crate::session::types::ChannelType;
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1570,10 +1561,9 @@ use crate::session::types::{ChannelType};
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
-        use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
-use crate::session::types::{ChannelType};
-        
+        use crate::extensions::framework::core::ExtensionCore;
+        use crate::session::types::ChannelType;
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1603,9 +1593,8 @@ use crate::session::types::{ChannelType};
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_spawn_session() {
-        use crate::extensions::framework::core::ExtensionCore;
         use crate::auth::principal::Principal;
-        
+        use crate::extensions::framework::core::ExtensionCore;
 
         // Force the encrypted-file identity fallback — see
         // `crate::identity::init_test_env` for the rationale.
@@ -1657,7 +1646,7 @@ use crate::session::types::{ChannelType};
     #[serial_test::serial(core)]
     async fn test_two_runtimes_same_name_different_did() {
         use crate::extensions::framework::core::ExtensionCore;
-        
+
         use tempfile::TempDir;
 
         // Force the encrypted-file identity fallback (Windows-headless

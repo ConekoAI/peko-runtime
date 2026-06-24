@@ -110,11 +110,7 @@ impl super::ApiAdapter for OpenAiCompatibleAdapter {
         Ok(parsed)
     }
 
-    fn parse_sse_event(
-        &self,
-        model_id: &str,
-        data: &str,
-    ) -> Result<Option<StreamEvent>> {
+    fn parse_sse_event(&self, model_id: &str, data: &str) -> Result<Option<StreamEvent>> {
         self.inner.parse_sse_event(model_id, data)
     }
 

@@ -55,7 +55,7 @@ impl PekoCli {
         // so a shared passphrase is safe.
         let vault_passphrase = "peko-test-vault-passphrase".to_string();
         let vault_path = home.path().join(".peko").join("vault.enc");
-        pekobot::common::vault::Vault::with_passphrase(
+        peko::common::vault::Vault::with_passphrase(
             &vault_path,
             &secrecy::SecretString::new(vault_passphrase.clone().into()),
         )

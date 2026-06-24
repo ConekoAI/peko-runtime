@@ -23,7 +23,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use pekobot::registry::packaging::{export_agent, import_agent, ExportOptions, ImportOptions};
+//! use peko::registry::packaging::{export_agent, import_agent, ExportOptions, ImportOptions};
 //!
 //! // Export an agent
 //! let options = ExportOptions {

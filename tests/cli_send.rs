@@ -20,7 +20,7 @@
 //! Tests early-return if unset so `cargo test` still passes on a bare checkout.
 
 mod common;
-use common::{write_v3_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use common::{run_with_timeout, write_v3_mock_agent, DaemonGuard, PekoCli};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -111,7 +111,8 @@ fn send_default_response_streams_to_stdout() {
 
     let _daemon = DaemonGuard::spawn(&cli);
 
-    let (stdout, stderr, status) = send(&cli, &["send", "test-agent", "Hello there", "--no-stream"]);
+    let (stdout, stderr, status) =
+        send(&cli, &["send", "test-agent", "Hello there", "--no-stream"]);
     assert_send_ok(&stdout, &stderr, &status);
     // The CI mock LLM is configured with `DEFAULT_RESPONSE=SUCCESS` in
     // tests/docker/docker-compose.integration.yml — every prompt that
@@ -178,7 +179,13 @@ fn send_file_option_reads_message_from_file() {
 
     let (stdout, stderr, status) = send(
         &cli,
-        &["send", "file-agent", "--file", test_file.to_str().unwrap(), "--no-stream"],
+        &[
+            "send",
+            "file-agent",
+            "--file",
+            test_file.to_str().unwrap(),
+            "--no-stream",
+        ],
     );
     assert_send_ok(&stdout, &stderr, &status);
     assert!(
@@ -204,10 +211,8 @@ fn send_new_flag_creates_additional_session() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     // First send — creates session 1
-    let (stdout1, stderr1, status1) = send(
-        &cli,
-        &["send", "new-agent", "First message", "--no-stream"],
-    );
+    let (stdout1, stderr1, status1) =
+        send(&cli, &["send", "new-agent", "First message", "--no-stream"]);
     assert_send_ok(&stdout1, &stderr1, &status1);
 
     let sessions_after_first = list_sessions_json(&cli, "new-agent");
@@ -221,7 +226,13 @@ fn send_new_flag_creates_additional_session() {
     // Second send with --new — creates session 2
     let (stdout2, stderr2, status2) = send(
         &cli,
-        &["send", "new-agent", "Second message", "--new", "--no-stream"],
+        &[
+            "send",
+            "new-agent",
+            "Second message",
+            "--new",
+            "--no-stream",
+        ],
     );
     assert_send_ok(&stdout2, &stderr2, &status2);
 
@@ -319,10 +330,7 @@ fn send_nonexistent_agent_fails() {
 
     let _daemon = DaemonGuard::spawn(&cli);
 
-    let (stdout, stderr, status) = send(
-        &cli,
-        &["send", "no-such-agent", "Hello", "--no-stream"],
-    );
+    let (stdout, stderr, status) = send(&cli, &["send", "no-such-agent", "Hello", "--no-stream"]);
     assert_send_err(&stdout, &stderr, &status);
     let combined = format!("{stdout}{stderr}");
     assert!(

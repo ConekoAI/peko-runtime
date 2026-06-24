@@ -1,15 +1,15 @@
-//! Common utilities shared across Pekobot
+//! Common utilities shared across Peko
 //!
 //! This module provides shared functionality used by both CLI and API components,
 //! ensuring consistency in path resolution, configuration handling, etc.
 
 pub mod config_path;
 pub mod identifiers;
-pub mod secret_store;
 pub mod json_utils;
 pub mod paths;
 pub mod process;
 pub mod registry;
+pub mod secret_store;
 pub mod services;
 pub mod time;
 pub mod types;

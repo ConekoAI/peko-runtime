@@ -12,7 +12,7 @@
 
 ## Context
 
-Pekobot v0.1.0 had **two parallel packaging systems** that created confusion:
+Peko v0.1.0 had **two parallel packaging systems** that created confusion:
 
 | System | Format | Purpose | Location |
 |--------|--------|---------|----------|

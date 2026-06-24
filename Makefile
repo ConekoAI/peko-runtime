@@ -1,4 +1,4 @@
-# Pekobot Test Targets — see docs/integration/TESTING.md
+# Peko Test Targets — see docs/integration/TESTING.md
 #
 # Four canonical targets:
 #   test                  — fast unit tests, no Docker, no LLM
@@ -48,7 +48,7 @@ PEKOHUB_URL  ?= http://localhost:3000
 MOCK_LLM_URL ?= http://localhost:8080
 
 help:
-	@echo "Pekobot Test Targets (see docs/integration/TESTING.md)"
+	@echo "Peko Test Targets (see docs/integration/TESTING.md)"
 	@echo ""
 	@echo "  test                      Fast unit tests (cargo test --lib, no Docker, no LLM)"
 	@echo "  test-integration          PR gate: all tests/*.rs against PekoHub + mock LLM"

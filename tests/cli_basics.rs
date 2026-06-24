@@ -10,7 +10,7 @@
 //!  landing — see ADR-038.)
 
 mod common;
-use common::{write_v3_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use common::{run_with_timeout, write_v3_mock_agent, DaemonGuard, PekoCli};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -121,7 +121,14 @@ fn agent_create_json_output() {
 
     let (out, err, status) = run(
         &cli,
-        &["agent", "create", "json-agent", "--provider", "mock-llm", "--json"],
+        &[
+            "agent",
+            "create",
+            "json-agent",
+            "--provider",
+            "mock-llm",
+            "--json",
+        ],
     );
     assert_ok(&out, &err, &status);
 
@@ -157,7 +164,9 @@ fn agent_move_renames_agent() {
     // The move command may or may not actually rename depending on implementation.
     // We verify at minimum that the command reports success.
     assert!(
-        out.to_lowercase().contains("moved") || out.to_lowercase().contains("renamed") || status.success(),
+        out.to_lowercase().contains("moved")
+            || out.to_lowercase().contains("renamed")
+            || status.success(),
         "move should report success or mention move/renamed: {out}"
     );
 }
@@ -280,7 +289,9 @@ fn team_move_renames_team() {
 
     // Verify the command reports success
     assert!(
-        out.to_lowercase().contains("moved") || out.to_lowercase().contains("renamed") || status.success(),
+        out.to_lowercase().contains("moved")
+            || out.to_lowercase().contains("renamed")
+            || status.success(),
         "move should report success or mention move/renamed: {out}"
     );
 }
@@ -349,10 +360,7 @@ fn config_set_and_get_roundtrip() {
     let cli = PekoCli::new();
 
     // Set a value
-    let (out, err, status) = run(
-        &cli,
-        &["config", "set", "provider.api_key", "test-key-123"],
-    );
+    let (out, err, status) = run(&cli, &["config", "set", "provider.api_key", "test-key-123"]);
     assert_ok(&out, &err, &status);
 
     // Get it back
@@ -374,7 +382,9 @@ fn config_validate_on_empty_config() {
     // either way it should not panic.
     let combined = format!("{out}{err}");
     assert!(
-        status.success() || combined.to_lowercase().contains("not found") || combined.to_lowercase().contains("no config"),
+        status.success()
+            || combined.to_lowercase().contains("not found")
+            || combined.to_lowercase().contains("no config"),
         "validate should either succeed or report missing config: {combined}"
     );
 }

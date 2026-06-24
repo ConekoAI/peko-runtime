@@ -11,19 +11,19 @@ use crate::common::types::extension::{
 use crate::common::vault::Vault;
 use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
 use crate::extensions::framework::core::global_core;
-use crate::extensions::framework::manager::{DependencyStatus, ExtensionManager};
 use crate::extensions::framework::manager::packaging::ExtensionPackager;
+use crate::extensions::framework::manager::{DependencyStatus, ExtensionManager};
 use crate::extensions::framework::types::{ExtensionId, ExtensionManifest};
 use crate::extensions::gateway::GatewayAdapter;
 use crate::extensions::general::GeneralExtensionAdapter;
 use crate::extensions::mcp::McpAdapter;
 use crate::extensions::skill::SkillAdapter;
 use crate::extensions::universal::UniversalToolAdapter;
-use crate::registry::AgentRegistry;
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::RegistryConfig;
 use crate::registry::manifest::RegistryManifest;
 use crate::registry::packaging::types::{compute_digest, ImageDigest, Layer, LayerType};
+use crate::registry::AgentRegistry;
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -103,12 +103,7 @@ impl ExtensionManagementService {
                 let missing: Vec<_> = resolution
                     .missing
                     .iter()
-                    .filter(|m| {
-                        matches!(
-                            m,
-                            DependencyStatus::Missing { required: true, .. }
-                        )
-                    })
+                    .filter(|m| matches!(m, DependencyStatus::Missing { required: true, .. }))
                     .map(|m| format!("{m:?}"))
                     .collect();
                 anyhow::bail!(
@@ -165,7 +160,8 @@ impl ExtensionManagementService {
         manifest.digest = manifest_digest.as_str().to_string();
 
         // Store manifest for RegistryClient
-        self.store_registry_manifest_for_client(&registry, &manifest).await?;
+        self.store_registry_manifest_for_client(&registry, &manifest)
+            .await?;
 
         // Parse registry ref and configure client
         let reg_ref = RegistryRef::parse_with_default(
@@ -173,7 +169,9 @@ impl ExtensionManagementService {
             cli_registry.or(Some(&self.registry_config().default)),
             Some(ResourceType::Extension),
         )?;
-        let config = self.resolve_registry_config(cli_registry, &reg_ref.host).await?;
+        let config = self
+            .resolve_registry_config(cli_registry, &reg_ref.host)
+            .await?;
 
         let client = RegistryClient::new(config, registry);
         let resolved_ref = reg_ref.full_ref();
@@ -310,15 +308,13 @@ impl ExtensionManagementService {
         // .ext packages are archives; the manager's type detection only works
         // on an extracted directory. Unpack to a temp dir before installing.
         let install_dir = if temp_path.extension().map_or(false, |e| e == "ext") {
-            let temp_dir = std::env::temp_dir()
-                .join("PEKO_ext_install")
-                .join(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs()
-                        .to_string(),
-                );
+            let temp_dir = std::env::temp_dir().join("PEKO_ext_install").join(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .to_string(),
+            );
             tokio::fs::create_dir_all(&temp_dir).await?;
             crate::extensions::framework::manager::packaging::ExtensionUnpackager::install(
                 temp_path, &temp_dir,
@@ -369,7 +365,9 @@ impl ExtensionManagementService {
             cli_registry.or(Some(&self.registry_config().default)),
             Some(ResourceType::Extension),
         )?;
-        let config = self.resolve_registry_config(cli_registry, &reg_ref.host).await?;
+        let config = self
+            .resolve_registry_config(cli_registry, &reg_ref.host)
+            .await?;
 
         let client = RegistryClient::new(config, agent_registry.clone());
         let resolved_ref = reg_ref.full_ref();
@@ -414,8 +412,7 @@ impl ExtensionManagementService {
         cli_registry: Option<&str>,
         host: &str,
     ) -> Result<RegistryConfig> {
-        let config =
-            crate::registry::config::load_from_config_dir(self.resolver.config_dir());
+        let config = crate::registry::config::load_from_config_dir(self.resolver.config_dir());
         let vault = Vault::load(self.resolver.vault())
             .with_context(|| "failed to load credential vault")?;
         let token = vault.get_registry_token().map(|t| t.token);

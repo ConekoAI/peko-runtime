@@ -27,7 +27,9 @@
 //! Lifecycle hooks (AgentInit, AgentShutdown) are still declared via
 //! `resolve_hooks()` because they are server-level, not tool-level.
 
-use crate::extensions::framework::adapters::{ExtensionState, ExtensionTypeAdapter, ManifestFormat};
+use crate::extensions::framework::adapters::{
+    ExtensionState, ExtensionTypeAdapter, ManifestFormat,
+};
 use crate::extensions::framework::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
     ToolMetadata, ToolSource,
@@ -561,7 +563,9 @@ impl McpAdapter {
                     {
                         manifest.set(
                             key,
-                            crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone()),
+                            crate::extensions::framework::adapters::parsing::yaml_to_json(
+                                v.clone(),
+                            ),
                         );
                     }
                 }
@@ -817,13 +821,17 @@ impl HookHandler for McpServerInitHandler {
                         Ok(config) => config,
                         Err(e) => {
                             warn!(server_name = %self.server_name, error = %e, "Failed to load MCP server config from unified manifest");
-                            return HookResult::Continue(crate::extensions::framework::types::HookOutput::Unit);
+                            return HookResult::Continue(
+                                crate::extensions::framework::types::HookOutput::Unit,
+                            );
                         }
                     }
                 }
                 None => {
                     warn!(server_name = %self.server_name, "No config_path or mcp_servers available for MCP server");
-                    return HookResult::Continue(crate::extensions::framework::types::HookOutput::Unit);
+                    return HookResult::Continue(
+                        crate::extensions::framework::types::HookOutput::Unit,
+                    );
                 }
             }
         } else {
@@ -831,7 +839,9 @@ impl HookHandler for McpServerInitHandler {
                 Ok(config) => config,
                 Err(e) => {
                     warn!(server_name = %self.server_name, error = %e, "Failed to load MCP server config");
-                    return HookResult::Continue(crate::extensions::framework::types::HookOutput::Unit);
+                    return HookResult::Continue(
+                        crate::extensions::framework::types::HookOutput::Unit,
+                    );
                 }
             }
         };

@@ -1,6 +1,6 @@
 //! Session management module
 //!
-//! Provides session storage with Pekobot JSONL format:
+//! Provides session storage with Peko JSONL format:
 //! - File locking for concurrent access safety
 //! - Unified session index (sessions.json + peers.json) for fast lookups
 //! - Session key derivation for multi-user isolation
@@ -10,11 +10,11 @@
 //! # Module Structure
 //!
 //! - `directory`: Explicit session directory management (no side effects)
-//! - `events`: Pekobot session event types (13 types per DATA_MODEL §5.3)
+//! - `events`: Peko session event types (13 types per DATA_MODEL §5.3)
 //! - `lock`: File locking with timeout and stale detection
 //! - `index`: Unified session index (sessions.json + peers.json) management
 //! - `key`: Session key derivation for scoping
-//! - `jsonl`: JSONL storage format (Pekobot format)
+//! - `jsonl`: JSONL storage format (Peko format)
 //! - `types`: Core types (Principal, ChannelType, OverlayType)
 //! - `overlay`: Session overlay trait and ChannelOverlay
 //! - `spawn`: Spawn overlay for subagent isolation

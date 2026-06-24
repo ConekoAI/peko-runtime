@@ -1,6 +1,6 @@
 [agent]
 name = "default"
-description = "Default Pekobot agent"
+description = "Default Peko agent"
 
 [provider]
 # Default provider - can be overridden per-agent

@@ -295,7 +295,8 @@ impl ExtensionManager {
 
         for binding in bindings {
             let handler = binding.handler_factory.create(manifest.clone());
-            let handler_arc: Arc<dyn crate::extensions::framework::core::HookHandler> = handler.into();
+            let handler_arc: Arc<dyn crate::extensions::framework::core::HookHandler> =
+                handler.into();
             let registration = self
                 .core
                 .register_hook(binding.point, handler_arc, &extension_id)

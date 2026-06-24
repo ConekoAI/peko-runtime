@@ -19,8 +19,7 @@ use std::collections::HashMap;
 const MAX_RESULT_PREVIEW_BYTES: usize = 2048;
 
 /// Suffix appended to truncated previews.
-const TRUNCATION_SUFFIX: &str =
-    "\n\n... (truncated; use `task output` for full result)";
+const TRUNCATION_SUFFIX: &str = "\n\n... (truncated; use `task output` for full result)";
 
 /// Truncate a result string to `MAX_RESULT_PREVIEW_BYTES`, respecting
 /// UTF-8 char boundaries, and append a suffix pointing the model at
@@ -114,11 +113,7 @@ mod tests {
         }
     }
 
-    fn make_completion_event(
-        task_id: &str,
-        tool_name: &str,
-        session_key: &str,
-    ) -> CompletionEvent {
+    fn make_completion_event(task_id: &str, tool_name: &str, session_key: &str) -> CompletionEvent {
         make_completion_event_with_status(
             task_id,
             tool_name,

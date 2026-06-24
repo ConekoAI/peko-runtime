@@ -11,7 +11,7 @@
 //! name: docker
 //! description: Docker container operations
 //! tags: [devops, containers]
-//! author: Pekora
+//! author: Peko
 //! ---
 //!
 //! # Docker Skill
@@ -31,7 +31,9 @@ use crate::extensions::framework::core::ExtensionServices;
 use crate::extensions::framework::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
-use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult};
+use crate::extensions::framework::types::{
+    ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;

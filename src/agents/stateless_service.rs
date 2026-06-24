@@ -16,11 +16,11 @@ use crate::agents::Agent;
 use crate::auth::principal::Principal;
 use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
+use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
 use crate::providers::TokenUsage;
 use crate::session::manager::SessionManager;
 use crate::session::types::ChannelType;
-use crate::common::types::message::LlmMessage;
 // Note: Session storage uses jsonl module directly
 use crate::common::types::message::ContentBlock;
 use anyhow::{Context, Result};
@@ -268,7 +268,11 @@ impl StatelessAgentService {
 
         info!(
             "StatelessAgentService initialized with team-aware paths (resolver: {})",
-            if service.resolver.is_some() { "wired" } else { "none" }
+            if service.resolver.is_some() {
+                "wired"
+            } else {
+                "none"
+            }
         );
 
         Ok(service)
@@ -1182,8 +1186,7 @@ mod tests {
         // Verify default timeout is 300 seconds (5 minutes)
         // We can't directly check the private field, but we can verify
         // the method returns self correctly
-        let service_with_timeout =
-            service.with_default_timeout(std::time::Duration::from_mins(2));
+        let service_with_timeout = service.with_default_timeout(std::time::Duration::from_mins(2));
         // Just verify it compiles and returns
         drop(service_with_timeout);
     }

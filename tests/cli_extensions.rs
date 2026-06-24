@@ -77,7 +77,7 @@
 //! stack.
 
 mod common;
-use common::{DaemonGuard, PekoCli, run_with_timeout};
+use common::{run_with_timeout, DaemonGuard, PekoCli};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -221,8 +221,7 @@ async fn ext_install_skill_tier1_detect() {
     );
 
     // peko ext list should show the skill.
-    let (list_out, err, status) =
-        run(&cli, &["ext", "list"], Duration::from_secs(10));
+    let (list_out, err, status) = run(&cli, &["ext", "list"], Duration::from_secs(10));
     assert_ok(&list_out, &err, &status);
     assert_contains_all(
         &list_out,
@@ -239,7 +238,12 @@ async fn ext_install_skill_tier1_detect() {
     assert_ok(&info_out, &err, &status);
     assert_contains_all(
         &info_out,
-        &["\"id\":", "\"name\":", "\"type\": \"skill\"", "\"version\":"],
+        &[
+            "\"id\":",
+            "\"name\":",
+            "\"type\": \"skill\"",
+            "\"version\":",
+        ],
         "peko ext info calculator-skill",
     );
 
@@ -333,7 +337,13 @@ async fn ext_install_mcp_manifest_reserved_params() {
     let install_path = fixture_dir("mcp/python/params_injection");
     let (out, err, status) = run(
         &cli,
-        &["ext", "install", &install_path.to_string_lossy(), "--type", "mcp"],
+        &[
+            "ext",
+            "install",
+            &install_path.to_string_lossy(),
+            "--type",
+            "mcp",
+        ],
         Duration::from_secs(15),
     );
     assert_ok(&out, &err, &status);
@@ -343,11 +353,7 @@ async fn ext_install_mcp_manifest_reserved_params() {
     );
 
     // peko ext info confirms type "mcp" (Tier 2 detection from manifest.yaml).
-    let (info_out, err, status) = run(
-        &cli,
-        &["ext", "info", "identity"],
-        Duration::from_secs(10),
-    );
+    let (info_out, err, status) = run(&cli, &["ext", "info", "identity"], Duration::from_secs(10));
     assert_ok(&info_out, &err, &status);
     assert!(
         info_out.contains("\"type\": \"mcp\""),
@@ -558,8 +564,7 @@ async fn ext_install_universal_python_reserved_params_manifest() {
         "installed manifest should preserve source: \"runtime\": {manifest}",
     );
     assert!(
-        manifest.contains("field: \"session_id\"")
-            && manifest.contains("field: \"agent_id\""),
+        manifest.contains("field: \"session_id\"") && manifest.contains("field: \"agent_id\""),
         "installed manifest should preserve field: <param>: {manifest}",
     );
 
@@ -703,8 +708,7 @@ async fn ext_install_uninstall_roundtrip() {
     assert_ok(&out, &err, &status);
 
     // peko ext list shows it.
-    let (list_out, err, status) =
-        run(&cli, &["ext", "list"], Duration::from_secs(10));
+    let (list_out, err, status) = run(&cli, &["ext", "list"], Duration::from_secs(10));
     assert_ok(&list_out, &err, &status);
     assert!(
         list_out.contains("calculator-skill"),
@@ -720,8 +724,7 @@ async fn ext_install_uninstall_roundtrip() {
     assert_ok(&out, &err, &status);
 
     // peko ext list no longer shows it.
-    let (list_out, err, status) =
-        run(&cli, &["ext", "list"], Duration::from_secs(10));
+    let (list_out, err, status) = run(&cli, &["ext", "list"], Duration::from_secs(10));
     assert_ok(&list_out, &err, &status);
     assert!(
         !list_out.contains("calculator-skill"),
@@ -795,7 +798,11 @@ async fn ext_enable_for_agent_modifies_whitelist() {
     // The agent config path. The peko agent on disk uses
     // <config_dir>/agents/<name>/config.toml; with PEKO_HOME=<peko_dir>,
     // config_dir resolves to <peko_dir>.
-    let agent_config = cli.peko_dir().join("agents").join(agent_name).join("config.toml");
+    let agent_config = cli
+        .peko_dir()
+        .join("agents")
+        .join(agent_name)
+        .join("config.toml");
     assert!(
         agent_config.exists(),
         "agent config should exist at {agent_config:?} before enable",
@@ -804,13 +811,7 @@ async fn ext_enable_for_agent_modifies_whitelist() {
     // peko ext enable writes to the agent's whitelist.
     let (out, err, status) = run(
         &cli,
-        &[
-            "ext",
-            "enable",
-            "calculator_simple",
-            "--target",
-            agent_name,
-        ],
+        &["ext", "enable", "calculator_simple", "--target", agent_name],
         Duration::from_secs(10),
     );
     assert_ok(&out, &err, &status);
@@ -830,8 +831,7 @@ async fn ext_enable_for_agent_modifies_whitelist() {
     // The agent's [extensions] enabled block should have at least the
     // calculator_simple entry.
     assert!(
-        after_enable.contains("enabled")
-            && after_enable.contains("calculator_simple"),
+        after_enable.contains("enabled") && after_enable.contains("calculator_simple"),
         "agent config should have calculator_simple in [extensions] enabled: {after_enable}",
     );
 

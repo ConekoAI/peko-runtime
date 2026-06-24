@@ -121,7 +121,8 @@ impl Manifest {
         let reserved_parameters: ReservedParamsConfig = yaml
             .get("reserved_parameters")
             .and_then(|v| {
-                let json_val = crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone());
+                let json_val =
+                    crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone());
                 serde_json::from_value(json_val).ok()
             })
             .unwrap_or_default();
@@ -129,7 +130,8 @@ impl Manifest {
         let protocol = yaml
             .get("protocol")
             .and_then(|v| {
-                let json_val = crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone());
+                let json_val =
+                    crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone());
                 serde_json::from_value(json_val).ok()
             })
             .unwrap_or_default();

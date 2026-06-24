@@ -1,11 +1,11 @@
-//! Pekobot global configuration
+//! Peko global configuration
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Global peko configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PekobotConfig {
+pub struct PekoConfig {
     /// Application name
     pub app_name: String,
     /// Storage configuration
@@ -21,7 +21,7 @@ pub struct PekobotConfig {
     pub compaction: CompactionConfig,
 }
 
-impl Default for PekobotConfig {
+impl Default for PekoConfig {
     fn default() -> Self {
         Self {
             app_name: "peko".to_string(),
@@ -122,7 +122,7 @@ impl Default for LogConfig {
     }
 }
 
-impl PekobotConfig {
+impl PekoConfig {
     /// Load configuration from TOML file
     pub fn from_file(path: &std::path::Path) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(path)?;
@@ -381,7 +381,7 @@ pub struct ExternalSource {
 /// Session compaction configuration (re-exported from the canonical
 /// definition in `crate::session::compaction`).
 ///
-/// `PekobotConfig.compaction` keeps this name so existing TOML configs
+/// `PekoConfig.compaction` keeps this name so existing TOML configs
 /// continue to round-trip. The canonical type lives next to the engine
 /// that consumes it (`engine/compaction_orchestrator`, `session/compaction/*`).
 #[allow(unused_imports)]
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_default_config() {
-        let config = PekobotConfig::default();
+        let config = PekoConfig::default();
         assert_eq!(config.app_name, "peko");
         assert_eq!(config.network.port, 8080);
         assert_eq!(config.logging.level, "info");
@@ -401,9 +401,9 @@ mod tests {
 
     #[test]
     fn test_config_roundtrip() {
-        let config = PekobotConfig::default();
+        let config = PekoConfig::default();
         let toml = toml::to_string(&config).unwrap();
-        let parsed: PekobotConfig = toml::from_str(&toml).unwrap();
+        let parsed: PekoConfig = toml::from_str(&toml).unwrap();
 
         assert_eq!(parsed.app_name, config.app_name);
         assert_eq!(parsed.network.port, config.network.port);
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn test_PEKO_config_with_compaction() {
-        let config = PekobotConfig::default();
+        let config = PekoConfig::default();
         assert!(config.compaction.enabled);
         assert_eq!(config.compaction.auto_threshold_percent, 85);
     }

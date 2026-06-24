@@ -4,7 +4,7 @@ Get started with MCP servers in 5 minutes.
 
 ## Prerequisites
 
-- Pekobot built from source
+- Peko built from source
 - MCP server binaries or extension packages
 
 ## 1. Install MCP Servers

@@ -12,9 +12,9 @@ use tracing::{debug, error, info, warn};
 const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6");
 
 use crate::auth::Principal;
+use crate::common::types::a2a::A2aMessageRequest;
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
-use crate::common::types::a2a::A2aMessageRequest;
 
 use super::a2a_audit;
 use super::protocol::{
@@ -275,7 +275,9 @@ impl TunnelDispatcher {
     /// TODO(#16): re-derive from `Principal::User` and surface
     /// `Principal::Agent` subjects to the hub once PekoHub accepts the
     /// agent principal (post #11).
-    fn compute_allowed_user_ids(config: &crate::agents::agent_config::AgentConfig) -> Option<Vec<String>> {
+    fn compute_allowed_user_ids(
+        config: &crate::agents::agent_config::AgentConfig,
+    ) -> Option<Vec<String>> {
         use crate::auth::principal::{Principal, SubjectKind};
         let ids: Vec<String> = config
             .permissions
@@ -519,7 +521,10 @@ impl TunnelDispatcher {
             // outbound `A2aSendTool` path registered in the pending
             // registry. Complete the oneshot so the outbound
             // `execute_remote` unblocks and decodes the payload.
-            TunnelMessage::AgentToAgentResponse { request_id, payload } => {
+            TunnelMessage::AgentToAgentResponse {
+                request_id,
+                payload,
+            } => {
                 self.handle_inbound_agent_to_agent_response(request_id, payload)
                     .await?;
             }
@@ -1937,7 +1942,11 @@ mod tests {
         // The handler should have sent back a structured
         // HubA2AErrorResponse. Drain the response and check the shape.
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse { request_id, payload } = response else {
+        let TunnelMessage::AgentToAgentResponse {
+            request_id,
+            payload,
+        } = response
+        else {
             panic!("expected AgentToAgentResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-malformed");
@@ -1994,7 +2003,11 @@ mod tests {
             .expect("handler must not panic");
 
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse { request_id, payload } = response else {
+        let TunnelMessage::AgentToAgentResponse {
+            request_id,
+            payload,
+        } = response
+        else {
             panic!("expected AgentToAgentResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-bad-sig");
@@ -2024,10 +2037,7 @@ mod tests {
             .expect("register must succeed for a fresh request_id");
 
         dispatcher
-            .handle_inbound_agent_to_agent_response(
-                "req-1".to_string(),
-                b"hello".to_vec(),
-            )
+            .handle_inbound_agent_to_agent_response("req-1".to_string(), b"hello".to_vec())
             .await
             .expect("handler must not panic");
 

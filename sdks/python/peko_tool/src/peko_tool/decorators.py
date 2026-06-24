@@ -1,4 +1,4 @@
-"""Decorators for creating Pekobot tools.
+"""Decorators for creating Peko tools.
 
 This module provides convenient decorators for defining tools without
 manual boilerplate.
@@ -22,9 +22,9 @@ def tool(
     reserved: Optional[List[str]] = None,
     auto_parameters: bool = True,
 ) -> Callable[[F], "ToolWrapper[F]"]:
-    """Decorator to create a Pekobot Universal Tool.
+    """Decorator to create a Peko Universal Tool.
     
-    This decorator wraps a Python function to make it usable as a Pekobot tool.
+    This decorator wraps a Python function to make it usable as a Peko tool.
     It automatically generates the parameter schema from the function signature
     (unless disabled) and handles the JSON-RPC protocol.
     

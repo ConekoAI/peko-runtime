@@ -201,8 +201,5 @@ pub use self::{A2aMessageRequest as MessageRequest, A2aMessageResponse as Messag
 /// Breaking cycle 5 (per `PLAN §2.5`).
 #[async_trait::async_trait]
 pub trait AgentMessageService: Send + Sync {
-    async fn execute_message(
-        &self,
-        req: A2aMessageRequest,
-    ) -> anyhow::Result<A2aMessageResponse>;
+    async fn execute_message(&self, req: A2aMessageRequest) -> anyhow::Result<A2aMessageResponse>;
 }

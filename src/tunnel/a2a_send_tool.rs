@@ -34,11 +34,11 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::auth::principal::Principal;
-use crate::tools::core::Tool;
-use crate::tunnel::a2a_audit;
 use crate::common::types::a2a::{
     A2aMessageRequest as MessageRequest, A2aMessageResponse as MessageResult, AgentMessageService,
 };
+use crate::tools::core::Tool;
+use crate::tunnel::a2a_audit;
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentDirectory, DirectoryError, ResolvedExposure};
@@ -533,11 +533,7 @@ impl A2aSendTool {
             Ok(s) => s,
             Err(err) => return Ok(remote_error_value(&err.to_string())),
         };
-        let caller_agent_did = match self
-            .caller_agent_did
-            .as_deref()
-            .filter(|s| !s.is_empty())
-        {
+        let caller_agent_did = match self.caller_agent_did.as_deref().filter(|s| !s.is_empty()) {
             Some(s) => s,
             None => {
                 return Ok(remote_error_value(
@@ -881,9 +877,7 @@ pub struct HubA2AErrorResponse {
 /// factors this out of `execute()` so both `execute_local` (Slice A
 /// behavior) and any future code path that needs the same shape can
 /// share the conversion.
-fn message_result_to_a2a_value(
-    result: Result<MessageResult>,
-) -> serde_json::Value {
+fn message_result_to_a2a_value(result: Result<MessageResult>) -> serde_json::Value {
     match result {
         Ok(msg_result) => {
             let tool_calls: Vec<serde_json::Value> = msg_result
@@ -1283,10 +1277,7 @@ mod tests {
     /// guard.
     #[test]
     fn test_target_spec_is_remote_discriminator() {
-        assert!(!TargetSpec::Local {
-            name: "x".into(),
-        }
-        .is_remote());
+        assert!(!TargetSpec::Local { name: "x".into() }.is_remote());
         assert!(TargetSpec::RemoteByDid {
             did: "did:peko:agent:x".into(),
             runtime_id_hint: None,
@@ -1452,10 +1443,8 @@ mod tests {
     #[tokio::test]
     async fn test_execute_remote_without_ctx_errors_cleanly() {
         let service = build_test_service().await;
-        let tool = A2aSendTool::new(service).with_caller_did(
-            "caller",
-            "did:peko:agent:caller-keyhash",
-        );
+        let tool =
+            A2aSendTool::new(service).with_caller_did("caller", "did:peko:agent:caller-keyhash");
         // Intentionally NOT calling `with_cross_runtime`.
         let args = A2aSendArgs {
             target_agent: "ignored".to_string(),
@@ -1525,10 +1514,7 @@ mod tests {
 
         let service = build_test_service().await;
         let (ctx, _rx, dir) = build_test_ctx(Duration::from_secs(1));
-        dir.register_did_err(
-            "did:peko:agent:unknown",
-            DirectoryErrorKind::NotFound,
-        );
+        dir.register_did_err("did:peko:agent:unknown", DirectoryErrorKind::NotFound);
         let tool = A2aSendTool::new(service)
             .with_caller_did("caller", "did:peko:agent:caller-keyhash")
             .with_cross_runtime(ctx);
@@ -1542,7 +1528,10 @@ mod tests {
             session_id: None,
             team: None,
         };
-        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
         let result: A2aSendResult = serde_json::from_value(value).unwrap();
         assert!(!result.success);
         let err = result.error.unwrap();
@@ -1569,11 +1558,7 @@ mod tests {
         // The target is a RemoteByHandle; register Forbidden against
         // the (owner, agent_name) tuple (FakeAgentDirectory's
         // separate maps for did vs handle).
-        dir.register_handle_err(
-            "alice",
-            "private-agent",
-            DirectoryErrorKind::Forbidden,
-        );
+        dir.register_handle_err("alice", "private-agent", DirectoryErrorKind::Forbidden);
         let tool = A2aSendTool::new(service)
             .with_caller_did("caller", "did:peko:agent:caller-keyhash")
             .with_cross_runtime(ctx);
@@ -1587,7 +1572,10 @@ mod tests {
             session_id: None,
             team: None,
         };
-        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
         let result: A2aSendResult = serde_json::from_value(value).unwrap();
         assert!(!result.success);
         let err = result.error.unwrap();
@@ -1656,14 +1644,23 @@ mod tests {
             session_id: None,
             team: None,
         };
-        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
         let result: A2aSendResult = serde_json::from_value(value).unwrap();
-        assert!(result.success, "expected success; got error: {:?}", result.error);
+        assert!(
+            result.success,
+            "expected success; got error: {:?}",
+            result.error
+        );
         assert_eq!(result.response, "Reviewed — looks good");
         assert_eq!(result.session_id, "agent:analyzer:session:abc");
         assert_eq!(result.iterations, Some(2));
 
-        dispatcher_join.await.expect("simulated dispatcher must not panic");
+        dispatcher_join
+            .await
+            .expect("simulated dispatcher must not panic");
     }
 
     /// When pekohub synthesizes a structured error response (target
@@ -1676,10 +1673,7 @@ mod tests {
     async fn test_execute_remote_decodes_hub_synthesized_error() {
         let service = build_test_service().await;
         let (ctx, mut rx, dir) = build_test_ctx(Duration::from_secs(1));
-        dir.register_did(
-            "did:peko:agent:target-keyhash",
-            sample_remote_resolution(),
-        );
+        dir.register_did("did:peko:agent:target-keyhash", sample_remote_resolution());
 
         let hub_error = serde_json::to_vec(&serde_json::json!({
             "kind": "error",
@@ -1711,7 +1705,10 @@ mod tests {
             session_id: None,
             team: None,
         };
-        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
         let result: A2aSendResult = serde_json::from_value(value).unwrap();
         assert!(!result.success);
         let err = result.error.unwrap();
@@ -1755,7 +1752,10 @@ mod tests {
             team: None,
         };
         let start = std::time::Instant::now();
-        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
         let elapsed = start.elapsed();
         let result: A2aSendResult = serde_json::from_value(value).unwrap();
         assert!(!result.success);
@@ -1801,7 +1801,10 @@ mod tests {
             session_id: None,
             team: None,
         };
-        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
         let result: A2aSendResult = serde_json::from_value(value).unwrap();
         assert!(!result.success);
         let err = result.error.unwrap();
@@ -1858,7 +1861,10 @@ mod tests {
             session_id: None,
             team: None,
         };
-        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
         let result: A2aSendResult = serde_json::from_value(value).unwrap();
         assert!(result.success);
         assert_eq!(result.response, "ok from hint path");

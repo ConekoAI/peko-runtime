@@ -2,10 +2,10 @@
 //!
 //! Exports teams to `.team` files (tar.gz archives containing multiple agents)
 
+use crate::agents::agent_config::AgentConfig;
 use crate::identity::Identity;
 use crate::registry::packaging::types::ExtensionRef;
 use crate::registry::packaging::{ExportOptions as AgentExportOptions, Packager};
-use crate::agents::agent_config::AgentConfig;
 use anyhow::Context;
 use std::collections::HashMap;
 use std::path::Path;
@@ -399,7 +399,7 @@ pub struct TeamInfo {
 pub struct TeamFormat {
     /// Format version
     pub version: String,
-    /// Pekobot version
+    /// Peko version
     pub peko_version: String,
 }
 

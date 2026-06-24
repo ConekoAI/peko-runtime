@@ -1,11 +1,11 @@
-# Pekobot — Data Model Specification
+# Peko — Data Model Specification
 
 **Version:** 0.1.0
 **Date:** 2026-06-23 (review pass)
 **Status:** Current
 **Companion docs:** [`AGENTS.md`](AGENTS.md) (build & module rules), [`API_SURFACE.md`](API_SURFACE.md) (public Rust API), [`docs/architecture/adr/`](docs/architecture/adr/) (decisions)
 
-This document defines every on-disk and in-memory data format used by the Pekobot runtime. It is the authoritative reference for anyone implementing the filesystem loader, session manager, image builder, or any component that reads or writes Pekobot data. All formats described here must be treated as stable contracts — breaking changes require a version increment.
+This document defines every on-disk and in-memory data format used by the Peko runtime. It is the authoritative reference for anyone implementing the filesystem loader, session manager, image builder, or any component that reads or writes Peko data. All formats described here must be treated as stable contracts — breaking changes require a version increment.
 
 ---
 
@@ -1595,7 +1595,7 @@ type        = "tool"              # REQUIRED. "tool"|"skill"|"mcp"|"session"
 name        = "web-browser"       # REQUIRED. Lowercase alphanumeric + hyphens
 version     = "1.2.0"            # REQUIRED. Semver
 description = "Playwright-based browser for web interaction"
-author      = "pekobot-community"
+author      = "peko-community"
 license     = "MIT"
 
 # For type = "tool"

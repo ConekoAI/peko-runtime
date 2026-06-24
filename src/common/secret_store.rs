@@ -190,9 +190,7 @@ impl SecretStore for OsKeychainSecretStore {
         match entry.delete_password() {
             Ok(()) => Ok(true),
             Err(keyring::Error::NoEntry) => Ok(false),
-            Err(e) => Err(SecretStoreError::Backend(format!(
-                "keychain delete: {e}"
-            ))),
+            Err(e) => Err(SecretStoreError::Backend(format!("keychain delete: {e}"))),
         }
     }
 
@@ -214,8 +212,8 @@ impl SecretStore for OsKeychainSecretStore {
         };
         let s = secret.expose_secret();
         let ok = match account {
-            "openai" | "azure-openai" | "azure" | "openrouter" | "together"
-            | "fireworks" | "groq" | "deepseek" | "xai" | "grok" | "moonshot" | "kimi" => {
+            "openai" | "azure-openai" | "azure" | "openrouter" | "together" | "fireworks"
+            | "groq" | "deepseek" | "xai" | "grok" | "moonshot" | "kimi" => {
                 s.starts_with("sk-") || s.len() > 10
             }
             "anthropic" => s.starts_with("sk-ant-") || s.len() > 10,
@@ -259,34 +257,36 @@ impl InMemorySecretStore {
 
 impl SecretStore for InMemorySecretStore {
     fn get(&self, account: &str) -> Result<Option<SecretString>, SecretStoreError> {
-        let guard = self.inner.read().map_err(|e| {
-            SecretStoreError::Backend(format!("in-memory lock poisoned: {e}"))
-        })?;
-        Ok(guard
-            .get(account)
-            .map(|s| SecretString::from(s.clone())))
+        let guard = self
+            .inner
+            .read()
+            .map_err(|e| SecretStoreError::Backend(format!("in-memory lock poisoned: {e}")))?;
+        Ok(guard.get(account).map(|s| SecretString::from(s.clone())))
     }
 
     fn set(&self, account: &str, secret: &SecretString) -> Result<(), SecretStoreError> {
         validate_account(account)?;
-        let mut guard = self.inner.write().map_err(|e| {
-            SecretStoreError::Backend(format!("in-memory lock poisoned: {e}"))
-        })?;
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|e| SecretStoreError::Backend(format!("in-memory lock poisoned: {e}")))?;
         guard.insert(account.to_string(), secret.expose_secret().to_string());
         Ok(())
     }
 
     fn delete(&self, account: &str) -> Result<bool, SecretStoreError> {
-        let mut guard = self.inner.write().map_err(|e| {
-            SecretStoreError::Backend(format!("in-memory lock poisoned: {e}"))
-        })?;
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|e| SecretStoreError::Backend(format!("in-memory lock poisoned: {e}")))?;
         Ok(guard.remove(account).is_some())
     }
 
     fn list_accounts(&self) -> Result<Vec<String>, SecretStoreError> {
-        let guard = self.inner.read().map_err(|e| {
-            SecretStoreError::Backend(format!("in-memory lock poisoned: {e}"))
-        })?;
+        let guard = self
+            .inner
+            .read()
+            .map_err(|e| SecretStoreError::Backend(format!("in-memory lock poisoned: {e}")))?;
         let mut v: Vec<String> = guard.keys().cloned().collect();
         v.sort();
         Ok(v)
@@ -328,11 +328,14 @@ mod tests {
 
     #[test]
     fn validate_account_rejects_empty_and_pathological() {
-        for bad in ["", "../escape", "with space", "with\nnewline", &"x".repeat(129)] {
-            assert!(
-                validate_account(bad).is_err(),
-                "should reject {bad:?}"
-            );
+        for bad in [
+            "",
+            "../escape",
+            "with space",
+            "with\nnewline",
+            &"x".repeat(129),
+        ] {
+            assert!(validate_account(bad).is_err(), "should reject {bad:?}");
         }
     }
 
@@ -364,12 +367,12 @@ mod tests {
 
     #[test]
     fn in_memory_list_accounts_sorted() {
-        let store = InMemorySecretStore::from_pairs(&[
-            ("zeta", "z"),
-            ("alpha", "a"),
-            ("beta", "b"),
-        ]);
-        assert_eq!(store.list_accounts().unwrap(), vec!["alpha", "beta", "zeta"]);
+        let store =
+            InMemorySecretStore::from_pairs(&[("zeta", "z"), ("alpha", "a"), ("beta", "b")]);
+        assert_eq!(
+            store.list_accounts().unwrap(),
+            vec!["alpha", "beta", "zeta"]
+        );
     }
 
     #[test]

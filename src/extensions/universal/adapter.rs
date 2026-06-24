@@ -126,12 +126,21 @@ impl UniversalToolAdapter {
         let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
             .with_context(|| format!("Failed to parse manifest {manifest_path:?}"))?;
 
-        let tool_name = crate::extensions::framework::adapters::parsing::require_string_field(&yaml, "name")
-            .or_else(|_| crate::extensions::framework::adapters::parsing::require_string_field(&yaml, "id"))?;
-        let description =
-            crate::extensions::framework::adapters::parsing::optional_string_field(&yaml, "description", "");
-        let version =
-            crate::extensions::framework::adapters::parsing::optional_string_field(&yaml, "version", "1.0.0");
+        let tool_name =
+            crate::extensions::framework::adapters::parsing::require_string_field(&yaml, "name")
+                .or_else(|_| {
+                    crate::extensions::framework::adapters::parsing::require_string_field(
+                        &yaml, "id",
+                    )
+                })?;
+        let description = crate::extensions::framework::adapters::parsing::optional_string_field(
+            &yaml,
+            "description",
+            "",
+        );
+        let version = crate::extensions::framework::adapters::parsing::optional_string_field(
+            &yaml, "version", "1.0.0",
+        );
 
         let mut manifest = ExtensionManifest::new(
             &tool_name,
@@ -280,21 +289,31 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
             .with_context(|| format!("Failed to parse universal tool YAML manifest at {path:?}"))?;
 
         let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
-        let tool_name = crate::extensions::framework::adapters::parsing::require_string_field(&yaml, "name")
-            .or_else(|_| crate::extensions::framework::adapters::parsing::require_string_field(&yaml, "id"))?;
-        let description =
-            crate::extensions::framework::adapters::parsing::optional_string_field(&yaml, "description", "");
-        let version =
-            crate::extensions::framework::adapters::parsing::optional_string_field(&yaml, "version", "1.0.0");
-
-        let executable =
-            crate::extensions::framework::adapters::parsing::find_executable_sync(tool_path, &tool_name)
-                .with_context(|| {
-                    format!(
-                        "Failed to find executable for tool '{}' in {:?}",
-                        tool_name, tool_path
+        let tool_name =
+            crate::extensions::framework::adapters::parsing::require_string_field(&yaml, "name")
+                .or_else(|_| {
+                    crate::extensions::framework::adapters::parsing::require_string_field(
+                        &yaml, "id",
                     )
                 })?;
+        let description = crate::extensions::framework::adapters::parsing::optional_string_field(
+            &yaml,
+            "description",
+            "",
+        );
+        let version = crate::extensions::framework::adapters::parsing::optional_string_field(
+            &yaml, "version", "1.0.0",
+        );
+
+        let executable = crate::extensions::framework::adapters::parsing::find_executable_sync(
+            tool_path, &tool_name,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to find executable for tool '{}' in {:?}",
+                tool_name, tool_path
+            )
+        })?;
 
         let mut manifest = ExtensionManifest::new(
             &tool_name,
@@ -378,8 +397,9 @@ impl HookHandler for UniversalToolExecuteHandler {
         let manifest_path = self.manifest_path.clone();
         let executable = self.executable.clone();
 
-        let exec_config =
-            crate::extensions::framework::services::ToolExecutionConfig::with_schema(self.full_schema.clone());
+        let exec_config = crate::extensions::framework::services::ToolExecutionConfig::with_schema(
+            self.full_schema.clone(),
+        );
 
         ctx.services
             .async_router()

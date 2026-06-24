@@ -17,9 +17,9 @@ pub mod turn_boundaries;
 #[cfg(test)]
 mod integration_tests;
 
-use crate::providers::MessageRole;
 use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
+use crate::providers::MessageRole;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

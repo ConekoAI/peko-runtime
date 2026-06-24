@@ -1,7 +1,7 @@
 //! Hook input/output/result types
 
-use crate::extensions::framework::types::{AsyncReceipt, AsyncTaskStatus};
 use crate::common::types::message::{ContentBlock, LlmMessage};
+use crate::extensions::framework::types::{AsyncReceipt, AsyncTaskStatus};
 
 /// Result of a hook handler invocation
 #[derive(Debug)]

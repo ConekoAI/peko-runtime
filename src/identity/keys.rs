@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn test_sign_and_verify() {
         let kp = KeyPair::generate();
-        let message = b"Hello, Pekobot!";
+        let message = b"Hello, Peko!";
 
         let signature = kp.sign(message);
         assert!(kp.verify(message, &signature).is_ok());
@@ -149,8 +149,8 @@ mod tests {
     #[test]
     fn test_verify_wrong_message() {
         let kp = KeyPair::generate();
-        let message1 = b"Hello, Pekobot!";
-        let message2 = b"Goodbye, Pekobot!";
+        let message1 = b"Hello, Peko!";
+        let message2 = b"Goodbye, Peko!";
 
         let signature = kp.sign(message1);
         assert!(kp.verify(message2, &signature).is_err());

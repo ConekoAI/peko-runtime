@@ -44,7 +44,8 @@ pub struct ToolMetadata {
     /// Source of the tool
     pub source: ToolSource,
     /// Reserved parameters configuration
-    pub reserved_params: crate::extensions::framework::services::reserved_params::ReservedParamsConfig,
+    pub reserved_params:
+        crate::extensions::framework::services::reserved_params::ReservedParamsConfig,
     /// Companion hook IDs registered alongside the primary execution hook.
     /// Populated by `ExtensionCore::register_tool()` and used during
     /// `unregister_tool()` for atomic cleanup.
@@ -65,8 +66,8 @@ impl ToolMetadata {
             description: description.into(),
             parameters,
             source,
-            reserved_params: crate::extensions::framework::services::reserved_params::ReservedParamsConfig::new(
-            ),
+            reserved_params:
+                crate::extensions::framework::services::reserved_params::ReservedParamsConfig::new(),
             companion_hook_ids: None,
         }
     }

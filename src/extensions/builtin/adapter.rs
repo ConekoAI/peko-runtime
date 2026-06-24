@@ -104,7 +104,8 @@ impl BuiltinToolAdapter {
         // Side-table: keep a clone of the Arc<dyn Tool> for direct
         // invocation paths (TaskTool::spawn calls core.get_tool). Clone
         // BEFORE moving the original into the execute handler below.
-        core.insert_tool_instance(tool_name.clone(), tool.clone()).await;
+        core.insert_tool_instance(tool_name.clone(), tool.clone())
+            .await;
 
         // Create execution handler (consumes the original `tool` Arc).
         let exec_handler = Arc::new(BuiltinExecuteHandler::new(tool));
@@ -316,8 +317,9 @@ impl HookHandler for BuiltinExecuteHandler {
         let tool_name_for_preproc = tool_name.clone();
         let tool_name_for_ctx = tool_name.clone();
 
-        let exec_config =
-            crate::extensions::framework::services::ToolExecutionConfig::with_schema(self.tool.parameters());
+        let exec_config = crate::extensions::framework::services::ToolExecutionConfig::with_schema(
+            self.tool.parameters(),
+        );
 
         ctx.services
             .async_router()

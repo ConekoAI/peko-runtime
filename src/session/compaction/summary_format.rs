@@ -78,8 +78,8 @@ pub fn format_summary_with_file_ops(summary: &str, details: &CompactionDetails) 
 pub fn extract_file_ops_from_messages(
     messages: &[crate::common::types::message::LlmMessage],
 ) -> CompactionDetails {
-    use crate::providers::MessageRole;
     use crate::common::types::message::ContentBlock;
+    use crate::providers::MessageRole;
 
     let mut read = Vec::new();
     let mut modified = Vec::new();
@@ -158,9 +158,9 @@ pub fn compute_cumulative_details(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::MessageRole;
     use crate::common::types::message::ContentBlock;
     use crate::common::types::message::LlmMessage;
+    use crate::providers::MessageRole;
 
     #[test]
     fn test_format_summary_with_file_ops() {

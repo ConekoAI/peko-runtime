@@ -8,6 +8,7 @@
 //! - Structured summary format with file operations
 //! - Cache validation and invalidation
 
+use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole};
 use crate::session::compaction::{
     registry::ModelContextRegistry,
     summary_format::{
@@ -18,7 +19,6 @@ use crate::session::compaction::{
     },
     CompactionConfig, CompactionEntry, Compactor,
 };
-use crate::common::types::message::{ContentBlock, LlmMessage, MessageRole};
 
 // ============================================================================
 // Success Criterion: Built-in compactor triggers using dual-threshold

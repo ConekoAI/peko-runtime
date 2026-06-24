@@ -3,11 +3,11 @@
 //! Provides unified session management for both CLI and HTTP API.
 //! Handles session listing, history retrieval, branching, and deletion.
 
+use crate::auth::principal::Principal;
 use crate::common::paths::PathResolver;
 use crate::session::events::SessionEvent;
 use crate::session::metadata_controller::MetadataController;
 use crate::session::sync::SyncSessionStorage;
-use crate::auth::principal::Principal;
 use crate::session::SessionEntry;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};

@@ -129,7 +129,7 @@ impl MessageTool {
             ChannelType::Whatsapp => self.send_whatsapp(recipient, content).await,
             ChannelType::Signal => self.send_signal(recipient, content).await,
             ChannelType::Email => {
-                let sub = subject.unwrap_or("Message from Pekobot");
+                let sub = subject.unwrap_or("Message from Peko");
                 self.send_email(recipient, sub, content).await
             }
             ChannelType::Webhook => self.send_webhook(recipient, content).await,

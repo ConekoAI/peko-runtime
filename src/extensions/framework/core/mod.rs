@@ -31,7 +31,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use pekobot::extensions::core::{ExtensionCore, HookPoint};
+//! use peko::extensions::core::{ExtensionCore, HookPoint};
 //!
 //! // Create the core
 //! let core = ExtensionCore::new();

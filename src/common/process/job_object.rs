@@ -12,7 +12,6 @@
 #[cfg(windows)]
 use tracing::warn;
 
-
 /// A handle to a Windows Job Object.
 ///
 /// When dropped, the handle is closed.  If `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`

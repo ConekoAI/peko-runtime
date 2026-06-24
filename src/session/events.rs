@@ -13,9 +13,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub use crate::common::types::message::TokenUsage;
 /// Re-export unified message types
 pub use crate::session::message::{MessageSource, RoleMetadata, SessionMessage};
-pub use crate::common::types::message::TokenUsage;
 
 /// Event envelope - every line in JSONL shares this structure
 ///
@@ -460,7 +460,9 @@ impl SessionEvent {
     #[must_use]
     pub fn is_assistant_message(&self) -> bool {
         match self {
-            SessionEvent::MessageV2(m) => m.role() == crate::common::types::message::MessageRole::Assistant,
+            SessionEvent::MessageV2(m) => {
+                m.role() == crate::common::types::message::MessageRole::Assistant
+            }
             _ => false,
         }
     }

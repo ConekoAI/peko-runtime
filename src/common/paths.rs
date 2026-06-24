@@ -1,6 +1,6 @@
 //! Common path resolution utilities
 //!
-//! This module provides standardized path resolution for Pekobot's
+//! This module provides standardized path resolution for Peko's
 //! directory structure. All components (CLI, API, daemon) should use
 //! these utilities for consistent path resolution.
 //!
@@ -40,7 +40,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Environment variable override for Pekobot's home directory.
+/// Environment variable override for Peko's home directory.
 const PEKO_HOME_ENV: &str = "PEKO_HOME";
 
 /// Get the default configuration directory
@@ -82,7 +82,7 @@ pub fn default_cache_dir() -> PathBuf {
     dirs::cache_dir().map_or_else(|| default_data_dir().join("cache"), |d| d.join("peko"))
 }
 
-/// Path resolver for Pekobot's directory structure
+/// Path resolver for Peko's directory structure
 ///
 /// This struct provides methods to resolve paths for agents, teams,
 /// sessions, and workspaces. It uses the configured base directories

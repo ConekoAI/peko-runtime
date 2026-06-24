@@ -377,11 +377,7 @@ impl ApiAdapter for MockAdapter {
         })
     }
 
-    fn parse_sse_event(
-        &self,
-        _model_id: &str,
-        _data: &str,
-    ) -> Result<Option<StreamEvent>> {
+    fn parse_sse_event(&self, _model_id: &str, _data: &str) -> Result<Option<StreamEvent>> {
         Ok(None)
     }
 
@@ -482,7 +478,12 @@ mod tests {
             parameters: serde_json::json!({}),
         }];
 
-        let _ = adapter.chat_with_tools("mock-model", &messages, Some(&tools), &ChatOptions::default());
+        let _ = adapter.chat_with_tools(
+            "mock-model",
+            &messages,
+            Some(&tools),
+            &ChatOptions::default(),
+        );
 
         let recorded = adapter.recorded_requests();
         assert_eq!(recorded.len(), 1);

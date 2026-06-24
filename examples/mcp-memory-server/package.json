@@ -1,5 +1,5 @@
 {
-  "name": "pekobot-mcp-memory-example",
+  "name": "peko-mcp-memory-example",
   "version": "1.0.0",
   "description": "MCP Memory Server demonstrating reserved parameter injection",
   "main": "server.js",
@@ -13,7 +13,7 @@
   },
   "keywords": [
     "mcp",
-    "pekobot",
+    "peko",
     "memory",
     "reserved-parameters"
   ]

@@ -270,11 +270,7 @@ mod tests {
             matches!(err, A2aWaitError::Timeout(_)),
             "expected Timeout, got: {err:?}"
         );
-        assert_eq!(
-            registry.pending_count(),
-            0,
-            "timed-out entry must not leak"
-        );
+        assert_eq!(registry.pending_count(), 0, "timed-out entry must not leak");
     }
 
     /// A spurious `complete` (no matching register) returns false and
