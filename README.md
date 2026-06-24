@@ -1,8 +1,8 @@
-# Pekobot 🐱
+# Peko 🐱
 
 **Lightweight Multi-Agent Runtime**
 
-Pekobot is a Rust-based multi-agent runtime that supports local multi-agent orchestration with DID identity, A2A protocol messaging, session overlays, and a unified extension architecture.
+Peko is a Rust-based multi-agent runtime that supports local multi-agent orchestration with DID identity, A2A protocol messaging, session overlays, and a unified extension architecture.
 
 > **Version:** 0.1.0 | **License:** MIT
 
@@ -63,8 +63,8 @@ See `.env.example` for all available options.
 
 ```bash
 # Clone the repository
-git clone https://github.com/coneko/pekobot
-cd pekobot
+git clone https://github.com/ConekoAI/peko-runtime
+cd peko-runtime
 
 # Build
 cargo build --release
@@ -94,14 +94,14 @@ echo "Hello" | ./target/release/peko send myagent --stdin
 
 ## CLI Reference
 
-Pekobot uses a hierarchical command structure (`peko <noun> <verb>`).
+Peko uses a hierarchical command structure (`peko <noun> <verb>`).
 
 ### Global Flags
 
 ```bash
---config-dir <PATH>     # Override config directory (env: PEKOBOT_CONFIG_DIR)
---data-dir <PATH>       # Override data directory (env: PEKOBOT_DATA_DIR)
---cache-dir <PATH>      # Override cache directory (env: PEKOBOT_CACHE_DIR)
+--config-dir <PATH>     # Override config directory (env: PEKO_CONFIG_DIR)
+--data-dir <PATH>       # Override data directory (env: PEKO_DATA_DIR)
+--cache-dir <PATH>      # Override cache directory (env: PEKO_CACHE_DIR)
 --json                  # Output results as JSON
 -q, --quiet             # Suppress non-error output
 -v, -vv, -vvv           # Verbose logging (repeat for more)
@@ -249,7 +249,7 @@ peko provider list                                # List available providers
 
 #### Update
 ```bash
-peko update                                       # Update Pekobot
+peko update                                       # Update Peko
 peko update --check                               # Check for updates only
 ```
 
@@ -344,7 +344,7 @@ peko agent inspect ./my-agent.agent
 
 ## Cron System & Daemon Mode
 
-Pekobot includes a full cron system for scheduling tasks with a daemon mode for automatic execution.
+Peko includes a full cron system for scheduling tasks with a daemon mode for automatic execution.
 
 ### Managing Cron Jobs
 
@@ -415,7 +415,7 @@ capabilities = ["messaging", "task_execution"]
 
 [agent.memory]
 enabled = true
-database_path = "~/.local/share/pekobot/memory.db"
+database_path = "~/.local/share/peko/memory.db"
 
 [agent.provider]
 type = "openai"
@@ -495,7 +495,7 @@ cargo clippy
 
 ```bash
 # Build image
-docker build -t pekobot:latest .
+docker build -t peko:latest .
 
 # Run with docker-compose
 docker-compose up

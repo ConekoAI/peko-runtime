@@ -10,7 +10,7 @@ model = "llama2"
 
 [memory]
 type = "sqlite"
-path = "~/.local/share/pekobot/memory.db"
+path = "~/.local/share/peko/memory.db"
 
 # ============================================
 # TOOL REGISTRY CONFIGURATION
@@ -34,12 +34,12 @@ url = "https://tools.coneko.ai"
 
 # UNCOMMENT FOR OFFLINE MODE:
 # type = "local"
-# path = "~/.local/share/pekobot/tools"
+# path = "~/.local/share/peko/tools"
 
 # UNCOMMENT FOR SOURCE BUILDS:
 # type = "source"
 # source_path = "~/src/pekohub-tools"
-# build_cache = "~/.cache/pekobot/tool-builds"
+# build_cache = "~/.cache/peko/tool-builds"
 
 # Advanced: Multi-registry with fallback
 # [[tools.registry.fallbacks]]
@@ -48,7 +48,7 @@ url = "https://tools.coneko.ai"
 #
 # [[tools.registry.fallbacks]]
 # type = "local"
-# path = "~/.local/share/pekobot/tools"
+# path = "~/.local/share/peko/tools"
 
 [tools]
 # Core tools (always bundled)
@@ -67,7 +67,7 @@ on_demand = [
 ]
 
 # Cache settings
-cache_dir = "~/.cache/pekobot/tools"
+cache_dir = "~/.cache/peko/tools"
 cache_ttl_hours = 168  # 1 week
 
 # Security

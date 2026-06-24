@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Pekobot Installer - Download from GitHub Releases
-# Usage: curl -fsSL https://raw.githubusercontent.com/coneko/pekobot/main/install.sh | bash
+# Peko Installer - Download from GitHub Releases
+# Usage: curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/main/install.sh | bash
 #
 
 set -e
@@ -14,11 +14,11 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-GITHUB_REPO="coneko/pekobot"
+GITHUB_REPO="ConekoAI/peko-runtime"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/pekobot}"
-DATA_DIR="${DATA_DIR:-$HOME/.local/share/pekobot}"
+CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/peko}"
+DATA_DIR="${DATA_DIR:-$HOME/.local/share/peko}"
 
 # Detect architecture and OS
 detect_platform() {
@@ -58,22 +58,22 @@ install_binary() {
     local platform=$1
     local version=$2
     local tmpdir=$(mktemp -d)
-    local asset_name="pekobot-${platform}.tar.gz"
+    local asset_name="peko-${platform}.tar.gz"
     
-    echo -e "${BLUE}Downloading Pekobot v${version} for ${platform}...${NC}"
+    echo -e "${BLUE}Downloading Peko v${version} for ${platform}...${NC}"
     
     # Try GitHub releases first
     local download_url="https://github.com/${GITHUB_REPO}/releases/download/v${version}/${asset_name}"
     
     echo -e "   ${BLUE}Source: ${download_url}${NC}"
     
-    if ! curl -fsSL --progress-bar "$download_url" -o "${tmpdir}/pekobot.tar.gz" 2>/dev/null; then
+    if ! curl -fsSL --progress-bar "$download_url" -o "${tmpdir}/peko.tar.gz" 2>/dev/null; then
         echo -e "${YELLOW}Release asset not found, trying alternative...${NC}"
         
         # Try without 'v' prefix
         download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${asset_name}"
         
-        if ! curl -fsSL --progress-bar "$download_url" -o "${tmpdir}/pekobot.tar.gz" 2>/dev/null; then
+        if ! curl -fsSL --progress-bar "$download_url" -o "${tmpdir}/peko.tar.gz" 2>/dev/null; then
             echo -e "${RED}Failed to download binary${NC}"
             echo -e "${YELLOW}Please check that the release exists:${NC}"
             echo -e "   ${BLUE}https://github.com/${GITHUB_REPO}/releases${NC}"
@@ -83,7 +83,7 @@ install_binary() {
     fi
     
     echo -e "${BLUE}Extracting...${NC}"
-    tar -xzf "${tmpdir}/pekobot.tar.gz" -C "$tmpdir" 2>/dev/null || {
+    tar -xzf "${tmpdir}/peko.tar.gz" -C "$tmpdir" 2>/dev/null || {
         echo -e "${RED}Failed to extract archive${NC}"
         rm -rf "$tmpdir"
         exit 1
@@ -91,16 +91,16 @@ install_binary() {
     
     # Find the binary (might be in subdir)
     local binary_path
-    if [ -f "${tmpdir}/pekobot" ]; then
-        binary_path="${tmpdir}/pekobot"
-    elif [ -f "${tmpdir}/target/release/pekobot" ]; then
-        binary_path="${tmpdir}/target/release/pekobot"
+    if [ -f "${tmpdir}/peko" ]; then
+        binary_path="${tmpdir}/peko"
+    elif [ -f "${tmpdir}/target/release/peko" ]; then
+        binary_path="${tmpdir}/target/release/peko"
     else
-        binary_path=$(find "$tmpdir" -name "pekobot" -type f | head -1)
+        binary_path=$(find "$tmpdir" -name "peko" -type f | head -1)
     fi
     
     if [ -z "$binary_path" ]; then
-        echo -e "${RED}Could not find pekobot binary in archive${NC}"
+        echo -e "${RED}Could not find peko binary in archive${NC}"
         rm -rf "$tmpdir"
         exit 1
     fi
@@ -111,14 +111,14 @@ install_binary() {
     # Install binary
     echo -e "${BLUE}Installing to ${INSTALL_DIR}...${NC}"
     if [ -w "$INSTALL_DIR" ]; then
-        mv "$binary_path" "${INSTALL_DIR}/pekobot"
+        mv "$binary_path" "${INSTALL_DIR}/peko"
     else
         echo -e "${YELLOW}Requesting sudo access to install to ${INSTALL_DIR}${NC}"
-        sudo mv "$binary_path" "${INSTALL_DIR}/pekobot"
+        sudo mv "$binary_path" "${INSTALL_DIR}/peko"
     fi
     
     rm -rf "$tmpdir"
-    echo -e "${GREEN}✓ Pekobot v${version} installed to ${INSTALL_DIR}/pekobot${NC}"
+    echo -e "${GREEN}✓ Peko v${version} installed to ${INSTALL_DIR}/peko${NC}"
 }
 
 # Install systemd service (Linux only)
@@ -137,18 +137,18 @@ install_systemd_service() {
     
     # Create service file
     if [ -w "/etc/systemd/system" ]; then
-        cat > /etc/systemd/system/pekobot.service <<EOF
+        cat > /etc/systemd/system/peko.service <<EOF
 [Unit]
-Description=Pekobot Agent Runtime
-Documentation=https://github.com/coneko/pekobot
+Description=Peko Agent Runtime
+Documentation=https://github.com/ConekoAI/peko-runtime
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=%I
-ExecStart=${INSTALL_DIR}/pekobot daemon start
-ExecStop=${INSTALL_DIR}/pekobot daemon stop
+ExecStart=${INSTALL_DIR}/peko daemon start
+ExecStop=${INSTALL_DIR}/peko daemon stop
 Restart=always
 RestartSec=10
 StartLimitInterval=60s
@@ -159,18 +159,18 @@ WantedBy=multi-user.target
 EOF
     else
         echo -e "${YELLOW}Requesting sudo access to install systemd service${NC}"
-        sudo tee /etc/systemd/system/pekobot.service > /dev/null <<EOF
+        sudo tee /etc/systemd/system/peko.service > /dev/null <<EOF
 [Unit]
-Description=Pekobot Agent Runtime
-Documentation=https://github.com/coneko/pekobot
+Description=Peko Agent Runtime
+Documentation=https://github.com/ConekoAI/peko-runtime
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=%I
-ExecStart=${INSTALL_DIR}/pekobot daemon start
-ExecStop=${INSTALL_DIR}/pekobot daemon stop
+ExecStart=${INSTALL_DIR}/peko daemon start
+ExecStop=${INSTALL_DIR}/peko daemon stop
 Restart=always
 RestartSec=10
 StartLimitInterval=60s
@@ -184,9 +184,9 @@ EOF
     sudo systemctl daemon-reload 2>/dev/null || true
     echo -e "${GREEN}✓ Systemd service installed${NC}"
     echo ""
-    echo -e "${YELLOW}To enable and start Pekobot as a service:${NC}"
-    echo "  sudo systemctl enable pekobot@\$USER"
-    echo "  sudo systemctl start pekobot@\$USER"
+    echo -e "${YELLOW}To enable and start Peko as a service:${NC}"
+    echo "  sudo systemctl enable peko@\$USER"
+    echo "  sudo systemctl start peko@\$USER"
 }
 
 # Create directories and config
@@ -201,7 +201,7 @@ setup_directories() {
     # Create default config if it doesn't exist
     if [ ! -f "${CONFIG_DIR}/config.toml" ]; then
         cat > "${CONFIG_DIR}/config.toml" <<EOF
-# Pekobot Configuration
+# Peko Configuration
 # Generated by install.sh on $(date -I)
 
 [agent]
@@ -248,7 +248,7 @@ check_dependencies() {
 print_post_install() {
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}  Pekobot installed successfully!${NC}"
+    echo -e "${GREEN}  Peko installed successfully!${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
     echo ""
     echo -e "${BLUE}Quick Start:${NC}"
@@ -257,37 +257,36 @@ print_post_install() {
     echo "     export OPENAI_API_KEY='your-key-here'"
     echo ""
     echo "  2. Create your first agent:"
-    echo "     pekobot agent create my-agent"
+    echo "     peko agent create my-agent"
     echo ""
-    echo "  3. Run the agent:"
-    echo "     pekobot agent start my-agent"
+    echo "  3. Send a message to the agent:"
+    echo "     peko send my-agent \"Hello\""
     echo ""
     echo "  4. Or run in daemon mode:"
-    echo "     pekobot daemon start"
+    echo "     peko daemon start"
     echo ""
     echo -e "${BLUE}Configuration:${NC}"
     echo "  Config: ${CONFIG_DIR}/config.toml"
     echo "  Data:   ${DATA_DIR}"
     echo ""
     echo -e "${BLUE}Documentation:${NC}"
-    echo "  https://github.com/coneko/pekobot#readme"
+    echo "  https://github.com/ConekoAI/peko-runtime#readme"
     echo ""
-    echo -e "${YELLOW}Need help? Join our Discord: https://discord.gg/clawd${NC}"
 }
 
 # Main installation flow
 main() {
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}  Pekobot Installer${NC}"
-    echo -e "${BLUE}  github.com/coneko/pekobot${NC}"
+    echo -e "${BLUE}  Peko Installer${NC}"
+    echo -e "${BLUE}  github.com/ConekoAI/peko-runtime${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}"
     echo ""
     
     # Check if already installed
-    if command -v pekobot >/dev/null 2>&1; then
+    if command -v peko >/dev/null 2>&1; then
         local current_version
-        current_version=$(pekobot --version 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
-        echo -e "${YELLOW}Pekobot is already installed (v${current_version})${NC}"
+        current_version=$(peko --version 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
+        echo -e "${YELLOW}Peko is already installed (v${current_version})${NC}"
         echo ""
         read -p "Reinstall/Update anyway? (y/N) " -n 1 -r
         echo
@@ -337,8 +336,8 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Environment:"
             echo "  INSTALL_DIR         Installation directory"
-            echo "  CONFIG_DIR          Config directory (default: ~/.config/pekobot)"
-            echo "  DATA_DIR            Data directory (default: ~/.local/share/pekobot)"
+            echo "  CONFIG_DIR          Config directory (default: ~/.config/peko)"
+            echo "  DATA_DIR            Data directory (default: ~/.local/share/peko)"
             exit 0
             ;;
         *)

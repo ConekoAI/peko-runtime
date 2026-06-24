@@ -47,8 +47,6 @@ use std::path::PathBuf;
   peko team create myteam                    # Create a new team
   peko agent create myteam/my-agent --provider kimi  # Create agent in team
   peko agent export my-agent -o my-agent.agent   # Export agent to package
-  peko run my-agent:v1.0                         # Run agent instance
-  peko ps                                    # List instances
   peko session list myteam/my-agent          # List sessions
   peko send myteam/my-agent \"Hello\"         # Send message
 ")]

@@ -45,13 +45,13 @@ jobs:
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/pekobot-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release pekobot
+          tar -czf dist/peko-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release peko
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pekobot-linux-x86_64
-          path: dist/pekobot-linux-x86_64.tar.gz
+          name: peko-linux-x86_64
+          path: dist/peko-linux-x86_64.tar.gz
 
   # Build for Linux aarch64 (ARM64)
   build-linux-aarch64:
@@ -94,13 +94,13 @@ jobs:
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/pekobot-linux-aarch64.tar.gz -C target/aarch64-unknown-linux-gnu/release pekobot
+          tar -czf dist/peko-linux-aarch64.tar.gz -C target/aarch64-unknown-linux-gnu/release peko
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pekobot-linux-aarch64
-          path: dist/pekobot-linux-aarch64.tar.gz
+          name: peko-linux-aarch64
+          path: dist/peko-linux-aarch64.tar.gz
 
   # Build for macOS x86_64
   build-macos-x86_64:
@@ -128,13 +128,13 @@ jobs:
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/pekobot-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release pekobot
+          tar -czf dist/peko-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release peko
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pekobot-macos-x86_64
-          path: dist/pekobot-macos-x86_64.tar.gz
+          name: peko-macos-x86_64
+          path: dist/peko-macos-x86_64.tar.gz
 
   # Build for macOS aarch64 (Apple Silicon)
   build-macos-aarch64:
@@ -162,13 +162,13 @@ jobs:
       - name: Create archive
         run: |
           mkdir -p dist
-          tar -czf dist/pekobot-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release pekobot
+          tar -czf dist/peko-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release peko
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pekobot-macos-aarch64
-          path: dist/pekobot-macos-aarch64.tar.gz
+          name: peko-macos-aarch64
+          path: dist/peko-macos-aarch64.tar.gz
 
   # Create GitHub Release
   create-release:
@@ -183,7 +183,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: pekobot-*
+          pattern: peko-*
           merge-multiple: true
       
       - name: Generate release notes
@@ -196,7 +196,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           
           cat > RELEASE_NOTES.md << EOF
-          ## Pekobot v${VERSION}
+          ## Peko v${VERSION}
           
           ### Installation
           
@@ -205,10 +205,10 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
           
           # Or manually download for your platform:
-          # Linux x86_64: pekobot-linux-x86_64.tar.gz
-          # Linux ARM64:  pekobot-linux-aarch64.tar.gz
-          # macOS x86_64: pekobot-macos-x86_64.tar.gz
-          # macOS ARM64:  pekobot-macos-aarch64.tar.gz
+          # Linux x86_64: peko-linux-x86_64.tar.gz
+          # Linux ARM64:  peko-linux-aarch64.tar.gz
+          # macOS x86_64: peko-macos-x86_64.tar.gz
+          # macOS ARM64:  peko-macos-aarch64.tar.gz
           \`\`\`
           
           ### Quick Start
@@ -218,18 +218,18 @@ jobs:
           export OPENAI_API_KEY='your-key-here'
           
           # Create and run an agent
-          pekobot agent create my-agent
-          pekobot agent start my-agent
+          peko agent create my-agent
+          peko send my-agent "Hello"
           \`\`\`
           
           ### Assets
           
           | Platform | Architecture | Asset |
           |----------|--------------|-------|
-          | Linux    | x86_64       | pekobot-linux-x86_64.tar.gz |
-          | Linux    | ARM64        | pekobot-linux-aarch64.tar.gz |
-          | macOS    | x86_64       | pekobot-macos-x86_64.tar.gz |
-          | macOS    | ARM64        | pekobot-macos-aarch64.tar.gz |
+          | Linux    | x86_64       | peko-linux-x86_64.tar.gz |
+          | Linux    | ARM64        | peko-linux-aarch64.tar.gz |
+          | macOS    | x86_64       | peko-macos-x86_64.tar.gz |
+          | macOS    | ARM64        | peko-macos-aarch64.tar.gz |
           
           ### Checksums
           EOF
@@ -244,7 +244,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          name: Pekobot v${{ steps.release_notes.outputs.version }}
+          name: Peko v${{ steps.release_notes.outputs.version }}
           body_path: RELEASE_NOTES.md
           files: artifacts/*.tar.gz
           draft: false
@@ -266,16 +266,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: pekobot-*
+          pattern: peko-*
           merge-multiple: true
       
       - name: Create manual release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ github.event.inputs.version }}
-          name: Pekobot v${{ github.event.inputs.version }}
+          name: Peko v${{ github.event.inputs.version }}
           body: |
-            ## Pekobot v${{ github.event.inputs.version }}
+            ## Peko v${{ github.event.inputs.version }}
             
             Manual release triggered via workflow dispatch.
             
