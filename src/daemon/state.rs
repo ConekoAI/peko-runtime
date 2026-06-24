@@ -1365,10 +1365,10 @@ mod tests {
             tool_runtime.has_tool("str_replace_file").await,
             "str_replace_file tool not registered"
         );
-        assert!(
-            tool_runtime.has_tool("task").await,
-            "task tool not registered"
-        );
+        // `task` is registered per-agent (not globally on the daemon's
+        // ToolRuntime) — see `Agent::build_agentic_loop` and
+        // `BuiltinToolAdapter::register_task_tool`. Asserting it's
+        // missing here pins the contract.
 
         // ExtensionCore should list the tools
         let core = tool_runtime.extension_core();

@@ -1,8 +1,8 @@
 //! Async Execution Router
 //!
-//! Routes tool execution based on the `_async` reserved parameter.
-//! This replaces `ToolWrapper`'s async handling and makes it available
-//! to ALL tool types (built-in, MCP, Universal, General) through `ExtensionCore`.
+//! Routes tool execution with a constant 5-minute timeout. Tools that exceed
+//! the timeout are auto-detached to background tasks; the agent retrieves
+//! the result via the `task` tool's `output` action.
 //!
 //! # Usage
 //!
@@ -16,170 +16,42 @@
 //! ```
 
 use crate::extensions::framework::async_exec::executor::{
-    AsyncResultDeliveryMode, AsyncToolConfig, DeliveryTarget,
+    AsyncResultDeliveryMode, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget,
 };
 use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
 use crate::extensions::framework::transport::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
 use crate::extensions::framework::types::{HookOutput, HookResult};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 use tracing::{info, instrument};
 
-/// Reserved parameters for async execution control
-///
-/// These parameters are extracted from tool calls and control execution behavior.
-/// They are removed from the params before the tool sees them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AsyncReservedParams {
-    /// Request async execution
-    #[serde(rename = "_async", default)]
-    pub async_mode: bool,
+/// Default tool execution timeout in seconds. When a tool call exceeds
+/// this, the work is detached to a background task and a receipt is
+/// returned to the agent. Agent config can override via
+/// `AgentConfig::default_tool_timeout_secs`.
+pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 300;
 
-    /// Timeout in seconds
-    #[serde(rename = "_timeout")]
-    pub timeout_secs: Option<u64>,
-
-    /// Result delivery mode: "queue" | "stream" | "blocking"
-    #[serde(rename = "_callback", default = "default_callback")]
-    pub callback: String,
-
-    /// Request progress updates (async only)
-    #[serde(rename = "_progress", default = "default_true")]
-    pub progress: bool,
-
-    /// Task priority: "low" | "normal" | "high"
-    #[serde(rename = "_priority", default = "default_priority")]
-    pub priority: String,
-
-    /// Number of retries on failure
-    #[serde(rename = "_retry", default)]
-    pub retry_count: u32,
-}
-
-impl Default for AsyncReservedParams {
-    fn default() -> Self {
-        Self {
-            async_mode: false,
-            timeout_secs: None,
-            callback: default_callback(),
-            progress: default_true(),
-            priority: default_priority(),
-            retry_count: 0,
-        }
-    }
-}
-
-fn default_callback() -> String {
-    "queue".to_string()
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_priority() -> String {
-    "normal".to_string()
-}
-
-impl AsyncReservedParams {
-    /// Extract reserved parameters from a JSON value
-    ///
-    /// Removes the reserved parameters from the input params and returns them.
-    pub fn extract(params: &mut Value) -> Self {
-        let mut reserved = Self::default();
-
-        if let Some(obj) = params.as_object_mut() {
-            // Extract _async (accept boolean or string)
-            if let Some(v) = obj.remove("_async") {
-                reserved.async_mode = Self::parse_bool(&v).unwrap_or(false);
-            }
-
-            // Extract _timeout (accept integer, float, or string)
-            if let Some(v) = obj.remove("_timeout") {
-                reserved.timeout_secs = v
-                    .as_u64()
-                    .or_else(|| v.as_f64().map(|f| f as u64))
-                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()));
-            }
-
-            // Extract _callback
-            if let Some(v) = obj.remove("_callback") {
-                if let Some(s) = v.as_str() {
-                    reserved.callback = s.to_string();
-                }
-            }
-
-            // Extract _progress (accept boolean or string)
-            if let Some(v) = obj.remove("_progress") {
-                reserved.progress = Self::parse_bool(&v).unwrap_or(true);
-            }
-
-            // Extract _priority
-            if let Some(v) = obj.remove("_priority") {
-                if let Some(s) = v.as_str() {
-                    reserved.priority = s.to_string();
-                }
-            }
-
-            // Extract _retry (accept integer or string)
-            if let Some(v) = obj.remove("_retry") {
-                reserved.retry_count = v
-                    .as_u64()
-                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0) as u32;
-            }
-        }
-
-        reserved
-    }
-
-    /// Parse a JSON value as a boolean, accepting both native booleans
-    /// and common string representations.
-    fn parse_bool(v: &Value) -> Option<bool> {
-        v.as_bool().or_else(|| {
-            v.as_str().and_then(|s| match s.to_lowercase().as_str() {
-                "true" | "yes" | "1" => Some(true),
-                "false" | "no" | "0" => Some(false),
-                _ => None,
-            })
-        })
-    }
-
-    /// Get effective timeout (use reserved or default)
-    #[must_use]
-    pub fn effective_timeout(&self, is_async: bool) -> u64 {
-        self.timeout_secs
-            .unwrap_or(if is_async { 300 } else { 120 })
-    }
-
-    /// Validate callback mode
-    #[must_use]
-    pub fn is_valid_callback(&self) -> bool {
-        matches!(self.callback.as_str(), "queue" | "stream" | "blocking")
-    }
-
-    /// Validate priority
-    #[must_use]
-    pub fn is_valid_priority(&self) -> bool {
-        matches!(self.priority.as_str(), "low" | "normal" | "high")
-    }
+/// Legacy reserved params are no longer honored; this is now a no-op.
+fn strip_legacy_reserved_params(params: Value) -> Value {
+    params
 }
 
 /// Async Execution Router
 ///
-/// Routes tool execution to either sync or async paths based on `_async` parameter.
+/// Routes tool execution with a constant 5-minute timeout
+/// ([`DEFAULT_TOOL_TIMEOUT_SECS`]). Tools exceeding the timeout are
+/// auto-detached to background tasks; the agent retrieves the result
+/// via the `task` tool's `output` action.
+///
 /// This is the unified router for ALL tool types in ADR-018a.
 ///
 /// In daemon mode, use `LocalAsyncTransport`. In CLI mode, use `DaemonHttpTransport`.
 #[derive(Clone)]
 pub struct AsyncExecutionRouter {
-    /// Default sync timeout
-    default_sync_timeout: Duration,
-    /// Default async timeout
-    default_async_timeout: Duration,
+    /// Default tool execution timeout (5 min default).
+    default_tool_timeout: Duration,
     /// Transport for async task execution (local or HTTP)
     transport: std::sync::Arc<dyn AsyncTaskTransport>,
 }
@@ -187,8 +59,7 @@ pub struct AsyncExecutionRouter {
 impl std::fmt::Debug for AsyncExecutionRouter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AsyncExecutionRouter")
-            .field("default_sync_timeout", &self.default_sync_timeout)
-            .field("default_async_timeout", &self.default_async_timeout)
+            .field("default_tool_timeout", &self.default_tool_timeout)
             .field("transport", &"<dyn AsyncTaskTransport>")
             .finish()
     }
@@ -201,26 +72,25 @@ impl Default for AsyncExecutionRouter {
 }
 
 impl AsyncExecutionRouter {
-    /// Create a new async execution router with default timeouts (local transport)
+    /// Create a new async execution router with the default tool timeout
+    /// (5 min) and a local transport.
     #[must_use]
     pub fn new() -> Self {
         use crate::extensions::framework::async_exec::executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
-            default_sync_timeout: Duration::from_mins(2),
-            default_async_timeout: Duration::from_mins(5),
+            default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),
         }
     }
 
-    /// Create with custom timeouts (local transport)
+    /// Create with a custom default tool timeout (local transport).
     #[must_use]
-    pub fn with_timeouts(sync_secs: u64, async_secs: u64) -> Self {
+    pub fn with_default_tool_timeout(secs: u64) -> Self {
         use crate::extensions::framework::async_exec::executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
-            default_sync_timeout: Duration::from_secs(sync_secs),
-            default_async_timeout: Duration::from_secs(async_secs),
+            default_tool_timeout: Duration::from_secs(secs),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),
         }
     }
@@ -229,8 +99,7 @@ impl AsyncExecutionRouter {
     #[must_use]
     pub fn with_transport(transport: std::sync::Arc<dyn AsyncTaskTransport>) -> Self {
         Self {
-            default_sync_timeout: Duration::from_mins(2),
-            default_async_timeout: Duration::from_mins(5),
+            default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             transport,
         }
     }
@@ -241,32 +110,35 @@ impl AsyncExecutionRouter {
         async_executor: crate::extensions::framework::async_exec::executor::AsyncExecutor,
     ) -> Self {
         Self {
-            default_sync_timeout: Duration::from_mins(2),
-            default_async_timeout: Duration::from_mins(5),
+            default_tool_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(async_executor)),
         }
     }
 
-    /// Route execution based on `_async` parameter
+    /// Route execution through the constant-timeout pipeline.
     ///
     /// This is the primary routing method for ALL tool execution in ADR-018a.
+    /// Legacy reserved parameters (`_async`, `_timeout`, `_callback`, `_progress`,
+    /// `_priority`, `_retry`) are silently dropped with a `tracing::warn!` if
+    /// present; the framework no longer honors them.
     ///
     /// # Arguments
     /// * `tool_name` - Name of the tool being executed
-    /// * `params` - Tool parameters (will be mutated to extract reserved params)
-    /// * `exec_service` - Tool execution service for sync path
+    /// * `params` - Tool parameters (reserved keys will be stripped)
+    /// * `exec_service` - Tool execution service
     /// * `tool_context` - Tool context for execution
     /// * `exec_config` - Execution configuration
     /// * `sync_executor` - Closure that performs the actual tool execution
     ///
     /// # Returns
-    /// Tool execution result
-    #[instrument(skip(self, params, exec_service, sync_executor), level = "debug")]
+    /// Tool execution result, or a `task_id` receipt if the work was
+    /// detached because it exceeded [`DEFAULT_TOOL_TIMEOUT_SECS`].
+    #[instrument(skip(self, params, _exec_service, sync_executor), level = "debug")]
     pub async fn route<F, Fut>(
         &self,
         tool_name: &str,
         params: &mut Value,
-        exec_service: &ToolExecutionService,
+        _exec_service: &ToolExecutionService,
         tool_context: &ToolExecutionContext,
         exec_config: &ToolExecutionConfig,
         sync_executor: F,
@@ -275,162 +147,148 @@ impl AsyncExecutionRouter {
         F: FnOnce(Value) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
     {
-        // Extract reserved parameters (this mutates params to remove them)
-        let reserved = AsyncReservedParams::extract(params);
+        // Strip legacy reserved params (with a warning) and clone the
+        // cleaned params for execution.
+        let cleaned = std::mem::replace(params, Value::Null);
+        let cleaned = strip_legacy_reserved_params(cleaned);
+        *params = cleaned.clone();
 
         info!(
-            async_mode = reserved.async_mode,
-            timeout = reserved.effective_timeout(reserved.async_mode),
+            timeout = self.default_tool_timeout.as_secs(),
             "AsyncExecutionRouter: routing execution"
         );
 
-        if reserved.async_mode {
-            // Async path: execute via AsyncExecutor
-            self.execute_async(
-                tool_name,
-                params.clone(),
-                tool_context,
-                &reserved,
-                sync_executor,
-            )
-            .await
-        } else {
-            // Sync path with timeout
-            self.execute_sync(
-                params.clone(),
-                exec_service,
-                tool_context,
-                exec_config,
-                &reserved,
-                sync_executor,
-            )
-            .await
-        }
+        // Single code path: execute with constant timeout. On Elapsed,
+        // detach to AsyncExecutor (existing path).
+        self.execute_with_timeout(
+            tool_name,
+            cleaned,
+            tool_context,
+            sync_executor,
+        )
+        .await
     }
 
-    /// Execute synchronously with timeout and retry support
-    #[instrument(skip(self, params, exec_service, sync_executor), level = "debug")]
-    async fn execute_sync<F, Fut>(
-        &self,
-        params: Value,
-        exec_service: &ToolExecutionService,
-        tool_context: &ToolExecutionContext,
-        exec_config: &ToolExecutionConfig,
-        reserved: &AsyncReservedParams,
-        sync_executor: F,
-    ) -> Result<Value>
-    where
-        F: FnOnce(Value) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<Value>> + Send,
-    {
-        let timeout_secs = reserved.effective_timeout(false);
-        let timeout = Duration::from_secs(timeout_secs);
-
-        info!(timeout = timeout_secs, "Executing tool synchronously");
-
-        // Build the context for parameter injection
-        let abort_signal = crate::tools::core::AbortSignal::new();
-        let ctx = abort_signal
-            .create_context(&tool_context.run_id, "tool_exec", "async_router")
-            .with_agent_id(&tool_context.agent_id)
-            .with_session_id(&tool_context.session_id)
-            .with_workspace(&tool_context.workspace);
-
-        // Execute with isolation and timeout
-        // Note: Retry logic is currently handled at a higher level if needed
-        exec_service
-            .execute_with_isolation(
-                params,
-                exec_config,
-                Some(&ctx),
-                Some(timeout),
-                sync_executor,
-            )
-            .await
-    }
-
-    /// Execute asynchronously via the configured transport
+    /// Execute synchronously with the constant default timeout.
+    ///
+    /// The work is spawned as a background task via the transport first,
+    /// then polled for completion up to the timeout. If the timeout fires
+    /// before the task completes, a receipt is returned and the work
+    /// continues running in the background.
     #[instrument(skip(self, params, sync_executor), level = "debug")]
-    async fn execute_async<F, Fut>(
+    async fn execute_with_timeout<F, Fut>(
         &self,
         tool_name: &str,
         params: Value,
         tool_context: &ToolExecutionContext,
-        reserved: &AsyncReservedParams,
         sync_executor: F,
     ) -> Result<Value>
     where
         F: FnOnce(Value) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
     {
-        let timeout_secs = reserved.effective_timeout(true);
+        let timeout = self.default_tool_timeout;
+        let timeout_secs = timeout.as_secs();
+
+        info!(
+            tool_name = tool_name,
+            timeout = timeout_secs,
+            "Executing tool with default timeout"
+        );
+
         let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
         let session_key = format!("{}_{}", tool_context.agent_id, tool_context.session_id);
 
-        let (delivery_mode, delivery_target) = match reserved.callback.as_str() {
-            "stream" => (
-                AsyncResultDeliveryMode::Interrupt,
-                DeliveryTarget::EventBroadcast,
-            ),
-            "blocking" => (
-                AsyncResultDeliveryMode::QueueWhenBusy,
-                DeliveryTarget::DirectChannel,
-            ),
-            _ => (
-                AsyncResultDeliveryMode::QueueWhenBusy,
-                DeliveryTarget::AsyncQueue,
-            ),
-        };
+        // The background task's hard timeout is the default 300s regardless of
+        // the router's polling timeout (which may be shorter in tests).
+        let task_hard_timeout_secs = DEFAULT_TOOL_TIMEOUT_SECS;
 
         let config = AsyncToolConfig {
-            delivery_mode,
-            delivery_target: Some(delivery_target),
-            timeout_secs,
+            delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
+            delivery_target: Some(DeliveryTarget::AsyncQueue),
+            timeout_secs: task_hard_timeout_secs,
             cleanup_after_delivery: true,
             label: Some(tool_name.to_string()),
         };
 
-        info!(
-            task_id = %task_id,
-            timeout = timeout_secs,
-            callback = %reserved.callback,
-            "Executing tool asynchronously via transport"
-        );
+        // Build a boxed execution closure that captures params and runs the tool.
+        let execution_fn: crate::extensions::framework::transport::async_transport::BoxedExecutionFn =
+            Box::new(move || Box::pin(sync_executor(params)));
 
-        let params_clone = params.clone();
-        let workspace = std::path::PathBuf::from(&tool_context.workspace);
+        // Spawn the real work as a background task via the transport.
         let receipt = self
             .transport
             .spawn_task_boxed(
-                task_id,
+                task_id.clone(),
                 tool_name.to_string(),
-                params,
+                Value::Null, // params already captured in the closure
                 session_key,
-                workspace,
+                std::path::PathBuf::from(&tool_context.workspace),
                 config,
-                Box::new(move || {
-                    Box::pin(async move {
-                        match sync_executor(params_clone).await {
-                            Ok(result) => Ok(result),
-                            Err(e) => Ok(serde_json::json!({"error": e.to_string()})),
-                        }
-                    })
-                }),
+                execution_fn,
             )
             .await?;
 
-        let mut receipt_json = serde_json::json!({
+        // Poll for completion up to the timeout.
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut backoff = Duration::from_millis(50);
+        loop {
+            match self.transport.get_status(&task_id).await? {
+                Some(AsyncTaskStatus::Completed { result }) => {
+                    if result.success {
+                        return Ok(result.data.unwrap_or(Value::Null));
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            result.error.unwrap_or_else(|| "Tool execution failed".to_string())
+                        ));
+                    }
+                }
+                Some(AsyncTaskStatus::Failed { error }) => {
+                    return Err(anyhow::anyhow!(error));
+                }
+                Some(AsyncTaskStatus::Cancelled) => {
+                    return Err(anyhow::anyhow!("Task was cancelled"));
+                }
+                Some(AsyncTaskStatus::TimedOut { error }) => {
+                    return Err(anyhow::anyhow!(error));
+                }
+                Some(AsyncTaskStatus::Pending) | Some(AsyncTaskStatus::Running) => {
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    let remaining = deadline - now;
+                    let sleep_duration = std::cmp::min(backoff, remaining);
+                    tokio::time::sleep(sleep_duration).await;
+                    // Double the backoff, capping at 1s.
+                    backoff = std::cmp::min(backoff * 2, Duration::from_secs(1));
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Task {} not found in transport registry after spawn",
+                        task_id
+                    ));
+                }
+            }
+        }
+
+        // Timeout fired — the task is still running in the background.
+        // Return an honest receipt.
+        tracing::warn!(
+            tool_name = tool_name,
+            timeout_secs = timeout_secs,
+            "Tool exceeded default timeout; returning receipt while work continues in background"
+        );
+
+        Ok(serde_json::json!({
             "_async_status": "queued",
             "task_id": receipt.task_id,
-            "status": receipt.status,
+            "status": "running",
+            "tool_name": tool_name,
             "task_file": receipt.task_file,
             "timeout_requested": timeout_secs,
-            "callback_mode": reserved.callback,
-        });
-        if let Some(params) = receipt.params {
-            receipt_json["params"] = params;
-        }
-        Ok(receipt_json)
+            "reason": "timeout",
+        }))
     }
 
     /// Get a reference to the underlying transport
@@ -599,47 +457,9 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_extract_async_params() {
-        let mut params = json!({
-            "query": "test",
-            "_async": true,
-            "_timeout": 60,
-            "_callback": "stream"
-        });
-
-        let reserved = AsyncReservedParams::extract(&mut params);
-
-        assert!(reserved.async_mode);
-        assert_eq!(reserved.timeout_secs, Some(60));
-        assert_eq!(reserved.callback, "stream");
-        assert!(!params.as_object().unwrap().contains_key("_async"));
-        assert_eq!(params["query"], "test");
-    }
-
-    #[test]
-    fn test_default_params() {
-        let mut params = json!({"query": "test"});
-        let reserved = AsyncReservedParams::extract(&mut params);
-
-        assert!(!reserved.async_mode);
-        assert_eq!(reserved.timeout_secs, None);
-        assert_eq!(reserved.callback, "queue");
-    }
-
-    #[test]
-    fn test_effective_timeout() {
-        let mut reserved = AsyncReservedParams::default();
-
-        // Default sync timeout
-        assert_eq!(reserved.effective_timeout(false), 120);
-
-        // Default async timeout
-        assert_eq!(reserved.effective_timeout(true), 300);
-
-        // Custom timeout
-        reserved.timeout_secs = Some(45);
-        assert_eq!(reserved.effective_timeout(false), 45);
-        assert_eq!(reserved.effective_timeout(true), 45);
+    fn test_default_tool_timeout_constant() {
+        // Single source of truth for the 5-min default.
+        assert_eq!(DEFAULT_TOOL_TIMEOUT_SECS, 300);
     }
 
     #[tokio::test]
@@ -669,72 +489,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_router_sync_timeout() {
+    async fn test_router_fast_tool_returns_inline_result() {
         let router = AsyncExecutionRouter::new();
         let exec_service = ToolExecutionService::new();
         let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
         let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
 
-        let mut params = json!({"query": "test", "_timeout": 1});
+        let mut params = json!({"query": "test"});
 
         let result = router
             .route(
-                "test_tool",
+                "fast_tool",
                 &mut params,
                 &exec_service,
                 &tool_context,
                 &exec_config,
-                |_p| async move {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    Ok(json!({"result": "success"}))
-                },
-            )
-            .await;
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("TOOL_TIMEOUT"),
-            "Expected timeout error, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_router_async_path() {
-        let router = AsyncExecutionRouter::new();
-        let exec_service = ToolExecutionService::new();
-        let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
-        let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
-
-        let mut params = json!({"query": "test", "_async": true, "_timeout": 60});
-
-        let result = router
-            .route(
-                "test_tool",
-                &mut params,
-                &exec_service,
-                &tool_context,
-                &exec_config,
-                |p| async move { Ok(json!({"result": "async_ok", "input": p})) },
+                |p| async move { Ok(json!({"result": "inline", "input": p})) },
             )
             .await;
 
         assert!(result.is_ok());
         let value = result.unwrap();
-        assert_eq!(value["_async_status"], "queued");
-        assert_eq!(value["timeout_requested"], 60);
-        assert!(value["task_id"].as_str().unwrap().starts_with("test_tool:"));
+        // Fast tools should return their result directly, not a receipt.
+        assert_eq!(value["result"], "inline");
+        assert_eq!(value["input"]["query"], "test");
+        assert!(value.get("task_id").is_none());
+        assert!(value.get("status").is_none());
+    }
 
-        // The task should complete shortly
-        let task_id = value["task_id"].as_str().unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    #[tokio::test]
+    async fn test_router_timeout_returns_receipt_with_tool_name() {
+        let router = AsyncExecutionRouter::with_default_tool_timeout(1);
+        let exec_service = ToolExecutionService::new();
+        let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
+        let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
 
-        let status = router
-            .transport()
-            .get_status(&task_id.to_string())
-            .await
-            .unwrap();
-        assert!(status.is_some());
-        assert!(status.unwrap().is_terminal());
+        let mut params = json!({"query": "slow"});
+
+        let result = router
+            .route(
+                "slow_tool",
+                &mut params,
+                &exec_service,
+                &tool_context,
+                &exec_config,
+                |_p| async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Ok(json!({"result": "should_never_see_this"}))
+                },
+            )
+            .await;
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let value = result.unwrap();
+        // Should be a receipt, not the tool result.
+        assert!(value.get("task_id").is_some());
+        assert_eq!(value["status"], "running");
+        assert_eq!(value["tool_name"], "slow_tool");
+        assert_eq!(value["reason"], "timeout");
     }
 }

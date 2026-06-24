@@ -4,7 +4,8 @@
 //! Results are announced back to the parent via the event system.
 //!
 //! Note: Async execution and timeout are handled by the framework-level
-//! `ToolWrapper` using `_async` and `_timeout` parameters.
+//! `AsyncExecutionRouter` using a constant 5-minute timeout. On timeout,
+//! the work is detached to a background task automatically.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,6 @@ use std::sync::Arc;
 
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::extensions::framework::async_exec::executor::TaskMetadata;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::core::Tool;
 
@@ -176,68 +176,6 @@ impl AgentSpawnTool {
         &self.executor
     }
 
-    /// Execute subagent spawn in async mode (returns receipt)
-    async fn execute_spawn_async(
-        &self,
-        task: &str,
-        isolated: bool,
-        parent_session_key: &str,
-        config: ExecutionConfig,
-        label: Option<String>,
-        cleanup: SpawnCleanupPolicy,
-    ) -> anyhow::Result<serde_json::Value> {
-        // Extract timeout before config is moved
-        let timeout_seconds = config.timeout_seconds;
-
-        match self
-            .executor
-            .spawn_and_execute(task, None, isolated, parent_session_key, config)
-            .await
-        {
-            Ok(run_id) => {
-                // Get the run info to return the child session key
-                let registry = self.executor.registry().read().await;
-                let entry = registry.get(&run_id).ok_or_else(|| {
-                    anyhow::anyhow!("Run {run_id} not found in registry after spawn")
-                })?;
-
-                let child_session_key = match &entry.metadata {
-                    TaskMetadata::Subagent(m) => m.child_session_key.clone(),
-                    _ => String::new(),
-                };
-
-                // Determine task_file path for agent polling
-                let task_file = self
-                    .executor
-                    .unified_executor()
-                    .task_file_writer()
-                    .map(|w| w.task_file_path(&run_id).to_string_lossy().to_string());
-
-                // Return receipt-style response for async mode
-                let mut receipt = json!({
-                    "status": "accepted",
-                    "childSessionKey": child_session_key,
-                    "runId": run_id,
-                    "note": "Subagent is running in the background. Use the task tool with action=\"status\" and the runId to check progress.",
-                    "label": label,
-                    "isolated": isolated,
-                    "timeout_seconds": timeout_seconds,
-                    "cleanup": match cleanup {
-                        SpawnCleanupPolicy::Keep => "keep",
-                        SpawnCleanupPolicy::Delete => "delete",
-                    }
-                });
-
-                if let Some(path) = task_file {
-                    receipt["task_file"] = json!(path);
-                }
-
-                Ok(receipt)
-            }
-            Err(e) => Self::format_error_response(&e),
-        }
-    }
-
     /// Execute subagent spawn in blocking mode (waits for completion, returns inline result)
     async fn execute_spawn_blocking(
         &self,
@@ -369,7 +307,7 @@ impl Tool for AgentSpawnTool {
     fn description(&self) -> String {
         r#"Spawn a sub-agent run in an isolated or shared session.
 
-Default mode (blocking): The parent waits for the subagent to complete its agentic loop and returns the result inline.
+The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned. Use the `task` tool's `output` action to retrieve the full result later.
 
 Parameters:
 - task: Description of the task to execute (required)
@@ -379,7 +317,7 @@ Parameters:
 - parent_session_key: Parent session key (optional - auto-detected if not provided)
 
 Examples:
-// Blocking spawn (default) - parent waits for result
+// Blocking spawn - parent waits for result (auto-detaches on timeout)
 {"task": "Use write_file to create report.txt with a summary"}
 
 // Isolated context - fresh session
@@ -419,14 +357,9 @@ Examples:
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        // Check for _async reserved parameter (extracted by AsyncExecutionRouter,
-        // but we also check here for direct tool calls that bypass the router)
-        let async_mode = params
-            .get("_async")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        // Parse parameters (after _async extraction, the rest are tool-specific)
+        // Parse parameters; the framework's auto-detach on timeout handles
+        // the sync/async decision. The 5-min default applies to subagent
+        // spawns like any other tool.
         let args: AgentSpawnArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
@@ -451,37 +384,25 @@ Examples:
 
         // Build execution config with defaults
         let config = ExecutionConfig {
-            timeout_seconds: 300, // Default timeout, can be overridden by framework _timeout
+            timeout_seconds: 300, // 5-min default; the framework auto-detaches on timeout
             cleanup,
             label: args.label.clone(),
             announce_completion: true,
             max_depth: self.max_depth,
         };
 
-        // Route based on async mode
-        if async_mode {
-            // Async mode: spawn in background, return receipt
-            self.execute_spawn_async(
-                &args.task,
-                args.isolated,
-                &parent_session_key,
-                config,
-                args.label,
-                cleanup,
-            )
-            .await
-        } else {
-            // Blocking mode (default): wait for subagent to complete, return inline result
-            self.execute_spawn_blocking(
-                &args.task,
-                args.isolated,
-                &parent_session_key,
-                config,
-                args.label,
-                cleanup,
-            )
-            .await
-        }
+        // Always go through the blocking path; the framework detaches on
+        // timeout. If the caller wants explicit async, they invoke this
+        // tool via 'task action=spawn tool=agent_spawn params=...'.
+        self.execute_spawn_blocking(
+            &args.task,
+            args.isolated,
+            &parent_session_key,
+            config,
+            args.label,
+            cleanup,
+        )
+        .await
     }
 }
 
@@ -523,7 +444,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_async_mode_error_response_formatting() {
+    async fn test_error_response_formatting() {
         // Test typed depth error
         let depth_err = anyhow::anyhow!(SpawnError::DepthLimitExceeded { current: 4, max: 3 });
         let response = AgentSpawnTool::format_error_response(&depth_err).unwrap();

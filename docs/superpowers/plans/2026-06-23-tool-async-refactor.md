@@ -868,7 +868,12 @@ Replace the `match action` block in `execute()` with the version that adds Spawn
                 let session_key = core.current_session_key().unwrap_or_else(|| "unknown".to_string());
 
                 let config = crate::extensions::framework::async_exec::executor::AsyncToolConfig {
-                    timeout_secs: 0, // No timeout — task runs to completion or cancellation
+                    // u64::MAX effectively disables the executor's timeout
+                    // (~584M years). The 5-min cap is applied by the
+                    // router on the *spawning* call, not on the spawned
+                    // task's lifetime. The task runs to completion (or
+                    // until cancelled via `task cancel`).
+                    timeout_secs: u64::MAX,
                     ..Default::default()
                 };
 
@@ -1307,6 +1312,7 @@ Append to the existing `tests` module in `async_router.rs`:
     #[tokio::test]
     async fn test_reserved_params_warn_on_use() {
         // Setup tracing to capture warn events.
+        // (tracing-subscriber is already a regular dep, no need to add.)
         let _ = tracing_subscriber::fmt::try_init();
 
         let router = AsyncExecutionRouter::new();
@@ -1338,15 +1344,6 @@ Append to the existing `tests` module in `async_router.rs`:
         assert!(value["input"].get("_timeout").is_none());
     }
 ```
-
-This test needs `tracing-subscriber` as a dev-dep. Check `Cargo.toml` — if it's not there, add it to `[dev-dependencies]`:
-
-```toml
-[dev-dependencies]
-tracing-subscriber = "0.3"
-```
-
-If it is already there, skip.
 
 - [ ] **Step 2: Run the test to confirm it fails (or passes by accident)**
 
@@ -1616,9 +1613,10 @@ Remove the warning, the `AsyncReservedParams` re-exports that might still linger
 ### Task 5.1: Remove `agent_spawn`'s special-case async path
 
 **Files:**
-- Modify: `src/tools/builtin/messaging/agent_spawn.rs:421-485`
+- Modify: `src/tools/builtin/messaging/agent_spawn.rs:421-485` (execute method)
+- Modify: `src/tools/builtin/messaging/agent_spawn.rs:179-260` (delete the `execute_spawn_async` method)
 
-- [ ] **Step 1: Remove the `_async` check and the `async_mode` branch**
+- [ ] **Step 1: Remove the `_async` check and the `async_mode` branch from `execute()`**
 
 Find the `execute()` method in `AgentSpawnTool`. The current code (lines 421-485) is:
 
@@ -1670,6 +1668,10 @@ Replace with:
         .await
     }
 ```
+
+- [ ] **Step 2: Delete the now-dead `execute_spawn_async` method**
+
+Per YAGNI: after step 1, no caller remains for `execute_spawn_async`. Delete the entire method (the body starting at line 180 of the current file: `async fn execute_spawn_async(...)` through the end of the method body). If there are any tests that exercise it directly (e.g. `test_async_mode_error_response_formatting`), delete those tests too — they test the removed behavior.
 
 - [ ] **Step 2: Update the tool's `description()` and `parameters()` method to remove `_async` mention**
 

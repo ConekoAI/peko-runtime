@@ -4,7 +4,6 @@ name: Integration Tests
 #
 # Tier        Trigger                               Wall-clock (warm)  Notes
 # ──────────── ──────────────────────────────────── ─────────────────── ─────────────────────
-# smoke        every PR that touches CI-relevant    < 6 min             fmt + clippy + --lib
 # lint         every PR that touches src/           < 1 min             scripts/check_*.sh
 # unit-linux   every PR that triggers the workflow  ~3 min              cargo test --lib
 # unit-windows `[windows]` / nightly / manual       ~5 min              gated; expensive runner
@@ -101,34 +100,6 @@ jobs:
               - 'src/ipc/pipe_security.rs'
               - 'tests/common/cli.rs'
 
-  # ── Tier 0a: Smoke — fmt + clippy + lib tests, every PR ──────────────
-  # `cargo fmt --check` is `continue-on-error: true` for now because
-  # master has ~494 files with accumulated fmt diffs that pre-date
-  # this refactor. The smoke job still runs fmt and reports the diff
-  # to the PR; promote to a hard gate once a one-time `cargo fmt`
-  # sweep lands (tracked as a follow-up to PLAN.md).
-  smoke:
-    name: Smoke (fmt + clippy + lib)
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.src == 'true' || needs.changes.outputs.tests == 'true'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .
-          shared-key: peko-runtime-rust
-      - name: cargo fmt --check (advisory)
-        continue-on-error: true
-        run: cargo fmt --all -- --check
-      - name: cargo clippy --all-targets
-        run: cargo clippy --all-targets -- -D warnings
-      - name: cargo test --lib
-        run: cargo test --lib
-
   # ── Tier 0b: Lint — Issue-015 boundary rules, every PR ───────────────
   # HARD GATE. `scripts/check_module_boundaries.sh` enforces the three
   # rules from Issue 015: framework code (`src/extension/`) must not
@@ -198,7 +169,7 @@ jobs:
   # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ─────────────────────
   # Path-aware gate: only run when src/, tests/, Cargo.*, Makefile, or
   # Docker assets changed. Pure refactors (src/** only) skip this tier
-  # but still run smoke + lint + unit-linux.
+  # but still run lint + unit-linux.
   integration:
     name: Integration (mock LLM)
     runs-on: ubuntu-latest

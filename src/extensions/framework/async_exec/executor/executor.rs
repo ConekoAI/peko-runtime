@@ -1,5 +1,8 @@
 //! Unified executor for all async tool operations
 
+use super::completion_queue::{
+    AsyncTaskCompletionQueue, CompletionEvent, SharedAsyncTaskCompletionQueue,
+};
 use super::delivery::{QueueDelivery, ResultDelivery};
 use super::queue::{AsyncResultQueueManager, SharedAsyncResultQueueManager};
 use super::registry::{AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata};
@@ -41,6 +44,9 @@ pub struct AsyncExecutor {
     default_delivery: DeliveryTarget,
     /// Task file writer for disk-based polling
     task_file_writer: Option<TaskFileWriter>,
+    /// Per-session queue of completed tasks (read by agentic loop).
+    /// Default-constructed if not provided; safe to use without setup.
+    completion_queue: SharedAsyncTaskCompletionQueue,
 }
 
 impl AsyncExecutor {
@@ -56,6 +62,7 @@ impl AsyncExecutor {
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
+            completion_queue: Arc::new(AsyncTaskCompletionQueue::new()),
         }
     }
 
@@ -74,6 +81,7 @@ impl AsyncExecutor {
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
+            completion_queue: Arc::new(AsyncTaskCompletionQueue::new()),
         }
     }
 
@@ -92,6 +100,20 @@ impl AsyncExecutor {
     pub fn with_default_delivery(mut self, target: DeliveryTarget) -> Self {
         self.default_delivery = target;
         self
+    }
+
+    /// Inject a shared completion queue. Used by the agentic loop to
+    /// receive task completion events for the next-iteration injection.
+    #[must_use]
+    pub fn with_completion_queue(mut self, queue: SharedAsyncTaskCompletionQueue) -> Self {
+        self.completion_queue = queue;
+        self
+    }
+
+    /// Borrow the shared completion queue.
+    #[must_use]
+    pub fn completion_queue(&self) -> &SharedAsyncTaskCompletionQueue {
+        &self.completion_queue
     }
 
     /// Set a custom task file writer
@@ -200,6 +222,8 @@ impl AsyncExecutor {
             .delivery_target
             .map(|dt| format!("{:?}", dt).to_lowercase());
         let params_for_spawn = params.clone();
+        let parent_session_key_for_completion = parent_session_key.clone();
+        let completion_queue = self.completion_queue.clone();
 
         // Spawn the background execution
         tokio::spawn(async move {
@@ -250,8 +274,8 @@ impl AsyncExecutor {
 
             // Map outcome to status and update registry
             let status = match &outcome {
-                TaskOutcome::Success(_) => AsyncTaskStatus::Completed {
-                    result: ToolResult::success(serde_json::json!({"completed": true})),
+                TaskOutcome::Success(value) => AsyncTaskStatus::Completed {
+                    result: ToolResult::success(value.clone()),
                 },
                 TaskOutcome::Failure(e) => AsyncTaskStatus::Failed {
                     error: e.to_string(),
@@ -304,6 +328,27 @@ impl AsyncExecutor {
                 if let Err(e) = delivery.deliver(entry).await {
                     tracing::debug!("Delivery result for task {}: {}", task_id_clone, e);
                 }
+            }
+
+            // NEW: push a completion event to the per-session queue so
+            // the agentic loop can drain it at the next iteration.
+            if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
+                let status = entry.status.clone();
+                let result = entry.result.clone().unwrap_or(serde_json::Value::Null);
+                let output_path = task_file_writer_clone
+                    .as_ref()
+                    .map(|w| w.task_file_path(&task_id_clone))
+                    .unwrap_or_else(|| std::path::PathBuf::from(""));
+                let event = CompletionEvent {
+                    task_id: task_id_clone.clone(),
+                    tool_name: tool_name.clone(),
+                    result,
+                    status,
+                    completed_at: chrono::Utc::now(),
+                    output_path,
+                    parent_session_key: parent_session_key_for_completion.clone(),
+                };
+                completion_queue.push(event);
             }
         });
 
@@ -505,6 +550,7 @@ impl std::fmt::Debug for AsyncExecutor {
             )
             .field("default_delivery", &self.default_delivery)
             .field("task_file_writer", &self.task_file_writer)
+            .field("completion_queue", &"<AsyncTaskCompletionQueue>")
             .finish()
     }
 }
@@ -512,5 +558,72 @@ impl std::fmt::Debug for AsyncExecutor {
 impl Default for AsyncExecutor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod completion_queue_fan_out_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn make_executor_with_queue() -> (AsyncExecutor, SharedAsyncTaskCompletionQueue) {
+        let queue = Arc::new(AsyncTaskCompletionQueue::new());
+        let exec = AsyncExecutor::new().with_completion_queue(queue.clone());
+        (exec, queue)
+    }
+
+    #[tokio::test]
+    async fn test_completion_event_pushed_on_success() {
+        let (exec, queue) = make_executor_with_queue();
+        let task_id = "shell:test-success".to_string();
+
+        let receipt = exec
+            .execute(
+                task_id.clone(),
+                "shell",
+                serde_json::json!({"command": "echo hi"}),
+                "session_1",
+                AsyncToolConfig::default(),
+                || async { Ok(serde_json::json!({"exit_code": 0})) },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(receipt.task_id, task_id);
+
+        // Wait for the spawned task to complete.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let drained = queue.drain().await;
+        assert_eq!(drained.len(), 1, "expected one completion event");
+        assert_eq!(drained[0].task_id, task_id);
+        assert_eq!(drained[0].tool_name, "shell");
+        assert_eq!(drained[0].parent_session_key, "session_1");
+        assert!(matches!(drained[0].status, AsyncTaskStatus::Completed { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_completion_event_pushed_on_failure() {
+        let (exec, queue) = make_executor_with_queue();
+        let task_id = "shell:test-fail".to_string();
+
+        let _ = exec
+            .execute(
+                task_id.clone(),
+                "shell",
+                serde_json::json!({}),
+                "session_1",
+                AsyncToolConfig::default(),
+                || async { anyhow::bail!("boom") },
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let drained = queue.drain().await;
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(drained[0].status, AsyncTaskStatus::Failed { .. }));
     }
 }

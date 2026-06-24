@@ -6,6 +6,7 @@
 //! This module consolidates the previously fragmented async tool
 //! infrastructure (see Issue 006) into a single, tool-agnostic framework.
 
+pub mod completion_queue;
 pub mod delivery;
 pub mod event_bus;
 pub mod executor;
@@ -14,6 +15,9 @@ pub mod registry;
 pub mod task_file;
 pub mod types;
 
+pub use completion_queue::{
+    AsyncTaskCompletionQueue, CompletionEvent, SharedAsyncTaskCompletionQueue,
+};
 pub use delivery::{
     build_completion_event, CallbackDelivery, ChannelDelivery, DefaultResultFormatter,
     FormatterRegistry, QueueDelivery, ResultDelivery, ResultFormatter,

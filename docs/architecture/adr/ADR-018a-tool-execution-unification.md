@@ -440,3 +440,4 @@ All 8 phases have been completed:
 - ToolExecutor: `src/engine/tool_executor.rs`
 - ExtensionCore: `src/extensions/core.rs`
 - BuiltinToolAdapter: `src/extensions/adapters/builtin_tool_adapter.rs`
+- ADR-040: Tool Timeout and Async Refactor (2026-06-23) — supersedes the `_async`/`_timeout` parameter-injection layer.

@@ -320,7 +320,7 @@ pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTr
             anyhow::bail!(
                 "peko daemon is not running. Async tool execution requires the daemon.\n\
                  Start it with: peko daemon start\n\
-                 Or use sync mode (remove _async: true from the tool call).\n\
+                 Or wait for the task to complete via the 'task' tool's 'output' action.\n\
                  Details: {e}"
             )
         }
@@ -335,7 +335,7 @@ pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTr
         anyhow::bail!(
             "peko daemon is not running. Async tool execution requires the daemon.\n\
              Start it with: peko daemon start\n\
-             Or use sync mode (remove _async: true from the tool call)."
+             Or wait for the task to complete via the 'task' tool's 'output' action."
         )
     }
 }

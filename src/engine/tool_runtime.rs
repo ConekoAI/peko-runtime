@@ -9,7 +9,7 @@ use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, TaskTool, Tool,
+    CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, Tool,
     WriteFileTool,
 };
 use anyhow::Result;
@@ -154,6 +154,12 @@ impl ToolRuntime {
     /// Register built-in tools with the given `ExtensionCore`
     ///
     /// This logic is extracted from `Agent::init_builtins_async()`.
+    ///
+    /// The `task` tool is **NOT** registered here. It depends on
+    /// per-agent state (AsyncExecutor + ExtensionCore for spawn-side
+    /// lookups). Each agent registers its own `TaskTool` via
+    /// `BuiltinToolAdapter::register_task_tool` once the agent has
+    /// constructed its executor and completion queue.
     pub async fn register_builtins(
         extension_core: &ExtensionCore,
         path_resolver: &PathResolver,
@@ -172,7 +178,6 @@ impl ToolRuntime {
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
             Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
             Arc::new(CronTool::new()),
-            Arc::new(TaskTool::global()),
         ];
 
         // Enable all built-in tools by default in the daemon context.

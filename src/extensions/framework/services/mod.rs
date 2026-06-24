@@ -21,7 +21,7 @@ pub use crate::extensions::framework::transport::async_transport;
 
 // Re-export transport types for backward compatibility
 pub use crate::extensions::framework::transport::async_router::{
-    AsyncExecutionRouter, AsyncReservedParams, ToolExecutionContext,
+    AsyncExecutionRouter, ToolExecutionContext, DEFAULT_TOOL_TIMEOUT_SECS,
 };
 pub use crate::extensions::framework::transport::async_transport::{
     create_local_transport, create_transport, AsyncTaskTransport, DaemonIpcTransport,

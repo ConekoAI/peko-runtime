@@ -589,12 +589,39 @@ pub async fn new_with_session_manager(
         }
 
         let agent_arc = Arc::new(self.clone());
-        let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
-            agent_arc,
-            provider,
-            self.extension_core(),
-        )
-        .await;
+        // Per-call wiring: fresh completion queue + executor + per-agent
+        // TaskTool. The agent's session key (read from `current_session_id`)
+        // is pushed onto the core so TaskTool::spawn can stamp
+        // `parent_session_key` correctly.
+        //
+        // Session-key flow across the three `execute_*` paths:
+        //
+        // - `Agent::execute()` (this method, one-shot CLI mode):
+        //   `current_session_id` is `None` here because `prepare_execution`
+        //   does not create a session — the session is born later, inside
+        //   `AgenticLoop::run` → `run_inner`. So `session_key` is `None`
+        //   and `set_session_key(None)` runs on the core. The loop's
+        //   `run_inner` rebinds the core's session key to the real
+        //   session id it just created (see `src/engine/agentic_loop.rs`),
+        //   so any `task spawn` issued *mid-iteration* still gets a
+        //   real `parent_session_key`. The brief window before the loop
+        //   starts (no iterations yet, no `task spawn` possible) does
+        //   not matter.
+        //
+        // - `Agent::execute_with_session(...)` (tunnel / pekohub):
+        //   The session id is explicitly written into
+        //   `current_session_id` (and pushed onto the core) *before*
+        //   `build_agentic_loop` runs, so the core sees a real value
+        //   from the very first iteration. The `run_inner` rebind is a
+        //   harmless idempotent no-op.
+        //
+        // - `Agent::execute_streaming_with_session(...)`: same as
+        //   `execute_with_session` — the session id is stamped into
+        //   `current_session_id` and the core before the helper runs.
+        let session_key = self.current_session_id.read().await.clone();
+        let loop_ = self
+            .build_agentic_loop(agent_arc, provider, session_key, None)
+            .await?;
 
         let result = match loop_.run(prompt, on_event).await {
             Ok(result) => Ok(result),
@@ -642,12 +669,21 @@ pub async fn new_with_session_manager(
         }
 
         let agent_arc = Arc::new(self.clone());
-        let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
-            agent_arc,
-            provider,
-            self.extension_core(),
-        )
-        .await;
+        // Capture session ID into both the agent's cell (used by the
+        // session tool) and the agent's session_key_provider cell, then
+        // pass the session_id to the per-call wiring. Unlike
+        // `Agent::execute`, the session already exists here, so we can
+        // push a real id onto the core before the loop starts — see the
+        // session-key flow comment in `Agent::execute` for the full
+        // picture across the three `execute_*` paths.
+        let session_id = session.read().await.id.clone();
+        {
+            let mut current = self.current_session_id.write().await;
+            *current = Some(session_id.clone());
+        }
+        let loop_ = self
+            .build_agentic_loop(agent_arc, provider, Some(session_id), None)
+            .await?;
 
         let result = match loop_
             .run_with_resume(prompt, on_event, session, history)
@@ -684,10 +720,48 @@ pub async fn new_with_session_manager(
         let event_tx_clone = event_tx.clone();
         let extension_core = self.extension_core();
 
+        let provider_for_loop = provider.clone();
+        let agent_for_loop = agent_arc.clone();
+        let extension_core_for_loop = extension_core.clone();
         tokio::task::spawn_local(async move {
-            let loop_ =
-                crate::engine::agentic_loop::AgenticLoop::new(agent_arc, provider, extension_core)
-                    .await;
+            // Construct the per-call wiring from inside the spawned task
+            // since we cannot borrow `self` here. We rely on the agent's
+            // session cell being already populated by prepare_execution
+            // or by the caller; if it is None, the spawn-side just
+            // stamps "unknown" via TaskTool::current_session_key fallback.
+            //
+            // We need the agent's current session id cell; replicate the
+            // wiring by recreating the same queue + executor + TaskTool
+            // locally here.
+            let async_completion_queue = Arc::new(
+                crate::extensions::framework::async_exec::executor::AsyncTaskCompletionQueue::new(),
+            );
+            let async_executor = Arc::new(
+                crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
+                    .with_completion_queue(async_completion_queue.clone()),
+            );
+            let core_weak = Arc::downgrade(&extension_core_for_loop);
+            let task_tool = Arc::new(crate::tools::builtin::TaskTool::with_executor_and_core(
+                async_executor,
+                core_weak,
+            ));
+            if let Err(e) =
+                crate::extensions::builtin::BuiltinToolAdapter::register_task_tool(
+                    &extension_core_for_loop,
+                    task_tool,
+                )
+                .await
+            {
+                warn!("Failed to register per-agent TaskTool (streaming): {}", e);
+            }
+
+            let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
+                agent_for_loop,
+                provider_for_loop,
+                extension_core_for_loop,
+            )
+            .await
+            .with_async_completion_queue(async_completion_queue);
 
             let _result = loop_
                 .run(&prompt, move |event| {
@@ -741,19 +815,93 @@ pub async fn new_with_session_manager(
         self.prepare_execution().await?;
 
         let agent_arc = Arc::new(self.clone());
-        let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
-            agent_arc,
-            provider,
-            self.extension_core(),
-        )
-        .await
-        .with_caller_id(caller_id);
+        // Per-call wiring: fresh completion queue + executor + per-agent
+        // TaskTool. The session ID we just stamped into current_session_id
+        // is the parent_session_key we'll use for any spawn in this loop.
+        // See the session-key flow comment in `Agent::execute` for how
+        // the three `execute_*` paths cooperate to ensure mid-iteration
+        // `task spawn` calls see a real session key.
+        let session_id = self.current_session_id.read().await.clone();
+        let loop_ = self
+            .build_agentic_loop(agent_arc, provider, session_id, caller_id)
+            .await?;
 
         let streaming_config = crate::engine::OrchestratorConfig::live();
 
         loop_
             .run_streaming_with_resume(prompt, on_event, session, history, streaming_config)
             .await
+    }
+
+    /// Construct the per-call wiring for the agentic loop so async
+    /// task completions reach the next iteration as a synthetic
+    /// user-role message.
+    ///
+    /// This is the central fix for the tool async refactor (commit 3
+    /// follow-up): each call to `Agent::execute_*` constructs a fresh
+    /// `AsyncTaskCompletionQueue`, an `AsyncExecutor` that fans out to
+    /// that queue, and a `TaskTool` bound to both. The TaskTool is
+    /// re-registered on the `ExtensionCore` (overwriting any prior
+    /// instance), and the same queue is given to `AgenticLoop` so the
+    /// loop drains it at iteration start.
+    ///
+    /// Returns the constructed `AgenticLoop` ready to run. The session
+    /// key is pushed onto the core so `TaskTool::spawn` can stamp
+    /// `parent_session_key` correctly.
+    async fn build_agentic_loop(
+        &self,
+        agent_arc: Arc<Agent>,
+        provider: Arc<crate::providers::Provider>,
+        session_key: Option<String>,
+        caller_id: Option<String>,
+    ) -> Result<crate::engine::agentic_loop::AgenticLoop> {
+        let extension_core = self.extension_core();
+
+        // 1. Per-call completion queue (shared by executor + loop).
+        let async_completion_queue = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncTaskCompletionQueue::new(),
+        );
+
+        // 2. Per-call AsyncExecutor wired to the same queue.
+        let async_executor = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
+                .with_completion_queue(async_completion_queue.clone()),
+        );
+
+        // 3. Per-call TaskTool bound to executor + core. Uses Weak so
+        //    the tool does not extend the core's lifetime past the
+        //    core itself.
+        let core_weak = Arc::downgrade(&extension_core);
+        let task_tool = Arc::new(crate::tools::builtin::TaskTool::with_executor_and_core(
+            async_executor,
+            core_weak,
+        ));
+
+        // 4. Re-register the per-agent TaskTool (overwrites any prior
+        //    instance). register_tool is idempotent — unregisters first.
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_task_tool(
+            &extension_core,
+            task_tool,
+        )
+        .await
+        {
+            warn!("Failed to register per-agent TaskTool: {}", e);
+        }
+
+        // 5. Push the session key onto the core so TaskTool::spawn
+        //    can stamp parent_session_key on every spawned task.
+        extension_core.set_session_key(session_key).await;
+
+        // 6. Construct AgenticLoop with the queue.
+        let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
+            agent_arc,
+            provider,
+            extension_core,
+        )
+        .await
+        .with_async_completion_queue(async_completion_queue)
+        .with_caller_id(caller_id);
+        Ok(loop_)
     }
 
     /// Prepare agent for execution by initializing built-in tools and invoking `AgentInit` hooks.
