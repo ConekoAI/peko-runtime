@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Pekora <peko@coneko.ai>"]
 description = "Lightweight multi-agent runtime with optional Coneko network"
 license = "MIT"
-repository = "https://github.com/coneko/pekobot"
+repository = "https://github.com/ConekoAI/peko-runtime"
 
 [dependencies]
 # Async runtime

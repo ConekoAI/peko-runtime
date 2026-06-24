@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 
-const GITHUB_REPO: &str = "coneko/pekobot";
+const GITHUB_REPO: &str = "ConekoAI/peko-runtime";
 
 /// Handle update command
 pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
