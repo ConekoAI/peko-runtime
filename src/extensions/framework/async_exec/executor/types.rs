@@ -170,8 +170,9 @@ pub struct AsyncToolConfig {
     pub delivery_mode: AsyncResultDeliveryMode,
     /// Which delivery mechanism to use (optional, defaults to executor default)
     pub delivery_target: Option<DeliveryTarget>,
-    /// Maximum time to wait for task completion
-    pub timeout_secs: u64,
+    /// Maximum time to wait for task completion. `None` means no timeout
+    /// (the task runs to completion or until cancelled).
+    pub timeout_secs: Option<u64>,
     /// Whether to delete task record after delivery
     pub cleanup_after_delivery: bool,
     /// Label for grouping/identifying tasks
@@ -183,7 +184,7 @@ impl Default for AsyncToolConfig {
         Self {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: None,
-            timeout_secs: 300,
+            timeout_secs: Some(300),
             cleanup_after_delivery: true,
             label: None,
         }

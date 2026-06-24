@@ -404,12 +404,11 @@ Returns structured data appropriate to the action.
                     .unwrap_or_else(|| "unknown".to_string());
 
                 let config = crate::extensions::framework::async_exec::executor::AsyncToolConfig {
-                    // u64::MAX effectively disables the executor's timeout
-                    // (~584M years). The 5-min cap is applied by the
-                    // router on the *spawning* call, not on the spawned
-                    // task's lifetime. The task runs to completion (or
-                    // until cancelled via `task cancel`).
-                    timeout_secs: u64::MAX,
+                    // `None` means no timeout: the spawned task runs to
+                    // completion or until cancelled via `task cancel`.
+                    // The 5-min cap is applied by the router on the
+                    // *spawning* call, not on the spawned task's lifetime.
+                    timeout_secs: None,
                     ..Default::default()
                 };
 

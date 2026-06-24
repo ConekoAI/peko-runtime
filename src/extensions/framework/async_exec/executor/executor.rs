@@ -165,7 +165,7 @@ impl AsyncExecutor {
         if let Some(ref writer) = self.task_file_writer {
             let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
             record.params = Some(params.clone());
-            record.timeout_requested = Some(config.timeout_secs);
+            record.timeout_requested = config.timeout_secs;
             record.callback_mode = config
                 .delivery_target
                 .map(|dt| format!("{:?}", dt).to_lowercase());
@@ -217,6 +217,7 @@ impl AsyncExecutor {
         let registry_clone = self.registry.clone();
         let task_id_clone = task_id.clone();
         let task_file_writer_clone = self.task_file_writer.clone();
+        // `None` means no timeout; the task runs until completion or cancellation.
         let timeout_secs = config.timeout_secs;
         let callback_mode = config
             .delivery_target
@@ -235,7 +236,7 @@ impl AsyncExecutor {
             if let Some(ref writer) = task_file_writer_clone {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
                 record.params = Some(params_for_spawn.clone());
-                record.timeout_requested = Some(timeout_secs);
+                record.timeout_requested = timeout_secs;
                 record.callback_mode = callback_mode.clone();
                 record.set_running();
                 if let Err(e) = writer.write(&record).await {
@@ -247,12 +248,19 @@ impl AsyncExecutor {
                 }
             }
 
-            // Execute the work with timeout enforcement
-            let timeout_duration = std::time::Duration::from_secs(timeout_secs);
-            let outcome = match tokio::time::timeout(timeout_duration, execution_fn()).await {
-                Ok(Ok(value)) => TaskOutcome::Success(value),
-                Ok(Err(e)) => TaskOutcome::Failure(e),
-                Err(_) => TaskOutcome::Timeout,
+            // Execute the work with optional timeout enforcement.
+            let outcome = match timeout_secs.map(std::time::Duration::from_secs) {
+                Some(duration) => {
+                    match tokio::time::timeout(duration, execution_fn()).await {
+                        Ok(Ok(value)) => TaskOutcome::Success(value),
+                        Ok(Err(e)) => TaskOutcome::Failure(e),
+                        Err(_) => TaskOutcome::Timeout,
+                    }
+                }
+                None => match execution_fn().await {
+                    Ok(value) => TaskOutcome::Success(value),
+                    Err(e) => TaskOutcome::Failure(e),
+                },
             };
 
             // Check if task was cancelled before updating
@@ -281,7 +289,12 @@ impl AsyncExecutor {
                     error: e.to_string(),
                 },
                 TaskOutcome::Timeout => AsyncTaskStatus::TimedOut {
-                    error: format!("Task timed out after {}s", timeout_secs),
+                    // `Timeout` is only produced by the `Some(duration)` branch above,
+                    // so `timeout_secs` is guaranteed to be `Some` here.
+                    error: format!(
+                        "Task timed out after {}s",
+                        timeout_secs.expect("Timeout implies Some timeout_secs")
+                    ),
                 },
             };
 
@@ -301,7 +314,7 @@ impl AsyncExecutor {
             if let Some(ref writer) = task_file_writer_clone {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
                 record.params = Some(params_for_spawn.clone());
-                record.timeout_requested = Some(timeout_secs);
+                record.timeout_requested = timeout_secs;
                 record.callback_mode = callback_mode.clone();
                 match outcome {
                     TaskOutcome::Success(value) => {
@@ -311,7 +324,10 @@ impl AsyncExecutor {
                         record.set_failed(e.to_string());
                     }
                     TaskOutcome::Timeout => {
-                        record.set_timed_out(format!("Task timed out after {}s", timeout_secs));
+                        record.set_timed_out(format!(
+                            "Task timed out after {}s",
+                            timeout_secs.expect("Timeout implies Some timeout_secs")
+                        ));
                     }
                 }
                 if let Err(e) = writer.write(&record).await {
