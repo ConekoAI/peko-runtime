@@ -102,7 +102,7 @@ print(result)  # {'success': True, 'result': 3.0, 'operation': 'add'}
 2. Place both files in your agent's `tools/` directory
 3. Enable the tool in your agent's `config.toml`
 
-See the [Pekobot documentation](https://github.com/yourusername/pekobot) for details.
+See the [Pekobot documentation](https://github.com/ConekoAI/peko-runtime) for details.
 
 ## License
 

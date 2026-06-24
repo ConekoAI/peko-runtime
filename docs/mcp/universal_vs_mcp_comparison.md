@@ -210,7 +210,7 @@ Both systems integrate via `ToolFactory`:
 let tools = create_builtin_tools();
 
 // 2. Universal tools (agent-specific)
-let universal = load_universal_tools(&tools_dir).await;
+let universal = load_tools_from_directory(&tools_dir).await;
 tools.extend(universal);
 
 // 3. MCP tools (global/external)

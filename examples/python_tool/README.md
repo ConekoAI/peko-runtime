@@ -114,9 +114,10 @@ python3 query_tool.py
 ### With Pekobot (when integrated)
 
 ```rust
-use pekobot::tools::universal::load_universal_tools;
+use pekobot::extensions::universal::{load_tools_from_directory, DiscoveredUniversalTool};
 
-let tools = load_universal_tools("./examples/python_tool").await?;
+let tools: Vec<DiscoveredUniversalTool> =
+    load_tools_from_directory("./examples/python_tool").await;
 // tools[0] is UniversalToolAdapter wrapping query_tool.py
 ```
 
