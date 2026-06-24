@@ -256,7 +256,10 @@ pub async fn handle_tunnel(
                         }
                     }
                     Ok(other) => {
-                        println!("⚠️  Unexpected response from daemon: {:?}", other);
+                        println!(
+                            "⚠️  Unexpected response from daemon: {}",
+                            other.variant_name()
+                        );
                     }
                     Err(e) => {
                         println!("❌ Failed to stop tunnel: {}", e);
@@ -318,7 +321,7 @@ pub async fn handle_tunnel(
                                 "credential_path": cred_path.to_string_lossy().to_string(),
                                 "daemon_running": true,
                                 "connected": false,
-                                "warning": format!("Unexpected response: {:?}", other),
+                                "warning": format!("Unexpected response: {}", other.variant_name()),
                             });
                             println!("{}", serde_json::to_string_pretty(&output)?);
                         } else {
