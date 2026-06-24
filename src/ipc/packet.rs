@@ -1405,6 +1405,79 @@ impl ResponsePacket {
         }
     }
 
+    /// Get the variant name without payload data.
+    #[must_use]
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Self::Text { .. } => "Text",
+            Self::AsyncReceipt { .. } => "AsyncReceipt",
+            Self::Done { .. } => "Done",
+            Self::Error { .. } => "Error",
+            Self::Pong { .. } => "Pong",
+            Self::Heartbeat { .. } => "Heartbeat",
+            Self::ShuttingDown { .. } => "ShuttingDown",
+            Self::CronList { .. } => "CronList",
+            Self::CronAdded { .. } => "CronAdded",
+            Self::CronRemoved { .. } => "CronRemoved",
+            Self::CronRunStarted { .. } => "CronRunStarted",
+            Self::CronHistory { .. } => "CronHistory",
+            Self::ExtStarted { .. } => "ExtStarted",
+            Self::ExtStopped { .. } => "ExtStopped",
+            Self::ExtRestarted { .. } => "ExtRestarted",
+            Self::ExtStatus { .. } => "ExtStatus",
+            Self::AgentList { .. } => "AgentList",
+            Self::AgentGet { .. } => "AgentGet",
+            Self::AgentCreated { .. } => "AgentCreated",
+            Self::AgentDeleted { .. } => "AgentDeleted",
+            Self::TeamList { .. } => "TeamList",
+            Self::TeamGet { .. } => "TeamGet",
+            Self::TeamCreated { .. } => "TeamCreated",
+            Self::TeamDeleted { .. } => "TeamDeleted",
+            Self::TeamMoved { .. } => "TeamMoved",
+            Self::TeamJoined { .. } => "TeamJoined",
+            Self::TeamLeft { .. } => "TeamLeft",
+            Self::SessionList { .. } => "SessionList",
+            Self::SessionGet { .. } => "SessionGet",
+            Self::SessionShown { .. } => "SessionShown",
+            Self::SessionRemoved { .. } => "SessionRemoved",
+            Self::SessionSwitched { .. } => "SessionSwitched",
+            Self::SystemStatus { .. } => "SystemStatus",
+            Self::SystemDoctor { .. } => "SystemDoctor",
+            Self::ProviderList { .. } => "ProviderList",
+            Self::ExtensionList { .. } => "ExtensionList",
+            Self::ExtensionEnabled { .. } => "ExtensionEnabled",
+            Self::ExtensionDisabled { .. } => "ExtensionDisabled",
+            Self::ExtensionValidated { .. } => "ExtensionValidated",
+            Self::ExtensionDebugInfo { .. } => "ExtensionDebugInfo",
+            Self::ExtensionInfoResponse { .. } => "ExtensionInfoResponse",
+            Self::ExtensionExported { .. } => "ExtensionExported",
+            Self::ExtensionBundled { .. } => "ExtensionBundled",
+            Self::SystemCleaned { .. } => "SystemCleaned",
+            Self::CronAddedSimple { .. } => "CronAddedSimple",
+            Self::SessionBranched { .. } => "SessionBranched",
+            Self::SessionCompacted { .. } => "SessionCompacted",
+            Self::SessionCompactDryRun { .. } => "SessionCompactDryRun",
+            Self::ExtensionInstalled { .. } => "ExtensionInstalled",
+            Self::ExtensionUninstalled { .. } => "ExtensionUninstalled",
+            Self::AgentExported { .. } => "AgentExported",
+            Self::AgentImported { .. } => "AgentImported",
+            Self::AgentMoved { .. } => "AgentMoved",
+            Self::AgentUpdated { .. } => "AgentUpdated",
+            Self::TeamExported { .. } => "TeamExported",
+            Self::TeamImported { .. } => "TeamImported",
+            Self::RegistryPulled { .. } => "RegistryPulled",
+            Self::RuntimeId { .. } => "RuntimeId",
+            Self::RuntimeInfo { .. } => "RuntimeInfo",
+            Self::RuntimeList { .. } => "RuntimeList",
+            Self::AuthApiKeyCreated { .. } => "AuthApiKeyCreated",
+            Self::AuthApiKeyList { .. } => "AuthApiKeyList",
+            Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",
+            Self::AuthStatus { .. } => "AuthStatus",
+            Self::TunnelStatus { .. } => "TunnelStatus",
+            Self::Status { .. } => "Status",
+        }
+    }
+
     /// Serialize to JSON bytes
     ///
     /// # Errors
@@ -4431,6 +4504,34 @@ mod tests {
         assert!(
             !json.contains("subject_id") && !json.contains("subject_type"),
             "new-shape serialization must not contain legacy fields, got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_variant_name_does_not_leak_payload() {
+        // Construct a response that contains a large binary-like payload.
+        let resp = ResponsePacket::Text {
+            request_id: 1,
+            seq: 0,
+            chunk: "sensitive-binary-payload-abc123".to_string(),
+        };
+
+        let name = resp.variant_name();
+        let err = crate::ipc::unexpected_response(&resp);
+        let err_msg = format!("{err}");
+
+        assert_eq!(name, "Text");
+        assert!(
+            err_msg.contains("Text"),
+            "error should name the variant: {err_msg}"
+        );
+        assert!(
+            !err_msg.contains("sensitive-binary-payload"),
+            "error must not leak payload: {err_msg}"
+        );
+        assert!(
+            !err_msg.contains("chunk"),
+            "error must not leak field names: {err_msg}"
         );
     }
 }

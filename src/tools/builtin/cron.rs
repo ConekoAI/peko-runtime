@@ -210,9 +210,7 @@ impl CronTool {
             ResponsePacket::Error { message, .. } => {
                 Err(anyhow::anyhow!("Failed to list jobs: {message}"))
             }
-            other => Err(anyhow::anyhow!(
-                "Unexpected response from daemon: {other:?}"
-            )),
+            other => Err(crate::ipc::unexpected_response(&other)),
         }
     }
 
@@ -234,9 +232,7 @@ impl CronTool {
                     return Err(anyhow::anyhow!("Failed to list jobs for cancel: {message}"));
                 }
                 other => {
-                    return Err(anyhow::anyhow!(
-                        "Unexpected response from daemon: {other:?}"
-                    ));
+                    return Err(crate::ipc::unexpected_response(&other));
                 }
             }
         } else {
@@ -254,9 +250,7 @@ impl CronTool {
             ResponsePacket::Error { message, .. } => {
                 Err(anyhow::anyhow!("Failed to cancel job: {message}"))
             }
-            other => Err(anyhow::anyhow!(
-                "Unexpected response from daemon: {other:?}"
-            )),
+            other => Err(crate::ipc::unexpected_response(&other)),
         }
     }
 
@@ -277,9 +271,7 @@ impl CronTool {
             ResponsePacket::Error { message, .. } => {
                 Err(anyhow::anyhow!("Failed to register job: {message}"))
             }
-            other => Err(anyhow::anyhow!(
-                "Unexpected response from daemon: {other:?}"
-            )),
+            other => Err(crate::ipc::unexpected_response(&other)),
         }
     }
 }

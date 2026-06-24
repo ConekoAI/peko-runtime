@@ -218,7 +218,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to list jobs: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
 
@@ -290,7 +290,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
 
@@ -343,7 +343,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
 
@@ -404,7 +404,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
 
@@ -423,7 +423,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to remove job: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
 
@@ -442,7 +442,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to run job: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
 
@@ -478,7 +478,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to get history: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
 
@@ -535,7 +535,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
 
@@ -590,7 +590,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 ResponsePacket::Error { message, .. } => {
                     Err(anyhow::anyhow!("Failed to add job: {message}"))
                 }
-                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+                other => Err(crate::ipc::unexpected_response(&other)),
             }
         }
     }

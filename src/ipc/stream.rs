@@ -74,7 +74,7 @@ impl PacketStream {
                     // Ignore heartbeats during collection
                 }
                 other => {
-                    warn!("Unexpected packet in text stream: {:?}", other);
+                    warn!("Unexpected packet in text stream: {}", other.variant_name());
                 }
             }
         }

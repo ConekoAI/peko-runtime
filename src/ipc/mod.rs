@@ -25,6 +25,7 @@
 pub mod client;
 pub mod client_service;
 pub mod connection;
+pub mod errors;
 pub mod packet;
 pub mod pipe_security;
 pub mod response_sink;
@@ -33,6 +34,7 @@ pub mod stream;
 
 pub use client::DaemonClient;
 pub use connection::{ConnectionHandle, ConnectionManager};
+pub use errors::unexpected_response;
 pub use packet::{AuthCredential, AuthHeader, AuthenticatedRequest, RequestPacket, ResponsePacket};
 pub use server::IpcServer;
 pub use stream::PacketStream;

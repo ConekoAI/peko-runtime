@@ -31,7 +31,7 @@ impl DaemonClientService {
             ResponsePacket::Error { message, .. } => {
                 anyhow::bail!("Failed to start '{}': {}", id, message)
             }
-            other => anyhow::bail!("Unexpected response from daemon: {:?}", other),
+            other => Err(crate::ipc::unexpected_response(&other)),
         }
     }
 
@@ -45,7 +45,7 @@ impl DaemonClientService {
             ResponsePacket::Error { message, .. } => {
                 anyhow::bail!("Failed to stop '{}': {}", id, message)
             }
-            other => anyhow::bail!("Unexpected response from daemon: {:?}", other),
+            other => Err(crate::ipc::unexpected_response(&other)),
         }
     }
 
@@ -59,7 +59,7 @@ impl DaemonClientService {
             ResponsePacket::Error { message, .. } => {
                 anyhow::bail!("Failed to restart '{}': {}", id, message)
             }
-            other => anyhow::bail!("Unexpected response from daemon: {:?}", other),
+            other => Err(crate::ipc::unexpected_response(&other)),
         }
     }
 
@@ -81,7 +81,7 @@ impl DaemonClientService {
             ResponsePacket::Error { message, .. } => {
                 anyhow::bail!("Failed to get status for '{}': {}", id, message)
             }
-            other => anyhow::bail!("Unexpected response from daemon: {:?}", other),
+            other => Err(crate::ipc::unexpected_response(&other)),
         }
     }
 }

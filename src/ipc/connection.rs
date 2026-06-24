@@ -306,7 +306,7 @@ impl ConnectionManager {
         let response = super::packet::ResponsePacket::from_bytes(&buf[..len])?;
         match response {
             super::packet::ResponsePacket::Pong { .. } => {}
-            _ => anyhow::bail!("Unexpected response to ping: {:?}", response),
+            _ => return Err(crate::ipc::unexpected_response(&response)),
         }
 
         Ok(ConnectionHandle::Unix {
@@ -373,7 +373,7 @@ impl ConnectionManager {
         let response = super::packet::ResponsePacket::from_bytes(&buf[..len])?;
         match response {
             super::packet::ResponsePacket::Pong { .. } => {}
-            _ => anyhow::bail!("Unexpected response to ping: {:?}", response),
+            _ => return Err(crate::ipc::unexpected_response(&response)),
         }
 
         Ok(ConnectionHandle::NamedPipe {
@@ -404,7 +404,7 @@ impl ConnectionManager {
         let response = super::packet::ResponsePacket::from_bytes(&buf[..len])?;
         match response {
             super::packet::ResponsePacket::Pong { .. } => {}
-            _ => anyhow::bail!("Unexpected response to ping: {:?}", response),
+            _ => return Err(crate::ipc::unexpected_response(&response)),
         }
 
         Ok(ConnectionHandle::Udp {
