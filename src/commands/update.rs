@@ -101,6 +101,14 @@ async fn query_latest_version() -> Result<String> {
 
 /// Perform the actual update
 async fn perform_update(version: &str) -> Result<()> {
+    #[cfg(windows)]
+    {
+        println!("⚠️  Self-update is not yet supported on Windows.");
+        println!("   Please download the latest release from:");
+        println!("   https://github.com/{GITHUB_REPO}/releases");
+        return Ok(());
+    }
+
     let platform = detect_platform()?;
     let asset_name = format!("peko-{platform}.tar.gz");
 
