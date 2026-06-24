@@ -3,7 +3,7 @@
  * MCP Memory Server with Reserved Parameter Injection Demo
  * 
  * This server demonstrates how MCP tools can receive reserved parameters
- * that are injected by the Pekobot runtime (hidden from the LLM).
+ * that are injected by the Peko runtime (hidden from the LLM).
  * 
  * The server stores/retrieves key-value pairs that are automatically
  * isolated per agent_id.
@@ -22,7 +22,7 @@ const storage = new Map();
 // Create MCP server
 const server = new Server(
   {
-    name: "pekobot-memory-server",
+    name: "peko-memory-server",
     version: "1.0.0",
   },
   {
@@ -36,7 +36,7 @@ const server = new Server(
  * List available tools
  * 
  * Note: agent_id and session_id are marked as NOT required.
- * They will be injected by Pekobot if reserved_parameters are configured.
+ * They will be injected by Peko if reserved_parameters are configured.
  */
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
@@ -55,7 +55,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "Value to store"
             },
-            // These are injected by Pekobot - NOT visible to LLM
+            // These are injected by Peko - NOT visible to LLM
             agent_id: {
               type: "string",
               description: "Agent identifier (auto-injected)"
@@ -80,7 +80,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "Memory key to retrieve"
             },
-            // These are injected by Pekobot
+            // These are injected by Peko
             agent_id: {
               type: "string",
               description: "Agent identifier (auto-injected)"
@@ -99,7 +99,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            // These are injected by Pekobot
+            // These are injected by Peko
             agent_id: {
               type: "string",
               description: "Agent identifier (auto-injected)"
@@ -122,7 +122,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "Memory key to delete"
             },
-            // These are injected by Pekobot
+            // These are injected by Peko
             agent_id: {
               type: "string",
               description: "Agent identifier (auto-injected)"

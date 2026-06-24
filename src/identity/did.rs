@@ -4,7 +4,7 @@ use crate::identity::keys::KeyPair;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-/// DID method for Pekobot
+/// DID method for Peko
 pub const DID_METHOD: &str = "peko";
 
 /// DID Identity document

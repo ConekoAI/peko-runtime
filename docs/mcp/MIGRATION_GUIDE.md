@@ -2,15 +2,15 @@
 
 ## Overview
 
-Pekobot supports the Model Context Protocol (MCP) for external tool integration. MCP servers are managed through the Unified Extension Architecture (ADR-017) as extensions.
+Peko supports the Model Context Protocol (MCP) for external tool integration. MCP servers are managed through the Unified Extension Architecture (ADR-017) as extensions.
 
-> **Note:** MCP servers are not built into Pekobot core. They are provided as external extensions that can be installed and enabled through the extension system.
+> **Note:** MCP servers are not built into Peko core. They are provided as external extensions that can be installed and enabled through the extension system.
 
 ## What Changed
 
 ### Before (Legacy)
 
-Some tools were built into Pekobot core:
+Some tools were built into Peko core:
 
 ```
 peko (single binary)

@@ -2,10 +2,10 @@
 //!
 //! End-to-end: export team → verify checksums → import → verify data
 
-use pekobot::registry::packaging::{
+use peko::agents::agent_config::AgentConfig;
+use peko::registry::packaging::{
     export_team, import_team_with_base_dir, inspect_team, TeamExportOptions, TeamImportOptions,
 };
-use pekobot::agents::agent_config::AgentConfig;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
@@ -40,7 +40,7 @@ frequency_penalty = 0.0
 }
 
 /// Create a mock identity for testing
-fn create_test_identity(name: &str) -> pekobot::identity::Identity {
+fn create_test_identity(name: &str) -> peko::identity::Identity {
     // Use a blocking approach since we're in a test context
     let rt = tokio::runtime::Handle::try_current();
     match rt {
@@ -48,7 +48,7 @@ fn create_test_identity(name: &str) -> pekobot::identity::Identity {
             // We're in an async context, use block_in_place
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
-                    pekobot::identity::Identity::new(name, pekobot::identity::did::DIDScope::Local)
+                    peko::identity::Identity::new(name, peko::identity::did::DIDScope::Local)
                         .await
                         .unwrap()
                 })
@@ -58,7 +58,7 @@ fn create_test_identity(name: &str) -> pekobot::identity::Identity {
             // No runtime, create one
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                pekobot::identity::Identity::new(name, pekobot::identity::did::DIDScope::Local)
+                peko::identity::Identity::new(name, peko::identity::did::DIDScope::Local)
                     .await
                     .unwrap()
             })
@@ -301,7 +301,7 @@ async fn test_team_import_fails_on_checksum_mismatch() {
 
     // Tamper with a file
     let manifest_bytes = files.get("team/manifest.toml").unwrap().clone();
-    let _manifest: pekobot::registry::packaging::TeamManifest =
+    let _manifest: peko::registry::packaging::TeamManifest =
         toml::from_str(std::str::from_utf8(&manifest_bytes).unwrap()).unwrap();
 
     // Modify a file but keep the old checksum
@@ -390,7 +390,7 @@ async fn test_team_import_warns_without_checksums() {
 
     // Modify manifest to remove packaging
     let manifest_bytes = files.get("team/manifest.toml").unwrap().clone();
-    let mut manifest: pekobot::registry::packaging::TeamManifest =
+    let mut manifest: peko::registry::packaging::TeamManifest =
         toml::from_str(std::str::from_utf8(&manifest_bytes).unwrap()).unwrap();
     manifest.packaging = None;
 

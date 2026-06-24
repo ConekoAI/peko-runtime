@@ -29,7 +29,7 @@
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use pekobot::test_utils::{AppState, DaemonConfigSnapshot};
+use peko::test_utils::{AppState, DaemonConfigSnapshot};
 
 mod common;
 use common::{generate_jwt, generate_runtime_identity, PekohubBackend};
@@ -143,7 +143,7 @@ fn seed_mock_provider_catalog(
     mock_llm_url: &str,
     api_key: &str,
 ) -> anyhow::Result<()> {
-    use pekobot::providers::catalog::{
+    use peko::providers::catalog::{
         ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;
@@ -196,7 +196,7 @@ fn seed_minimax_catalog_entry(
     workspace_dir: &std::path::Path,
     api_key: &str,
 ) -> anyhow::Result<()> {
-    use pekobot::providers::catalog::{
+    use peko::providers::catalog::{
         ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;
@@ -310,7 +310,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     tokio::fs::create_dir_all(vault_path.parent().unwrap())
         .await
         .unwrap();
-    let vault = pekobot::common::vault::Vault::with_passphrase(
+    let vault = peko::common::vault::Vault::with_passphrase(
         &vault_path,
         &secrecy::SecretString::new(vault_passphrase.clone().into()),
     )
@@ -362,12 +362,12 @@ async fn test_e2e_tunnel_chat_with_llm() {
     // that start_tunnel() can find them. The private key lives in the vault
     // at the AppState's config directory.
     let config_dir = workspace_path.join("config");
-    let cred_path = pekobot::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
+    let cred_path = peko::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
     tokio::fs::create_dir_all(cred_path.parent().unwrap())
         .await
         .unwrap();
 
-    let cred = pekobot::tunnel::PekoHubCredential {
+    let cred = peko::tunnel::PekoHubCredential {
         url: backend.ws_url.clone(),
         runtime_id: did.clone(),
     };

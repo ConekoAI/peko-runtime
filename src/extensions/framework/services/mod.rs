@@ -51,7 +51,9 @@ impl Services {
     /// Create new services container with default local transport
     #[must_use]
     pub fn new() -> Self {
-        Self::with_transport(crate::extensions::framework::transport::async_transport::create_local_transport())
+        Self::with_transport(
+            crate::extensions::framework::transport::async_transport::create_local_transport(),
+        )
     }
 
     /// Create services with a custom async task transport
@@ -86,7 +88,8 @@ impl Services {
     /// - If daemon is reachable, uses `DaemonHttpTransport`
     /// - Otherwise, returns an error — async tool execution requires the daemon
     pub async fn new_auto() -> anyhow::Result<Self> {
-        let transport = crate::extensions::framework::transport::async_transport::create_transport().await?;
+        let transport =
+            crate::extensions::framework::transport::async_transport::create_transport().await?;
         Ok(Self::with_transport(transport))
     }
 

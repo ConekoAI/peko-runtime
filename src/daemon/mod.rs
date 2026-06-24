@@ -213,7 +213,10 @@ impl Daemon {
         info!("✅ Daemon ready to accept requests");
 
         // Start PekoHub tunnel if credentials exist (ADR-035)
-        match app_state.start_tunnel(self.config.max_reconnect_attempts).await {
+        match app_state
+            .start_tunnel(self.config.max_reconnect_attempts)
+            .await
+        {
             Ok(true) => info!(
                 "🌐 PekoHub tunnel started in background (max_reconnect_attempts={})",
                 self.config.max_reconnect_attempts

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Calculator tool example using the Pekobot Tool SDK.
+"""Calculator tool example using the Peko Tool SDK.
 
 This demonstrates a simple arithmetic tool with reserved parameter injection.
 """
 
-from pekobot_tool import tool
+from peko_tool import tool
 
 
 @tool(

@@ -13,7 +13,7 @@
 
 ## Context
 
-Pekobot is a Rust-based multi-agent runtime (`peko-runtime`) paired with a public registry called PekoHub (Node.js / Fastify backend). A core user story is remote access to locally-hosted agents: an owner on their phone or web browser should be able to chat with an agent running on their laptop at home. The laptop is typically behind NAT and/or a firewall, making inbound connections impossible. We need an outbound tunnel from the runtime to PekoHub that is secure, reliable, and multiplexes traffic for all agents on the runtime.
+Peko is a Rust-based multi-agent runtime (`peko-runtime`) paired with a public registry called PekoHub (Node.js / Fastify backend). A core user story is remote access to locally-hosted agents: an owner on their phone or web browser should be able to chat with an agent running on their laptop at home. The laptop is typically behind NAT and/or a firewall, making inbound connections impossible. We need an outbound tunnel from the runtime to PekoHub that is secure, reliable, and multiplexes traffic for all agents on the runtime.
 
 ## Problem Statement
 

@@ -3,13 +3,13 @@
 //! This module provides a single provider implementation that works with
 //! any `ApiAdapter`. All provider-specific logic is delegated to the adapter.
 
+use crate::common::types::provider::ProviderConfig;
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
 use crate::providers::transport::HttpClient;
 use crate::providers::types::{
     ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
 };
-use crate::common::types::provider::ProviderConfig;
 use futures::StreamExt;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -197,9 +197,9 @@ impl Provider {
             return mock.chat_with_tools(model_id, messages, Some(tools), options);
         }
 
-        let (path, body) = self
-            .adapter
-            .build_request(model_id, messages, Some(tools), options, false)?;
+        let (path, body) =
+            self.adapter
+                .build_request(model_id, messages, Some(tools), options, false)?;
         let response: serde_json::Value = self.client.post_json(&path, &body).await?;
         self.adapter.parse_response(model_id, response)
     }
@@ -218,9 +218,9 @@ impl Provider {
             return mock.stream_with_tools(model_id, messages, Some(tools), options);
         }
 
-        let (path, body) = self
-            .adapter
-            .build_request(model_id, messages, Some(tools), options, true)?;
+        let (path, body) =
+            self.adapter
+                .build_request(model_id, messages, Some(tools), options, true)?;
         let stream = self.client.post_stream(&path, &body).await?;
 
         // Parse SSE and convert to StreamEvent using a channel-based approach
@@ -279,9 +279,9 @@ impl Provider {
             headers: std::collections::HashMap::new(),
         };
 
-        let (path, body) = self
-            .adapter
-            .build_request(&model_id_owned, &messages, None, &options, true)?;
+        let (path, body) =
+            self.adapter
+                .build_request(&model_id_owned, &messages, None, &options, true)?;
 
         // Emit running event
         let _ = event_tx

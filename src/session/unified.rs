@@ -16,6 +16,9 @@
 //! `SessionManager`**. `Session` is now an internal implementation detail.
 //! External code should use `SessionHandle` obtained from `SessionManager`.
 
+use crate::auth::principal::Principal;
+use crate::common::types::message::ContentBlock;
+use crate::common::types::message::LlmMessage;
 use crate::engine::ToolCall;
 use crate::providers::TokenUsage as ProviderTokenUsage;
 use crate::session::events::{
@@ -27,10 +30,7 @@ use crate::session::message_conversion::{
     entries_to_context_text, event_to_llm_message, normalized_entry_to_llm_message,
 };
 use crate::session::metadata_controller::MetadataController;
-use crate::auth::principal::Principal;
 use crate::session::NormalizedEntry;
-use crate::common::types::message::LlmMessage;
-use crate::common::types::message::ContentBlock;
 use anyhow::Result;
 use chrono::Utc;
 use tracing::warn;
@@ -141,7 +141,9 @@ impl Session {
         // The legacy `"default"` literal is no longer used as a fallback
         // user-attribution placeholder; empty is distinguishable from
         // a real, resolved caller.
-        let peer = peer.cloned().unwrap_or_else(|| Principal::User(String::new()));
+        let peer = peer
+            .cloned()
+            .unwrap_or_else(|| Principal::User(String::new()));
         let session_key = crate::session::key::derive_base_session_key(agent_name, &peer);
 
         Self::from_entries(
@@ -350,7 +352,7 @@ impl Session {
 
     /// Add an assistant message with tool calls (with `ContentBlock` tool calls)
     ///
-    /// Writes as Event Format (assistant.message) for consistency with the Pekobot
+    /// Writes as Event Format (assistant.message) for consistency with the Peko
     /// session specification (`DATA_MODEL.md` §5.3).
     /// Add a tool result
     ///

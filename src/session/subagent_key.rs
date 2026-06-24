@@ -22,7 +22,7 @@ pub fn generate_subagent_key(parent_session_key: &str) -> String {
 ///
 /// # Examples
 /// ```
-/// use pekobot::session::parse_subagent_key;
+/// use peko::session::parse_subagent_key;
 ///
 /// let key = "agent:myagent:peer:user:alice:subagent:uuid-here";
 /// let (agent, parent, uuid) = parse_subagent_key(key).unwrap();

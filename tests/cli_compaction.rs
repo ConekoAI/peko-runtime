@@ -153,12 +153,7 @@ fn build_n_turn_script(needle: &str, n_turns: usize) -> String {
 }
 
 /// Run a single `peko send` round. Returns the response stdout.
-fn send_turn(
-    cli: &PekoCli,
-    agent_name: &str,
-    prompt: &str,
-    timeout: Duration,
-) -> (String, String) {
+fn send_turn(cli: &PekoCli, agent_name: &str, prompt: &str, timeout: Duration) -> (String, String) {
     let (out, err, status) = run(cli, &["send", agent_name, prompt, "--no-stream"], timeout);
     assert_ok(&out, &err, &status);
     (out, err)
@@ -221,8 +216,7 @@ async fn setup_n_turn_session(
     let script = build_n_turn_script(needle, n_turns);
     configure_mock(mock_url, &script).await;
     let cli = PekoCli::new();
-    write_compaction_agent(cli.home(), agent_name, mock_url)
-        .expect("write compaction agent");
+    write_compaction_agent(cli.home(), agent_name, mock_url).expect("write compaction agent");
     let daemon = DaemonGuard::spawn(&cli);
 
     for i in 0..n_turns {
@@ -260,8 +254,7 @@ async fn setup_session_with_full_script(
     let script = build_full_script(needle, n_setup_turns, extra_turns);
     configure_mock(mock_url, &script).await;
     let cli = PekoCli::new();
-    write_compaction_agent(cli.home(), agent_name, mock_url)
-        .expect("write compaction agent");
+    write_compaction_agent(cli.home(), agent_name, mock_url).expect("write compaction agent");
     let daemon = DaemonGuard::spawn(&cli);
 
     for i in 0..n_setup_turns {
@@ -283,9 +276,7 @@ async fn setup_session_with_full_script(
 /// Format a prompt for an "extra" (post-compact) turn: tells the
 /// agent to write a file with the shared needle in the prompt.
 fn extra_turn_prompt(needle: &str, path: &str, content: &str) -> String {
-    format!(
-        "Use the needle '{needle}' to write a file {path} with content {content}."
-    )
+    format!("Use the needle '{needle}' to write a file {path} with content {content}.")
 }
 
 /// Run `peko session list <agent> --json` and return the active
@@ -302,10 +293,7 @@ fn find_active_session_id(cli: &PekoCli, agent_name: &str) -> String {
         .unwrap_or_else(|e| panic!("session list parse error: {e}\nstdout: {out}"));
     // `active_session` is the canonical active id; if absent, fall
     // back to the first listed session.
-    if let Some(active) = parsed
-        .get("active_session")
-        .and_then(|v| v.as_str())
-    {
+    if let Some(active) = parsed.get("active_session").and_then(|v| v.as_str()) {
         if !active.is_empty() {
             return active.to_string();
         }
@@ -322,7 +310,7 @@ fn find_active_session_id(cli: &PekoCli, agent_name: &str) -> String {
 
 /// The on-disk path to the session's JSONL file. `peko send` defaults
 /// the team to `"default"` when no `--team` is passed
-/// ([`parse_agent_identifier_with_override`](../../pekobot/peko-runtime/src/common/identifiers.rs)
+/// ([`parse_agent_identifier_with_override`](../../peko/peko-runtime/src/common/identifiers.rs)
 /// in `src/common/identifiers.rs:123`), so the agent's `default/`
 /// subdirectory is where the JSONL lives. (The agent is created
 /// in the `default` team too — see `write_compaction_agent` and
@@ -409,13 +397,11 @@ async fn cli_compact_dry_run_json_reports_metadata() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_compaction_agent(cli.home(), agent_name, &mock_url)
-        .expect("write compaction agent");
+    write_compaction_agent(cli.home(), agent_name, &mock_url).expect("write compaction agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
-    let warmup_prompt = format!(
-        "Use the needle '{needle}' to write a file warmup.txt and respond WARMUP_DONE."
-    );
+    let warmup_prompt =
+        format!("Use the needle '{needle}' to write a file warmup.txt and respond WARMUP_DONE.");
     let (_out, _err) = send_turn(&cli, agent_name, &warmup_prompt, Duration::from_secs(30));
 
     let (out, err, status) = run(
@@ -485,8 +471,7 @@ async fn cli_compact_dry_run_json_reports_message_counts_after_multi_turn() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_compaction_agent(cli.home(), agent_name, &mock_url)
-        .expect("write compaction agent");
+    write_compaction_agent(cli.home(), agent_name, &mock_url).expect("write compaction agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     for i in 0..N_TURNS {
@@ -706,14 +691,8 @@ async fn cli_compact_session_usable_after_compaction() {
         "POST_COMPACT_OK".to_string(),
         "POST_COMPACT_SUCCESS".to_string(),
     )];
-    let (cli, _daemon) = setup_session_with_full_script(
-        &mock_url,
-        agent_name,
-        needle,
-        N_TURNS,
-        &extra,
-    )
-    .await;
+    let (cli, _daemon) =
+        setup_session_with_full_script(&mock_url, agent_name, needle, N_TURNS, &extra).await;
 
     // First compact.
     let (out, err, status) = run(
@@ -776,14 +755,8 @@ async fn cli_compact_custom_instruction_in_summary() {
         "GROW".to_string(),
         "GROW_DONE".to_string(),
     )];
-    let (cli, _daemon) = setup_session_with_full_script(
-        &mock_url,
-        agent_name,
-        needle,
-        N_TURNS,
-        &extra,
-    )
-    .await;
+    let (cli, _daemon) =
+        setup_session_with_full_script(&mock_url, agent_name, needle, N_TURNS, &extra).await;
 
     // First compact (no instruction).
     let (out, err, status) = run(
@@ -870,14 +843,8 @@ async fn cli_compact_incremental_compaction_numbers() {
         "GROW".to_string(),
         "GROW_DONE".to_string(),
     )];
-    let (cli, _daemon) = setup_session_with_full_script(
-        &mock_url,
-        agent_name,
-        needle,
-        N_TURNS,
-        &extra,
-    )
-    .await;
+    let (cli, _daemon) =
+        setup_session_with_full_script(&mock_url, agent_name, needle, N_TURNS, &extra).await;
 
     // First compact.
     let (out, err, status) = run(
@@ -984,8 +951,7 @@ async fn cli_compact_with_compaction_extension_installed() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_compaction_agent(cli.home(), agent_name, &mock_url)
-        .expect("write compaction agent");
+    write_compaction_agent(cli.home(), agent_name, &mock_url).expect("write compaction agent");
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Install the custom compactor extension from the on-disk
@@ -998,11 +964,7 @@ async fn cli_compact_with_compaction_extension_installed() {
         env!("CARGO_MANIFEST_DIR"),
         "/e2e_tests_archive/compaction/extensions/custom_compactor"
     );
-    let (out, err, status) = run(
-        &cli,
-        &["ext", "install", ext_dir],
-        Duration::from_secs(20),
-    );
+    let (out, err, status) = run(&cli, &["ext", "install", ext_dir], Duration::from_secs(20));
     assert_ok(&out, &err, &status);
     // The install should report the extension id.
     assert!(
@@ -1122,7 +1084,11 @@ async fn cli_compact_with_compaction_extension_installed() {
         .iter()
         .filter_map(|e| e.get("compaction_number").and_then(|n| n.as_u64()))
         .collect();
-    assert_eq!(numbers, vec![1, 2], "compaction numbers should be [1, 2]; got: {numbers:?}");
+    assert_eq!(
+        numbers,
+        vec![1, 2],
+        "compaction numbers should be [1, 2]; got: {numbers:?}"
+    );
 
     // Cleanup: uninstall the extension so the next test starts
     // fresh. (The PekoCli tempdir is dropped on test exit, but the

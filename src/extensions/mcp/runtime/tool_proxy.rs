@@ -1,6 +1,6 @@
 //! MCP Tool Proxy
 //!
-//! Adapts MCP tools to Pekobot's Tool trait, allowing MCP tools to be used
+//! Adapts MCP tools to Peko's Tool trait, allowing MCP tools to be used
 //! seamlessly by the agent system.
 
 use crate::extensions::framework::protocols::shared::proxy_utils::{
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace};
 
-/// An MCP tool wrapped as a Pekobot Tool
+/// An MCP tool wrapped as a Peko Tool
 ///
 /// Uses full names with mcp: prefix (e.g., "`mcp:identity:echo_identity`")
 /// for consistent identification across whitelist, hooks, and execution.
@@ -127,7 +127,7 @@ impl McpToolProxy {
         }
     }
 
-    /// Convert MCP tool result to a JSON value for Pekobot
+    /// Convert MCP tool result to a JSON value for Peko
     fn convert_result(&self, result: CallToolResult) -> serde_json::Value {
         let contents: Vec<serde_json::Value> = result
             .content

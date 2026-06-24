@@ -61,7 +61,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 /// Idempotent: re-running with the same `mock_llm_url` overwrites
 /// the entry with the same values.
 pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
-    use pekobot::providers::catalog::{
+    use peko::providers::catalog::{
         ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;
@@ -109,7 +109,7 @@ pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
 /// (Anthropic-compatible) endpoint. The API key is read from the
 /// `MINIMAX_API_KEY` env var via `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
 pub fn seed_minimax_provider_in_catalog(home: &Path) {
-    use pekobot::providers::catalog::{
+    use peko::providers::catalog::{
         ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;
@@ -156,7 +156,7 @@ pub fn seed_minimax_provider_in_catalog(home: &Path) {
 /// The API key is read from the `KIMI_API_KEY` env var via
 /// `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
 pub fn seed_kimi_provider_in_catalog(home: &Path) {
-    use pekobot::providers::catalog::{
+    use peko::providers::catalog::{
         ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
     };
     use std::collections::BTreeMap;

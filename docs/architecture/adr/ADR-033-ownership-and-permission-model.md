@@ -12,7 +12,7 @@
 
 ## Context
 
-ADR-031 restructured pekobot so that agents are first-class citizens: they live at `~/.peko/agents/{agent}/`, teams are independent shared-resource containers at `~/.peko/teams/{team}/`, and membership is an explicit relationship stored in `memberships.toml` / `members.toml`. This decoupled identity from containment, but it left a critical question unanswered: **who owns an agent or team, and what can they do with it?**
+ADR-031 restructured peko so that agents are first-class citizens: they live at `~/.peko/agents/{agent}/`, teams are independent shared-resource containers at `~/.peko/teams/{team}/`, and membership is an explicit relationship stored in `memberships.toml` / `members.toml`. This decoupled identity from containment, but it left a critical question unanswered: **who owns an agent or team, and what can they do with it?**
 
 Without a formal ownership model, every local operation implicitly trusts the OS user, and remote access (via tunnel, desktop, or future web dashboard) has no principled way to enforce boundaries. This ADR defines the ownership and permission system that underpins remote management, exposure features, and multi-user scenarios.
 

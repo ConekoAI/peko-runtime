@@ -14,7 +14,7 @@
 
 ## Context
 
-The Pekobot extension ecosystem has a mature **consumption layer** (`peko ext install`, `peko ext push`, `peko ext pull`, `peko ext export`) but a broken **creation layer**. Today, developers who want to build an extension must:
+The Peko extension ecosystem has a mature **consumption layer** (`peko ext install`, `peko ext push`, `peko ext pull`, `peko ext export`) but a broken **creation layer**. Today, developers who want to build an extension must:
 
 1. Read `EXTENSION_SYSTEM.md` and multiple ADRs to understand manifest formats.
 2. Hand-write `manifest.yaml`, `SKILL.md`, or `server.json` from scratch.

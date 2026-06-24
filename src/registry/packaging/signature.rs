@@ -163,8 +163,9 @@ pub fn verify_manifest_signature(
     // re-parse (rather than reusing a pre-parsed manifest) so the caller
     // is forced to hand us the on-disk bytes — this makes tamper detection
     // automatic.
-    let manifest_str = std::str::from_utf8(manifest_bytes)
-        .map_err(|e| SignatureError::CanonicalizationFailed(format!("manifest is not utf-8: {e}")))?;
+    let manifest_str = std::str::from_utf8(manifest_bytes).map_err(|e| {
+        SignatureError::CanonicalizationFailed(format!("manifest is not utf-8: {e}"))
+    })?;
     let manifest = AgentManifest::from_toml(manifest_str)
         .map_err(|e| SignatureError::CanonicalizationFailed(e.to_string()))?;
 
@@ -348,8 +349,7 @@ mod tests {
         manifest_bytes[last] ^= 0x01;
         let did_bytes = did_doc_for(&keypair, &did);
 
-        let err =
-            verify_manifest_signature(&manifest_bytes, &did_bytes, false).unwrap_err();
+        let err = verify_manifest_signature(&manifest_bytes, &did_bytes, false).unwrap_err();
         assert!(matches!(
             err,
             SignatureError::VerificationFailed(_) | SignatureError::CanonicalizationFailed(_)

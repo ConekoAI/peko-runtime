@@ -70,8 +70,8 @@ pub enum CredentialCommands {
 
 /// Execute a credential subcommand.
 pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()> {
-    let vault = Vault::load(paths.resolver().vault())
-        .with_context(|| "failed to load credential vault")?;
+    let vault =
+        Vault::load(paths.resolver().vault()).with_context(|| "failed to load credential vault")?;
 
     match cmd {
         CredentialCommands::Set { provider, key } => set_cmd(&vault, &provider, key).await,

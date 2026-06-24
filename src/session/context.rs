@@ -3,8 +3,8 @@
 //! Provides a lightweight DTO for session routing metadata.
 //! All session operations go through `SessionHandle` obtained from `SessionManager`.
 
+use super::types::ChannelType;
 use crate::auth::principal::Principal;
-use super::types::{ChannelType};
 
 /// Lightweight context for session-aware agent execution — pure DTO, no operations.
 ///

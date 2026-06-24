@@ -11,16 +11,16 @@
 //!   cd peko-runtime
 //!   cargo test --test packaging_integration -- --ignored
 
-use pekobot::identity::{did::DIDScope, Identity};
-use pekobot::registry::packaging::manifest::AgentLayers;
-use pekobot::registry::packaging::{
+use peko::agents::agent_config::AgentConfig;
+use peko::identity::{did::DIDScope, Identity};
+use peko::registry::packaging::manifest::AgentLayers;
+use peko::registry::packaging::{
     export_team, import_team_with_base_dir, inspect_team, AgentManifest, ExportOptions,
     ImportOptions, Packager, TeamExportOptions, TeamImportOptions,
 };
-use pekobot::registry::{
+use peko::registry::{
     AgentRegistry, RegistryClient, RegistryConfig, RegistryManifest, RegistrySource,
 };
-use pekobot::agents::agent_config::AgentConfig;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
@@ -107,9 +107,9 @@ async fn build_agent_package_from_dir(
 
     let identity_dir = agent_dir.join("identity");
     let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await?;
-    let did_doc: pekobot::identity::DIDDocument = serde_json::from_str(&did_json)?;
+    let did_doc: peko::identity::DIDDocument = serde_json::from_str(&did_json)?;
     let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
-    let key_export: pekobot::identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
+    let key_export: peko::identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
     let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
 
     let skills_dir = agent_dir.join("skills");
@@ -127,7 +127,8 @@ async fn build_agent_package_from_dir(
     let _path = packager.export(export_opts).await?;
 
     // Inspect to get the manifest (with layers computed)
-    let (manifest, _validation) = pekobot::registry::packaging::inspect_agent(output_path, None).await?;
+    let (manifest, _validation) =
+        peko::registry::packaging::inspect_agent(output_path, None).await?;
     Ok(manifest)
 }
 
@@ -169,30 +170,30 @@ fn build_registry_manifest(
             // tarball we stored under that digest — see
             // `store_agent_layers_in_registry` for the encoder.
             reg_manifest = reg_manifest.with_config(digest.clone(), 0_u64, None::<String>);
-            reg_manifest.add_layer(pekobot::registry::packaging::Layer::new(
+            reg_manifest.add_layer(peko::registry::packaging::Layer::new(
                 digest.clone(),
-                pekobot::registry::packaging::LayerType::Config,
+                peko::registry::packaging::LayerType::Config,
                 0,
             ));
         }
         if let Some(digest) = &layers.identity {
-            reg_manifest.add_layer(pekobot::registry::packaging::Layer::new(
+            reg_manifest.add_layer(peko::registry::packaging::Layer::new(
                 digest.clone(),
-                pekobot::registry::packaging::LayerType::Identity,
+                peko::registry::packaging::LayerType::Identity,
                 0,
             ));
         }
         if let Some(digest) = &layers.skills {
-            reg_manifest.add_layer(pekobot::registry::packaging::Layer::new(
+            reg_manifest.add_layer(peko::registry::packaging::Layer::new(
                 digest.clone(),
-                pekobot::registry::packaging::LayerType::Skills,
+                peko::registry::packaging::LayerType::Skills,
                 0,
             ));
         }
         if let Some(digest) = &layers.workspace {
-            reg_manifest.add_layer(pekobot::registry::packaging::Layer::new(
+            reg_manifest.add_layer(peko::registry::packaging::Layer::new(
                 digest.clone(),
-                pekobot::registry::packaging::LayerType::Workspace,
+                peko::registry::packaging::LayerType::Workspace,
                 0,
             ));
         }
@@ -206,7 +207,7 @@ async fn store_registry_manifest_local(
     registry: &AgentRegistry,
     manifest: &RegistryManifest,
 ) -> anyhow::Result<()> {
-    let digest = pekobot::registry::packaging::ImageDigest::new(&manifest.digest)?;
+    let digest = peko::registry::packaging::ImageDigest::new(&manifest.digest)?;
     let reg_manifests_dir = registry
         .root_path()
         .join("registry_manifests")
@@ -282,7 +283,7 @@ async fn store_agent_layers_in_registry(
         }
 
         // Verify digest matches
-        let computed_digest = pekobot::registry::packaging::types::compute_digest(&buf);
+        let computed_digest = peko::registry::packaging::types::compute_digest(&buf);
         if computed_digest != *expected_digest {
             anyhow::bail!(
                 "Layer digest mismatch for {prefix}: expected {expected_digest}, got {computed_digest}"
@@ -369,13 +370,15 @@ async fn test_full_packaging_pipeline() {
 
     let mut push_events = Vec::new();
     let push_result = push_client
-        .push(&manifest_digest, &registry_ref, |event| push_events.push(event))
+        .push(&manifest_digest, &registry_ref, |event| {
+            push_events.push(event)
+        })
         .await;
 
     assert!(push_result.is_ok(), "Push failed: {:?}", push_result.err());
     let has_done = push_events
         .iter()
-        .any(|e| matches!(e, pekobot::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Push should complete with Done event");
 
     // ═════════════════════════════════════════════════════════════════
@@ -396,7 +399,7 @@ async fn test_full_packaging_pipeline() {
     assert!(pull_result.is_ok(), "Pull failed: {:?}", pull_result.err());
     let has_done = pull_events
         .iter()
-        .any(|e| matches!(e, pekobot::registry::ProgressEvent::Done { .. }));
+        .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. }));
     assert!(has_done, "Pull should complete with Done event");
 
     // Verify layers were pulled
@@ -411,7 +414,8 @@ async fn test_full_packaging_pipeline() {
     let import_base = base_dir.join("imported_agents");
     tokio::fs::create_dir_all(&import_base).await.unwrap();
 
-    let unpackager = pekobot::registry::packaging::Unpackager::new(&package_path).with_base_dir(&import_base);
+    let unpackager =
+        peko::registry::packaging::Unpackager::new(&package_path).with_base_dir(&import_base);
 
     let import_options = ImportOptions {
         new_name: Some("imported-agent".to_string()),

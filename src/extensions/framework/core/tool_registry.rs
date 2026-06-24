@@ -37,12 +37,17 @@ impl ToolRegistry {
         Self {
             tool_index: SharedRegistry::new(),
             tool_owners: RwLock::new(HashMap::new()),
-            tool_config: RwLock::new(crate::common::types::agent_legacy::ExtensionConfig::default()),
+            tool_config: RwLock::new(
+                crate::common::types::agent_legacy::ExtensionConfig::default(),
+            ),
         }
     }
 
     /// Set the tool configuration (whitelist, etc.)
-    pub async fn set_tool_config(&self, config: crate::common::types::agent_legacy::ExtensionConfig) {
+    pub async fn set_tool_config(
+        &self,
+        config: crate::common::types::agent_legacy::ExtensionConfig,
+    ) {
         let mut tool_config = self.tool_config.write().await;
         *tool_config = config;
         debug!("Updated tool configuration");

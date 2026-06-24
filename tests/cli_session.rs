@@ -15,7 +15,7 @@
 //!  landing — see ADR-038.)
 
 mod common;
-use common::{write_v3_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use common::{run_with_timeout, write_v3_mock_agent, DaemonGuard, PekoCli};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -74,10 +74,7 @@ fn list_sessions_json(cli: &PekoCli, agent: &str) -> serde_json::Value {
 
 /// Send a message to an agent, returning stdout.
 fn send_msg(cli: &PekoCli, agent: &str, msg: &str) -> String {
-    let (stdout, stderr, status) = run(
-        cli,
-        &["send", agent, msg, "--no-stream"],
-    );
+    let (stdout, stderr, status) = run(cli, &["send", agent, msg, "--no-stream"]);
     assert_ok(&stdout, &stderr, &status);
     stdout
 }
@@ -170,7 +167,14 @@ fn session_show_json_output_contains_session_id() {
 
     let (stdout, stderr, status) = run(
         &cli,
-        &["session", "show", "show-json-agent", "--session-id", &session_id, "--json"],
+        &[
+            "session",
+            "show",
+            "show-json-agent",
+            "--session-id",
+            &session_id,
+            "--json",
+        ],
     );
     assert_ok(&stdout, &stderr, &status);
 
@@ -180,7 +184,10 @@ fn session_show_json_output_contains_session_id() {
         .and_then(|s| s.get("session_id"))
         .and_then(|v| v.as_str())
         .expect("session.session_id in JSON");
-    assert_eq!(shown_id, session_id, "JSON show should return correct session_id");
+    assert_eq!(
+        shown_id, session_id,
+        "JSON show should return correct session_id"
+    );
 }
 
 #[test]
@@ -203,9 +210,7 @@ fn session_branch_creates_child_with_parent_history() {
         .as_str()
         .expect("session_id")
         .to_string();
-    let parent_msg_count = json["sessions"][0]["message_count"]
-        .as_i64()
-        .unwrap_or(0);
+    let parent_msg_count = json["sessions"][0]["message_count"].as_i64().unwrap_or(0);
 
     // Branch from explicit session
     let (stdout, stderr, status) = run(
@@ -229,7 +234,9 @@ fn session_branch_creates_child_with_parent_history() {
         .iter()
         .find(|s| s.get("parent_session_id").and_then(|v| v.as_str()) == Some(&parent_id))
         .expect("branched session with parent_session_id");
-    let branched_id = branched["session_id"].as_str().expect("branched session_id");
+    let branched_id = branched["session_id"]
+        .as_str()
+        .expect("branched session_id");
 
     // Verify branched session has history (message count >= parent - 2 for overhead)
     let branched_count = branched["message_count"].as_i64().unwrap_or(0);
@@ -241,9 +248,18 @@ fn session_branch_creates_child_with_parent_history() {
     // Verify we can show the branched session
     let (show_out, _, show_status) = run(
         &cli,
-        &["session", "show", "branch-agent", "--session-id", branched_id],
+        &[
+            "session",
+            "show",
+            "branch-agent",
+            "--session-id",
+            branched_id,
+        ],
     );
-    assert!(show_status.success(), "show branched session should succeed: {show_out}");
+    assert!(
+        show_status.success(),
+        "show branched session should succeed: {show_out}"
+    );
 }
 
 #[test]
@@ -308,7 +324,10 @@ fn session_branch_with_label() {
         .and_then(|s| s.get("title"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    assert_eq!(title, "test-label", "branched session title should be the label");
+    assert_eq!(
+        title, "test-label",
+        "branched session title should be the label"
+    );
 }
 
 #[test]
@@ -327,7 +346,13 @@ fn session_switch_changes_active_session() {
     // Second send with --new to create a separate session
     let (_, _, status) = run(
         &cli,
-        &["send", "switch-agent", "Second session", "--new", "--no-stream"],
+        &[
+            "send",
+            "switch-agent",
+            "Second session",
+            "--new",
+            "--no-stream",
+        ],
     );
     assert!(status.success(), "second send with --new should succeed");
 
@@ -338,10 +363,7 @@ fn session_switch_changes_active_session() {
     let session_id_2 = sessions[1]["session_id"].as_str().unwrap().to_string();
 
     // Switch to session 1
-    let (_, _, status) = run(
-        &cli,
-        &["session", "switch", "switch-agent", &session_id_1],
-    );
+    let (_, _, status) = run(&cli, &["session", "switch", "switch-agent", &session_id_1]);
     assert!(status.success(), "switch to session 1 should succeed");
 
     // Verify active session is now session 1 via show
@@ -353,10 +375,7 @@ fn session_switch_changes_active_session() {
     );
 
     // Switch to session 2
-    let (_, _, status) = run(
-        &cli,
-        &["session", "switch", "switch-agent", &session_id_2],
-    );
+    let (_, _, status) = run(&cli, &["session", "switch", "switch-agent", &session_id_2]);
     assert!(status.success(), "switch to session 2 should succeed");
 
     let (show_out2, _, show_status2) = run(&cli, &["session", "show", "switch-agent"]);
@@ -423,7 +442,11 @@ fn session_user_isolation_different_users_different_active_sessions() {
 
     let default_json = list_sessions_json(&cli, "user-agent");
     let default_sessions = default_json["sessions"].as_array().unwrap();
-    assert_eq!(default_sessions.len(), 1, "default user should have 1 session");
+    assert_eq!(
+        default_sessions.len(),
+        1,
+        "default user should have 1 session"
+    );
     let default_active = default_json
         .get("active_session")
         .and_then(|v| v.as_str())
@@ -441,7 +464,10 @@ fn session_user_isolation_different_users_different_active_sessions() {
             "--no-stream",
         ],
     );
-    assert!(alice_status.success(), "alice send should succeed: {alice_out}");
+    assert!(
+        alice_status.success(),
+        "alice send should succeed: {alice_out}"
+    );
 
     let alice_json = {
         let (stdout, stderr, status) = run(
@@ -486,13 +512,21 @@ fn session_user_isolation_different_users_different_active_sessions() {
 
     // All three users should have different active sessions (if isolation works)
     if let (Some(d), Some(a), Some(b)) = (&default_active, &alice_active, &bob_active) {
-        assert_ne!(d, a, "default and alice should have different active sessions");
+        assert_ne!(
+            d, a,
+            "default and alice should have different active sessions"
+        );
         assert_ne!(a, b, "alice and bob should have different active sessions");
-        assert_ne!(d, b, "default and bob should have different active sessions");
+        assert_ne!(
+            d, b,
+            "default and bob should have different active sessions"
+        );
     } else {
         // If active_session is not returned, that's a known limitation —
         // the sessions themselves are still created per-user.
-        eprintln!("Note: active_session isolation not fully implemented; checking session counts instead");
+        eprintln!(
+            "Note: active_session isolation not fully implemented; checking session counts instead"
+        );
         assert!(
             !alice_sessions.is_empty(),
             "alice should have at least 1 session"

@@ -59,7 +59,7 @@ Both implementations use **JSON-RPC 2.0** over **stdio** but serve different pur
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Agent Runtime (Pekobot)                                     │
+│  Agent Runtime (Peko)                                     │
 │  ┌─────────────────┐     ┌─────────────────────────────────┐│
 │  │ UniversalTool   │────▶│ JSON-RPC + Context Injection    ││
 │  │ Adapter         │     │                                 ││
@@ -87,7 +87,7 @@ Both implementations use **JSON-RPC 2.0** over **stdio** but serve different pur
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Agent Runtime (Pekobot)                                     │
+│  Agent Runtime (Peko)                                     │
 │  ┌─────────────────┐     ┌─────────────────────────────────┐│
 │  │ McpManager      │────▶│ McpClient                       ││
 │  │                 │     │                                 ││

@@ -7,10 +7,10 @@
 //! - Event emission (ToolEnd)
 //! - Duration tracking
 
+use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::AgenticEvent;
 use crate::extensions::framework::ExtensionCore;
 use crate::session::Session;
-use crate::common::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;

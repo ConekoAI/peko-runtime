@@ -63,7 +63,7 @@ impl RuntimeMetadata {
         let now = Utc::now();
         Self {
             runtime_id: runtime_id.into(),
-            display_name: "Pekobot Runtime".to_string(),
+            display_name: "Peko Runtime".to_string(),
             created_at: now,
             last_seen_at: now,
             version: env!("CARGO_PKG_VERSION").to_string(),

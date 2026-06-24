@@ -46,7 +46,7 @@ Extension authors must remember which file name maps to which type. There is no 
 
 **3. Tooling Friction**
 
-External tools (IDEs, validators, registries, CI pipelines) cannot determine an extension's type without implementing Pekobot's adapter-specific detection logic. A unified entry point would enable generic tooling.
+External tools (IDEs, validators, registries, CI pipelines) cannot determine an extension's type without implementing Peko's adapter-specific detection logic. A unified entry point would enable generic tooling.
 
 **4. No Escape Hatch for Hybrid Extensions**
 
@@ -54,12 +54,12 @@ An extension that wants to combine capabilities (e.g., provide both tools and a 
 
 **5. Misalignment with MCP Ecosystem Standards**
 
-The original architecture assumed MCP lacked ecosystem-wide standards and invented `config.toml` / `config.json` as Pekobot-specific MCP manifests. In reality, the MCP ecosystem has well-established conventions:
+The original architecture assumed MCP lacked ecosystem-wide standards and invented `config.toml` / `config.json` as Peko-specific MCP manifests. In reality, the MCP ecosystem has well-established conventions:
 
 - **`mcpServers` JSON** — the de facto client configuration standard used by Claude Desktop, Kimi CLI, VS Code, Cursor, and others. Example: `claude_desktop_config.json` and `~/.kimi/mcp.json` both use `{"mcpServers": {"name": {"command": "...", "args": [...]}}}`.
 - **`server.json`** — the official MCP Registry metadata format (`$schema: https://static.modelcontextprotocol.io/schemas/.../server.schema.json`) used with the `mcp-publisher` CLI for publishing servers.
 
-Neither standard uses a directory-level `config.toml` or `config.json`. Pekobot's invented convention creates friction for extension authors familiar with the broader MCP ecosystem.
+Neither standard uses a directory-level `config.toml` or `config.json`. Peko's invented convention creates friction for extension authors familiar with the broader MCP ecosystem.
 
 **6. `general` Adapter as the Natural Default**
 
@@ -69,7 +69,7 @@ When a `manifest.yaml` lacks any type-specific discriminator, the most reasonabl
 
 ## Decision
 
-We will introduce a **unified manifest convention** that consolidates all Pekobot-specific extension types under a single file name with an explicit `extension_type` field, while respecting true ecosystem standards.
+We will introduce a **unified manifest convention** that consolidates all Peko-specific extension types under a single file name with an explicit `extension_type` field, while respecting true ecosystem standards.
 
 ### Detection Hierarchy
 
@@ -87,10 +87,10 @@ We will introduce a **unified manifest convention** that consolidates all Pekobo
 │  │   └── Rationale: Official MCP Registry standard. Contains       │
 │  │       name, version, packages[], transport, etc.                │
 │  │                                                                 │
-│  TIER 2: Unified Manifest (new primary path for Pekobot-specific)  │
+│  TIER 2: Unified Manifest (new primary path for Peko-specific)  │
 │  ├── manifest.yaml     → read "extension_type" field               │
 │  │   ├── "universal-tool" → universal-tool adapter                 │
-│  │   ├── "mcp"            → mcp adapter (Pekobot wrapper/bundle)   │
+│  │   ├── "mcp"            → mcp adapter (Peko wrapper/bundle)   │
 │  │   ├── "gateway"        → gateway adapter                        │
 │  │   ├── "general"        → general adapter                        │
 │  │   └── "custom:*"       → custom adapters                        │
@@ -141,9 +141,9 @@ parameters:
   required: [expression]
 ```
 
-#### MCP Server (Pekobot Wrapper / Bundle)
+#### MCP Server (Peko Wrapper / Bundle)
 
-For Pekobot-specific MCP bundles that wrap or compose standard MCP servers with additional hooks:
+For Peko-specific MCP bundles that wrap or compose standard MCP servers with additional hooks:
 
 ```yaml
 id: "filesystem"
@@ -165,8 +165,8 @@ mcp_servers:
 
 | Format | Use When |
 |--------|----------|
-| `server.json` | Your extension is a **pure MCP server** following the official MCP Registry standard. No Pekobot-specific hooks or configuration needed. |
-| `manifest.yaml` + `extension_type: "mcp"` | Your extension is a **Pekobot-specific bundle** that wraps one or more MCP servers with additional hooks, custom lifecycle management, or Pekobot-specific metadata. |
+| `server.json` | Your extension is a **pure MCP server** following the official MCP Registry standard. No Peko-specific hooks or configuration needed. |
+| `manifest.yaml` + `extension_type: "mcp"` | Your extension is a **Peko-specific bundle** that wraps one or more MCP servers with additional hooks, custom lifecycle management, or Peko-specific metadata. |
 
 #### Gateway
 
@@ -218,14 +218,14 @@ hooks:
 
 **Explicit Over Implicit.** Requiring `extension_type` in `manifest.yaml` eliminates ambiguity. There is no "first match wins" — the manifest declares what it is.
 
-**Single Mental Model for Pekobot-Specific Extensions.** After this ADR, extension authors only need to remember:
+**Single Mental Model for Peko-Specific Extensions.** After this ADR, extension authors only need to remember:
 - Skills → `SKILL.md` (ecosystem convention)
 - Bare MCP servers → `server.json` (MCP Registry standard)
 - Everything else → `manifest.yaml` with `extension_type`
 
 The `general` adapter is the natural default: if you write a `manifest.yaml` with hooks and no specific type, `extension_type: "general"` is what you want.
 
-**Respect Ecosystem Standards.** `server.json` is the official MCP Registry metadata format. By elevating it to Tier 1, Pekobot extensions that are pure MCP servers can be consumed by other MCP-aware tools without translation layers.
+**Respect Ecosystem Standards.** `server.json` is the official MCP Registry metadata format. By elevating it to Tier 1, Peko extensions that are pure MCP servers can be consumed by other MCP-aware tools without translation layers.
 
 **Dockerfile parallel.** This mirrors how Docker works: `Dockerfile` is the standard, but `docker-compose.yml` is a separate, explicitly-typed file. There is no confusion about which is which.
 
@@ -261,7 +261,7 @@ def inspect_extension(path: Path) -> ExtensionInfo:
 
 **Future-Proof.** New extension types only need a new `extension_type` value. No new file name conventions to learn.
 
-**Custom Adapters.** Adapters can register custom type strings using the `custom:` prefix (e.g., `extension_type: "custom:my-org/proprietary-type"`). The prefix ensures custom types never collide with built-in types. The adapter registry is responsible for routing `custom:*` types to the appropriate adapter. This is an extension point for third-party or internal adapters without modifying core Pekobot code.
+**Custom Adapters.** Adapters can register custom type strings using the `custom:` prefix (e.g., `extension_type: "custom:my-org/proprietary-type"`). The prefix ensures custom types never collide with built-in types. The adapter registry is responsible for routing `custom:*` types to the appropriate adapter. This is an extension point for third-party or internal adapters without modifying core Peko code.
 
 **Hybrid Extensions.** A single `manifest.yaml` can theoretically declare multiple `extension_type` values (future enhancement), or a meta-adapter can compose multiple adapters from one manifest. For now, `extension_type` is a single string; arrays or composite types are reserved for future ADRs.
 
@@ -290,9 +290,9 @@ def inspect_extension(path: Path) -> ExtensionInfo:
 
 **Unify Everything Including SKILL.md.** Rejected. `SKILL.md` is an established ecosystem convention. Forcing skills into `manifest.yaml` would alienate users familiar with OpenClaw, Claude Code, and similar tools. The two-tier approach (ecosystem standard + unified manifest) is the right balance.
 
-**Treat `server.json` as Tier 2 (unified manifest) instead of Tier 1.** Rejected. `server.json` is an official, schema-backed standard maintained by the MCP project. Moving it under Pekobot's `manifest.yaml` would force MCP-native extensions to maintain two metadata files and would break compatibility with the MCP Registry and `mcp-publisher` tooling.
+**Treat `server.json` as Tier 2 (unified manifest) instead of Tier 1.** Rejected. `server.json` is an official, schema-backed standard maintained by the MCP project. Moving it under Peko's `manifest.yaml` would force MCP-native extensions to maintain two metadata files and would break compatibility with the MCP Registry and `mcp-publisher` tooling.
 
-**Use `peko.yaml` as Unified File Name.** Rejected. `manifest.yaml` is more generic and recognizable. `peko.yaml` is Pekobot-specific and would not help external tooling. However, `peko.yaml` may be considered as a future alias.
+**Use `peko.yaml` as Unified File Name.** Rejected. `manifest.yaml` is more generic and recognizable. `peko.yaml` is Peko-specific and would not help external tooling. However, `peko.yaml` may be considered as a future alias.
 
 **Use `manifest.yaml` with Frontmatter.** Rejected. Frontmatter (YAML between `---` delimiters followed by a body) is appropriate for `SKILL.md` because skills are primarily documentation. Extension manifests are primarily structured configuration. Requiring frontmatter parsing adds complexity for tools that just want to `yaml.safe_load()`. The `---` in examples is an optional YAML document-start marker, not frontmatter.
 
@@ -355,10 +355,10 @@ def inspect_extension(path: Path) -> ExtensionInfo:
 
 - **Unambiguous detection.** `extension_type` explicitly declares the adapter; no "first match wins" ambiguity.
 - **Single mental model.** Extension authors learn one pattern: `manifest.yaml` + `extension_type` for everything except skills and bare MCP servers.
-- **Ecosystem compatible.** Pure MCP servers can ship `server.json` and be understood by Pekobot and the broader MCP ecosystem (Registry, Claude Desktop, Kimi CLI, etc.).
+- **Ecosystem compatible.** Pure MCP servers can ship `server.json` and be understood by Peko and the broader MCP ecosystem (Registry, Claude Desktop, Kimi CLI, etc.).
 - **Tooling friendly.** External tools can inspect any extension by reading `manifest.yaml` or `server.json` and checking one field.
 - **Future-proof.** New extension types need only a new `extension_type` string.
-- **Self-documenting directories.** A `manifest.yaml` or `server.json` immediately signals "this is a Pekobot extension."
+- **Self-documenting directories.** A `manifest.yaml` or `server.json` immediately signals "this is a Peko extension."
 
 ### Negative / Risks
 

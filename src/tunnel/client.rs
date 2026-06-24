@@ -120,17 +120,11 @@ pub enum TunnelStatusUpdate {
     /// A connection attempt just failed; the client will keep retrying.
     /// `attempts` is the running count of consecutive failures.
     /// `last_error` is the error string from the latest attempt.
-    Disconnected {
-        attempts: u32,
-        last_error: String,
-    },
+    Disconnected { attempts: u32, last_error: String },
     /// The reconnect-attempt cap was hit. The client has stopped retrying.
     /// `attempts` equals the cap; `last_error` is the final error.
     /// After this, `peko daemon status --json` reports `tunnel.state == "degraded"`.
-    Degraded {
-        attempts: u32,
-        last_error: String,
-    },
+    Degraded { attempts: u32, last_error: String },
 }
 
 /// Tunnel client that maintains a persistent WebSocket connection to PekoHub.
@@ -144,14 +138,27 @@ pub struct TunnelClient {
     /// (issue #8: avoids infinite retry loop when PekoHub is permanently down).
     max_reconnect_attempts: u32,
     /// Optional callback for handling proxied requests
-    request_handler:
-        Option<Arc<dyn Fn(TunnelMessage, TunnelHandle) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
+    request_handler: Option<
+        Arc<
+            dyn Fn(
+                    TunnelMessage,
+                    TunnelHandle,
+                ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                + Send
+                + Sync,
+        >,
+    >,
     /// Optional callback for receiving per-iteration status updates
     /// (`Connected` / `Disconnected` / `Degraded`). Used by `AppState::start_tunnel`
     /// to keep the daemon's view of tunnel health in sync and to mark the
     /// daemon as degraded when the reconnect cap is hit (issue #8).
-    on_status:
-        Option<Arc<dyn Fn(TunnelStatusUpdate) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
+    on_status: Option<
+        Arc<
+            dyn Fn(TunnelStatusUpdate) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                + Send
+                + Sync,
+        >,
+    >,
 }
 
 impl TunnelClient {
@@ -313,7 +320,9 @@ impl TunnelClient {
         //    signature + allowlist membership; we sign it and reply.
         let challenge_msg = timeout(Duration::from_secs(10), read.next())
             .await
-            .map_err(|_| TunnelError::AuthFailed("Timeout waiting for TunnelChallenge".to_string()))?
+            .map_err(|_| {
+                TunnelError::AuthFailed("Timeout waiting for TunnelChallenge".to_string())
+            })?
             .ok_or(TunnelError::Closed)?
             .map_err(TunnelError::WebSocket)?;
 
@@ -531,7 +540,10 @@ impl TunnelClient {
         _internal_tx: &mpsc::UnboundedSender<TunnelMessage>,
         request_handler: Option<
             &Arc<
-                dyn Fn(TunnelMessage, TunnelHandle) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                dyn Fn(
+                        TunnelMessage,
+                        TunnelHandle,
+                    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
                     + Send
                     + Sync,
             >,
@@ -669,10 +681,7 @@ impl TunnelClient {
 }
 
 /// Spawn a tunnel client in the background and return a handle
-pub async fn spawn_tunnel<F, Fut>(
-    credential: PekoHubCredential,
-    request_handler: F,
-) -> TunnelHandle
+pub async fn spawn_tunnel<F, Fut>(credential: PekoHubCredential, request_handler: F) -> TunnelHandle
 where
     F: Fn(TunnelMessage, TunnelHandle) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -734,7 +743,10 @@ mod tests {
         };
         let client = TunnelClient::new(cred);
         assert!(!client.is_ready().await);
-        assert_eq!(client.max_reconnect_attempts(), DEFAULT_MAX_RECONNECT_ATTEMPTS);
+        assert_eq!(
+            client.max_reconnect_attempts(),
+            DEFAULT_MAX_RECONNECT_ATTEMPTS
+        );
     }
 
     /// Issue #8: when the tunnel cannot reach PekoHub, `run()` must stop
@@ -762,21 +774,19 @@ mod tests {
         });
 
         // Bound the test runtime in case of regression.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            client.run(),
-        )
-        .await;
-        assert!(result.is_ok(), "run() did not return within 10s — cap not enforced");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), client.run()).await;
+        assert!(
+            result.is_ok(),
+            "run() did not return within 10s — cap not enforced"
+        );
 
         let updates = captured.lock().await.clone();
         // First failure: Disconnected{attempts:1}. Second failure hits the
         // cap and emits Degraded{attempts:2}.
         assert!(
-            updates.iter().any(|u| matches!(
-                u,
-                TunnelStatusUpdate::Degraded { attempts: 2, .. }
-            )),
+            updates
+                .iter()
+                .any(|u| matches!(u, TunnelStatusUpdate::Degraded { attempts: 2, .. })),
             "expected Degraded{{attempts:2,..}} in {:?}",
             updates
         );

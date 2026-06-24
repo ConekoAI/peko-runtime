@@ -3,6 +3,8 @@
 //! Extracts and imports .agent files into the local peko runtime
 #![allow(dead_code)]
 
+use crate::agents::agent_config::AgentConfig;
+use crate::auth::principal::Principal;
 use crate::identity::crypto::{decrypt_with_passphrase, deserialize_encrypted};
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::registry::packaging::{
@@ -11,8 +13,6 @@ use crate::registry::packaging::{
     validation::{validate_package, ValidationResult},
 };
 use crate::session::key::derive_base_session_key;
-use crate::auth::principal::Principal;
-use crate::agents::agent_config::AgentConfig;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
@@ -484,10 +484,10 @@ impl Unpackager {
         &self,
         files: &HashMap<String, Vec<u8>>,
     ) -> anyhow::Result<()> {
+        use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
         use crate::extensions::framework::manager::{
             packaging::ExtensionUnpackager, ExtensionManager,
         };
-        use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
         use crate::extensions::gateway::GatewayAdapter;
         use crate::extensions::general::GeneralExtensionAdapter;
         use crate::extensions::mcp::McpAdapter;
@@ -524,11 +524,7 @@ impl Unpackager {
 
             let temp_ext_path = temp_dir.join(ext_file);
             if let Err(e) = tokio::fs::write(&temp_ext_path, content).await {
-                tracing::warn!(
-                    "Failed to write embedded extension '{}': {}",
-                    ext_file,
-                    e
-                );
+                tracing::warn!("Failed to write embedded extension '{}': {}", ext_file, e);
                 let _ = tokio::fs::remove_dir_all(&temp_dir).await;
                 continue;
             }
@@ -544,7 +540,8 @@ impl Unpackager {
 
             match install_result {
                 Ok(Ok(extracted_path)) => {
-                    let mut manager = ExtensionManager::new().with_storage_dir(extensions_dir.clone());
+                    let mut manager =
+                        ExtensionManager::new().with_storage_dir(extensions_dir.clone());
                     let _ = BuiltinToolAdapter::register_all(
                         &manager.core_arc(),
                         &BuiltinToolRegistrarConfig::default(),
@@ -569,11 +566,7 @@ impl Unpackager {
                     }
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!(
-                        "Failed to extract embedded extension '{}': {}",
-                        ext_file,
-                        e
-                    );
+                    tracing::warn!("Failed to extract embedded extension '{}': {}", ext_file, e);
                 }
                 Err(e) => {
                     tracing::warn!(

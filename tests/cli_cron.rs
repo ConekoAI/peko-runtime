@@ -30,8 +30,8 @@
 //! Windows side of the story.
 
 mod common;
-use common::{configure_mock, PekoCli, run_with_timeout};
 use common::agent::seed_mock_provider_in_catalog;
+use common::{configure_mock, run_with_timeout, PekoCli};
 use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
@@ -132,7 +132,11 @@ fn skip_if_no_mock() -> Option<()> {
     Some(())
 }
 
-fn run(cli: &PekoCli, args: &[&str], timeout: Duration) -> (String, String, std::process::ExitStatus) {
+fn run(
+    cli: &PekoCli,
+    args: &[&str],
+    timeout: Duration,
+) -> (String, String, std::process::ExitStatus) {
     let (out, _, _) = run_with_timeout(
         || {
             let mut c = cli.cmd();
@@ -202,11 +206,7 @@ fn remove_jobs_with_prefix(cli: &PekoCli, prefix: &str) {
 /// dispatcher. The agent-tool tests below need the cron tool ON, so
 /// this helper writes a config that includes its canonical ID
 /// (`builtin:tool:cron` — see `ToolRuntime::register_builtins`).
-fn write_cron_agent(
-    home: &std::path::Path,
-    name: &str,
-    mock_llm_url: &str,
-) -> std::io::Result<()> {
+fn write_cron_agent(home: &std::path::Path, name: &str, mock_llm_url: &str) -> std::io::Result<()> {
     use std::path::Path;
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
@@ -257,11 +257,7 @@ fn cron_list_empty_db() {
         "empty list should report no jobs, got: {out}"
     );
 
-    let (json_out, err, status) = run(
-        &cli,
-        &["cron", "list", "--json"],
-        Duration::from_secs(10),
-    );
+    let (json_out, err, status) = run(&cli, &["cron", "list", "--json"], Duration::from_secs(10));
     assert_ok(&json_out, &err, &status);
     let arr: serde_json::Value = serde_json::from_str(&json_out)
         .unwrap_or_else(|e| panic!("cron list --json did not parse: {e}\nstdout: {json_out}"));
@@ -283,7 +279,14 @@ fn cron_add_cron_expression_persists() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "add", "--name", name, "--schedule", "0 0 * * * *", "--message", "ping",
+            "cron",
+            "add",
+            "--name",
+            name,
+            "--schedule",
+            "0 0 * * * *",
+            "--message",
+            "ping",
         ],
         Duration::from_secs(10),
     );
@@ -294,12 +297,20 @@ fn cron_add_cron_expression_persists() {
     );
 
     let jobs = list_jobs_json(&cli);
-    let added = jobs.iter().find(|j| j.get("name").and_then(|n| n.as_str()) == Some(name));
-    assert!(added.is_some(), "added cron-expression job not in list: {jobs:?}");
+    let added = jobs
+        .iter()
+        .find(|j| j.get("name").and_then(|n| n.as_str()) == Some(name));
+    assert!(
+        added.is_some(),
+        "added cron-expression job not in list: {jobs:?}"
+    );
 
     let job = added.unwrap();
     assert!(
-        job.get("id").and_then(|i| i.as_str()).unwrap_or("").starts_with("cron_"),
+        job.get("id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .starts_with("cron_"),
         "job id should start with cron_: {job:?}"
     );
 }
@@ -320,7 +331,14 @@ fn cron_add_at_persists_with_delete_after_run() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "at", "--name", name, "--at", &future, "--message", "ping",
+            "cron",
+            "at",
+            "--name",
+            name,
+            "--at",
+            &future,
+            "--message",
+            "ping",
         ],
         Duration::from_secs(10),
     );
@@ -331,7 +349,9 @@ fn cron_add_at_persists_with_delete_after_run() {
     );
 
     let jobs = list_jobs_json(&cli);
-    let added = jobs.iter().find(|j| j.get("name").and_then(|n| n.as_str()) == Some(name));
+    let added = jobs
+        .iter()
+        .find(|j| j.get("name").and_then(|n| n.as_str()) == Some(name));
     assert!(added.is_some(), "added at-job not in list: {jobs:?}");
 
     // The CLI hard-codes `delete_after_run: true` for at-jobs (commands/cron.rs:329).
@@ -360,7 +380,14 @@ fn cron_add_every_persists() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "every", "--name", name, "--interval-ms", "60000", "--message", "tick",
+            "cron",
+            "every",
+            "--name",
+            name,
+            "--interval-ms",
+            "60000",
+            "--message",
+            "tick",
         ],
         Duration::from_secs(10),
     );
@@ -372,7 +399,8 @@ fn cron_add_every_persists() {
 
     let jobs = list_jobs_json(&cli);
     assert!(
-        jobs.iter().any(|j| j.get("name").and_then(|n| n.as_str()) == Some(name)),
+        jobs.iter()
+            .any(|j| j.get("name").and_then(|n| n.as_str()) == Some(name)),
         "added every-job not in list: {jobs:?}"
     );
 }
@@ -391,7 +419,14 @@ fn cron_add_idle_persists() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "add-idle", "--name", name, "--minutes", "1", "--message", "wakeup",
+            "cron",
+            "add-idle",
+            "--name",
+            name,
+            "--minutes",
+            "1",
+            "--message",
+            "wakeup",
         ],
         Duration::from_secs(10),
     );
@@ -403,7 +438,8 @@ fn cron_add_idle_persists() {
 
     let jobs = list_jobs_json(&cli);
     assert!(
-        jobs.iter().any(|j| j.get("name").and_then(|n| n.as_str()) == Some(name)),
+        jobs.iter()
+            .any(|j| j.get("name").and_then(|n| n.as_str()) == Some(name)),
         "added idle-job not in list: {jobs:?}"
     );
 }
@@ -422,8 +458,15 @@ fn cron_add_event_persists() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "add-event", "--name", name, "--event-type", "internal", "--once",
-            "--message", "react",
+            "cron",
+            "add-event",
+            "--name",
+            name,
+            "--event-type",
+            "internal",
+            "--once",
+            "--message",
+            "react",
         ],
         Duration::from_secs(10),
     );
@@ -435,7 +478,8 @@ fn cron_add_event_persists() {
 
     let jobs = list_jobs_json(&cli);
     assert!(
-        jobs.iter().any(|j| j.get("name").and_then(|n| n.as_str()) == Some(name)),
+        jobs.iter()
+            .any(|j| j.get("name").and_then(|n| n.as_str()) == Some(name)),
         "added event-job not in list: {jobs:?}"
     );
 }
@@ -453,9 +497,33 @@ fn cron_list_json_returns_added_count() {
     // Add three jobs with distinct schedule kinds.
     let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     for kind_args in [
-        vec!["add", "--name", "e2e-cron-count-a", "--schedule", "0 0 * * * *", "--message", "a"],
-        vec!["at", "--name", "e2e-cron-count-b", "--at", &future, "--message", "b"],
-        vec!["every", "--name", "e2e-cron-count-c", "--interval-ms", "60000", "--message", "c"],
+        vec![
+            "add",
+            "--name",
+            "e2e-cron-count-a",
+            "--schedule",
+            "0 0 * * * *",
+            "--message",
+            "a",
+        ],
+        vec![
+            "at",
+            "--name",
+            "e2e-cron-count-b",
+            "--at",
+            &future,
+            "--message",
+            "b",
+        ],
+        vec![
+            "every",
+            "--name",
+            "e2e-cron-count-c",
+            "--interval-ms",
+            "60000",
+            "--message",
+            "c",
+        ],
     ] {
         let mut full = vec!["cron"];
         full.extend(kind_args.iter().copied());
@@ -504,7 +572,14 @@ fn cron_remove_decrements_count() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "add", "--name", name, "--schedule", "0 0 * * * *", "--message", "x",
+            "cron",
+            "add",
+            "--name",
+            name,
+            "--schedule",
+            "0 0 * * * *",
+            "--message",
+            "x",
         ],
         Duration::from_secs(10),
     );
@@ -557,7 +632,14 @@ fn cron_history_empty_for_new_job() {
     let (out, _, status) = run(
         &cli,
         &[
-            "cron", "add", "--name", name, "--schedule", "0 0 * * * *", "--message", "x",
+            "cron",
+            "add",
+            "--name",
+            name,
+            "--schedule",
+            "0 0 * * * *",
+            "--message",
+            "x",
         ],
         Duration::from_secs(10),
     );
@@ -600,8 +682,14 @@ fn cron_add_invalid_cron_expr_rejects() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "add", "--name", "e2e-cron-bad-cron", "--schedule", "not a cron expr",
-            "--message", "x",
+            "cron",
+            "add",
+            "--name",
+            "e2e-cron-bad-cron",
+            "--schedule",
+            "not a cron expr",
+            "--message",
+            "x",
         ],
         Duration::from_secs(10),
     );
@@ -629,8 +717,14 @@ fn cron_add_at_invalid_timestamp_rejects() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "at", "--name", "e2e-cron-bad-time", "--at", "not-an-rfc3339-timestamp",
-            "--message", "x",
+            "cron",
+            "at",
+            "--name",
+            "e2e-cron-bad-time",
+            "--at",
+            "not-an-rfc3339-timestamp",
+            "--message",
+            "x",
         ],
         Duration::from_secs(10),
     );
@@ -665,7 +759,14 @@ fn cron_run_triggers_due_job() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "at", "--name", name, "--at", &near_future, "--message", "fire",
+            "cron",
+            "at",
+            "--name",
+            name,
+            "--at",
+            &near_future,
+            "--message",
+            "fire",
         ],
         Duration::from_secs(10),
     );
@@ -689,9 +790,7 @@ fn cron_run_triggers_due_job() {
             Duration::from_secs(5),
         );
         if hstatus.success()
-            && (hout.contains("success")
-                || hout.contains("failed")
-                || hout.contains("running"))
+            && (hout.contains("success") || hout.contains("failed") || hout.contains("running"))
         {
             ran = true;
             break;
@@ -731,7 +830,14 @@ fn cron_announce_writes_file_on_run() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "at", "--name", name, "--at", &near_future, "--message", "announce me",
+            "cron",
+            "at",
+            "--name",
+            name,
+            "--at",
+            &near_future,
+            "--message",
+            "announce me",
             "--announce",
         ],
         Duration::from_secs(10),
@@ -773,14 +879,24 @@ fn cron_add_idle_does_not_panic() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "add-idle", "--name", "e2e-cron-idle-smoke", "--minutes", "1",
-            "--message", "wakeup",
+            "cron",
+            "add-idle",
+            "--name",
+            "e2e-cron-idle-smoke",
+            "--minutes",
+            "1",
+            "--message",
+            "wakeup",
         ],
         Duration::from_secs(10),
     );
     assert_ok(&out, &err, &status);
     // Daemon should still be alive and responsive after the add.
-    let (_, _, status) = run(&cli, &["daemon", "status", "--json"], Duration::from_secs(5));
+    let (_, _, status) = run(
+        &cli,
+        &["daemon", "status", "--json"],
+        Duration::from_secs(5),
+    );
     assert!(
         status.success(),
         "daemon should still respond after add-idle"
@@ -802,13 +918,24 @@ fn cron_add_event_does_not_panic() {
     let (out, err, status) = run(
         &cli,
         &[
-            "cron", "add-event", "--name", "e2e-cron-evt-smoke", "--event-type", "internal",
-            "--once", "--message", "react",
+            "cron",
+            "add-event",
+            "--name",
+            "e2e-cron-evt-smoke",
+            "--event-type",
+            "internal",
+            "--once",
+            "--message",
+            "react",
         ],
         Duration::from_secs(10),
     );
     assert_ok(&out, &err, &status);
-    let (_, _, status) = run(&cli, &["daemon", "status", "--json"], Duration::from_secs(5));
+    let (_, _, status) = run(
+        &cli,
+        &["daemon", "status", "--json"],
+        Duration::from_secs(5),
+    );
     assert!(
         status.success(),
         "daemon should still respond after add-event"

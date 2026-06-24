@@ -2,9 +2,9 @@
 //!
 //! End-to-end: install → export → install from `.ext`
 
-use pekobot::extensions::framework::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
-use pekobot::extensions::framework::manager::ExtensionManager;
-use pekobot::extensions::framework::types::ExtensionId;
+use peko::extensions::framework::manager::packaging::{ExtensionPackager, ExtensionUnpackager};
+use peko::extensions::framework::manager::ExtensionManager;
+use peko::extensions::framework::types::ExtensionId;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -33,7 +33,7 @@ fn create_test_extension(temp: &TempDir, id: &str) -> PathBuf {
 }
 
 fn create_manager_with_adapters() -> ExtensionManager {
-    use pekobot::extensions::skill::SkillAdapter;
+    use peko::extensions::skill::SkillAdapter;
 
     let mut manager = ExtensionManager::new();
     manager.register_adapter(Box::new(SkillAdapter::new()));
@@ -210,11 +210,11 @@ archive_format = "tar"
     );
 }
 
-use pekobot::extensions::framework::core::HookPoint;
-use pekobot::extensions::framework::types::{HookInput, HookOutput, HookResult};
-use pekobot::extensions::skill::SkillAdapter;
-use pekobot::extensions::universal::UniversalToolAdapter;
-use pekobot::common::types::agent_legacy::ExtensionConfig;
+use peko::common::types::agent_legacy::ExtensionConfig;
+use peko::extensions::framework::core::HookPoint;
+use peko::extensions::framework::types::{HookInput, HookOutput, HookResult};
+use peko::extensions::skill::SkillAdapter;
+use peko::extensions::universal::UniversalToolAdapter;
 
 fn create_test_tool_extension(temp: &TempDir, id: &str) -> PathBuf {
     let ext_dir = temp.path().join(id);

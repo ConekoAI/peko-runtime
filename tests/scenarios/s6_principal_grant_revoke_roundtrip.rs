@@ -35,10 +35,10 @@ use common::{DaemonGuard, PekoCli};
 use serial_test::serial;
 use std::time::Duration;
 
-use pekobot::auth::ownership::Permission;
-use pekobot::auth::principal::Principal;
-use pekobot::ipc::packet::{RequestPacket, ResponsePacket};
-use pekobot::ipc::DaemonClient;
+use peko::auth::ownership::Permission;
+use peko::auth::principal::Principal;
+use peko::ipc::packet::{RequestPacket, ResponsePacket};
+use peko::ipc::DaemonClient;
 
 // ---------------------------------------------------------------------------
 // Fixture wiring
@@ -97,7 +97,7 @@ fn read_agent_permissions(cli: &PekoCli, agent_name: &str) -> Vec<Permission> {
         .join(agent_name)
         .join("config.toml");
     let raw = std::fs::read_to_string(&path).expect("read agent config.toml");
-    let cfg: pekobot::agents::agent_config::AgentConfig =
+    let cfg: peko::agents::agent_config::AgentConfig =
         toml::from_str(&raw).expect("parse agent config.toml");
     cfg.permissions
         .iter()
@@ -113,7 +113,7 @@ fn read_team_permissions(cli: &PekoCli, team_name: &str) -> Vec<Permission> {
         .join(team_name)
         .join("team.toml");
     let raw = std::fs::read_to_string(&path).expect("read team.toml");
-    let meta: pekobot::common::types::team::TeamMetadata =
+    let meta: peko::common::types::team::TeamMetadata =
         toml::from_str(&raw).expect("parse team.toml");
     meta.permissions
         .iter()

@@ -146,13 +146,13 @@ impl ExtensionTypeAdapter for GatewayAdapter {
             crate::extensions::framework::adapters::parsing::extract_extension_fields(&yaml)?;
 
         // Validate extension_type
-        let ext_type =
-            crate::extensions::framework::adapters::parsing::require_string_field(&yaml, "extension_type")
-                .with_context(|| {
-                    format!(
-                        "Gateway manifest at {path:?} is missing required field 'extension_type'"
-                    )
-                })?;
+        let ext_type = crate::extensions::framework::adapters::parsing::require_string_field(
+            &yaml,
+            "extension_type",
+        )
+        .with_context(|| {
+            format!("Gateway manifest at {path:?} is missing required field 'extension_type'")
+        })?;
         if ext_type != "gateway" {
             anyhow::bail!(
                 "Gateway manifest at {path:?} has extension_type '{}' but expected 'gateway'",
@@ -161,11 +161,13 @@ impl ExtensionTypeAdapter for GatewayAdapter {
         }
 
         // Validate gateway_type (required type-specific transport discriminator)
-        let gateway_type =
-            crate::extensions::framework::adapters::parsing::require_string_field(&yaml, "gateway_type")
-                .with_context(|| {
-                    format!("Gateway manifest at {path:?} is missing required field 'gateway_type'")
-                })?;
+        let gateway_type = crate::extensions::framework::adapters::parsing::require_string_field(
+            &yaml,
+            "gateway_type",
+        )
+        .with_context(|| {
+            format!("Gateway manifest at {path:?} is missing required field 'gateway_type'")
+        })?;
 
         let mut manifest = ExtensionManifest::new(
             &id,

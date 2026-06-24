@@ -343,7 +343,10 @@ mod tests {
         // string for every variant. Pin the contract here so any
         // future change to `SubjectKind`'s Display impl surfaces.
         assert_eq!(Principal::User("alice".into()).kind().to_string(), "user");
-        assert_eq!(Principal::Agent("helper".into()).kind().to_string(), "agent");
+        assert_eq!(
+            Principal::Agent("helper".into()).kind().to_string(),
+            "agent"
+        );
         assert_eq!(Principal::Team("eng".into()).kind().to_string(), "team");
         assert_eq!(Principal::Public.kind().to_string(), "public");
     }

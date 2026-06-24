@@ -11,11 +11,11 @@
 //! - Adding a new OpenAI-compatible provider = adding a metadata entry
 //! - Only truly unique APIs need a new adapter implementation
 
+use crate::common::types::provider::{ProviderConfig, ProviderType};
 use crate::providers::{
     adapters::{AnthropicAdapter, AnyAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
     core::Provider,
 };
-use crate::common::types::provider::{ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -361,10 +361,8 @@ fn create_openai_compatible_provider(config: &ProviderConfig) -> Result<Arc<Prov
 
     // Create a generic OpenAI-compatible adapter. The model id is no
     // longer baked into the adapter — it's threaded per request.
-    let adapter = AnyAdapter::OpenAiCompatible(OpenAiCompatibleAdapter::new(
-        "openai-compatible",
-        base_url,
-    ));
+    let adapter =
+        AnyAdapter::OpenAiCompatible(OpenAiCompatibleAdapter::new("openai-compatible", base_url));
     Ok(Arc::new(Provider::new(adapter, api_key, config.clone())?))
 }
 
@@ -484,7 +482,7 @@ pub fn create_provider_for_entry(
     api_key: &str,
     model: &crate::providers::catalog::ModelInfo,
 ) -> Result<Arc<Provider>> {
-    use crate::providers::adapters::{AnyAdapter, AnthropicAdapter, OpenAiAdapter};
+    use crate::providers::adapters::{AnthropicAdapter, AnyAdapter, OpenAiAdapter};
     use crate::providers::catalog::ApiFormat;
     use crate::providers::types::ProviderConfig;
 
@@ -524,9 +522,7 @@ pub fn create_provider_for_entry(
 
 /// Resolve the model name to thread as the default for the legacy
 /// `ProviderConfig`-based path. Mirrors `entry.default_model_id`.
-pub fn default_model_for_entry(
-    entry: &crate::providers::catalog::ProviderCatalogEntry,
-) -> &str {
+pub fn default_model_for_entry(entry: &crate::providers::catalog::ProviderCatalogEntry) -> &str {
     &entry.default_model_id
 }
 

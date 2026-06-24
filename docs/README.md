@@ -1,9 +1,9 @@
-# Pekobot Documentation
+# Peko Documentation
 
 **Last Updated:** 2026-06-23
 **Version:** 0.1.0
 
-Complete documentation for the Pekobot multi-agent runtime.
+Complete documentation for the Peko multi-agent runtime.
 
 ---
 

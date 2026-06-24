@@ -1,8 +1,7 @@
 //! Runtime supervisor — manages the lifecycle of individual runtimes
 
 use crate::common::process::{
-    graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy,
-    RuntimeSpawnConfig,
+    graceful_shutdown, spawn_process, ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig,
 };
 // `JobObject` is only referenced from inside a `#[cfg(windows)]` field on
 // `RuntimeKind::Process` below. Gate the import so non-Windows clippy

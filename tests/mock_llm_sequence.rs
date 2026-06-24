@@ -24,7 +24,7 @@
 //! Rule") and §7 Phase C.
 
 mod common;
-use common::{configure_mock, write_v3_mock_agent, DaemonGuard, PekoCli, run_with_timeout};
+use common::{configure_mock, run_with_timeout, write_v3_mock_agent, DaemonGuard, PekoCli};
 use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
@@ -82,8 +82,8 @@ async fn mock_llm_script_list_returns_ith_element_per_call() {
 
     // Script with a 3-element list keyed on a test-unique substring.
     let needle = "seq-needle-abc123";
-    let script = serde_json::json!({ needle: ["FIRST_TURN", "SECOND_TURN", "THIRD_TURN"] })
-        .to_string();
+    let script =
+        serde_json::json!({ needle: ["FIRST_TURN", "SECOND_TURN", "THIRD_TURN"] }).to_string();
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
@@ -201,7 +201,11 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
         .send()
         .await
         .expect("call 1 send");
-    assert!(resp1.status().is_success(), "call 1 status {}", resp1.status());
+    assert!(
+        resp1.status().is_success(),
+        "call 1 status {}",
+        resp1.status()
+    );
     let body1 = resp1.text().await.expect("read call 1 body");
     assert!(
         body1.contains("\"cron\""),
@@ -231,7 +235,11 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
         .send()
         .await
         .expect("call 2 send");
-    assert!(resp2.status().is_success(), "call 2 status {}", resp2.status());
+    assert!(
+        resp2.status().is_success(),
+        "call 2 status {}",
+        resp2.status()
+    );
     let body2 = resp2.text().await.expect("read call 2 body");
     assert!(
         body2.contains("TOOL_SUCCESS"),
@@ -273,7 +281,11 @@ async fn mock_llm_script_string_value_unchanged_single_shot() {
             .send()
             .await
             .unwrap_or_else(|e| panic!("call {i} send: {e}"));
-        assert!(resp.status().is_success(), "call {i} status {}", resp.status());
+        assert!(
+            resp.status().is_success(),
+            "call {i} status {}",
+            resp.status()
+        );
         let text = resp.text().await.expect("read body");
         assert!(
             text.contains("ALWAYS_THIS"),
@@ -387,9 +399,8 @@ async fn mock_llm_script_counters_are_per_substring() {
     ];
     for (i, (prompt, expected)) in expectations.iter().enumerate() {
         let body = call(prompt.clone()).await;
-        let msg = format!(
-            "interleaved call #{i} (prompt={prompt:?}) did not return {expected}\n{body}"
-        );
+        let msg =
+            format!("interleaved call #{i} (prompt={prompt:?}) did not return {expected}\n{body}");
         assert!(body.contains(expected), "{msg}");
     }
 }

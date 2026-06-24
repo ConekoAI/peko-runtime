@@ -30,9 +30,7 @@
 //! ```
 
 use crate::commands::GlobalPaths;
-use crate::providers::catalog::{
-    ApiFormat, ModelInfo, ProviderCatalog, ProviderCatalogEntry,
-};
+use crate::providers::catalog::{ApiFormat, ModelInfo, ProviderCatalog, ProviderCatalogEntry};
 use crate::providers::templates;
 use anyhow::{Context, Result};
 
@@ -133,9 +131,7 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
 
     if entries.is_empty() {
         println!("No providers in the catalog.");
-        println!(
-            "Add one with: peko provider add --template <anthropic|openai|ollama|...>"
-        );
+        println!("Add one with: peko provider add --template <anthropic|openai|ollama|...>");
         println!("Or:           peko provider add --custom --name <id> --api-format <fmt> --base-url <url>");
         return Ok(());
     }
@@ -164,10 +160,7 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
         if detailed {
             println!("      format:        {}", e.api_format);
             println!("      base_url:      {}", e.base_url);
-            println!(
-                "      default_model: {}",
-                e.default_model_id
-            );
+            println!("      default_model: {}", e.default_model_id);
             println!(
                 "      requires_key:  {}{}",
                 e.requires_key,
@@ -211,9 +204,7 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool) -> Result<()> {
     }
 
     if detailed && default_pid.is_none() {
-        println!(
-            "\nNo runtime default set. Use `peko provider set-default <id>` to choose one."
-        );
+        println!("\nNo runtime default set. Use `peko provider set-default <id>` to choose one.");
     }
 
     Ok(())
@@ -249,9 +240,8 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
         let api_format_str = args.api_format.as_deref().with_context(|| {
             "--api-format is required with --custom (openai_completions | anthropic_messages)"
         })?;
-        let api_format = ApiFormat::from_wire(api_format_str).with_context(|| {
-            format!("unknown --api-format '{api_format_str}'")
-        })?;
+        let api_format = ApiFormat::from_wire(api_format_str)
+            .with_context(|| format!("unknown --api-format '{api_format_str}'"))?;
         let base_url = args
             .base_url
             .clone()
@@ -293,10 +283,7 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
     };
 
     cat.upsert(entry.clone()).await?;
-    println!(
-        "Added provider '{}' ({}).",
-        entry.id, entry.display_name
-    );
+    println!("Added provider '{}' ({}).", entry.id, entry.display_name);
     if entry.requires_key {
         println!(
             "Next: store its API key with: peko credential set {}",
@@ -316,11 +303,7 @@ async fn remove_cmd(id: &str, paths: &GlobalPaths) -> Result<()> {
     Ok(())
 }
 
-async fn set_default_cmd(
-    provider: &str,
-    model: Option<&str>,
-    paths: &GlobalPaths,
-) -> Result<()> {
+async fn set_default_cmd(provider: &str, model: Option<&str>, paths: &GlobalPaths) -> Result<()> {
     let cat = open_catalog(paths).await?;
     cat.set_default(Some(provider.to_string()), model.map(str::to_string))
         .await?;

@@ -2,7 +2,9 @@
 //!
 //! Matches `OpenClaw`'s section-based prompt assembly
 
-use crate::agents::prompt::bootstrap::{default_workspace_dir, inject_bootstrap_files, BootstrapConfig};
+use crate::agents::prompt::bootstrap::{
+    default_workspace_dir, inject_bootstrap_files, BootstrapConfig,
+};
 use crate::agents::prompt::placeholder::{replace_placeholders, Placeholder};
 use crate::providers::ToolDefinition;
 use crate::tools::Tool;
@@ -64,7 +66,10 @@ impl SystemPromptBuilder {
     /// Set the extension core for hook integration
     ///
     /// This enables extensions to inject content into prompt sections.
-    pub fn with_extension_core(mut self, core: Arc<crate::extensions::framework::ExtensionCore>) -> Self {
+    pub fn with_extension_core(
+        mut self,
+        core: Arc<crate::extensions::framework::ExtensionCore>,
+    ) -> Self {
         self.extension_core = Some(core);
         self
     }

@@ -858,10 +858,7 @@ pub enum ResponsePacket {
 
     /// Agent updated response
     #[serde(rename = "agent_updated")]
-    AgentUpdated {
-        request_id: u64,
-        name: String,
-    },
+    AgentUpdated { request_id: u64, name: String },
 
     /// Team list response
     #[serde(rename = "team_list")]

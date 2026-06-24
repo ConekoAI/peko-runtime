@@ -548,23 +548,19 @@ impl RegistryManifest {
                         .iter()
                         .filter_map(|item| {
                             let id = item.get("id")?.as_str()?.to_string();
-                            let registry_ref =
-                                item.get("registry_ref")?.as_str()?.to_string();
+                            let registry_ref = item.get("registry_ref")?.as_str()?.to_string();
                             Some(ExtensionRef { id, registry_ref })
                         })
                         .collect();
                 } else if let Some(s) = v.as_str() {
                     // Legacy / hand-written format: parse the JSON
                     // string and pull the same fields.
-                    if let Ok(parsed) =
-                        serde_json::from_str::<Vec<serde_json::Value>>(s)
-                    {
+                    if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(s) {
                         self.extensions = parsed
                             .iter()
                             .filter_map(|item| {
                                 let id = item.get("id")?.as_str()?.to_string();
-                                let registry_ref =
-                                    item.get("registry_ref")?.as_str()?.to_string();
+                                let registry_ref = item.get("registry_ref")?.as_str()?.to_string();
                                 Some(ExtensionRef { id, registry_ref })
                             })
                             .collect();
@@ -619,7 +615,10 @@ impl RegistryManifest {
 
     /// Get layer by type
     #[must_use]
-    pub fn get_layer(&self, layer_type: crate::registry::packaging::types::LayerType) -> Option<&Layer> {
+    pub fn get_layer(
+        &self,
+        layer_type: crate::registry::packaging::types::LayerType,
+    ) -> Option<&Layer> {
         self.layers.iter().find(|l| l.layer_type == layer_type)
     }
 }

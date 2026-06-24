@@ -106,7 +106,11 @@ pub fn did_key_to_verifying_key(did: &str) -> Result<VerifyingKey> {
 pub fn verifying_key_to_did_key(key: &VerifyingKey) -> String {
     let mut payload = ED25519_MULTICODEC.to_vec();
     payload.extend_from_slice(&key.to_bytes());
-    format!("did:key:{}{}", MULTIBASE_BASE58BTC, bs58::encode(payload).into_string())
+    format!(
+        "did:key:{}{}",
+        MULTIBASE_BASE58BTC,
+        bs58::encode(payload).into_string()
+    )
 }
 
 /// Public helper for tests / error message formatting — base64
@@ -172,8 +176,8 @@ mod tests {
     #[test]
     fn test_did_key_rejects_wrong_length_payload() {
         // `z` + too-short payload (just "z").
-        let err = did_key_to_verifying_key("did:key:z")
-            .expect_err("too-short payload must be rejected");
+        let err =
+            did_key_to_verifying_key("did:key:z").expect_err("too-short payload must be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("payload is"),
@@ -188,10 +192,7 @@ mod tests {
         // Build a synthetic DID with the wrong multicodec header.
         let mut wrong_payload = vec![0x12, 0x20];
         wrong_payload.extend_from_slice(&[0xab; 32]);
-        let wrong_did = format!(
-            "did:key:z{}",
-            bs58::encode(&wrong_payload).into_string()
-        );
+        let wrong_did = format!("did:key:z{}", bs58::encode(&wrong_payload).into_string());
         let err = did_key_to_verifying_key(&wrong_did)
             .expect_err("non-ed25519 multicodec must be rejected");
         let msg = err.to_string();

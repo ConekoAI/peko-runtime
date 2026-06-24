@@ -37,7 +37,7 @@ pub enum SystemCommands {
         all: bool,
     },
 
-    /// Update Pekobot to latest version
+    /// Update Peko to latest version
     Update {
         /// Check for updates only
         #[arg(long)]
@@ -106,7 +106,7 @@ pub async fn handle_system(
             }
         }
         SystemCommands::Info => {
-            println!("ℹ️  Pekobot {}", env!("CARGO_PKG_VERSION"));
+            println!("ℹ️  Peko {}", env!("CARGO_PKG_VERSION"));
             println!("  Lightweight multi-agent runtime");
             Ok(())
         }
@@ -218,7 +218,7 @@ pub async fn handle_system(
             if check {
                 println!("🔍 Checking for updates...");
             } else {
-                println!("⬆️  Updating Pekobot...");
+                println!("⬆️  Updating Peko...");
             }
             Ok(())
         }

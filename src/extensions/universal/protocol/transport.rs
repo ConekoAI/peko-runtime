@@ -29,8 +29,10 @@ impl Transport {
     /// Uses the shared `ProcessTransport` for unified process management.
     pub async fn spawn(executable: impl AsRef<std::path::Path>) -> Result<Self> {
         let inner =
-            crate::extensions::framework::protocols::shared::ProcessTransport::spawn_default(executable)
-                .await?;
+            crate::extensions::framework::protocols::shared::ProcessTransport::spawn_default(
+                executable,
+            )
+            .await?;
 
         Ok(Self {
             inner,

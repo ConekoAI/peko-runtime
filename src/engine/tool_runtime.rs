@@ -4,13 +4,12 @@
 //! (and other non-agent contexts) to resolve and execute built-in tools.
 
 use crate::common::paths::PathResolver;
+use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
-use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, Tool,
-    WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, Tool, WriteFileTool,
 };
 use anyhow::Result;
 use std::path::PathBuf;

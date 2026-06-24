@@ -1,6 +1,6 @@
-# Getting Started with Pekobot
+# Getting Started with Peko
 
-Get up and running with Pekobot in under 5 minutes.
+Get up and running with Peko in under 5 minutes.
 
 ---
 
@@ -21,7 +21,7 @@ Get up and running with Pekobot in under 5 minutes.
 
 ```bash
 # Clone the repository
-git clone https://github.com/coneko/pekobot
+git clone https://github.com/coneko/peko
 cd peko
 
 # Build in release mode (optimized)
@@ -182,4 +182,4 @@ sudo apt-get install libssl-dev pkg-config
 
 ---
 
-*Welcome to Pekobot! 🐱*
+*Welcome to Peko! 🐱*

@@ -123,8 +123,7 @@ pub fn as_attributes(
     // nLength is required to be set per the Win32 docs;
     // bInheritHandle = FALSE (named pipes are not inherited by default).
     windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
-            as u32,
+        nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: attrs.descriptor,
         bInheritHandle: 0,
     }

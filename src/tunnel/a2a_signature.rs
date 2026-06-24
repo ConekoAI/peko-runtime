@@ -116,8 +116,8 @@ fn push_lp(out: &mut Vec<u8>, s: &str) {
     // u32 cast is checked: a `&str` longer than `u32::MAX` is
     // unrepresentable on any platform we target, but be explicit so a
     // future 128-bit platform doesn't silently truncate.
-    let len = u32::try_from(s.len())
-        .expect("a2a signed field exceeds u32::MAX bytes; rejected upstream");
+    let len =
+        u32::try_from(s.len()).expect("a2a signed field exceeds u32::MAX bytes; rejected upstream");
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(s.as_bytes());
 }

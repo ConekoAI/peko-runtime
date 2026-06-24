@@ -5,8 +5,8 @@
 //! context inheritance and lifecycle policies.
 
 use super::overlay::SessionOverlay;
+use super::types::{OverlayType, SpawnCleanupPolicy};
 use crate::auth::principal::Principal;
-use super::types::{OverlayType,  SpawnCleanupPolicy};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

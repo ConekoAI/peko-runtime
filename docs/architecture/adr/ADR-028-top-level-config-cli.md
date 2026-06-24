@@ -38,7 +38,7 @@ This ADR defines the minimal viable implementation for global config management,
 ## Problem Statement
 
 1. **Stub commands damage UX**: Users expect `peko config get provider.api_key_env` to return a value. Getting a emoji + no data is confusing.
-2. **No global config file**: Pekobot resolves paths (`~/.peko/`) but never creates or reads a `config.toml` at that location. Global defaults are hard-coded or env-var only.
+2. **No global config file**: Peko resolves paths (`~/.peko/`) but never creates or reads a `config.toml` at that location. Global defaults are hard-coded or env-var only.
 3. **Inconsistent with agent config**: `peko agent config get/set` works (via `config_path::get_config_value` / `set_config_value`). The top-level `config` command should use the same primitives.
 4. **Blocking Phase 1**: While classified as P1, the stub state is a polish issue that prevents calling the CLI "production-ready."
 

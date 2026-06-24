@@ -11,15 +11,13 @@
 //! - Background compaction works for both streaming and blocking modes
 //! - Event semantics are uniform across all consumers
 
-use crate::agents::Agent;
-use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::agents::prompt::SystemPromptService;
-use crate::extensions::framework::async_exec::executor::{
-    SharedAsyncTaskCompletionQueue,
-};
+use crate::agents::Agent;
+use crate::common::types::message::{ContentBlock, LlmMessage};
+use crate::engine::{AgenticEvent, LifecyclePhase};
+use crate::extensions::framework::async_exec::executor::SharedAsyncTaskCompletionQueue;
 use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
 use crate::session::Session;
-use crate::common::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -110,10 +108,7 @@ impl AgenticLoop {
     /// and synthesizes a single user-role message containing all
     /// completions since the last iteration.
     #[must_use]
-    pub fn with_async_completion_queue(
-        mut self,
-        queue: SharedAsyncTaskCompletionQueue,
-    ) -> Self {
+    pub fn with_async_completion_queue(mut self, queue: SharedAsyncTaskCompletionQueue) -> Self {
         self.async_completion_queue = Some(queue);
         self
     }
@@ -255,9 +250,9 @@ impl AgenticLoop {
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
     ) -> Result<AgenticResult> {
+        use crate::auth::principal::Principal;
         use crate::common::paths::PathResolver;
         use crate::session::manager::SessionManager;
-        use crate::auth::principal::Principal;
 
         // Create session via SessionManager. Issue #17: use the resolved
         // caller identity (set via `with_caller_id`) as the session's
@@ -436,7 +431,9 @@ impl AgenticLoop {
                         crate::common::types::message::ContentBlock::Text { text } => {
                             format!("[Text: {}]", text.chars().take(50).collect::<String>())
                         }
-                        crate::common::types::message::ContentBlock::ToolCall { id, name, .. } => {
+                        crate::common::types::message::ContentBlock::ToolCall {
+                            id, name, ..
+                        } => {
                             format!("[ToolCall: {name} ({id})]")
                         }
                         crate::common::types::message::ContentBlock::ToolResult {
@@ -876,13 +873,13 @@ impl AgenticLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::agent_config::AgentConfig;
     use crate::agents::Agent;
+    use crate::auth::principal::Principal;
+    use crate::common::types::provider::{ProviderConfig, ProviderType};
     use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
     use crate::session::manager::SessionManager;
-    use crate::auth::principal::Principal;
-    use crate::agents::agent_config::AgentConfig;
-    use crate::common::types::provider::{ProviderConfig, ProviderType};
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use tokio::sync::RwLock;
@@ -1338,11 +1335,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_e2e_async_completion_reaches_llm_real() {
+        use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
         use crate::extensions::framework::async_exec::executor::{
             AsyncTaskCompletionQueue, AsyncTaskStatus, CompletionEvent,
             SharedAsyncTaskCompletionQueue,
         };
-        use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
         use chrono::Utc;
 
         crate::identity::init_test_env();
@@ -1393,7 +1390,10 @@ mod tests {
             result.err()
         );
         let recorded = mock.recorded_requests();
-        assert!(!recorded.is_empty(), "mock should have recorded at least one request");
+        assert!(
+            !recorded.is_empty(),
+            "mock should have recorded at least one request"
+        );
 
         // The recorded messages should contain the synthetic user-role
         // message we synthesized from the completion event. The first
@@ -1424,9 +1424,7 @@ mod tests {
         let synthetic = synthetic_msg.unwrap();
         let has_tool_result = synthetic.content.iter().any(|b| {
             if let CB::ToolResult {
-                tool_call_id,
-                name,
-                ..
+                tool_call_id, name, ..
             } = b
             {
                 tool_call_id == "synthetic:shell:e2e-test" && name == "shell"

@@ -67,7 +67,9 @@ impl HookContext {
 
     /// Get input as prompt build state if applicable
     #[must_use]
-    pub fn as_prompt_build(&self) -> Option<&crate::extensions::framework::types::PromptBuildState> {
+    pub fn as_prompt_build(
+        &self,
+    ) -> Option<&crate::extensions::framework::types::PromptBuildState> {
         match &self.input {
             HookInput::PromptBuild(state) => Some(state),
             _ => None,
@@ -90,7 +92,9 @@ impl HookContext {
 
     /// Get input as session state if applicable
     #[must_use]
-    pub fn as_session_state(&self) -> Option<&crate::extensions::framework::types::SessionSnapshot> {
+    pub fn as_session_state(
+        &self,
+    ) -> Option<&crate::extensions::framework::types::SessionSnapshot> {
         match &self.input {
             HookInput::SessionState(state) => Some(state),
             _ => None,

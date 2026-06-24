@@ -3,16 +3,16 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pekobot-tool"
+name = "peko-tool"
 version = "0.1.0"
-description = "SDK for building Pekobot Universal Tools"
+description = "SDK for building Peko Universal Tools"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
-    {name = "Pekobot Contributors"}
+    {name = "Peko Contributors"}
 ]
-keywords = ["pekobot", "agent", "tool", "ai", "mcp"]
+keywords = ["peko", "agent", "tool", "ai", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -37,12 +37,12 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/ConekoAI/peko-runtime"
-Documentation = "https://github.com/ConekoAI/peko-runtime/tree/main/sdks/python/pekobot_tool"
+Documentation = "https://github.com/ConekoAI/peko-runtime/tree/main/sdks/python/peko_tool"
 Repository = "https://github.com/ConekoAI/peko-runtime.git"
 Issues = "https://github.com/ConekoAI/peko-runtime/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pekobot_tool"]
+packages = ["src/peko_tool"]
 
 [tool.black]
 line-length = 100

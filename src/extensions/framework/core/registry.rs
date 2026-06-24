@@ -10,7 +10,9 @@ use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::core::hook_registry::HookRegistry;
 use crate::extensions::framework::core::tool_registry::ToolRegistry;
-use crate::extensions::framework::types::{ExtensionId, HookId, HookInput, HookResult, ToolMetadata};
+use crate::extensions::framework::types::{
+    ExtensionId, HookId, HookInput, HookResult, ToolMetadata,
+};
 use crate::tools::core::Tool;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -109,7 +111,10 @@ impl ExtensionCore {
     }
 
     /// Set the tool configuration (whitelist, etc.)
-    pub async fn set_tool_config(&self, config: crate::common::types::agent_legacy::ExtensionConfig) {
+    pub async fn set_tool_config(
+        &self,
+        config: crate::common::types::agent_legacy::ExtensionConfig,
+    ) {
         self.tool_registry.set_tool_config(config).await;
     }
 
@@ -999,8 +1004,12 @@ mod tests {
         assert_eq!(core.current_session_key(agent_b), None);
 
         // Set key for agent A only.
-        core.set_session_key(agent_a, Some("sess-A".to_string())).await;
-        assert_eq!(core.current_session_key(agent_a), Some("sess-A".to_string()));
+        core.set_session_key(agent_a, Some("sess-A".to_string()))
+            .await;
+        assert_eq!(
+            core.current_session_key(agent_a),
+            Some("sess-A".to_string())
+        );
         assert_eq!(
             core.current_session_key(agent_b),
             None,
@@ -1008,14 +1017,28 @@ mod tests {
         );
 
         // Set key for agent B — agent A's key is preserved.
-        core.set_session_key(agent_b, Some("sess-B".to_string())).await;
-        assert_eq!(core.current_session_key(agent_a), Some("sess-A".to_string()));
-        assert_eq!(core.current_session_key(agent_b), Some("sess-B".to_string()));
+        core.set_session_key(agent_b, Some("sess-B".to_string()))
+            .await;
+        assert_eq!(
+            core.current_session_key(agent_a),
+            Some("sess-A".to_string())
+        );
+        assert_eq!(
+            core.current_session_key(agent_b),
+            Some("sess-B".to_string())
+        );
 
         // Overwriting agent A's key leaves agent B untouched.
-        core.set_session_key(agent_a, Some("sess-A2".to_string())).await;
-        assert_eq!(core.current_session_key(agent_a), Some("sess-A2".to_string()));
-        assert_eq!(core.current_session_key(agent_b), Some("sess-B".to_string()));
+        core.set_session_key(agent_a, Some("sess-A2".to_string()))
+            .await;
+        assert_eq!(
+            core.current_session_key(agent_a),
+            Some("sess-A2".to_string())
+        );
+        assert_eq!(
+            core.current_session_key(agent_b),
+            Some("sess-B".to_string())
+        );
 
         // Clearing agent A (None) leaves agent B untouched.
         core.set_session_key(agent_a, None).await;
@@ -1041,7 +1064,8 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let agent_id = format!("did:peko:agent:{i}");
                 let session_key = format!("sess-{i}");
-                core.set_session_key(&agent_id, Some(session_key.clone())).await;
+                core.set_session_key(&agent_id, Some(session_key.clone()))
+                    .await;
                 // Yield between set and read to maximise interleaving.
                 tokio::task::yield_now().await;
                 let read_back = core.current_session_key(&agent_id);

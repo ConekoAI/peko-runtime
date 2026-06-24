@@ -6,7 +6,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use pekobot::registry::{RegistryClient, RegistryConfig, ProgressEvent, AgentRegistry};
+//! use peko::registry::{RegistryClient, RegistryConfig, ProgressEvent, AgentRegistry};
 //!
 //! let config = RegistryConfig::default();
 //! let registry = AgentRegistry::new(".peko/registry");

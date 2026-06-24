@@ -1,4 +1,4 @@
-# Pekobot Extension System
+# Peko Extension System
 
 **Version:** 0.1.0 (Post-ADR-017 Implementation)
 **Date:** 2026-06-23 (review pass)
@@ -8,7 +8,7 @@
 
 ## Overview
 
-The Pekobot Extension System provides a unified architecture for adding capabilities to agents. All extensions—whether tools, skills, MCP servers, or gateways—use the same hook-based registration mechanism and lifecycle management.
+The Peko Extension System provides a unified architecture for adding capabilities to agents. All extensions—whether tools, skills, MCP servers, or gateways—use the same hook-based registration mechanism and lifecycle management.
 
 ---
 
@@ -16,7 +16,7 @@ The Pekobot Extension System provides a unified architecture for adding capabili
 
 ### 1. Type-Specific Adapters (Guided Approach)
 
-For common extension types, Pekobot provides guided adapters with constrained hook points:
+For common extension types, Peko provides guided adapters with constrained hook points:
 
 | Extension Type | Manifest | Primary Hooks | Best For |
 |----------------|----------|---------------|----------|
@@ -124,7 +124,7 @@ hooks:
 name: github
 description: GitHub CLI operations
 version: "1.0.0"
-author: Pekobot Team
+author: Peko Team
 ---
 
 # GitHub Skill
@@ -232,7 +232,7 @@ hooks:
 
 ### The Easy Way: `peko ext init` (ADR-036)
 
-Pekobot provides scaffolding for all extension types. One command creates a working extension:
+Peko provides scaffolding for all extension types. One command creates a working extension:
 
 ```bash
 # Skill extension

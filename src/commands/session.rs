@@ -4,6 +4,7 @@
 //! `SessionService` and `SessionCompactor`. Presentation lives in
 //! `session::presentation`.
 
+use crate::auth::principal::Principal;
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::session_service::{HistoryQuery, SessionService};
@@ -13,7 +14,6 @@ use crate::session::presentation::{
     render_session_history, render_session_list, render_session_list_json,
     render_session_show_json, render_switch_success,
 };
-use crate::auth::principal::Principal;
 use anyhow::Result;
 use clap::Subcommand;
 
@@ -548,11 +548,8 @@ mod tests {
     #[test]
     fn test_render_dry_run_json_preserves_message_counts() {
         let json = render_dry_run_json(
-            "sess-abc",
-            /* estimated_tokens */ 622,
-            /* context_window  */ 128_000,
-            /* percent         */ 0,
-            /* message_count   */ 12,
+            "sess-abc", /* estimated_tokens */ 622, /* context_window  */ 128_000,
+            /* percent         */ 0, /* message_count   */ 12,
             /* messages_to_compact */ 10,
         );
         assert_eq!(json["success"], serde_json::Value::Bool(true));

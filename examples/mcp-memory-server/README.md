@@ -15,7 +15,7 @@ This MCP server provides simple key-value memory storage that is automatically i
 ## Files
 
 - `server.js` - MCP server implementation (the @modelcontextprotocol/sdk server with `memory_store`, `memory_retrieve`, `memory_list`, `memory_delete` tools)
-- `manifest.yaml` - Pekobot extension manifest (ADR-024 unified format) that wires the server into the extension framework
+- `manifest.yaml` - Peko extension manifest (ADR-024 unified format) that wires the server into the extension framework
 
 ## Configuration
 
@@ -35,7 +35,7 @@ mcp_servers:
     auto_start: true
 ```
 
-The `auto_start: true` flag tells Pekobot to start the server process automatically when the extension is enabled. Reserved parameter injection (`agent_id`, `session_id`) is a Pekobot runtime feature — see `docs/mcp/mcp_reserved_params_guide.md` for the full mechanism.
+The `auto_start: true` flag tells Peko to start the server process automatically when the extension is enabled. Reserved parameter injection (`agent_id`, `session_id`) is a Peko runtime feature — see `docs/mcp/mcp_reserved_params_guide.md` for the full mechanism.
 
 ## What the LLM Sees
 
@@ -85,9 +85,9 @@ peko ext list
 #   mcp-memory-server   mcp   enabled   ...
 ```
 
-Once the server is running, any agent that has the `mcp-memory-server` extension enabled can call `memory_store`, `memory_retrieve`, `memory_list`, and `memory_delete` — the LLM sees only the user-facing parameters, and `agent_id` / `session_id` are injected automatically by the Pekobot runtime.
+Once the server is running, any agent that has the `mcp-memory-server` extension enabled can call `memory_store`, `memory_retrieve`, `memory_list`, and `memory_delete` — the LLM sees only the user-facing parameters, and `agent_id` / `session_id` are injected automatically by the Peko runtime.
 
-To test the server in isolation (outside Pekobot), you can run it directly with any MCP client:
+To test the server in isolation (outside Peko), you can run it directly with any MCP client:
 
 ```bash
 node examples/mcp-memory-server/server.js

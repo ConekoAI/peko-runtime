@@ -458,7 +458,13 @@ mod tests {
         ];
 
         let (path, body) = adapter
-            .build_request("gpt-4o-mini", &messages, None, &ChatOptions::default(), false)
+            .build_request(
+                "gpt-4o-mini",
+                &messages,
+                None,
+                &ChatOptions::default(),
+                false,
+            )
             .unwrap();
         assert_eq!(path, "/chat/completions");
         assert_eq!(body["model"], "gpt-4o-mini");

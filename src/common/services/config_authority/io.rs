@@ -7,7 +7,6 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tokio::fs;
 
-
 /// Configuration I/O operations for TOML files
 ///
 /// Handles reading and writing agent configurations to TOML files

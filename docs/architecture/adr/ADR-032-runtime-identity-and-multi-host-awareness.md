@@ -13,7 +13,7 @@
 
 ## Context
 
-Pekobot is a Rust-based multi-agent runtime. As of ADR-021, the daemon is the central runtime and communicates with the CLI via UDP/Unix socket IPC. As of ADR-031, agents are first-class citizens with explicit team memberships. However, the runtime still operates as a purely local, single-machine system with no concept of "which machine am I on."
+Peko is a Rust-based multi-agent runtime. As of ADR-021, the daemon is the central runtime and communicates with the CLI via UDP/Unix socket IPC. As of ADR-031, agents are first-class citizens with explicit team memberships. However, the runtime still operates as a purely local, single-machine system with no concept of "which machine am I on."
 
 Every runtime instance currently assumes `localhost` as its universe. Agents, teams, sessions, and the daemon all live in a single `~/.peko/` directory with no host-level scoping. This limits the system to one machine per user and prevents scenarios such as:
 
@@ -220,7 +220,7 @@ A local registry file `~/.peko/runtime/known_runtimes.toml` tracks other runtime
 runtime_id = "did:key:z6MktS3..."
 display_name = "megad-laptop"
 last_seen = "2026-06-06T10:00:00Z"
-connection_endpoint = "tunnel://pekobot.run/megad-laptop"
+connection_endpoint = "tunnel://peko.run/megad-laptop"
 trust_level = "self"
 
 [[runtimes]]
@@ -518,9 +518,9 @@ No migration needed. Runtime identity is generated on first daemon startup befor
 
 ## Reasoning
 
-### Why `did:key` instead of `did:pekobot:runtime:{uuid}`?
+### Why `did:key` instead of `did:peko:runtime:{uuid}`?
 
-**Self-certifying and spoofing-resistant.** With `did:pekobot:runtime:{uuid}`, the DID string and the public key are separate. An attacker could generate a different keypair and claim the same UUID in the DID, or race to register a UUID they don't own. With `did:key`, the DID *is* the public key — there is no separate identifier to fake. Anyone can derive the public key from the DID alone and verify signatures immediately, with no registry lookup.
+**Self-certifying and spoofing-resistant.** With `did:peko:runtime:{uuid}`, the DID string and the public key are separate. An attacker could generate a different keypair and claim the same UUID in the DID, or race to register a UUID they don't own. With `did:key`, the DID *is* the public key — there is no separate identifier to fake. Anyone can derive the public key from the DID alone and verify signatures immediately, with no registry lookup.
 
 **No registration race condition.** Because the DID is derived from the key, there is no "claiming" step where an attacker can squat on a desirable DID. The only way to present a valid `did:key` is to possess the corresponding private key.
 
@@ -552,7 +552,7 @@ No migration needed. Runtime identity is generated on first daemon startup befor
 
 ## Alternatives Considered
 
-### Alternative A: `did:pekobot:runtime:{uuid}` (Custom DID Method)
+### Alternative A: `did:peko:runtime:{uuid}` (Custom DID Method)
 
 Use a project-specific DID format with a UUID and a separate ed25519 keypair.
 

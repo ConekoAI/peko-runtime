@@ -1,7 +1,7 @@
-//! Core Engine - Agentic execution engine for Pekobot
+//! Core Engine - Agentic execution engine for Peko
 //!
 //! Provides the core agentic loop, runner, and state management.
-//! This is the heart of Pekobot's agent execution.
+//! This is the heart of Peko's agent execution.
 
 pub mod agentic_loop;
 pub mod async_completion;

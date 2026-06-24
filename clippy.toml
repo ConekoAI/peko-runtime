@@ -1,4 +1,4 @@
-# Clippy configuration for Pekobot
+# Clippy configuration for Peko
 # Relaxed rules for practical development
 
 avoid-breaking-exported-api = false

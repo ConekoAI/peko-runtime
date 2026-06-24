@@ -2,7 +2,7 @@
 """
 Gateway process for {{name}}.
 
-Communicates with the Pekobot daemon via stdio-line JSON protocol.
+Communicates with the Peko daemon via stdio-line JSON protocol.
 Receives GatewayPacket on stdin, sends GatewayResponse on stdout.
 """
 

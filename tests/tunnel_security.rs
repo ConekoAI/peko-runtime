@@ -15,11 +15,11 @@
 
 use secrecy::SecretString;
 
-use pekobot::common::vault::Vault;
-use pekobot::identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
-use pekobot::identity::storage::KeyStorage;
-use pekobot::identity::{DIDScope, Identity};
-use pekobot::tunnel::PekoHubCredential;
+use peko::common::vault::Vault;
+use peko::identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
+use peko::identity::storage::KeyStorage;
+use peko::identity::{DIDScope, Identity};
+use peko::tunnel::PekoHubCredential;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -70,8 +70,7 @@ private_key = "dGVzdC1rZXk="
 fn test_identity_storage_uses_encrypted_file_fallback() {
     let temp_dir = tempfile::tempdir().unwrap();
     let passphrase = SecretString::new("test-passphrase".into());
-    let storage =
-        KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+    let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
     let identity = Identity::generate(DIDScope::Public, None).unwrap();
     let did = identity.did.clone();
@@ -79,7 +78,9 @@ fn test_identity_storage_uses_encrypted_file_fallback() {
     storage.store(&identity).unwrap();
 
     // The identity JSON file should exist
-    let identity_path = temp_dir.path().join(format!("{}.json", did.replace(':', "_")));
+    let identity_path = temp_dir
+        .path()
+        .join(format!("{}.json", did.replace(':', "_")));
     assert!(identity_path.exists(), "Identity file should exist");
 
     // The identity file should NOT contain a plaintext private_key
@@ -94,7 +95,9 @@ fn test_identity_storage_uses_encrypted_file_fallback() {
     );
 
     // An encrypted key file should exist (because we used test passphrase fallback)
-    let enc_path = temp_dir.path().join(format!("{}.enc", did.replace(':', "_")));
+    let enc_path = temp_dir
+        .path()
+        .join(format!("{}.enc", did.replace(':', "_")));
     assert!(
         enc_path.exists(),
         "Encrypted key file should exist when using fallback"
@@ -110,8 +113,7 @@ fn test_identity_storage_uses_encrypted_file_fallback() {
 fn test_identity_file_is_useless_without_passphrase() {
     let temp_dir = tempfile::tempdir().unwrap();
     let passphrase = SecretString::new("correct-passphrase".into());
-    let storage =
-        KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+    let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
     let identity = Identity::generate(DIDScope::Public, None).unwrap();
     let did = identity.did.clone();
@@ -124,18 +126,14 @@ fn test_identity_file_is_useless_without_passphrase() {
         KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), wrong_passphrase).unwrap();
 
     let result = bad_storage.load(&did);
-    assert!(
-        result.is_err(),
-        "Loading with wrong passphrase must fail"
-    );
+    assert!(result.is_err(), "Loading with wrong passphrase must fail");
 }
 
 #[test]
 fn test_legacy_identity_auto_migration() {
     let temp_dir = tempfile::tempdir().unwrap();
     let passphrase = SecretString::new("migration-passphrase".into());
-    let storage =
-        KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+    let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
     // Create a legacy plaintext identity file manually
     let identity = Identity::generate(DIDScope::Public, None).unwrap();
@@ -152,8 +150,14 @@ fn test_legacy_identity_auto_migration() {
         "last_used": chrono::Utc::now().to_rfc3339(),
     });
 
-    let file_path = temp_dir.path().join(format!("{}.json", did.replace(':', "_")));
-    std::fs::write(&file_path, serde_json::to_string_pretty(&legacy_json).unwrap()).unwrap();
+    let file_path = temp_dir
+        .path()
+        .join(format!("{}.json", did.replace(':', "_")));
+    std::fs::write(
+        &file_path,
+        serde_json::to_string_pretty(&legacy_json).unwrap(),
+    )
+    .unwrap();
 
     // Load should auto-migrate
     let loaded = storage.load(&did).unwrap();
@@ -187,7 +191,7 @@ fn test_headless_store_without_passphrase_fails() {
 #[test]
 fn test_keychain_storage_ref_serialization() {
     let keychain_ref = KeyStorageRef::Keychain {
-        service: "pekobot-runtime".to_string(),
+        service: "peko-runtime".to_string(),
         account: "did:key:z6MkTest".to_string(),
     };
 
@@ -196,7 +200,7 @@ fn test_keychain_storage_ref_serialization() {
 
     match deserialized {
         KeyStorageRef::Keychain { service, account } => {
-            assert_eq!(service, "pekobot-runtime");
+            assert_eq!(service, "peko-runtime");
             assert_eq!(account, "did:key:z6MkTest");
         }
         other => panic!("Expected Keychain, got: {:?}", other),
@@ -210,8 +214,7 @@ fn test_encrypted_key_storage_roundtrip() {
     let private_key = "dGVzdC1wcml2YXRlLWtleQ==";
     let passphrase = SecretString::new("super-secret-passphrase".into());
 
-    let storage_ref =
-        EncryptedKeyStorage::store_key(&file_path, private_key, &passphrase).unwrap();
+    let storage_ref = EncryptedKeyStorage::store_key(&file_path, private_key, &passphrase).unwrap();
 
     match &storage_ref {
         KeyStorageRef::EncryptedFile { file_name } => {

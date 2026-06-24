@@ -2,7 +2,7 @@
 
 ## Overview
 
-Pekobot extends MCP (Model Context Protocol) with **reserved parameter injection**, allowing runtime context (like `agent_id`, `session_id`) to be automatically injected into MCP tool calls. This enables:
+Peko extends MCP (Model Context Protocol) with **reserved parameter injection**, allowing runtime context (like `agent_id`, `session_id`) to be automatically injected into MCP tool calls. This enables:
 
 - **Agent Isolation**: Memory and state automatically isolated per agent
 - **Security**: LLM cannot spoof identity parameters

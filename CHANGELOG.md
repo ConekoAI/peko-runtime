@@ -1,8 +1,29 @@
-# Pekobot Changelog
+# Peko Changelog
 
-All notable changes to Pekobot.
+All notable changes to Peko.
 
 ## [Unreleased]
+
+### Changed
+
+- **BREAKING**: Renamed the Rust crate from `pekobot` to `peko`. Update all
+  `use pekobot::...` imports to `use peko::...`.
+- **BREAKING**: Renamed the public Rust type
+  `peko::common::types::config::PekobotConfig` to `PekoConfig`.
+- **BREAKING**: Renamed the OS keychain service namespace from
+  `pekobot-runtime` to `peko-runtime`. Existing keychain entries are not
+  migrated; users will need to re-onboard (negligible at 0.1.0).
+- Renamed the project name in all prose, documentation, and config defaults
+  from "Pekobot" to "Peko". Binary name (`peko`), package layout on disk
+  (`config.toml` `app_name = "peko"`), and Python SDK defaults are unaffected.
+
+### Notes
+
+- The MCP example server display name was renamed from
+  `pekobot-memory-server` to `peko-memory-server`.
+- The Python SDK package was renamed from `pekobot-tool` / `pekobot_tool`
+  to `peko-tool` / `peko_tool`.
+- Historical CHANGELOG entries below are preserved verbatim.
 
 ### Provider catalog & agent decoupling (v3)
 

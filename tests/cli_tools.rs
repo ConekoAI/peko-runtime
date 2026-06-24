@@ -505,9 +505,8 @@ async fn built_in_str_replace_file_modifies_file() {
     // Pre-seed the workspace with a file containing the old string.
     let ws = workspace_dir(&cli);
     ensure_workspace_dir(&cli);
-    let initial = format!(
-        "[settings]\nname = \"{old_string}\"\nversion = \"1.0.0\"\ndebug = true\n"
-    );
+    let initial =
+        format!("[settings]\nname = \"{old_string}\"\nversion = \"1.0.0\"\ndebug = true\n");
     std::fs::write(ws.join(file_name), initial).expect("write initial file");
 
     let _daemon = DaemonGuard::spawn(&cli);

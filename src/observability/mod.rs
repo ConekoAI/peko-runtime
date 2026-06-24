@@ -1,4 +1,4 @@
-//! Observability - Audit, metrics, and tracing for Pekobot
+//! Observability - Audit, metrics, and tracing for Peko
 //!
 //! Provides visibility into:
 //! - What agents are doing (audit log)
@@ -87,8 +87,14 @@ impl Observability {
         agent_did: Option<&str>,
         details: serde_json::Value,
     ) -> Result<()> {
-        self.log_audit(event_type, agent_did, None, details, AuditSeverity::Security)
-            .await
+        self.log_audit(
+            event_type,
+            agent_did,
+            None,
+            details,
+            AuditSeverity::Security,
+        )
+        .await
     }
 
     /// Log a security-sensitive event tagged with the resolved caller
@@ -106,8 +112,14 @@ impl Observability {
         agent_did: Option<&str>,
         details: serde_json::Value,
     ) -> Result<()> {
-        self.log_audit(event_type, agent_did, caller, details, AuditSeverity::Security)
-            .await
+        self.log_audit(
+            event_type,
+            agent_did,
+            caller,
+            details,
+            AuditSeverity::Security,
+        )
+        .await
     }
 
     /// Internal: log a fully-specified audit event.
@@ -219,13 +231,9 @@ mod tests {
     #[tokio::test]
     async fn audit_without_caller_leaves_caller_unset() {
         let obs = Observability::new("tunnel");
-        obs.audit(
-            "agent_spawn",
-            Some("agent-a"),
-            serde_json::json!({}),
-        )
-        .await
-        .unwrap();
+        obs.audit("agent_spawn", Some("agent-a"), serde_json::json!({}))
+            .await
+            .unwrap();
 
         let entries = obs.get_audit_log(10).await;
         assert_eq!(entries.len(), 1);

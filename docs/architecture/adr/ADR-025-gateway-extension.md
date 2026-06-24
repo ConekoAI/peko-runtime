@@ -14,7 +14,7 @@
 
 ### The Goal
 
-Users should be able to talk to Pekobot agents through **any channel**: Discord, WhatsApp, Slack, a local TUI, a web dashboard, or a raw HTTPS endpoint. The channel itself is pluggable — installed as an external extension, enabled per-agent, and managed through the unified `peko ext` CLI.
+Users should be able to talk to Peko agents through **any channel**: Discord, WhatsApp, Slack, a local TUI, a web dashboard, or a raw HTTPS endpoint. The channel itself is pluggable — installed as an external extension, enabled per-agent, and managed through the unified `peko ext` CLI.
 
 ### Why This Requires a New ADR
 
@@ -410,7 +410,7 @@ my-gateway/
 id: "discord-gateway"
 name: "Discord Gateway"
 version: "1.0.0"
-description: "Connect Pekobot to Discord servers"
+description: "Connect Peko to Discord servers"
 extension_type: "gateway"
 gateway_type: "out-of-process"     # "out-of-process" | "external"
 config:
@@ -500,7 +500,7 @@ Gateway extensions **also** register hooks (`ChannelInput`, `ChannelOutput`, `Me
 | Layer | Responsibility | Example |
 |-------|---------------|---------|
 | **BackgroundRuntimeManager** | Transport: persistent connection, message routing, delivery | Discord WebSocket client |
-| **Extension Hooks** | Transformation: format messages, inject platform context | Convert Discord markdown ↔ Pekobot markdown |
+| **Extension Hooks** | Transformation: format messages, inject platform context | Convert Discord markdown ↔ Peko markdown |
 
 **Important:** Currently in `src/agent/stateless_service.rs`, `ChannelInput` and `ChannelOutput` hooks are invoked but their results are only logged — they are **not consumed**. Phase 4 of the migration makes these hooks functional, which is a **behavioral change**. Extensions that previously returned values that were ignored will now affect execution.
 

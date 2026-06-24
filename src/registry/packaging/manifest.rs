@@ -267,58 +267,58 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_manifest_with_extension_refs_roundtrip() {
-        use crate::registry::packaging::types::ExtensionRef;
+#[test]
+fn test_manifest_with_extension_refs_roundtrip() {
+    use crate::registry::packaging::types::ExtensionRef;
 
-        let mut manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
-        manifest.extensions = vec![
-            ExtensionRef {
-                id: "docker-skill".to_string(),
-                registry_ref: "pekohub.com/extensions/docker-skill:latest".to_string(),
-            },
-            ExtensionRef {
-                id: "filesystem-mcp".to_string(),
-                registry_ref: "pekohub.com/extensions/filesystem-mcp:v1.2.0".to_string(),
-            },
-        ];
+    let mut manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
+    manifest.extensions = vec![
+        ExtensionRef {
+            id: "docker-skill".to_string(),
+            registry_ref: "pekohub.com/extensions/docker-skill:latest".to_string(),
+        },
+        ExtensionRef {
+            id: "filesystem-mcp".to_string(),
+            registry_ref: "pekohub.com/extensions/filesystem-mcp:v1.2.0".to_string(),
+        },
+    ];
 
-        let toml = manifest.to_toml().unwrap();
-        assert!(toml.contains("docker-skill"));
-        assert!(toml.contains("pekohub.com/extensions/docker-skill:latest"));
+    let toml = manifest.to_toml().unwrap();
+    assert!(toml.contains("docker-skill"));
+    assert!(toml.contains("pekohub.com/extensions/docker-skill:latest"));
 
-        let parsed = AgentManifest::from_toml(&toml).unwrap();
-        assert_eq!(parsed.extensions.len(), 2);
-        assert_eq!(parsed.extensions[0].id, "docker-skill");
-        assert_eq!(
-            parsed.extensions[0].registry_ref,
-            "pekohub.com/extensions/docker-skill:latest"
-        );
-    }
+    let parsed = AgentManifest::from_toml(&toml).unwrap();
+    assert_eq!(parsed.extensions.len(), 2);
+    assert_eq!(parsed.extensions[0].id, "docker-skill");
+    assert_eq!(
+        parsed.extensions[0].registry_ref,
+        "pekohub.com/extensions/docker-skill:latest"
+    );
+}
 
-    #[test]
-    fn test_agent_layers_extensions_roundtrip() {
-        let layers = AgentLayers {
-            config: Some("sha256:abc".to_string()),
-            identity: Some("sha256:def".to_string()),
-            skills: None,
-            workspace: Some("sha256:ghi".to_string()),
-            sessions: None,
-            mcp: None,
-            extensions: Some("sha256:jkl".to_string()),
-        };
+#[test]
+fn test_agent_layers_extensions_roundtrip() {
+    let layers = AgentLayers {
+        config: Some("sha256:abc".to_string()),
+        identity: Some("sha256:def".to_string()),
+        skills: None,
+        workspace: Some("sha256:ghi".to_string()),
+        sessions: None,
+        mcp: None,
+        extensions: Some("sha256:jkl".to_string()),
+    };
 
-        let toml = toml::to_string(&layers).unwrap();
-        assert!(toml.contains("extensions"));
-        assert!(!toml.contains("skills"));
-        assert!(!toml.contains("mcp"));
+    let toml = toml::to_string(&layers).unwrap();
+    assert!(toml.contains("extensions"));
+    assert!(!toml.contains("skills"));
+    assert!(!toml.contains("mcp"));
 
-        let parsed: AgentLayers = toml::from_str(&toml).unwrap();
-        assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
-    }
+    let parsed: AgentLayers = toml::from_str(&toml).unwrap();
+    assert_eq!(parsed.extensions, Some("sha256:jkl".to_string()));
+}
 
-    #[test]
-    fn test_manifest_export_format_is_1_2() {
-        let manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
-        assert_eq!(manifest.agent.export_format, "1.2");
-    }
+#[test]
+fn test_manifest_export_format_is_1_2() {
+    let manifest = AgentManifest::new("test-agent", "1.0.0", "did:peko:test");
+    assert_eq!(manifest.agent.export_format, "1.2");
+}

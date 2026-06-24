@@ -12,7 +12,7 @@
 
 ## Context
 
-Pekobot currently models the agent-team relationship as a strict containment hierarchy:
+Peko currently models the agent-team relationship as a strict containment hierarchy:
 
 ```
 ~/.peko/
@@ -287,7 +287,7 @@ If `team_context` is `null`, the session is a personal/standalone session.
 Agent DIDs remain **team-agnostic**:
 
 ```
-did:pekobot:local:{tenant}:{agent_name}
+did:peko:local:{tenant}:{agent_name}
 ```
 
 Team membership is a runtime attribute, not part of the identifier. A2A addressing uses the agent DID plus an optional team context:

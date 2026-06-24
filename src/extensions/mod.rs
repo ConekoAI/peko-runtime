@@ -87,7 +87,9 @@ impl BuiltInAdapters {
         Self
     }
 
-    pub fn adapters(&self) -> Vec<Box<dyn crate::extensions::framework::adapters::ExtensionTypeAdapter>> {
+    pub fn adapters(
+        &self,
+    ) -> Vec<Box<dyn crate::extensions::framework::adapters::ExtensionTypeAdapter>> {
         vec![
             Box::new(skill::adapter::SkillAdapter::new()),
             Box::new(universal::adapter::UniversalToolAdapter::new()),

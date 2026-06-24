@@ -122,7 +122,7 @@ pub struct ExecuteParams {
     pub context: ExecutionContext,
 }
 
-/// Runtime context injected by Pekobot
+/// Runtime context injected by Peko
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecutionContext {
     pub session_id: String,

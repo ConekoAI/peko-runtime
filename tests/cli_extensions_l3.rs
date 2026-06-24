@@ -65,7 +65,7 @@
 //! by `cli_tools.rs` (`built_in_read_file_returns_content` et al.).
 
 mod common;
-use common::{configure_mock, DaemonGuard, PekoCli, run_with_timeout};
+use common::{configure_mock, run_with_timeout, DaemonGuard, PekoCli};
 use serial_test::serial;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -252,8 +252,7 @@ async fn ext_mcp_standard_echo_roundtrip() {
     // in the whitelist. The dispatcher's `is_tool_enabled` looks up the
     // tool's owner and matches that against this list — so the bare
     // tool name (or a wildcard) is what's required.
-    write_ext_agent(cli.home(), agent_name, &mock_url, &[ext_id])
-        .expect("write ext agent");
+    write_ext_agent(cli.home(), agent_name, &mock_url, &[ext_id]).expect("write ext agent");
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -296,11 +295,7 @@ async fn ext_mcp_standard_echo_roundtrip() {
     );
 
     // Cleanup.
-    let (_, _, _) = run(
-        &cli,
-        &["ext", "uninstall", ext_id],
-        Duration::from_secs(10),
-    );
+    let (_, _, _) = run(&cli, &["ext", "uninstall", ext_id], Duration::from_secs(10));
 }
 
 /// L3 universal round-trip: install the `calculator_simple` universal

@@ -590,7 +590,9 @@ mod tests {
         let future_job = CronJob {
             id: Uuid::new_v4().to_string(),
             name: "Future Job".to_string(),
-            schedule: ScheduleKind::Every { every_ms: 3_600_000 },
+            schedule: ScheduleKind::Every {
+                every_ms: 3_600_000,
+            },
             target: ExecutionTarget::Main,
             agent_id: None,
             message: "Test".to_string(),

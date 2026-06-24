@@ -18,7 +18,7 @@
 //! real-LLM credentials still passes.
 //!
 //! The test runner is the GitHub Actions `Integration (real LLM)` job
-//! (see [`.github/workflows/integration.yml`](../pekobot/peko-runtime/.github/workflows/integration.yml)),
+//! (see [`.github/workflows/integration.yml`](../peko/peko-runtime/.github/workflows/integration.yml)),
 //! which only fires on:
 //! 1. Nightly cron (line 37: `cron: '0 2 * * *'`),
 //! 2. Manual `workflow_dispatch`, or

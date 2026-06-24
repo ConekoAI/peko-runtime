@@ -173,8 +173,9 @@ impl HubAgentDirectoryClient {
     pub fn from_credential(
         cred: &crate::tunnel::PekoHubCredential,
     ) -> Result<Self, DirectoryError> {
-        let parsed = reqwest::Url::parse(&cred.url)
-            .map_err(|e| DirectoryError::Transport(format!("PekoHub URL is not a valid URL: {e}")))?;
+        let parsed = reqwest::Url::parse(&cred.url).map_err(|e| {
+            DirectoryError::Transport(format!("PekoHub URL is not a valid URL: {e}"))
+        })?;
         let scheme = match parsed.scheme() {
             "wss" => "https",
             "ws" => "http",
@@ -190,9 +191,7 @@ impl HubAgentDirectoryClient {
         let host = parsed
             .host_str()
             .ok_or_else(|| DirectoryError::Transport("PekoHub URL has no host".to_string()))?;
-        let port = parsed
-            .port()
-            .map_or_else(String::new, |p| format!(":{p}"));
+        let port = parsed.port().map_or_else(String::new, |p| format!(":{p}"));
         let base_url = format!("{scheme}://{host}{port}");
         Ok(Self::new(base_url))
     }
@@ -200,15 +199,12 @@ impl HubAgentDirectoryClient {
     /// Map an HTTP response status + body into our `DirectoryError`
     /// shape. Factored out so the by-did and by-handle paths share
     /// the contract.
-    async fn handle_response(
-        resp: reqwest::Response,
-    ) -> Result<AgentResolution, DirectoryError> {
+    async fn handle_response(resp: reqwest::Response) -> Result<AgentResolution, DirectoryError> {
         let status = resp.status();
         match status {
-            StatusCode::OK => resp
-                .json::<AgentResolution>()
-                .await
-                .map_err(|e| DirectoryError::Transport(format!("response body decode failed: {e}"))),
+            StatusCode::OK => resp.json::<AgentResolution>().await.map_err(|e| {
+                DirectoryError::Transport(format!("response body decode failed: {e}"))
+            }),
             StatusCode::NOT_FOUND => Err(DirectoryError::NotFound),
             StatusCode::FORBIDDEN => Err(DirectoryError::Forbidden),
             StatusCode::BAD_REQUEST => {
@@ -271,7 +267,7 @@ impl AgentDirectory for HubAgentDirectoryClient {
 /// it.
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fake {
-    use super::{async_trait, AgentResolution, DirectoryError, AgentDirectory};
+    use super::{async_trait, AgentDirectory, AgentResolution, DirectoryError};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -317,7 +313,10 @@ pub mod fake {
         }
 
         pub fn register_did(&self, did: impl Into<String>, resolution: AgentResolution) {
-            self.by_did.lock().unwrap().insert(did.into(), Ok(resolution));
+            self.by_did
+                .lock()
+                .unwrap()
+                .insert(did.into(), Ok(resolution));
         }
 
         pub fn register_did_err(&self, did: impl Into<String>, err: DirectoryErrorKind) {

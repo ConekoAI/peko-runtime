@@ -81,7 +81,10 @@ impl KeyStorage {
         Self::with_path_and_passphrase(base_path, env_passphrase)
     }
 
-    fn with_path_and_passphrase(base_path: PathBuf, passphrase: Option<SecretString>) -> Result<Self> {
+    fn with_path_and_passphrase(
+        base_path: PathBuf,
+        passphrase: Option<SecretString>,
+    ) -> Result<Self> {
         fs::create_dir_all(&base_path)
             .with_context(|| format!("Failed to create storage directory: {base_path:?}"))?;
 
@@ -145,8 +148,12 @@ impl KeyStorage {
         let key_storage = if self.test_passphrase.is_some() {
             // Test mode: always use encrypted file fallback for determinism
             let enc_path = self.encrypted_key_path(&identity.did);
-            EncryptedKeyStorage::store_key(&enc_path, &export.private_key, self.test_passphrase.as_ref().unwrap())
-                .context("Failed to store key in encrypted file (test fallback)")?
+            EncryptedKeyStorage::store_key(
+                &enc_path,
+                &export.private_key,
+                self.test_passphrase.as_ref().unwrap(),
+            )
+            .context("Failed to store key in encrypted file (test fallback)")?
         } else if keychain.is_available() {
             keychain
                 .store_key(&identity.did, &export.private_key)
@@ -216,35 +223,32 @@ impl KeyStorage {
     }
 
     /// Resolve the private key from a StoredIdentity and reconstruct the Identity.
-    fn load_from_stored(
-        &self,
-        stored: StoredIdentity,
-        did: &str,
-    ) -> Result<Identity> {
+    fn load_from_stored(&self, stored: StoredIdentity, did: &str) -> Result<Identity> {
         let private_key_b64 = match &stored.key_storage {
             KeyStorageRef::Keychain { service, account } => {
                 let keychain = KeychainStorage::with_service(service.clone());
-                keychain
-                    .retrieve_key(account)
-                    .with_context(|| {
-                        format!(
-                            "Failed to retrieve key from keychain for {account}. \
+                keychain.retrieve_key(account).with_context(|| {
+                    format!(
+                        "Failed to retrieve key from keychain for {account}. \
                              Is the keychain unlocked?"
-                        )
-                    })?
+                    )
+                })?
             }
             KeyStorageRef::EncryptedFile { file_name } => {
                 let enc_path = self.base_path.join(file_name);
-                let passphrase = self.test_passphrase.as_ref()
-                    .ok_or_else(|| anyhow::anyhow!(
+                let passphrase = self.test_passphrase.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
                         "Encrypted identity {did} requires a passphrase. \
                          Set PEKO_IDENTITY_PASSPHRASE or use KeyStorage::with_passphrase()."
-                    ))?;
+                    )
+                })?;
                 EncryptedKeyStorage::retrieve_key(&enc_path, passphrase)
                     .with_context(|| format!("Failed to decrypt key for {did}"))?
             }
             KeyStorageRef::Plaintext => {
-                anyhow::bail!("Identity {did} has Plaintext key_storage — this should have been migrated")
+                anyhow::bail!(
+                    "Identity {did} has Plaintext key_storage — this should have been migrated"
+                )
             }
         };
 
@@ -274,8 +278,12 @@ impl KeyStorage {
         let keychain = KeychainStorage::new();
         let key_storage = if self.test_passphrase.is_some() {
             let enc_path = self.encrypted_key_path(&did);
-            EncryptedKeyStorage::store_key(&enc_path, &legacy.private_key, self.test_passphrase.as_ref().unwrap())
-                .context("Failed to migrate key to encrypted file")?
+            EncryptedKeyStorage::store_key(
+                &enc_path,
+                &legacy.private_key,
+                self.test_passphrase.as_ref().unwrap(),
+            )
+            .context("Failed to migrate key to encrypted file")?
         } else if keychain.is_available() {
             keychain
                 .store_key(&did, &legacy.private_key)
@@ -346,7 +354,9 @@ impl KeyStorage {
                         // Try modern format
                         if let Ok(stored) = serde_json::from_str::<StoredIdentity>(&json) {
                             dids.push(stored.did);
-                        } else if let Ok(legacy) = serde_json::from_str::<LegacyStoredIdentity>(&json) {
+                        } else if let Ok(legacy) =
+                            serde_json::from_str::<LegacyStoredIdentity>(&json)
+                        {
                             dids.push(legacy.did);
                         }
                     }
@@ -473,7 +483,8 @@ mod tests {
     fn test_generate_and_store() {
         let temp_dir = TempDir::new().unwrap();
         let passphrase = SecretString::new("test-passphrase".into());
-        let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
         let identity = storage
             .generate_identity(DIDScope::Local, Some("test"))
@@ -487,7 +498,8 @@ mod tests {
     fn test_store_and_load() {
         let temp_dir = TempDir::new().unwrap();
         let passphrase = SecretString::new("test-passphrase".into());
-        let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
         let identity = Identity::generate(DIDScope::Public, None).unwrap();
         let original_did = identity.did.clone();
@@ -513,7 +525,8 @@ mod tests {
     fn test_list_identities() {
         let temp_dir = TempDir::new().unwrap();
         let passphrase = SecretString::new("test-passphrase".into());
-        let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
         storage.generate_identity(DIDScope::Public, None).unwrap();
         storage
@@ -528,7 +541,8 @@ mod tests {
     fn test_delete_identity() {
         let temp_dir = TempDir::new().unwrap();
         let passphrase = SecretString::new("test-passphrase".into());
-        let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
         let identity = storage.generate_identity(DIDScope::Private, None).unwrap();
         let did = identity.did.clone();
@@ -542,7 +556,8 @@ mod tests {
     fn test_legacy_migration() {
         let temp_dir = TempDir::new().unwrap();
         let passphrase = SecretString::new("migration-passphrase".into());
-        let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
         // Create a legacy plaintext identity file
         let identity = Identity::generate(DIDScope::Public, None).unwrap();
@@ -576,14 +591,20 @@ mod tests {
         // Verify keypair still works after migration
         let message = b"post-migration test";
         let signature = loaded.keypair.as_ref().unwrap().sign(message);
-        assert!(loaded.keypair.as_ref().unwrap().verify(message, &signature).is_ok());
+        assert!(loaded
+            .keypair
+            .as_ref()
+            .unwrap()
+            .verify(message, &signature)
+            .is_ok());
     }
 
     #[test]
     fn test_encrypted_file_fallback() {
         let temp_dir = TempDir::new().unwrap();
         let passphrase = SecretString::new("fallback-passphrase".into());
-        let storage = KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
+        let storage =
+            KeyStorage::with_passphrase(temp_dir.path().to_path_buf(), passphrase).unwrap();
 
         let identity = Identity::generate(DIDScope::Public, None).unwrap();
         let did = identity.did.clone();
@@ -597,7 +618,10 @@ mod tests {
         let enc_path = storage.encrypted_key_path(&did);
         let keychain = KeychainStorage::new();
         if !keychain.is_available() {
-            assert!(enc_path.exists(), "Encrypted key file should exist when keychain is unavailable");
+            assert!(
+                enc_path.exists(),
+                "Encrypted key file should exist when keychain is unavailable"
+            );
         }
 
         // Load should work regardless of where the key ended up

@@ -12,10 +12,10 @@
 //! [`ExportOptions`] and [`Packager`] are retained only for backward
 //! compatibility with team packaging, which still uses the skills layer.
 
+use crate::agents::agent_config::AgentConfig;
 use crate::identity::Identity;
 use crate::registry::packaging::manifest::{AgentLayers, AgentManifest};
 use crate::registry::packaging::types::{compute_digest, ExtensionRef, LayerType};
-use crate::agents::agent_config::AgentConfig;
 use anyhow::Context;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -601,40 +601,46 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_export_options_with_extensions_default_false() {
-        let opts = ExportOptions::default();
-        assert!(!opts.with_extensions);
-    }
+#[test]
+fn test_export_options_with_extensions_default_false() {
+    let opts = ExportOptions::default();
+    assert!(!opts.with_extensions);
+}
 
-    #[test]
-    fn test_compute_layers_includes_extensions_digest() {
-        let mut files = std::collections::HashMap::new();
-        files.insert("config/agent.toml".to_string(), b"[agent]\nname = \"test\"".to_vec());
-        files.insert(
-            "extensions/docker-skill.ext".to_string(),
-            b"fake ext bytes".to_vec(),
-        );
+#[test]
+fn test_compute_layers_includes_extensions_digest() {
+    let mut files = std::collections::HashMap::new();
+    files.insert(
+        "config/agent.toml".to_string(),
+        b"[agent]\nname = \"test\"".to_vec(),
+    );
+    files.insert(
+        "extensions/docker-skill.ext".to_string(),
+        b"fake ext bytes".to_vec(),
+    );
 
-        let layers = Packager::compute_layers(&files).unwrap();
-        assert!(layers.config.is_some());
-        assert!(layers.extensions.is_some());
-        // skills/mcp should not be present in a clean ADR-037 package
-        assert!(layers.skills.is_none());
-        assert!(layers.mcp.is_none());
-    }
+    let layers = Packager::compute_layers(&files).unwrap();
+    assert!(layers.config.is_some());
+    assert!(layers.extensions.is_some());
+    // skills/mcp should not be present in a clean ADR-037 package
+    assert!(layers.skills.is_none());
+    assert!(layers.mcp.is_none());
+}
 
-    #[test]
-    fn test_compute_layers_skills_legacy_backward_compat() {
-        let mut files = std::collections::HashMap::new();
-        files.insert("config/agent.toml".to_string(), b"[agent]\nname = \"test\"".to_vec());
-        files.insert(
-            "skills/legacy-skill/SKILL.md".to_string(),
-            b"# Legacy skill".to_vec(),
-        );
+#[test]
+fn test_compute_layers_skills_legacy_backward_compat() {
+    let mut files = std::collections::HashMap::new();
+    files.insert(
+        "config/agent.toml".to_string(),
+        b"[agent]\nname = \"test\"".to_vec(),
+    );
+    files.insert(
+        "skills/legacy-skill/SKILL.md".to_string(),
+        b"# Legacy skill".to_vec(),
+    );
 
-        let layers = Packager::compute_layers(&files).unwrap();
-        assert!(layers.config.is_some());
-        assert!(layers.skills.is_some());
-        assert!(layers.extensions.is_none());
-    }
+    let layers = Packager::compute_layers(&files).unwrap();
+    assert!(layers.config.is_some());
+    assert!(layers.skills.is_some());
+    assert!(layers.extensions.is_none());
+}

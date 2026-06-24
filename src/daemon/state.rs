@@ -15,10 +15,10 @@ use crate::common::services::{
     AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService, TeamManagementService,
     TeamService,
 };
+use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
-use crate::engine::tool_runtime::ToolRuntime;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -97,7 +97,8 @@ pub struct AppState {
     runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
 
     /// Extension manager for installed extensions (ADR-030 Tier 1)
-    extension_manager: Arc<tokio::sync::RwLock<crate::extensions::framework::manager::ExtensionManager>>,
+    extension_manager:
+        Arc<tokio::sync::RwLock<crate::extensions::framework::manager::ExtensionManager>>,
 
     /// Extension services for built-in extension operations
     extension_services: Arc<crate::extensions::framework::services::Services>,
@@ -442,7 +443,9 @@ impl AppState {
             tracing::info!("Reusing global ExtensionCore initialized by main.rs");
             existing
         } else {
-            use crate::extensions::framework::core::{init_global_core, ExtensionCore, ExtensionServices};
+            use crate::extensions::framework::core::{
+                init_global_core, ExtensionCore, ExtensionServices,
+            };
             use crate::extensions::framework::services::AsyncExecutionRouter;
             let router = AsyncExecutionRouter::with_transport(
                 crate::extensions::framework::services::async_transport::create_local_transport(),
@@ -497,11 +500,13 @@ impl AppState {
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
         // ADR-030: Initialize ExtensionManager for IPC extension operations
-        let ext_storage =
-            crate::extensions::framework::manager::ExtensionStorage::with_dir(data_dir.join("extensions"));
-        let mut ext_manager =
-            crate::extensions::framework::manager::ExtensionManager::with_core(Arc::clone(&global_core))
-                .with_storage_dir(ext_storage.dir().unwrap().to_path_buf());
+        let ext_storage = crate::extensions::framework::manager::ExtensionStorage::with_dir(
+            data_dir.join("extensions"),
+        );
+        let mut ext_manager = crate::extensions::framework::manager::ExtensionManager::with_core(
+            Arc::clone(&global_core),
+        )
+        .with_storage_dir(ext_storage.dir().unwrap().to_path_buf());
 
         // Register adapters (same as CLI create_manager_with_adapters)
         use crate::extensions::gateway::GatewayAdapter;
@@ -525,9 +530,9 @@ impl AppState {
         }
 
         let extension_manager = Arc::new(tokio::sync::RwLock::new(ext_manager));
-        let extension_services = Arc::new(crate::extensions::framework::services::Services::with_core(
-            Arc::clone(&global_core),
-        ));
+        let extension_services = Arc::new(
+            crate::extensions::framework::services::Services::with_core(Arc::clone(&global_core)),
+        );
 
         // ADR-034: Initialize auth components
         let auth_config = crate::auth::config::AuthConfig::load(&path_resolver)?;
@@ -1387,11 +1392,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_init_preserves_pre_registered_tools() {
+        use crate::agents::agent_config::AgentConfig;
         use crate::agents::Agent;
         use crate::extensions::framework::core::init_global_core;
         use crate::extensions::framework::{HookInput, HookPoint};
-        use crate::agents::agent_config::AgentConfig;
-        
 
         let state = create_test_state().await;
         let global_core = state.tool_runtime.extension_core().clone();

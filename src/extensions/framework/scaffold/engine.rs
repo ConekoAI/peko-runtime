@@ -24,7 +24,7 @@ impl Template {
     pub fn render(&self, vars: &HashMap<String, String>) -> String {
         let mut result = self.content.clone();
         for (key, value) in vars {
-            let placeholder = format!("{{{{{}}}}}" , key);
+            let placeholder = format!("{{{{{}}}}}", key);
             result = result.replace(&placeholder, value);
         }
         result

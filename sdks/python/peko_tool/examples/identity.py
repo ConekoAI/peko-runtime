@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Identity tool example using the Pekobot Tool SDK.
+"""Identity tool example using the Peko Tool SDK.
 
 This demonstrates context injection by echoing back the injected identity.
 """
 
-from pekobot_tool import tool
+from peko_tool import tool
 
 
 @tool(
@@ -22,7 +22,7 @@ def identity_tool(
     """Echo back the injected identity parameters.
     
     This tool is useful for verifying that context injection is working correctly.
-    The reserved parameters are injected by Pekobot at runtime.
+    The reserved parameters are injected by Peko at runtime.
     
     Args:
         message: Optional message to echo back

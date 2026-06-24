@@ -188,6 +188,10 @@ mod tests {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let drained = queue.drain().await;
-        assert_eq!(drained.len(), 100, "contended pushes must not be silently dropped");
+        assert_eq!(
+            drained.len(),
+            100,
+            "contended pushes must not be silently dropped"
+        );
     }
 }

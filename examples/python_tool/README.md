@@ -1,12 +1,12 @@
 # Universal Tool Example - Python
 
-This example demonstrates the Pekobot Universal Tool Protocol with a Python tool.
+This example demonstrates the Peko Universal Tool Protocol with a Python tool.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Pekobot (Rust)                                              │
+│  Peko (Rust)                                              │
 │  ┌─────────────────┐     ┌──────────────────────────────┐  │
 │  │ UniversalTool   │────▶│ JSON-RPC over stdio          │  │
 │  │ Adapter         │     │                              │  │
@@ -17,7 +17,7 @@ This example demonstrates the Pekobot Universal Tool Protocol with a Python tool
 ┌─────────────────────────────────────────────────────────────┐
 │  Python Tool (query_tool.py)                                 │
 │  ┌─────────────────┐     ┌──────────────────────────────┐  │
-│  │ pekobot_adapter │────▶│ User's function              │  │
+│  │ peko_adapter │────▶│ User's function              │  │
 │  │ (protocol only) │     │ (business logic only)        │  │
 │  └─────────────────┘     └──────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
@@ -27,14 +27,14 @@ This example demonstrates the Pekobot Universal Tool Protocol with a Python tool
 
 | File | Purpose |
 |------|---------|
-| `pekobot_adapter.py` | Protocol handler (reusable library) |
+| `peko_adapter.py` | Protocol handler (reusable library) |
 | `query_tool.py` | Example tool implementation |
 | `query_tool.json` | Manifest with reserved params |
 
 ## Key Design Principles
 
 ### 1. Single Responsibility
-- **Pekobot Adapter (Rust)**: Transport + injection only
+- **Peko Adapter (Rust)**: Transport + injection only
 - **Python Adapter**: Protocol parsing only
 - **User's Function**: Business logic only
 
@@ -48,7 +48,7 @@ The LLM sees only:
 But the function receives:
 ```python
 def query_database(query, limit, session_id, agent_id, workspace):
-    # session_id, agent_id, workspace are injected by Pekobot
+    # session_id, agent_id, workspace are injected by Peko
 ```
 
 This is declared in the manifest:
@@ -111,10 +111,10 @@ python3 query_tool.py
 {"jsonrpc": "2.0", "id": "2", "method": "tool/execute", "params": {"tool": "query_database", "args": {"query": "test"}, "context": {"session_id": "s1", "agent_id": "a1", "workspace": "/tmp"}}}
 ```
 
-### With Pekobot (when integrated)
+### With Peko (when integrated)
 
 ```rust
-use pekobot::extensions::universal::{load_tools_from_directory, DiscoveredUniversalTool};
+use peko::extensions::universal::{load_tools_from_directory, DiscoveredUniversalTool};
 
 let tools: Vec<DiscoveredUniversalTool> =
     load_tools_from_directory("./examples/python_tool").await;
@@ -124,7 +124,7 @@ let tools: Vec<DiscoveredUniversalTool> =
 ## Creating Your Own Tool
 
 ```python
-from pekobot_adapter import tool
+from peko_adapter import tool
 
 @tool(
     name="my_tool",

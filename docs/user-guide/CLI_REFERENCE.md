@@ -1,6 +1,6 @@
-# Pekobot CLI Reference
+# Peko CLI Reference
 
-Complete reference for the Pekobot command-line interface.
+Complete reference for the Peko command-line interface.
 
 ## Global Options
 
@@ -329,7 +329,7 @@ peko session compact my-agent --session-id sess_xxx
 
 ### `config` — Configuration Management
 
-Manage Pekobot configuration.
+Manage Peko configuration.
 
 ```bash
 peko config <COMMAND>
@@ -398,7 +398,7 @@ peko system clean
 
 ### `daemon` — Daemon Management
 
-Manage the Pekobot daemon (for cron job execution).
+Manage the Peko daemon (for cron job execution).
 
 ```bash
 peko daemon <COMMAND>
@@ -520,9 +520,9 @@ peko provider <COMMAND>
 
 ---
 
-### `update` — Update Pekobot
+### `update` — Update Peko
 
-Update Pekobot to the latest version.
+Update Peko to the latest version.
 
 ```bash
 peko update [--check]

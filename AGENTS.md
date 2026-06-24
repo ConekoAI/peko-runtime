@@ -1,6 +1,6 @@
-# Pekobot — Agent Guide
+# Peko — Agent Guide
 
-> **Project:** Pekobot  
+> **Project:** Peko  
 > **Version:** 0.1.0 (source of truth: `Cargo.toml`)  
 > **Language:** Rust (Edition 2021)  
 > **License:** MIT
@@ -9,7 +9,7 @@
 
 ## Project Overview
 
-Pekobot is a Rust-based multi-agent runtime with a unified extension architecture. It provides:
+Peko is a Rust-based multi-agent runtime with a unified extension architecture. It provides:
 
 - **Agent harness** with turn-based agentic loops (LLM → tool execution → respond)
 - **HTTP API daemon** (default `localhost:11435`) with SSE streaming and WebSocket support

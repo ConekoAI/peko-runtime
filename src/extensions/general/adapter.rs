@@ -278,7 +278,9 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
                     {
                         manifest.set(
                             key,
-                            crate::extensions::framework::adapters::parsing::yaml_to_json(v.clone()),
+                            crate::extensions::framework::adapters::parsing::yaml_to_json(
+                                v.clone(),
+                            ),
                         );
                     }
                 }
@@ -382,7 +384,9 @@ impl HookHandlerFactory for GeneralHandlerFactory {
         Box::new(GeneralHandler {
             handler_name: self.handler_name.clone(),
             hook_type: self.hook_type.clone(),
-            extension_id: crate::extensions::framework::types::ExtensionId::new(&self.manifest.id.0),
+            extension_id: crate::extensions::framework::types::ExtensionId::new(
+                &self.manifest.id.0,
+            ),
         })
     }
 }
@@ -542,7 +546,8 @@ pub async fn register_general_extensions_with_core(
 
         for binding in bindings {
             let handler = binding.handler_factory.create(ext.manifest.clone());
-            let handler_arc: Arc<dyn crate::extensions::framework::core::HookHandler> = Arc::from(handler);
+            let handler_arc: Arc<dyn crate::extensions::framework::core::HookHandler> =
+                Arc::from(handler);
 
             if let Err(e) = core
                 .register_hook(binding.point, handler_arc, &extension_id)

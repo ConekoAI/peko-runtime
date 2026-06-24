@@ -9,7 +9,7 @@ use rand::RngCore;
 /// Generate a fresh runtime identity: returns `(did:key:…, signing_key)`.
 ///
 /// The DID encodes the Ed25519 public key with the multicodec prefix
-/// `0xed 0x01` and base58btc, matching what `pekobot::identity` produces.
+/// `0xed 0x01` and base58btc, matching what `peko::identity` produces.
 pub fn generate_runtime_identity() -> (String, SigningKey) {
     let mut rng = rand::thread_rng();
     let mut secret = [0u8; 32];

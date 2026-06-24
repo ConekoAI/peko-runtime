@@ -1,6 +1,6 @@
 # Tutorial: Building Your First Agent
 
-In this tutorial, you'll build your first Pekobot agent using the CLI. By the end, you'll have a working agent that can process tasks and store conversations.
+In this tutorial, you'll build your first Peko agent using the CLI. By the end, you'll have a working agent that can process tasks and store conversations.
 
 ## Table of Contents
 
@@ -21,7 +21,7 @@ Before starting, ensure you have:
 
 - Rust 1.70+ installed (`rustc --version`)
 - An API key for an LLM provider (OpenAI, Anthropic, Kimi, or Ollama)
-- Pekobot built from source (see [Getting Started](GETTING_STARTED.md))
+- Peko built from source (see [Getting Started](GETTING_STARTED.md))
 
 ---
 
@@ -37,7 +37,7 @@ export OPENAI_API_KEY="sk-..."
 peko agent create my-first-agent --provider minimax
 ```
 
-This creates an agent configuration in Pekobot's config directory with the following structure:
+This creates an agent configuration in Peko's config directory with the following structure:
 
 ```
 my-first-agent/
@@ -247,7 +247,7 @@ peko cron remove --id <job-id>
 
 ## What's Next?
 
-Congratulations! You've built your first Pekobot agent. Here are some things to try next:
+Congratulations! You've built your first Peko agent. Here are some things to try next:
 
 ### 1. Explore Extensions
 
@@ -307,7 +307,7 @@ peko system clean
 
 ### 5. Read More
 
-- [User Guide](../user-guide/USERS_GUIDE.md) — Comprehensive guide to Pekobot
+- [User Guide](../user-guide/USERS_GUIDE.md) — Comprehensive guide to Peko
 - [CLI Reference](../user-guide/CLI_REFERENCE.md) — Command-line documentation
 - [Extension System](../architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
 

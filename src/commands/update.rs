@@ -1,4 +1,4 @@
-//! Update command - Self-update functionality for Pekobot
+//! Update command - Self-update functionality for Peko
 
 use anyhow::{Context, Result};
 use std::process::Command;
@@ -27,7 +27,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     println!("   Latest version:  v{latest_version}");
 
     if current_version == latest_version && !force {
-        println!("✅ Pekobot is up to date!");
+        println!("✅ Peko is up to date!");
         return Ok(());
     }
 

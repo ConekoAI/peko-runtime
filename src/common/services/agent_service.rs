@@ -7,6 +7,7 @@
 //! Agents are first-class citizens and team membership is managed separately
 //! via `memberships.toml` files.
 
+use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
 use crate::commands::agent_bootstrap::AgentBootstrap;
 use crate::common::identifiers::{
     parse_agent_identifier_with_override, validate_agent_name, ValidationError,
@@ -31,7 +32,6 @@ use crate::extensions::mcp::McpAdapter;
 use crate::extensions::skill::SkillAdapter;
 use crate::extensions::universal::UniversalToolAdapter;
 use crate::identity::Identity;
-use crate::registry::AgentRegistry;
 use crate::registry::client::{ProgressEvent, RegistryClient, RegistryRef, ResourceType};
 use crate::registry::config::RegistryConfig;
 use crate::registry::manifest::RegistryManifest;
@@ -41,7 +41,7 @@ use crate::registry::packaging::{get_package_info, PackageInfo};
 use crate::registry::packaging::{
     ExportOptions as PortableExportOptions, ExtensionRef, ImportOptions as PortableImportOptions,
 };
-use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
+use crate::registry::AgentRegistry;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Read;
@@ -55,9 +55,9 @@ async fn resolve_extension_refs(
     config: &AgentConfig,
     extensions_dir: &std::path::Path,
 ) -> Vec<ExtensionRef> {
+    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::framework::core::global_core;
     use crate::extensions::framework::manager::{ExtensionManager, ExtensionStorage};
-    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::gateway::GatewayAdapter;
     use crate::extensions::general::GeneralExtensionAdapter;
     use crate::extensions::mcp::McpAdapter;
@@ -73,7 +73,9 @@ async fn resolve_extension_refs(
     let core = match global_core() {
         Some(c) => c,
         None => {
-            tracing::warn!("Global ExtensionCore not initialized; skipping extension ref resolution");
+            tracing::warn!(
+                "Global ExtensionCore not initialized; skipping extension ref resolution"
+            );
             return Vec::new();
         }
     };
@@ -130,7 +132,10 @@ async fn resolve_extension_refs(
             }
             None => {
                 // Unknown — may be a built-in alias or missing extension
-                tracing::debug!("Could not resolve enabled extension '{}' to an installed extension", tool_name);
+                tracing::debug!(
+                    "Could not resolve enabled extension '{}' to an installed extension",
+                    tool_name
+                );
             }
         }
     }
@@ -147,12 +152,12 @@ async fn build_embedded_extensions(
     extension_refs: &[ExtensionRef],
     extensions_dir: &std::path::Path,
 ) -> HashMap<String, Vec<u8>> {
+    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::framework::core::global_core;
     use crate::extensions::framework::manager::{
         packaging::ExtensionPackager, ExtensionManager, ExtensionStorage,
     };
     use crate::extensions::framework::types::ExtensionId;
-    use crate::extensions::builtin::{BuiltinToolAdapter, BuiltinToolRegistrarConfig};
     use crate::extensions::gateway::GatewayAdapter;
     use crate::extensions::general::GeneralExtensionAdapter;
     use crate::extensions::mcp::McpAdapter;
@@ -164,7 +169,9 @@ async fn build_embedded_extensions(
     let core = match global_core() {
         Some(c) => c,
         None => {
-            tracing::warn!("Global ExtensionCore not initialized; skipping embedded extension build");
+            tracing::warn!(
+                "Global ExtensionCore not initialized; skipping embedded extension build"
+            );
             return embedded;
         }
     };
@@ -422,9 +429,7 @@ impl AgentService {
         // they understand the catalog concept.
         let catalog_path = self.resolver.config_dir().join("providers.toml");
         let provider_id = request.provider.clone();
-        if let Ok(catalog) =
-            crate::providers::ProviderCatalog::load_or_init(&catalog_path).await
-        {
+        if let Ok(catalog) = crate::providers::ProviderCatalog::load_or_init(&catalog_path).await {
             let enabled = catalog.list_enabled().await;
             if !enabled.is_empty() && catalog.get_enabled(&provider_id).await.is_none() {
                 let available = enabled
@@ -771,8 +776,14 @@ impl AgentService {
         // up in `peko agent list` (which scans `<config>/agents/`).
         // Phase D3 flow 5 is the first end-to-end test that exercised
         // this code path and surfaced the regression.
-        let config_dir = self.resolver.agents_root_dir().parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.resolver.agents_root_dir());
-        let unpackager = crate::registry::packaging::Unpackager::new(file_path).with_base_dir(&config_dir);
+        let config_dir = self
+            .resolver
+            .agents_root_dir()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.resolver.agents_root_dir());
+        let unpackager =
+            crate::registry::packaging::Unpackager::new(file_path).with_base_dir(&config_dir);
 
         // Import the package
         let result = match unpackager.import(import_opts).await {
@@ -799,10 +810,7 @@ impl AgentService {
     }
 
     /// Inspect an agent package and return lightweight metadata.
-    pub async fn inspect_agent_package(
-        &self,
-        file_path: impl AsRef<Path>,
-    ) -> Result<PackageInfo> {
+    pub async fn inspect_agent_package(&self, file_path: impl AsRef<Path>) -> Result<PackageInfo> {
         let file_path = file_path.as_ref();
         if !file_path.exists() {
             anyhow::bail!("File not found: {}", file_path.display());
@@ -826,7 +834,8 @@ impl AgentService {
         registry.init().await?;
 
         let agent_manifest = if let Some(file_path) = file {
-            self.load_agent_file_into_registry(file_path, &registry).await?
+            self.load_agent_file_into_registry(file_path, &registry)
+                .await?
         } else {
             registry
                 .get_manifest_by_tag(local_tag)
@@ -839,7 +848,9 @@ impl AgentService {
             cli_registry.or(Some(&self.registry_config().default)),
             Some(ResourceType::Agent),
         )?;
-        let config = self.resolve_registry_config(cli_registry, &reg_ref.host).await?;
+        let config = self
+            .resolve_registry_config(cli_registry, &reg_ref.host)
+            .await?;
 
         let registry_manifest = self
             .agent_to_registry_manifest(&agent_manifest, &registry, registry_ref)
@@ -848,7 +859,8 @@ impl AgentService {
 
         let client = RegistryClient::new(config, registry.clone());
 
-        self.store_registry_manifest_for_client(&registry, &registry_manifest).await?;
+        self.store_registry_manifest_for_client(&registry, &registry_manifest)
+            .await?;
 
         let push_tag = if file.is_some() {
             "<file>".to_string()
@@ -893,7 +905,9 @@ impl AgentService {
             cli_registry.or(Some(&self.registry_config().default)),
             Some(ResourceType::Agent),
         )?;
-        let config = self.resolve_registry_config(cli_registry, &reg_ref.host).await?;
+        let config = self
+            .resolve_registry_config(cli_registry, &reg_ref.host)
+            .await?;
 
         let client = RegistryClient::new(config, agent_registry.clone());
         let resolved_ref = reg_ref.full_ref();
@@ -938,7 +952,8 @@ impl AgentService {
         });
 
         // Inspect the temp package to read manifest extensions before import.
-        let (agent_manifest, _) = crate::registry::packaging::inspect_agent(&temp_path, None).await?;
+        let (agent_manifest, _) =
+            crate::registry::packaging::inspect_agent(&temp_path, None).await?;
         let extension_refs = agent_manifest.extensions;
 
         let import_opts = AgentImportOptions {
@@ -1041,8 +1056,7 @@ impl AgentService {
         // Remove existing grant for same subject+permission
         let grant_disc = std::mem::discriminant(&grant.permission);
         config.permissions.retain(|g| {
-            !(g.subject == grant.subject
-                && std::mem::discriminant(&g.permission) == grant_disc)
+            !(g.subject == grant.subject && std::mem::discriminant(&g.permission) == grant_disc)
         });
         config.permissions.push(grant);
 
@@ -1162,7 +1176,8 @@ cron.json
                         std::collections::BTreeMap::new();
                     for (path, content) in &files {
                         if path.starts_with(&format!("{prefix}/")) {
-                            let layer_path = path.strip_prefix(&format!("{prefix}/")).unwrap_or(path);
+                            let layer_path =
+                                path.strip_prefix(&format!("{prefix}/")).unwrap_or(path);
                             layer_files.insert(layer_path.to_string(), content.clone());
                         }
                     }
@@ -1170,8 +1185,10 @@ cron.json
                     if !layer_files.is_empty() {
                         let mut buf = Vec::new();
                         {
-                            let enc =
-                                flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+                            let enc = flate2::write::GzEncoder::new(
+                                &mut buf,
+                                flate2::Compression::default(),
+                            );
                             let mut tar = tar::Builder::new(enc);
                             for (path, content) in layer_files {
                                 let mut header = tar::Header::new_gnu();
@@ -1281,7 +1298,8 @@ cron.json
             let config_path = registry.layer_path(&registry_manifest.config.digest);
             if let Ok(bytes) = std::fs::read(&config_path) {
                 if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    if let Some(toml_str) = json.get("agent_manifest_toml").and_then(|v| v.as_str()) {
+                    if let Some(toml_str) = json.get("agent_manifest_toml").and_then(|v| v.as_str())
+                    {
                         if let Ok(manifest) = AgentManifest::from_toml(toml_str) {
                             return manifest;
                         }
@@ -1486,15 +1504,32 @@ mod tests {
     /// in-memory `Arc<ProviderCatalog>`s would not share state.
     async fn seed_test_catalog(resolver: &PathResolver) {
         use crate::providers::catalog::{
-            ApiFormat, ModelInfo, ProviderCatalogFile, ProviderCatalogEntry,
+            ApiFormat, ModelInfo, ProviderCatalogEntry, ProviderCatalogFile,
         };
         let catalog_path = resolver.config_dir().join("providers.toml");
         if let Some(parent) = catalog_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let entries = [("minimax", ApiFormat::AnthropicMessages, "https://api.minimaxi.com/anthropic", "MiniMax-M3"),
-            ("openai", ApiFormat::OpenaiCompletions, "https://api.openai.com/v1", "gpt-4o-mini"),
-            ("anthropic", ApiFormat::AnthropicMessages, "https://api.anthropic.com", "claude-3-5-sonnet-latest")];
+        let entries = [
+            (
+                "minimax",
+                ApiFormat::AnthropicMessages,
+                "https://api.minimaxi.com/anthropic",
+                "MiniMax-M3",
+            ),
+            (
+                "openai",
+                ApiFormat::OpenaiCompletions,
+                "https://api.openai.com/v1",
+                "gpt-4o-mini",
+            ),
+            (
+                "anthropic",
+                ApiFormat::AnthropicMessages,
+                "https://api.anthropic.com",
+                "claude-3-5-sonnet-latest",
+            ),
+        ];
         let now = chrono::Utc::now();
         let provider_entries: std::collections::BTreeMap<String, ProviderCatalogEntry> = entries
             .iter()
@@ -1735,8 +1770,14 @@ mod tests {
         // As of v3, the model is a soft hint, not an embedded provider
         // field. `agent update --model X` populates `preferred_model_id`.
         assert_eq!(info.config.preferred_model_id.as_deref(), Some("mini-4"));
-        assert_eq!(info.config.description.as_deref(), Some("Agent for testing"));
-        assert_eq!(info.system_prompt.as_deref(), Some("You are a test assistant."));
+        assert_eq!(
+            info.config.description.as_deref(),
+            Some("Agent for testing")
+        );
+        assert_eq!(
+            info.system_prompt.as_deref(),
+            Some("You are a test assistant.")
+        );
         assert!(info
             .config
             .prompt

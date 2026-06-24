@@ -8,9 +8,7 @@ pub mod async_router;
 pub mod async_transport;
 
 // Re-export main types for convenience
-pub use async_router::{
-    AsyncExecutionRouter, ToolExecutionContext, DEFAULT_TOOL_TIMEOUT_SECS,
-};
+pub use async_router::{AsyncExecutionRouter, ToolExecutionContext, DEFAULT_TOOL_TIMEOUT_SECS};
 pub use async_transport::{
     create_local_transport, create_transport, AsyncTaskTransport, DaemonIpcTransport,
     LocalAsyncTransport, UnavailableAsyncTransport,

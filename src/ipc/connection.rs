@@ -32,14 +32,11 @@ use tokio::net::UdpSocket;
 use tokio::net::UnixDatagram;
 use tracing::debug;
 
-use super::{
-    default_socket_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST,
-    DEFAULT_PORT,
-};
 #[cfg(test)]
 use super::default_pid_path;
 #[cfg(windows)]
 use super::{default_pipe_name, DAEMON_PIPE_ENV};
+use super::{default_socket_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
 
 /// Platform-specific socket handle
 ///
@@ -255,11 +252,8 @@ impl ConnectionManager {
         {
             let default_sock = default_socket_path();
             debug!("Trying default Unix socket: {}", default_sock.display());
-            if let Ok(handle) = Self::connect_unix_with_timeout(
-                &default_sock.to_string_lossy(),
-                ping_timeout,
-            )
-            .await
+            if let Ok(handle) =
+                Self::connect_unix_with_timeout(&default_sock.to_string_lossy(), ping_timeout).await
             {
                 return Ok(handle);
             }
@@ -337,9 +331,12 @@ impl ConnectionManager {
 
         let name_for_blocking = name.clone();
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<NamedPipeHandle> {
-            let client = tokio::net::windows::named_pipe::ClientOptions::new()
-                .open(&name_for_blocking)?;
-            Ok(NamedPipeHandle { client, name: name_for_blocking })
+            let client =
+                tokio::net::windows::named_pipe::ClientOptions::new().open(&name_for_blocking)?;
+            Ok(NamedPipeHandle {
+                client,
+                name: name_for_blocking,
+            })
         });
 
         let mut handle = match tokio::time::timeout(timeout, join).await {
