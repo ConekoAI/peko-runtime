@@ -16,7 +16,7 @@ pub mod task_file;
 pub mod types;
 
 pub use completion_queue::{
-    AsyncTaskCompletionQueue, CompletionEvent, SharedAsyncTaskCompletionQueue,
+    CompletionEvent, InboxItem, SessionInbox, SharedSessionInbox, SteeringMessage,
 };
 pub use delivery::{
     build_completion_event, CallbackDelivery, ChannelDelivery, DefaultResultFormatter,

@@ -444,6 +444,71 @@ impl DaemonClient {
             None => anyhow::bail!("Auth status stream closed unexpectedly"),
         }
     }
+
+    /// Enqueue a user steering message for the given session. Returns
+    /// a `PacketStream`; the first packet is `MessageQueued`
+    /// (followed by the auto-triggered run's events if
+    /// `run_triggered = true`, or by `Done` if `run_triggered = false`).
+    ///
+    /// # Errors
+    /// Returns error if the request cannot be sent.
+    pub async fn steer_session(
+        &self,
+        session_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> anyhow::Result<PacketStream> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::SessionSteer {
+            request_id,
+            session_id: session_id.into(),
+            content: content.into(),
+        };
+        self.send_request(packet).await
+    }
+
+    /// List pending steering messages for a session.
+    ///
+    /// # Errors
+    /// Returns error if the request cannot be sent or the daemon
+    /// responds with `Error`.
+    pub async fn steer_session_list(
+        &self,
+        session_id: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::SessionSteerList {
+            request_id,
+            session_id: session_id.into(),
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("SessionSteerList stream closed unexpectedly"),
+        }
+    }
+
+    /// Best-effort cancel of a queued steering message by id.
+    ///
+    /// # Errors
+    /// Returns error if the request cannot be sent or the daemon
+    /// responds with `Error`.
+    pub async fn steer_session_cancel(
+        &self,
+        session_id: impl Into<String>,
+        message_id: uuid::Uuid,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::SessionSteerCancel {
+            request_id,
+            session_id: session_id.into(),
+            message_id,
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("SessionSteerCancel stream closed unexpectedly"),
+        }
+    }
 }
 
 #[cfg(test)]

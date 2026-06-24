@@ -15,7 +15,8 @@ use crate::agents::prompt::SystemPromptService;
 use crate::agents::Agent;
 use crate::common::types::message::{ContentBlock, LlmMessage};
 use crate::engine::{AgenticEvent, LifecyclePhase};
-use crate::extensions::framework::async_exec::executor::SharedAsyncTaskCompletionQueue;
+use crate::extensions::framework::async_exec::executor::completion_queue::InboxItem;
+use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
 use crate::providers::{ChatOptions, MessageRole, StopReason, TokenUsage, ToolDefinition};
 use crate::session::Session;
 use anyhow::Result;
@@ -65,7 +66,7 @@ pub struct AgenticLoop {
     /// Per-session queue of completed async tasks, drained at the start
     /// of each `run_inner` iteration. Surfaced to the LLM as a
     /// synthetic user-role message containing all queued completions.
-    async_completion_queue: Option<SharedAsyncTaskCompletionQueue>,
+    async_completion_queue: Option<SharedSessionInbox>,
 }
 
 impl AgenticLoop {
@@ -108,7 +109,7 @@ impl AgenticLoop {
     /// and synthesizes a single user-role message containing all
     /// completions since the last iteration.
     #[must_use]
-    pub fn with_async_completion_queue(mut self, queue: SharedAsyncTaskCompletionQueue) -> Self {
+    pub fn with_async_completion_queue(mut self, queue: SharedSessionInbox) -> Self {
         self.async_completion_queue = Some(queue);
         self
     }
@@ -244,6 +245,99 @@ impl AgenticLoop {
             .await
     }
 
+    /// Like [`Self::run_streaming_with_resume`] but skips the user-message
+    /// persistence step. Used by the steering path: the IPC handler has
+    /// already called `session.add_user(content)` to persist the queued
+    /// steering message, so the loop must not add it again.
+    ///
+    /// The actual steering content reaches the LLM via the inbox drain
+    /// at the start of `run_inner`'s first iteration: any pending
+    /// `InboxItem::Steering` items are pushed onto `messages` as
+    /// `LlmMessage::user(...)` turns, in arrival order. Persistence is
+    /// already done; only the in-memory copy is materialized here.
+    pub async fn run_streaming_with_resume_skip_user_add(
+        &self,
+        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+        session: Arc<RwLock<Session>>,
+        history: Option<Vec<LlmMessage>>,
+        streaming_config: crate::engine::OrchestratorConfig,
+    ) -> Result<AgenticResult> {
+        let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
+
+        let session_id = {
+            let s = session.read().await;
+            s.id.clone()
+        };
+        info!("Using session: {}", session_id);
+
+        // Emit start event
+        on_event(AgenticEvent::Lifecycle {
+            run_id: run_id.clone(),
+            phase: LifecyclePhase::Start,
+            error: None,
+        });
+
+        info!(
+            "Starting v4 streaming agentic loop for agent: {} (session: {}) [skip-user-add, steering path]",
+            self.agent.name(),
+            session_id
+        );
+
+        // Build messages - either from history or fresh start
+        let messages = if let Some(h) = history {
+            info!("Loaded {} messages from history", h.len());
+            let has_system = h
+                .first()
+                .is_some_and(|m| matches!(m.role, MessageRole::System));
+            if has_system {
+                h
+            } else {
+                let mut msgs = vec![LlmMessage {
+                    role: MessageRole::System,
+                    content: vec![ContentBlock::Text {
+                        text: self.system_prompt.clone(),
+                    }],
+                    timestamp: Utc::now(),
+                    metadata: HashMap::new(),
+                    tool_call_id: None,
+                }];
+                msgs.extend(h);
+
+                {
+                    let mut s = session.write().await;
+                    s.add_system(&self.system_prompt).await?;
+                }
+
+                msgs
+            }
+        } else {
+            let msgs = vec![LlmMessage {
+                role: MessageRole::System,
+                content: vec![ContentBlock::Text {
+                    text: self.system_prompt.clone(),
+                }],
+                timestamp: Utc::now(),
+                metadata: HashMap::new(),
+                tool_call_id: None,
+            }];
+
+            {
+                let mut s = session.write().await;
+                s.add_system(&self.system_prompt).await?;
+            }
+
+            msgs
+        };
+
+        // No `messages.push(LlmMessage::user(...))` and no `s.add_user(...)`
+        // here. The user turn was persisted by the IPC handler; the
+        // steering content is delivered to the LLM at iteration start
+        // by the inbox drain inside `run_inner`.
+
+        self.run_inner(messages, session, on_event, run_id, streaming_config)
+            .await
+    }
+
     /// Original run method - creates new session via `SessionManager`
     pub async fn run(
         &self,
@@ -354,16 +448,44 @@ impl AgenticLoop {
             let mut iteration_usage = TokenUsage::default();
             info!("Agent loop: iteration {}", iteration);
 
-            // NEW: drain completed async tasks for this session and
-            // inject them as a synthetic user-role message. Runs at
-            // the start of every iteration, so completions that arrive
-            // mid-iteration wait for the next one.
-            if let Some(ref queue) = self.async_completion_queue {
-                let events = queue.drain().await;
-                if let Some(msg) =
-                    super::async_completion::build_async_completion_message(&events, &session_id)
-                {
+            // Drain the per-session inbox and inject its contents at the
+            // start of every iteration. Two kinds of items:
+            //
+            // - `Completion` events from background async tasks →
+            //   folded into a single synthetic user-role message via
+            //   `build_async_completion_message` (existing behavior).
+            // - `Steering` messages queued by the user via IPC →
+            //   delivered as separate user-role turns in arrival
+            //   order. The IPC handler has already persisted them via
+            //   `session.add_user`; this loop only pushes the
+            //   in-memory copy so the LLM sees them this iteration.
+            //
+            // Runs at the start of every iteration, so events that
+            // arrive mid-iteration wait for the next one.
+            if let Some(ref inbox) = self.async_completion_queue {
+                let items = inbox.drain_all().await;
+                let mut completions = Vec::new();
+                let mut steering = Vec::new();
+                for item in items {
+                    match item {
+                        InboxItem::Completion(e) => completions.push(e),
+                        InboxItem::Steering(m) => steering.push(m),
+                    }
+                }
+                if let Some(msg) = super::async_completion::build_async_completion_message(
+                    &completions,
+                    &session_id,
+                ) {
                     messages.push(msg);
+                }
+                for msg in steering {
+                    debug!(
+                        "AgenticLoop: injecting queued steering message {} ({} bytes) at iteration {}",
+                        msg.id,
+                        msg.content.len(),
+                        iteration,
+                    );
+                    messages.push(LlmMessage::user(msg.content));
                 }
             }
 
@@ -1337,9 +1459,9 @@ mod tests {
     async fn test_e2e_async_completion_reaches_llm_real() {
         use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
         use crate::extensions::framework::async_exec::executor::{
-            AsyncTaskCompletionQueue, AsyncTaskStatus, CompletionEvent,
-            SharedAsyncTaskCompletionQueue,
+            AsyncTaskStatus, CompletionEvent,
         };
+        use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
         use chrono::Utc;
 
         crate::identity::init_test_env();
@@ -1354,8 +1476,7 @@ mod tests {
 
         // Build the queue the same way `Agent::build_agentic_loop` does:
         // shared between the executor and the agentic loop.
-        let queue: SharedAsyncTaskCompletionQueue =
-            std::sync::Arc::new(AsyncTaskCompletionQueue::new());
+        let queue: SharedSessionInbox = std::sync::Arc::new(crate::extensions::framework::async_exec::executor::SessionInbox::new());
         let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core.clone())
             .await
             .with_async_completion_queue(queue.clone());
@@ -1451,6 +1572,114 @@ mod tests {
             core_key,
             Some(session_id.clone()),
             "core's session key for this agent must match the loop's session id after run_inner bootstrap"
+        );
+    }
+
+    // ===================================================================
+    // End-to-end: push a SteeringMessage to the inbox → loop delivers
+    // it to the LLM as a user-role turn at the next iteration.
+    //
+    // Mirrors the e2e completion test above but exercises the new
+    // steering half of the inbox split.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_e2e_steering_message_reaches_llm_real() {
+        use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
+        use crate::extensions::framework::async_exec::executor::completion_queue::{
+            SessionInbox, SharedSessionInbox, SteeringMessage,
+        };
+        use crate::extensions::framework::async_exec::executor::AsyncTaskStatus;
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("Got the steering.");
+
+        let config = test_agent_config("e2e-steering-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+
+        let queue: SharedSessionInbox = std::sync::Arc::new(SessionInbox::new());
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core.clone())
+            .await
+            .with_async_completion_queue(queue.clone());
+
+        // Pre-push a steering message AND a completion event. They
+        // must arrive in insertion order, with the steering item
+        // delivered as a plain user-role message and the completion
+        // event folded into the synthetic user message.
+        let session = test_session("e2e-steering-agent", temp_dir.path()).await;
+        let session_id = session.read().await.id.clone();
+
+        queue.push(SteeringMessage::new("actually do X instead"));
+        queue.push(crate::extensions::framework::async_exec::executor::CompletionEvent {
+            task_id: "shell:steer-test".to_string(),
+            tool_name: "shell".to_string(),
+            result: serde_json::json!({"exit_code": 0}),
+            status: AsyncTaskStatus::Completed {
+                result: crate::tools::core::ToolResult::success(
+                    serde_json::json!({"exit_code": 0}),
+                ),
+            },
+            completed_at: chrono::Utc::now(),
+            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
+            parent_session_key: session_id.clone(),
+        });
+
+        let result = loop_
+            .run_with_resume("Trigger steering drain", |_| {}, session, None)
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "agentic loop should succeed: {:?}",
+            result.err()
+        );
+        let recorded = mock.recorded_requests();
+        assert!(
+            !recorded.is_empty(),
+            "mock should have recorded at least one request"
+        );
+
+        let req = &recorded[0];
+
+        // The steering content must appear in the recorded messages
+        // as a user-role turn with no tool-result wrapping.
+        let steering_msg: Option<&LlmMessage> = req.messages.iter().find(|m| {
+            matches!(m.role, MessageRole::User)
+                && m.content.iter().any(|b| {
+                    if let CB::Text { text } = b {
+                        text == "actually do X instead"
+                    } else {
+                        false
+                    }
+                })
+        });
+        assert!(
+            steering_msg.is_some(),
+            "expected a user-role message with the steering content in: {:?}",
+            req.messages
+                .iter()
+                .map(|m| format!("{:?} -> {:?}", m.role, m.content))
+                .collect::<Vec<_>>()
+        );
+
+        // The synthetic completion message must still be present.
+        let synthetic_msg: Option<&LlmMessage> = req.messages.iter().find(|m| {
+            matches!(m.role, MessageRole::User)
+                && m.content.iter().any(|b| {
+                    if let CB::Text { text } = b {
+                        text.contains("Async task results")
+                    } else {
+                        false
+                    }
+                })
+        });
+        assert!(
+            synthetic_msg.is_some(),
+            "expected the synthetic user message with the Async task results header"
         );
     }
 }

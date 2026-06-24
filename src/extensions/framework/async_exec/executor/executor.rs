@@ -1,8 +1,6 @@
 //! Unified executor for all async tool operations
 
-use super::completion_queue::{
-    AsyncTaskCompletionQueue, CompletionEvent, SharedAsyncTaskCompletionQueue,
-};
+use super::completion_queue::{CompletionEvent, InboxItem};
 use super::delivery::{QueueDelivery, ResultDelivery};
 use super::queue::{AsyncResultQueueManager, SharedAsyncResultQueueManager};
 use super::registry::{AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata};
@@ -10,6 +8,7 @@ use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, DeliveryTarget, WaitResult,
 };
+use crate::session::InboxRegistry;
 use crate::tools::core::ToolResult;
 use anyhow::Result;
 use serde_json::Value;
@@ -44,13 +43,18 @@ pub struct AsyncExecutor {
     default_delivery: DeliveryTarget,
     /// Task file writer for disk-based polling
     task_file_writer: Option<TaskFileWriter>,
-    /// Per-session queue of completed tasks (read by agentic loop).
-    /// Default-constructed if not provided; safe to use without setup.
-    completion_queue: SharedAsyncTaskCompletionQueue,
+    /// Per-session inbox registry. The executor looks up the
+    /// session's `SessionInbox` by `parent_session_key` on each
+    /// completion and pushes the event there. Replaces the older
+    /// per-call `SessionInbox` plumbing; completion
+    /// delivery is now session-keyed and daemon-global.
+    inbox_registry: Arc<InboxRegistry>,
 }
 
 impl AsyncExecutor {
-    /// Create a new unified async executor
+    /// Create a new unified async executor with a default
+    /// `InboxRegistry`. Use [`Self::with_inbox_registry`] to share
+    /// a registry with the rest of the daemon (the common case).
     #[must_use]
     pub fn new() -> Self {
         let task_file_writer = crate::common::paths::default_data_dir()
@@ -62,7 +66,7 @@ impl AsyncExecutor {
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
-            completion_queue: Arc::new(AsyncTaskCompletionQueue::new()),
+            inbox_registry: Arc::new(InboxRegistry::new()),
         }
     }
 
@@ -81,7 +85,7 @@ impl AsyncExecutor {
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
-            completion_queue: Arc::new(AsyncTaskCompletionQueue::new()),
+            inbox_registry: Arc::new(InboxRegistry::new()),
         }
     }
 
@@ -102,18 +106,20 @@ impl AsyncExecutor {
         self
     }
 
-    /// Inject a shared completion queue. Used by the agentic loop to
-    /// receive task completion events for the next-iteration injection.
+    /// Inject the shared `InboxRegistry` used for per-session
+    /// completion delivery. The daemon's `AppState` calls this
+    /// during startup so that completion events land in the same
+    /// inboxes the in-flight `AgenticLoop` drains from.
     #[must_use]
-    pub fn with_completion_queue(mut self, queue: SharedAsyncTaskCompletionQueue) -> Self {
-        self.completion_queue = queue;
+    pub fn with_inbox_registry(mut self, registry: Arc<InboxRegistry>) -> Self {
+        self.inbox_registry = registry;
         self
     }
 
-    /// Borrow the shared completion queue.
+    /// Borrow the shared `InboxRegistry`.
     #[must_use]
-    pub fn completion_queue(&self) -> &SharedAsyncTaskCompletionQueue {
-        &self.completion_queue
+    pub fn inbox_registry(&self) -> &Arc<InboxRegistry> {
+        &self.inbox_registry
     }
 
     /// Set a custom task file writer
@@ -224,7 +230,7 @@ impl AsyncExecutor {
             .map(|dt| format!("{:?}", dt).to_lowercase());
         let params_for_spawn = params.clone();
         let parent_session_key_for_completion = parent_session_key.clone();
-        let completion_queue = self.completion_queue.clone();
+        let inbox_registry = self.inbox_registry.clone();
 
         // Spawn the background execution
         tokio::spawn(async move {
@@ -344,8 +350,10 @@ impl AsyncExecutor {
                 }
             }
 
-            // NEW: push a completion event to the per-session queue so
-            // the agentic loop can drain it at the next iteration.
+            // NEW: push a completion event to the per-session inbox
+            // so the agentic loop can drain it at the next iteration.
+            // The session's inbox is resolved via the daemon-global
+            // `InboxRegistry` keyed by `parent_session_key`.
             if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
                 let status = entry.status.clone();
                 let result = entry.result.clone().unwrap_or(serde_json::Value::Null);
@@ -362,7 +370,10 @@ impl AsyncExecutor {
                     output_path,
                     parent_session_key: parent_session_key_for_completion.clone(),
                 };
-                completion_queue.push(event);
+                let inbox = inbox_registry
+                    .get_or_create(&parent_session_key_for_completion)
+                    .await;
+                inbox.push(InboxItem::Completion(event));
             }
         });
 
@@ -564,7 +575,7 @@ impl std::fmt::Debug for AsyncExecutor {
             )
             .field("default_delivery", &self.default_delivery)
             .field("task_file_writer", &self.task_file_writer)
-            .field("completion_queue", &"<AsyncTaskCompletionQueue>")
+            .field("inbox_registry", &"<InboxRegistry>")
             .finish()
     }
 }
@@ -578,18 +589,19 @@ impl Default for AsyncExecutor {
 #[cfg(test)]
 mod completion_queue_fan_out_tests {
     use super::*;
+    use crate::session::InboxRegistry;
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn make_executor_with_queue() -> (AsyncExecutor, SharedAsyncTaskCompletionQueue) {
-        let queue = Arc::new(AsyncTaskCompletionQueue::new());
-        let exec = AsyncExecutor::new().with_completion_queue(queue.clone());
-        (exec, queue)
+    fn make_executor_with_registry() -> (AsyncExecutor, Arc<InboxRegistry>) {
+        let registry = Arc::new(InboxRegistry::new());
+        let exec = AsyncExecutor::new().with_inbox_registry(registry.clone());
+        (exec, registry)
     }
 
     #[tokio::test]
     async fn test_completion_event_pushed_on_success() {
-        let (exec, queue) = make_executor_with_queue();
+        let (exec, registry) = make_executor_with_registry();
         let task_id = "shell:test-success".to_string();
 
         let receipt = exec
@@ -609,20 +621,23 @@ mod completion_queue_fan_out_tests {
         // Wait for the spawned task to complete.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let drained = queue.drain().await;
-        assert_eq!(drained.len(), 1, "expected one completion event");
-        assert_eq!(drained[0].task_id, task_id);
-        assert_eq!(drained[0].tool_name, "shell");
-        assert_eq!(drained[0].parent_session_key, "session_1");
-        assert!(matches!(
-            drained[0].status,
-            AsyncTaskStatus::Completed { .. }
-        ));
+        let inbox = registry.get_or_create("session_1").await;
+        let items = inbox.drain_all().await;
+        assert_eq!(items.len(), 1, "expected one completion event");
+        match &items[0] {
+            InboxItem::Completion(e) => {
+                assert_eq!(e.task_id, task_id);
+                assert_eq!(e.tool_name, "shell");
+                assert_eq!(e.parent_session_key, "session_1");
+                assert!(matches!(e.status, AsyncTaskStatus::Completed { .. }));
+            }
+            other => panic!("expected InboxItem::Completion, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn test_completion_event_pushed_on_failure() {
-        let (exec, queue) = make_executor_with_queue();
+        let (exec, registry) = make_executor_with_registry();
         let task_id = "shell:test-fail".to_string();
 
         let _ = exec
@@ -639,8 +654,64 @@ mod completion_queue_fan_out_tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let drained = queue.drain().await;
-        assert_eq!(drained.len(), 1);
-        assert!(matches!(drained[0].status, AsyncTaskStatus::Failed { .. }));
+        let inbox = registry.get_or_create("session_1").await;
+        let items = inbox.drain_all().await;
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            InboxItem::Completion(e) => {
+                assert!(matches!(e.status, AsyncTaskStatus::Failed { .. }));
+            }
+            other => panic!("expected InboxItem::Completion, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_completion_event_routed_by_parent_session_key() {
+        // Tasks with different parent_session_keys land in different
+        // inboxes in the same registry.
+        let (exec, registry) = make_executor_with_registry();
+        let task_a = "shell:a".to_string();
+        let task_b = "shell:b".to_string();
+
+        let _ = exec
+            .execute(
+                task_a.clone(),
+                "shell",
+                serde_json::json!({}),
+                "session_alpha",
+                AsyncToolConfig::default(),
+                || async { Ok(serde_json::json!({"exit_code": 0})) },
+            )
+            .await
+            .unwrap();
+        let _ = exec
+            .execute(
+                task_b.clone(),
+                "shell",
+                serde_json::json!({}),
+                "session_beta",
+                AsyncToolConfig::default(),
+                || async { Ok(serde_json::json!({"exit_code": 0})) },
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let inbox_a = registry.get_or_create("session_alpha").await;
+        let items_a = inbox_a.drain_all().await;
+        assert_eq!(items_a.len(), 1);
+        match &items_a[0] {
+            InboxItem::Completion(e) => assert_eq!(e.task_id, task_a),
+            other => panic!("expected Completion, got {other:?}"),
+        }
+
+        let inbox_b = registry.get_or_create("session_beta").await;
+        let items_b = inbox_b.drain_all().await;
+        assert_eq!(items_b.len(), 1);
+        match &items_b[0] {
+            InboxItem::Completion(e) => assert_eq!(e.task_id, task_b),
+            other => panic!("expected Completion, got {other:?}"),
+        }
     }
 }
