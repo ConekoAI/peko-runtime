@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "echo 'Run with: pekobot tool test memory memory_store'"
+    "test": "echo 'After peko ext install, the server is started by: peko ext start mcp-memory-server'"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

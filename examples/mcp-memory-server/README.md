@@ -9,27 +9,33 @@ This MCP server provides simple key-value memory storage that is automatically i
 ## How It Works
 
 1. **Tool Definition**: The `memory_store` tool declares optional `agent_id` and `session_id` parameters
-2. **Pekobot Configuration**: Configure reserved parameters to inject `agent_id` from runtime context
+2. **Manifest Configuration**: The extension manifest declares `extension_type: "mcp"` and embeds the server's startup command
 3. **Auto-Isolation**: Keys are automatically prefixed with the agent ID, ensuring isolation
 
 ## Files
 
-- `server.js` - MCP server implementation
-- `mcp-config.toml` - Pekobot MCP configuration with reserved parameters
+- `server.js` - MCP server implementation (the @modelcontextprotocol/sdk server with `memory_store`, `memory_retrieve`, `memory_list`, `memory_delete` tools)
+- `manifest.yaml` - Pekobot extension manifest (ADR-024 unified format) that wires the server into the extension framework
 
 ## Configuration
 
-```toml
-[[server]]
-name = "memory"
-transport = "stdio"
-command = "node"
-args = ["examples/mcp-memory-server/server.js"]
+The extension is configured via `manifest.yaml`:
 
-[server.reserved_parameters]
-agent_id = { source = "runtime", field = "agent_id" }
-session_id = { source = "runtime", field = "session_id" }
+```yaml
+id: "mcp-memory-server"
+name: "MCP Memory Server"
+version: "1.0.0"
+description: "Agent-isolated key-value memory storage"
+extension_type: "mcp"
+
+mcp_servers:
+  mcp-memory-server:
+    command: "node"
+    args: ["examples/mcp-memory-server/server.js"]
+    auto_start: true
 ```
+
+The `auto_start: true` flag tells Pekobot to start the server process automatically when the extension is enabled. Reserved parameter injection (`agent_id`, `session_id`) is a Pekobot runtime feature — see `docs/mcp/mcp_reserved_params_guide.md` for the full mechanism.
 
 ## What the LLM Sees
 
@@ -67,9 +73,28 @@ the server receives:
 ## Running
 
 ```bash
-# Start Pekobot with the example config
-cargo run --bin pekobot -- --mcp-config examples/mcp-memory-server/mcp-config.toml
+# 1. Install the extension (one-time, per host)
+peko ext install examples/mcp-memory-server
 
-# Or test the server directly
-pekobot tool test memory memory_store '{"key": "test", "value": "hello"}'
+# 2. Start the MCP server runtime
+peko ext start mcp-memory-server
+
+# 3. Verify it's running
+peko ext list
+# Expected output includes:
+#   mcp-memory-server   mcp   enabled   ...
 ```
+
+Once the server is running, any agent that has the `mcp-memory-server` extension enabled can call `memory_store`, `memory_retrieve`, `memory_list`, and `memory_delete` — the LLM sees only the user-facing parameters, and `agent_id` / `session_id` are injected automatically by the Pekobot runtime.
+
+To test the server in isolation (outside Pekobot), you can run it directly with any MCP client:
+
+```bash
+node examples/mcp-memory-server/server.js
+```
+
+## See also
+
+- `docs/mcp/MCP.md` — full MCP integration guide
+- `docs/mcp/mcp_reserved_params_guide.md` — how reserved parameter injection works
+- `src/extensions/framework/scaffold/templates/mcp/manifest.yaml` — canonical MCP manifest template

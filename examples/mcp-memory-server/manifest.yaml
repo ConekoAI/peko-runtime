@@ -1,0 +1,12 @@
+id: "mcp-memory-server"
+name: "MCP Memory Server"
+version: "1.0.0"
+description: "Agent-isolated key-value memory storage demonstrating reserved parameter injection (agent_id, session_id) into MCP tool calls."
+extension_type: "mcp"
+
+# MCP wrapper configuration — embed one or more MCP servers
+mcp_servers:
+  mcp-memory-server:
+    command: "node"
+    args: ["examples/mcp-memory-server/server.js"]
+    auto_start: true

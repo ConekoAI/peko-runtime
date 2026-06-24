@@ -36,10 +36,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/pekobot"
-Documentation = "https://github.com/yourusername/pekobot/tree/main/tools/python/pekobot_tool"
-Repository = "https://github.com/yourusername/pekobot.git"
-Issues = "https://github.com/yourusername/pekobot/issues"
+Homepage = "https://github.com/ConekoAI/peko-runtime"
+Documentation = "https://github.com/ConekoAI/peko-runtime/tree/main/sdks/python/pekobot_tool"
+Repository = "https://github.com/ConekoAI/peko-runtime.git"
+Issues = "https://github.com/ConekoAI/peko-runtime/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pekobot_tool"]
