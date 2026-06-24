@@ -880,6 +880,34 @@ impl AgenticLoop {
 /// - One `ToolResult` block per event, with `tool_call_id` of the
 ///   form `synthetic:<task_id>` so the model can reference a
 ///   specific completed task in its next tool call.
+/// Maximum size of a tool result to include verbatim in the synthetic
+/// completion message. Results larger than this are truncated and the
+/// model is told to call `task output` for the full content. Keeps the
+/// LLM context window bounded when a long-running tool produces a large
+/// payload.
+const MAX_RESULT_PREVIEW_BYTES: usize = 2048;
+
+/// Suffix appended to truncated previews.
+const TRUNCATION_SUFFIX: &str =
+    "\n\n... (truncated; use `task output` for full result)";
+
+/// Truncate a result string to `MAX_RESULT_PREVIEW_BYTES`, respecting
+/// UTF-8 char boundaries, and append a suffix pointing the model at
+/// `task output` for the full content.
+fn truncate_for_preview(text: &str) -> String {
+    if text.len() <= MAX_RESULT_PREVIEW_BYTES {
+        return text.to_string();
+    }
+    let mut end = MAX_RESULT_PREVIEW_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + TRUNCATION_SUFFIX.len());
+    out.push_str(&text[..end]);
+    out.push_str(TRUNCATION_SUFFIX);
+    out
+}
+
 fn build_async_completion_message(
     events: &[CompletionEvent],
     session_id: &str,
@@ -907,7 +935,7 @@ fn build_async_completion_message(
             tool_call_id: format!("synthetic:{}", event.task_id),
             name: event.tool_name.clone(),
             content: vec![ContentBlock::Text {
-                text: event.result.to_string(),
+                text: truncate_for_preview(&event.result.to_string()),
             }],
             is_error,
         });
@@ -1560,6 +1588,76 @@ mod tests {
                 assert!(!(*is_error), "Completed status should set is_error=false");
             }
             other => panic!("expected ToolResult block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_truncate_for_preview_short_text_passes_through() {
+        let text = "hello world";
+        assert_eq!(truncate_for_preview(text), "hello world");
+    }
+
+    #[test]
+    fn test_truncate_for_preview_truncates_long_text() {
+        let text = "a".repeat(MAX_RESULT_PREVIEW_BYTES + 100);
+        let out = truncate_for_preview(&text);
+        // The output is the truncated body plus the suffix.
+        assert!(out.starts_with(&"a".repeat(MAX_RESULT_PREVIEW_BYTES)));
+        assert!(out.ends_with(TRUNCATION_SUFFIX));
+        // And it is shorter than the original.
+        assert!(out.len() < text.len());
+        // The truncated body itself is at most MAX_RESULT_PREVIEW_BYTES.
+        let body_len = out.len() - TRUNCATION_SUFFIX.len();
+        assert_eq!(body_len, MAX_RESULT_PREVIEW_BYTES);
+    }
+
+    #[test]
+    fn test_truncate_for_preview_respects_utf8_boundary() {
+        // Build a string of multi-byte chars (each is 2 bytes) that
+        // straddles the limit on a non-boundary. The function must not
+        // panic and must end on a char boundary.
+        let char_count = MAX_RESULT_PREVIEW_BYTES; // 2048 chars
+        let text: String = "ñ".repeat(char_count + 5); // each "ñ" is 2 bytes
+        let out = truncate_for_preview(&text);
+        // The suffix is present because the text is over the limit.
+        assert!(out.ends_with(TRUNCATION_SUFFIX));
+        // The body is valid UTF-8 (no panic when slicing) and shorter
+        // than the limit in bytes.
+        let body = &out[..out.len() - TRUNCATION_SUFFIX.len()];
+        assert!(body.is_char_boundary(body.len()));
+    }
+
+    #[test]
+    fn test_build_async_completion_message_truncates_large_result() {
+        let big = "x".repeat(MAX_RESULT_PREVIEW_BYTES + 500);
+        let events = vec![CompletionEvent {
+            task_id: "shell:big".to_string(),
+            tool_name: "shell".to_string(),
+            result: serde_json::json!({"stdout": big}),
+            status: crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Completed {
+                result: crate::tools::core::ToolResult::success(
+                    serde_json::json!({"stdout": big}),
+                ),
+            },
+            completed_at: chrono::Utc::now(),
+            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
+            parent_session_key: "session_a".to_string(),
+        }];
+
+        let msg = build_async_completion_message(&events, "session_a")
+            .expect("event should produce Some(msg)");
+        match &msg.content[1] {
+            ContentBlock::ToolResult { content, .. } => match &content[0] {
+                ContentBlock::Text { text } => {
+                    assert!(
+                        text.ends_with(TRUNCATION_SUFFIX),
+                        "large result should be truncated with suffix; got len {}",
+                        text.len()
+                    );
+                }
+                other => panic!("expected Text, got {other:?}"),
+            },
+            other => panic!("expected ToolResult, got {other:?}"),
         }
     }
 
