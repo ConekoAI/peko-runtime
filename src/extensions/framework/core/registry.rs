@@ -43,10 +43,16 @@ pub struct ExtensionCore {
     /// underlying tool directly without going through the hook layer.
     tool_instances: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
 
-    /// Current session key, set by the agent before each `execute_*`
+    /// Per-agent session keys, set by the agent before each `execute_*`
     /// call so tools that need a parent_session_key (e.g.,
-    /// `TaskTool::spawn`) can read it from the core.
-    session_key: Arc<RwLock<Option<String>>>,
+    /// `TaskTool::spawn`) can read the *correct* agent's key from the
+    /// core.
+    ///
+    /// Keyed by `Agent` DID (i.e. agent identity). A single shared
+    /// `ExtensionCore` services every agent in the daemon; storing one
+    /// value per agent prevents concurrent agents from overwriting each
+    /// other's session key — the bug addressed in issue #68.
+    session_keys: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl std::fmt::Debug for ExtensionCore {
@@ -56,7 +62,7 @@ impl std::fmt::Debug for ExtensionCore {
             .field("tool_registry", &self.tool_registry)
             .field("services", &self.services)
             .field("tool_instances", &"<Arc<RwLock<HashMap<Arc<dyn Tool>>>>>")
-            .field("session_key", &"<Arc<RwLock<Option<String>>>>")
+            .field("session_keys", &"<Arc<RwLock<HashMap<String, String>>>>")
             .finish()
     }
 }
@@ -71,7 +77,7 @@ impl ExtensionCore {
             tool_registry: Arc::new(ToolRegistry::new()),
             services,
             tool_instances: Arc::new(RwLock::new(HashMap::new())),
-            session_key: Arc::new(RwLock::new(None)),
+            session_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -82,7 +88,7 @@ impl ExtensionCore {
             tool_registry: Arc::new(ToolRegistry::new()),
             services,
             tool_instances: Arc::new(RwLock::new(HashMap::new())),
-            session_key: Arc::new(RwLock::new(None)),
+            session_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -531,25 +537,42 @@ impl ExtensionCore {
         instances.remove(name);
     }
 
-    /// Return the current session key, if one is associated with this core.
+    /// Return the current session key for a given agent, if one is set.
     ///
-    /// The agent calls `set_session_key` before `execute_*` so tools that
-    /// need a parent_session_key (e.g., `TaskTool::spawn`) can read it
-    /// from the core.
-    pub fn current_session_key(&self) -> Option<String> {
-        // Blocking read against a `tokio::sync::RwLock` is a soft-fail: if
-        // a writer is mid-flight, return None rather than panic. The
+    /// The agent calls `set_session_key` before `execute_*` so tools
+    /// that need a parent_session_key (e.g., `TaskTool::spawn`) can
+    /// read the key for the *calling* agent. Storing keys in a map
+    /// keyed by agent ID (issue #68 fix) prevents concurrent agents in
+    /// daemon mode from overwriting each other — `TaskTool::spawn`
+    /// issued by agent B no longer stamps agent A's session.
+    pub fn current_session_key(&self, agent_id: &str) -> Option<String> {
+        // Blocking read against a `tokio::sync::RwLock` is a soft-fail:
+        // if a writer is mid-flight, return None rather than panic. The
         // session_key is set before tool invocation begins, so a
         // transient read lock during `spawn` would be unusual.
-        self.session_key.try_read().ok().and_then(|g| g.clone())
+        self.session_keys
+            .try_read()
+            .ok()
+            .and_then(|m| m.get(agent_id).cloned())
     }
 
-    /// Set the current session key for this core. Used by the agent to
-    /// inject the active session before invoking tools that need a
-    /// `parent_session_key` (e.g., `TaskTool::spawn`).
-    pub async fn set_session_key(&self, key: Option<String>) {
-        let mut guard = self.session_key.write().await;
-        *guard = key;
+    /// Set the current session key for a given agent. Used by the
+    /// agent to inject the active session before invoking tools that
+    /// need a `parent_session_key` (e.g., `TaskTool::spawn`).
+    ///
+    /// Passing `None` clears the entry for `agent_id`. The map is
+    /// keyed by `agent_id` so concurrent agents do not clobber each
+    /// other's session keys (issue #68).
+    pub async fn set_session_key(&self, agent_id: &str, key: Option<String>) {
+        let mut guard = self.session_keys.write().await;
+        match key {
+            Some(value) => {
+                guard.insert(agent_id.to_string(), value);
+            }
+            None => {
+                guard.remove(agent_id);
+            }
+        }
     }
 }
 
@@ -959,5 +982,88 @@ mod tests {
             }
             _ => panic!("Expected Continue with text, got {result:?}"),
         }
+    }
+
+    // ==================== Issue #68: per-agent session key isolation ====================
+
+    #[tokio::test]
+    async fn test_session_key_per_agent_isolation() {
+        // Two agents share one `ExtensionCore`. Setting a key for one
+        // must not leak into the other's lookup.
+        let core = ExtensionCore::new();
+        let agent_a = "did:peko:agent:A";
+        let agent_b = "did:peko:agent:B";
+
+        // Initial state: no keys set.
+        assert_eq!(core.current_session_key(agent_a), None);
+        assert_eq!(core.current_session_key(agent_b), None);
+
+        // Set key for agent A only.
+        core.set_session_key(agent_a, Some("sess-A".to_string())).await;
+        assert_eq!(core.current_session_key(agent_a), Some("sess-A".to_string()));
+        assert_eq!(
+            core.current_session_key(agent_b),
+            None,
+            "agent B must not see agent A's session key"
+        );
+
+        // Set key for agent B — agent A's key is preserved.
+        core.set_session_key(agent_b, Some("sess-B".to_string())).await;
+        assert_eq!(core.current_session_key(agent_a), Some("sess-A".to_string()));
+        assert_eq!(core.current_session_key(agent_b), Some("sess-B".to_string()));
+
+        // Overwriting agent A's key leaves agent B untouched.
+        core.set_session_key(agent_a, Some("sess-A2".to_string())).await;
+        assert_eq!(core.current_session_key(agent_a), Some("sess-A2".to_string()));
+        assert_eq!(core.current_session_key(agent_b), Some("sess-B".to_string()));
+
+        // Clearing agent A (None) leaves agent B untouched.
+        core.set_session_key(agent_a, None).await;
+        assert_eq!(core.current_session_key(agent_a), None);
+        assert_eq!(
+            core.current_session_key(agent_b),
+            Some("sess-B".to_string()),
+            "clearing agent A must not affect agent B"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_key_concurrent_agents_do_not_clobber() {
+        // Regression test for issue #68: in daemon mode multiple agents
+        // share one `ExtensionCore`. Previously `set_session_key`
+        // stored a single value, so the last agent to call it won.
+        // With the per-agent map, concurrent writes are isolated.
+        let core = std::sync::Arc::new(ExtensionCore::new());
+
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let core = core.clone();
+            handles.push(tokio::spawn(async move {
+                let agent_id = format!("did:peko:agent:{i}");
+                let session_key = format!("sess-{i}");
+                core.set_session_key(&agent_id, Some(session_key.clone())).await;
+                // Yield between set and read to maximise interleaving.
+                tokio::task::yield_now().await;
+                let read_back = core.current_session_key(&agent_id);
+                assert_eq!(
+                    read_back,
+                    Some(session_key),
+                    "agent {i} read back its own session key"
+                );
+            }));
+        }
+        for h in handles {
+            h.await.expect("task should not panic");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_key_unknown_agent_returns_none() {
+        let core = ExtensionCore::new();
+        core.set_session_key("did:peko:agent:X", Some("sess-X".to_string()))
+            .await;
+        // An agent that never had its key set returns None, not
+        // another agent's value.
+        assert_eq!(core.current_session_key("did:peko:agent:Y"), None);
     }
 }

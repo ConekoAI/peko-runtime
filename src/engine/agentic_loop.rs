@@ -313,9 +313,12 @@ impl AgenticLoop {
         // with a real session key on the core before iteration 1
         // begins, so even the first `task spawn` issued mid-iteration
         // sees a real `parent_session_key` rather than the `"unknown"`
-        // fallback in `task_management.rs`.
+        // fallback in `task_management.rs`. The session key is keyed by
+        // the loop's agent DID on the shared `ExtensionCore` so
+        // concurrent agents in daemon mode do not clobber each other
+        // (issue #68).
         self.extension_core
-            .set_session_key(Some(session_id.clone()))
+            .set_session_key(&self.agent.identity.did, Some(session_id.clone()))
             .await;
 
         // Resolve model id once at start — threaded through every
@@ -1437,17 +1440,19 @@ mod tests {
         );
 
         // Session-key flow fix: once `run_inner` is past its bootstrap,
-        // the core's session key must equal the real session id — not
-        // `None` and not the `"unknown"` fallback. This guards the fix
-        // in `run_inner` that pushes `session_id` onto the core for
-        // every entry into the loop (covers the `Agent::execute` one-shot
-        // CLI path, where the session is born inside `run_inner` and the
-        // caller's `build_agentic_loop` would have pushed `None`).
-        let core_key = extension_core.current_session_key();
+        // the core's session key for this agent must equal the real
+        // session id — not `None` and not the `"unknown"` fallback.
+        // This guards the fix in `run_inner` that pushes `session_id`
+        // onto the core for every entry into the loop (covers the
+        // `Agent::execute` one-shot CLI path, where the session is
+        // born inside `run_inner` and the caller's `build_agentic_loop`
+        // would have pushed `None`). The lookup is keyed by the
+        // agent's DID on the shared core (issue #68).
+        let core_key = extension_core.current_session_key(&agent.identity.did);
         assert_eq!(
             core_key,
             Some(session_id.clone()),
-            "core's session key must match the loop's session id after run_inner bootstrap"
+            "core's session key for this agent must match the loop's session id after run_inner bootstrap"
         );
     }
 }

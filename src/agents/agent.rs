@@ -600,11 +600,12 @@ pub async fn new_with_session_manager(
         //   `current_session_id` is `None` here because `prepare_execution`
         //   does not create a session — the session is born later, inside
         //   `AgenticLoop::run` → `run_inner`. So `session_key` is `None`
-        //   and `set_session_key(None)` runs on the core. The loop's
-        //   `run_inner` rebinds the core's session key to the real
-        //   session id it just created (see `src/engine/agentic_loop.rs`),
-        //   so any `task spawn` issued *mid-iteration* still gets a
-        //   real `parent_session_key`. The brief window before the loop
+        //   and `set_session_key(&self.identity.did, None)` runs on the
+        //   core. The loop's `run_inner` rebinds the core's session key
+        //   for *this* agent's DID to the real session id it just
+        //   created (see `src/engine/agentic_loop.rs`), so any
+        //   `task spawn` issued *mid-iteration* still gets a real
+        //   `parent_session_key`. The brief window before the loop
         //   starts (no iterations yet, no `task spawn` possible) does
         //   not matter.
         //
@@ -744,6 +745,7 @@ pub async fn new_with_session_manager(
             let task_tool = Arc::new(crate::tools::builtin::TaskTool::with_executor_and_core(
                 async_executor,
                 core_weak,
+                Some(agent_for_loop.identity.did.clone()),
             ));
             if let Err(e) =
                 crate::extensions::builtin::BuiltinToolAdapter::register_task_tool(
@@ -875,6 +877,7 @@ pub async fn new_with_session_manager(
         let task_tool = Arc::new(crate::tools::builtin::TaskTool::with_executor_and_core(
             async_executor,
             core_weak,
+            Some(self.identity.did.clone()),
         ));
 
         // 4. Re-register the per-agent TaskTool (overwrites any prior
@@ -890,7 +893,12 @@ pub async fn new_with_session_manager(
 
         // 5. Push the session key onto the core so TaskTool::spawn
         //    can stamp parent_session_key on every spawned task.
-        extension_core.set_session_key(session_key).await;
+        //    The session key is keyed by this agent's DID on the shared
+        //    core so concurrent agents in daemon mode do not clobber
+        //    each other (issue #68).
+        extension_core
+            .set_session_key(&self.identity.did, session_key)
+            .await;
 
         // 6. Construct AgenticLoop with the queue.
         let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
