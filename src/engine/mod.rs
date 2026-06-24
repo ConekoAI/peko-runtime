@@ -4,6 +4,7 @@
 //! This is the heart of Pekobot's agent execution.
 
 pub mod agentic_loop;
+pub mod async_completion;
 pub mod chunker;
 pub mod compaction_orchestrator;
 pub mod event_processor;
