@@ -206,7 +206,7 @@ impl AsyncExecutionRouter {
         let config = AsyncToolConfig {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: Some(DeliveryTarget::AsyncQueue),
-            timeout_secs: task_hard_timeout_secs,
+            timeout_secs: Some(task_hard_timeout_secs),
             cleanup_after_delivery: true,
             label: Some(tool_name.to_string()),
         };
