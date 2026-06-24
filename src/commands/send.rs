@@ -79,20 +79,62 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
     // Connect to daemon (fails if not running — start it with: peko daemon start)
     let client = DaemonClient::connect().await?;
 
-    // Send execute request to daemon
-    let mut stream = client
-        .execute(
-            agent_name,
-            team,
-            message,
-            args.session.clone(),
-            args.new,
-            !args.no_stream,
-            _paths.user(),
-        )
-        .await?;
+    // Routing (issue: generalize the per-session inbox to also carry
+    // user steering messages):
+    //
+    // 1. `--new` is explicit → fresh session, use `Execute`.
+    // 2. `--session X` → user knows the session; route to `SessionSteer`
+    //    so a queued message either joins an in-flight run (next
+    //    iteration) or auto-triggers a new one if idle. Same UX as
+    //    `peko send` against the active session, but explicit.
+    // 3. No session specified → fall back to `Execute`. The daemon
+    //    resolves the active session, creates a new one if none,
+    //    and runs as before. This preserves the "no flags → just
+    //    send a message" path for first-time users.
+    let stream = if args.new {
+        // Explicit new-session: must go through Execute; SessionSteer
+        // expects an existing session id.
+        client
+            .execute(
+                agent_name,
+                team,
+                message.clone(),
+                None,
+                true,
+                !args.no_stream,
+                _paths.user(),
+            )
+            .await?
+    } else if let Some(session_id) = args.session.clone() {
+        client.steer_session(session_id, message.clone()).await?
+    } else {
+        // Default path: send as a fresh execute. The daemon resolves
+        // the active session or creates one.
+        client
+            .execute(
+                agent_name,
+                team,
+                message.clone(),
+                None,
+                false,
+                !args.no_stream,
+                _paths.user(),
+            )
+            .await?
+    };
 
-    // Process response stream
+    process_response_stream(stream, &args, _json).await
+}
+
+/// Process the response stream from either an `Execute` or a
+/// `SessionSteer` request. Both use the same wire: the first packet
+/// may be a `MessageQueued` confirmation (steering only) followed by
+/// `Text` chunks and a terminal `Done` or `Error`.
+async fn process_response_stream(
+    mut stream: crate::ipc::PacketStream,
+    args: &SendArgs,
+    json: bool,
+) -> Result<()> {
     if args.no_stream {
         // Blocking mode: collect all text and print at the end
         let mut final_text = String::new();
@@ -113,6 +155,17 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
                 }
                 ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("Agent execution failed: {message}");
+                }
+                ResponsePacket::MessageQueued {
+                    run_triggered, ..
+                } => {
+                    // SessionSteer confirmation. The actual response
+                    // (or `Done`) follows on the same stream.
+                    if !run_triggered && json {
+                        println!(
+                            "{{\"status\":\"queued\",\"run_triggered\":false}}"
+                        );
+                    }
                 }
                 ResponsePacket::Heartbeat { .. } => {
                     // Ignore heartbeats in blocking mode
@@ -149,6 +202,16 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
             }
             ResponsePacket::Error { message, .. } => {
                 anyhow::bail!("Agent execution failed: {message}");
+            }
+            ResponsePacket::MessageQueued {
+                run_triggered, ..
+            } => {
+                // Briefly acknowledge the queued-and-triggered state
+                // before the run's text chunks arrive on the same
+                // stream.
+                if !run_triggered {
+                    eprintln!("(queued — will run when session is idle)");
+                }
             }
             ResponsePacket::Heartbeat { .. } => {
                 // Ignore heartbeats — they just keep the connection alive

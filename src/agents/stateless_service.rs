@@ -999,6 +999,103 @@ impl StatelessAgentService {
         })
     }
 
+    /// Run a new agentic loop for an existing session whose
+    /// [`crate::session::InboxRegistry`] has just received a steering
+    /// message. The handler (`ipc::server::handle_session_steer`)
+    /// pushes the steering item into the registry's inbox, acquires
+    /// the per-session run permit, and calls this method.
+    ///
+    /// Semantics:
+    /// - Resolves the agent from the session record (`session.agent_name`).
+    /// - Loads history from disk via `load_session_history`.
+    /// - Builds a fresh `AgenticLoop` with the same per-session inbox
+    ///   the executor already pushes into (looked up from
+    ///   `inbox_registry` by `session.id`).
+    /// - Skips the user-message persistence step (the handler already
+    ///   persisted the steering content via `session.add_user`).
+    /// - Spawns the loop on the current Tokio runtime and returns an
+    ///   `EventStream`. The `run_permit` is moved into the spawn
+    ///   future so it is released exactly when the spawn future
+    ///   returns — i.e. when the run is fully drained to the sink.
+    /// - The empty-inbox guard is enforced inside the loop via the
+    ///   post-drain `messages` check (no `User` role → no LLM call).
+    pub async fn run_session_on_inbox(
+        &self,
+        session: Arc<RwLock<crate::session::Session>>,
+        inbox_registry: Arc<crate::session::InboxRegistry>,
+        run_permit: crate::session::RunPermitGuard,
+        caller_id: Option<String>,
+    ) -> Result<crate::engine::EventStream> {
+        let session_id = session.read().await.id.clone();
+        let agent_name = session.read().await.agent_name.clone();
+        info!(
+            "run_session_on_inbox: starting new loop for agent '{}' session '{}'",
+            agent_name, session_id
+        );
+
+        // Load agent config + history up front (these are Send-safe).
+        let config_entry = self.load_config_fresh(&agent_name).await?;
+        let history = self.load_session_history(session.clone()).await?;
+        let agent = self
+            .build_agent(&agent_name, config_entry.config.clone())
+            .await
+            .with_context(|| format!("Failed to create agent: {agent_name}"))?;
+
+        // Create channels.
+        let (event_tx, event_rx) =
+            tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(1000);
+        let (completion_tx, completion_rx) =
+            tokio::sync::oneshot::channel::<Result<()>>();
+
+        let event_tx_for_error = event_tx.clone();
+        let session_for_spawn = session.clone();
+        let session_id_for_log = session_id.clone();
+
+        tokio::spawn(async move {
+            // The run_permit lives for the duration of this spawn
+            // future. When the future returns (after the loop ends
+            // and the last event_tx.try_send call), the permit is
+            // released and the registry reports the session as idle.
+            let _permit = run_permit;
+
+            let on_event = move |event: crate::engine::AgenticEvent| {
+                let _ = event_tx.try_send(event);
+            };
+
+            let result = agent
+                .run_streaming_with_session_skip_user_add(
+                    on_event,
+                    session_for_spawn,
+                    Some(history),
+                    caller_id,
+                )
+                .await;
+
+            if let Err(e) = result {
+                let _ = event_tx_for_error.try_send(crate::engine::AgenticEvent::Lifecycle {
+                    run_id: agent.name().to_string(),
+                    phase: crate::engine::LifecyclePhase::Error,
+                    error: Some(format!("Steering run failed: {e:#}")),
+                });
+            }
+
+            // Drop the agent and inbox_registry only after the loop
+            // returns. We keep `session_id_for_log` for diagnostics
+            // and let the daemon-side handlers do their work.
+            let _ = (session_id_for_log, inbox_registry);
+
+            let _ = completion_tx.send(Ok(()));
+            // event_tx drops here, closing the stream.
+        });
+
+        Ok(crate::engine::EventStream {
+            receiver: event_rx,
+            completion: completion_rx,
+            session_id,
+            is_new_session: false,
+        })
+    }
+
     /// Get current metrics
     pub async fn metrics(&self) -> ExecutionMetrics {
         self.metrics.read().await.clone()

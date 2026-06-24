@@ -397,6 +397,44 @@ pub enum RequestPacket {
         instruction: Option<String>,
     },
 
+    // ── Session inbox (steering) ─────────────────────────────────────
+    //
+    // Issue: generalize the per-session `AsyncTaskCompletionQueue` into
+    // a `SessionInbox` that also carries user steering messages queued
+    // via IPC. If the session is idle when the message arrives, the
+    // daemon auto-triggers a new run; otherwise the in-flight loop
+    // drains the message at the start of its next iteration.
+
+    /// Enqueue a user steering message for the given session. The
+    /// daemon responds with `MessageQueued` (carrying `run_triggered`)
+    /// and, if the session was idle, forwards the auto-triggered
+    /// run's events on the same `request_id`'s stream.
+    #[serde(rename = "session_steer")]
+    SessionSteer {
+        request_id: u64,
+        session_id: String,
+        content: String,
+    },
+
+    /// List pending (un-drained) steering messages for a session.
+    /// Returns an empty list if the session has no inbox entry yet.
+    #[serde(rename = "session_steer_list")]
+    SessionSteerList {
+        request_id: u64,
+        session_id: String,
+    },
+
+    /// Best-effort cancel of a queued steering message by id. Returns
+    /// `MessageCancelled { was_present }`. Once a message has been
+    /// drained into the in-flight loop's message buffer it can no
+    /// longer be cancelled.
+    #[serde(rename = "session_steer_cancel")]
+    SessionSteerCancel {
+        request_id: u64,
+        session_id: String,
+        message_id: uuid::Uuid,
+    },
+
     /// Install an extension from a path
     #[serde(rename = "extension_install")]
     ExtensionInstall { request_id: u64, path: String },
@@ -618,6 +656,9 @@ impl RequestPacket {
             | Self::CronAddSimple { request_id, .. }
             | Self::SessionBranch { request_id, .. }
             | Self::SessionCompact { request_id, .. }
+            | Self::SessionSteer { request_id, .. }
+            | Self::SessionSteerList { request_id, .. }
+            | Self::SessionSteerCancel { request_id, .. }
             | Self::ExtensionInstall { request_id, .. }
             | Self::ExtensionUninstall { request_id, .. }
             | Self::AgentExport { request_id, .. }
@@ -1211,6 +1252,51 @@ pub enum ResponsePacket {
         api_key_enabled: bool,
         api_key_count: usize,
     },
+
+    // ── Session inbox (steering) ─────────────────────────────────────
+    //
+    // Past-tense naming matches the `FooAdded`/`FooListed` convention.
+
+    /// Confirmation that a steering message was enqueued.
+    /// `run_triggered = true` means the daemon auto-started a new run
+    /// because the session was idle; subsequent `Text`/`Done` packets
+    /// for the same `request_id` carry the run's output.
+    /// `run_triggered = false` means an `AgenticLoop` is already in
+    /// flight; the message will be drained at the start of its next
+    /// iteration.
+    #[serde(rename = "message_queued")]
+    MessageQueued {
+        request_id: u64,
+        message_id: uuid::Uuid,
+        run_triggered: bool,
+    },
+
+    /// Pending (un-drained) steering messages for a session.
+    #[serde(rename = "pending_messages")]
+    PendingMessages {
+        request_id: u64,
+        session_id: String,
+        messages: Vec<SteeringMessageSummary>,
+    },
+
+    /// Result of a `SessionSteerCancel` request.
+    #[serde(rename = "message_cancelled")]
+    MessageCancelled {
+        request_id: u64,
+        message_id: uuid::Uuid,
+        was_present: bool,
+    },
+}
+
+/// Wire-level summary of a queued steering message. Mirrors the
+/// fields a CLI needs to render the message list (`peko session
+/// pending`). Full content is intentionally omitted from the list
+/// payload to keep large inboxes cheap to enumerate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SteeringMessageSummary {
+    pub message_id: uuid::Uuid,
+    pub queued_at: chrono::DateTime<chrono::Utc>,
+    pub preview: String,
 }
 
 /// Summary of an extension for IPC responses
@@ -1401,7 +1487,10 @@ impl ResponsePacket {
             | Self::AuthApiKeyRevoked { request_id, .. }
             | Self::AuthStatus { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
-            | Self::Status { request_id, .. } => *request_id,
+            | Self::Status { request_id, .. }
+            | Self::MessageQueued { request_id, .. }
+            | Self::PendingMessages { request_id, .. }
+            | Self::MessageCancelled { request_id, .. } => *request_id,
         }
     }
 
@@ -1475,6 +1564,9 @@ impl ResponsePacket {
             Self::AuthStatus { .. } => "AuthStatus",
             Self::TunnelStatus { .. } => "TunnelStatus",
             Self::Status { .. } => "Status",
+            Self::MessageQueued { .. } => "MessageQueued",
+            Self::PendingMessages { .. } => "PendingMessages",
+            Self::MessageCancelled { .. } => "MessageCancelled",
         }
     }
 

@@ -468,6 +468,30 @@ impl SessionService {
         Ok(storage.session_exists(session_id).await)
     }
 
+    /// Cross-agent session metadata lookup by id. Used by IPC handlers
+    /// that don't know the agent name (e.g. `SessionSteer` which
+    /// only carries `session_id` and `content`).
+    pub async fn get_session_metadata(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::metadata::SessionMetadata> {
+        // `SessionManager::get_session_metadata` walks every agent's
+        // sessions dir to find the metadata. We use a "personal" team
+        // namespace; team metadata, if it differs, lives in a sibling
+        // directory keyed by team name, but the global index is keyed
+        // by session_id alone.
+        let manager = SessionManager::for_cli(
+            self.path_resolver.clone(),
+            "",
+            None,
+            "",
+        );
+        manager
+            .get_session_metadata(session_id)
+            .await
+            .with_context(|| format!("Session '{session_id}' not found"))
+    }
+
     /// Resolve a session ID, falling back to the active session if none provided
     pub async fn resolve_session_id(
         &self,

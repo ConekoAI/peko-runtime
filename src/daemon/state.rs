@@ -18,6 +18,7 @@ use crate::common::services::{
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
+use crate::session::InboxRegistry;
 use crate::registry::{load_from_workspace, RegistryConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -83,6 +84,13 @@ pub struct AppState {
 
     /// Async task executor for daemon-side background execution (ADR-020)
     pub async_task_executor: Arc<AsyncExecutor>,
+
+    /// Per-session inbox registry: shared `SessionInbox` and run-permit
+    /// semaphore for every session the daemon knows about. The IPC
+    /// server pushes steering messages here, the executor pushes
+    /// completion events here, and the in-flight `AgenticLoop` drains
+    /// from here at the top of every iteration.
+    pub inbox_registry: Arc<InboxRegistry>,
 
     /// Background runtime manager for MCP servers and gateways (ADR-025)
     background_runtime_manager: Arc<BackgroundRuntimeManager>,
@@ -190,6 +198,7 @@ impl std::fmt::Debug for AppState {
             .field("team_service", &"<TeamManagementService>")
             .field("tool_runtime", &"<ToolRuntime>")
             .field("async_task_executor", &"<AsyncExecutor>")
+            .field("inbox_registry", &"<InboxRegistry>")
             .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
             .field("gateway_router", &"<GatewayRouter>")
             .field("mcp_client_registry", &"<McpClientRegistry>")
@@ -476,7 +485,17 @@ impl AppState {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
         );
-        let async_task_executor = Arc::new(AsyncExecutor::new());
+        // Per-session inbox registry: shared by the IPC server (which
+        // pushes steering messages from external clients), the
+        // `AsyncExecutor` (which pushes completion events from
+        // background tasks), and the in-flight `AgenticLoop` (which
+        // drains at iteration start). Lazy-initializes entries on
+        // first access; no explicit cleanup.
+        let inbox_registry = Arc::new(InboxRegistry::new());
+
+        let async_task_executor = Arc::new(
+            AsyncExecutor::new().with_inbox_registry(Arc::clone(&inbox_registry)),
+        );
 
         // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
@@ -586,6 +605,7 @@ impl AppState {
             team_service,
             tool_runtime,
             async_task_executor,
+            inbox_registry,
             background_runtime_manager,
             gateway_router,
             mcp_client_registry,

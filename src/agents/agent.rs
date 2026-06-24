@@ -732,12 +732,23 @@ impl Agent {
             // We need the agent's current session id cell; replicate the
             // wiring by recreating the same queue + executor + TaskTool
             // locally here.
-            let async_completion_queue = Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncTaskCompletionQueue::new(),
+            //
+            // The executor and the loop share a per-call `InboxRegistry`
+            // and a single inbox pre-populated for this session, so
+            // completions land in the inbox the loop drains at the next
+            // iteration. The daemon-global `InboxRegistry` will replace
+            // this once the per-call path is rewired to use
+            // `AppState::inbox_registry` directly.
+            let async_inbox_registry = Arc::new(
+                crate::session::InboxRegistry::new(),
             );
+            let streaming_session_key = "streaming".to_string();
+            let async_completion_queue = async_inbox_registry
+                .get_or_create(&streaming_session_key)
+                .await;
             let async_executor = Arc::new(
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
-                    .with_completion_queue(async_completion_queue.clone()),
+                    .with_inbox_registry(async_inbox_registry.clone()),
             );
             let core_weak = Arc::downgrade(&extension_core_for_loop);
             let task_tool = Arc::new(crate::tools::builtin::TaskTool::with_executor_and_core(
@@ -832,13 +843,62 @@ impl Agent {
             .await
     }
 
+    /// Like [`Self::execute_streaming_with_session`] but skips the
+    /// user-message persistence step. Used by the steering path: the
+    /// IPC handler has already called `session.add_user(content)` to
+    /// persist the queued steering message, so the loop must not add
+    /// it again.
+    ///
+    /// The actual steering content reaches the LLM via the inbox
+    /// drain at the start of `run_inner`'s first iteration (see
+    /// [`crate::engine::agentic_loop::AgenticLoop::run_streaming_with_resume_skip_user_add`]).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_streaming_with_session_skip_user_add<F>(
+        &self,
+        on_event: F,
+        session: std::sync::Arc<tokio::sync::RwLock<crate::session::Session>>,
+        history: Option<Vec<crate::common::types::message::LlmMessage>>,
+        caller_id: Option<String>,
+    ) -> Result<crate::engine::AgenticResult>
+    where
+        F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+    {
+        let Some(provider) = self.provider_arc() else {
+            return Err(anyhow::anyhow!("No provider configured"));
+        };
+
+        let mut ext_config = self.config.extensions.clone().unwrap_or_default();
+        ext_config.enabled = self.config.extension_whitelist();
+        self.extension_core.set_tool_config(ext_config).await;
+
+        {
+            let session_id = session.read().await.id.clone();
+            let mut current = self.current_session_id.write().await;
+            *current = Some(session_id);
+        }
+
+        self.prepare_execution().await?;
+
+        let agent_arc = Arc::new(self.clone());
+        let session_id = self.current_session_id.read().await.clone();
+        let loop_ = self
+            .build_agentic_loop(agent_arc, provider, session_id, caller_id)
+            .await?;
+
+        let streaming_config = crate::engine::OrchestratorConfig::live();
+
+        loop_
+            .run_streaming_with_resume_skip_user_add(on_event, session, history, streaming_config)
+            .await
+    }
+
     /// Construct the per-call wiring for the agentic loop so async
     /// task completions reach the next iteration as a synthetic
     /// user-role message.
     ///
     /// This is the central fix for the tool async refactor (commit 3
     /// follow-up): each call to `Agent::execute_*` constructs a fresh
-    /// `AsyncTaskCompletionQueue`, an `AsyncExecutor` that fans out to
+    /// `SessionInbox`, an `AsyncExecutor` that fans out to
     /// that queue, and a `TaskTool` bound to both. The TaskTool is
     /// re-registered on the `ExtensionCore` (overwriting any prior
     /// instance), and the same queue is given to `AgenticLoop` so the
@@ -847,7 +907,7 @@ impl Agent {
     /// Returns the constructed `AgenticLoop` ready to run. The session
     /// key is pushed onto the core so `TaskTool::spawn` can stamp
     /// `parent_session_key` correctly.
-    async fn build_agentic_loop(
+    pub async fn build_agentic_loop(
         &self,
         agent_arc: Arc<Agent>,
         provider: Arc<crate::providers::Provider>,
@@ -857,14 +917,23 @@ impl Agent {
         let extension_core = self.extension_core();
 
         // 1. Per-call completion queue (shared by executor + loop).
-        let async_completion_queue = Arc::new(
-            crate::extensions::framework::async_exec::executor::AsyncTaskCompletionQueue::new(),
-        );
+        //    The executor is wired to a per-call `InboxRegistry` that
+        //    holds the same `SessionInbox` the loop drains; the
+        //    daemon-global `InboxRegistry` will replace this in a
+        //    follow-up once the per-call path is rewired to read from
+        //    `AppState::inbox_registry` directly.
+        let async_inbox_registry = Arc::new(crate::session::InboxRegistry::new());
+        let async_inbox_key = session_key
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let async_completion_queue = async_inbox_registry
+            .get_or_create(&async_inbox_key)
+            .await;
 
-        // 2. Per-call AsyncExecutor wired to the same queue.
+        // 2. Per-call AsyncExecutor wired to the same registry.
         let async_executor = Arc::new(
             crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
-                .with_completion_queue(async_completion_queue.clone()),
+                .with_inbox_registry(async_inbox_registry.clone()),
         );
 
         // 3. Per-call TaskTool bound to executor + core. Uses Weak so

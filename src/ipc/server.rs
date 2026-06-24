@@ -2341,6 +2341,65 @@ impl IpcServer {
                 }
             }
 
+            RequestPacket::SessionSteer {
+                request_id,
+                session_id,
+                content,
+            } => {
+                if let Err(e) = Self::handle_session_steer(
+                    request_id,
+                    &session_id,
+                    content,
+                    state,
+                    sink,
+                )
+                .await
+                {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: e.to_string(),
+                    };
+                    Self::send_sink(sink, response).await?;
+                }
+            }
+
+            RequestPacket::SessionSteerList {
+                request_id,
+                session_id,
+            } => {
+                if let Err(e) =
+                    Self::handle_session_steer_list(request_id, &session_id, state, sink).await
+                {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: e.to_string(),
+                    };
+                    Self::send_sink(sink, response).await?;
+                }
+            }
+
+            RequestPacket::SessionSteerCancel {
+                request_id,
+                session_id,
+                message_id,
+            } => {
+                if let Err(e) = Self::handle_session_steer_cancel(
+                    request_id,
+                    &session_id,
+                    message_id,
+                    state,
+                    sink,
+                )
+                .await
+                {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: e.to_string(),
+                    };
+                    Self::send_sink(sink, response).await?;
+                }
+            }
+
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let mut manager = state.extension_manager().write().await;
                 let install_path =
@@ -3594,6 +3653,281 @@ impl IpcServer {
         };
         Self::send_sink(sink, response).await?;
 
+        Ok(())
+    }
+
+    /// Enqueue a user steering message for the given session. If the
+    /// session is idle, auto-trigger a new run; otherwise the in-flight
+    /// loop drains the message at the start of its next iteration.
+    ///
+    /// Steps:
+    /// 1. Resolve the session by id (cross-agent metadata lookup so
+    ///    the caller doesn't need to know the agent name).
+    /// 2. Persist the user turn via `session.add_user(content)` (the
+    ///    handler is the single owner of the "user wrote this" fact).
+    /// 3. Push the steering item to the per-session inbox.
+    /// 4. `try_acquire_run`: if `Some(permit)`, the daemon auto-starts
+    ///    a new run via `agent_service.run_session_on_inbox` and
+    ///    forwards events to the sink on the same `request_id`.
+    /// 5. Otherwise, the in-flight loop drains the steering message
+    ///    at its next iteration; we emit `MessageQueued {
+    ///    run_triggered: false }` and close the stream.
+    async fn handle_session_steer(
+        request_id: u64,
+        session_id: &str,
+        content: String,
+        state: AppState,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        use crate::extensions::framework::async_exec::executor::completion_queue::{
+            InboxItem, SteeringMessage,
+        };
+        use crate::engine::{AgenticEvent, LifecyclePhase};
+
+        let session_service = state.session_service();
+
+        // 1. Resolve agent_name from the cross-agent metadata index.
+        let metadata = match session_service.get_session_metadata(session_id).await {
+            Ok(m) => m,
+            Err(e) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("session not found: {e}"),
+                };
+                Self::send_sink(sink, response).await?;
+                return Ok(());
+            }
+        };
+        let agent_name = metadata.agent_name.clone();
+
+        // 2. Open the session by (agent, session_id). We pass an
+        //    empty `user` so we don't fabricate a fake caller — the
+        //    session record already has its real peer. Team is
+        //    unavailable from cross-agent metadata, so we open under
+        //    the personal (None) team namespace; this matches the
+        //    `execute_streaming` path's default.
+        let session = match session_service
+            .open_session(&agent_name, None, session_id, "")
+            .await
+        {
+            Ok(s) => Arc::new(tokio::sync::RwLock::new(s)),
+            Err(e) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("failed to open session: {e}"),
+                };
+                Self::send_sink(sink, response).await?;
+                return Ok(());
+            }
+        };
+
+        // 3. Persist the user turn on the session.
+        {
+            let mut s = session.write().await;
+            if let Err(e) = s.add_user(&content).await {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("failed to persist user turn: {e}"),
+                };
+                Self::send_sink(sink, response).await?;
+                return Ok(());
+            }
+        }
+
+        // 4. Push the steering item to the per-session inbox.
+        let inbox = state.inbox_registry.get_or_create(session_id).await;
+        let steering = SteeringMessage::new(content.clone());
+        let message_id = steering.id;
+        inbox.push(InboxItem::Steering(steering));
+
+        // 5. Try to acquire the run permit. If the session is busy,
+        //    the in-flight loop will drain the steering message at
+        //    its next iteration; just emit MessageQueued and Done.
+        let permit = match state.inbox_registry.try_acquire_run(session_id).await {
+            Some(permit) => permit,
+            None => {
+                let queued = ResponsePacket::MessageQueued {
+                    request_id,
+                    message_id,
+                    run_triggered: false,
+                };
+                Self::send_sink(sink, queued).await?;
+                let done = ResponsePacket::Done {
+                    request_id,
+                    success: true,
+                    error: None,
+                };
+                Self::send_sink(sink, done).await?;
+                return Ok(());
+            }
+        };
+
+        // 6. Auto-trigger: session was idle. Emit MessageQueued with
+        //    run_triggered=true, then start the run and forward its
+        //    events to the sink on the same request_id.
+        let queued = ResponsePacket::MessageQueued {
+            request_id,
+            message_id,
+            run_triggered: true,
+        };
+        Self::send_sink(sink, queued).await?;
+
+        let agent_service = state.agent_service().clone();
+        let mut event_stream = match agent_service
+            .run_session_on_inbox(session, state.inbox_registry.clone(), permit, None)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("failed to start steering run: {e}"),
+                };
+                Self::send_sink(sink, response).await?;
+                let done = ResponsePacket::Done {
+                    request_id,
+                    success: false,
+                    error: Some(e.to_string()),
+                };
+                Self::send_sink(sink, done).await?;
+                return Ok(());
+            }
+        };
+
+        // Forward events to the sink (mirrors handle_execute's loop
+        // but stripped of the streaming-vs-buffered split — the
+        // steering path always streams).
+        let mut heartbeat = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+        loop {
+            tokio::select! {
+                maybe_event = event_stream.receiver.recv() => {
+                    match maybe_event {
+                        Some(AgenticEvent::AssistantDelta { text, .. } | AgenticEvent::AssistantText { text, .. }) => {
+                            let packet = ResponsePacket::Text {
+                                request_id,
+                                seq: 0,
+                                chunk: text,
+                            };
+                            Self::send_sink(sink, packet).await?;
+                        }
+                        Some(AgenticEvent::Lifecycle {
+                            phase: LifecyclePhase::End,
+                            ..
+                        }) => {
+                            let packet = ResponsePacket::Done {
+                                request_id,
+                                success: true,
+                                error: None,
+                            };
+                            Self::send_sink(sink, packet).await?;
+                            break;
+                        }
+                        Some(AgenticEvent::Lifecycle {
+                            phase: LifecyclePhase::Error,
+                            error,
+                            ..
+                        }) => {
+                            let packet = ResponsePacket::Done {
+                                request_id,
+                                success: false,
+                                error,
+                            };
+                            Self::send_sink(sink, packet).await?;
+                            break;
+                        }
+                        Some(_) => {
+                            // Ignore other events (ToolStart, ToolEnd,
+                            // Thinking, Status, Usage). The CLI is
+                            // interested in text + lifecycle only.
+                        }
+                        None => {
+                            // Sender dropped without an End/Error —
+                            // treat as success.
+                            let packet = ResponsePacket::Done {
+                                request_id,
+                                success: true,
+                                error: None,
+                            };
+                            Self::send_sink(sink, packet).await?;
+                            break;
+                        }
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    let packet = ResponsePacket::Heartbeat { request_id };
+                    Self::send_sink(sink, packet).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// List pending (un-drained) steering messages for a session.
+    async fn handle_session_steer_list(
+        request_id: u64,
+        session_id: &str,
+        state: AppState,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        // Validate the session exists (returns Error if not).
+        if let Err(e) = state.session_service().get_session_metadata(session_id).await {
+            let response = ResponsePacket::Error {
+                request_id,
+                message: format!("session not found: {e}"),
+            };
+            Self::send_sink(sink, response).await?;
+            return Ok(());
+        }
+
+        // No inbox entry yet → empty list. We deliberately don't
+        // lazy-create on read; the inbox exists only when something
+        // has been queued or the executor has touched the session.
+        let summaries = if state.inbox_registry.is_empty().await {
+            Vec::new()
+        } else {
+            match state.inbox_registry.peek_inbox(session_id).await {
+                Some(inbox) => {
+                    let pending = inbox.pending_steering().await;
+                    pending
+                        .into_iter()
+                        .map(|m| crate::ipc::packet::SteeringMessageSummary {
+                            message_id: m.id,
+                            queued_at: m.queued_at,
+                            preview: m.content,
+                        })
+                        .collect()
+                }
+                None => Vec::new(),
+            }
+        };
+
+        let response = ResponsePacket::PendingMessages {
+            request_id,
+            session_id: session_id.to_string(),
+            messages: summaries,
+        };
+        Self::send_sink(sink, response).await?;
+        Ok(())
+    }
+
+    /// Best-effort cancel of a queued steering message by id.
+    async fn handle_session_steer_cancel(
+        request_id: u64,
+        session_id: &str,
+        message_id: uuid::Uuid,
+        state: AppState,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        let was_present = match state.inbox_registry.peek_inbox(session_id).await {
+            Some(inbox) => inbox.cancel_steering(message_id).await,
+            None => false,
+        };
+        let response = ResponsePacket::MessageCancelled {
+            request_id,
+            message_id,
+            was_present,
+        };
+        Self::send_sink(sink, response).await?;
         Ok(())
     }
 
