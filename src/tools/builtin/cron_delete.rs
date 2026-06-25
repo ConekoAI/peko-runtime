@@ -30,12 +30,13 @@ impl Default for CronDeleteTool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronDeleteArgs {
     /// Job ID to cancel
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// Legacy alias for `id` (peko extension)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
     /// Optional label to cancel (peko extension; alternative to `id`)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 
@@ -56,9 +57,16 @@ impl Tool for CronDeleteTool {
                 "id": {
                     "type": "string",
                     "description": "ID of the scheduled job to cancel"
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Label of the scheduled job to cancel (peko extension)"
                 }
             },
-            "required": ["id"]
+            "anyOf": [
+                { "required": ["id"] },
+                { "required": ["label"] }
+            ]
         })
     }
 
@@ -66,9 +74,9 @@ impl Tool for CronDeleteTool {
         let args: CronDeleteArgs = serde_json::from_value(params.clone())
             .map_err(|e| anyhow::anyhow!("Invalid CronDelete arguments: {e}"))?;
 
-        let job_id = if !args.id.is_empty() {
-            args.id
-        } else if let Some(job_id) = args.job_id {
+        let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
+            id
+        } else if let Some(job_id) = args.job_id.filter(|s| !s.is_empty()) {
             job_id
         } else if let Some(label) = args.label {
             Self::resolve_id_by_label(&label).await?
@@ -130,6 +138,6 @@ mod tests {
         let tool = CronDeleteTool::new();
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
-        assert!(params.get("required").is_some());
+        assert!(params.get("anyOf").is_some());
     }
 }
