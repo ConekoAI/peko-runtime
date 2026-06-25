@@ -30,9 +30,9 @@ use std::sync::Arc;
 pub struct BuiltinToolRegistrarConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
-    /// Enable granular filesystem tools (`Read`, `Write`, glob, grep, `str_replace_file`)
+    /// Enable granular filesystem tools (`Read`, `Write`, glob, grep, `Edit`)
     pub enable_granular_fs: bool,
-    /// Enable write tools (`Write`, `str_replace_file`)
+    /// Enable write tools (`Write`, `Edit`)
     pub enable_granular_write: bool,
     /// Enable shell tool
     pub enable_shell: bool,
@@ -157,8 +157,7 @@ impl BuiltinToolAdapter {
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::{
-            CronTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, StrReplaceFileTool,
-            WriteTool,
+            CronTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, WriteTool,
         };
 
         let disabled_set: HashSet<String> = config
@@ -203,9 +202,9 @@ impl BuiltinToolAdapter {
                 Self::register_tool(core, tool).await?;
             }
 
-            // str_replace_file
-            if config.enable_granular_write && !disabled_set.contains("str_replace_file") {
-                let tool = Arc::new(StrReplaceFileTool::new().with_workspace(&workspace));
+            // Edit
+            if config.enable_granular_write && !disabled_set.contains("edit") {
+                let tool = Arc::new(EditTool::new().with_workspace(&workspace));
                 Self::register_tool(core, tool).await?;
             }
         }
@@ -374,20 +373,15 @@ impl HookHandler for BuiltinExecuteHandler {
                                             );
                                         }
                                     }
-                                    "Write" | "Edit" | "str_replace_file" => {
-                                        let key = if tool_name_for_preproc == "Write" {
-                                            "file_path"
-                                        } else {
-                                            "path"
-                                        };
-                                        if let Some(path_val) = obj.get(key) {
+                                    "Write" | "Edit" => {
+                                        if let Some(path_val) = obj.get("file_path") {
                                             if let Some(path_str) = path_val.as_str() {
                                                 let path_buf = std::path::PathBuf::from(path_str);
                                                 if !path_buf.is_absolute() {
                                                     let resolved =
                                                         std::path::PathBuf::from(ws).join(path_str);
                                                     obj.insert(
-                                                        key.to_string(),
+                                                        "file_path".to_string(),
                                                         serde_json::Value::String(
                                                             resolved.to_string_lossy().to_string(),
                                                         ),

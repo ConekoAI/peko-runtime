@@ -47,7 +47,7 @@ pub struct ExtensionConfig {
     pub http: Option<HttpToolConfig>,
     /// Custom tool definitions
     pub custom: Option<HashMap<String, serde_json::Value>>,
-    /// Per-extension settings (snake_case keys like "str_replace_file", "Write", etc.)
+    /// Per-extension settings (snake_case keys like "Edit", "Write", etc.)
     #[serde(default)]
     pub read_file: Option<ExtensionSettings>,
     #[serde(default)]
@@ -57,7 +57,7 @@ pub struct ExtensionConfig {
     #[serde(default)]
     pub grep: Option<ExtensionSettings>,
     #[serde(default)]
-    pub str_replace_file: Option<ExtensionSettings>,
+    pub edit_tool: Option<ExtensionSettings>,
 }
 
 impl Default for ExtensionConfig {
@@ -71,7 +71,7 @@ impl Default for ExtensionConfig {
                 "builtin:tool:Write".to_string(),
                 "builtin:tool:glob".to_string(),
                 "builtin:tool:grep".to_string(),
-                "builtin:tool:str_replace_file".to_string(),
+                "builtin:tool:Edit".to_string(),
                 "builtin:tool:session".to_string(),
                 "builtin:tool:cron".to_string(),
                 "builtin:tool:agent_spawn".to_string(),
@@ -83,7 +83,7 @@ impl Default for ExtensionConfig {
             write_file: None,
             glob: None,
             grep: None,
-            str_replace_file: None,
+            edit_tool: None,
         }
     }
 }
@@ -133,7 +133,7 @@ impl ExtensionConfig {
             "Write" => self.write_file.as_ref(),
             "glob" => self.glob.as_ref(),
             "grep" => self.grep.as_ref(),
-            "str_replace_file" => self.str_replace_file.as_ref(),
+            "Edit" => self.edit_tool.as_ref(),
             _ => None,
         }
     }
@@ -316,7 +316,7 @@ mod tests {
                 "builtin:tool:Write".to_string(),
                 "builtin:tool:glob".to_string(),
                 "builtin:tool:grep".to_string(),
-                "builtin:tool:str_replace_file".to_string(),
+                "builtin:tool:Edit".to_string(),
                 "builtin:tool:session".to_string(),
                 "builtin:tool:cron".to_string(),
             ],
@@ -329,7 +329,7 @@ mod tests {
         assert!(config.is_extension_enabled("builtin:tool:Write"));
         assert!(config.is_extension_enabled("builtin:tool:glob"));
         assert!(config.is_extension_enabled("builtin:tool:grep"));
-        assert!(config.is_extension_enabled("builtin:tool:str_replace_file"));
+        assert!(config.is_extension_enabled("builtin:tool:Edit"));
         assert!(config.is_extension_enabled("builtin:tool:session"));
         assert!(config.is_extension_enabled("builtin:tool:cron"));
 
@@ -356,7 +356,7 @@ mod tests {
             write_file: None,
             glob: None,
             grep: None,
-            str_replace_file: None,
+            edit_tool: None,
         };
 
         assert!(!config.is_extension_enabled("builtin:tool:shell"));
@@ -378,7 +378,7 @@ mod tests {
             write_file: None,
             glob: None,
             grep: None,
-            str_replace_file: None,
+            edit_tool: None,
         };
 
         assert!(config.is_extension_enabled("builtin:tool:Read"));

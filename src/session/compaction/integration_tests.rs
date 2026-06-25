@@ -179,12 +179,12 @@ fn test_file_op_extraction_from_tool_calls() {
             ContentBlock::ToolCall {
                 id: "tc1".to_string(),
                 name: "Read".to_string(),
-                arguments: serde_json::json!({"path": "config.toml"}),
+                arguments: serde_json::json!({"file_path": "config.toml"}),
             },
             ContentBlock::ToolCall {
                 id: "tc2".to_string(),
                 name: "Write".to_string(),
-                arguments: serde_json::json!({"path": "output.txt", "content": "..."}),
+                arguments: serde_json::json!({"file_path": "output.txt", "content": "..."}),
             },
         ],
         timestamp: chrono::Utc::now(),

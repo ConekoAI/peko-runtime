@@ -1386,8 +1386,8 @@ mod tests {
             "grep tool not registered"
         );
         assert!(
-            tool_runtime.has_tool("str_replace_file").await,
-            "str_replace_file tool not registered"
+            tool_runtime.has_tool("Edit").await,
+            "Edit tool not registered"
         );
         // `task` is registered per-agent (not globally on the daemon's
         // ToolRuntime) — see `Agent::build_agentic_loop` and

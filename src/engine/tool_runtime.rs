@@ -8,9 +8,7 @@ use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
-use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadTool, ShellTool, StrReplaceFileTool, Tool, WriteTool,
-};
+use crate::tools::{CronTool, EditTool, GlobTool, GrepTool, ReadTool, ShellTool, Tool, WriteTool};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -175,7 +173,7 @@ impl ToolRuntime {
             Arc::new(WriteTool::new().with_workspace(workspace.clone())),
             Arc::new(GlobTool::new().with_workspace(workspace.clone())),
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
-            Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
+            Arc::new(EditTool::new().with_workspace(workspace.clone())),
             Arc::new(CronTool::new()),
         ];
 
@@ -193,7 +191,7 @@ impl ToolRuntime {
             write_file: None,
             glob: None,
             grep: None,
-            str_replace_file: None,
+            edit_tool: None,
         };
         extension_core.set_tool_config(ext_config).await;
 
@@ -313,7 +311,7 @@ mod tests {
         assert!(runtime.has_tool("Write").await);
         assert!(runtime.has_tool("glob").await);
         assert!(runtime.has_tool("grep").await);
-        assert!(runtime.has_tool("str_replace_file").await);
+        assert!(runtime.has_tool("Edit").await);
         assert!(runtime.has_tool("cron").await);
     }
 

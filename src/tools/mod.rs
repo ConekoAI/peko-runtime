@@ -21,9 +21,9 @@ pub use core::{AbortSignal, Tool, ToolContext, ToolError, ToolResult, ToolWithCo
 
 // Re-exports from builtin for convenience.
 pub use builtin::{
-    AgentSpawnTool, ChannelType, CronTool, GlobTool, GrepTool, MessageConfig, MessageResult,
-    MessageTool, ReadTool, SessionCache, SessionInfo, SessionIntrospectionRegistry,
-    SessionIntrospector, SessionTool, ShellTool, StrReplaceFileTool, TaskTool, WriteTool,
+    AgentSpawnTool, ChannelType, CronTool, EditTool, GlobTool, GrepTool, MessageConfig,
+    MessageResult, MessageTool, ReadTool, SessionCache, SessionInfo, SessionIntrospectionRegistry,
+    SessionIntrospector, SessionTool, ShellTool, TaskTool, WriteTool,
 };
 
 // Re-exports from registry

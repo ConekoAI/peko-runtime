@@ -18,7 +18,7 @@ fn harness_compiles() {
 // Future fixtures (to be added as tools are renamed):
 // - Read -> Read schema parity
 // - Write -> Write schema parity
-// - str_replace_file -> Edit schema parity
+// - Edit -> Edit schema parity
 // - shell -> Bash schema parity
 // - cron -> CronCreate/CronDelete/CronList split
 // - agent_spawn -> Agent schema parity

@@ -564,15 +564,7 @@ impl ExtensionState {
 pub mod builtin_tools {
     /// Tools registered once at daemon startup by `BuiltinToolAdapter::register_all()`.
     pub const GLOBAL_TOOL_NAMES: &[&str] = &[
-        "shell",
-        "Read",
-        "Write",
-        "glob",
-        "grep",
-        "str_replace_file",
-        "session",
-        "cron",
-        "task",
+        "shell", "Read", "Write", "glob", "grep", "Edit", "session", "cron", "task",
     ];
 
     /// Tools registered per-agent in `Agent::init_builtins_async()`.

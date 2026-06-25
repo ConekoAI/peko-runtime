@@ -10,7 +10,7 @@
 //! | `built-in/grep.ps1`        | `built_in_grep_searches_content`                   |
 //! | `built-in/read_file.ps1`   | `built_in_read_file_returns_content`               |
 //! | `built-in/write_file.ps1`  | `built_in_write_file_creates_file`                 |
-//! | `built-in/str_replace_file.ps1` | `built_in_str_replace_file_modifies_file`     |
+//! | `built-in/Edit.ps1`        | `built_in_edit_modifies_file`                 |
 //! | `built-in/shell.ps1`       | `built_in_shell_executes_command`                  |
 //!
 //! Each test:
@@ -120,7 +120,7 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
 /// Ensure the daemon's tool-workspace root exists. The daemon doesn't
 /// create `<peko_dir>/data/workspaces/` on its own — it only writes
 /// into it when a tool is invoked. Tests that pre-seed files (for
-/// Read / grep / str_replace_file inputs, or to verify
+/// Read / grep / Edit inputs, or to verify
 /// write_file's output) need to mkdir -p the root first.
 fn ensure_workspace_dir(cli: &PekoCli) {
     std::fs::create_dir_all(workspace_dir(cli)).expect("create workspaces dir");
@@ -170,13 +170,13 @@ enabled = [
     "Write",
     "glob",
     "grep",
-    "str_replace_file",
+    "Edit",
     "builtin:tool:shell",
     "builtin:tool:Read",
     "builtin:tool:Write",
     "builtin:tool:glob",
     "builtin:tool:grep",
-    "builtin:tool:str_replace_file",
+    "builtin:tool:Edit",
 ]
 
 [channels]
@@ -190,7 +190,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     std::fs::write(
         agent_dir.join("SYSTEM.md"),
         "Test agent for the built-in tools CLI integration suite. \
-         Has shell, read_file, Write, glob, grep, and str_replace_file tools enabled.",
+         Has shell, Read, Write, glob, grep, and Edit tools enabled.",
     )?;
     Ok(())
 }
@@ -465,14 +465,14 @@ async fn built_in_write_file_creates_file() {
     );
 }
 
-/// `built-in/str_replace_file.ps1` T1+T2+T3: simple / multiple /
+/// `built-in/Edit.ps1` T1+T2+T3: simple / multiple /
 /// atomic-fail. We exercise the simple replacement (T1) — it covers
 /// the in-place file mutation path. The atomic-fail case (T3) is
-/// unit-tested in `src/tools/builtin/fs/str_replace_file.rs`.
+/// unit-tested in `src/tools/builtin/fs/edit.rs`.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
-async fn built_in_str_replace_file_modifies_file() {
+async fn built_in_edit_modifies_file() {
     if mock_llm_url().is_none() {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
@@ -480,20 +480,22 @@ async fn built_in_str_replace_file_modifies_file() {
     let mock_url = mock_llm_url().unwrap();
 
     let needle = "built-in-strreplace-e0b7";
-    let agent_name = "built_in_str_replace";
-    let file_name = "built_in_str_replace_T1.txt";
+    let agent_name = "built_in_edit";
+    let file_name = "built_in_edit_T1.txt";
     let old_string = "Original Name";
     let new_string = "New Name";
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "str_replace_file", "arguments":
+            { "tool_call": { "name": "Edit", "arguments":
                 serde_json::json!({
-                    "path": file_name,
-                    "edit": { "old": old_string, "new": new_string },
+                    "file_path": file_name,
+                    "old_string": old_string,
+                    "new_string": new_string,
+                    "replace_all": false,
                 }).to_string()
             } },
-            "STRREPLACE_DONE",
+            "EDIT_DONE",
         ],
     })
     .to_string();
@@ -512,9 +514,9 @@ async fn built_in_str_replace_file_modifies_file() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your str_replace_file tool to replace '{old_string}' with \
+        "Use your Edit tool to replace '{old_string}' with \
          '{new_string}' in '{file_name}'. When the replacement is done, \
-         respond STRREPLACE_DONE. Use the needle '{needle}' in your response."
+         respond EDIT_DONE. Use the needle '{needle}' in your response."
     );
     let (out, err, status) = run(
         &cli,
@@ -523,8 +525,8 @@ async fn built_in_str_replace_file_modifies_file() {
     );
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("STRREPLACE_DONE"),
-        "parent did not report STRREPLACE_DONE: stdout={out} stderr={err}",
+        out.contains("EDIT_DONE"),
+        "parent did not report EDIT_DONE: stdout={out} stderr={err}",
     );
 
     // Verify the replacement actually landed in the file.
@@ -532,12 +534,12 @@ async fn built_in_str_replace_file_modifies_file() {
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         let dump = dump_data_dir(&cli);
         panic!(
-            "str_replace_file target not readable at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}"
+            "Edit target not readable at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}"
         )
     });
     assert!(
         actual.contains(new_string) && !actual.contains(old_string),
-        "str_replace_file did not produce the expected content at {path:?}: {actual}",
+        "Edit did not produce the expected content at {path:?}: {actual}",
     );
 }
 

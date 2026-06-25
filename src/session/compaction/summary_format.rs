@@ -73,7 +73,7 @@ pub fn format_summary_with_file_ops(summary: &str, details: &CompactionDetails) 
 
 /// Extract file operations from a list of messages being summarized.
 ///
-/// Scans tool calls for `read_file`, `Write`, `edit_file`, etc.
+/// Scans tool calls for `Read`, `Write`, `Edit`, etc.
 /// This is a best-effort heuristic — exact tracking depends on tool naming.
 pub fn extract_file_ops_from_messages(
     messages: &[crate::common::types::message::LlmMessage],
@@ -135,8 +135,15 @@ pub fn extract_file_ops_from_messages(
 
 /// Try to extract a file path from tool call arguments.
 fn extract_path_from_args(args: &serde_json::Value) -> Option<String> {
-    // Common patterns: {"path": "..."}, {"file": "..."}, {"target": "..."}
-    for key in &["path", "file", "target", "filepath", "filename"] {
+    // Common patterns: {"file_path": "..."}, {"path": "..."}, {"file": "..."}, {"target": "..."}
+    for key in &[
+        "file_path",
+        "path",
+        "file",
+        "target",
+        "filepath",
+        "filename",
+    ] {
         if let Some(path) = args.get(key).and_then(|v| v.as_str()) {
             return Some(path.to_string());
         }
@@ -197,12 +204,12 @@ mod tests {
                 ContentBlock::ToolCall {
                     id: "tc1".to_string(),
                     name: "Read".to_string(),
-                    arguments: serde_json::json!({"path": "src/main.rs"}),
+                    arguments: serde_json::json!({"file_path": "src/main.rs"}),
                 },
                 ContentBlock::ToolCall {
                     id: "tc2".to_string(),
                     name: "Write".to_string(),
-                    arguments: serde_json::json!({"path": "src/lib.rs", "content": "..."}),
+                    arguments: serde_json::json!({"file_path": "src/lib.rs", "content": "..."}),
                 },
             ],
             timestamp: chrono::Utc::now(),
@@ -227,7 +234,7 @@ mod tests {
             content: vec![ContentBlock::ToolCall {
                 id: "tc1".to_string(),
                 name: "Read".to_string(),
-                arguments: serde_json::json!({"path": "c.rs"}),
+                arguments: serde_json::json!({"file_path": "c.rs"}),
             }],
             timestamp: chrono::Utc::now(),
             metadata: std::collections::HashMap::new(),
