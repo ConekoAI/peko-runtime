@@ -22,7 +22,7 @@ pub use core::{AbortSignal, Tool, ToolContext, ToolError, ToolResult, ToolWithCo
 // Re-exports from builtin for convenience.
 pub use builtin::{
     AgentSpawnTool, ChannelType, CronTool, GlobTool, GrepTool, MessageConfig, MessageResult,
-    MessageTool, ReadFileTool, SessionCache, SessionInfo, SessionIntrospectionRegistry,
+    MessageTool, ReadTool, SessionCache, SessionInfo, SessionIntrospectionRegistry,
     SessionIntrospector, SessionTool, ShellTool, StrReplaceFileTool, TaskTool, WriteFileTool,
 };
 

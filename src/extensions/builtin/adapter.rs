@@ -30,7 +30,7 @@ use std::sync::Arc;
 pub struct BuiltinToolRegistrarConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
-    /// Enable granular filesystem tools (`read_file`, `write_file`, glob, grep, `str_replace_file`)
+    /// Enable granular filesystem tools (`Read`, `write_file`, glob, grep, `str_replace_file`)
     pub enable_granular_fs: bool,
     /// Enable write tools (`write_file`, `str_replace_file`)
     pub enable_granular_write: bool,
@@ -157,7 +157,7 @@ impl BuiltinToolAdapter {
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::{
-            CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
+            CronTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, StrReplaceFileTool,
             WriteFileTool,
         };
 
@@ -179,9 +179,9 @@ impl BuiltinToolAdapter {
 
         // Granular filesystem tools
         if config.enable_granular_fs {
-            // read_file
-            if !disabled_set.contains("read_file") {
-                let tool = Arc::new(ReadFileTool::new().with_workspace(&workspace));
+            // Read
+            if !disabled_set.contains("read") {
+                let tool = Arc::new(ReadTool::new().with_workspace(&workspace));
                 Self::register_tool(core, tool).await?;
             }
 
@@ -374,15 +374,37 @@ impl HookHandler for BuiltinExecuteHandler {
                                             );
                                         }
                                     }
-                                    "write_file" | "read_file" | "str_replace_file" => {
-                                        if let Some(path_val) = obj.get("path") {
+                                    "Write" | "write_file" | "Edit" | "str_replace_file" => {
+                                        let key = if tool_name_for_preproc == "Write" {
+                                            "file_path"
+                                        } else {
+                                            "path"
+                                        };
+                                        if let Some(path_val) = obj.get(key) {
                                             if let Some(path_str) = path_val.as_str() {
                                                 let path_buf = std::path::PathBuf::from(path_str);
                                                 if !path_buf.is_absolute() {
                                                     let resolved =
                                                         std::path::PathBuf::from(ws).join(path_str);
                                                     obj.insert(
-                                                        "path".to_string(),
+                                                        key.to_string(),
+                                                        serde_json::Value::String(
+                                                            resolved.to_string_lossy().to_string(),
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "Read" => {
+                                        if let Some(path_val) = obj.get("file_path") {
+                                            if let Some(path_str) = path_val.as_str() {
+                                                let path_buf = std::path::PathBuf::from(path_str);
+                                                if !path_buf.is_absolute() {
+                                                    let resolved =
+                                                        std::path::PathBuf::from(ws).join(path_str);
+                                                    obj.insert(
+                                                        "file_path".to_string(),
                                                         serde_json::Value::String(
                                                             resolved.to_string_lossy().to_string(),
                                                         ),
@@ -538,7 +560,7 @@ mod tests {
     fn test_is_builtin() {
         // Global tools
         assert!(BuiltinToolAdapter::is_builtin("shell"));
-        assert!(BuiltinToolAdapter::is_builtin("read_file"));
+        assert!(BuiltinToolAdapter::is_builtin("Read"));
         assert!(BuiltinToolAdapter::is_builtin("SHELL")); // case insensitive
                                                           // Agent-specific tools
         assert!(BuiltinToolAdapter::is_builtin("agent_spawn"));
@@ -552,7 +574,7 @@ mod tests {
     fn test_all_tool_names() {
         let names = BuiltinToolAdapter::all_tool_names();
         assert!(names.contains(&"shell"));
-        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"Read"));
         assert!(names.contains(&"agent_spawn"));
         assert!(names.contains(&"a2a_send"));
     }

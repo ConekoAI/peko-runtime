@@ -565,7 +565,7 @@ pub mod builtin_tools {
     /// Tools registered once at daemon startup by `BuiltinToolAdapter::register_all()`.
     pub const GLOBAL_TOOL_NAMES: &[&str] = &[
         "shell",
-        "read_file",
+        "Read",
         "write_file",
         "glob",
         "grep",

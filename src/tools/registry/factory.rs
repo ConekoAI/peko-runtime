@@ -26,7 +26,7 @@
 //! Note: Custom tools can also be disabled by name.
 
 use crate::tools::builtin::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
+    CronTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, StrReplaceFileTool,
     WriteFileTool,
 };
 use crate::tools::core::traits::Tool;
@@ -319,8 +319,8 @@ impl ToolFactory {
 
         // Filesystem tool
         // Granular filesystem tools
-        registry.register("read_file", config.enable_granular_fs, || {
-            Arc::new(ReadFileTool::new().with_workspace(config.workspace_dir.clone()))
+        registry.register("Read", config.enable_granular_fs, || {
+            Arc::new(ReadTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
         registry.register(

@@ -120,7 +120,7 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
 /// Ensure the daemon's tool-workspace root exists. The daemon doesn't
 /// create `<peko_dir>/data/workspaces/` on its own — it only writes
 /// into it when a tool is invoked. Tests that pre-seed files (for
-/// read_file / grep / str_replace_file inputs, or to verify
+/// Read / grep / str_replace_file inputs, or to verify
 /// write_file's output) need to mkdir -p the root first.
 fn ensure_workspace_dir(cli: &PekoCli) {
     std::fs::create_dir_all(workspace_dir(cli)).expect("create workspaces dir");
@@ -166,13 +166,13 @@ default_timeout_seconds = 60
 [extensions]
 enabled = [
     "shell",
-    "read_file",
+    "Read",
     "write_file",
     "glob",
     "grep",
     "str_replace_file",
     "builtin:tool:shell",
-    "builtin:tool:read_file",
+    "builtin:tool:Read",
     "builtin:tool:write_file",
     "builtin:tool:glob",
     "builtin:tool:grep",
@@ -352,8 +352,8 @@ async fn built_in_read_file_returns_content() {
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "read_file", "arguments":
-                serde_json::json!({ "path": file_name }).to_string()
+            { "tool_call": { "name": "Read", "arguments":
+                serde_json::json!({ "file_path": file_name }).to_string()
             } },
             "READ_DONE",
         ],
@@ -376,7 +376,7 @@ async fn built_in_read_file_returns_content() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your read_file tool to read '{file_name}'. When you've seen the \
+        "Use your Read tool to read '{file_name}'. When you've seen the \
          content, respond READ_DONE. Use the needle '{needle}' in your response."
     );
     let (out, err, status) = run(

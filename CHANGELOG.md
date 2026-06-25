@@ -21,8 +21,7 @@ execution, A2A protocol, and extension system.
 
 #### Upcoming (tracked on `tool-parity-core-subset` branch)
 
-- Rename `read_file` → `Read`, `write_file` → `Write`,
-  `str_replace_file` → `Edit`, `shell` → `Bash`.
+- Rename `write_file` → `Write`, `str_replace_file` → `Edit`, `shell` → `Bash`.
 - Split `cron` → `CronCreate` / `CronDelete` / `CronList`.
 - Rename `agent_spawn` → `Agent` and add `subagent_type`, `description`,
   `model` params.
@@ -33,6 +32,10 @@ execution, A2A protocol, and extension system.
 
 ### Changed
 
+- **BREAKING**: Renamed built-in tool `read_file` to `Read`. The tool now
+  reports its canonical name as `Read` and its schema uses `file_path`
+  (with `offset`, `limit`, and `pages` support). Update agent configs,
+  whitelists, and prompts that referenced the old name.
 - **BREAKING**: Renamed the Rust crate from `pekobot` to `peko`. Update all
   `use pekobot::...` imports to `use peko::...`.
 - **BREAKING**: Renamed the public Rust type

@@ -1,6 +1,8 @@
-//! `ReadFile` tool - Read file contents with optional line ranges
+//! `Read` tool - Read file contents with optional line ranges
 //!
-//! Granular read-only file access for agents.
+//! Granular read-only file access for agents. Matches Claude Code's `Read`
+//! tool surface; peko extensions are binary auto-detection and a `pages`
+//! parameter for PDFs (PDF support is pending).
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -10,30 +12,33 @@ use tokio::fs;
 
 use crate::tools::core::Tool;
 
-/// `ReadFile` tool arguments
+/// `Read` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadFileArgs {
+pub struct ReadArgs {
     /// Path to the file (relative to workspace or absolute)
-    pub path: String,
+    pub file_path: String,
     /// Starting line number (1-indexed, inclusive)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_offset: Option<usize>,
+    pub offset: Option<usize>,
     /// Maximum number of lines to read
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub n_lines: Option<usize>,
+    pub limit: Option<usize>,
+    /// PDF page range, e.g. "1-5" (peko extension; PDF support pending)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pages: Option<String>,
     /// Use base64 encoding for binary files
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
 }
 
-/// `ReadFile` tool - Read file contents with granular control
-pub struct ReadFileTool {
+/// `Read` tool - Read file contents with granular control
+pub struct ReadTool {
     /// Default workspace directory (for relative paths)
     workspace_dir: Option<PathBuf>,
 }
 
-impl ReadFileTool {
-    /// Create a new `ReadFile` tool
+impl ReadTool {
+    /// Create a new `Read` tool
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -63,12 +68,13 @@ impl ReadFileTool {
     /// Read file contents with optional line range
     async fn read_file(
         &self,
-        path: &str,
-        line_offset: Option<usize>,
-        n_lines: Option<usize>,
+        file_path: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        pages: Option<&str>,
         encoding: Option<&str>,
     ) -> Result<serde_json::Value> {
-        let resolved = self.resolve_path(path);
+        let resolved = self.resolve_path(file_path);
 
         // Verify it's a file
         let metadata = fs::metadata(&resolved)
@@ -78,6 +84,13 @@ impl ReadFileTool {
         if !metadata.is_file() {
             return Err(anyhow::anyhow!(
                 "Path is not a file: {}",
+                resolved.display()
+            ));
+        }
+
+        if pages.is_some() {
+            return Err(anyhow::anyhow!(
+                "PDF page ranges are not yet supported: {}",
                 resolved.display()
             ));
         }
@@ -111,8 +124,8 @@ impl ReadFileTool {
                 let lines: Vec<&str> = content_str.lines().collect();
                 let total = lines.len();
 
-                let start = line_offset.map_or(0, |o| o.saturating_sub(1));
-                let end = n_lines.map_or(total, |n| (start + n).min(total));
+                let start = offset.map_or(0, |o| o.saturating_sub(1));
+                let end = limit.map_or(total, |n| (start + n).min(total));
 
                 let selected: Vec<&str> = lines.get(start..end).unwrap_or(&[]).to_vec();
 
@@ -143,7 +156,7 @@ impl ReadFileTool {
     }
 }
 
-impl Default for ReadFileTool {
+impl Default for ReadTool {
     fn default() -> Self {
         Self::new()
     }
@@ -155,9 +168,9 @@ fn base64_encode(input: &[u8]) -> String {
 }
 
 #[async_trait]
-impl Tool for ReadFileTool {
+impl Tool for ReadTool {
     fn name(&self) -> &'static str {
-        "read_file"
+        "Read"
     }
 
     fn description(&self) -> String {
@@ -165,18 +178,21 @@ impl Tool for ReadFileTool {
 Read file contents with support for partial reading (line ranges) and binary files.
 
 Use when: Reading source code, configuration files, logs, or any text file.
-Don't use when: You need to write files (use WriteFile) or search across files (use Grep).
+Don't use when: You need to write files (use Write) or search across files (use Grep).
 
 ## Parameters
 
-### path (required)
+### file_path (required)
 Path to the file. Can be relative to workspace or absolute.
 
-### line_offset (optional)
+### offset (optional)
 Starting line number (1-indexed). If omitted, starts from beginning.
 
-### n_lines (optional)
+### limit (optional)
 Maximum number of lines to read. If omitted, reads to end of file.
+
+### pages (optional)
+PDF page range, e.g. "1-5". (Peko extension; PDF support pending.)
 
 ### encoding (optional)
 - "utf8" (default): Read as text
@@ -186,17 +202,17 @@ Maximum number of lines to read. If omitted, reads to end of file.
 
 Read entire file:
 ```json
-{"path": "src/main.rs"}
+{"file_path": "src/main.rs"}
 ```
 
 Read specific lines:
 ```json
-{"path": "src/main.rs", "line_offset": 10, "n_lines": 20}
+{"file_path": "src/main.rs", "offset": 10, "limit": 20}
 ```
 
 Read binary file:
 ```json
-{"path": "image.png", "encoding": "base64"}
+{"file_path": "image.png", "encoding": "base64"}
 ```"#
             .to_string()
     }
@@ -205,19 +221,23 @@ Read binary file:
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": {
+                "file_path": {
                     "type": "string",
                     "description": "Path to the file (relative to workspace or absolute)"
                 },
-                "line_offset": {
+                "offset": {
                     "type": "integer",
                     "description": "Starting line number (1-indexed, inclusive)",
                     "minimum": 1
                 },
-                "n_lines": {
+                "limit": {
                     "type": "integer",
                     "description": "Maximum number of lines to read",
                     "minimum": 1
+                },
+                "pages": {
+                    "type": "string",
+                    "description": "PDF page range, e.g. '1-5' (peko extension; PDF support pending)"
                 },
                 "encoding": {
                     "type": "string",
@@ -225,18 +245,19 @@ Read binary file:
                     "enum": ["utf8", "base64"]
                 }
             },
-            "required": ["path"]
+            "required": ["file_path"]
         })
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
-        let args: ReadFileArgs = serde_json::from_value(params)
+        let args: ReadArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         self.read_file(
-            &args.path,
-            args.line_offset,
-            args.n_lines,
+            &args.file_path,
+            args.offset,
+            args.limit,
+            args.pages.as_deref(),
             args.encoding.as_deref(),
         )
         .await
@@ -256,14 +277,14 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_basic() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = ReadFileTool::new().with_workspace(temp_dir.path());
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
 
         // Create test file
         fs::write(temp_dir.path().join("test.txt"), "Hello, World!")
             .await
             .unwrap();
 
-        let params = json!({"path": "test.txt"});
+        let params = json!({"file_path": "test.txt"});
         let result = tool.execute(params).await.unwrap();
 
         assert_eq!(result["content"], "Hello, World!");
@@ -274,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_with_line_range() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = ReadFileTool::new().with_workspace(temp_dir.path());
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
 
         // Create test file with multiple lines
         let content = "line1\nline2\nline3\nline4\nline5";
@@ -284,9 +305,9 @@ mod tests {
 
         // Read lines 2-3
         let params = json!({
-            "path": "lines.txt",
-            "line_offset": 2,
-            "n_lines": 2
+            "file_path": "lines.txt",
+            "offset": 2,
+            "limit": 2
         });
         let result = tool.execute(params).await.unwrap();
 
@@ -299,7 +320,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_binary() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = ReadFileTool::new().with_workspace(temp_dir.path());
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
 
         // Create binary file
         let binary_content = vec![0u8, 1, 2, 3, 255, 254, 253];
@@ -307,7 +328,7 @@ mod tests {
             .await
             .unwrap();
 
-        let params = json!({"path": "binary.bin", "encoding": "base64"});
+        let params = json!({"file_path": "binary.bin", "encoding": "base64"});
         let result = tool.execute(params).await.unwrap();
 
         assert_eq!(result["encoding"], "base64");
@@ -324,9 +345,9 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_not_found() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = ReadFileTool::new().with_workspace(temp_dir.path());
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
 
-        let params = json!({"path": "nonexistent.txt"});
+        let params = json!({"file_path": "nonexistent.txt"});
         let result = tool.execute(params).await;
 
         assert!(result.is_err());
@@ -335,15 +356,31 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_directory() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = ReadFileTool::new().with_workspace(temp_dir.path());
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
 
         // Create a directory
         fs::create_dir(temp_dir.path().join("mydir")).await.unwrap();
 
-        let params = json!({"path": "mydir"});
+        let params = json!({"file_path": "mydir"});
         let result = tool.execute(params).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not a file"));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_pages_unsupported() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+
+        fs::write(temp_dir.path().join("doc.txt"), "text")
+            .await
+            .unwrap();
+
+        let params = json!({"file_path": "doc.txt", "pages": "1-2"});
+        let result = tool.execute(params).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("PDF"));
     }
 }

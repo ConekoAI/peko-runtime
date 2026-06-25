@@ -344,7 +344,7 @@ async fn a2a_blocking_t2_blocking_execution() {
 
     let cli = PekoCli::new();
     write_a2a_agent(cli.home(), delegator, &[]).expect("write delegator");
-    write_a2a_agent(cli.home(), worker, &["read_file"]).expect("write worker");
+    write_a2a_agent(cli.home(), worker, &["Read"]).expect("write worker");
     write_sentinel_file(&cli, file_name, file_content);
     common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
 
@@ -360,8 +360,8 @@ async fn a2a_blocking_t2_blocking_execution() {
     );
     let worker_script = worker_tool_script(
         child_needle,
-        "read_file",
-        serde_json::json!({"path": file_name}),
+        "Read",
+        serde_json::json!({"file_path": file_name}),
         file_content,
     );
     configure_mock(&mock_url, &merge_scripts(&delegator_script, &worker_script)).await;

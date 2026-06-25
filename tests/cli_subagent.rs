@@ -151,12 +151,12 @@ enabled = [
     "agent_spawn",
     "task",
     "write_file",
-    "read_file",
+    "Read",
     "shell",
     "builtin:tool:agent_spawn",
     "builtin:tool:task",
     "builtin:tool:write_file",
-    "builtin:tool:read_file",
+    "builtin:tool:Read",
     "builtin:tool:shell",
 ]
 
@@ -362,7 +362,7 @@ async fn subagent_blocking_t4_inline_read() {
     let file_content = "INLINE_RESULT_OK";
 
     let task_for_child = format!(
-        "Read '{file_name}' via read_file and return its content as your final \
+        "Read '{file_name}' via Read and return its content as your final \
          text. Substring '{child_needle}' for mock routing. \
          (test=subagent_blocking_T4_inline)"
     );
@@ -384,8 +384,8 @@ async fn subagent_blocking_t4_inline_read() {
             "INLINE_SUCCESS",
         ],
         child_needle: [
-            { "tool_call": { "name": "read_file", "arguments":
-                serde_json::json!({ "path": file_name }).to_string()
+            { "tool_call": { "name": "Read", "arguments":
+                serde_json::json!({ "file_path": file_name }).to_string()
             } },
             // Child's final text — this is what gets captured into
             // the parent's blocking receipt's `output` field.
@@ -618,7 +618,7 @@ async fn subagent_isolation_t1_shared_workspace() {
     let file_content = "SHARED_CONTEXT_SECRET";
 
     let task_for_child = format!(
-        "Read '{file_name}' via read_file and return its content as your \
+        "Read '{file_name}' via Read and return its content as your \
          final text. Substring '{child_needle}' for mock routing. \
          (test=subagent_isolation_T1_shared_workspace)"
     );
@@ -639,8 +639,8 @@ async fn subagent_isolation_t1_shared_workspace() {
             "SHARED_OK",
         ],
         child_needle: [
-            { "tool_call": { "name": "read_file", "arguments":
-                serde_json::json!({ "path": file_name }).to_string()
+            { "tool_call": { "name": "Read", "arguments":
+                serde_json::json!({ "file_path": file_name }).to_string()
             } },
             file_content,
         ],

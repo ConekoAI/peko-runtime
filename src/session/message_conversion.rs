@@ -194,13 +194,13 @@ mod tests {
     fn test_entries_to_context_text_with_tool_result() {
         let entries = vec![NormalizedEntry::ToolResult {
             tool_call_id: "1".to_string(),
-            tool_name: "read_file".to_string(),
+            tool_name: "Read".to_string(),
             content: "File contents".to_string(),
             is_error: false,
         }];
 
         let context = entries_to_context_text(&entries);
-        assert!(context.contains("tool: [read_file result: File contents]"));
+        assert!(context.contains("tool: [Read result: File contents]"));
     }
 
     #[test]

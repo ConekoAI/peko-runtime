@@ -1,7 +1,7 @@
 //! Filesystem tools
 //!
 //! Granular filesystem operations for agents:
-//! - `read_file`: Read file contents
+//! - `Read`: Read file contents
 //! - `write_file`: Write file contents
 //! - `glob`: Find files matching patterns
 //! - `grep`: Search file contents
@@ -9,12 +9,12 @@
 
 pub mod glob;
 pub mod grep;
-pub mod read_file;
+pub mod read;
 pub mod str_replace_file;
 pub mod write_file;
 
 pub use glob::GlobTool;
 pub use grep::GrepTool;
-pub use read_file::ReadFileTool;
+pub use read::ReadTool;
 pub use str_replace_file::StrReplaceFileTool;
 pub use write_file::WriteFileTool;

@@ -106,10 +106,10 @@ preferred_model_id = "default"
 [extensions]
 enabled = [
     "shell",
-    "read_file",
+    "Read",
     "write_file",
     "builtin:tool:shell",
-    "builtin:tool:read_file",
+    "builtin:tool:Read",
     "builtin:tool:write_file",
 ]
 

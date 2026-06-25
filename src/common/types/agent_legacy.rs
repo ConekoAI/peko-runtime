@@ -67,7 +67,7 @@ impl Default for ExtensionConfig {
             // Whitelist stores canonical extension IDs, not bare tool names.
             enabled: vec![
                 "builtin:tool:shell".to_string(),
-                "builtin:tool:read_file".to_string(),
+                "builtin:tool:Read".to_string(),
                 "builtin:tool:write_file".to_string(),
                 "builtin:tool:glob".to_string(),
                 "builtin:tool:grep".to_string(),
@@ -129,7 +129,7 @@ impl ExtensionConfig {
     pub fn get_extension_settings(&self, name: &str) -> Option<&ExtensionSettings> {
         let bare = name.rsplit(':').next().unwrap_or(name);
         match bare {
-            "read_file" => self.read_file.as_ref(),
+            "Read" => self.read_file.as_ref(),
             "write_file" => self.write_file.as_ref(),
             "glob" => self.glob.as_ref(),
             "grep" => self.grep.as_ref(),
@@ -304,9 +304,7 @@ mod tests {
         // Default whitelist enables common built-in tools using canonical extension IDs
         assert!(!config.enabled.is_empty());
         assert!(config.enabled.contains(&"builtin:tool:shell".to_string()));
-        assert!(config
-            .enabled
-            .contains(&"builtin:tool:read_file".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:Read".to_string()));
     }
 
     #[test]
@@ -314,7 +312,7 @@ mod tests {
         let config = ExtensionConfig {
             enabled: vec![
                 "builtin:tool:shell".to_string(),
-                "builtin:tool:read_file".to_string(),
+                "builtin:tool:Read".to_string(),
                 "builtin:tool:write_file".to_string(),
                 "builtin:tool:glob".to_string(),
                 "builtin:tool:grep".to_string(),
@@ -327,7 +325,7 @@ mod tests {
 
         // All whitelisted extensions should be enabled (canonical IDs)
         assert!(config.is_extension_enabled("builtin:tool:shell"));
-        assert!(config.is_extension_enabled("builtin:tool:read_file"));
+        assert!(config.is_extension_enabled("builtin:tool:Read"));
         assert!(config.is_extension_enabled("builtin:tool:write_file"));
         assert!(config.is_extension_enabled("builtin:tool:glob"));
         assert!(config.is_extension_enabled("builtin:tool:grep"));
@@ -341,7 +339,7 @@ mod tests {
 
         // Bare tool names should NOT match (no special-case parsing)
         assert!(!config.is_extension_enabled("shell"));
-        assert!(!config.is_extension_enabled("read_file"));
+        assert!(!config.is_extension_enabled("Read"));
 
         // Unknown extensions should not be enabled
         assert!(!config.is_extension_enabled("unknown_tool"));
@@ -362,7 +360,7 @@ mod tests {
         };
 
         assert!(!config.is_extension_enabled("builtin:tool:shell"));
-        assert!(!config.is_extension_enabled("builtin:tool:read_file"));
+        assert!(!config.is_extension_enabled("builtin:tool:Read"));
         assert!(!config.is_extension_enabled("mcp:any_server"));
     }
 
@@ -371,7 +369,7 @@ mod tests {
         // Custom whitelist using canonical extension IDs
         let config = ExtensionConfig {
             enabled: vec![
-                "builtin:tool:read_file".to_string(),
+                "builtin:tool:Read".to_string(),
                 "builtin:tool:write_file".to_string(),
             ],
             http: None,
@@ -383,7 +381,7 @@ mod tests {
             str_replace_file: None,
         };
 
-        assert!(config.is_extension_enabled("builtin:tool:read_file"));
+        assert!(config.is_extension_enabled("builtin:tool:Read"));
         assert!(config.is_extension_enabled("builtin:tool:write_file"));
         assert!(!config.is_extension_enabled("builtin:tool:shell"));
     }
@@ -406,7 +404,7 @@ mod tests {
         let config = ExtensionConfig {
             enabled: vec![
                 "builtin:tool:shell".to_string(),
-                "builtin:tool:read_file".to_string(),
+                "builtin:tool:Read".to_string(),
             ],
             ..Default::default()
         };
@@ -415,7 +413,7 @@ mod tests {
         // Should contain the enabled list with canonical IDs
         assert!(toml.contains("enabled"));
         assert!(toml.contains("builtin:tool:shell"));
-        assert!(toml.contains("builtin:tool:read_file"));
+        assert!(toml.contains("builtin:tool:Read"));
     }
 
     /// v3-cleanup (commit 2.1): the legacy `[provider]` and

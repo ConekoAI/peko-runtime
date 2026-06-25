@@ -18,8 +18,8 @@ use crate::common::services::{
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
-use crate::session::InboxRegistry;
 use crate::registry::{load_from_workspace, RegistryConfig};
+use crate::session::InboxRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -493,9 +493,8 @@ impl AppState {
         // first access; no explicit cleanup.
         let inbox_registry = Arc::new(InboxRegistry::new());
 
-        let async_task_executor = Arc::new(
-            AsyncExecutor::new().with_inbox_registry(Arc::clone(&inbox_registry)),
-        );
+        let async_task_executor =
+            Arc::new(AsyncExecutor::new().with_inbox_registry(Arc::clone(&inbox_registry)));
 
         // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
@@ -1371,8 +1370,8 @@ mod tests {
             "shell tool not registered"
         );
         assert!(
-            tool_runtime.has_tool("read_file").await,
-            "read_file tool not registered"
+            tool_runtime.has_tool("Read").await,
+            "Read tool not registered"
         );
         assert!(
             tool_runtime.has_tool("write_file").await,

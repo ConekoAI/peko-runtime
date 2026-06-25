@@ -196,7 +196,7 @@ mod tests {
                 },
                 ContentBlock::ToolCall {
                     id: "tc1".to_string(),
-                    name: "read_file".to_string(),
+                    name: "Read".to_string(),
                     arguments: serde_json::json!({"path": "src/main.rs"}),
                 },
                 ContentBlock::ToolCall {
@@ -226,7 +226,7 @@ mod tests {
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolCall {
                 id: "tc1".to_string(),
-                name: "read_file".to_string(),
+                name: "Read".to_string(),
                 arguments: serde_json::json!({"path": "c.rs"}),
             }],
             timestamp: chrono::Utc::now(),
