@@ -255,7 +255,11 @@ pub enum RoutingStrategy {
     #[serde(rename = "builtin:default")]
     BuiltinDefault,
     #[serde(rename = "agent:router")]
-    AgentRouter { agent_image: Option<String> },
+    AgentRouter {
+        /// Optional path to the router agent prompt Markdown file.
+        /// If omitted, the runtime uses a built-in router prompt.
+        router_prompt: Option<PathBuf>,
+    },
     #[serde(rename = "extension")]
     Extension { extension_id: String },
 }
