@@ -14,7 +14,7 @@ execution, A2A protocol, and extension system.
 
 - `docs/architecture/builtin-tools.md` — canonical catalog of built-in tools,
   schemas, and Claude parity status.
-- `tests/parity.rs` — integration-test harness for golden-transcript parity
+- `tests/core_tools.rs` — integration-test harness for golden-transcript parity
   fixtures.
 - Configuration gates `enable_async_tools` and `enable_task_tools` on
   `ToolFactoryConfig` and `BuiltinToolRegistrarConfig`.
