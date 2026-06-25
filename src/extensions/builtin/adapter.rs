@@ -40,8 +40,11 @@ pub struct BuiltinToolRegistrarConfig {
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
-    /// Enable universal task management tools (task_status, task_list)
-    pub enable_task_management: bool,
+    /// Enable async execution control tools (AsyncSpawn, AsyncOutput, AsyncStop,
+    /// AsyncStatus, AsyncList)
+    pub enable_async_tools: bool,
+    /// Enable planning todo tools (TaskCreate, TaskGet, TaskList, TaskUpdate)
+    pub enable_task_tools: bool,
     /// Path to cron database
     pub cron_db_path: Option<PathBuf>,
     /// Instance ID for cron persistence
@@ -59,7 +62,8 @@ impl Default for BuiltinToolRegistrarConfig {
             enable_shell: true,
             enable_session_tools: true,
             enable_cron: true,
-            enable_task_management: true,
+            enable_async_tools: true,
+            enable_task_tools: true,
             cron_db_path: None,
             instance_id: None,
             disabled_tools: Vec::new(),

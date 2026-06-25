@@ -4,6 +4,33 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Claude Code core tool parity (in progress)
+
+A multi-phase program to align peko's built-in tool names and schemas with
+Claude Code's core tool surface, while preserving peko's daemon-first
+execution, A2A protocol, and extension system.
+
+#### Added
+
+- `docs/architecture/builtin-tools.md` — canonical catalog of built-in tools,
+  schemas, and Claude parity status.
+- `tests/parity.rs` — integration-test harness for golden-transcript parity
+  fixtures.
+- Configuration gates `enable_async_tools` and `enable_task_tools` on
+  `ToolFactoryConfig` and `BuiltinToolRegistrarConfig`.
+
+#### Upcoming (tracked on `tool-parity-core-subset` branch)
+
+- Rename `read_file` → `Read`, `write_file` → `Write`,
+  `str_replace_file` → `Edit`, `shell` → `Bash`.
+- Split `cron` → `CronCreate` / `CronDelete` / `CronList`.
+- Rename `agent_spawn` → `Agent` and add `subagent_type`, `description`,
+  `model` params.
+- Split `task` into `AsyncSpawn` / `AsyncOutput` / `AsyncStop` /
+  `AsyncStatus` / `AsyncList`.
+- Add planning-todo family `TaskCreate` / `TaskGet` / `TaskList` /
+  `TaskUpdate`.
+
 ### Changed
 
 - **BREAKING**: Renamed the Rust crate from `pekobot` to `peko`. Update all

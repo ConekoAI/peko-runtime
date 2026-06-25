@@ -135,6 +135,10 @@ pub struct ToolFactoryConfig {
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
+    /// Enable async execution control tools
+    pub enable_async_tools: bool,
+    /// Enable planning todo tools
+    pub enable_task_tools: bool,
     /// Path to cron database (defaults to `workspace_dir/cron.json`)
     pub cron_db_path: Option<PathBuf>,
     /// MCP configuration
@@ -162,6 +166,8 @@ impl Default for ToolFactoryConfig {
             enable_shell: true,
             enable_session_tools: true,
             enable_cron: true,
+            enable_async_tools: true,
+            enable_task_tools: true,
             cron_db_path: None,
             mcp: McpFactoryConfig::default(),
             disabled_tools: Vec::new(),
@@ -188,6 +194,8 @@ impl ToolFactoryConfig {
             enable_shell: true,
             enable_session_tools: false,
             enable_cron: false,
+            enable_async_tools: false,
+            enable_task_tools: false,
             mcp: McpFactoryConfig::disabled(),
             ..Default::default()
         }
