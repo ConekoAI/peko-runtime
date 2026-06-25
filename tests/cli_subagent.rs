@@ -110,7 +110,7 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
 }
 
 /// Write a mock-LLM-pointed agent that has the tools the subagent
-/// migration needs enabled: `agent_spawn`, `task`, `write_file`,
+/// migration needs enabled: `agent_spawn`, `task`, `Write`,
 /// `read_file`, and `shell`.
 ///
 /// **`[extensions] enabled` is a special filter.** The agent's
@@ -150,12 +150,12 @@ default_timeout_seconds = 60
 enabled = [
     "agent_spawn",
     "task",
-    "write_file",
+    "Write",
     "Read",
     "shell",
     "builtin:tool:agent_spawn",
     "builtin:tool:task",
-    "builtin:tool:write_file",
+    "builtin:tool:Write",
     "builtin:tool:Read",
     "builtin:tool:shell",
 ]
@@ -171,7 +171,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     std::fs::write(
         agent_dir.join("SYSTEM.md"),
         "Test agent for the subagent CLI integration suite. \
-         Has the agent_spawn, task, write_file, read_file, and shell tools enabled.",
+         Has the agent_spawn, task, Write, read_file, and shell tools enabled.",
     )?;
     Ok(())
 }
@@ -181,7 +181,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 // ---------------------------------------------------------------------------
 
 /// `subagent_blocking.ps1` TEST 1: parent spawns a child that uses
-/// `write_file` to create a file, then the parent reports success.
+/// `Write` to create a file, then the parent reports success.
 ///
 /// Script: parent turn 1 = `tool_call(agent_spawn, …)`; parent turn 2
 /// = text `BLOCKING_SUCCESS` (the parent's LLM sees the blocking
@@ -209,7 +209,7 @@ async fn subagent_blocking_t1_write_file() {
     // child needle into the task string so the mock routes the child's
     // LLM call to the child script.
     let task_for_child = format!(
-        "Write '{file_name}' with content '{file_content}' via write_file. \
+        "Write '{file_name}' with content '{file_content}' via Write. \
          The substring '{child_needle}' is in this task on purpose so the mock \
          can route the child's LLM call. (test=subagent_blocking_T1)"
     );
@@ -222,8 +222,8 @@ async fn subagent_blocking_t1_write_file() {
             "BLOCKING_SUCCESS",
         ],
         child_needle: [
-            { "tool_call": { "name": "write_file", "arguments":
-                serde_json::json!({ "path": file_name, "content": file_content }).to_string()
+            { "tool_call": { "name": "Write", "arguments":
+                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
             } },
             "CHILD_DONE",
         ],
@@ -287,7 +287,7 @@ async fn subagent_blocking_t2_isolated() {
     let file_content = "ISOLATED_SUBAGENT_WAS_HERE";
 
     let task_for_child = format!(
-        "Write '{file_name}' with content '{file_content}' via write_file. \
+        "Write '{file_name}' with content '{file_content}' via Write. \
          Substring '{child_needle}' for mock routing. (test=subagent_blocking_T2_isolated)"
     );
 
@@ -302,8 +302,8 @@ async fn subagent_blocking_t2_isolated() {
             "ISOLATED_SUCCESS",
         ],
         child_needle: [
-            { "tool_call": { "name": "write_file", "arguments":
-                serde_json::json!({ "path": file_name, "content": file_content }).to_string()
+            { "tool_call": { "name": "Write", "arguments":
+                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
             } },
             "CHILD_DONE",
         ],
@@ -339,7 +339,7 @@ async fn subagent_blocking_t2_isolated() {
 }
 
 /// `subagent_blocking.ps1` TEST 4: the inline-result contract. The
-/// parent first writes a file with `write_file`, then spawns a child
+/// parent first writes a file with `Write`, then spawns a child
 /// that uses `read_file` to return the file content. The parent's
 /// blocking tool result for `agent_spawn` should include the child's
 /// text (`INLINE_RESULT_OK`) in its `output` field — proving the
@@ -370,8 +370,8 @@ async fn subagent_blocking_t4_inline_read() {
     let script = serde_json::json!({
         parent_needle: [
             // Parent turn 1: write the file the child will read.
-            { "tool_call": { "name": "write_file", "arguments":
-                serde_json::json!({ "path": file_name, "content": file_content }).to_string()
+            { "tool_call": { "name": "Write", "arguments":
+                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
             } },
             // Parent turn 2: spawn the child.
             { "tool_call": { "name": "agent_spawn", "arguments":
@@ -400,7 +400,7 @@ async fn subagent_blocking_t4_inline_read() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "First write_file '{file_name}' with content '{file_content}'. Then \
+        "First Write '{file_name}' with content '{file_content}'. Then \
          spawn a subagent to read it and return the content. Then respond with \
          INLINE_SUCCESS. Use the needle '{parent_needle}'."
     );
@@ -448,7 +448,7 @@ async fn subagent_nesting_t1_depth2_writes_file() {
 
     let task_for_child_a = format!(
         "You are Subagent-A at depth 1. Delegate to a grandchild (Subagent-B) \
-         that uses write_file to create '{file_name}' with content \
+         that uses Write to create '{file_name}' with content \
          '{file_content}'. Pass the substring '{child_a_needle}' in your own \
          tool_call task arg so the mock can route your LLM call. The substring \
          '{grandchild_needle}' must also appear in the task you pass to \
@@ -456,7 +456,7 @@ async fn subagent_nesting_t1_depth2_writes_file() {
          (test=subagent_nesting_T1_depth2)"
     );
     let task_for_grandchild = format!(
-        "Write '{file_name}' with content '{file_content}' via write_file. \
+        "Write '{file_name}' with content '{file_content}' via Write. \
          (test=depth2 grandchild, routed by needle {grandchild_needle})"
     );
 
@@ -474,8 +474,8 @@ async fn subagent_nesting_t1_depth2_writes_file() {
             "CHILD_A_DONE",
         ],
         grandchild_needle: [
-            { "tool_call": { "name": "write_file", "arguments":
-                serde_json::json!({ "path": file_name, "content": file_content }).to_string()
+            { "tool_call": { "name": "Write", "arguments":
+                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
             } },
             "GRANDCHILD_DONE",
         ],
@@ -626,8 +626,8 @@ async fn subagent_isolation_t1_shared_workspace() {
     let script = serde_json::json!({
         parent_needle: [
             // Parent turn 1: write the file the child will read.
-            { "tool_call": { "name": "write_file", "arguments":
-                serde_json::json!({ "path": file_name, "content": file_content }).to_string()
+            { "tool_call": { "name": "Write", "arguments":
+                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
             } },
             // Parent turn 2: spawn a non-isolated child.
             { "tool_call": { "name": "agent_spawn", "arguments":
@@ -653,7 +653,7 @@ async fn subagent_isolation_t1_shared_workspace() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "First write_file '{file_name}' with content '{file_content}'. Then \
+        "First Write '{file_name}' with content '{file_content}'. Then \
          spawn a non-isolated subagent to read it. Respond with SHARED_OK. \
          Use the needle '{parent_needle}'."
     );
@@ -691,7 +691,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
     let file_content = "ISOLATED_SUBAGENT_MARKER";
 
     let task_for_child = format!(
-        "Write '{file_name}' with content '{file_content}' via write_file. \
+        "Write '{file_name}' with content '{file_content}' via Write. \
          Substring '{child_needle}' for mock routing. \
          (test=subagent_isolation_T2_isolated)"
     );
@@ -707,8 +707,8 @@ async fn subagent_isolation_t2_isolated_writes_file() {
             "ISOLATED_OK",
         ],
         child_needle: [
-            { "tool_call": { "name": "write_file", "arguments":
-                serde_json::json!({ "path": file_name, "content": file_content }).to_string()
+            { "tool_call": { "name": "Write", "arguments":
+                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
             } },
             "CHILD_DONE",
         ],

@@ -47,7 +47,7 @@ pub struct ExtensionConfig {
     pub http: Option<HttpToolConfig>,
     /// Custom tool definitions
     pub custom: Option<HashMap<String, serde_json::Value>>,
-    /// Per-extension settings (snake_case keys like "str_replace_file", "write_file", etc.)
+    /// Per-extension settings (snake_case keys like "str_replace_file", "Write", etc.)
     #[serde(default)]
     pub read_file: Option<ExtensionSettings>,
     #[serde(default)]
@@ -68,7 +68,7 @@ impl Default for ExtensionConfig {
             enabled: vec![
                 "builtin:tool:shell".to_string(),
                 "builtin:tool:Read".to_string(),
-                "builtin:tool:write_file".to_string(),
+                "builtin:tool:Write".to_string(),
                 "builtin:tool:glob".to_string(),
                 "builtin:tool:grep".to_string(),
                 "builtin:tool:str_replace_file".to_string(),
@@ -130,7 +130,7 @@ impl ExtensionConfig {
         let bare = name.rsplit(':').next().unwrap_or(name);
         match bare {
             "Read" => self.read_file.as_ref(),
-            "write_file" => self.write_file.as_ref(),
+            "Write" => self.write_file.as_ref(),
             "glob" => self.glob.as_ref(),
             "grep" => self.grep.as_ref(),
             "str_replace_file" => self.str_replace_file.as_ref(),
@@ -313,7 +313,7 @@ mod tests {
             enabled: vec![
                 "builtin:tool:shell".to_string(),
                 "builtin:tool:Read".to_string(),
-                "builtin:tool:write_file".to_string(),
+                "builtin:tool:Write".to_string(),
                 "builtin:tool:glob".to_string(),
                 "builtin:tool:grep".to_string(),
                 "builtin:tool:str_replace_file".to_string(),
@@ -326,7 +326,7 @@ mod tests {
         // All whitelisted extensions should be enabled (canonical IDs)
         assert!(config.is_extension_enabled("builtin:tool:shell"));
         assert!(config.is_extension_enabled("builtin:tool:Read"));
-        assert!(config.is_extension_enabled("builtin:tool:write_file"));
+        assert!(config.is_extension_enabled("builtin:tool:Write"));
         assert!(config.is_extension_enabled("builtin:tool:glob"));
         assert!(config.is_extension_enabled("builtin:tool:grep"));
         assert!(config.is_extension_enabled("builtin:tool:str_replace_file"));
@@ -370,7 +370,7 @@ mod tests {
         let config = ExtensionConfig {
             enabled: vec![
                 "builtin:tool:Read".to_string(),
-                "builtin:tool:write_file".to_string(),
+                "builtin:tool:Write".to_string(),
             ],
             http: None,
             custom: None,
@@ -382,7 +382,7 @@ mod tests {
         };
 
         assert!(config.is_extension_enabled("builtin:tool:Read"));
-        assert!(config.is_extension_enabled("builtin:tool:write_file"));
+        assert!(config.is_extension_enabled("builtin:tool:Write"));
         assert!(!config.is_extension_enabled("builtin:tool:shell"));
     }
 

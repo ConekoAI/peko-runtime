@@ -183,7 +183,7 @@ fn test_file_op_extraction_from_tool_calls() {
             },
             ContentBlock::ToolCall {
                 id: "tc2".to_string(),
-                name: "write_file".to_string(),
+                name: "Write".to_string(),
                 arguments: serde_json::json!({"path": "output.txt", "content": "..."}),
             },
         ],

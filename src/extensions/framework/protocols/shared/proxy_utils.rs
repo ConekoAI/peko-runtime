@@ -177,7 +177,7 @@ mod tests {
     fn test_estimate_tool_duration() {
         assert_eq!(estimate_tool_duration("Read"), 500);
         assert_eq!(estimate_tool_duration("search_code"), 500);
-        assert_eq!(estimate_tool_duration("write_file"), 2000);
+        assert_eq!(estimate_tool_duration("Write"), 2000);
         assert_eq!(estimate_tool_duration("fetch_url"), 5000);
         assert_eq!(estimate_tool_duration("build_project"), 30000);
         assert_eq!(estimate_tool_duration("unknown"), 1000);

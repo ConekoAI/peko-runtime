@@ -9,7 +9,7 @@ use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadTool, ShellTool, StrReplaceFileTool, Tool, WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadTool, ShellTool, StrReplaceFileTool, Tool, WriteTool,
 };
 use anyhow::Result;
 use std::path::PathBuf;
@@ -172,7 +172,7 @@ impl ToolRuntime {
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(ShellTool::new().with_workspace(workspace.clone())),
             Arc::new(ReadTool::new().with_workspace(workspace.clone())),
-            Arc::new(WriteFileTool::new().with_workspace(workspace.clone())),
+            Arc::new(WriteTool::new().with_workspace(workspace.clone())),
             Arc::new(GlobTool::new().with_workspace(workspace.clone())),
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
             Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
@@ -310,7 +310,7 @@ mod tests {
 
         assert!(runtime.has_tool("shell").await);
         assert!(runtime.has_tool("Read").await);
-        assert!(runtime.has_tool("write_file").await);
+        assert!(runtime.has_tool("Write").await);
         assert!(runtime.has_tool("glob").await);
         assert!(runtime.has_tool("grep").await);
         assert!(runtime.has_tool("str_replace_file").await);

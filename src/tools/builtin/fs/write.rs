@@ -1,4 +1,4 @@
-//! `WriteFile` tool - Write or append to files
+//! `Write` tool - Write or append to files
 //!
 //! Granular write access for agents. Creates parent directories automatically.
 
@@ -11,11 +11,11 @@ use tokio::io::AsyncWriteExt;
 
 use crate::tools::core::Tool;
 
-/// `WriteFile` tool arguments
+/// `Write` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WriteFileArgs {
+pub struct WriteArgs {
     /// Path to the file (relative to workspace or absolute)
-    pub path: String,
+    pub file_path: String,
     /// Content to write
     pub content: String,
     /// Write mode: overwrite (default), append, `create_new`
@@ -34,14 +34,14 @@ fn default_encoding() -> String {
     "utf8".to_string()
 }
 
-/// `WriteFile` tool - Write files with various modes
-pub struct WriteFileTool {
+/// `Write` tool - Write files with various modes
+pub struct WriteTool {
     /// Default workspace directory (for relative paths)
     workspace_dir: Option<PathBuf>,
 }
 
-impl WriteFileTool {
-    /// Create a new `WriteFile` tool
+impl WriteTool {
+    /// Create a new `Write` tool
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -69,14 +69,14 @@ impl WriteFileTool {
     }
 
     /// Write file with specified mode and encoding
-    async fn write_file(
+    async fn write(
         &self,
-        path: &str,
+        file_path: &str,
         content: &str,
         mode: &str,
         encoding: &str,
     ) -> Result<serde_json::Value> {
-        let resolved = self.resolve_path(path);
+        let resolved = self.resolve_path(file_path);
 
         // Decode content if base64 encoded
         let decoded_content = if encoding == "base64" {
@@ -147,7 +147,7 @@ impl WriteFileTool {
     }
 }
 
-impl Default for WriteFileTool {
+impl Default for WriteTool {
     fn default() -> Self {
         Self::new()
     }
@@ -159,9 +159,9 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, base64::DecodeError> {
 }
 
 #[async_trait]
-impl Tool for WriteFileTool {
+impl Tool for WriteTool {
     fn name(&self) -> &'static str {
-        "write_file"
+        "Write"
     }
 
     fn description(&self) -> String {
@@ -169,11 +169,11 @@ impl Tool for WriteFileTool {
 Write or append content to files. Creates parent directories automatically.
 
 Use when: Creating new files, overwriting existing files, or appending to logs.
-Don't use when: Making targeted edits to existing files (use StrReplaceFile instead).
+Don't use when: Making targeted edits to existing files (use Edit instead).
 
 ## Parameters
 
-### path (required)
+### file_path (required)
 Path to the file. Can be relative to workspace or absolute.
 
 ### content (required)
@@ -192,17 +192,17 @@ Content to write to the file.
 
 Create/overwrite a file:
 ```json
-{"path": "config.toml", "content": "[settings]\nkey = \"value\""}
+{"file_path": "config.toml", "content": "[settings]\nkey = \"value\""}
 ```
 
 Append to a file:
 ```json
-{"path": "log.txt", "content": "New log entry\n", "mode": "append"}
+{"file_path": "log.txt", "content": "New log entry\n", "mode": "append"}
 ```
 
 Write binary data:
 ```json
-{"path": "data.bin", "content": "SGVsbG8=", "encoding": "base64"}
+{"file_path": "data.bin", "content": "SGVsbG8=", "encoding": "base64"}
 ```"#
             .to_string()
     }
@@ -211,7 +211,7 @@ Write binary data:
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": {
+                "file_path": {
                     "type": "string",
                     "description": "Path to the file (relative to workspace or absolute)"
                 },
@@ -232,15 +232,15 @@ Write binary data:
                     "default": "utf8"
                 }
             },
-            "required": ["path", "content"]
+            "required": ["file_path", "content"]
         })
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
-        let args: WriteFileArgs = serde_json::from_value(params)
+        let args: WriteArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
-        self.write_file(&args.path, &args.content, &args.mode, &args.encoding)
+        self.write(&args.file_path, &args.content, &args.mode, &args.encoding)
             .await
     }
 
@@ -258,10 +258,10 @@ mod tests {
     #[tokio::test]
     async fn test_write_file_overwrite() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = WriteFileTool::new().with_workspace(temp_dir.path());
+        let tool = WriteTool::new().with_workspace(temp_dir.path());
 
         let params = json!({
-            "path": "test.txt",
+            "file_path": "test.txt",
             "content": "Hello, World!"
         });
 
@@ -278,7 +278,7 @@ mod tests {
     #[tokio::test]
     async fn test_write_file_append() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = WriteFileTool::new().with_workspace(temp_dir.path());
+        let tool = WriteTool::new().with_workspace(temp_dir.path());
 
         // Initial write
         fs::write(temp_dir.path().join("log.txt"), "Line 1\n")
@@ -287,7 +287,7 @@ mod tests {
 
         // Append
         let params = json!({
-            "path": "log.txt",
+            "file_path": "log.txt",
             "content": "Line 2\n",
             "mode": "append"
         });
@@ -304,7 +304,7 @@ mod tests {
     #[tokio::test]
     async fn test_write_file_create_new_fails_on_existing() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = WriteFileTool::new().with_workspace(temp_dir.path());
+        let tool = WriteTool::new().with_workspace(temp_dir.path());
 
         // Create file
         fs::write(temp_dir.path().join("existing.txt"), "content")
@@ -313,7 +313,7 @@ mod tests {
 
         // Try to create_new
         let params = json!({
-            "path": "existing.txt",
+            "file_path": "existing.txt",
             "content": "new content",
             "mode": "create_new"
         });
@@ -326,10 +326,10 @@ mod tests {
     #[tokio::test]
     async fn test_write_file_creates_directories() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = WriteFileTool::new().with_workspace(temp_dir.path());
+        let tool = WriteTool::new().with_workspace(temp_dir.path());
 
         let params = json!({
-            "path": "level1/level2/level3/file.txt",
+            "file_path": "level1/level2/level3/file.txt",
             "content": "nested content"
         });
 
@@ -345,10 +345,10 @@ mod tests {
     #[tokio::test]
     async fn test_write_file_base64() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = WriteFileTool::new().with_workspace(temp_dir.path());
+        let tool = WriteTool::new().with_workspace(temp_dir.path());
 
         let params = json!({
-            "path": "binary.bin",
+            "file_path": "binary.bin",
             "content": "SGVsbG8sIFdvcmxkIQ==", // "Hello, World!" in base64
             "encoding": "base64"
         });
@@ -363,11 +363,11 @@ mod tests {
     #[tokio::test]
     async fn test_write_file_absolute_path() {
         let temp_dir = TempDir::new().unwrap();
-        let tool = WriteFileTool::new(); // No workspace
+        let tool = WriteTool::new(); // No workspace
 
         let file_path = temp_dir.path().join("absolute.txt");
         let params = json!({
-            "path": file_path.to_str().unwrap(),
+            "file_path": file_path.to_str().unwrap(),
             "content": "absolute content"
         });
 

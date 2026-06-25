@@ -73,7 +73,7 @@ pub fn format_summary_with_file_ops(summary: &str, details: &CompactionDetails) 
 
 /// Extract file operations from a list of messages being summarized.
 ///
-/// Scans tool calls for `read_file`, `write_file`, `edit_file`, etc.
+/// Scans tool calls for `read_file`, `Write`, `edit_file`, etc.
 /// This is a best-effort heuristic — exact tracking depends on tool naming.
 pub fn extract_file_ops_from_messages(
     messages: &[crate::common::types::message::LlmMessage],
@@ -201,7 +201,7 @@ mod tests {
                 },
                 ContentBlock::ToolCall {
                     id: "tc2".to_string(),
-                    name: "write_file".to_string(),
+                    name: "Write".to_string(),
                     arguments: serde_json::json!({"path": "src/lib.rs", "content": "..."}),
                 },
             ],

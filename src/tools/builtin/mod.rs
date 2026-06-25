@@ -1,7 +1,7 @@
 //! Built-in tool implementations
 //!
 //! This module contains all built-in tools that ship with Peko:
-//! - `fs`: Filesystem tools (Read, write_file, glob, grep, str_replace_file)
+//! - `fs`: Filesystem tools (Read, Write, glob, grep, str_replace_file)
 //! - `messaging`: Messaging tools (agent_spawn, a2a_send, message_tool)
 //! - `shell`: Shell execution
 //! - `cron`: Scheduled jobs
@@ -16,7 +16,7 @@ pub mod shell;
 pub mod task_management;
 
 pub use cron::CronTool;
-pub use fs::{GlobTool, GrepTool, ReadTool, StrReplaceFileTool, WriteFileTool};
+pub use fs::{GlobTool, GrepTool, ReadTool, StrReplaceFileTool, WriteTool};
 pub use messaging::{AgentSpawnTool, ChannelType, MessageConfig, MessageResult, MessageTool};
 pub use session::{
     SessionCache, SessionInfo, SessionIntrospector,

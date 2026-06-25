@@ -1374,8 +1374,8 @@ mod tests {
             "Read tool not registered"
         );
         assert!(
-            tool_runtime.has_tool("write_file").await,
-            "write_file tool not registered"
+            tool_runtime.has_tool("Write").await,
+            "Write tool not registered"
         );
         assert!(
             tool_runtime.has_tool("glob").await,

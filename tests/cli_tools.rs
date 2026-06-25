@@ -132,10 +132,10 @@ fn ensure_workspace_dir(cli: &PekoCli) {
 /// **`[extensions] enabled` is a special filter.** The agent's
 /// `init_builtins_async` (in `src/agent/agent.rs:121-135`) iterates
 /// the per-agent tools and compares each whitelist pattern to
-/// `tool.name()` (e.g. `"write_file"`). The dispatcher check at
+/// `tool.name()` (e.g. `"Write"`). The dispatcher check at
 /// `src/extension/core/tool_registry.rs:60-63` does the same lookup
 /// against `tool_owners[tool_name]`, which stores the canonical
-/// extension ID (e.g. `"builtin:tool:write_file"`). The whitelist
+/// extension ID (e.g. `"builtin:tool:Write"`). The whitelist
 /// must therefore contain BOTH the bare tool name AND the canonical
 /// extension ID — the bare name so the per-agent init registers the
 /// tool, and the canonical ID so the dispatcher's `is_tool_enabled`
@@ -167,13 +167,13 @@ default_timeout_seconds = 60
 enabled = [
     "shell",
     "Read",
-    "write_file",
+    "Write",
     "glob",
     "grep",
     "str_replace_file",
     "builtin:tool:shell",
     "builtin:tool:Read",
-    "builtin:tool:write_file",
+    "builtin:tool:Write",
     "builtin:tool:glob",
     "builtin:tool:grep",
     "builtin:tool:str_replace_file",
@@ -190,7 +190,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     std::fs::write(
         agent_dir.join("SYSTEM.md"),
         "Test agent for the built-in tools CLI integration suite. \
-         Has shell, read_file, write_file, glob, grep, and str_replace_file tools enabled.",
+         Has shell, read_file, Write, glob, grep, and str_replace_file tools enabled.",
     )?;
     Ok(())
 }
@@ -408,13 +408,13 @@ async fn built_in_write_file_creates_file() {
     let needle = "built-in-writefile-7a9f";
     let agent_name = "built_in_write_file";
     let file_name = "built_in_write_file_T1.txt";
-    let file_content = "Hello from write_file tool!";
+    let file_content = "Hello from Write tool!";
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "write_file", "arguments":
+            { "tool_call": { "name": "Write", "arguments":
                 serde_json::json!({
-                    "path": file_name,
+                    "file_path": file_name,
                     "content": file_content,
                 }).to_string()
             } },
@@ -426,7 +426,7 @@ async fn built_in_write_file_creates_file() {
 
     let cli = PekoCli::new();
     write_builtin_agent(cli.home(), agent_name, &mock_url).expect("write builtin agent");
-    // Ensure the tool workspace root exists — the daemon's `write_file`
+    // Ensure the tool workspace root exists — the daemon's `Write`
     // auto-creates the file's *parent* directory but not the workspace
     // root itself. Pre-creating it makes the test less reliant on that
     // implementation detail.
@@ -434,7 +434,7 @@ async fn built_in_write_file_creates_file() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your write_file tool to create '{file_name}' with content \
+        "Use your Write tool to create '{file_name}' with content \
          '{file_content}' in your workspace. When the file has been written, \
          respond WRITE_DONE. Use the needle '{needle}' in your response."
     );
@@ -449,7 +449,7 @@ async fn built_in_write_file_creates_file() {
         "parent did not report WRITE_DONE: stdout={out} stderr={err}",
     );
 
-    // The LLM's `write_file` tool call wrote a file into the tool
+    // The LLM's `Write` tool call wrote a file into the tool
     // workspace. We also dump the contents of `<peko_dir>/data/` on
     // failure so the path is obvious from the assertion message.
     let path = workspace_dir(&cli).join(file_name);

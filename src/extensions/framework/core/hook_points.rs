@@ -571,7 +571,7 @@ mod tests {
         assert!(hp.matches("tool.execute.*"));
         assert!(hp.matches("tool.*"));
         assert!(!hp.matches("prompt.*"));
-        assert!(!hp.matches("tool.execute.write_file"));
+        assert!(!hp.matches("tool.execute.Write"));
     }
 
     #[test]

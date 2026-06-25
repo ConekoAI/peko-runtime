@@ -26,8 +26,7 @@
 //! Note: Custom tools can also be disabled by name.
 
 use crate::tools::builtin::{
-    CronTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, StrReplaceFileTool,
-    WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, StrReplaceFileTool, WriteTool,
 };
 use crate::tools::core::traits::Tool;
 use std::collections::HashSet;
@@ -122,9 +121,9 @@ pub struct ToolFactoryConfig {
     /// Workspace directory (default for relative paths)
     pub workspace_dir: PathBuf,
     /// Enable granular filesystem tools
-    /// When true, enables `ReadFile`, Glob, Grep, `WriteFile`, `StrReplaceFile`
+    /// When true, enables `Read`, Glob, Grep, `Write`, `StrReplaceFile`
     pub enable_granular_fs: bool,
-    /// Enable granular write tools (`WriteFile`, `StrReplaceFile`)
+    /// Enable granular write tools (`Write`, `StrReplaceFile`)
     /// Only effective when `enable_granular_fs` is true
     /// Defaults to true for full functionality, set to false for read-only
     pub enable_granular_write: bool,
@@ -190,7 +189,7 @@ impl ToolFactoryConfig {
         Self {
             workspace_dir,
             enable_granular_fs: true,
-            enable_granular_write: false, // Read-only: no WriteFile or StrReplaceFile
+            enable_granular_write: false, // Read-only: no Write or StrReplaceFile
             enable_shell: true,
             enable_session_tools: false,
             enable_cron: false,
@@ -324,9 +323,9 @@ impl ToolFactory {
         });
 
         registry.register(
-            "write_file",
+            "Write",
             config.enable_granular_fs && config.enable_granular_write,
-            || Arc::new(WriteFileTool::new().with_workspace(config.workspace_dir.clone())),
+            || Arc::new(WriteTool::new().with_workspace(config.workspace_dir.clone())),
         );
 
         registry.register("glob", config.enable_granular_fs, || {

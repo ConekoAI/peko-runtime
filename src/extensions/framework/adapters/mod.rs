@@ -566,7 +566,7 @@ pub mod builtin_tools {
     pub const GLOBAL_TOOL_NAMES: &[&str] = &[
         "shell",
         "Read",
-        "write_file",
+        "Write",
         "glob",
         "grep",
         "str_replace_file",

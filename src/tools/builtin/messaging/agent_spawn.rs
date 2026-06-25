@@ -318,7 +318,7 @@ Parameters:
 
 Examples:
 // Blocking spawn - parent waits for result (auto-detaches on timeout)
-{"task": "Use write_file to create report.txt with a summary"}
+{"task": "Use Write to create report.txt with a summary"}
 
 // Isolated context - fresh session
 {"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}"#

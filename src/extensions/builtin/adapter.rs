@@ -30,9 +30,9 @@ use std::sync::Arc;
 pub struct BuiltinToolRegistrarConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
-    /// Enable granular filesystem tools (`Read`, `write_file`, glob, grep, `str_replace_file`)
+    /// Enable granular filesystem tools (`Read`, `Write`, glob, grep, `str_replace_file`)
     pub enable_granular_fs: bool,
-    /// Enable write tools (`write_file`, `str_replace_file`)
+    /// Enable write tools (`Write`, `str_replace_file`)
     pub enable_granular_write: bool,
     /// Enable shell tool
     pub enable_shell: bool,
@@ -158,7 +158,7 @@ impl BuiltinToolAdapter {
     ) -> Result<()> {
         use crate::tools::builtin::{
             CronTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, StrReplaceFileTool,
-            WriteFileTool,
+            WriteTool,
         };
 
         let disabled_set: HashSet<String> = config
@@ -185,9 +185,9 @@ impl BuiltinToolAdapter {
                 Self::register_tool(core, tool).await?;
             }
 
-            // write_file
-            if config.enable_granular_write && !disabled_set.contains("write_file") {
-                let tool = Arc::new(WriteFileTool::new().with_workspace(&workspace));
+            // Write
+            if config.enable_granular_write && !disabled_set.contains("write") {
+                let tool = Arc::new(WriteTool::new().with_workspace(&workspace));
                 Self::register_tool(core, tool).await?;
             }
 
@@ -374,7 +374,7 @@ impl HookHandler for BuiltinExecuteHandler {
                                             );
                                         }
                                     }
-                                    "Write" | "write_file" | "Edit" | "str_replace_file" => {
+                                    "Write" | "Edit" | "str_replace_file" => {
                                         let key = if tool_name_for_preproc == "Write" {
                                             "file_path"
                                         } else {

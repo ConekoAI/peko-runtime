@@ -73,7 +73,7 @@ impl Agent {
     ///
     /// This asynchronous version loads Universal Tools from extensions directory
     /// and registers only agent-specific built-in tools with `ExtensionCore`.
-    /// Common built-in tools (shell, read_file, write_file, etc.) are already
+    /// Common built-in tools (shell, Read, Write, etc.) are already
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
@@ -739,9 +739,7 @@ impl Agent {
             // iteration. The daemon-global `InboxRegistry` will replace
             // this once the per-call path is rewired to use
             // `AppState::inbox_registry` directly.
-            let async_inbox_registry = Arc::new(
-                crate::session::InboxRegistry::new(),
-            );
+            let async_inbox_registry = Arc::new(crate::session::InboxRegistry::new());
             let streaming_session_key = "streaming".to_string();
             let async_completion_queue = async_inbox_registry
                 .get_or_create(&streaming_session_key)
@@ -923,12 +921,8 @@ impl Agent {
         //    follow-up once the per-call path is rewired to read from
         //    `AppState::inbox_registry` directly.
         let async_inbox_registry = Arc::new(crate::session::InboxRegistry::new());
-        let async_inbox_key = session_key
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        let async_completion_queue = async_inbox_registry
-            .get_or_create(&async_inbox_key)
-            .await;
+        let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
+        let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
         // 2. Per-call AsyncExecutor wired to the same registry.
         let async_executor = Arc::new(
