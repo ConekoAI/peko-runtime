@@ -23,7 +23,7 @@ impl TaskListTool {
 
 #[async_trait]
 impl Tool for TaskListTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TaskList"
     }
 
@@ -102,7 +102,7 @@ mod tests {
             .unwrap();
         storage
             .update_todo(
-                &ctx.session_id.clone().unwrap(),
+                ctx.session_id.as_ref().unwrap(),
                 b["taskId"].as_str().unwrap(),
                 Some(TodoStatus::InProgress),
                 None,
@@ -120,5 +120,27 @@ mod tests {
             .unwrap();
         assert_eq!(pending.as_array().unwrap().len(), 1);
         assert_eq!(pending[0]["subject"], "A");
+    }
+
+    #[tokio::test]
+    async fn test_task_list_empty() {
+        let temp = TempDir::new().unwrap();
+        let storage = Arc::new(TodoStorage::new(temp.path().to_path_buf()));
+        let tool = TaskListTool::new(storage);
+        let ctx = ToolContext::for_hook_run("run", "tc", "TaskList")
+            .with_session_id("agent:test:cli:empty");
+
+        let result = tool.execute_with_context(json!({}), &ctx).await.unwrap();
+        assert!(result.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_task_list_no_session() {
+        let temp = TempDir::new().unwrap();
+        let storage = Arc::new(TodoStorage::new(temp.path().to_path_buf()));
+        let tool = TaskListTool::new(storage);
+        let ctx = ToolContext::for_hook_run("run", "tc", "TaskList");
+        let result = tool.execute_with_context(json!({}), &ctx).await;
+        assert!(result.is_err());
     }
 }

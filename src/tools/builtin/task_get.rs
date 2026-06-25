@@ -23,7 +23,7 @@ impl TaskGetTool {
 
 #[async_trait]
 impl Tool for TaskGetTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TaskGet"
     }
 
@@ -114,5 +114,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["error"], "Todo not found");
+    }
+
+    #[tokio::test]
+    async fn test_task_get_no_session() {
+        let temp = TempDir::new().unwrap();
+        let storage = Arc::new(TodoStorage::new(temp.path().to_path_buf()));
+        let tool = TaskGetTool::new(storage);
+        let ctx = ToolContext::for_hook_run("run", "tc", "TaskGet");
+        let result = tool
+            .execute_with_context(json!({"taskId": "todo:nope"}), &ctx)
+            .await;
+        assert!(result.is_err());
     }
 }

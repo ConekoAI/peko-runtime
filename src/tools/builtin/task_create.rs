@@ -23,7 +23,7 @@ impl TaskCreateTool {
 
 #[async_trait]
 impl Tool for TaskCreateTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TaskCreate"
     }
 

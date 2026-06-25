@@ -23,7 +23,7 @@ impl TaskUpdateTool {
 
 #[async_trait]
 impl Tool for TaskUpdateTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TaskUpdate"
     }
 
@@ -57,7 +57,11 @@ Returns the updated todo, or an error if it does not exist."
                     "description": "Optional new owner/agent name."
                 }
             },
-            "required": ["taskId"]
+            "required": ["taskId"],
+            "anyOf": [
+                { "required": ["status"] },
+                { "required": ["owner"] }
+            ]
         })
     }
 
@@ -153,5 +157,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["error"], "TaskUpdate requires 'status' or 'owner'");
+    }
+
+    #[tokio::test]
+    async fn test_task_update_owner_only() {
+        let temp = TempDir::new().unwrap();
+        let storage = Arc::new(TodoStorage::new(temp.path().to_path_buf()));
+        let create = TaskCreateTool::new(storage.clone());
+        let ctx = ToolContext::for_hook_run("run", "tc", "TaskCreate")
+            .with_session_id("agent:test:cli:owner");
+        let created = create
+            .execute_with_context(json!({"subject": "S"}), &ctx)
+            .await
+            .unwrap();
+
+        let tool = TaskUpdateTool::new(storage);
+        let result = tool
+            .execute_with_context(
+                json!({"taskId": created["taskId"], "owner": "claude"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["owner"], "claude");
+        assert_eq!(result["status"], "pending");
+    }
+
+    #[tokio::test]
+    async fn test_task_update_not_found() {
+        let temp = TempDir::new().unwrap();
+        let storage = Arc::new(TodoStorage::new(temp.path().to_path_buf()));
+        let tool = TaskUpdateTool::new(storage);
+        let ctx = ToolContext::for_hook_run("run", "tc", "TaskUpdate")
+            .with_session_id("agent:test:cli:nf");
+        let result = tool
+            .execute_with_context(json!({"taskId": "todo:nope", "status": "completed"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result["error"], "Todo not found");
+    }
+
+    #[tokio::test]
+    async fn test_task_update_invalid_status() {
+        let temp = TempDir::new().unwrap();
+        let storage = Arc::new(TodoStorage::new(temp.path().to_path_buf()));
+        let tool = TaskUpdateTool::new(storage);
+        let ctx = ToolContext::for_hook_run("run", "tc", "TaskUpdate")
+            .with_session_id("agent:test:cli:iv");
+        let result = tool
+            .execute_with_context(json!({"taskId": "todo:nope", "status": "done"}), &ctx)
+            .await;
+        assert!(result.is_err());
     }
 }

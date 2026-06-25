@@ -59,6 +59,7 @@ Returns: { total, active, tasks: [{ task_id, tool_name, status, is_terminal, met
             "properties": {
                 "status_filter": {
                     "type": "string",
+                    "enum": ["pending", "running", "completed", "failed", "cancelled", "timed_out"],
                     "description": "Optional filter by status: pending, running, completed, failed, cancelled, timed_out"
                 },
                 "tool_filter": {
