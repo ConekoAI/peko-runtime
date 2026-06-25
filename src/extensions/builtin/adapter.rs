@@ -157,9 +157,8 @@ impl BuiltinToolAdapter {
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::{
-            AsyncListTool, AsyncStatusTool, AsyncStopTool, BashTool, CronCreateTool,
-            CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool,
-            WriteTool,
+            BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool,
+            ReadTool, SessionTool, WriteTool,
         };
 
         let disabled_set: HashSet<String> = config
@@ -233,27 +232,17 @@ impl BuiltinToolAdapter {
         }
 
         // Async task control family (global members)
-        // The legacy "task" key disables the whole family for backward
-        // compatibility with old disabled_tools configs.
-        let async_disabled = disabled_set.contains("task") || disabled_set.contains("async");
-        if config.enable_async_tools {
-            if !async_disabled && !disabled_set.contains("asyncstatus") {
-                Self::register_tool(core, Arc::new(AsyncStatusTool::global())).await?;
-            }
-            if !async_disabled && !disabled_set.contains("asynclist") {
-                Self::register_tool(core, Arc::new(AsyncListTool::global())).await?;
-            }
-            if !async_disabled && !disabled_set.contains("asyncstop") {
-                Self::register_tool(core, Arc::new(AsyncStopTool::global())).await?;
-            }
-        }
-
-        // NB: AsyncSpawn and AsyncOutput are intentionally NOT registered here.
-        // They depend on per-agent state (AsyncExecutor + ExtensionCore
-        // for spawn-side lookups), so each agent registers its own via
-        // `BuiltinToolAdapter::register_async_spawn_tool` and
-        // `BuiltinToolAdapter::register_async_output_tool` after constructing
-        // its executor and completion queue.
+        //
+        // AsyncStatus, AsyncList, and AsyncStop are intentionally NOT registered
+        // globally. The previous global implementation enumerated tasks across
+        // every agent's registry, which broke session isolation (issue from
+        // parity audit). Each agent now registers its own copy bound to its
+        // AsyncExecutor's registry inside `Agent::rebuild_async_tools`, so
+        // introspection is scoped to the calling agent's own tasks.
+        //
+        // AsyncSpawn and AsyncOutput are also per-agent for the same reason:
+        // they depend on per-agent state (AsyncExecutor + ExtensionCore for
+        // spawn-side lookups).
 
         Ok(())
     }

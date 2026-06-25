@@ -9,8 +9,8 @@ use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
 use crate::tools::{
-    AsyncListTool, AsyncStatusTool, AsyncStopTool, BashTool, CronCreateTool, CronDeleteTool,
-    CronListTool, EditTool, GlobTool, GrepTool, ReadTool, Tool, WriteTool,
+    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
+    Tool, WriteTool,
 };
 use anyhow::Result;
 use std::path::PathBuf;
@@ -181,9 +181,6 @@ impl ToolRuntime {
             Arc::new(CronCreateTool::new()),
             Arc::new(CronDeleteTool::new()),
             Arc::new(CronListTool::new()),
-            Arc::new(AsyncStatusTool::global()),
-            Arc::new(AsyncListTool::global()),
-            Arc::new(AsyncStopTool::global()),
         ];
 
         // Enable all built-in tools by default in the daemon context.

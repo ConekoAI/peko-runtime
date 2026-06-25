@@ -386,8 +386,8 @@ The framework applies a constant 5-minute timeout to all tool calls. If the suba
 Parameters:
 - prompt: Description of the task to execute (required)
 - subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required)
-- description: Optional description for tracking (peko extension)
-- model: Optional model override for the subagent (peko extension)
+- description: Optional description for tracking (matches Claude Code's Agent schema)
+- model: Optional model override for the subagent (matches Claude Code's Agent schema)
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
 - parent_session_key: Parent session key (optional - auto-detected if not provided)

@@ -150,7 +150,7 @@ Returns: { task_id, status, tool_name }"
         Ok(json!({
             "task_id": receipt.task_id,
             "status": "running",
-            "tool_name": tool_name,
+            "tool": tool_name,
         }))
     }
 }

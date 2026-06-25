@@ -924,6 +924,7 @@ async fn test_executor_cancel() {
                 delivery_mode: crate::extensions::framework::async_exec::executor::types::AsyncResultDeliveryMode::QueueWhenBusy,
                 delivery_target: None,
                 timeout_secs: Some(3600),
+                timeout_millis: None,
                 cleanup_after_delivery: false,
                 label: None,
             },

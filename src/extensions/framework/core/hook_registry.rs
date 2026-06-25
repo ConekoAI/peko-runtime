@@ -84,14 +84,14 @@ impl RegisteredHook {
 /// Information about a built-in extension
 ///
 /// Built-in extensions are compiled into the binary and register hooks
-/// with `HookRegistry` under IDs like `builtin:tool:shell`.
+/// with `HookRegistry` under IDs like `builtin:tool:Bash`.
 #[derive(Debug, Clone)]
 pub struct BuiltinExtensionInfo {
-    /// Full extension ID (e.g., "builtin:tool:shell")
+    /// Full extension ID (e.g., "builtin:tool:Bash")
     pub id: String,
     /// Extension type (e.g., "tool", "gateway")
     pub ext_type: String,
-    /// Short name (e.g., "shell")
+    /// Short name (e.g., "Bash")
     pub name: String,
     /// Whether any hook for this extension is enabled
     pub enabled: bool,

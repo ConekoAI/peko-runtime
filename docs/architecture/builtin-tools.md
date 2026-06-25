@@ -15,7 +15,7 @@ parameter, extra behavior, or no Claude equivalent).
 
 ## Filesystem tools
 
-### `Read` ✅
+### `Read` 🔧
 
 Read file contents with optional line ranges and binary support.
 
@@ -41,16 +41,19 @@ Return:
 }
 ```
 
-**Peko extensions:** binary auto-detection with base64 return.
+**Peko extensions:** `encoding` parameter to force base64 (Claude auto-detects
+binary); binary auto-detection with base64 return.
 
-### `Write` ✅
+### `Write` 🔧
 
 Write or append content to files.
 
 ```json
 {
   "file_path": "string (required)",
-  "content": "string (required)"
+  "content": "string (required)",
+  "mode": "create_new (default) | overwrite | append",
+  "encoding": "utf8 (default) | base64"
 }
 ```
 
@@ -60,15 +63,16 @@ Return:
   "path": "string",
   "bytes_written": "integer",
   "size_bytes": "integer",
-  "mode": "overwrite | append | create_new",
+  "mode": "create_new | overwrite | append",
   "encoding": "utf8 | base64"
 }
 ```
 
-**Peko extension:** `mode` field. Claude Code errors when writing an existing
-file; peko defaults to `overwrite` and also supports `append` and `create_new`.
+**Peko extensions:** `mode` and `encoding` parameters. The default mode is
+`create_new` to match Claude Code's safety invariant (writing an existing
+file errors). `overwrite` and `append` remain opt-in peko extensions.
 
-### `Edit` ✅
+### `Edit` 🔧
 
 Targeted string replacement in files.
 
@@ -85,9 +89,16 @@ Return:
 ```json
 {
   "path": "string",
-  "replacements": [{ "old": "string", "new": "string", "occurrences": "integer" }]
+  "replacements": [{ "old": "string", "new": "string", "occurrences": "integer" }],
+  "total_replacements": "integer",
+  "success": "boolean"
 }
 ```
+
+**Peko extensions:** the return object includes `total_replacements` and
+`success` top-level fields, plus `success`/`error` per replacement. The
+canonical Claude shape is `{ path, replacements: [...] }`; the extras are
+non-breaking but make the tool 🔧.
 
 ## Shell
 
@@ -120,7 +131,7 @@ Return (background): async task receipt.
 
 ## Scheduling
 
-### `CronCreate` ✅
+### `CronCreate` 🔧
 
 Create a scheduled job.
 
@@ -133,18 +144,45 @@ Create a scheduled job.
 }
 ```
 
-**Peko extensions:** `at`, `interval_ms`, `start_at`, `timezone`, `idle_ms`,
-`event_topic`, `event_filter`.
+**Peko extensions:** the schema does not require `cron` because peko
+supports multiple schedule kinds (`at`, `interval_ms`, event-triggered jobs
+via `event_topic`/`event_filter`). To schedule a classic cron job, supply
+`cron`; otherwise supply one of the extension fields. Extra fields:
+`label`, `at`, `interval_ms`, `start_at`, `timezone`, `idle_ms`,
+`event_topic`, `event_filter`, `agent_id`.
 
-### `CronDelete` ✅
+### `CronDelete` 🔧
 
 ```json
-{ "id": "string (required)" }
+{
+  "id": "string?",
+  "label": "string? (peko extension)"
+}
 ```
 
-### `CronList` ✅
+**Peko extensions:** accepts `label` as an alternative to `id` (the schema
+uses `anyOf` rather than requiring `id`). The canonical Claude call passes
+`id` only.
 
-No parameters. Returns an array of jobs.
+### `CronList` 🔧
+
+```json
+{
+  "status_filter": "string? (peko extension)",
+  "kind_filter": "string? (peko extension)"
+}
+```
+
+Returns:
+```json
+{
+  "jobs": [ ... ],
+  "count": "integer"
+}
+```
+
+**Peko extensions:** `status_filter` and `kind_filter` query parameters, and
+the return is wrapped as `{ jobs, count }` instead of a bare array.
 
 ## Agent control
 

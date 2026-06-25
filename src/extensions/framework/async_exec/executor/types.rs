@@ -173,6 +173,11 @@ pub struct AsyncToolConfig {
     /// Maximum time to wait for task completion. `None` means no timeout
     /// (the task runs to completion or until cancelled).
     pub timeout_secs: Option<u64>,
+    /// Optional millisecond-precision timeout. When set, takes precedence
+    /// over `timeout_secs` so callers can request sub-second timeouts
+    /// (e.g. `Bash { run_in_background, timeout: 100 }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_millis: Option<u64>,
     /// Whether to delete task record after delivery
     pub cleanup_after_delivery: bool,
     /// Label for grouping/identifying tasks
@@ -185,6 +190,7 @@ impl Default for AsyncToolConfig {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: None,
             timeout_secs: Some(300),
+            timeout_millis: None,
             cleanup_after_delivery: true,
             label: None,
         }

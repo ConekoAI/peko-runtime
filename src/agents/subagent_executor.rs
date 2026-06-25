@@ -280,6 +280,7 @@ impl SubagentExecutor {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: None,
             timeout_secs: Some(config.timeout_seconds),
+            timeout_millis: None,
             cleanup_after_delivery: config.cleanup == SpawnCleanupPolicy::Delete,
             label: config.label.clone(),
         };

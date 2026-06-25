@@ -81,6 +81,23 @@ pub struct AgentConfig {
     /// provider the agent is tuned for. Optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_model_id: Option<String>,
+
+    /// Whether the planning-todo family (`TaskCreate`/`TaskGet`/
+    /// `TaskList`/`TaskUpdate`) is enabled for this agent. Defaults to
+    /// `true`. The factory- and registrar-level `enable_task_tools`
+    /// flag is a separate global default that propagates here.
+    #[serde(default = "default_true")]
+    pub enable_task_tools: bool,
+
+    /// Whether the async execution family (`AsyncSpawn`/`AsyncOutput`/
+    /// `AsyncStatus`/`AsyncList`/`AsyncStop`) is enabled for this agent.
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub enable_async_tools: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl AgentConfig {
@@ -170,6 +187,8 @@ impl Default for AgentConfig {
             // v3+ soft hints. None by default.
             preferred_provider_id: None,
             preferred_model_id: None,
+            enable_task_tools: true,
+            enable_async_tools: true,
         }
     }
 }
