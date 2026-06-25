@@ -7,8 +7,8 @@
 //!
 //! ## Usage
 //! ```rust,ignore
-//! let shell = Arc::new(ShellTool::new());
-//! BuiltinToolAdapter::register_tool(&core, shell).await?;
+//! let bash = Arc::new(BashTool::new());
+//! BuiltinToolAdapter::register_tool(&core, bash).await?;
 //! ```
 
 use crate::extensions::framework::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
@@ -157,7 +157,7 @@ impl BuiltinToolAdapter {
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::{
-            CronTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, WriteTool,
+            BashTool, CronTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool,
         };
 
         let disabled_set: HashSet<String> = config
@@ -168,12 +168,12 @@ impl BuiltinToolAdapter {
 
         let workspace = config.workspace_dir.clone();
 
-        // Shell tool
-        let shell_enabled = config.enable_shell;
-        let shell_disabled = disabled_set.contains("shell");
-        if shell_enabled && !shell_disabled {
-            let shell = Arc::new(ShellTool::new().with_workspace(&workspace));
-            Self::register_tool(core, shell).await?;
+        // Shell tool (Bash)
+        let bash_enabled = config.enable_shell;
+        let bash_disabled = disabled_set.contains("bash");
+        if bash_enabled && !bash_disabled {
+            let bash = Arc::new(BashTool::new().with_workspace(&workspace));
+            Self::register_tool(core, bash).await?;
         }
 
         // Granular filesystem tools
@@ -365,7 +365,7 @@ impl HookHandler for BuiltinExecuteHandler {
                                             );
                                         }
                                     }
-                                    "shell" => {
+                                    "Bash" => {
                                         if !obj.contains_key("cwd") {
                                             obj.insert(
                                                 "cwd".to_string(),
@@ -553,10 +553,10 @@ mod tests {
     #[test]
     fn test_is_builtin() {
         // Global tools
-        assert!(BuiltinToolAdapter::is_builtin("shell"));
+        assert!(BuiltinToolAdapter::is_builtin("Bash"));
         assert!(BuiltinToolAdapter::is_builtin("Read"));
-        assert!(BuiltinToolAdapter::is_builtin("SHELL")); // case insensitive
-                                                          // Agent-specific tools
+        assert!(BuiltinToolAdapter::is_builtin("BASH")); // case insensitive
+                                                         // Agent-specific tools
         assert!(BuiltinToolAdapter::is_builtin("agent_spawn"));
         assert!(BuiltinToolAdapter::is_builtin("a2a_send"));
         assert!(BuiltinToolAdapter::is_builtin("A2A_SEND")); // case insensitive
@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn test_all_tool_names() {
         let names = BuiltinToolAdapter::all_tool_names();
-        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"Bash"));
         assert!(names.contains(&"Read"));
         assert!(names.contains(&"agent_spawn"));
         assert!(names.contains(&"a2a_send"));
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn test_global_tool_names() {
         let names = BuiltinToolAdapter::global_tool_names();
-        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"Bash"));
         assert!(names.contains(&"task"));
         assert!(!names.contains(&"agent_spawn")); // agent-specific, not global
         assert!(!names.contains(&"a2a_send")); // agent-specific, not global
@@ -587,7 +587,7 @@ mod tests {
         let names = BuiltinToolAdapter::agent_specific_tool_names();
         assert!(names.contains(&"agent_spawn"));
         assert!(names.contains(&"a2a_send"));
-        assert!(!names.contains(&"shell")); // global, not agent-specific
+        assert!(!names.contains(&"Bash")); // global, not agent-specific
     }
 
     #[test]
@@ -595,7 +595,7 @@ mod tests {
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("agent_spawn"));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("a2a_send"));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT_SPAWN")); // case insensitive
-        assert!(!BuiltinToolAdapter::is_agent_specific_builtin("shell"));
+        assert!(!BuiltinToolAdapter::is_agent_specific_builtin("Bash"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("session"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("unknown"));
     }

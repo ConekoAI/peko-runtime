@@ -21,7 +21,6 @@ execution, A2A protocol, and extension system.
 
 #### Upcoming (tracked on `tool-parity-core-subset` branch)
 
-- Rename `shell` → `Bash`.
 - Split `cron` → `CronCreate` / `CronDelete` / `CronList`.
 - Rename `agent_spawn` → `Agent` and add `subagent_type`, `description`,
   `model` params.
@@ -44,6 +43,12 @@ execution, A2A protocol, and extension system.
   now uses `file_path`, `old_string`, `new_string`, and `replace_all` (default
   false); the previous `path` + `edit` object shape is removed. Update agent
   configs, whitelists, and prompts that referenced the old name.
+- **BREAKING**: Renamed built-in tool `shell` to `Bash`. The schema now uses
+  `command`, `description`, `cwd`, `run_in_background`, and `timeout`. Blocking
+  execution returns `{ exit_code, stdout, stderr, success }`; background
+  execution returns an async task receipt discoverable by the future `Async*`
+  family. Update agent configs, whitelists, and prompts that referenced the old
+  name.
 - **BREAKING**: Renamed the Rust crate from `pekobot` to `peko`. Update all
   `use pekobot::...` imports to `use peko::...`.
 - **BREAKING**: Renamed the public Rust type

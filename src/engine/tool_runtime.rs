@@ -8,7 +8,7 @@ use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
-use crate::tools::{CronTool, EditTool, GlobTool, GrepTool, ReadTool, ShellTool, Tool, WriteTool};
+use crate::tools::{BashTool, CronTool, EditTool, GlobTool, GrepTool, ReadTool, Tool, WriteTool};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -168,7 +168,7 @@ impl ToolRuntime {
             .unwrap_or_else(|| PathBuf::from("."));
 
         let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(ShellTool::new().with_workspace(workspace.clone())),
+            Arc::new(BashTool::new().with_workspace(workspace.clone())),
             Arc::new(ReadTool::new().with_workspace(workspace.clone())),
             Arc::new(WriteTool::new().with_workspace(workspace.clone())),
             Arc::new(GlobTool::new().with_workspace(workspace.clone())),
@@ -306,7 +306,7 @@ mod tests {
         let resolver = PathResolver::new();
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
-        assert!(runtime.has_tool("shell").await);
+        assert!(runtime.has_tool("Bash").await);
         assert!(runtime.has_tool("Read").await);
         assert!(runtime.has_tool("Write").await);
         assert!(runtime.has_tool("glob").await);
@@ -322,7 +322,7 @@ mod tests {
         let tools = runtime.list_tools().await;
 
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
-        assert!(tool_names.contains(&"shell".to_string()));
+        assert!(tool_names.contains(&"Bash".to_string()));
         assert!(tool_names.contains(&"Read".to_string()));
     }
 
@@ -332,7 +332,7 @@ mod tests {
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
         let result = runtime
-            .execute_tool("shell", json!({"command": "echo hello"}))
+            .execute_tool("Bash", json!({"command": "echo hello"}))
             .await;
 
         assert!(

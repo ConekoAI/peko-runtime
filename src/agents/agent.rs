@@ -83,12 +83,12 @@ impl Agent {
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
         // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
         // all common built-ins on the global ExtensionCore before any Agent is created.
-        let has_shell = self
+        let has_bash = self
             .extension_core
-            .get_tool_metadata("shell")
+            .get_tool_metadata("Bash")
             .await
             .is_some();
-        if !has_shell {
+        if !has_bash {
             tracing::error!(
                 "Built-in tools not pre-registered on ExtensionCore. \
                  This indicates a startup ordering bug — AppState should initialize \

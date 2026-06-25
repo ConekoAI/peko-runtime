@@ -1366,8 +1366,8 @@ mod tests {
         // ToolRuntime should have registered built-in tools
         let tool_runtime = state.tool_runtime.clone();
         assert!(
-            tool_runtime.has_tool("shell").await,
-            "shell tool not registered"
+            tool_runtime.has_tool("Bash").await,
+            "Bash tool not registered"
         );
         assert!(
             tool_runtime.has_tool("Read").await,
@@ -1400,7 +1400,7 @@ mod tests {
         assert!(!tools.is_empty(), "No tools in ExtensionCore");
 
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-        assert!(tool_names.contains(&"shell".to_string()));
+        assert!(tool_names.contains(&"Bash".to_string()));
         assert!(tool_names.contains(&"grep".to_string()));
 
         // Tool definitions should be available for LLM API
@@ -1440,8 +1440,8 @@ mod tests {
         let tools: Vec<crate::extensions::framework::types::ToolMetadata> = core.list_tools().await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(
-            tool_names.contains(&"shell".to_string()),
-            "shell missing after agent init"
+            tool_names.contains(&"Bash".to_string()),
+            "Bash missing after agent init"
         );
         assert!(
             tool_names.contains(&"grep".to_string()),
@@ -1461,10 +1461,7 @@ mod tests {
         assert!(prompt.is_some(), "Prompt section returned None");
         let prompt_text = prompt.unwrap();
         assert!(!prompt_text.is_empty(), "Prompt section is empty");
-        assert!(
-            prompt_text.contains("shell"),
-            "Prompt doesn't mention shell"
-        );
+        assert!(prompt_text.contains("Bash"), "Prompt doesn't mention Bash");
         assert!(prompt_text.contains("grep"), "Prompt doesn't mention grep");
     }
 

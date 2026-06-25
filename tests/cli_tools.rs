@@ -11,7 +11,7 @@
 //! | `built-in/read_file.ps1`   | `built_in_read_file_returns_content`               |
 //! | `built-in/write_file.ps1`  | `built_in_write_file_creates_file`                 |
 //! | `built-in/Edit.ps1`        | `built_in_edit_modifies_file`                 |
-//! | `built-in/shell.ps1`       | `built_in_shell_executes_command`                  |
+//! | `built-in/Bash.ps1`        | `built_in_bash_executes_command`              |
 //!
 //! Each test:
 //!   1. Builds an isolated [`PekoCli`] tempdir as `HOME`.
@@ -165,13 +165,13 @@ default_timeout_seconds = 60
 
 [extensions]
 enabled = [
-    "shell",
+    "Bash",
     "Read",
     "Write",
     "glob",
     "grep",
     "Edit",
-    "builtin:tool:shell",
+    "builtin:tool:Bash",
     "builtin:tool:Read",
     "builtin:tool:Write",
     "builtin:tool:glob",
@@ -190,7 +190,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     std::fs::write(
         agent_dir.join("SYSTEM.md"),
         "Test agent for the built-in tools CLI integration suite. \
-         Has shell, Read, Write, glob, grep, and Edit tools enabled.",
+         Has Bash, Read, Write, glob, grep, and Edit tools enabled.",
     )?;
     Ok(())
 }
@@ -543,37 +543,37 @@ async fn built_in_edit_modifies_file() {
     );
 }
 
-/// `built-in/shell.ps1` T1+T2: execute a basic shell command (T1)
+/// `built-in/Bash.ps1` T1+T2: execute a basic shell command (T1)
 /// vs. with a working directory (T2). We exercise T1 with a
 /// cross-platform `echo` so the same test runs on Unix and Windows.
 ///
-/// The shell tool's actual command execution is unit-tested in
-/// `src/tools/builtin/shell.rs`. The CLI integration concern is that
+/// The Bash tool's actual command execution is unit-tested in
+/// `src/tools/builtin/bash.rs`. The CLI integration concern is that
 /// the tool call is dispatched end-to-end through the agent loop.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
-async fn built_in_shell_executes_command() {
+async fn built_in_bash_executes_command() {
     if mock_llm_url().is_none() {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     }
     let mock_url = mock_llm_url().unwrap();
 
-    let needle = "built-in-shell-3f5d";
-    let agent_name = "built_in_shell";
+    let needle = "built-in-bash-3f5d";
+    let agent_name = "built_in_bash";
 
-    // Cross-platform echo: `echo SHELL_TEST_MARKER` works in sh, bash,
+    // Cross-platform echo: `echo BASH_TEST_MARKER` works in sh, bash,
     // cmd, and PowerShell (with minor quoting differences — we use
     // single quotes to keep the literal identical).
-    let shell_command = "echo SHELL_TEST_MARKER";
+    let bash_command = "echo BASH_TEST_MARKER";
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "shell", "arguments":
-                serde_json::json!({ "command": shell_command }).to_string()
+            { "tool_call": { "name": "Bash", "arguments":
+                serde_json::json!({ "command": bash_command }).to_string()
             } },
-            "SHELL_DONE",
+            "BASH_DONE",
         ],
     })
     .to_string();
@@ -584,8 +584,8 @@ async fn built_in_shell_executes_command() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your shell tool to run '{shell_command}'. When the command has \
-         executed, respond SHELL_DONE. Use the needle '{needle}' in your \
+        "Use your Bash tool to run '{bash_command}'. When the command has \
+         executed, respond BASH_DONE. Use the needle '{needle}' in your \
          response."
     );
     let (out, err, status) = run(
@@ -595,8 +595,8 @@ async fn built_in_shell_executes_command() {
     );
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("SHELL_DONE"),
-        "parent did not report SHELL_DONE: stdout={out} stderr={err}",
+        out.contains("BASH_DONE"),
+        "parent did not report BASH_DONE: stdout={out} stderr={err}",
     );
 }
 

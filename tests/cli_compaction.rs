@@ -105,10 +105,10 @@ preferred_model_id = "default"
 
 [extensions]
 enabled = [
-    "shell",
+    "Bash",
     "Read",
     "Write",
-    "builtin:tool:shell",
+    "builtin:tool:Bash",
     "builtin:tool:Read",
     "builtin:tool:Write",
 ]

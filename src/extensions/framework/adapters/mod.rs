@@ -564,7 +564,7 @@ impl ExtensionState {
 pub mod builtin_tools {
     /// Tools registered once at daemon startup by `BuiltinToolAdapter::register_all()`.
     pub const GLOBAL_TOOL_NAMES: &[&str] = &[
-        "shell", "Read", "Write", "glob", "grep", "Edit", "session", "cron", "task",
+        "Bash", "Read", "Write", "glob", "grep", "Edit", "session", "cron", "task",
     ];
 
     /// Tools registered per-agent in `Agent::init_builtins_async()`.
@@ -598,14 +598,14 @@ pub mod builtin_tools {
         #[test]
         fn all_tool_names_includes_both_lists() {
             let names = all_tool_names();
-            assert!(names.contains(&"shell"));
+            assert!(names.contains(&"Bash"));
             assert!(names.contains(&"agent_spawn"));
         }
 
         #[test]
         fn is_builtin_tool_is_case_insensitive() {
-            assert!(is_builtin_tool("shell"));
-            assert!(is_builtin_tool("SHELL"));
+            assert!(is_builtin_tool("Bash"));
+            assert!(is_builtin_tool("BASH"));
             assert!(is_builtin_tool("A2A_SEND"));
             assert!(!is_builtin_tool("unknown_tool"));
         }
@@ -613,7 +613,7 @@ pub mod builtin_tools {
         #[test]
         fn is_agent_specific_builtin_tool_filters() {
             assert!(is_agent_specific_builtin_tool("agent_spawn"));
-            assert!(!is_agent_specific_builtin_tool("shell"));
+            assert!(!is_agent_specific_builtin_tool("Bash"));
             assert!(!is_agent_specific_builtin_tool("unknown"));
         }
     }

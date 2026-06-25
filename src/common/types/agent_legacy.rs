@@ -66,7 +66,7 @@ impl Default for ExtensionConfig {
             // Default: enable all common built-in tools so agents work out of the box.
             // Whitelist stores canonical extension IDs, not bare tool names.
             enabled: vec![
-                "builtin:tool:shell".to_string(),
+                "builtin:tool:Bash".to_string(),
                 "builtin:tool:Read".to_string(),
                 "builtin:tool:Write".to_string(),
                 "builtin:tool:glob".to_string(),
@@ -294,7 +294,7 @@ mod tests {
     fn test_extension_config_default() {
         let config = ExtensionConfig::default();
         assert!(!config.enabled.is_empty());
-        assert!(config.enabled.contains(&"builtin:tool:shell".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:Bash".to_string()));
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
 
         // Default whitelist enables common built-in tools using canonical extension IDs
         assert!(!config.enabled.is_empty());
-        assert!(config.enabled.contains(&"builtin:tool:shell".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:Bash".to_string()));
         assert!(config.enabled.contains(&"builtin:tool:Read".to_string()));
     }
 
@@ -311,7 +311,7 @@ mod tests {
     fn test_extension_config_is_extension_enabled() {
         let config = ExtensionConfig {
             enabled: vec![
-                "builtin:tool:shell".to_string(),
+                "builtin:tool:Bash".to_string(),
                 "builtin:tool:Read".to_string(),
                 "builtin:tool:Write".to_string(),
                 "builtin:tool:glob".to_string(),
@@ -324,7 +324,7 @@ mod tests {
         };
 
         // All whitelisted extensions should be enabled (canonical IDs)
-        assert!(config.is_extension_enabled("builtin:tool:shell"));
+        assert!(config.is_extension_enabled("builtin:tool:Bash"));
         assert!(config.is_extension_enabled("builtin:tool:Read"));
         assert!(config.is_extension_enabled("builtin:tool:Write"));
         assert!(config.is_extension_enabled("builtin:tool:glob"));
@@ -334,11 +334,11 @@ mod tests {
         assert!(config.is_extension_enabled("builtin:tool:cron"));
 
         // Case-insensitive matching
-        assert!(config.is_extension_enabled("BUILTIN:TOOL:SHELL"));
+        assert!(config.is_extension_enabled("BUILTIN:TOOL:BASH"));
         assert!(config.is_extension_enabled("Builtin:Tool:Session"));
 
         // Bare tool names should NOT match (no special-case parsing)
-        assert!(!config.is_extension_enabled("shell"));
+        assert!(!config.is_extension_enabled("Bash"));
         assert!(!config.is_extension_enabled("Read"));
 
         // Unknown extensions should not be enabled
@@ -359,7 +359,7 @@ mod tests {
             edit_tool: None,
         };
 
-        assert!(!config.is_extension_enabled("builtin:tool:shell"));
+        assert!(!config.is_extension_enabled("builtin:tool:Bash"));
         assert!(!config.is_extension_enabled("builtin:tool:Read"));
         assert!(!config.is_extension_enabled("mcp:any_server"));
     }
@@ -383,7 +383,7 @@ mod tests {
 
         assert!(config.is_extension_enabled("builtin:tool:Read"));
         assert!(config.is_extension_enabled("builtin:tool:Write"));
-        assert!(!config.is_extension_enabled("builtin:tool:shell"));
+        assert!(!config.is_extension_enabled("builtin:tool:Bash"));
     }
 
     #[test]
@@ -396,14 +396,14 @@ mod tests {
         assert!(!extensions.enabled.is_empty());
         assert!(extensions
             .enabled
-            .contains(&"builtin:tool:shell".to_string()));
+            .contains(&"builtin:tool:Bash".to_string()));
     }
 
     #[test]
     fn test_extension_config_toml_serialization() {
         let config = ExtensionConfig {
             enabled: vec![
-                "builtin:tool:shell".to_string(),
+                "builtin:tool:Bash".to_string(),
                 "builtin:tool:Read".to_string(),
             ],
             ..Default::default()
@@ -412,7 +412,7 @@ mod tests {
 
         // Should contain the enabled list with canonical IDs
         assert!(toml.contains("enabled"));
-        assert!(toml.contains("builtin:tool:shell"));
+        assert!(toml.contains("builtin:tool:Bash"));
         assert!(toml.contains("builtin:tool:Read"));
     }
 

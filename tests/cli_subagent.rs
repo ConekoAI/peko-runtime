@@ -152,12 +152,12 @@ enabled = [
     "task",
     "Write",
     "Read",
-    "shell",
+    "Bash",
     "builtin:tool:agent_spawn",
     "builtin:tool:task",
     "builtin:tool:Write",
     "builtin:tool:Read",
-    "builtin:tool:shell",
+    "builtin:tool:Bash",
 ]
 
 [channels]

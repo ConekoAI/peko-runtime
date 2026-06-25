@@ -26,7 +26,7 @@
 //! Note: Custom tools can also be disabled by name.
 
 use crate::tools::builtin::{
-    CronTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool, ShellTool, WriteTool,
+    BashTool, CronTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool,
 };
 use crate::tools::core::traits::Tool;
 use std::collections::HashSet;
@@ -342,15 +342,15 @@ impl ToolFactory {
             || Arc::new(EditTool::new().with_workspace(config.workspace_dir.clone())),
         );
 
-        // Shell tool
-        let shell_enabled = config.enable_shell;
-        let shell_disabled = registry.is_disabled("shell");
-        if shell_enabled {
-            if shell_disabled {
-                registry.disabled.push("shell".to_string());
+        // Shell tool (Bash)
+        let bash_enabled = config.enable_shell;
+        let bash_disabled = registry.is_disabled("bash");
+        if bash_enabled {
+            if bash_disabled {
+                registry.disabled.push("bash".to_string());
             } else {
                 registry.tools.push(Arc::new(
-                    ShellTool::new().with_workspace(config.workspace_dir.clone()),
+                    BashTool::new().with_workspace(config.workspace_dir.clone()),
                 ));
             }
         }
@@ -395,19 +395,20 @@ mod tests {
     fn test_disabled_tools_filtering() {
         let config = ToolFactoryConfig {
             workspace_dir: PathBuf::from("."),
-            disabled_tools: vec!["shell".to_string(), "cron".to_string()],
+            disabled_tools: vec!["bash".to_string(), "cron".to_string()],
             ..Default::default()
         };
 
         let result = ToolFactory::create_tools(&config);
 
-        // Check that shell and cron are in disabled list
-        assert!(result.disabled.contains(&"shell".to_string()));
+        // Check that bash and cron are in disabled list
+        assert!(result.disabled.contains(&"bash".to_string()));
         assert!(result.disabled.contains(&"cron".to_string()));
 
         // Check that disabled tools are not in tools list
         let tool_names: Vec<_> = result.tools.iter().map(|t| t.name()).collect();
-        assert!(!tool_names.contains(&"shell"));
+        assert!(!tool_names.contains(&"bash"));
+        assert!(!tool_names.contains(&"Bash"));
         assert!(!tool_names.contains(&"cron"));
     }
 
