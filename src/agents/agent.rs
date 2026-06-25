@@ -116,6 +116,26 @@ impl Agent {
             ),
         ));
 
+        // Add planning todo (Task*) tools backed by the agent's session storage.
+        if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
+            let todo_storage = Arc::new(crate::session::todos::TodoStorage::new(sessions_dir));
+            tools.push(Arc::new(crate::tools::TaskCreateTool::new(
+                todo_storage.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::TaskGetTool::new(
+                todo_storage.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::TaskListTool::new(
+                todo_storage.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::TaskUpdateTool::new(todo_storage)));
+        } else {
+            tracing::warn!(
+                "Session storage directory not available for agent '{}'; Task* tools will not be registered",
+                self.config.name
+            );
+        }
+
         // Note: `task` tool (status/list/cancel) is registered globally by the daemon's
         // ToolRuntime::register_builtins() and searches across all registries at runtime.
         // We do NOT register per-agent versions here to avoid shadowing the global

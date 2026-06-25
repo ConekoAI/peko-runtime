@@ -355,6 +355,11 @@ impl HookHandler for BuiltinExecuteHandler {
             self.tool.parameters(),
         );
 
+        let runtime_ctx = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .cloned()
+            .unwrap_or_default();
+
         ctx.services
             .async_router()
             .execute_from_hook(
@@ -444,12 +449,18 @@ impl HookHandler for BuiltinExecuteHandler {
                 ),
                 move |p| {
                     let tool = tool.clone();
+                    let tool_ctx = crate::tools::ToolContext::for_hook_run(
+                        "hook_run",
+                        "hook",
+                        &tool_name_for_ctx,
+                    )
+                    .with_agent_id(runtime_ctx.agent_id.clone().unwrap_or_default())
+                    .with_session_id(runtime_ctx.session_id.clone().unwrap_or_default())
+                    .with_workspace(runtime_ctx.workspace.clone().unwrap_or_default());
                     async move {
-                        // Use execute_with_context for consistent metrics/timeout/abort handling.
-                        // In the future, HookContext can be extended to carry abort signals and
-                        // progress callbacks, which would be passed through here.
-                        let ctx = crate::tools::ToolContext::default_for_tool(&tool_name_for_ctx);
-                        tool.execute_with_context(p, &ctx).await
+                        // Use execute_with_context so tools receive session/agent
+                        // context injected by the extension framework.
+                        tool.execute_with_context(p, &tool_ctx).await
                     }
                 },
             )

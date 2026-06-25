@@ -42,6 +42,7 @@ pub mod recovery;
 pub mod spawn;
 pub mod subagent_key;
 pub mod sync;
+pub mod todos;
 pub mod types;
 pub mod unified;
 
@@ -91,6 +92,7 @@ pub use directory::SessionDirectory;
 pub use maintenance::{maintain_agent, MaintenanceScheduler};
 pub use recovery::{RecoveryReport, RecoveryState, SessionRecovery};
 pub use sync::SyncSessionStorage;
+pub use todos::{Todo, TodoStatus, TodoStorage};
 
 // Re-export subagent key utilities
 pub use subagent_key::{

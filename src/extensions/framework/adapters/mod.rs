@@ -580,8 +580,16 @@ pub mod builtin_tools {
     ];
 
     /// Tools registered per-agent in `Agent::init_builtins_async()`.
-    pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] =
-        &["Agent", "a2a_send", "AsyncSpawn", "AsyncOutput"];
+    pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &[
+        "Agent",
+        "a2a_send",
+        "AsyncSpawn",
+        "AsyncOutput",
+        "TaskCreate",
+        "TaskGet",
+        "TaskList",
+        "TaskUpdate",
+    ];
 
     /// Concatenation of [`GLOBAL_TOOL_NAMES`] and [`AGENT_SPECIFIC_TOOL_NAMES`].
     pub fn all_tool_names() -> Vec<&'static str> {

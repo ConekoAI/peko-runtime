@@ -10,6 +10,7 @@
 //! - `cron_list`: `CronList` tool
 //! - `async_*`: Async task control family (AsyncSpawn, AsyncOutput, AsyncStop,
 //!   AsyncStatus, AsyncList)
+//! - `task_*`: Planning todo family (TaskCreate, TaskGet, TaskList, TaskUpdate)
 //! - `session`: Session introspection
 
 pub mod async_common;
@@ -26,6 +27,11 @@ pub mod cron_list;
 pub mod fs;
 pub mod messaging;
 pub mod session;
+pub mod task_common;
+pub mod task_create;
+pub mod task_get;
+pub mod task_list;
+pub mod task_update;
 
 pub use async_list::AsyncListTool;
 pub use async_output::AsyncOutputTool;
@@ -42,3 +48,7 @@ pub use session::{
     SessionCache, SessionInfo, SessionIntrospector,
     SessionRegistry as SessionIntrospectionRegistry, SessionTool,
 };
+pub use task_create::TaskCreateTool;
+pub use task_get::TaskGetTool;
+pub use task_list::TaskListTool;
+pub use task_update::TaskUpdateTool;

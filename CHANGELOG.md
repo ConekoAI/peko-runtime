@@ -21,8 +21,17 @@ execution, A2A protocol, and extension system.
 
 #### Upcoming (tracked on `tool-parity-core-subset` branch)
 
-- Add planning-todo family `TaskCreate` / `TaskGet` / `TaskList` /
-  `TaskUpdate`.
+- (none — all scoped tools are now in place)
+
+### Added
+
+- Planning-todo family `TaskCreate`, `TaskGet`, `TaskList`, and `TaskUpdate`.
+  Todos are stored in a per-session JSONL sidecar
+  (`{session_key}.todos.jsonl`) alongside the main session JSONL, using the
+  same atomic-write durability strategy as session storage. `TaskCreate` takes
+  `subject`, `description`, and `activeForm`; `TaskGet` and `TaskUpdate` take
+  `taskId`; `TaskList` accepts an optional `status_filter`. These tools are
+  registered per-agent so they resolve to the agent's own session directory.
 
 ### Changed
 
