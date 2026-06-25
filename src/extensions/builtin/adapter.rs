@@ -7,8 +7,8 @@
 //!
 //! ## Usage
 //! ```rust,ignore
-//! let shell = Arc::new(ShellTool::new());
-//! BuiltinToolAdapter::register_tool(&core, shell).await?;
+//! let bash = Arc::new(BashTool::new());
+//! BuiltinToolAdapter::register_tool(&core, bash).await?;
 //! ```
 
 use crate::extensions::framework::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
@@ -30,9 +30,9 @@ use std::sync::Arc;
 pub struct BuiltinToolRegistrarConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
-    /// Enable granular filesystem tools (`read_file`, `write_file`, glob, grep, `str_replace_file`)
+    /// Enable granular filesystem tools (`Read`, `Write`, glob, grep, `Edit`)
     pub enable_granular_fs: bool,
-    /// Enable write tools (`write_file`, `str_replace_file`)
+    /// Enable write tools (`Write`, `Edit`)
     pub enable_granular_write: bool,
     /// Enable shell tool
     pub enable_shell: bool,
@@ -40,8 +40,11 @@ pub struct BuiltinToolRegistrarConfig {
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
-    /// Enable universal task management tools (task_status, task_list)
-    pub enable_task_management: bool,
+    /// Enable async execution control tools (AsyncSpawn, AsyncOutput, AsyncStop,
+    /// AsyncStatus, AsyncList)
+    pub enable_async_tools: bool,
+    /// Enable planning todo tools (TaskCreate, TaskGet, TaskList, TaskUpdate)
+    pub enable_task_tools: bool,
     /// Path to cron database
     pub cron_db_path: Option<PathBuf>,
     /// Instance ID for cron persistence
@@ -59,7 +62,8 @@ impl Default for BuiltinToolRegistrarConfig {
             enable_shell: true,
             enable_session_tools: true,
             enable_cron: true,
-            enable_task_management: true,
+            enable_async_tools: true,
+            enable_task_tools: true,
             cron_db_path: None,
             instance_id: None,
             disabled_tools: Vec::new(),
@@ -87,7 +91,7 @@ impl BuiltinToolAdapter {
     /// populates the `ExtensionCore` side-table of `Arc<dyn Tool>`
     /// instances keyed by tool name. The side-table is what
     /// `ExtensionCore::get_tool` reads from so direct callers (e.g.,
-    /// `TaskTool::spawn`) can obtain an `Arc<dyn Tool>` without going
+    /// `AsyncSpawnTool`) can obtain an `Arc<dyn Tool>` without going
     /// through the hook layer.
     pub async fn register_tool(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
         let tool_name = tool.name().to_string();
@@ -102,7 +106,7 @@ impl BuiltinToolAdapter {
         );
 
         // Side-table: keep a clone of the Arc<dyn Tool> for direct
-        // invocation paths (TaskTool::spawn calls core.get_tool). Clone
+        // invocation paths (AsyncSpawnTool calls core.get_tool). Clone
         // BEFORE moving the original into the execute handler below.
         core.insert_tool_instance(tool_name.clone(), tool.clone())
             .await;
@@ -130,12 +134,11 @@ impl BuiltinToolAdapter {
     /// All tools are registered as hooks in `ExtensionCore`, making them
     /// discoverable via `ToolRegister` hook and executable via `ToolExecute` hook.
     ///
-    /// The `task` tool is **NOT** registered here. It depends on a
-    /// per-agent `AsyncExecutor` and `ExtensionCore` reference (for the
-    /// spawn side-table and session key), so it is registered per-agent
-    /// by `register_task_tool` once the agent has constructed its
-    /// executor and queue. The pre-refactor global registration has
-    /// been removed; the per-agent path is the only production path.
+    /// `AsyncSpawn` and `AsyncOutput` are **NOT** registered here. They
+    /// depend on a per-agent `AsyncExecutor` and `ExtensionCore` reference,
+    /// so they are registered per-agent by `register_async_spawn_tool` and
+    /// `register_async_output_tool` once the agent has constructed its
+    /// executor and queue.
     pub async fn register_all(
         core: &ExtensionCore,
         config: &BuiltinToolRegistrarConfig,
@@ -143,18 +146,20 @@ impl BuiltinToolAdapter {
         Self::register_globals(core, config).await
     }
 
-    /// Register global built-in tools (everything except the `task` tool).
+    /// Register global built-in tools.
     ///
-    /// `task` is excluded because it requires per-agent wiring (an
-    /// `AsyncExecutor` and an `ExtensionCore` reference). Callers that
-    /// need the `task` tool must use `register_task_tool` per-agent.
+    /// `AsyncSpawn` and `AsyncOutput` are excluded because they require
+    /// per-agent wiring (an `AsyncExecutor` and an `ExtensionCore`
+    /// reference). Callers that need those tools must use
+    /// `register_async_spawn_tool` / `register_async_output_tool` per-agent.
     pub async fn register_globals(
         core: &ExtensionCore,
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::{
-            CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
-            WriteFileTool,
+            AsyncListTool, AsyncStatusTool, AsyncStopTool, BashTool, CronCreateTool,
+            CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool,
+            WriteTool,
         };
 
         let disabled_set: HashSet<String> = config
@@ -165,25 +170,25 @@ impl BuiltinToolAdapter {
 
         let workspace = config.workspace_dir.clone();
 
-        // Shell tool
-        let shell_enabled = config.enable_shell;
-        let shell_disabled = disabled_set.contains("shell");
-        if shell_enabled && !shell_disabled {
-            let shell = Arc::new(ShellTool::new().with_workspace(&workspace));
-            Self::register_tool(core, shell).await?;
+        // Shell tool (Bash)
+        let bash_enabled = config.enable_shell;
+        let bash_disabled = disabled_set.contains("bash");
+        if bash_enabled && !bash_disabled {
+            let bash = Arc::new(BashTool::new().with_workspace(&workspace));
+            Self::register_tool(core, bash).await?;
         }
 
         // Granular filesystem tools
         if config.enable_granular_fs {
-            // read_file
-            if !disabled_set.contains("read_file") {
-                let tool = Arc::new(ReadFileTool::new().with_workspace(&workspace));
+            // Read
+            if !disabled_set.contains("read") {
+                let tool = Arc::new(ReadTool::new().with_workspace(&workspace));
                 Self::register_tool(core, tool).await?;
             }
 
-            // write_file
-            if config.enable_granular_write && !disabled_set.contains("write_file") {
-                let tool = Arc::new(WriteFileTool::new().with_workspace(&workspace));
+            // Write
+            if config.enable_granular_write && !disabled_set.contains("write") {
+                let tool = Arc::new(WriteTool::new().with_workspace(&workspace));
                 Self::register_tool(core, tool).await?;
             }
 
@@ -199,9 +204,9 @@ impl BuiltinToolAdapter {
                 Self::register_tool(core, tool).await?;
             }
 
-            // str_replace_file
-            if config.enable_granular_write && !disabled_set.contains("str_replace_file") {
-                let tool = Arc::new(StrReplaceFileTool::new().with_workspace(&workspace));
+            // Edit
+            if config.enable_granular_write && !disabled_set.contains("edit") {
+                let tool = Arc::new(EditTool::new().with_workspace(&workspace));
                 Self::register_tool(core, tool).await?;
             }
         }
@@ -213,38 +218,67 @@ impl BuiltinToolAdapter {
             Self::register_tool(core, tool).await?;
         }
 
-        // Cron tool
-        if config.enable_cron && !disabled_set.contains("cron") {
-            let tool = Arc::new(CronTool::new());
-            Self::register_tool(core, tool).await?;
+        // Cron family for scheduled jobs
+        let cron_disabled = disabled_set.contains("cron");
+        if config.enable_cron {
+            if !cron_disabled && !disabled_set.contains("croncreate") {
+                Self::register_tool(core, Arc::new(CronCreateTool::new())).await?;
+            }
+            if !cron_disabled && !disabled_set.contains("crondelete") {
+                Self::register_tool(core, Arc::new(CronDeleteTool::new())).await?;
+            }
+            if !cron_disabled && !disabled_set.contains("cronlist") {
+                Self::register_tool(core, Arc::new(CronListTool::new())).await?;
+            }
         }
 
-        // NB: the `task` tool is intentionally NOT registered here.
-        // It depends on per-agent state (AsyncExecutor + ExtensionCore
+        // Async task control family (global members)
+        // The legacy "task" key disables the whole family for backward
+        // compatibility with old disabled_tools configs.
+        let async_disabled = disabled_set.contains("task") || disabled_set.contains("async");
+        if config.enable_async_tools {
+            if !async_disabled && !disabled_set.contains("asyncstatus") {
+                Self::register_tool(core, Arc::new(AsyncStatusTool::global())).await?;
+            }
+            if !async_disabled && !disabled_set.contains("asynclist") {
+                Self::register_tool(core, Arc::new(AsyncListTool::global())).await?;
+            }
+            if !async_disabled && !disabled_set.contains("asyncstop") {
+                Self::register_tool(core, Arc::new(AsyncStopTool::global())).await?;
+            }
+        }
+
+        // NB: AsyncSpawn and AsyncOutput are intentionally NOT registered here.
+        // They depend on per-agent state (AsyncExecutor + ExtensionCore
         // for spawn-side lookups), so each agent registers its own via
-        // `BuiltinToolAdapter::register_task_tool` after constructing
+        // `BuiltinToolAdapter::register_async_spawn_tool` and
+        // `BuiltinToolAdapter::register_async_output_tool` after constructing
         // its executor and completion queue.
 
         Ok(())
     }
 
-    /// Register the `task` tool with per-agent wiring.
+    /// Register `AsyncSpawn` with per-agent wiring.
     ///
-    /// `task` requires an `AsyncExecutor` (for `spawn` and `output`
-    /// actions) and an `ExtensionCore` reference (so the spawn arm can
-    /// look up the target tool by name and read the current session
-    /// key). Each agent calls this once during initialization so its
-    /// spawns land in its own completion queue and are drained by its
-    /// own agentic loop iteration.
-    ///
-    /// If `task` was previously registered on this core, it is
-    /// unregistered first (the `register_tool` path is idempotent),
-    /// so this function can safely be re-invoked.
-    pub async fn register_task_tool(
+    /// `AsyncSpawn` requires an `AsyncExecutor` and an `ExtensionCore`
+    /// reference (so it can look up the target tool by name and read the
+    /// current session key). Each agent calls this once during initialization
+    /// so spawned tasks land in its own completion queue.
+    pub async fn register_async_spawn_tool(
         core: &ExtensionCore,
-        task_tool: Arc<crate::tools::builtin::TaskTool>,
+        tool: Arc<crate::tools::builtin::AsyncSpawnTool>,
     ) -> Result<()> {
-        Self::register_tool(core, task_tool).await
+        Self::register_tool(core, tool).await
+    }
+
+    /// Register `AsyncOutput` with per-agent wiring.
+    ///
+    /// `AsyncOutput` requires an `AsyncExecutor` for blocking reads.
+    pub async fn register_async_output_tool(
+        core: &ExtensionCore,
+        tool: Arc<crate::tools::builtin::AsyncOutputTool>,
+    ) -> Result<()> {
+        Self::register_tool(core, tool).await
     }
 
     /// Get list of globally-registered built-in tool names.
@@ -321,6 +355,11 @@ impl HookHandler for BuiltinExecuteHandler {
             self.tool.parameters(),
         );
 
+        let runtime_ctx = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .cloned()
+            .unwrap_or_default();
+
         ctx.services
             .async_router()
             .execute_from_hook(
@@ -332,11 +371,9 @@ impl HookHandler for BuiltinExecuteHandler {
                         if let Some(obj) = params.as_object_mut() {
                             // Subagent spawn inherently takes longer than simple tools because
                             // the subagent runs a full agentic loop with its own LLM calls.
-                            // Inject a longer default timeout for blocking agent_spawn if none
+                            // Inject a longer default timeout for blocking Agent if none
                             // is provided by the caller.
-                            if tool_name_for_preproc == "agent_spawn"
-                                && !obj.contains_key("_timeout")
-                            {
+                            if tool_name_for_preproc == "Agent" && !obj.contains_key("_timeout") {
                                 obj.insert(
                                     "_timeout".to_string(),
                                     serde_json::Value::Number(300.into()),
@@ -362,7 +399,7 @@ impl HookHandler for BuiltinExecuteHandler {
                                             );
                                         }
                                     }
-                                    "shell" => {
+                                    "Bash" => {
                                         if !obj.contains_key("cwd") {
                                             obj.insert(
                                                 "cwd".to_string(),
@@ -370,15 +407,32 @@ impl HookHandler for BuiltinExecuteHandler {
                                             );
                                         }
                                     }
-                                    "write_file" | "read_file" | "str_replace_file" => {
-                                        if let Some(path_val) = obj.get("path") {
+                                    "Write" | "Edit" => {
+                                        if let Some(path_val) = obj.get("file_path") {
                                             if let Some(path_str) = path_val.as_str() {
                                                 let path_buf = std::path::PathBuf::from(path_str);
                                                 if !path_buf.is_absolute() {
                                                     let resolved =
                                                         std::path::PathBuf::from(ws).join(path_str);
                                                     obj.insert(
-                                                        "path".to_string(),
+                                                        "file_path".to_string(),
+                                                        serde_json::Value::String(
+                                                            resolved.to_string_lossy().to_string(),
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "Read" => {
+                                        if let Some(path_val) = obj.get("file_path") {
+                                            if let Some(path_str) = path_val.as_str() {
+                                                let path_buf = std::path::PathBuf::from(path_str);
+                                                if !path_buf.is_absolute() {
+                                                    let resolved =
+                                                        std::path::PathBuf::from(ws).join(path_str);
+                                                    obj.insert(
+                                                        "file_path".to_string(),
                                                         serde_json::Value::String(
                                                             resolved.to_string_lossy().to_string(),
                                                         ),
@@ -395,12 +449,18 @@ impl HookHandler for BuiltinExecuteHandler {
                 ),
                 move |p| {
                     let tool = tool.clone();
+                    let tool_ctx = crate::tools::ToolContext::for_hook_run(
+                        "hook_run",
+                        "hook",
+                        &tool_name_for_ctx,
+                    )
+                    .with_agent_id(runtime_ctx.agent_id.clone().unwrap_or_default())
+                    .with_session_id(runtime_ctx.session_id.clone().unwrap_or_default())
+                    .with_workspace(runtime_ctx.workspace.clone().unwrap_or_default());
                     async move {
-                        // Use execute_with_context for consistent metrics/timeout/abort handling.
-                        // In the future, HookContext can be extended to carry abort signals and
-                        // progress callbacks, which would be passed through here.
-                        let ctx = crate::tools::ToolContext::default_for_tool(&tool_name_for_ctx);
-                        tool.execute_with_context(p, &ctx).await
+                        // Use execute_with_context so tools receive session/agent
+                        // context injected by the extension framework.
+                        tool.execute_with_context(p, &tool_ctx).await
                     }
                 },
             )
@@ -533,12 +593,17 @@ mod tests {
     #[test]
     fn test_is_builtin() {
         // Global tools
-        assert!(BuiltinToolAdapter::is_builtin("shell"));
-        assert!(BuiltinToolAdapter::is_builtin("read_file"));
-        assert!(BuiltinToolAdapter::is_builtin("SHELL")); // case insensitive
-                                                          // Agent-specific tools
-        assert!(BuiltinToolAdapter::is_builtin("agent_spawn"));
+        assert!(BuiltinToolAdapter::is_builtin("Bash"));
+        assert!(BuiltinToolAdapter::is_builtin("Read"));
+        assert!(BuiltinToolAdapter::is_builtin("BASH")); // case insensitive
+        assert!(BuiltinToolAdapter::is_builtin("AsyncStatus"));
+        assert!(BuiltinToolAdapter::is_builtin("AsyncList"));
+        assert!(BuiltinToolAdapter::is_builtin("AsyncStop"));
+        // Agent-specific tools
+        assert!(BuiltinToolAdapter::is_builtin("Agent"));
         assert!(BuiltinToolAdapter::is_builtin("a2a_send"));
+        assert!(BuiltinToolAdapter::is_builtin("AsyncSpawn"));
+        assert!(BuiltinToolAdapter::is_builtin("AsyncOutput"));
         assert!(BuiltinToolAdapter::is_builtin("A2A_SEND")); // case insensitive
                                                              // Unknown
         assert!(!BuiltinToolAdapter::is_builtin("unknown_tool"));
@@ -547,35 +612,46 @@ mod tests {
     #[test]
     fn test_all_tool_names() {
         let names = BuiltinToolAdapter::all_tool_names();
-        assert!(names.contains(&"shell"));
-        assert!(names.contains(&"read_file"));
-        assert!(names.contains(&"agent_spawn"));
+        assert!(names.contains(&"Bash"));
+        assert!(names.contains(&"Read"));
+        assert!(names.contains(&"Agent"));
         assert!(names.contains(&"a2a_send"));
+        assert!(names.contains(&"AsyncSpawn"));
+        assert!(names.contains(&"AsyncOutput"));
+        assert!(names.contains(&"AsyncStatus"));
+        assert!(names.contains(&"AsyncList"));
+        assert!(names.contains(&"AsyncStop"));
     }
 
     #[test]
     fn test_global_tool_names() {
         let names = BuiltinToolAdapter::global_tool_names();
-        assert!(names.contains(&"shell"));
-        assert!(names.contains(&"task"));
-        assert!(!names.contains(&"agent_spawn")); // agent-specific, not global
+        assert!(names.contains(&"Bash"));
+        assert!(names.contains(&"AsyncStatus"));
+        assert!(names.contains(&"AsyncList"));
+        assert!(names.contains(&"AsyncStop"));
+        assert!(!names.contains(&"AsyncSpawn")); // agent-specific, not global
+        assert!(!names.contains(&"AsyncOutput")); // agent-specific, not global
+        assert!(!names.contains(&"Agent")); // agent-specific, not global
         assert!(!names.contains(&"a2a_send")); // agent-specific, not global
     }
 
     #[test]
     fn test_agent_specific_tool_names() {
         let names = BuiltinToolAdapter::agent_specific_tool_names();
-        assert!(names.contains(&"agent_spawn"));
+        assert!(names.contains(&"Agent"));
         assert!(names.contains(&"a2a_send"));
-        assert!(!names.contains(&"shell")); // global, not agent-specific
+        assert!(names.contains(&"AsyncSpawn"));
+        assert!(names.contains(&"AsyncOutput"));
+        assert!(!names.contains(&"Bash")); // global, not agent-specific
     }
 
     #[test]
     fn test_is_agent_specific_builtin() {
-        assert!(BuiltinToolAdapter::is_agent_specific_builtin("agent_spawn"));
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin("Agent"));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("a2a_send"));
-        assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT_SPAWN")); // case insensitive
-        assert!(!BuiltinToolAdapter::is_agent_specific_builtin("shell"));
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT")); // case insensitive
+        assert!(!BuiltinToolAdapter::is_agent_specific_builtin("Bash"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("session"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("unknown"));
     }

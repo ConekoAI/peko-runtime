@@ -1,20 +1,20 @@
 //! Filesystem tools
 //!
 //! Granular filesystem operations for agents:
-//! - `read_file`: Read file contents
-//! - `write_file`: Write file contents
+//! - `Read`: Read file contents
+//! - `Write`: Write file contents
 //! - `glob`: Find files matching patterns
 //! - `grep`: Search file contents
-//! - `str_replace_file`: Targeted string replacement in files
+//! - `Edit`: Targeted string replacement in files
 
+pub mod edit;
 pub mod glob;
 pub mod grep;
-pub mod read_file;
-pub mod str_replace_file;
-pub mod write_file;
+pub mod read;
+pub mod write;
 
+pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
-pub use read_file::ReadFileTool;
-pub use str_replace_file::StrReplaceFileTool;
-pub use write_file::WriteFileTool;
+pub use read::ReadTool;
+pub use write::WriteTool;

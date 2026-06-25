@@ -48,7 +48,7 @@ pub enum ExtCommands {
 
     /// Enable an extension or built-in capability
     Enable {
-        /// Extension ID or built-in capability name (e.g., shell, `read_file`)
+        /// Extension ID or built-in capability name (e.g., Bash, Read)
         id: String,
         /// Target team or team/agent for built-in capabilities
         #[arg(short, long, value_name = "TARGET")]

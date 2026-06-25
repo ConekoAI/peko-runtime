@@ -109,10 +109,7 @@ impl InboxRegistry {
         };
 
         // Step 2: try to acquire without holding the map lock.
-        semaphore
-            .try_acquire_owned()
-            .ok()
-            .map(RunPermitGuard::new)
+        semaphore.try_acquire_owned().ok().map(RunPermitGuard::new)
     }
 
     /// Best-effort snapshot: returns `true` if a run permit is
@@ -243,10 +240,7 @@ mod tests {
         // Holding a permit on s1 must not block acquiring a permit
         // on s2.
         let permit2 = reg.try_acquire_run("s2").await;
-        assert!(
-            permit2.is_some(),
-            "permits are per-session, not global"
-        );
+        assert!(permit2.is_some(), "permits are per-session, not global");
     }
 
     #[tokio::test]
@@ -263,17 +257,11 @@ mod tests {
     async fn test_peek_run_held_reflects_state() {
         let reg = InboxRegistry::new();
         let _inbox = reg.get_or_create("s1").await;
-        assert!(
-            !reg.peek_run_held("s1").await,
-            "no permit held initially"
-        );
+        assert!(!reg.peek_run_held("s1").await, "no permit held initially");
         let permit = reg.try_acquire_run("s1").await;
         assert!(reg.peek_run_held("s1").await, "permit held after acquire");
         drop(permit);
-        assert!(
-            !reg.peek_run_held("s1").await,
-            "permit released after drop"
-        );
+        assert!(!reg.peek_run_held("s1").await, "permit released after drop");
         // Unknown session -> false.
         assert!(!reg.peek_run_held("never-touched").await);
     }

@@ -10,7 +10,7 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::ChannelType;
-use crate::tools::builtin::messaging::agent_spawn::DynamicSessionKeyProvider;
+use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use anyhow::{Context, Result};
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
@@ -39,7 +39,7 @@ pub struct Agent {
     session_manager: Arc<TokioRwLock<SessionManager>>,
     /// Subagent executor for background task execution
     subagent_executor: Arc<SubagentExecutor>,
-    /// Dynamic session key provider for `agent_spawn` tool
+    /// Dynamic session key provider for `Agent` tool
     session_key_provider: Arc<DynamicSessionKeyProvider>,
     /// Current session ID for `session` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
@@ -73,22 +73,22 @@ impl Agent {
     ///
     /// This asynchronous version loads Universal Tools from extensions directory
     /// and registers only agent-specific built-in tools with `ExtensionCore`.
-    /// Common built-in tools (shell, read_file, write_file, etc.) are already
+    /// Common built-in tools (Bash, Read, Write, etc.) are already
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::builtin::session::SessionIntrospector;
-        use crate::tools::{AgentSpawnTool, SessionTool, Tool};
+        use crate::tools::{AgentTool, SessionTool, Tool};
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
         // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
         // all common built-ins on the global ExtensionCore before any Agent is created.
-        let has_shell = self
+        let has_bash = self
             .extension_core
-            .get_tool_metadata("shell")
+            .get_tool_metadata("Bash")
             .await
             .is_some();
-        if !has_shell {
+        if !has_bash {
             tracing::error!(
                 "Built-in tools not pre-registered on ExtensionCore. \
                  This indicates a startup ordering bug — AppState should initialize \
@@ -106,11 +106,35 @@ impl Agent {
         );
         tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
-        // Add agent spawn tool v2 with executor and session provider
-        tools.push(Arc::new(AgentSpawnTool::with_session_provider(
-            self.subagent_executor.clone(),
-            Box::new(self.session_key_provider.clone()),
-        )));
+        // Add Agent tool with executor and session provider
+        let agent_service = crate::common::services::AgentService::new(PathResolver::new());
+        tools.push(Arc::new(
+            AgentTool::with_agent_service_and_session_provider(
+                self.subagent_executor.clone(),
+                agent_service,
+                Box::new(self.session_key_provider.clone()),
+            ),
+        ));
+
+        // Add planning todo (Task*) tools backed by the agent's session storage.
+        if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
+            let todo_storage = Arc::new(crate::session::todos::TodoStorage::new(sessions_dir));
+            tools.push(Arc::new(crate::tools::TaskCreateTool::new(
+                todo_storage.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::TaskGetTool::new(
+                todo_storage.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::TaskListTool::new(
+                todo_storage.clone(),
+            )));
+            tools.push(Arc::new(crate::tools::TaskUpdateTool::new(todo_storage)));
+        } else {
+            tracing::warn!(
+                "Session storage directory not available for agent '{}'; Task* tools will not be registered",
+                self.config.name
+            );
+        }
 
         // Note: `task` tool (status/list/cancel) is registered globally by the daemon's
         // ToolRuntime::register_builtins() and searches across all registries at runtime.
@@ -368,7 +392,7 @@ impl Agent {
             None => Arc::new(subagent_executor_base),
         };
 
-        // Initialize session key provider for agent_spawn tool
+        // Initialize session key provider for Agent tool
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
             "agent:{}:cli:default",
             config.name
@@ -554,7 +578,7 @@ impl Agent {
         Arc::clone(&self.current_session_id)
     }
 
-    /// Get the session key provider for agent_spawn tool.
+    /// Get the session key provider for Agent tool.
     #[must_use]
     pub fn session_key_provider(&self) -> Arc<DynamicSessionKeyProvider> {
         Arc::clone(&self.session_key_provider)
@@ -588,9 +612,9 @@ impl Agent {
 
         let agent_arc = Arc::new(self.clone());
         // Per-call wiring: fresh completion queue + executor + per-agent
-        // TaskTool. The agent's session key (read from `current_session_id`)
-        // is pushed onto the core so TaskTool::spawn can stamp
-        // `parent_session_key` correctly.
+        // AsyncSpawn/AsyncOutput tools. The agent's session key (read from
+        // `current_session_id`) is pushed onto the core so AsyncSpawn can
+        // stamp `parent_session_key` correctly.
         //
         // Session-key flow across the three `execute_*` paths:
         //
@@ -602,9 +626,9 @@ impl Agent {
         //   core. The loop's `run_inner` rebinds the core's session key
         //   for *this* agent's DID to the real session id it just
         //   created (see `src/engine/agentic_loop.rs`), so any
-        //   `task spawn` issued *mid-iteration* still gets a real
+        //   `AsyncSpawn` issued *mid-iteration* still gets a real
         //   `parent_session_key`. The brief window before the loop
-        //   starts (no iterations yet, no `task spawn` possible) does
+        //   starts (no iterations yet, no `AsyncSpawn` possible) does
         //   not matter.
         //
         // - `Agent::execute_with_session(...)` (tunnel / pekohub):
@@ -727,11 +751,11 @@ impl Agent {
             // since we cannot borrow `self` here. We rely on the agent's
             // session cell being already populated by prepare_execution
             // or by the caller; if it is None, the spawn-side just
-            // stamps "unknown" via TaskTool::current_session_key fallback.
+            // stamps "unknown" via AsyncSpawnTool's session-key fallback.
             //
             // We need the agent's current session id cell; replicate the
-            // wiring by recreating the same queue + executor + TaskTool
-            // locally here.
+            // wiring by recreating the same queue + executor + AsyncSpawn/
+            // AsyncOutput tools locally here.
             //
             // The executor and the loop share a per-call `InboxRegistry`
             // and a single inbox pre-populated for this session, so
@@ -739,9 +763,7 @@ impl Agent {
             // iteration. The daemon-global `InboxRegistry` will replace
             // this once the per-call path is rewired to use
             // `AppState::inbox_registry` directly.
-            let async_inbox_registry = Arc::new(
-                crate::session::InboxRegistry::new(),
-            );
+            let async_inbox_registry = Arc::new(crate::session::InboxRegistry::new());
             let streaming_session_key = "streaming".to_string();
             let async_completion_queue = async_inbox_registry
                 .get_or_create(&streaming_session_key)
@@ -751,18 +773,37 @@ impl Agent {
                     .with_inbox_registry(async_inbox_registry.clone()),
             );
             let core_weak = Arc::downgrade(&extension_core_for_loop);
-            let task_tool = Arc::new(crate::tools::builtin::TaskTool::with_executor_and_core(
-                async_executor,
-                core_weak,
+            let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+                async_executor.clone(),
+                core_weak.clone(),
                 Some(agent_for_loop.identity.did.clone()),
             ));
-            if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_task_tool(
-                &extension_core_for_loop,
-                task_tool,
-            )
-            .await
+            let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::with_executor(
+                async_executor,
+            ));
+            if let Err(e) =
+                crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
+                    &extension_core_for_loop,
+                    spawn_tool,
+                )
+                .await
             {
-                warn!("Failed to register per-agent TaskTool (streaming): {}", e);
+                warn!(
+                    "Failed to register per-agent AsyncSpawnTool (streaming): {}",
+                    e
+                );
+            }
+            if let Err(e) =
+                crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
+                    &extension_core_for_loop,
+                    output_tool,
+                )
+                .await
+            {
+                warn!(
+                    "Failed to register per-agent AsyncOutputTool (streaming): {}",
+                    e
+                );
             }
 
             let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
@@ -826,11 +867,11 @@ impl Agent {
 
         let agent_arc = Arc::new(self.clone());
         // Per-call wiring: fresh completion queue + executor + per-agent
-        // TaskTool. The session ID we just stamped into current_session_id
-        // is the parent_session_key we'll use for any spawn in this loop.
-        // See the session-key flow comment in `Agent::execute` for how
-        // the three `execute_*` paths cooperate to ensure mid-iteration
-        // `task spawn` calls see a real session key.
+        // AsyncSpawn/AsyncOutput tools. The session ID we just stamped into
+        // current_session_id is the parent_session_key we'll use for any
+        // spawn in this loop. See the session-key flow comment in
+        // `Agent::execute` for how the three `execute_*` paths cooperate
+        // to ensure mid-iteration `AsyncSpawn` calls see a real session key.
         let session_id = self.current_session_id.read().await.clone();
         let loop_ = self
             .build_agentic_loop(agent_arc, provider, session_id, caller_id)
@@ -899,13 +940,13 @@ impl Agent {
     /// This is the central fix for the tool async refactor (commit 3
     /// follow-up): each call to `Agent::execute_*` constructs a fresh
     /// `SessionInbox`, an `AsyncExecutor` that fans out to
-    /// that queue, and a `TaskTool` bound to both. The TaskTool is
-    /// re-registered on the `ExtensionCore` (overwriting any prior
-    /// instance), and the same queue is given to `AgenticLoop` so the
+    /// that queue, and `AsyncSpawn`/`AsyncOutput` tools bound to both.
+    /// The tools are re-registered on the `ExtensionCore` (overwriting any
+    /// prior instances), and the same queue is given to `AgenticLoop` so the
     /// loop drains it at iteration start.
     ///
     /// Returns the constructed `AgenticLoop` ready to run. The session
-    /// key is pushed onto the core so `TaskTool::spawn` can stamp
+    /// key is pushed onto the core so `AsyncSpawn` can stamp
     /// `parent_session_key` correctly.
     pub async fn build_agentic_loop(
         &self,
@@ -923,12 +964,8 @@ impl Agent {
         //    follow-up once the per-call path is rewired to read from
         //    `AppState::inbox_registry` directly.
         let async_inbox_registry = Arc::new(crate::session::InboxRegistry::new());
-        let async_inbox_key = session_key
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        let async_completion_queue = async_inbox_registry
-            .get_or_create(&async_inbox_key)
-            .await;
+        let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
+        let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
         // 2. Per-call AsyncExecutor wired to the same registry.
         let async_executor = Arc::new(
@@ -936,32 +973,42 @@ impl Agent {
                 .with_inbox_registry(async_inbox_registry.clone()),
         );
 
-        // 3. Per-call TaskTool bound to executor + core. Uses Weak so
-        //    the tool does not extend the core's lifetime past the
-        //    core itself.
+        // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
+        //    core. Uses Weak so the tools do not extend the core's lifetime
+        //    past the core itself.
         let core_weak = Arc::downgrade(&extension_core);
-        let task_tool = Arc::new(crate::tools::builtin::TaskTool::with_executor_and_core(
-            async_executor,
-            core_weak,
+        let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+            async_executor.clone(),
+            core_weak.clone(),
             Some(self.identity.did.clone()),
         ));
+        let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::with_executor(
+            async_executor,
+        ));
 
-        // 4. Re-register the per-agent TaskTool (overwrites any prior
+        // 4. Re-register the per-agent async tools (overwrites any prior
         //    instance). register_tool is idempotent — unregisters first.
-        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_task_tool(
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
             &extension_core,
-            task_tool,
+            spawn_tool,
         )
         .await
         {
-            warn!("Failed to register per-agent TaskTool: {}", e);
+            warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
+        }
+        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
+            &extension_core,
+            output_tool,
+        )
+        .await
+        {
+            warn!("Failed to register per-agent AsyncOutputTool: {}", e);
         }
 
-        // 5. Push the session key onto the core so TaskTool::spawn
-        //    can stamp parent_session_key on every spawned task.
-        //    The session key is keyed by this agent's DID on the shared
-        //    core so concurrent agents in daemon mode do not clobber
-        //    each other (issue #68).
+        // 5. Push the session key onto the core so AsyncSpawn can stamp
+        //    parent_session_key on every spawned task. The session key is
+        //    keyed by this agent's DID on the shared core so concurrent
+        //    agents in daemon mode do not clobber each other (issue #68).
         extension_core
             .set_session_key(&self.identity.did, session_key)
             .await;
@@ -1661,7 +1708,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial(core)]
-    async fn test_agent_spawn_session() {
+    async fn test_agent_tool_session() {
         use crate::auth::principal::Principal;
         use crate::extensions::framework::core::ExtensionCore;
 

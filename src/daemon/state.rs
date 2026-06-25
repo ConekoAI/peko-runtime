@@ -18,8 +18,8 @@ use crate::common::services::{
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
-use crate::session::InboxRegistry;
 use crate::registry::{load_from_workspace, RegistryConfig};
+use crate::session::InboxRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -493,9 +493,8 @@ impl AppState {
         // first access; no explicit cleanup.
         let inbox_registry = Arc::new(InboxRegistry::new());
 
-        let async_task_executor = Arc::new(
-            AsyncExecutor::new().with_inbox_registry(Arc::clone(&inbox_registry)),
-        );
+        let async_task_executor =
+            Arc::new(AsyncExecutor::new().with_inbox_registry(Arc::clone(&inbox_registry)));
 
         // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
@@ -1367,16 +1366,16 @@ mod tests {
         // ToolRuntime should have registered built-in tools
         let tool_runtime = state.tool_runtime.clone();
         assert!(
-            tool_runtime.has_tool("shell").await,
-            "shell tool not registered"
+            tool_runtime.has_tool("Bash").await,
+            "Bash tool not registered"
         );
         assert!(
-            tool_runtime.has_tool("read_file").await,
-            "read_file tool not registered"
+            tool_runtime.has_tool("Read").await,
+            "Read tool not registered"
         );
         assert!(
-            tool_runtime.has_tool("write_file").await,
-            "write_file tool not registered"
+            tool_runtime.has_tool("Write").await,
+            "Write tool not registered"
         );
         assert!(
             tool_runtime.has_tool("glob").await,
@@ -1387,13 +1386,13 @@ mod tests {
             "grep tool not registered"
         );
         assert!(
-            tool_runtime.has_tool("str_replace_file").await,
-            "str_replace_file tool not registered"
+            tool_runtime.has_tool("Edit").await,
+            "Edit tool not registered"
         );
-        // `task` is registered per-agent (not globally on the daemon's
-        // ToolRuntime) — see `Agent::build_agentic_loop` and
-        // `BuiltinToolAdapter::register_task_tool`. Asserting it's
-        // missing here pins the contract.
+        // `AsyncSpawn` and `AsyncOutput` are registered per-agent (not
+        // globally on the daemon's ToolRuntime) — see `Agent::build_agentic_loop`
+        // and `BuiltinToolAdapter::register_async_spawn_tool`. Asserting they
+        // are missing here pins the contract.
 
         // ExtensionCore should list the tools
         let core = tool_runtime.extension_core();
@@ -1401,7 +1400,7 @@ mod tests {
         assert!(!tools.is_empty(), "No tools in ExtensionCore");
 
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-        assert!(tool_names.contains(&"shell".to_string()));
+        assert!(tool_names.contains(&"Bash".to_string()));
         assert!(tool_names.contains(&"grep".to_string()));
 
         // Tool definitions should be available for LLM API
@@ -1441,8 +1440,8 @@ mod tests {
         let tools: Vec<crate::extensions::framework::types::ToolMetadata> = core.list_tools().await;
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(
-            tool_names.contains(&"shell".to_string()),
-            "shell missing after agent init"
+            tool_names.contains(&"Bash".to_string()),
+            "Bash missing after agent init"
         );
         assert!(
             tool_names.contains(&"grep".to_string()),
@@ -1462,10 +1461,7 @@ mod tests {
         assert!(prompt.is_some(), "Prompt section returned None");
         let prompt_text = prompt.unwrap();
         assert!(!prompt_text.is_empty(), "Prompt section is empty");
-        assert!(
-            prompt_text.contains("shell"),
-            "Prompt doesn't mention shell"
-        );
+        assert!(prompt_text.contains("Bash"), "Prompt doesn't mention Bash");
         assert!(prompt_text.contains("grep"), "Prompt doesn't mention grep");
     }
 

@@ -41,13 +41,13 @@ pub struct ExtensionCore {
 
     /// Side-table of `Arc<dyn Tool>` keyed by tool name. Populated by
     /// `BuiltinToolAdapter::register_tool` and consulted by
-    /// `get_tool` so callers (e.g., `TaskTool::spawn`) can invoke the
+    /// `get_tool` so callers (e.g., `AsyncSpawnTool`) can invoke the
     /// underlying tool directly without going through the hook layer.
     tool_instances: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
 
     /// Per-agent session keys, set by the agent before each `execute_*`
     /// call so tools that need a parent_session_key (e.g.,
-    /// `TaskTool::spawn`) can read the *correct* agent's key from the
+    /// `AsyncSpawnTool`) can read the *correct* agent's key from the
     /// core.
     ///
     /// Keyed by `Agent` DID (i.e. agent identity). A single shared
@@ -529,7 +529,7 @@ impl ExtensionCore {
 
     /// Insert a tool instance into the side-table. Called by
     /// `BuiltinToolAdapter::register_tool` so `get_tool` can find the
-    /// `Arc<dyn Tool>` for direct invocation (e.g., `TaskTool::spawn`).
+    /// `Arc<dyn Tool>` for direct invocation (e.g., `AsyncSpawnTool`).
     pub(crate) async fn insert_tool_instance(&self, name: String, tool: Arc<dyn Tool>) {
         let mut instances = self.tool_instances.write().await;
         instances.insert(name, tool);
@@ -545,10 +545,10 @@ impl ExtensionCore {
     /// Return the current session key for a given agent, if one is set.
     ///
     /// The agent calls `set_session_key` before `execute_*` so tools
-    /// that need a parent_session_key (e.g., `TaskTool::spawn`) can
+    /// that need a parent_session_key (e.g., `AsyncSpawnTool`) can
     /// read the key for the *calling* agent. Storing keys in a map
     /// keyed by agent ID (issue #68 fix) prevents concurrent agents in
-    /// daemon mode from overwriting each other — `TaskTool::spawn`
+    /// daemon mode from overwriting each other — `AsyncSpawnTool`
     /// issued by agent B no longer stamps agent A's session.
     pub fn current_session_key(&self, agent_id: &str) -> Option<String> {
         // Blocking read against a `tokio::sync::RwLock` is a soft-fail:
@@ -563,7 +563,7 @@ impl ExtensionCore {
 
     /// Set the current session key for a given agent. Used by the
     /// agent to inject the active session before invoking tools that
-    /// need a `parent_session_key` (e.g., `TaskTool::spawn`).
+    /// need a `parent_session_key` (e.g., `AsyncSpawnTool`).
     ///
     /// Passing `None` clears the entry for `agent_id`. The map is
     /// keyed by `agent_id` so concurrent agents do not clobber each

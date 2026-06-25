@@ -170,10 +170,10 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
     };
 
     let needle = "seq-needle-ghi789";
-    let tool_args = r#"{"sub_command":"at","at":"2099-01-01T00:00:00Z","agent_id":"x"}"#;
+    let tool_args = r#"{"at":"2099-01-01T00:00:00Z","agent_id":"x"}"#;
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "cron", "arguments": tool_args } },
+            { "tool_call": { "name": "CronCreate", "arguments": tool_args } },
             "TOOL_SUCCESS",
         ]
     })
@@ -208,15 +208,15 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
     );
     let body1 = resp1.text().await.expect("read call 1 body");
     assert!(
-        body1.contains("\"cron\""),
-        "call 1 did not include tool name 'cron' in its stream\n{body1}",
+        body1.contains("\"CronCreate\""),
+        "call 1 did not include tool name 'CronCreate' in its stream\n{body1}",
     );
     // The tool-call chunk is emitted as a JSON string value, so the
     // inner quotes of `tool_args` are escaped to `\"` when the mock
     // serializes the SSE chunk. Assert on values inside the args
     // (a key, a value, and the timestamp) so the check is robust to
     // JSON escaping.
-    for needle in ["sub_command", "2099-01-01T00:00:00Z", "agent_id"] {
+    for needle in ["at", "2099-01-01T00:00:00Z", "agent_id"] {
         assert!(
             body1.contains(needle),
             "call 1 stream missing expected args substring {needle:?}\n{body1}",

@@ -906,7 +906,47 @@ Alongside each `.jsonl` file is an optional `.context.cache` file. It is a **der
 
 ---
 
-### 5.6 Compaction
+### 5.6 Planning Todo Sidecar
+
+Planning todos created via the `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` tools are persisted in a per-session JSONL sidecar alongside the main conversation JSONL.
+
+**Location:** `<session-id>.todos.jsonl`
+
+**Format:** Each line is an independently parseable JSON object representing the current state of a single todo. Lines are separated by `\n` and the file is rewritten atomically on every mutation (`<filename>.todos.tmp` + `rename()`).
+
+```json
+{
+  "taskId": "todo:abc123",
+  "subject": "Write tests",
+  "description": "Add unit tests for TaskCreate",
+  "activeForm": "Writing tests",
+  "status": "in_progress",
+  "owner": "claude",
+  "created_at": "2026-06-25T10:00:00.000Z",
+  "updated_at": "2026-06-25T10:05:00.000Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `taskId` | string | Unique todo identifier |
+| `subject` | string | Short imperative title |
+| `description` | string? | Longer details |
+| `activeForm` | string? | Present-continuous form for UI spinners |
+| `status` | string | `pending`, `in_progress`, or `completed` |
+| `owner` | string? | Owner/agent name |
+| `created_at` | string | ISO 8601 creation timestamp |
+| `updated_at` | string | ISO 8601 last-mutation timestamp |
+
+**Properties:**
+
+- **Session-scoped**: Todos are tied to the session key; different sessions have independent sidecars.
+- **Atomic**: Every create/update rewrites the entire sidecar via tmp + rename, so a crash cannot produce a partially updated file.
+- **Optional**: Sessions that never use planning tools have no `.todos.jsonl` file.
+
+---
+
+### 5.7 Compaction
 
 Compaction is the process of summarizing old conversation history to stay within the LLM's context window. It is triggered automatically when token usage crosses a configurable threshold, or manually via `peko session compact`.
 

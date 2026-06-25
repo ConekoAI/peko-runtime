@@ -26,8 +26,8 @@
 //! Note: Custom tools can also be disabled by name.
 
 use crate::tools::builtin::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
-    WriteFileTool,
+    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
+    SessionTool, WriteTool,
 };
 use crate::tools::core::traits::Tool;
 use std::collections::HashSet;
@@ -122,9 +122,9 @@ pub struct ToolFactoryConfig {
     /// Workspace directory (default for relative paths)
     pub workspace_dir: PathBuf,
     /// Enable granular filesystem tools
-    /// When true, enables `ReadFile`, Glob, Grep, `WriteFile`, `StrReplaceFile`
+    /// When true, enables `Read`, Glob, Grep, `Write`, `Edit`
     pub enable_granular_fs: bool,
-    /// Enable granular write tools (`WriteFile`, `StrReplaceFile`)
+    /// Enable granular write tools (`Write`, `Edit`)
     /// Only effective when `enable_granular_fs` is true
     /// Defaults to true for full functionality, set to false for read-only
     pub enable_granular_write: bool,
@@ -135,6 +135,10 @@ pub struct ToolFactoryConfig {
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
+    /// Enable async execution control tools
+    pub enable_async_tools: bool,
+    /// Enable planning todo tools
+    pub enable_task_tools: bool,
     /// Path to cron database (defaults to `workspace_dir/cron.json`)
     pub cron_db_path: Option<PathBuf>,
     /// MCP configuration
@@ -162,6 +166,8 @@ impl Default for ToolFactoryConfig {
             enable_shell: true,
             enable_session_tools: true,
             enable_cron: true,
+            enable_async_tools: true,
+            enable_task_tools: true,
             cron_db_path: None,
             mcp: McpFactoryConfig::default(),
             disabled_tools: Vec::new(),
@@ -184,10 +190,12 @@ impl ToolFactoryConfig {
         Self {
             workspace_dir,
             enable_granular_fs: true,
-            enable_granular_write: false, // Read-only: no WriteFile or StrReplaceFile
+            enable_granular_write: false, // Read-only: no Write or Edit
             enable_shell: true,
             enable_session_tools: false,
             enable_cron: false,
+            enable_async_tools: false,
+            enable_task_tools: false,
             mcp: McpFactoryConfig::disabled(),
             ..Default::default()
         }
@@ -311,14 +319,14 @@ impl ToolFactory {
 
         // Filesystem tool
         // Granular filesystem tools
-        registry.register("read_file", config.enable_granular_fs, || {
-            Arc::new(ReadFileTool::new().with_workspace(config.workspace_dir.clone()))
+        registry.register("Read", config.enable_granular_fs, || {
+            Arc::new(ReadTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
         registry.register(
-            "write_file",
+            "Write",
             config.enable_granular_fs && config.enable_granular_write,
-            || Arc::new(WriteFileTool::new().with_workspace(config.workspace_dir.clone())),
+            || Arc::new(WriteTool::new().with_workspace(config.workspace_dir.clone())),
         );
 
         registry.register("glob", config.enable_granular_fs, || {
@@ -330,20 +338,20 @@ impl ToolFactory {
         });
 
         registry.register(
-            "str_replace_file",
+            "Edit",
             config.enable_granular_fs && config.enable_granular_write,
-            || Arc::new(StrReplaceFileTool::new().with_workspace(config.workspace_dir.clone())),
+            || Arc::new(EditTool::new().with_workspace(config.workspace_dir.clone())),
         );
 
-        // Shell tool
-        let shell_enabled = config.enable_shell;
-        let shell_disabled = registry.is_disabled("shell");
-        if shell_enabled {
-            if shell_disabled {
-                registry.disabled.push("shell".to_string());
+        // Shell tool (Bash)
+        let bash_enabled = config.enable_shell;
+        let bash_disabled = registry.is_disabled("bash");
+        if bash_enabled {
+            if bash_disabled {
+                registry.disabled.push("bash".to_string());
             } else {
                 registry.tools.push(Arc::new(
-                    ShellTool::new().with_workspace(config.workspace_dir.clone()),
+                    BashTool::new().with_workspace(config.workspace_dir.clone()),
                 ));
             }
         }
@@ -357,8 +365,31 @@ impl ToolFactory {
             });
         }
 
-        // Cron tool for scheduled jobs
-        registry.register("cron", config.enable_cron, || Arc::new(CronTool::new()));
+        // Cron family for scheduled jobs
+        if config.enable_cron {
+            let cron_disabled = registry.is_disabled("cron");
+            let create_disabled = registry.is_disabled("croncreate");
+            let delete_disabled = registry.is_disabled("crondelete");
+            let list_disabled = registry.is_disabled("cronlist");
+
+            if cron_disabled || create_disabled {
+                registry.disabled.push("CronCreate".to_string());
+            } else {
+                registry.tools.push(Arc::new(CronCreateTool::new()));
+            }
+
+            if cron_disabled || delete_disabled {
+                registry.disabled.push("CronDelete".to_string());
+            } else {
+                registry.tools.push(Arc::new(CronDeleteTool::new()));
+            }
+
+            if cron_disabled || list_disabled {
+                registry.disabled.push("CronList".to_string());
+            } else {
+                registry.tools.push(Arc::new(CronListTool::new()));
+            }
+        }
 
         let (tools, disabled) = registry.build();
 
@@ -388,20 +419,25 @@ mod tests {
     fn test_disabled_tools_filtering() {
         let config = ToolFactoryConfig {
             workspace_dir: PathBuf::from("."),
-            disabled_tools: vec!["shell".to_string(), "cron".to_string()],
+            disabled_tools: vec!["bash".to_string(), "cron".to_string()],
             ..Default::default()
         };
 
         let result = ToolFactory::create_tools(&config);
 
-        // Check that shell and cron are in disabled list
-        assert!(result.disabled.contains(&"shell".to_string()));
-        assert!(result.disabled.contains(&"cron".to_string()));
+        // Check that bash and cron family are in disabled list
+        assert!(result.disabled.contains(&"bash".to_string()));
+        assert!(result.disabled.contains(&"CronCreate".to_string()));
+        assert!(result.disabled.contains(&"CronDelete".to_string()));
+        assert!(result.disabled.contains(&"CronList".to_string()));
 
         // Check that disabled tools are not in tools list
         let tool_names: Vec<_> = result.tools.iter().map(|t| t.name()).collect();
-        assert!(!tool_names.contains(&"shell"));
-        assert!(!tool_names.contains(&"cron"));
+        assert!(!tool_names.contains(&"bash"));
+        assert!(!tool_names.contains(&"Bash"));
+        assert!(!tool_names.contains(&"CronCreate"));
+        assert!(!tool_names.contains(&"CronDelete"));
+        assert!(!tool_names.contains(&"CronList"));
     }
 
     // Dead tests for removed methods (is_disabled, validate_disabled_tools,

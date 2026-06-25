@@ -4,8 +4,77 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Claude Code core tool parity (in progress)
+
+A multi-phase program to align peko's built-in tool names and schemas with
+Claude Code's core tool surface, while preserving peko's daemon-first
+execution, A2A protocol, and extension system.
+
+#### Added
+
+- `docs/architecture/builtin-tools.md` — canonical catalog of built-in tools,
+  schemas, and Claude parity status.
+- `tests/core_tools.rs` — integration-test harness for golden-transcript parity
+  fixtures.
+- Configuration gates `enable_async_tools` and `enable_task_tools` on
+  `ToolFactoryConfig` and `BuiltinToolRegistrarConfig`.
+
+#### Upcoming (tracked on `tool-parity-core-subset` branch)
+
+- (none — all scoped tools are now in place)
+
+### Added
+
+- Planning-todo family `TaskCreate`, `TaskGet`, `TaskList`, and `TaskUpdate`.
+  Todos are stored in a per-session JSONL sidecar
+  (`{session_key}.todos.jsonl`) alongside the main session JSONL, using the
+  same atomic-write durability strategy as session storage. `TaskCreate` takes
+  `subject`, `description`, and `activeForm`; `TaskGet` and `TaskUpdate` take
+  `taskId`; `TaskList` accepts an optional `status_filter`. These tools are
+  registered per-agent so they resolve to the agent's own session directory.
+
 ### Changed
 
+- **BREAKING**: Split built-in tool `task` into `AsyncSpawn`, `AsyncOutput`,
+  `AsyncStop`, `AsyncStatus`, and `AsyncList`. `AsyncSpawn` runs any built-in
+  tool in the background (`tool`, `params`, optional `label`); `AsyncOutput`
+  reads a task's result with optional blocking (`block`, `timeout`,
+  `tail_lines`); `AsyncStop` cancels a running task; `AsyncStatus` returns the
+  current status; `AsyncList` lists tasks with optional filters. The previous
+  `task` tool and `sub_command`-based schema are removed. Legacy
+  `disabled_tools` entries `"task"` and `"async"` disable the entire Async*
+  family. Update agent configs, whitelists, and prompts that referenced the old
+  name.
+- **BREAKING**: Renamed built-in tool `read_file` to `Read`. The tool now
+  reports its canonical name as `Read` and its schema uses `file_path`
+  (with `offset`, `limit`, and `pages` support). Update agent configs,
+  whitelists, and prompts that referenced the old name.
+- **BREAKING**: Renamed built-in tool `write_file` to `Write`. The schema now
+  uses `file_path` instead of `path`; `mode` and `encoding` extensions are
+  unchanged. Update agent configs, whitelists, and prompts that referenced
+  the old name.
+- **BREAKING**: Renamed built-in tool `str_replace_file` to `Edit`. The schema
+  now uses `file_path`, `old_string`, `new_string`, and `replace_all` (default
+  false); the previous `path` + `edit` object shape is removed. Update agent
+  configs, whitelists, and prompts that referenced the old name.
+- **BREAKING**: Renamed built-in tool `shell` to `Bash`. The schema now uses
+  `command`, `description`, `cwd`, `run_in_background`, and `timeout`. Blocking
+  execution returns `{ exit_code, stdout, stderr, success }`; background
+  execution returns an async task receipt discoverable by the future `Async*`
+  family. Update agent configs, whitelists, and prompts that referenced the old
+  name.
+- **BREAKING**: Split built-in tool `cron` into `CronCreate`, `CronDelete`, and
+  `CronList`. `CronCreate` uses `prompt` plus one schedule source (`cron`, `at`,
+  `interval_ms`, `idle_ms`, or `event_topic`) and `recurring`/`durable` flags;
+  `CronDelete` takes `id`; `CronList` takes no required arguments. The previous
+  `sub_command`-based schema is removed. Update agent configs, whitelists, and
+  prompts that referenced the old name.
+- **BREAKING**: Renamed built-in tool `agent_spawn` to `Agent`. The schema now
+  uses `prompt`, `subagent_type`, `description` (renamed from `label`), and
+  `model`; `isolated`, `cleanup`, and `parent_session_key` are unchanged.
+  `subagent_type` resolves to `~/.peko/agents/<subagent_type>/config.toml` via
+  `AgentService`. Update agent configs, whitelists, and prompts that referenced
+  the old name.
 - **BREAKING**: Renamed the Rust crate from `pekobot` to `peko`. Update all
   `use pekobot::...` imports to `use peko::...`.
 - **BREAKING**: Renamed the public Rust type
@@ -19,6 +88,12 @@ All notable changes to Peko.
 
 ### Notes
 
+- Phase 6 cleanup completed: updated `DATA_MODEL.md` with a new "Planning
+  Todo Sidecar" section, refreshed `docs/architecture/builtin-tools.md` to
+  include `TaskList`'s optional `status_filter`, and updated help text and
+  `AGENTS.md` for the renamed `Async*` and `Agent` tools.
+- Removed the one-release `label` alias from the `Agent` tool; `description`
+  is now the only subagent tracking field.
 - The MCP example server display name was renamed from
   `pekobot-memory-server` to `peko-memory-server`.
 - The Python SDK package was renamed from `pekobot-tool` / `pekobot_tool`

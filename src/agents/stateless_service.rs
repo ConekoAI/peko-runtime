@@ -1042,10 +1042,8 @@ impl StatelessAgentService {
             .with_context(|| format!("Failed to create agent: {agent_name}"))?;
 
         // Create channels.
-        let (event_tx, event_rx) =
-            tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(1000);
-        let (completion_tx, completion_rx) =
-            tokio::sync::oneshot::channel::<Result<()>>();
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(1000);
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<Result<()>>();
 
         let event_tx_for_error = event_tx.clone();
         let session_for_spawn = session.clone();
@@ -1296,13 +1294,13 @@ mod tests {
     fn test_tool_call_info_creation() {
         let tool_call = ToolCallInfo {
             id: "tool_123".to_string(),
-            name: "read_file".to_string(),
+            name: "Read".to_string(),
             parameters: serde_json::json!({"path": "/tmp/test"}),
             result: Some("File contents".to_string()),
         };
 
         assert_eq!(tool_call.id, "tool_123");
-        assert_eq!(tool_call.name, "read_file");
+        assert_eq!(tool_call.name, "Read");
         assert_eq!(tool_call.result, Some("File contents".to_string()));
     }
 

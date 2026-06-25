@@ -47,7 +47,7 @@ pub struct ExtensionConfig {
     pub http: Option<HttpToolConfig>,
     /// Custom tool definitions
     pub custom: Option<HashMap<String, serde_json::Value>>,
-    /// Per-extension settings (snake_case keys like "str_replace_file", "write_file", etc.)
+    /// Per-extension settings (snake_case keys like "Edit", "Write", etc.)
     #[serde(default)]
     pub read_file: Option<ExtensionSettings>,
     #[serde(default)]
@@ -57,7 +57,7 @@ pub struct ExtensionConfig {
     #[serde(default)]
     pub grep: Option<ExtensionSettings>,
     #[serde(default)]
-    pub str_replace_file: Option<ExtensionSettings>,
+    pub edit_tool: Option<ExtensionSettings>,
 }
 
 impl Default for ExtensionConfig {
@@ -66,15 +66,17 @@ impl Default for ExtensionConfig {
             // Default: enable all common built-in tools so agents work out of the box.
             // Whitelist stores canonical extension IDs, not bare tool names.
             enabled: vec![
-                "builtin:tool:shell".to_string(),
-                "builtin:tool:read_file".to_string(),
-                "builtin:tool:write_file".to_string(),
+                "builtin:tool:Bash".to_string(),
+                "builtin:tool:Read".to_string(),
+                "builtin:tool:Write".to_string(),
                 "builtin:tool:glob".to_string(),
                 "builtin:tool:grep".to_string(),
-                "builtin:tool:str_replace_file".to_string(),
+                "builtin:tool:Edit".to_string(),
                 "builtin:tool:session".to_string(),
-                "builtin:tool:cron".to_string(),
-                "builtin:tool:agent_spawn".to_string(),
+                "builtin:tool:CronCreate".to_string(),
+                "builtin:tool:CronDelete".to_string(),
+                "builtin:tool:CronList".to_string(),
+                "builtin:tool:Agent".to_string(),
                 "builtin:tool:task".to_string(),
             ],
             http: None,
@@ -83,7 +85,7 @@ impl Default for ExtensionConfig {
             write_file: None,
             glob: None,
             grep: None,
-            str_replace_file: None,
+            edit_tool: None,
         }
     }
 }
@@ -129,11 +131,11 @@ impl ExtensionConfig {
     pub fn get_extension_settings(&self, name: &str) -> Option<&ExtensionSettings> {
         let bare = name.rsplit(':').next().unwrap_or(name);
         match bare {
-            "read_file" => self.read_file.as_ref(),
-            "write_file" => self.write_file.as_ref(),
+            "Read" => self.read_file.as_ref(),
+            "Write" => self.write_file.as_ref(),
             "glob" => self.glob.as_ref(),
             "grep" => self.grep.as_ref(),
-            "str_replace_file" => self.str_replace_file.as_ref(),
+            "Edit" => self.edit_tool.as_ref(),
             _ => None,
         }
     }
@@ -294,7 +296,7 @@ mod tests {
     fn test_extension_config_default() {
         let config = ExtensionConfig::default();
         assert!(!config.enabled.is_empty());
-        assert!(config.enabled.contains(&"builtin:tool:shell".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:Bash".to_string()));
     }
 
     #[test]
@@ -303,45 +305,47 @@ mod tests {
 
         // Default whitelist enables common built-in tools using canonical extension IDs
         assert!(!config.enabled.is_empty());
-        assert!(config.enabled.contains(&"builtin:tool:shell".to_string()));
-        assert!(config
-            .enabled
-            .contains(&"builtin:tool:read_file".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:Bash".to_string()));
+        assert!(config.enabled.contains(&"builtin:tool:Read".to_string()));
     }
 
     #[test]
     fn test_extension_config_is_extension_enabled() {
         let config = ExtensionConfig {
             enabled: vec![
-                "builtin:tool:shell".to_string(),
-                "builtin:tool:read_file".to_string(),
-                "builtin:tool:write_file".to_string(),
+                "builtin:tool:Bash".to_string(),
+                "builtin:tool:Read".to_string(),
+                "builtin:tool:Write".to_string(),
                 "builtin:tool:glob".to_string(),
                 "builtin:tool:grep".to_string(),
-                "builtin:tool:str_replace_file".to_string(),
+                "builtin:tool:Edit".to_string(),
                 "builtin:tool:session".to_string(),
-                "builtin:tool:cron".to_string(),
+                "builtin:tool:CronCreate".to_string(),
+                "builtin:tool:CronDelete".to_string(),
+                "builtin:tool:CronList".to_string(),
             ],
             ..Default::default()
         };
 
         // All whitelisted extensions should be enabled (canonical IDs)
-        assert!(config.is_extension_enabled("builtin:tool:shell"));
-        assert!(config.is_extension_enabled("builtin:tool:read_file"));
-        assert!(config.is_extension_enabled("builtin:tool:write_file"));
+        assert!(config.is_extension_enabled("builtin:tool:Bash"));
+        assert!(config.is_extension_enabled("builtin:tool:Read"));
+        assert!(config.is_extension_enabled("builtin:tool:Write"));
         assert!(config.is_extension_enabled("builtin:tool:glob"));
         assert!(config.is_extension_enabled("builtin:tool:grep"));
-        assert!(config.is_extension_enabled("builtin:tool:str_replace_file"));
+        assert!(config.is_extension_enabled("builtin:tool:Edit"));
         assert!(config.is_extension_enabled("builtin:tool:session"));
-        assert!(config.is_extension_enabled("builtin:tool:cron"));
+        assert!(config.is_extension_enabled("builtin:tool:CronCreate"));
+        assert!(config.is_extension_enabled("builtin:tool:CronDelete"));
+        assert!(config.is_extension_enabled("builtin:tool:CronList"));
 
         // Case-insensitive matching
-        assert!(config.is_extension_enabled("BUILTIN:TOOL:SHELL"));
+        assert!(config.is_extension_enabled("BUILTIN:TOOL:BASH"));
         assert!(config.is_extension_enabled("Builtin:Tool:Session"));
 
         // Bare tool names should NOT match (no special-case parsing)
-        assert!(!config.is_extension_enabled("shell"));
-        assert!(!config.is_extension_enabled("read_file"));
+        assert!(!config.is_extension_enabled("Bash"));
+        assert!(!config.is_extension_enabled("Read"));
 
         // Unknown extensions should not be enabled
         assert!(!config.is_extension_enabled("unknown_tool"));
@@ -358,11 +362,11 @@ mod tests {
             write_file: None,
             glob: None,
             grep: None,
-            str_replace_file: None,
+            edit_tool: None,
         };
 
-        assert!(!config.is_extension_enabled("builtin:tool:shell"));
-        assert!(!config.is_extension_enabled("builtin:tool:read_file"));
+        assert!(!config.is_extension_enabled("builtin:tool:Bash"));
+        assert!(!config.is_extension_enabled("builtin:tool:Read"));
         assert!(!config.is_extension_enabled("mcp:any_server"));
     }
 
@@ -371,8 +375,8 @@ mod tests {
         // Custom whitelist using canonical extension IDs
         let config = ExtensionConfig {
             enabled: vec![
-                "builtin:tool:read_file".to_string(),
-                "builtin:tool:write_file".to_string(),
+                "builtin:tool:Read".to_string(),
+                "builtin:tool:Write".to_string(),
             ],
             http: None,
             custom: None,
@@ -380,12 +384,12 @@ mod tests {
             write_file: None,
             glob: None,
             grep: None,
-            str_replace_file: None,
+            edit_tool: None,
         };
 
-        assert!(config.is_extension_enabled("builtin:tool:read_file"));
-        assert!(config.is_extension_enabled("builtin:tool:write_file"));
-        assert!(!config.is_extension_enabled("builtin:tool:shell"));
+        assert!(config.is_extension_enabled("builtin:tool:Read"));
+        assert!(config.is_extension_enabled("builtin:tool:Write"));
+        assert!(!config.is_extension_enabled("builtin:tool:Bash"));
     }
 
     #[test]
@@ -398,15 +402,15 @@ mod tests {
         assert!(!extensions.enabled.is_empty());
         assert!(extensions
             .enabled
-            .contains(&"builtin:tool:shell".to_string()));
+            .contains(&"builtin:tool:Bash".to_string()));
     }
 
     #[test]
     fn test_extension_config_toml_serialization() {
         let config = ExtensionConfig {
             enabled: vec![
-                "builtin:tool:shell".to_string(),
-                "builtin:tool:read_file".to_string(),
+                "builtin:tool:Bash".to_string(),
+                "builtin:tool:Read".to_string(),
             ],
             ..Default::default()
         };
@@ -414,8 +418,8 @@ mod tests {
 
         // Should contain the enabled list with canonical IDs
         assert!(toml.contains("enabled"));
-        assert!(toml.contains("builtin:tool:shell"));
-        assert!(toml.contains("builtin:tool:read_file"));
+        assert!(toml.contains("builtin:tool:Bash"));
+        assert!(toml.contains("builtin:tool:Read"));
     }
 
     /// v3-cleanup (commit 2.1): the legacy `[provider]` and

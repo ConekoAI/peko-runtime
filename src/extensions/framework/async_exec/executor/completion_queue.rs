@@ -421,7 +421,10 @@ mod tests {
 
         inbox.push(SteeringMessage::new("hi"));
         let removed2 = inbox.cancel_steering(missing).await;
-        assert!(!removed2, "cancel must return false for an id not in the inbox");
+        assert!(
+            !removed2,
+            "cancel must return false for an id not in the inbox"
+        );
     }
 
     #[tokio::test]

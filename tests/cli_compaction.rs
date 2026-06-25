@@ -76,7 +76,7 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 
 /// Write a mock-LLM-pointed agent. `peko session compact` is
 /// truncation-based (see `src/compaction/cli.rs:75`), so the compact
-/// itself doesn't need any tools. We still enable `write_file` /
+/// itself doesn't need any tools. We still enable `Write` /
 /// `read_file` / `shell` (and their canonical IDs) so the
 /// T4 (post-compact usable) and extension tests can drive
 /// `peko send <agent> <prompt>` that wants to write a file.
@@ -105,12 +105,12 @@ preferred_model_id = "default"
 
 [extensions]
 enabled = [
-    "shell",
-    "read_file",
-    "write_file",
-    "builtin:tool:shell",
-    "builtin:tool:read_file",
-    "builtin:tool:write_file",
+    "Bash",
+    "Read",
+    "Write",
+    "builtin:tool:Bash",
+    "builtin:tool:Read",
+    "builtin:tool:Write",
 ]
 
 [channels]
@@ -124,14 +124,14 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     std::fs::write(
         agent_dir.join("SYSTEM.md"),
         "Test agent for the session-compaction CLI integration suite. \
-         Has write_file, read_file, and shell tools enabled.",
+         Has Write, read_file, and shell tools enabled.",
     )?;
     Ok(())
 }
 
 /// Build the `MOCK_LLM_SCRIPT` for `n_turns` setup rounds.
 ///
-/// Each turn drives the LLM twice: the first call gets a `write_file`
+/// Each turn drives the LLM twice: the first call gets a `Write`
 /// tool_call, the second call (after the tool dispatch) gets a text
 /// sentinel. The flat `[tc_1, sent_1, tc_2, sent_2, …]` list is
 /// consumed in order by the mock's per-substring counter, which
@@ -143,8 +143,8 @@ fn build_n_turn_script(needle: &str, n_turns: usize) -> String {
         let content = format!("COMPACTION_SETUP_T{i:02}_CONTENT");
         entries.push(serde_json::json!({
             "tool_call": {
-                "name": "write_file",
-                "arguments": serde_json::json!({ "path": path, "content": content }).to_string(),
+                "name": "Write",
+                "arguments": serde_json::json!({ "file_path": path, "content": content }).to_string(),
             }
         }));
         entries.push(serde_json::json!({ "text": format!("SETUP_T{i:02}_DONE") }));
@@ -181,8 +181,8 @@ fn build_full_script(
         let content = format!("COMPACTION_SETUP_T{i:02}_CONTENT");
         entries.push(serde_json::json!({
             "tool_call": {
-                "name": "write_file",
-                "arguments": serde_json::json!({ "path": path, "content": content }).to_string(),
+                "name": "Write",
+                "arguments": serde_json::json!({ "file_path": path, "content": content }).to_string(),
             }
         }));
         entries.push(serde_json::json!({ "text": format!("SETUP_T{i:02}_DONE") }));
@@ -191,8 +191,8 @@ fn build_full_script(
     for (path, content, sentinel) in extra_turns {
         entries.push(serde_json::json!({
             "tool_call": {
-                "name": "write_file",
-                "arguments": serde_json::json!({ "path": path, "content": content }).to_string(),
+                "name": "Write",
+                "arguments": serde_json::json!({ "file_path": path, "content": content }).to_string(),
             }
         }));
         entries.push(serde_json::json!({ "text": sentinel.clone() }));
@@ -221,7 +221,7 @@ async fn setup_n_turn_session(
 
     for i in 0..n_turns {
         let prompt = format!(
-            "Use your write_file tool to create 'compaction_setup_t{i:02}.txt' \
+            "Use your Write tool to create 'compaction_setup_t{i:02}.txt' \
              with content 'COMPACTION_SETUP_T{i:02}_CONTENT' and include the \
              needle '{needle}' in your reply.",
         );
@@ -259,7 +259,7 @@ async fn setup_session_with_full_script(
 
     for i in 0..n_setup_turns {
         let prompt = format!(
-            "Use your write_file tool to create 'compaction_setup_t{i:02}.txt' \
+            "Use your Write tool to create 'compaction_setup_t{i:02}.txt' \
              with content 'COMPACTION_SETUP_T{i:02}_CONTENT' and include the \
              needle '{needle}' in your reply.",
         );
@@ -388,8 +388,8 @@ async fn cli_compact_dry_run_json_reports_metadata() {
     // session becomes "active".
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "write_file", "arguments":
-                serde_json::json!({ "path": "warmup.txt", "content": "WARMUP" }).to_string()
+            { "tool_call": { "name": "Write", "arguments":
+                serde_json::json!({ "file_path": "warmup.txt", "content": "WARMUP" }).to_string()
             } },
         ],
     })
@@ -476,7 +476,7 @@ async fn cli_compact_dry_run_json_reports_message_counts_after_multi_turn() {
 
     for i in 0..N_TURNS {
         let prompt = format!(
-            "Use your write_file tool to create 'compaction_setup_t{i:02}.txt' \
+            "Use your Write tool to create 'compaction_setup_t{i:02}.txt' \
              with content 'COMPACTION_SETUP_T{i:02}_CONTENT' and include the \
              needle '{needle}' in your reply.",
         );
@@ -975,7 +975,7 @@ async fn cli_compact_with_compaction_extension_installed() {
     // Drive 3 setup rounds.
     for i in 0..N_TURNS {
         let prompt = format!(
-            "Use your write_file tool to create 'compaction_setup_t{i:02}.txt' \
+            "Use your Write tool to create 'compaction_setup_t{i:02}.txt' \
              with content 'COMPACTION_SETUP_T{i:02}_CONTENT' and include the \
              needle '{needle}' in your reply.",
         );

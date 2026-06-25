@@ -1346,7 +1346,7 @@ mod tests {
     fn test_resolve_tool_name_builtin_returns_none() {
         let manager = ExtensionManager::new();
         assert!(manager.resolve_tool_name("shell").is_none());
-        assert!(manager.resolve_tool_name("read_file").is_none());
+        assert!(manager.resolve_tool_name("Read").is_none());
     }
 
     #[test]

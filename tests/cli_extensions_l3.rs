@@ -12,7 +12,7 @@
 //!
 //! - Cover only the L1 lifecycle (no LLM in the path) — `cli_extensions.rs`.
 //! - Drive the LLM path but only against **built-in** tools
-//!   (`read_file`, `cron`, `agent_spawn`, `a2a_send`, `write_file`) —
+//!   (`Read`, `cron`, `Agent`, `a2a_send`, `Write`) —
 //!   `cli_tools.rs`, `cli_cron.rs`, `cli_subagent.rs`, `cli_a2a.rs`,
 //!   `cli_compaction.rs`.
 //! - Call `invoke_hook` directly with no LLM in the path —

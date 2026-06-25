@@ -202,10 +202,10 @@ fn remove_jobs_with_prefix(cli: &PekoCli, prefix: &str) {
 /// uses as an EXCLUSIVE whitelist — the daemon's `register_builtins`
 /// enables every built-in tool by default, but the agent's whitelist
 /// override turns the cron tool OFF for the agent, so any tool_call
-/// the LLM emits for "cron" gets rejected by the runtime's tool
-/// dispatcher. The agent-tool tests below need the cron tool ON, so
-/// this helper writes a config that includes its canonical ID
-/// (`builtin:tool:cron` — see `ToolRuntime::register_builtins`).
+/// the LLM emits for the cron family gets rejected by the runtime's tool
+/// dispatcher. The agent-tool tests below need the cron family ON, so
+/// this helper writes a config that includes their canonical IDs
+/// (`builtin:tool:CronCreate`, etc. — see `ToolRuntime::register_builtins`).
 fn write_cron_agent(home: &std::path::Path, name: &str, mock_llm_url: &str) -> std::io::Result<()> {
     use std::path::Path;
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
@@ -222,7 +222,7 @@ preferred_model_id = "default"
 default_timeout_seconds = 60
 
 [extensions]
-enabled = ["builtin:tool:cron"]
+enabled = ["builtin:tool:CronCreate", "builtin:tool:CronDelete", "builtin:tool:CronList"]
 
 [channels]
 cli = true
@@ -1026,19 +1026,19 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     let agent_name = "cron_tool_agent_sched";
 
     // Far-future time so the job never fires during the test; the
-    // runtime's CronTool only validates RFC3339, not the date itself.
+    // runtime's CronCreate only validates RFC3339, not the date itself.
     let at_time = "2099-01-01T00:00:00Z";
     let task = "write AGENT_CRON_SUCCESS marker (no-op for mock test)";
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "cron", "arguments":
+            { "tool_call": { "name": "CronCreate", "arguments":
                 format!(
-                    r#"{{"sub_command":"at","time":"{at_time}","label":"{job_label}","task":"{task}","agent_id":"{agent_name}"}}"#
+                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}","agent_id":"{agent_name}"}}"#
                 )
             } },
-            { "tool_call": { "name": "cron", "arguments":
-                r#"{"sub_command":"list"}"#
+            { "tool_call": { "name": "CronList", "arguments":
+                r#"{}"#
             } },
             "TOOL_SUCCESS",
         ]
@@ -1056,9 +1056,9 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     // mock extracts the FIRST user message, which is this prompt and
     // doesn't change between tool-result turns).
     let prompt = format!(
-        "You have access to the cron tool. Schedule a one-time job (sub_command: \"at\") \
-         using label \"{job_label}\", task \"{task}\", agent_id \"{agent_name}\", time \"{at_time}\". \
-         Then call cron list to verify. Respond with TOOL_SUCCESS if you see the job, \
+        "You have access to CronCreate, CronList, and CronDelete. Schedule a one-time job \
+         using CronCreate with label \"{job_label}\", prompt \"{task}\", agent_id \"{agent_name}\", at \"{at_time}\". \
+         Then call CronList to verify. Respond with TOOL_SUCCESS if you see the job, \
          else TOOL_FAILED. ({needle})"
     );
     let (out, err, status) = run(
@@ -1074,7 +1074,7 @@ async fn cron_agent_tool_schedules_and_lists_job() {
 
     // Daemon-side verification: the cron job should exist in the
     // daemon's cron DB with the label the agent set. The agent's tool
-    // dispatch path goes through CronTool -> DaemonClient -> daemon IPC
+    // dispatch path goes through CronCreate -> DaemonClient -> daemon IPC
     // -> cron.json, so this is the full chain.
     let jobs = list_jobs_json(&cli);
     let scheduled = jobs
@@ -1088,14 +1088,13 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     );
 }
 
-/// Agent uses the `cron` tool to schedule a job and then cancel it
-/// via `cancel_label` (which doesn't need a pre-known job_id). Mirrors
+/// Agent uses CronCreate/CronList/CronDelete to schedule a job and then
+/// cancel it via `label` (which doesn't need a pre-known job_id). Mirrors
 /// `cron_agent_tool.ps1` TEST 4.
 ///
-/// Uses `cancel_label` instead of `job_id` in the script because the
+/// Uses `label` instead of `id` in the script because the
 /// mock doesn't know the daemon-assigned `job_id` ahead of time; the
-/// runtime's `CronTool::handle_cancel` looks the id up by label when
-/// given `cancel_label`.
+/// runtime's `CronDeleteTool` looks the id up by label when given `label`.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
 #[serial]
@@ -1113,16 +1112,16 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "cron", "arguments":
+            { "tool_call": { "name": "CronCreate", "arguments":
                 format!(
-                    r#"{{"sub_command":"at","time":"{at_time}","label":"{job_label}","task":"{task}","agent_id":"{agent_name}"}}"#
+                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}","agent_id":"{agent_name}"}}"#
                 )
             } },
-            { "tool_call": { "name": "cron", "arguments":
-                r#"{"sub_command":"list"}"#
+            { "tool_call": { "name": "CronList", "arguments":
+                r#"{}"#
             } },
-            { "tool_call": { "name": "cron", "arguments":
-                format!(r#"{{"sub_command":"cancel","cancel_label":"{job_label}"}}"#)
+            { "tool_call": { "name": "CronDelete", "arguments":
+                format!(r#"{{"label":"{job_label}"}}"#)
             } },
             "CANCEL_SUCCESS",
         ]
@@ -1136,8 +1135,8 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
     remove_jobs_with_prefix(&cli, job_label);
 
     let prompt = format!(
-        "Schedule a cron job (sub_command \"at\") with label \"{job_label}\", task \"{task}\", \
-         agent_id \"{agent_name}\", time \"{at_time}\". Then list, then cancel by label \
+        "Schedule a one-time cron job using CronCreate with label \"{job_label}\", prompt \"{task}\", \
+         agent_id \"{agent_name}\", at \"{at_time}\". Then call CronList, then CronDelete by label \
          \"{job_label}\". Then list again to confirm it's gone. Respond CANCEL_SUCCESS if the \
          job was removed, CANCEL_FAILED otherwise. ({needle})"
     );

@@ -126,7 +126,7 @@ impl ResultRecovery {
     fn process_tool_result(raw: &str) -> String {
         // Try to parse as JSON and extract common content fields
         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(raw) {
-            // For read_file results: extract "content" field
+            // For Read results: extract "content" field
             if let Some(content) = json_val.get("content").and_then(|v| v.as_str()) {
                 return content.to_string();
             }
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_extract_tool_results_with_tool_result_block() {
-        let history = vec![LlmMessage::tool_result("id", "read_file", "file content")];
+        let history = vec![LlmMessage::tool_result("id", "Read", "file content")];
         assert_eq!(
             ResultRecovery::extract_tool_results(&history),
             Some("file content".to_string())

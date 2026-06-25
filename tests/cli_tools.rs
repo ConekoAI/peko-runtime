@@ -10,8 +10,8 @@
 //! | `built-in/grep.ps1`        | `built_in_grep_searches_content`                   |
 //! | `built-in/read_file.ps1`   | `built_in_read_file_returns_content`               |
 //! | `built-in/write_file.ps1`  | `built_in_write_file_creates_file`                 |
-//! | `built-in/str_replace_file.ps1` | `built_in_str_replace_file_modifies_file`     |
-//! | `built-in/shell.ps1`       | `built_in_shell_executes_command`                  |
+//! | `built-in/Edit.ps1`        | `built_in_edit_modifies_file`                 |
+//! | `built-in/Bash.ps1`        | `built_in_bash_executes_command`              |
 //!
 //! Each test:
 //!   1. Builds an isolated [`PekoCli`] tempdir as `HOME`.
@@ -120,7 +120,7 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
 /// Ensure the daemon's tool-workspace root exists. The daemon doesn't
 /// create `<peko_dir>/data/workspaces/` on its own — it only writes
 /// into it when a tool is invoked. Tests that pre-seed files (for
-/// read_file / grep / str_replace_file inputs, or to verify
+/// Read / grep / Edit inputs, or to verify
 /// write_file's output) need to mkdir -p the root first.
 fn ensure_workspace_dir(cli: &PekoCli) {
     std::fs::create_dir_all(workspace_dir(cli)).expect("create workspaces dir");
@@ -132,10 +132,10 @@ fn ensure_workspace_dir(cli: &PekoCli) {
 /// **`[extensions] enabled` is a special filter.** The agent's
 /// `init_builtins_async` (in `src/agent/agent.rs:121-135`) iterates
 /// the per-agent tools and compares each whitelist pattern to
-/// `tool.name()` (e.g. `"write_file"`). The dispatcher check at
+/// `tool.name()` (e.g. `"Write"`). The dispatcher check at
 /// `src/extension/core/tool_registry.rs:60-63` does the same lookup
 /// against `tool_owners[tool_name]`, which stores the canonical
-/// extension ID (e.g. `"builtin:tool:write_file"`). The whitelist
+/// extension ID (e.g. `"builtin:tool:Write"`). The whitelist
 /// must therefore contain BOTH the bare tool name AND the canonical
 /// extension ID — the bare name so the per-agent init registers the
 /// tool, and the canonical ID so the dispatcher's `is_tool_enabled`
@@ -165,18 +165,18 @@ default_timeout_seconds = 60
 
 [extensions]
 enabled = [
-    "shell",
-    "read_file",
-    "write_file",
+    "Bash",
+    "Read",
+    "Write",
     "glob",
     "grep",
-    "str_replace_file",
-    "builtin:tool:shell",
-    "builtin:tool:read_file",
-    "builtin:tool:write_file",
+    "Edit",
+    "builtin:tool:Bash",
+    "builtin:tool:Read",
+    "builtin:tool:Write",
     "builtin:tool:glob",
     "builtin:tool:grep",
-    "builtin:tool:str_replace_file",
+    "builtin:tool:Edit",
 ]
 
 [channels]
@@ -190,7 +190,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     std::fs::write(
         agent_dir.join("SYSTEM.md"),
         "Test agent for the built-in tools CLI integration suite. \
-         Has shell, read_file, write_file, glob, grep, and str_replace_file tools enabled.",
+         Has Bash, Read, Write, glob, grep, and Edit tools enabled.",
     )?;
     Ok(())
 }
@@ -352,8 +352,8 @@ async fn built_in_read_file_returns_content() {
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "read_file", "arguments":
-                serde_json::json!({ "path": file_name }).to_string()
+            { "tool_call": { "name": "Read", "arguments":
+                serde_json::json!({ "file_path": file_name }).to_string()
             } },
             "READ_DONE",
         ],
@@ -376,7 +376,7 @@ async fn built_in_read_file_returns_content() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your read_file tool to read '{file_name}'. When you've seen the \
+        "Use your Read tool to read '{file_name}'. When you've seen the \
          content, respond READ_DONE. Use the needle '{needle}' in your response."
     );
     let (out, err, status) = run(
@@ -408,13 +408,13 @@ async fn built_in_write_file_creates_file() {
     let needle = "built-in-writefile-7a9f";
     let agent_name = "built_in_write_file";
     let file_name = "built_in_write_file_T1.txt";
-    let file_content = "Hello from write_file tool!";
+    let file_content = "Hello from Write tool!";
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "write_file", "arguments":
+            { "tool_call": { "name": "Write", "arguments":
                 serde_json::json!({
-                    "path": file_name,
+                    "file_path": file_name,
                     "content": file_content,
                 }).to_string()
             } },
@@ -426,7 +426,7 @@ async fn built_in_write_file_creates_file() {
 
     let cli = PekoCli::new();
     write_builtin_agent(cli.home(), agent_name, &mock_url).expect("write builtin agent");
-    // Ensure the tool workspace root exists — the daemon's `write_file`
+    // Ensure the tool workspace root exists — the daemon's `Write`
     // auto-creates the file's *parent* directory but not the workspace
     // root itself. Pre-creating it makes the test less reliant on that
     // implementation detail.
@@ -434,7 +434,7 @@ async fn built_in_write_file_creates_file() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your write_file tool to create '{file_name}' with content \
+        "Use your Write tool to create '{file_name}' with content \
          '{file_content}' in your workspace. When the file has been written, \
          respond WRITE_DONE. Use the needle '{needle}' in your response."
     );
@@ -449,7 +449,7 @@ async fn built_in_write_file_creates_file() {
         "parent did not report WRITE_DONE: stdout={out} stderr={err}",
     );
 
-    // The LLM's `write_file` tool call wrote a file into the tool
+    // The LLM's `Write` tool call wrote a file into the tool
     // workspace. We also dump the contents of `<peko_dir>/data/` on
     // failure so the path is obvious from the assertion message.
     let path = workspace_dir(&cli).join(file_name);
@@ -465,14 +465,14 @@ async fn built_in_write_file_creates_file() {
     );
 }
 
-/// `built-in/str_replace_file.ps1` T1+T2+T3: simple / multiple /
+/// `built-in/Edit.ps1` T1+T2+T3: simple / multiple /
 /// atomic-fail. We exercise the simple replacement (T1) — it covers
 /// the in-place file mutation path. The atomic-fail case (T3) is
-/// unit-tested in `src/tools/builtin/fs/str_replace_file.rs`.
+/// unit-tested in `src/tools/builtin/fs/edit.rs`.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
-async fn built_in_str_replace_file_modifies_file() {
+async fn built_in_edit_modifies_file() {
     if mock_llm_url().is_none() {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
@@ -480,20 +480,22 @@ async fn built_in_str_replace_file_modifies_file() {
     let mock_url = mock_llm_url().unwrap();
 
     let needle = "built-in-strreplace-e0b7";
-    let agent_name = "built_in_str_replace";
-    let file_name = "built_in_str_replace_T1.txt";
+    let agent_name = "built_in_edit";
+    let file_name = "built_in_edit_T1.txt";
     let old_string = "Original Name";
     let new_string = "New Name";
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "str_replace_file", "arguments":
+            { "tool_call": { "name": "Edit", "arguments":
                 serde_json::json!({
-                    "path": file_name,
-                    "edit": { "old": old_string, "new": new_string },
+                    "file_path": file_name,
+                    "old_string": old_string,
+                    "new_string": new_string,
+                    "replace_all": false,
                 }).to_string()
             } },
-            "STRREPLACE_DONE",
+            "EDIT_DONE",
         ],
     })
     .to_string();
@@ -512,9 +514,9 @@ async fn built_in_str_replace_file_modifies_file() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your str_replace_file tool to replace '{old_string}' with \
+        "Use your Edit tool to replace '{old_string}' with \
          '{new_string}' in '{file_name}'. When the replacement is done, \
-         respond STRREPLACE_DONE. Use the needle '{needle}' in your response."
+         respond EDIT_DONE. Use the needle '{needle}' in your response."
     );
     let (out, err, status) = run(
         &cli,
@@ -523,8 +525,8 @@ async fn built_in_str_replace_file_modifies_file() {
     );
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("STRREPLACE_DONE"),
-        "parent did not report STRREPLACE_DONE: stdout={out} stderr={err}",
+        out.contains("EDIT_DONE"),
+        "parent did not report EDIT_DONE: stdout={out} stderr={err}",
     );
 
     // Verify the replacement actually landed in the file.
@@ -532,46 +534,46 @@ async fn built_in_str_replace_file_modifies_file() {
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         let dump = dump_data_dir(&cli);
         panic!(
-            "str_replace_file target not readable at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}"
+            "Edit target not readable at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}"
         )
     });
     assert!(
         actual.contains(new_string) && !actual.contains(old_string),
-        "str_replace_file did not produce the expected content at {path:?}: {actual}",
+        "Edit did not produce the expected content at {path:?}: {actual}",
     );
 }
 
-/// `built-in/shell.ps1` T1+T2: execute a basic shell command (T1)
+/// `built-in/Bash.ps1` T1+T2: execute a basic shell command (T1)
 /// vs. with a working directory (T2). We exercise T1 with a
 /// cross-platform `echo` so the same test runs on Unix and Windows.
 ///
-/// The shell tool's actual command execution is unit-tested in
-/// `src/tools/builtin/shell.rs`. The CLI integration concern is that
+/// The Bash tool's actual command execution is unit-tested in
+/// `src/tools/builtin/bash.rs`. The CLI integration concern is that
 /// the tool call is dispatched end-to-end through the agent loop.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
-async fn built_in_shell_executes_command() {
+async fn built_in_bash_executes_command() {
     if mock_llm_url().is_none() {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     }
     let mock_url = mock_llm_url().unwrap();
 
-    let needle = "built-in-shell-3f5d";
-    let agent_name = "built_in_shell";
+    let needle = "built-in-bash-3f5d";
+    let agent_name = "built_in_bash";
 
-    // Cross-platform echo: `echo SHELL_TEST_MARKER` works in sh, bash,
+    // Cross-platform echo: `echo BASH_TEST_MARKER` works in sh, bash,
     // cmd, and PowerShell (with minor quoting differences — we use
     // single quotes to keep the literal identical).
-    let shell_command = "echo SHELL_TEST_MARKER";
+    let bash_command = "echo BASH_TEST_MARKER";
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "shell", "arguments":
-                serde_json::json!({ "command": shell_command }).to_string()
+            { "tool_call": { "name": "Bash", "arguments":
+                serde_json::json!({ "command": bash_command }).to_string()
             } },
-            "SHELL_DONE",
+            "BASH_DONE",
         ],
     })
     .to_string();
@@ -582,8 +584,8 @@ async fn built_in_shell_executes_command() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your shell tool to run '{shell_command}'. When the command has \
-         executed, respond SHELL_DONE. Use the needle '{needle}' in your \
+        "Use your Bash tool to run '{bash_command}'. When the command has \
+         executed, respond BASH_DONE. Use the needle '{needle}' in your \
          response."
     );
     let (out, err, status) = run(
@@ -593,8 +595,8 @@ async fn built_in_shell_executes_command() {
     );
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("SHELL_DONE"),
-        "parent did not report SHELL_DONE: stdout={out} stderr={err}",
+        out.contains("BASH_DONE"),
+        "parent did not report BASH_DONE: stdout={out} stderr={err}",
     );
 }
 

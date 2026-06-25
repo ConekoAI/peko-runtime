@@ -156,15 +156,11 @@ async fn process_response_stream(
                 ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("Agent execution failed: {message}");
                 }
-                ResponsePacket::MessageQueued {
-                    run_triggered, ..
-                } => {
+                ResponsePacket::MessageQueued { run_triggered, .. } => {
                     // SessionSteer confirmation. The actual response
                     // (or `Done`) follows on the same stream.
                     if !run_triggered && json {
-                        println!(
-                            "{{\"status\":\"queued\",\"run_triggered\":false}}"
-                        );
+                        println!("{{\"status\":\"queued\",\"run_triggered\":false}}");
                     }
                 }
                 ResponsePacket::Heartbeat { .. } => {
@@ -203,9 +199,7 @@ async fn process_response_stream(
             ResponsePacket::Error { message, .. } => {
                 anyhow::bail!("Agent execution failed: {message}");
             }
-            ResponsePacket::MessageQueued {
-                run_triggered, ..
-            } => {
+            ResponsePacket::MessageQueued { run_triggered, .. } => {
                 // Briefly acknowledge the queued-and-triggered state
                 // before the run's text chunks arrive on the same
                 // stream.

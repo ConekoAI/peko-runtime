@@ -917,7 +917,7 @@ async fn test_executor_cancel() {
         let mut registry_guard = registry.write().await;
         let entry = crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
             run_id.clone(),
-            "agent_spawn".to_string(),
+            "Agent".to_string(),
             serde_json::json!({"task": "Long task"}),
             "agent:test:peer:user:alice".to_string(),
             crate::extensions::framework::async_exec::executor::types::AsyncToolConfig {

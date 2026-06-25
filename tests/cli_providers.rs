@@ -136,10 +136,7 @@ fn write_tool_agent(
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
 
-    let mut enabled = vec![
-        "builtin:tool:read_file".to_string(),
-        "read_file".to_string(),
-    ];
+    let mut enabled = vec!["builtin:tool:Read".to_string(), "Read".to_string()];
     enabled.extend(extra_tools.iter().map(|s| s.to_string()));
     let enabled_toml = enabled
         .iter()
@@ -289,7 +286,7 @@ async fn cli_providers_minimax_anthropic_native_tool_call() {
     assert_ok(&out, &err, &status);
     assert!(
         out.contains("TOOL_TEST_SECRET_123"),
-        "expected the LLM to call read_file and report the secret; \
+        "expected the LLM to call Read and report the secret; \
          stdout={out:?} stderr={err:?}",
     );
 }

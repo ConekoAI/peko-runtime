@@ -165,3 +165,8 @@ path = "tests/scenarios/s6_principal_grant_revoke_roundtrip.rs"
 [[test]]
 name = "tunnel_security"
 path = "tests/tunnel_security.rs"
+
+# Core tool parity harness for the Claude Code built-in tool surface.
+[[test]]
+name = "core_tools"
+path = "tests/core_tools.rs"

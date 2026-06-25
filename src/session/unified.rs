@@ -923,13 +923,13 @@ mod tests {
                     },
                     ContentBlock::ToolCall {
                         id: "tool_abc".to_string(),
-                        name: "read_file".to_string(),
+                        name: "Read".to_string(),
                         arguments: serde_json::json!({"path": "test.txt"}),
                     },
                 ],
                 Some(vec![crate::session::events::ToolCallBlock {
                     id: "tool_abc".to_string(),
-                    name: "read_file".to_string(),
+                    name: "Read".to_string(),
                     arguments: serde_json::json!({"path": "test.txt"}),
                 }]),
                 None,
@@ -940,7 +940,7 @@ mod tests {
 
         // Add tool result
         session
-            .add_tool_result("tool_abc", "read_file", "Hello World")
+            .add_tool_result("tool_abc", "Read", "Hello World")
             .await
             .unwrap();
 
@@ -973,7 +973,7 @@ mod tests {
         } = &assistant.content[1]
         {
             assert_eq!(id, "tool_abc");
-            assert_eq!(name, "read_file");
+            assert_eq!(name, "Read");
             assert_eq!(arguments, &serde_json::json!({"path": "test.txt"}));
         }
 
@@ -992,7 +992,7 @@ mod tests {
         } = &tool.content[0]
         {
             assert_eq!(tool_call_id, "tool_abc");
-            assert_eq!(name, "read_file");
+            assert_eq!(name, "Read");
             assert!(!(*is_error));
             assert_eq!(
                 content,

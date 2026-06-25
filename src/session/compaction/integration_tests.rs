@@ -71,7 +71,7 @@ fn test_never_cuts_at_tool_result() {
             role: MessageRole::Tool,
             content: vec![ContentBlock::ToolResult {
                 tool_call_id: "tc1".to_string(),
-                name: "read_file".to_string(),
+                name: "Read".to_string(),
                 content: vec![ContentBlock::Text {
                     text: "content".to_string(),
                 }],
@@ -178,13 +178,13 @@ fn test_file_op_extraction_from_tool_calls() {
         content: vec![
             ContentBlock::ToolCall {
                 id: "tc1".to_string(),
-                name: "read_file".to_string(),
-                arguments: serde_json::json!({"path": "config.toml"}),
+                name: "Read".to_string(),
+                arguments: serde_json::json!({"file_path": "config.toml"}),
             },
             ContentBlock::ToolCall {
                 id: "tc2".to_string(),
-                name: "write_file".to_string(),
-                arguments: serde_json::json!({"path": "output.txt", "content": "..."}),
+                name: "Write".to_string(),
+                arguments: serde_json::json!({"file_path": "output.txt", "content": "..."}),
             },
         ],
         timestamp: chrono::Utc::now(),

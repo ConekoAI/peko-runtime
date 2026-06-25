@@ -149,7 +149,7 @@ mod tests {
             .log(AuditEvent {
                 timestamp: chrono::Utc::now(),
                 component: "test".to_string(),
-                event_type: "agent_spawn".to_string(),
+                event_type: "Agent".to_string(),
                 agent_did: Some("did:1".to_string()),
                 caller: None,
                 details: serde_json::json!({}),
@@ -455,7 +455,7 @@ mod tests {
         let without_caller = AuditEvent {
             timestamp: chrono::Utc::now(),
             component: "tunnel".to_string(),
-            event_type: "agent_spawn".to_string(),
+            event_type: "Agent".to_string(),
             agent_did: None,
             caller: None,
             details: serde_json::json!({}),

@@ -427,11 +427,11 @@ mod tests {
 
     #[test]
     fn test_parse_from_prefix() {
-        let text = "TOOL_CALL: read_file({\"path\": \"/tmp\"})";
+        let text = "TOOL_CALL: Read({\"path\": \"/tmp\"})";
 
         let calls = parse_tool_calls_from_text(text);
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, Some("read_file".to_string()));
+        assert_eq!(calls[0].name, Some("Read".to_string()));
     }
 
     #[test]

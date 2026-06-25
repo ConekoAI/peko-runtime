@@ -9,7 +9,8 @@ use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, Tool, WriteFileTool,
+    AsyncListTool, AsyncStatusTool, AsyncStopTool, BashTool, CronCreateTool, CronDeleteTool,
+    CronListTool, EditTool, GlobTool, GrepTool, ReadTool, Tool, WriteTool,
 };
 use anyhow::Result;
 use std::path::PathBuf;
@@ -154,11 +155,12 @@ impl ToolRuntime {
     ///
     /// This logic is extracted from `Agent::init_builtins_async()`.
     ///
-    /// The `task` tool is **NOT** registered here. It depends on
-    /// per-agent state (AsyncExecutor + ExtensionCore for spawn-side
-    /// lookups). Each agent registers its own `TaskTool` via
-    /// `BuiltinToolAdapter::register_task_tool` once the agent has
-    /// constructed its executor and completion queue.
+    /// `AsyncSpawn` and `AsyncOutput` are **NOT** registered here. They
+    /// depend on per-agent state (AsyncExecutor + ExtensionCore for
+    /// spawn-side lookups). Each agent registers its own via
+    /// `BuiltinToolAdapter::register_async_spawn_tool` and
+    /// `BuiltinToolAdapter::register_async_output_tool` once the agent
+    /// has constructed its executor and completion queue.
     pub async fn register_builtins(
         extension_core: &ExtensionCore,
         path_resolver: &PathResolver,
@@ -170,13 +172,18 @@ impl ToolRuntime {
             .unwrap_or_else(|| PathBuf::from("."));
 
         let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(ShellTool::new().with_workspace(workspace.clone())),
-            Arc::new(ReadFileTool::new().with_workspace(workspace.clone())),
-            Arc::new(WriteFileTool::new().with_workspace(workspace.clone())),
+            Arc::new(BashTool::new().with_workspace(workspace.clone())),
+            Arc::new(ReadTool::new().with_workspace(workspace.clone())),
+            Arc::new(WriteTool::new().with_workspace(workspace.clone())),
             Arc::new(GlobTool::new().with_workspace(workspace.clone())),
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
-            Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
-            Arc::new(CronTool::new()),
+            Arc::new(EditTool::new().with_workspace(workspace.clone())),
+            Arc::new(CronCreateTool::new()),
+            Arc::new(CronDeleteTool::new()),
+            Arc::new(CronListTool::new()),
+            Arc::new(AsyncStatusTool::global()),
+            Arc::new(AsyncListTool::global()),
+            Arc::new(AsyncStopTool::global()),
         ];
 
         // Enable all built-in tools by default in the daemon context.
@@ -193,7 +200,7 @@ impl ToolRuntime {
             write_file: None,
             glob: None,
             grep: None,
-            str_replace_file: None,
+            edit_tool: None,
         };
         extension_core.set_tool_config(ext_config).await;
 
@@ -308,13 +315,15 @@ mod tests {
         let resolver = PathResolver::new();
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
-        assert!(runtime.has_tool("shell").await);
-        assert!(runtime.has_tool("read_file").await);
-        assert!(runtime.has_tool("write_file").await);
+        assert!(runtime.has_tool("Bash").await);
+        assert!(runtime.has_tool("Read").await);
+        assert!(runtime.has_tool("Write").await);
         assert!(runtime.has_tool("glob").await);
         assert!(runtime.has_tool("grep").await);
-        assert!(runtime.has_tool("str_replace_file").await);
-        assert!(runtime.has_tool("cron").await);
+        assert!(runtime.has_tool("Edit").await);
+        assert!(runtime.has_tool("CronCreate").await);
+        assert!(runtime.has_tool("CronDelete").await);
+        assert!(runtime.has_tool("CronList").await);
     }
 
     #[tokio::test]
@@ -324,8 +333,8 @@ mod tests {
         let tools = runtime.list_tools().await;
 
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
-        assert!(tool_names.contains(&"shell".to_string()));
-        assert!(tool_names.contains(&"read_file".to_string()));
+        assert!(tool_names.contains(&"Bash".to_string()));
+        assert!(tool_names.contains(&"Read".to_string()));
     }
 
     #[tokio::test]
@@ -334,7 +343,7 @@ mod tests {
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
         let result = runtime
-            .execute_tool("shell", json!({"command": "echo hello"}))
+            .execute_tool("Bash", json!({"command": "echo hello"}))
             .await;
 
         assert!(

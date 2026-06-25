@@ -556,22 +556,22 @@ mod tests {
         assert_eq!(hp.name(), "prompt.system_section.skills");
 
         let hp = HookPoint::ToolExecute {
-            tool_name: "read_file".to_string(),
+            tool_name: "Read".to_string(),
         };
-        assert_eq!(hp.name(), "tool.execute.read_file");
+        assert_eq!(hp.name(), "tool.execute.Read");
     }
 
     #[test]
     fn test_hook_point_matches() {
         let hp = HookPoint::ToolExecute {
-            tool_name: "read_file".to_string(),
+            tool_name: "Read".to_string(),
         };
 
-        assert!(hp.matches("tool.execute.read_file"));
+        assert!(hp.matches("tool.execute.Read"));
         assert!(hp.matches("tool.execute.*"));
         assert!(hp.matches("tool.*"));
         assert!(!hp.matches("prompt.*"));
-        assert!(!hp.matches("tool.execute.write_file"));
+        assert!(!hp.matches("tool.execute.Write"));
     }
 
     #[test]
@@ -615,11 +615,11 @@ mod tests {
 
         // Test ToolCheckStatus
         let hp = HookPoint::ToolCheckStatus {
-            tool_name: "agent_spawn".to_string(),
+            tool_name: "Agent".to_string(),
         };
-        assert_eq!(hp.name(), "tool.check_status.agent_spawn");
+        assert_eq!(hp.name(), "tool.check_status.Agent");
         assert_eq!(hp.category(), "tool");
-        assert!(hp.matches("tool.check_status.agent_spawn"));
+        assert!(hp.matches("tool.check_status.Agent"));
 
         // Test ToolCancel
         let hp = HookPoint::ToolCancel {

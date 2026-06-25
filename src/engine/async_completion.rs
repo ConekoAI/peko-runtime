@@ -13,17 +13,17 @@ use std::collections::HashMap;
 
 /// Maximum size of a tool result to include verbatim in the synthetic
 /// completion message. Results larger than this are truncated and the
-/// model is told to call `task output` for the full content. Keeps the
+/// model is told to call `AsyncOutput` for the full content. Keeps the
 /// LLM context window bounded when a long-running tool produces a large
 /// payload.
 const MAX_RESULT_PREVIEW_BYTES: usize = 2048;
 
 /// Suffix appended to truncated previews.
-const TRUNCATION_SUFFIX: &str = "\n\n... (truncated; use `task output` for full result)";
+const TRUNCATION_SUFFIX: &str = "\n\n... (truncated; use `AsyncOutput` for full result)";
 
 /// Truncate a result string to `MAX_RESULT_PREVIEW_BYTES`, respecting
 /// UTF-8 char boundaries, and append a suffix pointing the model at
-/// `task output` for the full content.
+/// `AsyncOutput` for the full content.
 fn truncate_for_preview(text: &str) -> String {
     if text.len() <= MAX_RESULT_PREVIEW_BYTES {
         return text.to_string();
