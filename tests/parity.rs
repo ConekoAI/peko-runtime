@@ -21,5 +21,5 @@ fn harness_compiles() {
 // - Edit -> Edit schema parity
 // - shell -> Bash schema parity
 // - cron -> CronCreate/CronDelete/CronList split
-// - agent_spawn -> Agent schema parity
+// - Agent -> Agent schema parity
 // - task -> Async*/Task* family split

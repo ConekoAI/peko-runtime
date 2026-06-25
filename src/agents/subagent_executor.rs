@@ -304,7 +304,7 @@ impl SubagentExecutor {
         self.unified_executor
             .execute_with_metadata(
                 run_id.clone(),
-                "agent_spawn",
+                "Agent",
                 serde_json::json!({
                     "task": task,
                     "isolated": isolated,
@@ -565,7 +565,7 @@ impl SubagentExecutor {
         registry
             .list_tasks(None)
             .into_iter()
-            .filter(|e| e.tool_name == "agent_spawn" && !e.status.is_terminal())
+            .filter(|e| e.tool_name == "Agent" && !e.status.is_terminal())
             .count()
     }
 
@@ -607,7 +607,7 @@ impl SubagentExecutor {
         let active_runs: Vec<String> = registry
             .list_tasks(None)
             .into_iter()
-            .filter(|e| e.tool_name == "agent_spawn" && !e.status.is_terminal())
+            .filter(|e| e.tool_name == "Agent" && !e.status.is_terminal())
             .map(|e| e.task_id.clone())
             .collect();
 
@@ -628,9 +628,7 @@ impl SubagentExecutor {
         registry
             .list_tasks(None)
             .into_iter()
-            .filter(|e| {
-                e.tool_name == "agent_spawn" && e.status.is_terminal() && e.result.is_some()
-            })
+            .filter(|e| e.tool_name == "Agent" && e.status.is_terminal() && e.result.is_some())
             .filter_map(|e| {
                 let view = SubagentRunView::from_entry(&e)?;
                 if view.announce_completion {

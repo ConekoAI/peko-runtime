@@ -10,7 +10,7 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::ChannelType;
-use crate::tools::builtin::messaging::agent_spawn::DynamicSessionKeyProvider;
+use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use anyhow::{Context, Result};
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
@@ -39,7 +39,7 @@ pub struct Agent {
     session_manager: Arc<TokioRwLock<SessionManager>>,
     /// Subagent executor for background task execution
     subagent_executor: Arc<SubagentExecutor>,
-    /// Dynamic session key provider for `agent_spawn` tool
+    /// Dynamic session key provider for `Agent` tool
     session_key_provider: Arc<DynamicSessionKeyProvider>,
     /// Current session ID for `session` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
@@ -78,7 +78,7 @@ impl Agent {
     /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::builtin::session::SessionIntrospector;
-        use crate::tools::{AgentSpawnTool, SessionTool, Tool};
+        use crate::tools::{AgentTool, SessionTool, Tool};
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
         // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
@@ -106,11 +106,15 @@ impl Agent {
         );
         tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
-        // Add agent spawn tool v2 with executor and session provider
-        tools.push(Arc::new(AgentSpawnTool::with_session_provider(
-            self.subagent_executor.clone(),
-            Box::new(self.session_key_provider.clone()),
-        )));
+        // Add Agent tool with executor and session provider
+        let agent_service = crate::common::services::AgentService::new(PathResolver::new());
+        tools.push(Arc::new(
+            AgentTool::with_agent_service_and_session_provider(
+                self.subagent_executor.clone(),
+                agent_service,
+                Box::new(self.session_key_provider.clone()),
+            ),
+        ));
 
         // Note: `task` tool (status/list/cancel) is registered globally by the daemon's
         // ToolRuntime::register_builtins() and searches across all registries at runtime.
@@ -368,7 +372,7 @@ impl Agent {
             None => Arc::new(subagent_executor_base),
         };
 
-        // Initialize session key provider for agent_spawn tool
+        // Initialize session key provider for Agent tool
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
             "agent:{}:cli:default",
             config.name
@@ -554,7 +558,7 @@ impl Agent {
         Arc::clone(&self.current_session_id)
     }
 
-    /// Get the session key provider for agent_spawn tool.
+    /// Get the session key provider for Agent tool.
     #[must_use]
     pub fn session_key_provider(&self) -> Arc<DynamicSessionKeyProvider> {
         Arc::clone(&self.session_key_provider)
@@ -1655,7 +1659,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial(core)]
-    async fn test_agent_spawn_session() {
+    async fn test_agent_tool_session() {
         use crate::auth::principal::Principal;
         use crate::extensions::framework::core::ExtensionCore;
 

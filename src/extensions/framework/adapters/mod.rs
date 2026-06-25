@@ -578,7 +578,7 @@ pub mod builtin_tools {
     ];
 
     /// Tools registered per-agent in `Agent::init_builtins_async()`.
-    pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &["agent_spawn", "a2a_send"];
+    pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &["Agent", "a2a_send"];
 
     /// Concatenation of [`GLOBAL_TOOL_NAMES`] and [`AGENT_SPECIFIC_TOOL_NAMES`].
     pub fn all_tool_names() -> Vec<&'static str> {
@@ -609,20 +609,21 @@ pub mod builtin_tools {
         fn all_tool_names_includes_both_lists() {
             let names = all_tool_names();
             assert!(names.contains(&"Bash"));
-            assert!(names.contains(&"agent_spawn"));
+            assert!(names.contains(&"Agent"));
         }
 
         #[test]
         fn is_builtin_tool_is_case_insensitive() {
             assert!(is_builtin_tool("Bash"));
             assert!(is_builtin_tool("BASH"));
+            assert!(is_builtin_tool("Agent"));
             assert!(is_builtin_tool("A2A_SEND"));
             assert!(!is_builtin_tool("unknown_tool"));
         }
 
         #[test]
         fn is_agent_specific_builtin_tool_filters() {
-            assert!(is_agent_specific_builtin_tool("agent_spawn"));
+            assert!(is_agent_specific_builtin_tool("Agent"));
             assert!(!is_agent_specific_builtin_tool("Bash"));
             assert!(!is_agent_specific_builtin_tool("unknown"));
         }

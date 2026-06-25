@@ -14,7 +14,7 @@ Peko is a Rust-based multi-agent runtime with a unified extension architecture. 
 - **Agent harness** with turn-based agentic loops (LLM → tool execution → respond)
 - **HTTP API daemon** (default `localhost:11435`) with SSE streaming and WebSocket support
 - **Session management** via durable JSONL files with atomic writes
-- **Built-in tools** (filesystem, process, apply_patch, agent_spawn, cron, etc.)
+- **Built-in tools** (filesystem, process, apply_patch, Agent, cron, etc.)
 - **Team runtime** with A2A (agent-to-agent) messaging over an event bus
 - **Extension system** with 22 hook points for tools, skills, MCP servers, channels, and gateways
 - **Packaging** — `.agent` build/export/import, `.team` export/import, `.ext` export, registry push/pull with content-addressable storage

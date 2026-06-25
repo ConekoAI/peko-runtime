@@ -231,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn audit_without_caller_leaves_caller_unset() {
         let obs = Observability::new("tunnel");
-        obs.audit("agent_spawn", Some("agent-a"), serde_json::json!({}))
+        obs.audit("Agent", Some("agent-a"), serde_json::json!({}))
             .await
             .unwrap();
 

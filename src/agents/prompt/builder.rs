@@ -256,7 +256,7 @@ impl SystemPromptBuilder {
             lines.push("Example:".to_string());
             lines.push("```json".to_string());
             lines.push(
-                r#"{"action": "spawn", "tool": "agent_spawn", "params": {"task": "Analyze confidential data"}}"#.to_string(),
+                r#"{"action": "spawn", "tool": "Agent", "params": {"prompt": "Analyze confidential data", "subagent_type": "researcher"}}"#.to_string(),
             );
             lines.push("```".to_string());
         }

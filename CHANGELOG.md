@@ -21,8 +21,6 @@ execution, A2A protocol, and extension system.
 
 #### Upcoming (tracked on `tool-parity-core-subset` branch)
 
-- Rename `agent_spawn` → `Agent` and add `subagent_type`, `description`,
-  `model` params.
 - Split `task` into `AsyncSpawn` / `AsyncOutput` / `AsyncStop` /
   `AsyncStatus` / `AsyncList`.
 - Add planning-todo family `TaskCreate` / `TaskGet` / `TaskList` /
@@ -54,6 +52,12 @@ execution, A2A protocol, and extension system.
   `CronDelete` takes `id`; `CronList` takes no required arguments. The previous
   `sub_command`-based schema is removed. Update agent configs, whitelists, and
   prompts that referenced the old name.
+- **BREAKING**: Renamed built-in tool `agent_spawn` to `Agent`. The schema now
+  uses `prompt`, `subagent_type`, `description` (renamed from `label`), and
+  `model`; `isolated`, `cleanup`, and `parent_session_key` are unchanged.
+  `subagent_type` resolves to `~/.peko/agents/<subagent_type>/config.toml` via
+  `AgentService`. Update agent configs, whitelists, and prompts that referenced
+  the old name.
 - **BREAKING**: Renamed the Rust crate from `pekobot` to `peko`. Update all
   `use pekobot::...` imports to `use peko::...`.
 - **BREAKING**: Renamed the public Rust type

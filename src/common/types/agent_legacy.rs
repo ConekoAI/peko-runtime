@@ -76,7 +76,7 @@ impl Default for ExtensionConfig {
                 "builtin:tool:CronCreate".to_string(),
                 "builtin:tool:CronDelete".to_string(),
                 "builtin:tool:CronList".to_string(),
-                "builtin:tool:agent_spawn".to_string(),
+                "builtin:tool:Agent".to_string(),
                 "builtin:tool:task".to_string(),
             ],
             http: None,

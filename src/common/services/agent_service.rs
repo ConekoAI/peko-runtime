@@ -395,6 +395,22 @@ impl AgentService {
         }))
     }
 
+    /// Load an agent config by name from the filesystem.
+    ///
+    /// This is the resolution hook for the `Agent` tool's `subagent_type`
+    /// parameter: `subagent_type` maps to `~/.peko/agents/<name>/config.toml`.
+    pub async fn resolve_subagent_type(&self, name: &str) -> Result<AgentConfig> {
+        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let config_path = self.resolver.agent_config(agent_name);
+        if !config_path.exists() {
+            anyhow::bail!("Subagent type '{name}' not found at {config_path:?}");
+        }
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        let config: AgentConfig = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse agent config for '{name}'"))?;
+        Ok(config)
+    }
+
     // ========================================================================
     // Agent CRUD (New Layout)
     // ========================================================================

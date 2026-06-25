@@ -280,7 +280,7 @@ impl Tool for TaskTool {
     fn description(&self) -> String {
         r"Manage async tasks: check status, list tasks, cancel, spawn, or read output.
 
-Works for ALL async tasks: shell, grep, agent_spawn, a2a_send, etc.
+Works for ALL async tasks: Bash, grep, Agent, a2a_send, etc.
 
 Actions:
 - status: get one task by id
@@ -331,7 +331,7 @@ Returns structured data appropriate to the action.
                 },
                 "tool_filter": {
                     "type": "string",
-                    "description": "Optional filter for 'list': shell, agent_spawn, a2a_send, etc."
+                    "description": "Optional filter for 'list': Bash, Agent, a2a_send, etc."
                 },
                 "blocking": {
                     "type": "boolean",
@@ -626,8 +626,8 @@ mod tests {
             reg.register(entry1);
 
             let entry2 = AsyncTaskEntry::new(
-                "agent_spawn:test-2".to_string(),
-                "agent_spawn".to_string(),
+                "Agent:test-2".to_string(),
+                "Agent".to_string(),
                 json!({}),
                 "session_1".to_string(),
                 AsyncToolConfig::default(),

@@ -344,11 +344,9 @@ impl HookHandler for BuiltinExecuteHandler {
                         if let Some(obj) = params.as_object_mut() {
                             // Subagent spawn inherently takes longer than simple tools because
                             // the subagent runs a full agentic loop with its own LLM calls.
-                            // Inject a longer default timeout for blocking agent_spawn if none
+                            // Inject a longer default timeout for blocking Agent if none
                             // is provided by the caller.
-                            if tool_name_for_preproc == "agent_spawn"
-                                && !obj.contains_key("_timeout")
-                            {
+                            if tool_name_for_preproc == "Agent" && !obj.contains_key("_timeout") {
                                 obj.insert(
                                     "_timeout".to_string(),
                                     serde_json::Value::Number(300.into()),
@@ -566,7 +564,7 @@ mod tests {
         assert!(BuiltinToolAdapter::is_builtin("Read"));
         assert!(BuiltinToolAdapter::is_builtin("BASH")); // case insensitive
                                                          // Agent-specific tools
-        assert!(BuiltinToolAdapter::is_builtin("agent_spawn"));
+        assert!(BuiltinToolAdapter::is_builtin("Agent"));
         assert!(BuiltinToolAdapter::is_builtin("a2a_send"));
         assert!(BuiltinToolAdapter::is_builtin("A2A_SEND")); // case insensitive
                                                              // Unknown
@@ -578,7 +576,7 @@ mod tests {
         let names = BuiltinToolAdapter::all_tool_names();
         assert!(names.contains(&"Bash"));
         assert!(names.contains(&"Read"));
-        assert!(names.contains(&"agent_spawn"));
+        assert!(names.contains(&"Agent"));
         assert!(names.contains(&"a2a_send"));
     }
 
@@ -587,23 +585,23 @@ mod tests {
         let names = BuiltinToolAdapter::global_tool_names();
         assert!(names.contains(&"Bash"));
         assert!(names.contains(&"task"));
-        assert!(!names.contains(&"agent_spawn")); // agent-specific, not global
+        assert!(!names.contains(&"Agent")); // agent-specific, not global
         assert!(!names.contains(&"a2a_send")); // agent-specific, not global
     }
 
     #[test]
     fn test_agent_specific_tool_names() {
         let names = BuiltinToolAdapter::agent_specific_tool_names();
-        assert!(names.contains(&"agent_spawn"));
+        assert!(names.contains(&"Agent"));
         assert!(names.contains(&"a2a_send"));
         assert!(!names.contains(&"Bash")); // global, not agent-specific
     }
 
     #[test]
     fn test_is_agent_specific_builtin() {
-        assert!(BuiltinToolAdapter::is_agent_specific_builtin("agent_spawn"));
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin("Agent"));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("a2a_send"));
-        assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT_SPAWN")); // case insensitive
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT")); // case insensitive
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("Bash"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("session"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("unknown"));

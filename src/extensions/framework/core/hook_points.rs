@@ -615,11 +615,11 @@ mod tests {
 
         // Test ToolCheckStatus
         let hp = HookPoint::ToolCheckStatus {
-            tool_name: "agent_spawn".to_string(),
+            tool_name: "Agent".to_string(),
         };
-        assert_eq!(hp.name(), "tool.check_status.agent_spawn");
+        assert_eq!(hp.name(), "tool.check_status.Agent");
         assert_eq!(hp.category(), "tool");
-        assert!(hp.matches("tool.check_status.agent_spawn"));
+        assert!(hp.matches("tool.check_status.Agent"));
 
         // Test ToolCancel
         let hp = HookPoint::ToolCancel {

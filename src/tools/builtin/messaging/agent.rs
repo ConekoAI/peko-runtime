@@ -1,4 +1,4 @@
-//! Agent Spawn Tool (OpenClaw-Style)
+//! Agent tool (Claude Code parity)
 //!
 //! Spawns subagent sessions for isolated task execution.
 //! Results are announced back to the parent via the event system.
@@ -12,10 +12,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
+use crate::common::services::AgentService;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::core::Tool;
+use anyhow::Context;
 
 /// Maximum allowed spawn depth (safety limit)
 const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
@@ -98,13 +101,22 @@ impl SessionKeyProvider for DynamicSessionKeyProvider {
     }
 }
 
-/// Agent Spawn Arguments
+/// Agent tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSpawnArgs {
-    /// Task description for the subagent
-    pub task: String,
-    /// Optional label for tracking
+pub struct AgentArgs {
+    /// Task description / prompt for the subagent
+    pub prompt: String,
+    /// Subagent type: name of the agent config under ~/.peko/agents/<subagent_type>/config.toml
+    pub subagent_type: String,
+    /// Optional description for tracking (replaces the legacy `label` field)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Optional label alias for backward compatibility (one-release)
+    #[serde(alias = "label", skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Optional model override for the subagent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Create isolated session without parent context
     #[serde(default)]
     pub isolated: bool,
@@ -115,13 +127,15 @@ pub struct AgentSpawnArgs {
     pub parent_session_key: Option<String>,
 }
 
-/// Agent Spawn Tool
+/// Agent tool
 ///
 /// Creates a subagent session and executes a task in the background.
 /// Results are announced back to the parent when complete.
-pub struct AgentSpawnTool {
+pub struct AgentTool {
     /// Subagent executor for background execution
     executor: Arc<SubagentExecutor>,
+    /// Agent service for resolving subagent_type to an AgentConfig
+    agent_service: Option<AgentService>,
     /// Session key provider to get current session at execution time
     session_provider: Option<Box<dyn SessionKeyProvider>>,
     /// Maximum spawn depth allowed
@@ -130,19 +144,35 @@ pub struct AgentSpawnTool {
     max_concurrent: usize,
 }
 
-impl AgentSpawnTool {
-    /// Create a new spawn tool with an executor
+impl AgentTool {
+    /// Create a new Agent tool with an executor
     #[must_use]
     pub fn new(executor: Arc<SubagentExecutor>) -> Self {
         Self {
             executor,
+            agent_service: None,
             session_provider: None,
             max_depth: DEFAULT_MAX_SPAWN_DEPTH,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
         }
     }
 
-    /// Create a spawn tool with a session key provider
+    /// Create an Agent tool with an agent service for subagent_type resolution
+    #[must_use]
+    pub fn with_agent_service(
+        executor: Arc<SubagentExecutor>,
+        agent_service: AgentService,
+    ) -> Self {
+        Self {
+            executor,
+            agent_service: Some(agent_service),
+            session_provider: None,
+            max_depth: DEFAULT_MAX_SPAWN_DEPTH,
+            max_concurrent: DEFAULT_MAX_CONCURRENT,
+        }
+    }
+
+    /// Create an Agent tool with a session key provider
     #[must_use]
     pub fn with_session_provider(
         executor: Arc<SubagentExecutor>,
@@ -150,6 +180,23 @@ impl AgentSpawnTool {
     ) -> Self {
         Self {
             executor,
+            agent_service: None,
+            session_provider: Some(provider),
+            max_depth: DEFAULT_MAX_SPAWN_DEPTH,
+            max_concurrent: DEFAULT_MAX_CONCURRENT,
+        }
+    }
+
+    /// Create an Agent tool with both agent service and session provider
+    #[must_use]
+    pub fn with_agent_service_and_session_provider(
+        executor: Arc<SubagentExecutor>,
+        agent_service: AgentService,
+        provider: Box<dyn SessionKeyProvider>,
+    ) -> Self {
+        Self {
+            executor,
+            agent_service: Some(agent_service),
             session_provider: Some(provider),
             max_depth: DEFAULT_MAX_SPAWN_DEPTH,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
@@ -176,14 +223,42 @@ impl AgentSpawnTool {
         &self.executor
     }
 
+    /// Resolve subagent_type to an AgentConfig, applying optional model override.
+    async fn resolve_subagent_config(
+        &self,
+        subagent_type: &str,
+        model_override: Option<&str>,
+    ) -> anyhow::Result<AgentConfig> {
+        let mut config = if let Some(ref service) = self.agent_service {
+            service.resolve_subagent_type(subagent_type).await?
+        } else {
+            // Fallback: load directly from the filesystem when no service is injected.
+            // This keeps unit tests self-contained.
+            let resolver = crate::common::paths::PathResolver::new();
+            let config_path = resolver.agent_config(subagent_type);
+            if !config_path.exists() {
+                anyhow::bail!("Subagent type '{subagent_type}' not found at {config_path:?}");
+            }
+            let content = tokio::fs::read_to_string(&config_path).await?;
+            toml::from_str(&content)
+                .with_context(|| format!("Failed to parse agent config for '{subagent_type}'"))?
+        };
+
+        if let Some(model) = model_override {
+            config.preferred_model_id = Some(model.to_string());
+        }
+
+        Ok(config)
+    }
+
     /// Execute subagent spawn in blocking mode (waits for completion, returns inline result)
     async fn execute_spawn_blocking(
         &self,
-        task: &str,
+        prompt: &str,
         isolated: bool,
         parent_session_key: &str,
         config: ExecutionConfig,
-        label: Option<String>,
+        description: Option<String>,
         cleanup: SpawnCleanupPolicy,
     ) -> anyhow::Result<serde_json::Value> {
         let timeout_seconds = config.timeout_seconds;
@@ -191,7 +266,7 @@ impl AgentSpawnTool {
         match self
             .executor
             .execute_and_wait(
-                task,
+                prompt,
                 None,
                 isolated,
                 parent_session_key,
@@ -205,7 +280,9 @@ impl AgentSpawnTool {
                 let status_str = run.status.as_str();
                 let success = matches!(
                     run.status,
-                    crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Completed { .. }
+                    crate::extensions::framework::async_exec::executor::AsyncTaskStatus::Completed {
+                        ..
+                    }
                 );
 
                 let mut result = json!({
@@ -213,7 +290,7 @@ impl AgentSpawnTool {
                     "run_id": run.run_id,
                     "child_session_key": run.child_session_key,
                     "success": success,
-                    "label": label,
+                    "description": description,
                     "isolated": isolated,
                     "timeout_seconds": timeout_seconds,
                     "cleanup": match cleanup {
@@ -299,29 +376,31 @@ impl AgentSpawnTool {
 }
 
 #[async_trait]
-impl Tool for AgentSpawnTool {
+impl Tool for AgentTool {
     fn name(&self) -> &'static str {
-        "agent_spawn"
+        "Agent"
     }
 
     fn description(&self) -> String {
         r#"Spawn a sub-agent run in an isolated or shared session.
 
-The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned. Use the `task` tool's `output` action to retrieve the full result later.
+The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
 
 Parameters:
-- task: Description of the task to execute (required)
-- label: Label for this spawn (optional)
+- prompt: Description of the task to execute (required)
+- subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required)
+- description: Optional description for tracking (peko extension; aliases label)
+- model: Optional model override for the subagent (peko extension)
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
 - parent_session_key: Parent session key (optional - auto-detected if not provided)
 
 Examples:
 // Blocking spawn - parent waits for result (auto-detaches on timeout)
-{"task": "Use Write to create report.txt with a summary"}
+{"prompt": "Use Write to create report.txt with a summary", "subagent_type": "writer"}
 
 // Isolated context - fresh session
-{"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}"#
+{"prompt": "Analyze confidential data", "subagent_type": "analyst", "isolated": true, "cleanup": "delete"}"#
             .to_string()
     }
 
@@ -329,13 +408,21 @@ Examples:
         json!({
             "type": "object",
             "properties": {
-                "task": {
+                "prompt": {
                     "type": "string",
                     "description": "Description of the task to execute"
                 },
-                "label": {
+                "subagent_type": {
                     "type": "string",
-                    "description": "Optional label for tracking this spawn"
+                    "description": "Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional description for tracking this spawn"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model override for the subagent"
                 },
                 "isolated": {
                     "type": "boolean",
@@ -352,15 +439,12 @@ Examples:
                     "description": "Parent session key (auto-detected if not provided)"
                 }
             },
-            "required": ["task"]
+            "required": ["prompt", "subagent_type"]
         })
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        // Parse parameters; the framework's auto-detach on timeout handles
-        // the sync/async decision. The 5-min default applies to subagent
-        // spawns like any other tool.
-        let args: AgentSpawnArgs = serde_json::from_value(params)
+        let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         let cleanup = args.cleanup.map_or(SpawnCleanupPolicy::Keep, |s| {
@@ -377,29 +461,51 @@ Examples:
             provider.current_session_key()
         } else {
             return Err(anyhow::anyhow!(
-                "AgentSpawnTool requires a parent_session_key parameter or session provider. \
+                "Agent tool requires a parent_session_key parameter or session provider. \
                 Please provide parent_session_key in the tool parameters."
             ));
         };
+
+        // Resolve subagent_type to a concrete agent config and apply model override.
+        let subagent_config = self
+            .resolve_subagent_config(&args.subagent_type, args.model.as_deref())
+            .await?;
+
+        // Update the executor with the resolved subagent config so the spawned
+        // session uses the subagent's provider/model wiring.
+        let executor = self
+            .executor
+            .as_ref()
+            .clone()
+            .with_agent_config(subagent_config);
+
+        let description = args.description.or(args.label);
 
         // Build execution config with defaults
         let config = ExecutionConfig {
             timeout_seconds: 300, // 5-min default; the framework auto-detaches on timeout
             cleanup,
-            label: args.label.clone(),
+            label: description.clone(),
             announce_completion: true,
             max_depth: self.max_depth,
         };
 
         // Always go through the blocking path; the framework detaches on
         // timeout. If the caller wants explicit async, they invoke this
-        // tool via 'task action=spawn tool=agent_spawn params=...'.
-        self.execute_spawn_blocking(
-            &args.task,
+        // tool via AsyncSpawn.
+        let tool = AgentTool {
+            executor: Arc::new(executor),
+            agent_service: self.agent_service.clone(),
+            session_provider: None,
+            max_depth: self.max_depth,
+            max_concurrent: self.max_concurrent,
+        };
+        tool.execute_spawn_blocking(
+            &args.prompt,
             args.isolated,
             &parent_session_key,
             config,
-            args.label,
+            description,
             cleanup,
         )
         .await
@@ -414,23 +520,23 @@ mod tests {
     use tokio::sync::RwLock;
 
     #[tokio::test]
-    async fn test_spawn_tool_creation() {
+    async fn test_agent_tool_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
         let executor = Arc::new(SubagentExecutor::new(manager, "test_agent", 5));
-        let tool = AgentSpawnTool::new(executor);
+        let tool = AgentTool::new(executor);
 
-        assert_eq!(tool.name(), "agent_spawn");
+        assert_eq!(tool.name(), "Agent");
     }
 
     #[tokio::test]
-    async fn test_spawn_tool_with_session_provider() {
+    async fn test_agent_tool_with_session_provider() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
         let executor = Arc::new(SubagentExecutor::new(manager, "test_agent", 5));
 
         let provider = Box::new(StaticSessionKeyProvider::new("test:session:key"));
-        let tool = AgentSpawnTool::with_session_provider(executor, provider);
+        let tool = AgentTool::with_session_provider(executor, provider);
 
-        assert_eq!(tool.name(), "agent_spawn");
+        assert_eq!(tool.name(), "Agent");
     }
 
     #[test]
@@ -447,7 +553,7 @@ mod tests {
     async fn test_error_response_formatting() {
         // Test typed depth error
         let depth_err = anyhow::anyhow!(SpawnError::DepthLimitExceeded { current: 4, max: 3 });
-        let response = AgentSpawnTool::format_error_response(&depth_err).unwrap();
+        let response = AgentTool::format_error_response(&depth_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("depth"));
         assert!(response["error"].as_str().unwrap().contains('4'));
@@ -455,13 +561,13 @@ mod tests {
         // Test typed concurrent error
         let concurrent_err =
             anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded { current: 5, max: 5 });
-        let response = AgentSpawnTool::format_error_response(&concurrent_err).unwrap();
+        let response = AgentTool::format_error_response(&concurrent_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("concurrent"));
 
         // Test typed timeout error
         let timeout_err = anyhow::anyhow!(SpawnError::Timeout { seconds: 30 });
-        let response = AgentSpawnTool::format_error_response(&timeout_err).unwrap();
+        let response = AgentTool::format_error_response(&timeout_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "timeout");
         assert!(response["error"].as_str().unwrap().contains("30"));
 
@@ -469,7 +575,7 @@ mod tests {
         let exec_err = anyhow::anyhow!(SpawnError::ExecutionFailed(
             "something went wrong".to_string()
         ));
-        let response = AgentSpawnTool::format_error_response(&exec_err).unwrap();
+        let response = AgentTool::format_error_response(&exec_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "error");
         assert!(response["error"]
             .as_str()
@@ -478,7 +584,7 @@ mod tests {
 
         // Test fallback string matching for untyped errors
         let untyped = anyhow::anyhow!("Some random depth-related failure");
-        let response = AgentSpawnTool::format_error_response(&untyped).unwrap();
+        let response = AgentTool::format_error_response(&untyped).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("depth"));
     }
@@ -486,16 +592,30 @@ mod tests {
     #[test]
     fn test_args_parsing() {
         let json = r#"{
-            "task": "Do something",
-            "label": "my-task",
+            "prompt": "Do something",
+            "subagent_type": "writer",
+            "description": "my-task",
             "isolated": true,
             "cleanup": "delete"
         }"#;
 
-        let args: AgentSpawnArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.task, "Do something");
-        assert_eq!(args.label, Some("my-task".to_string()));
+        let args: AgentArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.prompt, "Do something");
+        assert_eq!(args.subagent_type, "writer");
+        assert_eq!(args.description, Some("my-task".to_string()));
         assert!(args.isolated);
         assert_eq!(args.cleanup, Some("delete".to_string()));
+    }
+
+    #[test]
+    fn test_args_label_alias() {
+        let json = r#"{
+            "prompt": "Do something",
+            "subagent_type": "writer",
+            "label": "legacy-label"
+        }"#;
+
+        let args: AgentArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.label, Some("legacy-label".to_string()));
     }
 }
