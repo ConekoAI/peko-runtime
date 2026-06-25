@@ -406,8 +406,7 @@ fn send_with_session_routes_through_session_steer() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     // First send — creates a session.
-    let (out1, err1, status1) =
-        send(&cli, &["send", "steer-agent", "Hello", "--no-stream"]);
+    let (out1, err1, status1) = send(&cli, &["send", "steer-agent", "Hello", "--no-stream"]);
     assert_send_ok(&out1, &err1, &status1);
     let session_id = first_session_id(&cli, "steer-agent").expect("session_id");
 
@@ -460,8 +459,7 @@ fn send_default_path_creates_new_session() {
 
     // No `--session`, no `--new` — daemon resolves the active session
     // or creates one. After one send, exactly 1 session exists.
-    let (out, err, status) =
-        send(&cli, &["send", "default-agent", "Hello", "--no-stream"]);
+    let (out, err, status) = send(&cli, &["send", "default-agent", "Hello", "--no-stream"]);
     assert_send_ok(&out, &err, &status);
 
     let after = list_sessions_json(&cli, "default-agent");
@@ -489,8 +487,7 @@ fn multiple_session_steers_collapse_into_same_session() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     // First send creates the session.
-    let (out1, err1, status1) =
-        send(&cli, &["send", "multi-agent", "Hello", "--no-stream"]);
+    let (out1, err1, status1) = send(&cli, &["send", "multi-agent", "Hello", "--no-stream"]);
     assert_send_ok(&out1, &err1, &status1);
     let session_id = first_session_id(&cli, "multi-agent").expect("session_id");
 

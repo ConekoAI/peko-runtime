@@ -1389,10 +1389,10 @@ mod tests {
             tool_runtime.has_tool("Edit").await,
             "Edit tool not registered"
         );
-        // `task` is registered per-agent (not globally on the daemon's
-        // ToolRuntime) — see `Agent::build_agentic_loop` and
-        // `BuiltinToolAdapter::register_task_tool`. Asserting it's
-        // missing here pins the contract.
+        // `AsyncSpawn` and `AsyncOutput` are registered per-agent (not
+        // globally on the daemon's ToolRuntime) — see `Agent::build_agentic_loop`
+        // and `BuiltinToolAdapter::register_async_spawn_tool`. Asserting they
+        // are missing here pins the contract.
 
         // ExtensionCore should list the tools
         let core = tool_runtime.extension_core();

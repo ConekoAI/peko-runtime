@@ -21,10 +21,10 @@ pub use core::{AbortSignal, Tool, ToolContext, ToolError, ToolResult, ToolWithCo
 
 // Re-exports from builtin for convenience.
 pub use builtin::{
-    AgentTool, BashTool, ChannelType, CronCreateTool, CronDeleteTool, CronListTool, EditTool,
-    GlobTool, GrepTool, MessageConfig, MessageResult, MessageTool, ReadTool, SessionCache,
-    SessionInfo, SessionIntrospectionRegistry, SessionIntrospector, SessionTool, TaskTool,
-    WriteTool,
+    AgentTool, AsyncListTool, AsyncOutputTool, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
+    BashTool, ChannelType, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool,
+    GrepTool, MessageConfig, MessageResult, MessageTool, ReadTool, SessionCache, SessionInfo,
+    SessionIntrospectionRegistry, SessionIntrospector, SessionTool, WriteTool,
 };
 
 // Re-exports from registry

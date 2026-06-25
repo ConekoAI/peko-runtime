@@ -9,8 +9,8 @@ use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
 use crate::tools::{
-    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
-    Tool, WriteTool,
+    AsyncListTool, AsyncStatusTool, AsyncStopTool, BashTool, CronCreateTool, CronDeleteTool,
+    CronListTool, EditTool, GlobTool, GrepTool, ReadTool, Tool, WriteTool,
 };
 use anyhow::Result;
 use std::path::PathBuf;
@@ -155,11 +155,12 @@ impl ToolRuntime {
     ///
     /// This logic is extracted from `Agent::init_builtins_async()`.
     ///
-    /// The `task` tool is **NOT** registered here. It depends on
-    /// per-agent state (AsyncExecutor + ExtensionCore for spawn-side
-    /// lookups). Each agent registers its own `TaskTool` via
-    /// `BuiltinToolAdapter::register_task_tool` once the agent has
-    /// constructed its executor and completion queue.
+    /// `AsyncSpawn` and `AsyncOutput` are **NOT** registered here. They
+    /// depend on per-agent state (AsyncExecutor + ExtensionCore for
+    /// spawn-side lookups). Each agent registers its own via
+    /// `BuiltinToolAdapter::register_async_spawn_tool` and
+    /// `BuiltinToolAdapter::register_async_output_tool` once the agent
+    /// has constructed its executor and completion queue.
     pub async fn register_builtins(
         extension_core: &ExtensionCore,
         path_resolver: &PathResolver,
@@ -180,6 +181,9 @@ impl ToolRuntime {
             Arc::new(CronCreateTool::new()),
             Arc::new(CronDeleteTool::new()),
             Arc::new(CronListTool::new()),
+            Arc::new(AsyncStatusTool::global()),
+            Arc::new(AsyncListTool::global()),
+            Arc::new(AsyncStopTool::global()),
         ];
 
         // Enable all built-in tools by default in the daemon context.

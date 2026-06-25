@@ -24,8 +24,8 @@
 pub mod context;
 pub mod directory;
 pub mod events;
-mod index;
 pub mod inbox_registry;
+mod index;
 pub mod jsonl;
 pub mod key;
 pub mod lock;
@@ -57,8 +57,8 @@ pub use events::{
     SpawnRequestEvent, SpawnResultEvent, SystemEvent, ThinkingEvent, TokenUsage, ToolCallBlock,
     ToolCallEvent, ToolResultEvent,
 };
-pub use index::{MaintenanceConfig, MaintenanceReport, PeerIndex, PeerInfo, SessionEntry};
 pub use inbox_registry::{InboxRegistry, RunPermitGuard};
+pub use index::{MaintenanceConfig, MaintenanceReport, PeerIndex, PeerInfo, SessionEntry};
 pub use jsonl::{NormalizedEntry, SessionStorage};
 pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,

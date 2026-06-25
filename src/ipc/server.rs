@@ -2346,14 +2346,8 @@ impl IpcServer {
                 session_id,
                 content,
             } => {
-                if let Err(e) = Self::handle_session_steer(
-                    request_id,
-                    &session_id,
-                    content,
-                    state,
-                    sink,
-                )
-                .await
+                if let Err(e) =
+                    Self::handle_session_steer(request_id, &session_id, content, state, sink).await
                 {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -3679,10 +3673,10 @@ impl IpcServer {
         state: AppState,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<()> {
+        use crate::engine::{AgenticEvent, LifecyclePhase};
         use crate::extensions::framework::async_exec::executor::completion_queue::{
             InboxItem, SteeringMessage,
         };
-        use crate::engine::{AgenticEvent, LifecyclePhase};
 
         let session_service = state.session_service();
 
@@ -3870,7 +3864,11 @@ impl IpcServer {
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<()> {
         // Validate the session exists (returns Error if not).
-        if let Err(e) = state.session_service().get_session_metadata(session_id).await {
+        if let Err(e) = state
+            .session_service()
+            .get_session_metadata(session_id)
+            .await
+        {
             let response = ResponsePacket::Error {
                 request_id,
                 message: format!("session not found: {e}"),

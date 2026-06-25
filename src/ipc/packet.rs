@@ -404,7 +404,6 @@ pub enum RequestPacket {
     // via IPC. If the session is idle when the message arrives, the
     // daemon auto-triggers a new run; otherwise the in-flight loop
     // drains the message at the start of its next iteration.
-
     /// Enqueue a user steering message for the given session. The
     /// daemon responds with `MessageQueued` (carrying `run_triggered`)
     /// and, if the session was idle, forwards the auto-triggered
@@ -419,10 +418,7 @@ pub enum RequestPacket {
     /// List pending (un-drained) steering messages for a session.
     /// Returns an empty list if the session has no inbox entry yet.
     #[serde(rename = "session_steer_list")]
-    SessionSteerList {
-        request_id: u64,
-        session_id: String,
-    },
+    SessionSteerList { request_id: u64, session_id: String },
 
     /// Best-effort cancel of a queued steering message by id. Returns
     /// `MessageCancelled { was_present }`. Once a message has been
@@ -1256,7 +1252,6 @@ pub enum ResponsePacket {
     // ── Session inbox (steering) ─────────────────────────────────────
     //
     // Past-tense naming matches the `FooAdded`/`FooListed` convention.
-
     /// Confirmation that a steering message was enqueued.
     /// `run_triggered = true` means the daemon auto-started a new run
     /// because the session was idle; subsequent `Text`/`Done` packets

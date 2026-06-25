@@ -518,8 +518,7 @@ impl SessionService {
                 if !sub_path.is_dir() {
                     continue;
                 }
-                let controller =
-                    Arc::new(RwLock::new(MetadataController::new(sub_path.clone())));
+                let controller = Arc::new(RwLock::new(MetadataController::new(sub_path.clone())));
                 let mut guard = controller.write().await;
                 match guard.get_metadata(session_id, false).await {
                     Ok(Some(m)) => {
@@ -537,9 +536,7 @@ impl SessionService {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| {
-            anyhow::anyhow!("Session '{session_id}' not found")
-        }))
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Session '{session_id}' not found")))
     }
 
     /// Resolve a session ID, falling back to the active session if none provided

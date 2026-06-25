@@ -91,7 +91,7 @@ impl BuiltinToolAdapter {
     /// populates the `ExtensionCore` side-table of `Arc<dyn Tool>`
     /// instances keyed by tool name. The side-table is what
     /// `ExtensionCore::get_tool` reads from so direct callers (e.g.,
-    /// `TaskTool::spawn`) can obtain an `Arc<dyn Tool>` without going
+    /// `AsyncSpawnTool`) can obtain an `Arc<dyn Tool>` without going
     /// through the hook layer.
     pub async fn register_tool(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
         let tool_name = tool.name().to_string();
@@ -106,7 +106,7 @@ impl BuiltinToolAdapter {
         );
 
         // Side-table: keep a clone of the Arc<dyn Tool> for direct
-        // invocation paths (TaskTool::spawn calls core.get_tool). Clone
+        // invocation paths (AsyncSpawnTool calls core.get_tool). Clone
         // BEFORE moving the original into the execute handler below.
         core.insert_tool_instance(tool_name.clone(), tool.clone())
             .await;
@@ -134,12 +134,11 @@ impl BuiltinToolAdapter {
     /// All tools are registered as hooks in `ExtensionCore`, making them
     /// discoverable via `ToolRegister` hook and executable via `ToolExecute` hook.
     ///
-    /// The `task` tool is **NOT** registered here. It depends on a
-    /// per-agent `AsyncExecutor` and `ExtensionCore` reference (for the
-    /// spawn side-table and session key), so it is registered per-agent
-    /// by `register_task_tool` once the agent has constructed its
-    /// executor and queue. The pre-refactor global registration has
-    /// been removed; the per-agent path is the only production path.
+    /// `AsyncSpawn` and `AsyncOutput` are **NOT** registered here. They
+    /// depend on a per-agent `AsyncExecutor` and `ExtensionCore` reference,
+    /// so they are registered per-agent by `register_async_spawn_tool` and
+    /// `register_async_output_tool` once the agent has constructed its
+    /// executor and queue.
     pub async fn register_all(
         core: &ExtensionCore,
         config: &BuiltinToolRegistrarConfig,
@@ -147,18 +146,20 @@ impl BuiltinToolAdapter {
         Self::register_globals(core, config).await
     }
 
-    /// Register global built-in tools (everything except the `task` tool).
+    /// Register global built-in tools.
     ///
-    /// `task` is excluded because it requires per-agent wiring (an
-    /// `AsyncExecutor` and an `ExtensionCore` reference). Callers that
-    /// need the `task` tool must use `register_task_tool` per-agent.
+    /// `AsyncSpawn` and `AsyncOutput` are excluded because they require
+    /// per-agent wiring (an `AsyncExecutor` and an `ExtensionCore`
+    /// reference). Callers that need those tools must use
+    /// `register_async_spawn_tool` / `register_async_output_tool` per-agent.
     pub async fn register_globals(
         core: &ExtensionCore,
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::{
-            BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool,
-            ReadTool, SessionTool, WriteTool,
+            AsyncListTool, AsyncStatusTool, AsyncStopTool, BashTool, CronCreateTool,
+            CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool,
+            WriteTool,
         };
 
         let disabled_set: HashSet<String> = config
@@ -231,32 +232,53 @@ impl BuiltinToolAdapter {
             }
         }
 
-        // NB: the `task` tool is intentionally NOT registered here.
-        // It depends on per-agent state (AsyncExecutor + ExtensionCore
+        // Async task control family (global members)
+        // The legacy "task" key disables the whole family for backward
+        // compatibility with old disabled_tools configs.
+        let async_disabled = disabled_set.contains("task") || disabled_set.contains("async");
+        if config.enable_async_tools {
+            if !async_disabled && !disabled_set.contains("asyncstatus") {
+                Self::register_tool(core, Arc::new(AsyncStatusTool::global())).await?;
+            }
+            if !async_disabled && !disabled_set.contains("asynclist") {
+                Self::register_tool(core, Arc::new(AsyncListTool::global())).await?;
+            }
+            if !async_disabled && !disabled_set.contains("asyncstop") {
+                Self::register_tool(core, Arc::new(AsyncStopTool::global())).await?;
+            }
+        }
+
+        // NB: AsyncSpawn and AsyncOutput are intentionally NOT registered here.
+        // They depend on per-agent state (AsyncExecutor + ExtensionCore
         // for spawn-side lookups), so each agent registers its own via
-        // `BuiltinToolAdapter::register_task_tool` after constructing
+        // `BuiltinToolAdapter::register_async_spawn_tool` and
+        // `BuiltinToolAdapter::register_async_output_tool` after constructing
         // its executor and completion queue.
 
         Ok(())
     }
 
-    /// Register the `task` tool with per-agent wiring.
+    /// Register `AsyncSpawn` with per-agent wiring.
     ///
-    /// `task` requires an `AsyncExecutor` (for `spawn` and `output`
-    /// actions) and an `ExtensionCore` reference (so the spawn arm can
-    /// look up the target tool by name and read the current session
-    /// key). Each agent calls this once during initialization so its
-    /// spawns land in its own completion queue and are drained by its
-    /// own agentic loop iteration.
-    ///
-    /// If `task` was previously registered on this core, it is
-    /// unregistered first (the `register_tool` path is idempotent),
-    /// so this function can safely be re-invoked.
-    pub async fn register_task_tool(
+    /// `AsyncSpawn` requires an `AsyncExecutor` and an `ExtensionCore`
+    /// reference (so it can look up the target tool by name and read the
+    /// current session key). Each agent calls this once during initialization
+    /// so spawned tasks land in its own completion queue.
+    pub async fn register_async_spawn_tool(
         core: &ExtensionCore,
-        task_tool: Arc<crate::tools::builtin::TaskTool>,
+        tool: Arc<crate::tools::builtin::AsyncSpawnTool>,
     ) -> Result<()> {
-        Self::register_tool(core, task_tool).await
+        Self::register_tool(core, tool).await
+    }
+
+    /// Register `AsyncOutput` with per-agent wiring.
+    ///
+    /// `AsyncOutput` requires an `AsyncExecutor` for blocking reads.
+    pub async fn register_async_output_tool(
+        core: &ExtensionCore,
+        tool: Arc<crate::tools::builtin::AsyncOutputTool>,
+    ) -> Result<()> {
+        Self::register_tool(core, tool).await
     }
 
     /// Get list of globally-registered built-in tool names.
@@ -563,9 +585,14 @@ mod tests {
         assert!(BuiltinToolAdapter::is_builtin("Bash"));
         assert!(BuiltinToolAdapter::is_builtin("Read"));
         assert!(BuiltinToolAdapter::is_builtin("BASH")); // case insensitive
-                                                         // Agent-specific tools
+        assert!(BuiltinToolAdapter::is_builtin("AsyncStatus"));
+        assert!(BuiltinToolAdapter::is_builtin("AsyncList"));
+        assert!(BuiltinToolAdapter::is_builtin("AsyncStop"));
+        // Agent-specific tools
         assert!(BuiltinToolAdapter::is_builtin("Agent"));
         assert!(BuiltinToolAdapter::is_builtin("a2a_send"));
+        assert!(BuiltinToolAdapter::is_builtin("AsyncSpawn"));
+        assert!(BuiltinToolAdapter::is_builtin("AsyncOutput"));
         assert!(BuiltinToolAdapter::is_builtin("A2A_SEND")); // case insensitive
                                                              // Unknown
         assert!(!BuiltinToolAdapter::is_builtin("unknown_tool"));
@@ -578,13 +605,22 @@ mod tests {
         assert!(names.contains(&"Read"));
         assert!(names.contains(&"Agent"));
         assert!(names.contains(&"a2a_send"));
+        assert!(names.contains(&"AsyncSpawn"));
+        assert!(names.contains(&"AsyncOutput"));
+        assert!(names.contains(&"AsyncStatus"));
+        assert!(names.contains(&"AsyncList"));
+        assert!(names.contains(&"AsyncStop"));
     }
 
     #[test]
     fn test_global_tool_names() {
         let names = BuiltinToolAdapter::global_tool_names();
         assert!(names.contains(&"Bash"));
-        assert!(names.contains(&"task"));
+        assert!(names.contains(&"AsyncStatus"));
+        assert!(names.contains(&"AsyncList"));
+        assert!(names.contains(&"AsyncStop"));
+        assert!(!names.contains(&"AsyncSpawn")); // agent-specific, not global
+        assert!(!names.contains(&"AsyncOutput")); // agent-specific, not global
         assert!(!names.contains(&"Agent")); // agent-specific, not global
         assert!(!names.contains(&"a2a_send")); // agent-specific, not global
     }
@@ -594,6 +630,8 @@ mod tests {
         let names = BuiltinToolAdapter::agent_specific_tool_names();
         assert!(names.contains(&"Agent"));
         assert!(names.contains(&"a2a_send"));
+        assert!(names.contains(&"AsyncSpawn"));
+        assert!(names.contains(&"AsyncOutput"));
         assert!(!names.contains(&"Bash")); // global, not agent-specific
     }
 

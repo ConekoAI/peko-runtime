@@ -21,13 +21,21 @@ execution, A2A protocol, and extension system.
 
 #### Upcoming (tracked on `tool-parity-core-subset` branch)
 
-- Split `task` into `AsyncSpawn` / `AsyncOutput` / `AsyncStop` /
-  `AsyncStatus` / `AsyncList`.
 - Add planning-todo family `TaskCreate` / `TaskGet` / `TaskList` /
   `TaskUpdate`.
 
 ### Changed
 
+- **BREAKING**: Split built-in tool `task` into `AsyncSpawn`, `AsyncOutput`,
+  `AsyncStop`, `AsyncStatus`, and `AsyncList`. `AsyncSpawn` runs any built-in
+  tool in the background (`tool`, `params`, optional `label`); `AsyncOutput`
+  reads a task's result with optional blocking (`block`, `timeout`,
+  `tail_lines`); `AsyncStop` cancels a running task; `AsyncStatus` returns the
+  current status; `AsyncList` lists tasks with optional filters. The previous
+  `task` tool and `sub_command`-based schema are removed. Legacy
+  `disabled_tools` entries `"task"` and `"async"` disable the entire Async*
+  family. Update agent configs, whitelists, and prompts that referenced the old
+  name.
 - **BREAKING**: Renamed built-in tool `read_file` to `Read`. The tool now
   reports its canonical name as `Read` and its schema uses `file_path`
   (with `offset`, `limit`, and `pages` support). Update agent configs,

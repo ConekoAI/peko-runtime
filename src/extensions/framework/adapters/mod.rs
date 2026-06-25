@@ -574,11 +574,14 @@ pub mod builtin_tools {
         "CronCreate",
         "CronDelete",
         "CronList",
-        "task",
+        "AsyncStatus",
+        "AsyncList",
+        "AsyncStop",
     ];
 
     /// Tools registered per-agent in `Agent::init_builtins_async()`.
-    pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &["Agent", "a2a_send"];
+    pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] =
+        &["Agent", "a2a_send", "AsyncSpawn", "AsyncOutput"];
 
     /// Concatenation of [`GLOBAL_TOOL_NAMES`] and [`AGENT_SPECIFIC_TOOL_NAMES`].
     pub fn all_tool_names() -> Vec<&'static str> {

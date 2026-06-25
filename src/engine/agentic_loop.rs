@@ -391,7 +391,7 @@ impl AgenticLoop {
             s.id.clone()
         };
 
-        // Push the resolved session id onto the core so `TaskTool::spawn`
+        // Push the resolved session id onto the core so `AsyncSpawn`
         // can stamp `parent_session_key` on any task issued from this
         // loop. This is the only place that *always* knows the real id
         // (the `Agent::execute*` callers have already pushed it for the
@@ -400,12 +400,11 @@ impl AgenticLoop {
         // `run_inner`). Doing it here means every entry into the loop
         // — regardless of which `execute_*` path called us — ends up
         // with a real session key on the core before iteration 1
-        // begins, so even the first `task spawn` issued mid-iteration
+        // begins, so even the first `AsyncSpawn` issued mid-iteration
         // sees a real `parent_session_key` rather than the `"unknown"`
-        // fallback in `task_management.rs`. The session key is keyed by
-        // the loop's agent DID on the shared `ExtensionCore` so
-        // concurrent agents in daemon mode do not clobber each other
-        // (issue #68).
+        // fallback. The session key is keyed by the loop's agent DID on
+        // the shared `ExtensionCore` so concurrent agents in daemon mode
+        // do not clobber each other (issue #68).
         self.extension_core
             .set_session_key(&self.agent.identity.did, Some(session_id.clone()))
             .await;
@@ -1458,10 +1457,10 @@ mod tests {
     #[serial_test::serial(core)]
     async fn test_e2e_async_completion_reaches_llm_real() {
         use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
+        use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
         use crate::extensions::framework::async_exec::executor::{
             AsyncTaskStatus, CompletionEvent,
         };
-        use crate::extensions::framework::async_exec::executor::SharedSessionInbox;
         use chrono::Utc;
 
         crate::identity::init_test_env();
@@ -1476,7 +1475,9 @@ mod tests {
 
         // Build the queue the same way `Agent::build_agentic_loop` does:
         // shared between the executor and the agentic loop.
-        let queue: SharedSessionInbox = std::sync::Arc::new(crate::extensions::framework::async_exec::executor::SessionInbox::new());
+        let queue: SharedSessionInbox = std::sync::Arc::new(
+            crate::extensions::framework::async_exec::executor::SessionInbox::new(),
+        );
         let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core.clone())
             .await
             .with_async_completion_queue(queue.clone());
@@ -1614,19 +1615,21 @@ mod tests {
         let session_id = session.read().await.id.clone();
 
         queue.push(SteeringMessage::new("actually do X instead"));
-        queue.push(crate::extensions::framework::async_exec::executor::CompletionEvent {
-            task_id: "shell:steer-test".to_string(),
-            tool_name: "shell".to_string(),
-            result: serde_json::json!({"exit_code": 0}),
-            status: AsyncTaskStatus::Completed {
-                result: crate::tools::core::ToolResult::success(
-                    serde_json::json!({"exit_code": 0}),
-                ),
+        queue.push(
+            crate::extensions::framework::async_exec::executor::CompletionEvent {
+                task_id: "shell:steer-test".to_string(),
+                tool_name: "shell".to_string(),
+                result: serde_json::json!({"exit_code": 0}),
+                status: AsyncTaskStatus::Completed {
+                    result: crate::tools::core::ToolResult::success(
+                        serde_json::json!({"exit_code": 0}),
+                    ),
+                },
+                completed_at: chrono::Utc::now(),
+                output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
+                parent_session_key: session_id.clone(),
             },
-            completed_at: chrono::Utc::now(),
-            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
-            parent_session_key: session_id.clone(),
-        });
+        );
 
         let result = loop_
             .run_with_resume("Trigger steering drain", |_| {}, session, None)

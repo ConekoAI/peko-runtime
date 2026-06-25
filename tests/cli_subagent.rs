@@ -110,7 +110,8 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
 }
 
 /// Write a mock-LLM-pointed agent that has the tools the subagent
-/// migration needs enabled: `Agent`, `task`, `Write`, `Read`, and `Bash`.
+/// migration needs enabled: `Agent`, `Write`, `Read`, `Bash`, and the
+/// Async* family.
 ///
 /// **`[extensions] enabled` is a special filter.** The agent's
 /// `init_builtins_async` (in `src/agents/agent.rs`) iterates
@@ -146,15 +147,23 @@ default_timeout_seconds = 60
 [extensions]
 enabled = [
     "Agent",
-    "task",
     "Write",
     "Read",
     "Bash",
+    "AsyncSpawn",
+    "AsyncOutput",
+    "AsyncStatus",
+    "AsyncList",
+    "AsyncStop",
     "builtin:tool:Agent",
-    "builtin:tool:task",
     "builtin:tool:Write",
     "builtin:tool:Read",
     "builtin:tool:Bash",
+    "builtin:tool:AsyncSpawn",
+    "builtin:tool:AsyncOutput",
+    "builtin:tool:AsyncStatus",
+    "builtin:tool:AsyncList",
+    "builtin:tool:AsyncStop",
 ]
 
 [channels]
@@ -168,7 +177,7 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
     std::fs::write(
         agent_dir.join("SYSTEM.md"),
         "Test agent for the subagent CLI integration suite. \
-         Has the Agent, task, Write, Read, and Bash tools enabled.",
+         Has the Agent, Write, Read, Bash, and Async* tools enabled.",
     )?;
     Ok(())
 }
