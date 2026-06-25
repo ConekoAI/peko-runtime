@@ -170,10 +170,10 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
     };
 
     let needle = "seq-needle-ghi789";
-    let tool_args = r#"{"sub_command":"at","at":"2099-01-01T00:00:00Z","agent_id":"x"}"#;
+    let tool_args = r#"{"at":"2099-01-01T00:00:00Z","agent_id":"x"}"#;
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "cron", "arguments": tool_args } },
+            { "tool_call": { "name": "CronCreate", "arguments": tool_args } },
             "TOOL_SUCCESS",
         ]
     })

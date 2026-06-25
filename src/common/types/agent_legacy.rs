@@ -73,7 +73,9 @@ impl Default for ExtensionConfig {
                 "builtin:tool:grep".to_string(),
                 "builtin:tool:Edit".to_string(),
                 "builtin:tool:session".to_string(),
-                "builtin:tool:cron".to_string(),
+                "builtin:tool:CronCreate".to_string(),
+                "builtin:tool:CronDelete".to_string(),
+                "builtin:tool:CronList".to_string(),
                 "builtin:tool:agent_spawn".to_string(),
                 "builtin:tool:task".to_string(),
             ],
@@ -318,7 +320,9 @@ mod tests {
                 "builtin:tool:grep".to_string(),
                 "builtin:tool:Edit".to_string(),
                 "builtin:tool:session".to_string(),
-                "builtin:tool:cron".to_string(),
+                "builtin:tool:CronCreate".to_string(),
+                "builtin:tool:CronDelete".to_string(),
+                "builtin:tool:CronList".to_string(),
             ],
             ..Default::default()
         };
@@ -331,7 +335,9 @@ mod tests {
         assert!(config.is_extension_enabled("builtin:tool:grep"));
         assert!(config.is_extension_enabled("builtin:tool:Edit"));
         assert!(config.is_extension_enabled("builtin:tool:session"));
-        assert!(config.is_extension_enabled("builtin:tool:cron"));
+        assert!(config.is_extension_enabled("builtin:tool:CronCreate"));
+        assert!(config.is_extension_enabled("builtin:tool:CronDelete"));
+        assert!(config.is_extension_enabled("builtin:tool:CronList"));
 
         // Case-insensitive matching
         assert!(config.is_extension_enabled("BUILTIN:TOOL:BASH"));

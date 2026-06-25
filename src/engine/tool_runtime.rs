@@ -8,7 +8,10 @@ use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
-use crate::tools::{BashTool, CronTool, EditTool, GlobTool, GrepTool, ReadTool, Tool, WriteTool};
+use crate::tools::{
+    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
+    Tool, WriteTool,
+};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -174,7 +177,9 @@ impl ToolRuntime {
             Arc::new(GlobTool::new().with_workspace(workspace.clone())),
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
             Arc::new(EditTool::new().with_workspace(workspace.clone())),
-            Arc::new(CronTool::new()),
+            Arc::new(CronCreateTool::new()),
+            Arc::new(CronDeleteTool::new()),
+            Arc::new(CronListTool::new()),
         ];
 
         // Enable all built-in tools by default in the daemon context.
@@ -312,7 +317,9 @@ mod tests {
         assert!(runtime.has_tool("glob").await);
         assert!(runtime.has_tool("grep").await);
         assert!(runtime.has_tool("Edit").await);
-        assert!(runtime.has_tool("cron").await);
+        assert!(runtime.has_tool("CronCreate").await);
+        assert!(runtime.has_tool("CronDelete").await);
+        assert!(runtime.has_tool("CronList").await);
     }
 
     #[tokio::test]

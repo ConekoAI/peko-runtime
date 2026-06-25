@@ -26,7 +26,8 @@
 //! Note: Custom tools can also be disabled by name.
 
 use crate::tools::builtin::{
-    BashTool, CronTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool,
+    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
+    SessionTool, WriteTool,
 };
 use crate::tools::core::traits::Tool;
 use std::collections::HashSet;
@@ -364,8 +365,31 @@ impl ToolFactory {
             });
         }
 
-        // Cron tool for scheduled jobs
-        registry.register("cron", config.enable_cron, || Arc::new(CronTool::new()));
+        // Cron family for scheduled jobs
+        if config.enable_cron {
+            let cron_disabled = registry.is_disabled("cron");
+            let create_disabled = registry.is_disabled("croncreate");
+            let delete_disabled = registry.is_disabled("crondelete");
+            let list_disabled = registry.is_disabled("cronlist");
+
+            if cron_disabled || create_disabled {
+                registry.disabled.push("CronCreate".to_string());
+            } else {
+                registry.tools.push(Arc::new(CronCreateTool::new()));
+            }
+
+            if cron_disabled || delete_disabled {
+                registry.disabled.push("CronDelete".to_string());
+            } else {
+                registry.tools.push(Arc::new(CronDeleteTool::new()));
+            }
+
+            if cron_disabled || list_disabled {
+                registry.disabled.push("CronList".to_string());
+            } else {
+                registry.tools.push(Arc::new(CronListTool::new()));
+            }
+        }
 
         let (tools, disabled) = registry.build();
 
@@ -401,15 +425,19 @@ mod tests {
 
         let result = ToolFactory::create_tools(&config);
 
-        // Check that bash and cron are in disabled list
+        // Check that bash and cron family are in disabled list
         assert!(result.disabled.contains(&"bash".to_string()));
-        assert!(result.disabled.contains(&"cron".to_string()));
+        assert!(result.disabled.contains(&"CronCreate".to_string()));
+        assert!(result.disabled.contains(&"CronDelete".to_string()));
+        assert!(result.disabled.contains(&"CronList".to_string()));
 
         // Check that disabled tools are not in tools list
         let tool_names: Vec<_> = result.tools.iter().map(|t| t.name()).collect();
         assert!(!tool_names.contains(&"bash"));
         assert!(!tool_names.contains(&"Bash"));
-        assert!(!tool_names.contains(&"cron"));
+        assert!(!tool_names.contains(&"CronCreate"));
+        assert!(!tool_names.contains(&"CronDelete"));
+        assert!(!tool_names.contains(&"CronList"));
     }
 
     // Dead tests for removed methods (is_disabled, validate_disabled_tools,

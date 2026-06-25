@@ -157,7 +157,8 @@ impl BuiltinToolAdapter {
         config: &BuiltinToolRegistrarConfig,
     ) -> Result<()> {
         use crate::tools::builtin::{
-            BashTool, CronTool, EditTool, GlobTool, GrepTool, ReadTool, SessionTool, WriteTool,
+            BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool,
+            ReadTool, SessionTool, WriteTool,
         };
 
         let disabled_set: HashSet<String> = config
@@ -216,10 +217,18 @@ impl BuiltinToolAdapter {
             Self::register_tool(core, tool).await?;
         }
 
-        // Cron tool
-        if config.enable_cron && !disabled_set.contains("cron") {
-            let tool = Arc::new(CronTool::new());
-            Self::register_tool(core, tool).await?;
+        // Cron family for scheduled jobs
+        let cron_disabled = disabled_set.contains("cron");
+        if config.enable_cron {
+            if !cron_disabled && !disabled_set.contains("croncreate") {
+                Self::register_tool(core, Arc::new(CronCreateTool::new())).await?;
+            }
+            if !cron_disabled && !disabled_set.contains("crondelete") {
+                Self::register_tool(core, Arc::new(CronDeleteTool::new())).await?;
+            }
+            if !cron_disabled && !disabled_set.contains("cronlist") {
+                Self::register_tool(core, Arc::new(CronListTool::new())).await?;
+            }
         }
 
         // NB: the `task` tool is intentionally NOT registered here.

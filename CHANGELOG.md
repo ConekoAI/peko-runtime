@@ -21,7 +21,6 @@ execution, A2A protocol, and extension system.
 
 #### Upcoming (tracked on `tool-parity-core-subset` branch)
 
-- Split `cron` → `CronCreate` / `CronDelete` / `CronList`.
 - Rename `agent_spawn` → `Agent` and add `subagent_type`, `description`,
   `model` params.
 - Split `task` into `AsyncSpawn` / `AsyncOutput` / `AsyncStop` /
@@ -49,6 +48,12 @@ execution, A2A protocol, and extension system.
   execution returns an async task receipt discoverable by the future `Async*`
   family. Update agent configs, whitelists, and prompts that referenced the old
   name.
+- **BREAKING**: Split built-in tool `cron` into `CronCreate`, `CronDelete`, and
+  `CronList`. `CronCreate` uses `prompt` plus one schedule source (`cron`, `at`,
+  `interval_ms`, `idle_ms`, or `event_topic`) and `recurring`/`durable` flags;
+  `CronDelete` takes `id`; `CronList` takes no required arguments. The previous
+  `sub_command`-based schema is removed. Update agent configs, whitelists, and
+  prompts that referenced the old name.
 - **BREAKING**: Renamed the Rust crate from `pekobot` to `peko`. Update all
   `use pekobot::...` imports to `use peko::...`.
 - **BREAKING**: Renamed the public Rust type
