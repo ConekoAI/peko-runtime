@@ -3,7 +3,7 @@
 //! Provides dot-notation get/set operations on `AgentConfig` via JSON intermediate
 //! representation, enabling generic CLI commands like:
 //!   peko agent config get my-agent tools.enabled
-//!   peko agent config set my-agent tools.enabled '["shell","Read"]'
+//!   peko agent config set my-agent tools.enabled '["Bash","Read"]'
 
 use crate::agents::agent_config::AgentConfig;
 use anyhow::{Context, Result};
@@ -327,10 +327,10 @@ mod tests {
     #[test]
     fn test_set_array_value() {
         let mut config = AgentConfig::default();
-        set_config_value(&mut config, "extensions.enabled", r#"["shell","Read"]"#).unwrap();
+        set_config_value(&mut config, "extensions.enabled", r#"["Bash","Read"]"#).unwrap();
         assert_eq!(
             config.extensions.as_ref().unwrap().enabled,
-            vec!["shell", "Read"]
+            vec!["Bash", "Read"]
         );
     }
 

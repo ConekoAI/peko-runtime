@@ -18,7 +18,7 @@ pub struct WriteArgs {
     pub file_path: String,
     /// Content to write
     pub content: String,
-    /// Write mode: overwrite (default), append, `create_new`
+    /// Write mode: `create_new` (default; Claude parity), `overwrite`, or `append`
     #[serde(default = "default_mode")]
     pub mode: String,
     /// Content encoding: utf8 (default) or base64
@@ -27,7 +27,10 @@ pub struct WriteArgs {
 }
 
 fn default_mode() -> String {
-    "overwrite".to_string()
+    // Default to `create_new` so callers trained on Claude Code's safety
+    // invariant (writing an existing file errors) do not silently clobber
+    // existing files. `overwrite` and `append` remain opt-in peko extensions.
+    "create_new".to_string()
 }
 
 fn default_encoding() -> String {
@@ -180,9 +183,9 @@ Path to the file. Can be relative to workspace or absolute.
 Content to write to the file.
 
 ### mode (optional)
-- "overwrite" (default): Replace existing file or create new
+- "create_new" (default): Fail if the file already exists (Claude parity safety invariant)
+- "overwrite": Replace existing file or create new
 - "append": Append to existing file (create if not exists)
-- "create_new": Fail if file already exists
 
 ### encoding (optional)
 - "utf8" (default): Content is UTF-8 text
@@ -223,7 +226,7 @@ Write binary data:
                     "type": "string",
                     "description": "Write mode",
                     "enum": ["overwrite", "append", "create_new"],
-                    "default": "overwrite"
+                    "default": "create_new"
                 },
                 "encoding": {
                     "type": "string",
@@ -256,7 +259,10 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_write_file_overwrite() {
+    async fn test_write_file_default_create_new() {
+        // Default mode is `create_new` to match Claude Code's safety invariant:
+        // writing a brand-new file with no `mode` argument must succeed, and
+        // the reported mode is `create_new`.
         let temp_dir = TempDir::new().unwrap();
         let tool = WriteTool::new().with_workspace(temp_dir.path());
 
@@ -267,7 +273,7 @@ mod tests {
 
         let result = tool.execute(params).await.unwrap();
         assert_eq!(result["bytes_written"], 13);
-        assert_eq!(result["mode"], "overwrite");
+        assert_eq!(result["mode"], "create_new");
 
         let content = fs::read_to_string(temp_dir.path().join("test.txt"))
             .await

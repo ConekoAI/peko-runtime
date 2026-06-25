@@ -206,6 +206,7 @@ impl AsyncExecutionRouter {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: Some(DeliveryTarget::AsyncQueue),
             timeout_secs: Some(task_hard_timeout_secs),
+            timeout_millis: None,
             cleanup_after_delivery: true,
             label: Some(tool_name.to_string()),
         };

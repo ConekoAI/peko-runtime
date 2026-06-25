@@ -143,7 +143,7 @@ pub struct ToolFactoryConfig {
     pub cron_db_path: Option<PathBuf>,
     /// MCP configuration
     pub mcp: McpFactoryConfig,
-    /// List of disabled tool names (e.g., ["process", "cron"])
+    /// List of disabled tool names (e.g., ["Bash", "CronCreate"])
     pub disabled_tools: Vec<String>,
     /// Instance ID for cron persistence
     pub instance_id: Option<String>,

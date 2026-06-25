@@ -52,6 +52,14 @@ pub struct AsyncExecutor {
 }
 
 impl AsyncExecutor {
+    /// Clone the underlying task registry so per-agent introspection
+    /// tools (`AsyncStatus`, `AsyncList`, `AsyncStop`) can be bound to
+    /// the agent's own executor and stay scoped to its tasks.
+    #[must_use]
+    pub fn clone_registry(&self) -> SharedAsyncTaskRegistry {
+        self.registry.clone()
+    }
+
     /// Create a new unified async executor with a default
     /// `InboxRegistry`. Use [`Self::with_inbox_registry`] to share
     /// a registry with the rest of the daemon (the common case).
@@ -171,7 +179,13 @@ impl AsyncExecutor {
         if let Some(ref writer) = self.task_file_writer {
             let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
             record.params = Some(params.clone());
-            record.timeout_requested = config.timeout_secs;
+            // Persist the seconds-equivalent timeout for audit. If the caller
+            // supplied `timeout_millis`, round up so the recorded value never
+            // under-reports the actual wait.
+            record.timeout_requested = config
+                .timeout_millis
+                .map(|ms| ms.div_ceil(1000))
+                .or(config.timeout_secs);
             record.callback_mode = config
                 .delivery_target
                 .map(|dt| format!("{:?}", dt).to_lowercase());
@@ -224,7 +238,16 @@ impl AsyncExecutor {
         let task_id_clone = task_id.clone();
         let task_file_writer_clone = self.task_file_writer.clone();
         // `None` means no timeout; the task runs until completion or cancellation.
-        let timeout_secs = config.timeout_secs;
+        // `timeout_millis` takes precedence so callers can request sub-second
+        // timeouts (e.g. `Bash { run_in_background, timeout: 100 }`).
+        let timeout_secs = config
+            .timeout_millis
+            .map(|ms| ms.div_ceil(1000))
+            .or(config.timeout_secs);
+        let timeout_duration = config
+            .timeout_millis
+            .map(std::time::Duration::from_millis)
+            .or(config.timeout_secs.map(std::time::Duration::from_secs));
         let callback_mode = config
             .delivery_target
             .map(|dt| format!("{:?}", dt).to_lowercase());
@@ -255,7 +278,7 @@ impl AsyncExecutor {
             }
 
             // Execute the work with optional timeout enforcement.
-            let outcome = match timeout_secs.map(std::time::Duration::from_secs) {
+            let outcome = match timeout_duration {
                 Some(duration) => match tokio::time::timeout(duration, execution_fn()).await {
                     Ok(Ok(value)) => TaskOutcome::Success(value),
                     Ok(Err(e)) => TaskOutcome::Failure(e),

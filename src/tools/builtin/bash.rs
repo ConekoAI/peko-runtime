@@ -166,7 +166,9 @@ impl BashTool {
     ) -> Result<serde_json::Value> {
         let task_id = format!("Bash:{}", uuid::Uuid::new_v4());
         let config = AsyncToolConfig {
-            timeout_secs: timeout_ms.map(|ms| std::cmp::max(ms / 1000, 1)),
+            // Preserve millisecond precision by using `timeout_millis` when set;
+            // the executor will fall back to `timeout_secs` otherwise.
+            timeout_millis: timeout_ms,
             ..Default::default()
         };
 
@@ -186,7 +188,7 @@ impl BashTool {
         Ok(json!({
             "task_id": receipt.task_id,
             "status": "running",
-            "tool_name": "Bash",
+            "tool": "Bash",
         }))
     }
 
@@ -506,6 +508,6 @@ mod tests {
         let response = result.unwrap();
         assert!(response["task_id"].as_str().unwrap().starts_with("Bash:"));
         assert_eq!(response["status"], "running");
-        assert_eq!(response["tool_name"], "Bash");
+        assert_eq!(response["tool"], "Bash");
     }
 }

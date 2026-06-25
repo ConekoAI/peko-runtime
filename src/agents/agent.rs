@@ -11,6 +11,7 @@ use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::ChannelType;
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
+use crate::tools::core::Tool;
 use anyhow::{Context, Result};
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
@@ -117,29 +118,36 @@ impl Agent {
         ));
 
         // Add planning todo (Task*) tools backed by the agent's session storage.
-        if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
-            let todo_storage = Arc::new(crate::session::todos::TodoStorage::new(sessions_dir));
-            tools.push(Arc::new(crate::tools::TaskCreateTool::new(
-                todo_storage.clone(),
-            )));
-            tools.push(Arc::new(crate::tools::TaskGetTool::new(
-                todo_storage.clone(),
-            )));
-            tools.push(Arc::new(crate::tools::TaskListTool::new(
-                todo_storage.clone(),
-            )));
-            tools.push(Arc::new(crate::tools::TaskUpdateTool::new(todo_storage)));
+        if self.config.enable_task_tools {
+            if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
+                let todo_storage = Arc::new(crate::session::todos::TodoStorage::new(sessions_dir));
+                tools.push(Arc::new(crate::tools::TaskCreateTool::new(
+                    todo_storage.clone(),
+                )));
+                tools.push(Arc::new(crate::tools::TaskGetTool::new(
+                    todo_storage.clone(),
+                )));
+                tools.push(Arc::new(crate::tools::TaskListTool::new(
+                    todo_storage.clone(),
+                )));
+                tools.push(Arc::new(crate::tools::TaskUpdateTool::new(todo_storage)));
+            } else {
+                tracing::warn!(
+                    "Session storage directory not available for agent '{}'; Task* tools will not be registered",
+                    self.config.name
+                );
+            }
         } else {
-            tracing::warn!(
-                "Session storage directory not available for agent '{}'; Task* tools will not be registered",
+            tracing::debug!(
+                "Task* tools disabled by config for agent '{}'",
                 self.config.name
             );
         }
 
-        // Note: `task` tool (status/list/cancel) is registered globally by the daemon's
-        // ToolRuntime::register_builtins() and searches across all registries at runtime.
-        // We do NOT register per-agent versions here to avoid shadowing the global
-        // registrations and breaking visibility of router async tasks.
+        // Note: `AsyncStatus`/`AsyncList`/`AsyncStop` are intentionally NOT registered
+        // here. They are registered per-agent inside `build_agentic_loop`, bound
+        // to the agent's own `AsyncExecutor` registry so each agent only sees its
+        // own async tasks (session isolation).
 
         // Add a2a_send tool for agent-to-agent messaging (ADR-023)
         if let Some(agent_service) = self.extension_core.services().agent_service() {
@@ -772,6 +780,10 @@ impl Agent {
                 crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
                     .with_inbox_registry(async_inbox_registry.clone()),
             );
+            // Snapshot the registry so the per-agent AsyncStatus/AsyncList/
+            // AsyncStop tools can be bound to it after `async_executor` is
+            // moved into AsyncOutputTool below.
+            let async_registry = async_executor.clone_registry();
             let core_weak = Arc::downgrade(&extension_core_for_loop);
             let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
                 async_executor.clone(),
@@ -804,6 +816,40 @@ impl Agent {
                     "Failed to register per-agent AsyncOutputTool (streaming): {}",
                     e
                 );
+            }
+
+            // Register the per-agent introspection trio so the agent only
+            // sees its own async tasks (session isolation). Previously these
+            // tools were registered globally and could enumerate tasks across
+            // all agents.
+            for (tool_name, tool) in [
+                (
+                    "AsyncStatus",
+                    Arc::new(crate::tools::builtin::AsyncStatusTool::with_registry(
+                        async_registry.clone(),
+                    )) as Arc<dyn Tool>,
+                ),
+                (
+                    "AsyncList",
+                    Arc::new(crate::tools::builtin::AsyncListTool::with_registry(
+                        async_registry.clone(),
+                    )),
+                ),
+                (
+                    "AsyncStop",
+                    Arc::new(crate::tools::builtin::AsyncStopTool::with_registry(
+                        async_registry.clone(),
+                    )),
+                ),
+            ] {
+                if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+                    &extension_core_for_loop,
+                    tool,
+                )
+                .await
+                {
+                    warn!("Failed to register per-agent {tool_name}Tool: {e}");
+                }
             }
 
             let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
@@ -972,37 +1018,83 @@ impl Agent {
             crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
                 .with_inbox_registry(async_inbox_registry.clone()),
         );
+        // Snapshot the registry so the per-agent AsyncStatus/AsyncList/
+        // AsyncStop tools can be bound to it after `async_executor` is moved
+        // into AsyncOutputTool below.
+        let async_registry = async_executor.clone_registry();
 
         // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
         //    core. Uses Weak so the tools do not extend the core's lifetime
         //    past the core itself.
-        let core_weak = Arc::downgrade(&extension_core);
-        let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
-            async_executor.clone(),
-            core_weak.clone(),
-            Some(self.identity.did.clone()),
-        ));
-        let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::with_executor(
-            async_executor,
-        ));
+        if self.config.enable_async_tools {
+            let core_weak = Arc::downgrade(&extension_core);
+            let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+                async_executor.clone(),
+                core_weak.clone(),
+                Some(self.identity.did.clone()),
+            ));
+            let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::with_executor(
+                async_executor,
+            ));
 
-        // 4. Re-register the per-agent async tools (overwrites any prior
-        //    instance). register_tool is idempotent — unregisters first.
-        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
-            &extension_core,
-            spawn_tool,
-        )
-        .await
-        {
-            warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
-        }
-        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
-            &extension_core,
-            output_tool,
-        )
-        .await
-        {
-            warn!("Failed to register per-agent AsyncOutputTool: {}", e);
+            // 4. Re-register the per-agent async tools (overwrites any prior
+            //    instance). register_tool is idempotent — unregisters first.
+            if let Err(e) =
+                crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
+                    &extension_core,
+                    spawn_tool,
+                )
+                .await
+            {
+                warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
+            }
+            if let Err(e) =
+                crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
+                    &extension_core,
+                    output_tool,
+                )
+                .await
+            {
+                warn!("Failed to register per-agent AsyncOutputTool: {}", e);
+            }
+
+            // Register the per-agent introspection trio so this agent only sees
+            // its own async tasks. `register_tool` is idempotent — it unregisters
+            // any prior instance with the same name first.
+            for (tool_name, tool) in [
+                (
+                    "AsyncStatus",
+                    Arc::new(crate::tools::builtin::AsyncStatusTool::with_registry(
+                        async_registry.clone(),
+                    )) as Arc<dyn Tool>,
+                ),
+                (
+                    "AsyncList",
+                    Arc::new(crate::tools::builtin::AsyncListTool::with_registry(
+                        async_registry.clone(),
+                    )),
+                ),
+                (
+                    "AsyncStop",
+                    Arc::new(crate::tools::builtin::AsyncStopTool::with_registry(
+                        async_registry.clone(),
+                    )),
+                ),
+            ] {
+                if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
+                    &extension_core,
+                    tool,
+                )
+                .await
+                {
+                    warn!("Failed to register per-agent {tool_name}Tool: {e}");
+                }
+            }
+        } else {
+            tracing::debug!(
+                "Async tools disabled by config for agent '{}'",
+                self.config.name
+            );
         }
 
         // 5. Push the session key onto the core so AsyncSpawn can stamp

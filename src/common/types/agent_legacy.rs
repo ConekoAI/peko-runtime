@@ -77,7 +77,10 @@ impl Default for ExtensionConfig {
                 "builtin:tool:CronDelete".to_string(),
                 "builtin:tool:CronList".to_string(),
                 "builtin:tool:Agent".to_string(),
-                "builtin:tool:task".to_string(),
+                "builtin:tool:TaskCreate".to_string(),
+                "builtin:tool:TaskGet".to_string(),
+                "builtin:tool:TaskList".to_string(),
+                "builtin:tool:TaskUpdate".to_string(),
             ],
             http: None,
             custom: None,
@@ -93,7 +96,7 @@ impl Default for ExtensionConfig {
 impl ExtensionConfig {
     /// Check if an extension is enabled according to the whitelist.
     ///
-    /// The whitelist stores **canonical extension IDs** (e.g. `builtin:tool:shell`,
+    /// The whitelist stores **canonical extension IDs** (e.g. `builtin:tool:Bash`,
     /// `mcp:standard-echo`, `universal:calculator`).  The caller is expected to
     /// pass the canonical `extension_id` of the extension that owns the tool.
     ///
