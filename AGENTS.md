@@ -14,7 +14,7 @@ Peko is a Rust-based multi-agent runtime with a unified extension architecture. 
 - **Agent harness** with turn-based agentic loops (LLM → tool execution → respond)
 - **HTTP API daemon** (default `localhost:11435`) with SSE streaming and WebSocket support
 - **Session management** via durable JSONL files with atomic writes
-- **Built-in tools** (filesystem, process, apply_patch, Agent, cron, etc.)
+- **Built-in tools** (Read, Write, Edit, Bash, Agent, CronCreate/CronDelete/CronList, AsyncSpawn/AsyncOutput/AsyncStop/AsyncStatus/AsyncList, TaskCreate/TaskGet/TaskList/TaskUpdate, session, etc.)
 - **Team runtime** with A2A (agent-to-agent) messaging over an event bus
 - **Extension system** with 22 hook points for tools, skills, MCP servers, channels, and gateways
 - **Packaging** — `.agent` build/export/import, `.team` export/import, `.ext` export, registry push/pull with content-addressable storage
@@ -200,7 +200,7 @@ cargo test --all-features
 - **Version:** The canonical project version is **0.1.0** as declared in `Cargo.toml`. Several documentation files previously referenced `2.0` or `v2.0` — these have been aligned to `0.1.0` because `Cargo.toml` is the ground truth.
 - **Daemon default bind:** `127.0.0.1:11435`. Binding to `0.0.0.0` requires explicit config and prints a warning.
 - **Session durability:** JSONL is the source of truth; SQLite (`state.db`) is a rebuildable index.
-- **Credential isolation:** API keys are never passed to tool subprocesses. The `process` tool strips `*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`.
+- **Credential isolation:** API keys are stored in the OS keychain, not in environment variables. The `Bash` tool inherits the runtime environment and does not scrub env vars; keep secrets out of `env` in agent configs.
 - **Module Boundaries (Issue 014 / Issue 015 / Issue 016 / Issue 020):**
   - `src/extensions/framework/` contains the **generic extension framework** — core, types, manager, async_exec, transport, services, protocols/shared, and adapters. It has **zero dependencies** on concrete extension type implementations under `src/extensions/<type>/`.
   - `src/extensions/<type>/` (builtin, gateway, general, mcp, skill, universal) contains **extension type implementations**. Each type lives in its own directory and should not import from sibling extension types.

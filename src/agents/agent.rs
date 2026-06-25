@@ -73,7 +73,7 @@ impl Agent {
     ///
     /// This asynchronous version loads Universal Tools from extensions directory
     /// and registers only agent-specific built-in tools with `ExtensionCore`.
-    /// Common built-in tools (shell, Read, Write, etc.) are already
+    /// Common built-in tools (Bash, Read, Write, etc.) are already
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {

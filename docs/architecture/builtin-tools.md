@@ -188,7 +188,11 @@ Create a planning todo item.
 
 ### `TaskList` ✅
 
-No parameters.
+```json
+{
+  "status_filter": "string? (pending | in_progress | completed)"
+}
+```
 
 ### `TaskUpdate` ✅
 

@@ -108,12 +108,9 @@ pub struct AgentArgs {
     pub prompt: String,
     /// Subagent type: name of the agent config under ~/.peko/agents/<subagent_type>/config.toml
     pub subagent_type: String,
-    /// Optional description for tracking (replaces the legacy `label` field)
+    /// Optional description for tracking
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Optional label alias for backward compatibility (one-release)
-    #[serde(alias = "label", skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
     /// Optional model override for the subagent
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -389,7 +386,7 @@ The framework applies a constant 5-minute timeout to all tool calls. If the suba
 Parameters:
 - prompt: Description of the task to execute (required)
 - subagent_type: Name of the agent config under ~/.peko/agents/<subagent_type>/config.toml (required)
-- description: Optional description for tracking (peko extension; aliases label)
+- description: Optional description for tracking (peko extension)
 - model: Optional model override for the subagent (peko extension)
 - isolated: If true, creates isolated session without parent context (default: false)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
@@ -479,7 +476,7 @@ Examples:
             .clone()
             .with_agent_config(subagent_config);
 
-        let description = args.description.or(args.label);
+        let description = args.description;
 
         // Build execution config with defaults
         let config = ExecutionConfig {
@@ -605,17 +602,5 @@ mod tests {
         assert_eq!(args.description, Some("my-task".to_string()));
         assert!(args.isolated);
         assert_eq!(args.cleanup, Some("delete".to_string()));
-    }
-
-    #[test]
-    fn test_args_label_alias() {
-        let json = r#"{
-            "prompt": "Do something",
-            "subagent_type": "writer",
-            "label": "legacy-label"
-        }"#;
-
-        let args: AgentArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.label, Some("legacy-label".to_string()));
     }
 }

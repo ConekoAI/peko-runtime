@@ -88,6 +88,12 @@ execution, A2A protocol, and extension system.
 
 ### Notes
 
+- Phase 6 cleanup completed: updated `DATA_MODEL.md` with a new "Planning
+  Todo Sidecar" section, refreshed `docs/architecture/builtin-tools.md` to
+  include `TaskList`'s optional `status_filter`, and updated help text and
+  `AGENTS.md` for the renamed `Async*` and `Agent` tools.
+- Removed the one-release `label` alias from the `Agent` tool; `description`
+  is now the only subagent tracking field.
 - The MCP example server display name was renamed from
   `pekobot-memory-server` to `peko-memory-server`.
 - The Python SDK package was renamed from `pekobot-tool` / `pekobot_tool`
