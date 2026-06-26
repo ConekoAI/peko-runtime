@@ -103,6 +103,10 @@ pub struct LlmResolver {
     /// env vars when the secret store has no entry. Read-only path;
     /// keys found via env are never persisted.
     bootstrap_env_keys: bool,
+    /// Test-only: a mock adapter to return instead of building a real
+    /// provider from the catalog. Used by `LlmResolver::mock`.
+    #[cfg(test)]
+    mock_adapter: Option<crate::providers::MockAdapter>,
 }
 
 impl LlmResolver {
@@ -113,6 +117,8 @@ impl LlmResolver {
             catalog,
             secrets,
             bootstrap_env_keys: false,
+            #[cfg(test)]
+            mock_adapter: None,
         }
     }
 
@@ -122,6 +128,64 @@ impl LlmResolver {
     pub fn with_env_bootstrap(mut self) -> Self {
         self.bootstrap_env_keys = true;
         self
+    }
+
+    /// Build a mock-backed resolver for tests.
+    ///
+    /// The returned resolver has a single catalog entry (`id = "mock"`,
+    /// model = "mock-model") marked as the runtime default. Any agent
+    /// that resolves through it will get a provider backed by the shared
+    /// `MockAdapter`, so queued responses are returned deterministically.
+    ///
+    /// `catalog_path` should point to a `providers.toml` file; the parent
+    /// directory is assumed to exist for the lifetime of the test.
+    #[cfg(test)]
+    pub async fn mock(
+        adapter: crate::providers::MockAdapter,
+        catalog_path: impl AsRef<std::path::Path>,
+    ) -> (std::sync::Arc<Self>, crate::providers::MockAdapter) {
+        use crate::common::secret_store::InMemorySecretStore;
+        use crate::providers::catalog::{ApiFormat, ModelInfo, ProviderCatalogEntry};
+        use crate::providers::ProviderCatalog;
+
+        let catalog = ProviderCatalog::load_or_init(catalog_path)
+            .await
+            .expect("mock catalog init failed");
+
+        let entry = ProviderCatalogEntry {
+            id: "mock".to_string(),
+            display_name: "Mock Provider".to_string(),
+            template_id: None,
+            api_format: ApiFormat::OpenaiCompletions,
+            base_url: String::new(),
+            models: vec![ModelInfo {
+                id: "mock-model".to_string(),
+                display_name: Some("Mock Model".to_string()),
+                context_length: None,
+                max_output_tokens: None,
+                capabilities: vec![],
+            }],
+            default_model_id: "mock-model".to_string(),
+            headers: std::collections::BTreeMap::new(),
+            requires_key: false,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        catalog.upsert(entry).await.expect("mock upsert failed");
+        catalog
+            .set_default(Some("mock".to_string()), None)
+            .await
+            .expect("mock default failed");
+
+        let secrets = std::sync::Arc::new(InMemorySecretStore::from_pairs(&[("mock", "mock-key")]));
+        let resolver = std::sync::Arc::new(Self {
+            catalog,
+            secrets,
+            bootstrap_env_keys: false,
+            mock_adapter: Some(adapter.clone()),
+        });
+        (resolver, adapter)
     }
 
     /// Whether the env-var bootstrap path is enabled.
@@ -214,10 +278,41 @@ impl LlmResolver {
         entry: &ProviderCatalogEntry,
         model: &ModelInfo,
     ) -> Result<Arc<Provider>> {
+        #[cfg(test)]
+        if entry.id == "mock" {
+            if let Some(ref adapter) = self.mock_adapter {
+                return Self::build_mock_provider(adapter.clone(), model);
+            }
+        }
+
         let api_key = self
             .resolve_api_key(&entry.id)
             .with_context(|| format!("no API key available for provider '{}'", entry.id))?;
         create_provider_for_entry(entry, api_key.expose_secret(), model)
+    }
+
+    /// Test-only helper: build a `Provider` backed by the shared mock adapter.
+    #[cfg(test)]
+    fn build_mock_provider(
+        adapter: crate::providers::MockAdapter,
+        model: &ModelInfo,
+    ) -> Result<Arc<Provider>> {
+        use crate::common::types::provider::{ModelConfig, ProviderConfig};
+        use crate::providers::adapters::AnyAdapter;
+
+        let mut models = std::collections::HashMap::new();
+        models.insert(
+            "default".to_string(),
+            ModelConfig {
+                name: model.id.clone(),
+                ..Default::default()
+            },
+        );
+        let mut config = ProviderConfig::default();
+        config.default_model = "default".to_string();
+        config.models = models;
+
+        Provider::new(AnyAdapter::Mock(adapter), "mock-key".to_string(), config).map(Arc::new)
     }
 
     /// Internal: look up the API key for a provider.

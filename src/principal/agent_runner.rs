@@ -70,19 +70,19 @@ pub async fn run_agent_prompt(
         .with_user(&peer.to_string());
     let session_manager = Arc::new(RwLock::new(session_manager));
 
-    // Open or create the session.
-    let session = if let Some(handle) = session_manager
-        .write()
-        .await
-        .open_session(&session_id)
-        .await?
-    {
+    // Open or create the session. Do not hold the write lock across the
+    // `open_session` await; otherwise a second write acquire on the same
+    // task can deadlock with tokio's async RwLock.
+    let maybe_handle = {
+        let mut mgr = session_manager.write().await;
+        mgr.open_session(&session_id).await?
+    };
+    let session = if let Some(handle) = maybe_handle {
         handle.base().clone()
     } else {
+        let mut mgr = session_manager.write().await;
         let options = SessionCreateOptions::new().with_session_id(&session_id);
-        let handle = session_manager
-            .write()
-            .await
+        let handle = mgr
             .create_session(&prompt.name, &peer, options)
             .await
             .context("failed to create session for principal")?;
@@ -101,7 +101,8 @@ pub async fn run_agent_prompt(
 
     // Run the agentic loop.
     let result = agent
-        .execute_with_session(&message,
+        .execute_with_session(
+            &message,
             session,
             Some(history),
             |_event| {

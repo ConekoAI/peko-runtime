@@ -43,6 +43,9 @@ pub struct PrincipalManager {
     memory_factory: Arc<dyn PrincipalMemoryFactory>,
     router_factory: Arc<dyn PrincipalRouterFactory>,
     resolver: Option<Arc<LlmResolver>>,
+    /// Per-principal execution lock so concurrent `receive` calls on the
+    /// same Principal do not race on shared session state.
+    execution_locks: tokio::sync::RwLock<HashMap<PrincipalId, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl PrincipalManager {
@@ -58,6 +61,7 @@ impl PrincipalManager {
             memory_factory,
             router_factory,
             resolver: None,
+            execution_locks: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -183,6 +187,21 @@ impl PrincipalManager {
         self.get(id).await
     }
 
+    /// Get (or create) the execution mutex for a given Principal.
+    async fn execution_lock(&self, principal_id: PrincipalId) -> Arc<tokio::sync::Mutex<()>> {
+        {
+            let locks = self.execution_locks.read().await;
+            if let Some(lock) = locks.get(&principal_id) {
+                return lock.clone();
+            }
+        }
+        let mut locks = self.execution_locks.write().await;
+        locks
+            .entry(principal_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
     /// The main entry point: a message arrives at a Principal boundary.
     ///
     /// Phase 1 scaffolding: validates the decision and returns a placeholder
@@ -249,6 +268,11 @@ impl PrincipalManager {
                 )));
             }
         }
+
+        // Serialize execution for this Principal so concurrent `receive`
+        // calls do not race on the shared session index.
+        let exec_lock = self.execution_lock(principal.id.clone()).await;
+        let _exec_guard = exec_lock.lock().await;
 
         match decision {
             RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
@@ -368,4 +392,210 @@ async fn load_agent_prompts(
         prompts.insert(r.name.clone(), prompt);
     }
     Ok(prompts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::Subject;
+    use crate::engine::tool_runtime::ToolRuntime;
+    use crate::extensions::framework::core::init_global_core;
+    use crate::principal::{
+        config::{
+            AgentRole, PrincipalAgentRef, PrincipalCapabilities, PrincipalConfig,
+            PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+            PrincipalMemoryConfig, PrincipalRoutingConfig,
+        },
+        router::{ChannelContext, ChannelKind},
+        DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
+    };
+    use crate::providers::{LlmResolver, MockAdapter};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, Arc<PrincipalManager>, MockAdapter, PrincipalId) {
+        let temp = TempDir::new().expect("temp dir");
+        std::env::set_var("PEKO_HOME", temp.path());
+        crate::identity::init_test_env();
+
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver, temp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+
+        let workspace = temp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let catalog_path = temp.path().join("providers.toml");
+        let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        let manager = Arc::new(
+            PrincipalManager::new(
+                workspace,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+            )
+            .with_resolver(resolver),
+        );
+
+        let principal = create_test_principal(&manager, "stressy").await;
+        (temp, manager, adapter, principal.id.clone())
+    }
+
+    async fn create_test_principal(manager: &PrincipalManager, name: &str) -> Arc<Principal> {
+        let agents_dir = manager.workspace_root.join(name).join("agents");
+        tokio::fs::create_dir_all(&agents_dir).await.unwrap();
+        let prompt_path = agents_dir.join("primary.md");
+        let prompt_body = format!(
+            "---\ndescription: \"Test assistant for {name}\"\n---\n\n\
+             You are {name}, a test assistant. Reply concisely.\n"
+        );
+        tokio::fs::write(&prompt_path, prompt_body).await.unwrap();
+
+        let config = test_config(name);
+        manager.create(config).await.unwrap()
+    }
+
+    fn test_config(name: &str) -> PrincipalConfig {
+        PrincipalConfig {
+            name: name.to_string(),
+            did: None,
+            owner: Subject::User("test-owner".to_string()),
+            identity: PrincipalIdentityConfig {
+                display_name: Some(name.to_string()),
+                description: Some(format!("The {name} Principal")),
+                avatar: None,
+            },
+            intent: PrincipalIntentConfig::default(),
+            governance: PrincipalGovernanceConfig::default(),
+            memory: PrincipalMemoryConfig::default(),
+            routing: PrincipalRoutingConfig {
+                default_agent: "primary".to_string(),
+                ..Default::default()
+            },
+            capabilities: PrincipalCapabilities::default(),
+            agents: vec![PrincipalAgentRef {
+                name: "primary".to_string(),
+                prompt: PathBuf::from("agents/primary.md"),
+                role: AgentRole::Default,
+            }],
+        }
+    }
+
+    fn cli_channel() -> ChannelContext {
+        ChannelContext {
+            kind: ChannelKind::Cli,
+            streaming: false,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn same_peer_continues_session() {
+        let (_temp, manager, adapter, id) = setup().await;
+        let turns = 5;
+        for i in 0..turns {
+            adapter.queue_text(format!("reply {i}"));
+        }
+
+        let peer = Subject::User("alice".to_string());
+        for i in 0..turns {
+            let response = manager
+                .receive(id.clone(), peer.clone(), format!("message {i}"), cli_channel())
+                .await
+                .expect("receive should succeed");
+            assert!(
+                response.content.contains(&format!("reply {i}")),
+                "response should contain mock reply {i}: {}",
+                response.content
+            );
+        }
+
+        let principal = manager.get(id).await.expect("principal should exist");
+        let sessions = principal.memory.list_sessions().await.expect("list sessions");
+        assert_eq!(sessions.len(), 1, "repeated messages from one peer must reuse one session");
+        assert_eq!(sessions[0].peer, peer);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn distinct_peers_spawn_isolated_sessions() {
+        let (_temp, manager, adapter, id) = setup().await;
+        let peers = 5;
+        for i in 0..peers {
+            adapter.queue_text(format!("peer reply {i}"));
+        }
+
+        for i in 0..peers {
+            let peer = Subject::User(format!("peer-{i}"));
+            let response = manager
+                .receive(id.clone(), peer, format!("hello {i}"), cli_channel())
+                .await
+                .expect("receive should succeed");
+            assert!(response.content.contains(&format!("peer reply {i}")));
+        }
+
+        let principal = manager.get(id).await.expect("principal should exist");
+        let sessions = principal.memory.list_sessions().await.expect("list sessions");
+        assert_eq!(
+            sessions.len(),
+            peers as usize,
+            "each new peer should get its own session"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn concurrent_receives_are_isolated() {
+        let (_temp, manager, adapter, id) = setup().await;
+        let peers = 10;
+        for i in 0..peers {
+            adapter.queue_text(format!("concurrent {i}"));
+        }
+
+        let mut handles = Vec::with_capacity(peers as usize);
+        for i in 0..peers {
+            let manager = Arc::clone(&manager);
+            let id = id.clone();
+            let handle = tokio::spawn(async move {
+                let peer = Subject::User(format!("concurrent-{i}"));
+                manager
+                    .receive(id, peer, format!("hello {i}"), cli_channel())
+                    .await
+            });
+            handles.push(handle);
+        }
+
+        let results = futures::future::join_all(handles).await;
+        let ok_count = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(ok_count, peers as usize, "all concurrent receives should complete");
+
+        let mut actual_texts: Vec<String> = Vec::with_capacity(peers as usize);
+        for result in results {
+            let response = result.expect("task should not panic").expect("receive should succeed");
+            actual_texts.push(response.content);
+        }
+
+        let expected_texts: Vec<String> = (0..peers)
+            .map(|i| format!("concurrent {i}"))
+            .collect();
+        for expected in &expected_texts {
+            assert!(
+                actual_texts.iter().any(|t| t.contains(expected)),
+                "expected one response to contain '{expected}'"
+            );
+        }
+
+        let principal = manager.get(id).await.expect("principal should exist");
+        let sessions = principal.memory.list_sessions().await.expect("list sessions");
+        assert_eq!(
+            sessions.len(),
+            peers as usize,
+            "concurrent peers should each get a distinct session"
+        );
+    }
 }
