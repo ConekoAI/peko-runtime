@@ -62,19 +62,19 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
             super::RoutingStrategy::BuiltinDefault => {
                 Arc::new(super::routers::BuiltinDefaultRouter::new(memory))
             }
-            super::RoutingStrategy::AgentRouter { ref router_prompt } => {
-                let prompt = match router_prompt {
+            super::RoutingStrategy::Supervisor { ref supervisor_prompt } => {
+                let prompt = match supervisor_prompt {
                     Some(path) => super::agent_prompt::load_agent_prompt(path)
                         .unwrap_or_else(|e| {
                             tracing::warn!(
-                                "Failed to load router prompt from {}: {e}. Using built-in router.",
+                                "Failed to load supervisor prompt from {}: {e}. Using built-in supervisor.",
                                 path.display()
                             );
-                            super::routers::default_router_prompt()
+                            super::routers::default_supervisor_prompt()
                         }),
-                    None => super::routers::default_router_prompt(),
+                    None => super::routers::default_supervisor_prompt(),
                 };
-                Arc::new(super::routers::AgentRouter::new(
+                Arc::new(super::routers::SupervisorRouter::new(
                     memory,
                     resolver,
                     prompt,

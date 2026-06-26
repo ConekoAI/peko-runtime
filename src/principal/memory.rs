@@ -35,8 +35,8 @@ pub trait PrincipalMemory: Send + Sync {
     /// Get the path to the principal's session directory.
     fn sessions_dir(&self) -> PathBuf;
 
-    /// Get the router agent's dedicated session path.
-    fn router_session_path(&self) -> PathBuf;
+    /// Get the supervisor agent's dedicated session path.
+    fn supervisor_session_path(&self) -> PathBuf;
 }
 
 #[derive(Debug, Clone)]
@@ -207,7 +207,7 @@ impl PrincipalMemory for DefaultPrincipalMemory {
         self.memory_dir().join("sessions")
     }
 
-    fn router_session_path(&self) -> PathBuf {
-        self.sessions_dir().join("router.jsonl")
+    fn supervisor_session_path(&self) -> PathBuf {
+        self.sessions_dir().join("supervisor.jsonl")
     }
 }

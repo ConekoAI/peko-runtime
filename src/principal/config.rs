@@ -192,11 +192,11 @@ fn default_max_router_iterations() -> usize {
 pub enum RoutingStrategy {
     #[serde(rename = "builtin:default")]
     BuiltinDefault,
-    #[serde(rename = "agent:router")]
-    AgentRouter {
-        /// Optional path to the router agent prompt Markdown file.
-        /// If omitted, the runtime uses a built-in router prompt.
-        router_prompt: Option<PathBuf>,
+    #[serde(rename = "agent:supervisor")]
+    Supervisor {
+        /// Optional path to the supervisor agent prompt Markdown file.
+        /// If omitted, the runtime uses the built-in supervisor prompt.
+        supervisor_prompt: Option<PathBuf>,
     },
     #[serde(rename = "extension")]
     Extension { extension_id: String },

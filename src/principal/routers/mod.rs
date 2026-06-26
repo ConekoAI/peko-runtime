@@ -1,5 +1,5 @@
-pub mod agent;
 pub mod builtin;
+pub mod supervisor;
 
-pub use agent::{AgentRouter, default_router_prompt};
 pub use builtin::BuiltinDefaultRouter;
+pub use supervisor::{SupervisorRouter, default_supervisor_prompt};

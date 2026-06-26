@@ -131,13 +131,13 @@ pub async fn run_agent_prompt(
     Ok(result.final_answer)
 }
 
-/// Run the router agent prompt in a peer-scoped session using a dedicated
+/// Run the supervisor agent prompt in a peer-scoped session using a dedicated
 /// `ExtensionCore`.
 ///
-/// The router core is isolated from the global core: it carries the principal's
-/// own agents as `{{agents}}` hooks, an `Agent` tool that resolves those agents,
-/// and principal-scoped session/memory/catalog tools.
-pub async fn run_router_prompt(
+/// The supervisor core is isolated from the global core: it carries the
+/// principal's own agents as `{{agents}}` hooks, an `Agent` tool that resolves
+/// those agents, and principal-scoped session/memory/catalog tools.
+pub async fn run_supervisor_prompt(
     prompt: &AgentPrompt,
     capabilities: &PrincipalCapabilities,
     peer: Subject,
@@ -151,7 +151,7 @@ pub async fn run_router_prompt(
 ) -> anyhow::Result<String> {
     let mut config = build_agent_config(prompt, capabilities);
 
-    // Router-specific whitelist.  We include bare tool names so
+    // Supervisor-specific whitelist.  We include bare tool names so
     // `Agent::init_builtins_async` keeps the tools it registers, plus canonical
     // extension IDs so the core permission checks pass.
     let mut enabled: Vec<String> = vec![
@@ -204,7 +204,7 @@ pub async fn run_router_prompt(
         ..config.extensions.unwrap_or_default()
     });
 
-    // Dedicated ExtensionCore for this router decision.
+    // Dedicated ExtensionCore for this supervisor decision.
     let core = Arc::new(ExtensionCore::new());
     let path_resolver = PathResolver::new();
     crate::engine::tool_runtime::ToolRuntime::register_builtins(&core, &path_resolver).await?;
@@ -225,7 +225,7 @@ pub async fn run_router_prompt(
         .with_user(&peer.to_string());
     let session_manager = Arc::new(RwLock::new(session_manager));
 
-    // Open or create the router session.
+    // Open or create the supervisor session.
     let maybe_handle = {
         let mut mgr = session_manager.write().await;
         mgr.open_session(&session_id).await?
@@ -238,13 +238,13 @@ pub async fn run_router_prompt(
         let handle = mgr
             .create_session(&prompt.name, &peer, options)
             .await
-            .context("failed to create router session")?;
+            .context("failed to create supervisor session")?;
         handle.base().clone()
     };
 
     let history: Vec<LlmMessage> = session.read().await.load_history().await?;
 
-    // Cold-start the router agent on the dedicated core.
+    // Cold-start the supervisor agent on the dedicated core.
     let agent = Agent::new_with_session_manager_resolver_and_core(
         config,
         Arc::clone(&session_manager),
@@ -254,7 +254,7 @@ pub async fn run_router_prompt(
     .await?;
 
     // Register the principal-scoped tools after `Agent::new*` but before
-    // execution so they are available on the router's private core.
+    // execution so they are available on the supervisor's private core.
     let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
         "agent:{}:cli:default",
         prompt.name
@@ -267,7 +267,7 @@ pub async fn run_router_prompt(
             5,
         )
         .with_provider(agent.provider_arc().ok_or_else(|| {
-            anyhow::anyhow!("router agent has no provider configured")
+            anyhow::anyhow!("supervisor agent has no provider configured")
         })?)
         .with_agent_config(agent.config.clone()),
     );
@@ -313,7 +313,7 @@ pub async fn run_router_prompt(
             },
         )
         .await
-        .context("router agent execution failed")?;
+        .context("supervisor agent execution failed")?;
 
     Ok(result.final_answer)
 }

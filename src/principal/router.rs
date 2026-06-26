@@ -115,7 +115,7 @@ pub trait PrincipalRouter: Send + Sync {
 pub enum RouterError {
     #[error("router decision invalid: {0}")]
     InvalidDecision(String),
-    #[error("router agent failed: {0}")]
+    #[error("routing agent failed: {0}")]
     AgentFailed(String),
     #[error("router loop detected")]
     LoopDetected,

@@ -1,6 +1,6 @@
 //! Principal memory recall/store tool
 //!
-//! Provides `principal_memory` so the router agent can recall stored
+//! Provides `principal_memory` so the supervisor agent can recall stored
 //! artifacts or persist new ones in the Principal's memory namespace.
 
 use async_trait::async_trait;
@@ -266,8 +266,8 @@ mod tests {
             std::env::temp_dir()
         }
 
-        fn router_session_path(&self) -> std::path::PathBuf {
-            std::env::temp_dir().join("router.jsonl")
+        fn supervisor_session_path(&self) -> std::path::PathBuf {
+            std::env::temp_dir().join("supervisor.jsonl")
         }
     }
 

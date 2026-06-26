@@ -354,7 +354,7 @@ impl Agent {
     /// Create a new agent with an existing session manager, optional resolver,
     /// and a custom `ExtensionCore`.
     ///
-    /// This is the internal constructor used by the router agent so its
+    /// This is the internal constructor used by the supervisor agent so its
     /// principal-scoped tools and adapted `Agent` tool live on a dedicated
     /// core rather than the global one.
     pub async fn new_with_session_manager_resolver_and_core(

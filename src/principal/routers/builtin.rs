@@ -150,8 +150,8 @@ mod tests {
             std::env::temp_dir()
         }
 
-        fn router_session_path(&self) -> std::path::PathBuf {
-            std::env::temp_dir().join("router.jsonl")
+        fn supervisor_session_path(&self) -> std::path::PathBuf {
+            std::env::temp_dir().join("supervisor.jsonl")
         }
     }
 
