@@ -1,5 +1,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::session::InboxRegistry;
 
 /// A routing decision emitted by a `PrincipalRouter`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +44,12 @@ pub struct RouterContext {
     pub capabilities: super::PrincipalCapabilities,
     pub intent: super::PrincipalIntentConfig,
     pub governance: super::PrincipalGovernanceConfig,
+    /// Shared inbox registry so the router can wire the supervisor agent
+    /// to the same inbox the Principal boundary pushes steering messages into.
+    pub inbox_registry: Arc<InboxRegistry>,
+    /// Per-principal lock held during supervisor session creation so concurrent
+    /// peers do not race on shared session metadata/index writes.
+    pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Clone)]

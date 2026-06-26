@@ -10,6 +10,7 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::ChannelType;
+use crate::session::InboxRegistry;
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
@@ -46,6 +47,10 @@ pub struct Agent {
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Extension core for skill loading and hook integration
     extension_core: Arc<ExtensionCore>,
+    /// Optional external inbox registry. When set, the agentic loop drains
+    /// this registry's session inbox instead of creating a per-call one,
+    /// so external callers can push steering messages into a running agent.
+    inbox_registry: Option<Arc<InboxRegistry>>,
 }
 
 impl Clone for Agent {
@@ -65,6 +70,7 @@ impl Clone for Agent {
             session_key_provider: Arc::clone(&self.session_key_provider),
             current_session_id: Arc::clone(&self.current_session_id),
             extension_core: Arc::clone(&self.extension_core),
+            inbox_registry: self.inbox_registry.clone(),
         }
     }
 }
@@ -347,21 +353,25 @@ impl Agent {
             session_manager,
             llm_resolver,
             extension_core,
+            None,
         )
         .await
     }
 
     /// Create a new agent with an existing session manager, optional resolver,
-    /// and a custom `ExtensionCore`.
+    /// a custom `ExtensionCore`, and an optional external `InboxRegistry`.
     ///
     /// This is the internal constructor used by the supervisor agent so its
     /// principal-scoped tools and adapted `Agent` tool live on a dedicated
-    /// core rather than the global one.
+    /// core rather than the global one. When `inbox_registry` is supplied,
+    /// the agentic loop drains that registry's session inbox, allowing the
+    /// Principal boundary to queue steering messages into a running supervisor.
     pub async fn new_with_session_manager_resolver_and_core(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
         extension_core: Arc<ExtensionCore>,
+        inbox_registry: Option<Arc<InboxRegistry>>,
     ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
 
@@ -427,6 +437,7 @@ impl Agent {
             session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
+            inbox_registry,
         };
 
         info!(
@@ -513,6 +524,7 @@ impl Agent {
             session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
+            inbox_registry: None,
         };
 
         info!(
@@ -1016,7 +1028,11 @@ impl Agent {
         //    daemon-global `InboxRegistry` will replace this in a
         //    follow-up once the per-call path is rewired to read from
         //    `AppState::inbox_registry` directly.
-        let async_inbox_registry = Arc::new(crate::session::InboxRegistry::new());
+        let async_inbox_registry = if let Some(ref reg) = self.inbox_registry {
+            Arc::clone(reg)
+        } else {
+            Arc::new(crate::session::InboxRegistry::new())
+        };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
         let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
@@ -1460,6 +1476,7 @@ impl Agent {
             session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
+            inbox_registry: None,
         })
     }
 

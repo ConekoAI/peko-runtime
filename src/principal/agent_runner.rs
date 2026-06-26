@@ -19,6 +19,7 @@ use crate::principal::router::AgentPromptSummary;
 use crate::providers::LlmResolver;
 use crate::session::manager::SessionManager;
 use crate::session::SessionCreateOptions;
+use crate::session::InboxRegistry;
 use crate::tools::builtin::{
     AgentCatalogTool, AgentTool, DynamicSessionKeyProvider, PrincipalMemoryTool,
     PrincipalSessionsTool,
@@ -74,6 +75,8 @@ pub async fn run_supervisor_prompt(
     workspace_path: PathBuf,
     available_agents: Vec<AgentPromptSummary>,
     memory: Arc<dyn PrincipalMemory>,
+    inbox_registry: Arc<InboxRegistry>,
+    session_creation_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> anyhow::Result<String> {
     let mut config = build_agent_config(prompt, capabilities);
 
@@ -151,31 +154,38 @@ pub async fn run_supervisor_prompt(
         .with_user(&peer.to_string());
     let session_manager = Arc::new(RwLock::new(session_manager));
 
-    // Open or create the supervisor session.
-    let maybe_handle = {
-        let mut mgr = session_manager.write().await;
-        mgr.open_session(&session_id).await?
-    };
-    let session = if let Some(handle) = maybe_handle {
-        handle.base().clone()
-    } else {
-        let mut mgr = session_manager.write().await;
-        let options = SessionCreateOptions::new().with_session_id(&session_id);
-        let handle = mgr
-            .create_session(&prompt.name, &peer, options)
-            .await
-            .context("failed to create supervisor session")?;
-        handle.base().clone()
+    // Open or create the supervisor session.  Hold the per-principal
+    // session-creation lock while touching the shared session index so
+    // concurrent peers don't corrupt it.
+    let session = {
+        let _creation_guard = session_creation_lock.lock().await;
+        let maybe_handle = {
+            let mut mgr = session_manager.write().await;
+            mgr.open_session(&session_id).await?
+        };
+        if let Some(handle) = maybe_handle {
+            handle.base().clone()
+        } else {
+            let mut mgr = session_manager.write().await;
+            let options = SessionCreateOptions::new().with_session_id(&session_id);
+            let handle = mgr
+                .create_session(&prompt.name, &peer, options)
+                .await
+                .context("failed to create supervisor session")?;
+            handle.base().clone()
+        }
     };
 
     let history: Vec<LlmMessage> = session.read().await.load_history().await?;
 
-    // Cold-start the supervisor agent on the dedicated core.
+    // Cold-start the supervisor agent on the dedicated core, wiring it to the
+    // same inbox registry the Principal boundary uses for steering messages.
     let agent = Agent::new_with_session_manager_resolver_and_core(
         config,
         Arc::clone(&session_manager),
         resolver,
         Arc::clone(&core),
+        Some(inbox_registry),
     )
     .await?;
 

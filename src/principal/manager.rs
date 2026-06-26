@@ -14,6 +14,8 @@ use super::{
 use crate::auth::Subject;
 use crate::extensions::agent::AgentAdapter;
 use crate::providers::LlmResolver;
+use crate::session::InboxRegistry;
+use crate::extensions::framework::async_exec::executor::SteeringMessage;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -42,9 +44,13 @@ pub struct PrincipalManager {
     memory_factory: Arc<dyn PrincipalMemoryFactory>,
     router_factory: Arc<dyn PrincipalRouterFactory>,
     resolver: Option<Arc<LlmResolver>>,
-    /// Per-principal execution lock so concurrent `receive` calls on the
-    /// same Principal do not race on shared session state.
-    execution_locks: tokio::sync::RwLock<HashMap<PrincipalId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Shared inbox registry used by supervisor agents and the Principal
+    /// boundary to queue steering messages for sessions that already have
+    /// a run in flight.
+    inbox_registry: Arc<InboxRegistry>,
+    /// Per-principal lock guarding first-time session creation/open so
+    /// concurrent peers do not race on shared metadata/index writes.
+    session_creation_locks: tokio::sync::RwLock<HashMap<PrincipalId, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl PrincipalManager {
@@ -60,7 +66,8 @@ impl PrincipalManager {
             memory_factory,
             router_factory,
             resolver: None,
-            execution_locks: tokio::sync::RwLock::new(HashMap::new()),
+            inbox_registry: Arc::new(InboxRegistry::new()),
+            session_creation_locks: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -189,15 +196,18 @@ impl PrincipalManager {
         self.get(id).await
     }
 
-    /// Get (or create) the execution mutex for a given Principal.
-    async fn execution_lock(&self, principal_id: PrincipalId) -> Arc<tokio::sync::Mutex<()>> {
+    /// Get (or create) the session-creation mutex for a given Principal.
+    async fn session_creation_lock(
+        &self,
+        principal_id: PrincipalId,
+    ) -> Arc<tokio::sync::Mutex<()>> {
         {
-            let locks = self.execution_locks.read().await;
+            let locks = self.session_creation_locks.read().await;
             if let Some(lock) = locks.get(&principal_id) {
                 return lock.clone();
             }
         }
-        let mut locks = self.execution_locks.write().await;
+        let mut locks = self.session_creation_locks.write().await;
         locks
             .entry(principal_id)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -258,19 +268,33 @@ impl PrincipalManager {
             capabilities: principal.config.capabilities.clone(),
             intent: principal.config.intent.clone(),
             governance: principal.config.governance.clone(),
+            inbox_registry: Arc::clone(&self.inbox_registry),
+            session_creation_lock: self.session_creation_lock(principal.id.clone()).await,
         };
 
-        // Serialize execution for this Principal so concurrent `receive`
-        // calls do not race on the shared session index. This is especially
-        // important now that routing runs the supervisor agent, which creates
-        // or resumes a stable peer session.
-        let exec_lock = self.execution_lock(principal.id.clone()).await;
-        let _exec_guard = exec_lock.lock().await;
-
-        let decision = principal.router.route(ctx).await?;
-
-        match decision {
-            RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
+        // Serial queue per peer: only one supervisor run may be active for a
+        // given peer/session at a time.  If a message arrives while the
+        // supervisor is already running, queue it as a steering message in the
+        // same session inbox; the active run will drain it on its next
+        // iteration.
+        let session_id = super::routers::supervisor::supervisor_session_id(&peer,
+        );
+        match self.inbox_registry.try_acquire_run(&session_id).await {
+            Some(_permit) => {
+                let decision = principal.router.route(ctx).await?;
+                match decision {
+                    RouteDecision::Respond { response } => {
+                        Ok(PrincipalResponse::text(response))
+                    }
+                }
+            }
+            None => {
+                let inbox = self.inbox_registry.get_or_create(&session_id).await;
+                inbox.push(SteeringMessage::new(ctx.message.clone()));
+                Ok(PrincipalResponse::queued(format!(
+                    "Queued for supervisor session {session_id}."
+                )))
+            }
         }
     }
 }
@@ -283,6 +307,10 @@ pub struct PrincipalResponse {
 
 impl PrincipalResponse {
     pub fn text(content: String) -> Self {
+        Self { content }
+    }
+
+    pub fn queued(content: String) -> Self {
         Self { content }
     }
 }
@@ -528,6 +556,69 @@ mod tests {
             sessions.len(),
             peers as usize,
             "concurrent peers should each get a distinct session"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn concurrent_same_peer_messages_are_queued() {
+        let (_temp, manager, adapter, id) = setup().await;
+        let messages = 5;
+        for i in 0..messages {
+            adapter.queue_text(format!("same-peer {i}"));
+        }
+
+        let peer = Subject::User("same-peer".to_string());
+        let mut handles = Vec::with_capacity(messages as usize);
+        for i in 0..messages {
+            let manager = Arc::clone(&manager);
+            let id = id.clone();
+            let peer = peer.clone();
+            let handle = tokio::spawn(async move {
+                manager
+                    .receive(id, peer, format!("hello {i}"), cli_channel())
+                    .await
+            });
+            handles.push(handle);
+        }
+
+        let results = futures::future::join_all(handles).await;
+        let ok_count = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            ok_count, messages as usize,
+            "all concurrent receives should complete"
+        );
+
+        let responses: Vec<PrincipalResponse> = results
+            .into_iter()
+            .map(|r| r.expect("task should not panic").expect("receive should succeed"))
+            .collect();
+
+        let answered = responses
+            .iter()
+            .filter(|r| !r.content.starts_with("Queued for supervisor session"))
+            .count();
+        assert_eq!(
+            answered, 1,
+            "only one supervisor run should be active for the same peer at a time"
+        );
+
+        let queued = responses
+            .iter()
+            .filter(|r| r.content.starts_with("Queued for supervisor session"))
+            .count();
+        assert_eq!(
+            queued,
+            messages as usize - 1,
+            "the rest should be queued as steering messages"
+        );
+
+        let principal = manager.get(id).await.expect("principal should exist");
+        let sessions = principal.memory.list_sessions().await.expect("list sessions");
+        assert_eq!(
+            sessions.len(),
+            1,
+            "all messages for the same peer share one supervisor session"
         );
     }
 }

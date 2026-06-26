@@ -28,6 +28,12 @@ pub fn default_supervisor_prompt() -> AgentPrompt {
     parse_agent_prompt("supervisor", PathBuf::from("builtin:supervisor"), content)
 }
 
+/// Stable supervisor session id for a peer.
+#[must_use]
+pub fn supervisor_session_id(peer: &crate::auth::Subject) -> String {
+    format!("supervisor:{peer}")
+}
+
 /// A Principal router powered by a supervisor agentic loop.
 pub struct SupervisorRouter {
     memory: Arc<dyn PrincipalMemory>,
@@ -63,7 +69,7 @@ impl PrincipalRouter for SupervisorRouter {
         // continues across `receive` calls.  Using a stable id prevents us from
         // accidentally resuming a specialist session that happens to be the
         // latest session for this peer.
-        let session_id = format!("supervisor:{peer}");
+        let session_id = supervisor_session_id(&peer);
         let sessions_dir = self.memory.sessions_dir();
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
 
@@ -80,6 +86,8 @@ impl PrincipalRouter for SupervisorRouter {
             self.workspace_path.clone(),
             available_agents,
             Arc::clone(&self.memory),
+            Arc::clone(&ctx.inbox_registry),
+            Arc::clone(&ctx.session_creation_lock),
         )
         .await
         .map_err(|e| RouterError::AgentFailed(e.to_string()))?;
@@ -130,6 +138,7 @@ mod tests {
         PrincipalRoutingConfig,
     };
     use crate::principal::router::{ChannelContext, ChannelKind, ContextInjectionKind};
+    use crate::session::InboxRegistry;
 
     #[test]
     fn test_default_supervisor_prompt_loads() {
@@ -166,6 +175,8 @@ mod tests {
             capabilities: PrincipalCapabilities::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
+            inbox_registry: Arc::new(InboxRegistry::new()),
+            session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let message = build_supervisor_message(&ctx);
