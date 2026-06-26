@@ -10,5 +10,5 @@
 pub mod agent;
 pub mod message_tool;
 
-pub use agent::AgentTool;
+pub use agent::{AgentTool, DynamicSessionKeyProvider};
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};

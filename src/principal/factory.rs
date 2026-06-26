@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{memory::PrincipalMemory, PrincipalConfig, PrincipalId};
+use crate::providers::LlmResolver;
 
 /// Factory for building a Principal's memory store.
 #[async_trait]
@@ -21,6 +22,8 @@ pub trait PrincipalRouterFactory: Send + Sync {
         &self,
         config: &PrincipalConfig,
         memory: Arc<dyn PrincipalMemory>,
+        workspace_path: &std::path::Path,
+        resolver: Option<Arc<LlmResolver>>,
     ) -> Arc<dyn super::router::PrincipalRouter>;
 }
 
@@ -52,10 +55,31 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         &self,
         config: &PrincipalConfig,
         memory: Arc<dyn PrincipalMemory>,
+        workspace_path: &std::path::Path,
+        resolver: Option<Arc<LlmResolver>>,
     ) -> Arc<dyn super::router::PrincipalRouter> {
         match config.routing.strategy {
             super::RoutingStrategy::BuiltinDefault => {
                 Arc::new(super::routers::BuiltinDefaultRouter::new(memory))
+            }
+            super::RoutingStrategy::AgentRouter { ref router_prompt } => {
+                let prompt = match router_prompt {
+                    Some(path) => super::agent_prompt::load_agent_prompt(path)
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                "Failed to load router prompt from {}: {e}. Using built-in router.",
+                                path.display()
+                            );
+                            super::routers::default_router_prompt()
+                        }),
+                    None => super::routers::default_router_prompt(),
+                };
+                Arc::new(super::routers::AgentRouter::new(
+                    memory,
+                    resolver,
+                    prompt,
+                    workspace_path.to_path_buf(),
+                ))
             }
             _ => {
                 // Fallback to builtin for any unimplemented strategy in the first slice.

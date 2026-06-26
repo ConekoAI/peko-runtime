@@ -56,6 +56,9 @@ pub mod mcp;
 /// Skill extension adapter — SKILL.md-based capabilities with YAML frontmatter.
 pub mod skill;
 
+/// Agent extension adapter — AGENT.md-based prompt extensions with YAML frontmatter.
+pub mod agent;
+
 /// Universal tool extension — external executable tools with manifest.yaml.
 pub mod universal;
 
@@ -92,6 +95,7 @@ impl BuiltInAdapters {
     ) -> Vec<Box<dyn crate::extensions::framework::adapters::ExtensionTypeAdapter>> {
         vec![
             Box::new(skill::adapter::SkillAdapter::new()),
+            Box::new(agent::adapter::AgentAdapter::new()),
             Box::new(universal::adapter::UniversalToolAdapter::new()),
             Box::new(mcp::adapter::McpAdapter::with_default_manager()),
             Box::new(gateway::adapter::GatewayAdapter::new(Arc::new(
@@ -113,6 +117,9 @@ pub mod extension_types {
     /// Skill extension type (SKILL.md)
     pub const SKILL: &str = "skill";
 
+    /// Agent extension type (AGENT.md)
+    pub const AGENT: &str = "agent";
+
     /// MCP server extension type
     pub const MCP: &str = "mcp";
 
@@ -128,14 +135,14 @@ pub mod extension_types {
     /// Check if a type is valid
     #[must_use]
     pub fn is_valid_type(ext_type: &str) -> bool {
-        matches!(ext_type, SKILL | MCP | UNIVERSAL_TOOL | GATEWAY)
+        matches!(ext_type, SKILL | AGENT | MCP | UNIVERSAL_TOOL | GATEWAY)
             || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types
     #[must_use]
     pub fn standard_types() -> Vec<&'static str> {
-        vec![SKILL, MCP, UNIVERSAL_TOOL, GATEWAY]
+        vec![SKILL, AGENT, MCP, UNIVERSAL_TOOL, GATEWAY]
     }
 }
 
@@ -146,6 +153,7 @@ mod tests {
     #[test]
     fn test_extension_type_constants() {
         assert_eq!(extension_types::SKILL, "skill");
+        assert_eq!(extension_types::AGENT, "agent");
         assert_eq!(extension_types::MCP, "mcp");
         assert_eq!(extension_types::UNIVERSAL_TOOL, "universal-tool");
     }
@@ -153,6 +161,7 @@ mod tests {
     #[test]
     fn test_extension_type_validation() {
         assert!(extension_types::is_valid_type("skill"));
+        assert!(extension_types::is_valid_type("agent"));
         assert!(extension_types::is_valid_type("mcp"));
         assert!(extension_types::is_valid_type("custom:internal"));
         assert!(!extension_types::is_valid_type("invalid"));
@@ -162,6 +171,7 @@ mod tests {
     fn test_standard_types() {
         let types = extension_types::standard_types();
         assert!(types.contains(&"skill"));
+        assert!(types.contains(&"agent"));
         assert!(types.contains(&"mcp"));
         assert!(types.contains(&"gateway"));
     }
@@ -171,6 +181,6 @@ mod tests {
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
         assert!(!adapters.is_empty());
-        assert_eq!(adapters.len(), 5);
+        assert_eq!(adapters.len(), 6);
     }
 }

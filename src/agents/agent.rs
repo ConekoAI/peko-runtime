@@ -341,6 +341,28 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
     ) -> Result<Self> {
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+        Self::new_with_session_manager_resolver_and_core(
+            config,
+            session_manager,
+            llm_resolver,
+            extension_core,
+        )
+        .await
+    }
+
+    /// Create a new agent with an existing session manager, optional resolver,
+    /// and a custom `ExtensionCore`.
+    ///
+    /// This is the internal constructor used by the router agent so its
+    /// principal-scoped tools and adapted `Agent` tool live on a dedicated
+    /// core rather than the global one.
+    pub async fn new_with_session_manager_resolver_and_core(
+        config: AgentConfig,
+        session_manager: Arc<TokioRwLock<SessionManager>>,
+        llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+        extension_core: Arc<ExtensionCore>,
+    ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
 
         // Load or create identity
@@ -352,23 +374,11 @@ impl Agent {
         //
         // Soft-fail: the agent_dir may not exist yet for a freshly-
         // spawned subagent whose in-memory config hasn't been written.
-        // `backfill_agent_did` itself returns
-        // "Failed to persist agent_did ... (in-memory identity will
-        // still work this session)" so the next production-path
-        // `Agent::new()` call will retry the write. Hard-failing here
-        // would break unit tests that build agents against a tempdir
-        // without pre-creating `agents/<name>/`.
         let config_path = PathResolver::new().agent_config(&config.name);
         if let Err(e) = Self::backfill_agent_did(&config_path, &config, &identity.did).await {
             warn!("Could not backfill agent_did into config: {}", e);
         }
 
-        // Issue #28 review #4: surface DID rotation loudly. If the
-        // resolved identity's DID differs from the one the config
-        // claimed (a "broken state" recovery in load_or_create_identity
-        // — identity file was missing, backup restore, etc.), log both
-        // old and new so the operator can correlate audit / grant
-        // breakage to the event.
         if let Some(ref old_did) = config.agent_did {
             if old_did != &identity.did {
                 warn!(
@@ -405,9 +415,6 @@ impl Agent {
             "agent:{}:cli:default",
             config.name
         )));
-
-        // Global ExtensionCore is always initialized in main.rs before command dispatch.
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         let agent = Self {
             config,

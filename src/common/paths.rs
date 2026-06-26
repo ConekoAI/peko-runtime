@@ -362,6 +362,14 @@ impl PathResolver {
         self.data_dir.join("skills")
     }
 
+    /// Get the Agents directory
+    ///
+    /// Path: `{data_dir}/agents`
+    #[must_use]
+    pub fn agents_dir(&self) -> PathBuf {
+        self.data_dir.join("agents")
+    }
+
     // ====================================================================================
     // Data Directory Paths (sessions, workspaces, runtime data)
     // ====================================================================================

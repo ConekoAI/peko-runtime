@@ -30,14 +30,25 @@ pub fn load_agent_prompt(path: &PathBuf) -> anyhow::Result<AgentPrompt> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "agent".to_string());
 
-    let (frontmatter, body) = parse_frontmatter(&content);
+    Ok(parse_agent_prompt(file_stem, path.clone(), &content))
+}
 
-    Ok(AgentPrompt {
-        name: frontmatter.name.clone().unwrap_or(file_stem),
-        path: path.clone(),
+/// Parse an agent prompt from its raw Markdown content.
+pub fn parse_agent_prompt(
+    name: impl Into<String>,
+    path: impl Into<PathBuf>,
+    content: &str,
+) -> AgentPrompt {
+    let name = name.into();
+    let path = path.into();
+    let (frontmatter, body) = parse_frontmatter(content);
+
+    AgentPrompt {
+        name: frontmatter.name.clone().unwrap_or(name),
+        path,
         frontmatter,
         body,
-    })
+    }
 }
 
 fn parse_frontmatter(content: &str) -> (AgentPromptFrontmatter, String) {

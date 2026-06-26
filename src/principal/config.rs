@@ -48,6 +48,8 @@ pub struct PrincipalCapabilities {
     pub skills: Vec<String>,
     #[serde(default)]
     pub mcps: Vec<String>,
+    #[serde(default)]
+    pub agents: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -200,6 +202,11 @@ pub enum RoutingStrategy {
     Extension { extension_id: String },
 }
 
+/// Reference to an agent prompt loaded from a Markdown file.
+///
+/// Deprecated: agents are now discovered as `AGENT.md` extensions under
+/// `<principal_workspace>/agents/<name>/AGENT.md`. This struct is kept only
+/// for backward compatibility with existing `principal.toml` files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalAgentRef {
     /// Local name for this agent prompt inside the Principal.

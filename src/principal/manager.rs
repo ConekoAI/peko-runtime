@@ -14,6 +14,7 @@ use super::{
     AgentPrompt, Principal, PrincipalId,
 };
 use crate::auth::Subject;
+use crate::extensions::agent::AgentAdapter;
 use crate::providers::LlmResolver;
 
 /// Error type for PrincipalManager operations.
@@ -93,12 +94,12 @@ impl PrincipalManager {
         tokio::fs::write(workspace_path.join("principal.toml"), toml).await?;
 
         let memory = self.memory_factory.create(&id, &workspace_path).await;
-        let router = self.router_factory.create(&config, memory.clone()).await;
+        let router = self
+            .router_factory
+            .create(&config, memory.clone(), &workspace_path, self.resolver.clone())
+            .await;
 
-        let agent_prompts = load_agent_prompts(&workspace_path,
-            &config.agents,
-        )
-        .await?;
+        let agent_prompts = discover_agent_prompts(&workspace_path, &config.agents).await?;
 
         let principal = Arc::new(Principal {
             id: id.clone(),
@@ -151,8 +152,11 @@ impl PrincipalManager {
 
         let id = PrincipalId::generate();
         let memory = self.memory_factory.create(&id, &workspace_path).await;
-        let router = self.router_factory.create(&config, memory.clone()).await;
-        let agent_prompts = load_agent_prompts(&workspace_path, &config.agents).await?;
+        let router = self
+            .router_factory
+            .create(&config, memory.clone(), &workspace_path, self.resolver.clone())
+            .await;
+        let agent_prompts = discover_agent_prompts(&workspace_path, &config.agents).await?;
 
         let principal = Arc::new(Principal {
             id: id.clone(),
@@ -239,7 +243,7 @@ impl PrincipalManager {
             .values()
             .map(|p| super::router::AgentPromptSummary {
                 name: p.name.clone(),
-                role: crate::principal::config::AgentRole::Default,
+                role: parse_agent_role(p.frontmatter.role.as_deref()),
                 description: p.frontmatter.description.clone(),
             })
             .collect();
@@ -376,12 +380,27 @@ impl PrincipalResponse {
     }
 }
 
-async fn load_agent_prompts(
+async fn discover_agent_prompts(
     workspace_path: &Path,
     refs: &[super::config::PrincipalAgentRef],
 ) -> Result<HashMap<String, AgentPrompt>, PrincipalManagerError> {
     let mut prompts = HashMap::new();
+
+    // 1. Discover AGENT.md extensions under <workspace>/agents/
+    let agents_dir = workspace_path.join("agents");
+    let adapter = AgentAdapter::new();
+    let discovered = adapter.discover_agents(&agents_dir);
+    for d in discovered {
+        let prompt = load_agent_prompt(&d.file_path)
+            .map_err(|e| PrincipalManagerError::Config(format!("{}: {e}", d.manifest.name)))?;
+        prompts.insert(d.manifest.name.clone(), prompt);
+    }
+
+    // 2. Legacy fallback: merge any config.agents entries not yet discovered.
     for r in refs {
+        if prompts.contains_key(&r.name) {
+            continue;
+        }
         let path = if r.prompt.is_absolute() {
             r.prompt.clone()
         } else {
@@ -391,7 +410,16 @@ async fn load_agent_prompts(
             .map_err(|e| PrincipalManagerError::Config(format!("{}: {e}", r.name)))?;
         prompts.insert(r.name.clone(), prompt);
     }
+
     Ok(prompts)
+}
+
+fn parse_agent_role(role: Option<&str>) -> super::config::AgentRole {
+    match role.unwrap_or("default").to_lowercase().as_str() {
+        "router" => super::config::AgentRole::Router,
+        "specialist" => super::config::AgentRole::Specialist,
+        _ => super::config::AgentRole::Default,
+    }
 }
 
 #[cfg(test)]
