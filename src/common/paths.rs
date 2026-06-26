@@ -234,6 +234,54 @@ impl PathResolver {
         self.config_dir.join("mcp.toml")
     }
 
+    /// Get the principals configuration directory
+    ///
+    /// Path: `{config_dir}/principals`
+    #[must_use]
+    pub fn principals_root_dir(&self) -> PathBuf {
+        self.config_dir.join("principals")
+    }
+
+    /// Get a specific principal's configuration directory
+    ///
+    /// Path: `{config_dir}/principals/{principal}`
+    #[must_use]
+    pub fn principal_dir(&self, principal: &str) -> PathBuf {
+        self.principals_root_dir().join(principal)
+    }
+
+    /// Get the path to a principal's config file
+    ///
+    /// Path: `{config_dir}/principals/{principal}/principal.toml`
+    #[must_use]
+    pub fn principal_config(&self, principal: &str) -> PathBuf {
+        self.principal_dir(principal).join("principal.toml")
+    }
+
+    /// Get the path to a principal's agent prompts directory
+    ///
+    /// Path: `{config_dir}/principals/{principal}/agents`
+    #[must_use]
+    pub fn principal_agents_dir(&self, principal: &str) -> PathBuf {
+        self.principal_dir(principal).join("agents")
+    }
+
+    /// Get a principal's memory directory
+    ///
+    /// Path: `{data_dir}/principals/{principal}/memory`
+    #[must_use]
+    pub fn principal_memory_dir(&self, principal: &str) -> PathBuf {
+        self.data_dir.join("principals").join(principal).join("memory")
+    }
+
+    /// Get a principal's sessions directory
+    ///
+    /// Path: `{data_dir}/principals/{principal}/memory/sessions`
+    #[must_use]
+    pub fn principal_sessions_dir(&self, principal: &str) -> PathBuf {
+        self.principal_memory_dir(principal).join("sessions")
+    }
+
     /// Get the runtime directory
     ///
     /// Path: `{config_dir}/runtime`

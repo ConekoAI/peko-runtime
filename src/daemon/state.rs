@@ -18,9 +18,14 @@ use crate::common::services::{
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
+use crate::principal::{
+    factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
+    memory::{DefaultPrincipalMemory, PrincipalMemory},
+    PrincipalManager,
+};
 use crate::registry::{load_from_workspace, RegistryConfig};
 use crate::session::InboxRegistry;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::{broadcast, RwLock};
@@ -66,6 +71,9 @@ pub struct AppState {
 
     /// Stateless agent execution service
     agent_service: Arc<StatelessAgentService>,
+
+    /// Principal manager (AI Principal container lifecycle)
+    principal_manager: Arc<PrincipalManager>,
 
     /// Agent service (unified for CLI and API)
     agent_mgmt_service: Arc<AgentService>,
@@ -194,6 +202,7 @@ impl std::fmt::Debug for AppState {
             .field("config", &self.config)
             .field("config_service", &"<ConfigAuthorityImpl>")
             .field("agent_service", &"<StatelessAgentService>")
+            .field("principal_manager", &"<PrincipalManager>")
             .field("agent_mgmt_service", &"<AgentService>")
             .field("team_service", &"<TeamManagementService>")
             .field("tool_runtime", &"<ToolRuntime>")
@@ -399,6 +408,38 @@ impl AppState {
         }
         let resolver = Arc::new(resolver_builder);
 
+        // Initialize the PrincipalManager and load any existing principals.
+        let principal_manager = {
+            let root = path_resolver.principals_root_dir();
+            let _ = std::fs::create_dir_all(&root);
+            let manager = PrincipalManager::new(
+                root.clone(),
+                Arc::new(DaemonPrincipalMemoryFactory {
+                    data_dir: data_dir.clone(),
+                }),
+                Arc::new(DefaultPrincipalRouterFactory),
+            )
+            .with_resolver(resolver.clone());
+
+            if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let config_path = path.join("principal.toml");
+                        if config_path.exists() {
+                            if let Err(e) = manager.load(&config_path).await {
+                                tracing::warn!(
+                                    "Failed to load principal from {}: {e}",
+                                    config_path.display()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Arc::new(manager)
+        };
+
         let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
             StatelessAgentService::new_with_resolver(
@@ -598,6 +639,7 @@ impl AppState {
             observability: Arc::new(Observability::new("api")),
             config_service,
             agent_service,
+            principal_manager,
             agent_mgmt_service,
             lifecycle,
             session_service,
@@ -750,6 +792,12 @@ impl AppState {
     #[must_use]
     pub fn agent_service(&self) -> &Arc<StatelessAgentService> {
         &self.agent_service
+    }
+
+    /// Get the principal manager
+    #[must_use]
+    pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        &self.principal_manager
     }
 
     /// Get the lifecycle manager
@@ -1274,6 +1322,31 @@ impl TunnelHealth {
             Self::Disconnected { last_error, .. } => last_error.as_deref(),
             Self::Degraded { last_error, .. } => Some(last_error.as_str()),
         }
+    }
+}
+
+/// Memory factory that places Principal memory under the data directory,
+/// outside the config directory where `principal.toml` lives.
+struct DaemonPrincipalMemoryFactory {
+    data_dir: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl PrincipalMemoryFactory for DaemonPrincipalMemoryFactory {
+    async fn create(
+        &self,
+        _principal_id: &crate::principal::PrincipalId,
+        workspace_path: &Path,
+    ) -> Arc<dyn PrincipalMemory> {
+        let name = workspace_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let memory_dir = self.data_dir.join("principals").join(name).join("memory");
+        let _ = tokio::fs::create_dir_all(&memory_dir).await;
+        let memory = DefaultPrincipalMemory::new(memory_dir);
+        let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
+        Arc::new(memory)
     }
 }
 

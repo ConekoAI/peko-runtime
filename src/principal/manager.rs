@@ -6,12 +6,15 @@ use tokio::sync::RwLock;
 
 use super::{
     agent_prompt::load_agent_prompt,
+    agent_runner::{new_session_id, run_agent_prompt},
     config::PrincipalConfig,
     factory::{PrincipalMemoryFactory, PrincipalRouterFactory},
+    memory::SessionArtifact,
     router::{ChannelContext, RouteDecision, RouterContext, RouterError},
     AgentPrompt, Principal, PrincipalId,
 };
 use crate::auth::Subject;
+use crate::providers::LlmResolver;
 
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +42,7 @@ pub struct PrincipalManager {
     workspace_root: PathBuf,
     memory_factory: Arc<dyn PrincipalMemoryFactory>,
     router_factory: Arc<dyn PrincipalRouterFactory>,
+    resolver: Option<Arc<LlmResolver>>,
 }
 
 impl PrincipalManager {
@@ -53,7 +57,13 @@ impl PrincipalManager {
             workspace_root,
             memory_factory,
             router_factory,
+            resolver: None,
         }
+    }
+
+    pub fn with_resolver(mut self, resolver: Arc<LlmResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     /// Create a new Principal from config and load its agent prompts.
@@ -85,6 +95,60 @@ impl PrincipalManager {
             &config.agents,
         )
         .await?;
+
+        let principal = Arc::new(Principal {
+            id: id.clone(),
+            config,
+            workspace_path,
+            memory,
+            router,
+            agent_prompts,
+        });
+
+        self.principals
+            .write()
+            .await
+            .insert(id.clone(), principal.clone());
+        self.principals_by_name.write().await.insert(name, id);
+
+        Ok(principal)
+    }
+
+    /// Load an existing Principal from a `principal.toml` on disk.
+    ///
+    /// The parent directory of `config_path` becomes the Principal's
+    /// workspace. The caller is responsible for ensuring the directory
+    /// and agent prompt files exist.
+    pub async fn load(
+        &self,
+        config_path: &Path,
+    ) -> Result<Arc<Principal>, PrincipalManagerError> {
+        let config_str = tokio::fs::read_to_string(config_path)
+            .await
+            .map_err(PrincipalManagerError::Io)?;
+        let config: PrincipalConfig = toml::from_str(&config_str)
+            .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
+
+        let name = config.name.clone();
+        {
+            let by_name = self.principals_by_name.read().await;
+            if let Some(id) = by_name.get(&name) {
+                return self
+                    .get(id.clone())
+                    .await
+                    .ok_or(PrincipalManagerError::NotFound(name));
+            }
+        }
+
+        let workspace_path = config_path
+            .parent()
+            .ok_or_else(|| PrincipalManagerError::Config("invalid config path".to_string()))?
+            .to_path_buf();
+
+        let id = PrincipalId::generate();
+        let memory = self.memory_factory.create(&id, &workspace_path).await;
+        let router = self.router_factory.create(&config, memory.clone()).await;
+        let agent_prompts = load_agent_prompts(&workspace_path, &config.agents).await?;
 
         let principal = Arc::new(Principal {
             id: id.clone(),
@@ -164,7 +228,7 @@ impl PrincipalManager {
         let ctx = RouterContext {
             principal_id: principal.id.clone(),
             principal_name: principal.config.name.clone(),
-            peer,
+            peer: peer.clone(),
             message,
             channel: _channel,
             routing: principal.config.routing.clone(),
@@ -189,13 +253,79 @@ impl PrincipalManager {
         match decision {
             RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
             RouteDecision::Defer { reason } => Ok(PrincipalResponse::deferred(reason)),
-            _ => {
-                // Phase 1: execution is not yet implemented.
-                Ok(PrincipalResponse::text(
-                    "[Phase 1] Routing decision accepted; execution not yet wired.".to_string(),
-                ))
+            RouteDecision::Continue {
+                target_agent,
+                input_message,
+                resume_session_id,
+                ..
+            } => {
+                self.execute_agent_decision(
+                    principal,
+                    peer,
+                    target_agent,
+                    input_message,
+                    resume_session_id,
+                )
+                .await
+            }
+            RouteDecision::Spawn {
+                target_agent,
+                input_message,
+                ..
+            } => {
+                self.execute_agent_decision(principal, peer, target_agent, input_message, None)
+                    .await
             }
         }
+    }
+
+    async fn execute_agent_decision(
+        &self,
+        principal: Arc<Principal>,
+        peer: Subject,
+        target_agent: String,
+        input_message: String,
+        resume_session_id: Option<String>,
+    ) -> Result<PrincipalResponse, PrincipalManagerError> {
+        let prompt = principal
+            .agent_prompt(&target_agent)
+            .ok_or_else(|| {
+                PrincipalManagerError::InvalidDecision(format!(
+                    "agent prompt '{target_agent}' disappeared after routing"
+                ))
+            })?;
+
+        let session_id = resume_session_id.unwrap_or_else(new_session_id);
+        let sessions_dir = principal.memory.sessions_dir();
+        let capabilities = principal.capabilities().clone();
+
+        let response_text = run_agent_prompt(
+            prompt,
+            &capabilities,
+            peer.clone(),
+            input_message,
+            session_id.clone(),
+            sessions_dir,
+            self.resolver.clone(),
+        )
+        .await
+        .map_err(|e| {
+            PrincipalManagerError::RouterError(RouterError::AgentFailed(e.to_string()))
+        })?;
+
+        // Record the session artifact so future routing can resume it.
+        let artifact = SessionArtifact {
+            session_id,
+            peer,
+            title: Some(target_agent),
+            updated_at: chrono::Utc::now(),
+            summary: Some(response_text.clone()),
+        };
+        if let Err(e) = principal.memory.record_session(artifact).await {
+            tracing::warn!("failed to record principal session artifact: {e}");
+        }
+
+        Ok(PrincipalResponse::text(response_text))
     }
 }
 

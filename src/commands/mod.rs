@@ -20,6 +20,7 @@ pub mod cron;
 pub mod daemon;
 pub mod ext;
 pub mod orchestration;
+pub mod principal;
 pub mod provider;
 pub mod registry;
 pub mod runtime;
@@ -94,6 +95,10 @@ pub struct Cli {
 /// Top-level commands
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Principal management commands (AI Principal container)
+    #[command(subcommand)]
+    Principal(principal::PrincipalCommands),
+
     /// Agent management commands
     #[command(subcommand)]
     Agent(agent::AgentCommands),
@@ -313,6 +318,42 @@ impl GlobalPaths {
     #[must_use]
     pub fn agent_dir(&self, agent: &str) -> PathBuf {
         self.resolver.agent_dir(agent)
+    }
+
+    /// Get the principals configuration directory
+    #[must_use]
+    pub fn principals_root_dir(&self) -> PathBuf {
+        self.resolver.principals_root_dir()
+    }
+
+    /// Get a specific principal's directory
+    #[must_use]
+    pub fn principal_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_dir(principal)
+    }
+
+    /// Get principal config file path
+    #[must_use]
+    pub fn principal_config(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_config(principal)
+    }
+
+    /// Get principal agent prompts directory
+    #[must_use]
+    pub fn principal_agents_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_agents_dir(principal)
+    }
+
+    /// Get principal memory directory
+    #[must_use]
+    pub fn principal_memory_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_memory_dir(principal)
+    }
+
+    /// Get principal sessions directory
+    #[must_use]
+    pub fn principal_sessions_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_sessions_dir(principal)
     }
 
     /// Get agent config file path
