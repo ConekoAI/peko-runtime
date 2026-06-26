@@ -172,6 +172,9 @@ pub mod auth;
 /// Canonical actor type (ADR-041).
 pub mod subject;
 
+/// Principal container entity (ADR-041).
+pub mod principal;
+
 // ============================================================================
 // Infrastructure
 // ============================================================================
