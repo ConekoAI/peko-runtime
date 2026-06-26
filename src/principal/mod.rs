@@ -8,12 +8,12 @@ pub mod router;
 pub mod routers;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
-pub use agent_runner::{build_agent_config, run_agent_prompt};
+pub use agent_runner::build_agent_config;
 pub use config::{
     AgentRole, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalAgentRef,
     PrincipalCapabilities, PrincipalConfig, PrincipalDID, PrincipalGovernanceConfig,
     PrincipalIdentityConfig, PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
-    RoutingStrategy, TtlPolicy,
+    TtlPolicy,
 };
 pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,

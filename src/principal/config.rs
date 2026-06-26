@@ -143,11 +143,10 @@ pub enum ArtifactKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalRoutingConfig {
-    #[serde(default = "default_routing_strategy")]
-    pub strategy: RoutingStrategy,
-
-    /// Default agent for `builtin:default` and as a fallback for routers.
-    pub default_agent: String,
+    /// Optional path to a custom supervisor agent prompt Markdown file.
+    /// If omitted, the runtime uses the built-in supervisor prompt.
+    #[serde(default)]
+    pub supervisor_prompt: Option<PathBuf>,
 
     #[serde(default = "default_context_window_messages")]
     pub context_window_messages: usize,
@@ -162,17 +161,12 @@ pub struct PrincipalRoutingConfig {
 impl Default for PrincipalRoutingConfig {
     fn default() -> Self {
         Self {
-            strategy: default_routing_strategy(),
-            default_agent: "primary".to_string(),
+            supervisor_prompt: None,
             context_window_messages: default_context_window_messages(),
             recall_top_k: default_recall_top_k(),
             max_router_iterations: default_max_router_iterations(),
         }
     }
-}
-
-fn default_routing_strategy() -> RoutingStrategy {
-    RoutingStrategy::BuiltinDefault
 }
 
 fn default_context_window_messages() -> usize {
@@ -185,21 +179,6 @@ fn default_recall_top_k() -> usize {
 
 fn default_max_router_iterations() -> usize {
     5
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value")]
-pub enum RoutingStrategy {
-    #[serde(rename = "builtin:default")]
-    BuiltinDefault,
-    #[serde(rename = "agent:supervisor")]
-    Supervisor {
-        /// Optional path to the supervisor agent prompt Markdown file.
-        /// If omitted, the runtime uses the built-in supervisor prompt.
-        supervisor_prompt: Option<PathBuf>,
-    },
-    #[serde(rename = "extension")]
-    Extension { extension_id: String },
 }
 
 /// Reference to an agent prompt loaded from a Markdown file.
@@ -225,5 +204,5 @@ pub enum AgentRole {
     #[default]
     Default,
     Specialist,
-    Router,
+    Supervisor,
 }

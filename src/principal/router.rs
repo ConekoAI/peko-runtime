@@ -5,45 +5,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum RouteDecision {
-    /// Continue an existing session with the target agent.
-    #[serde(rename = "continue")]
-    Continue {
-        target_agent: String,
-        input_message: String,
-        #[serde(default)]
-        resume_session_id: Option<String>,
-        #[serde(default)]
-        context_injection: Vec<ContextInjection>,
-        #[serde(default)]
-        synthesize: bool,
-        #[serde(default)]
-        async_execution: bool,
-        #[serde(default)]
-        timeout_seconds: Option<u64>,
-    },
-
-    /// Start a fresh session with the target agent.
-    #[serde(rename = "spawn")]
-    Spawn {
-        target_agent: String,
-        input_message: String,
-        #[serde(default)]
-        context_injection: Vec<ContextInjection>,
-        #[serde(default)]
-        synthesize: bool,
-        #[serde(default)]
-        async_execution: bool,
-        #[serde(default)]
-        timeout_seconds: Option<u64>,
-    },
-
     /// Respond directly from the router; no sub-agent invocation.
     #[serde(rename = "respond")]
     Respond { response: String },
-
-    /// Do not respond now; queue for later.
-    #[serde(rename = "defer")]
-    Defer { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,29 +77,12 @@ pub trait PrincipalRouter: Send + Sync {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RouterError {
-    #[error("router decision invalid: {0}")]
+    #[error("routing decision invalid: {0}")]
     InvalidDecision(String),
     #[error("routing agent failed: {0}")]
     AgentFailed(String),
-    #[error("router loop detected")]
+    #[error("routing loop detected")]
     LoopDetected,
     #[error("permission denied: {0}")]
     PermissionDenied(String),
-}
-
-impl RouteDecision {
-    /// Target agent for `continue`/`spawn` decisions, if any.
-    pub fn target_agent(&self) -> Option<&str> {
-        match self {
-            Self::Continue { target_agent, .. } | Self::Spawn { target_agent, .. } => {
-                Some(target_agent.as_str())
-            }
-            _ => None,
-        }
-    }
-
-    /// True if this decision requires executing a target agent.
-    pub fn is_execution(&self) -> bool {
-        matches!(self, Self::Continue { .. } | Self::Spawn { .. })
-    }
 }

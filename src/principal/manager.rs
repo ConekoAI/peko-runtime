@@ -6,10 +6,8 @@ use tokio::sync::RwLock;
 
 use super::{
     agent_prompt::load_agent_prompt,
-    agent_runner::{new_session_id, run_agent_prompt},
     config::PrincipalConfig,
     factory::{PrincipalMemoryFactory, PrincipalRouterFactory},
-    memory::SessionArtifact,
     router::{ChannelContext, RouteDecision, RouterContext, RouterError},
     AgentPrompt, Principal, PrincipalId,
 };
@@ -262,98 +260,18 @@ impl PrincipalManager {
             governance: principal.config.governance.clone(),
         };
 
-        let decision = principal.router.route(ctx).await?;
-
-        // Validate the decision against this principal's registered prompts.
-        if let Some(target) = decision.target_agent() {
-            if principal.agent_prompt(target).is_none() {
-                return Err(PrincipalManagerError::InvalidDecision(format!(
-                    "unknown agent prompt '{target}'"
-                )));
-            }
-        }
-
         // Serialize execution for this Principal so concurrent `receive`
-        // calls do not race on the shared session index.
+        // calls do not race on the shared session index. This is especially
+        // important now that routing runs the supervisor agent, which creates
+        // or resumes a stable peer session.
         let exec_lock = self.execution_lock(principal.id.clone()).await;
         let _exec_guard = exec_lock.lock().await;
 
+        let decision = principal.router.route(ctx).await?;
+
         match decision {
             RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
-            RouteDecision::Defer { reason } => Ok(PrincipalResponse::deferred(reason)),
-            RouteDecision::Continue {
-                target_agent,
-                input_message,
-                resume_session_id,
-                ..
-            } => {
-                self.execute_agent_decision(
-                    principal,
-                    peer,
-                    target_agent,
-                    input_message,
-                    resume_session_id,
-                )
-                .await
-            }
-            RouteDecision::Spawn {
-                target_agent,
-                input_message,
-                ..
-            } => {
-                self.execute_agent_decision(principal, peer, target_agent, input_message, None)
-                    .await
-            }
         }
-    }
-
-    async fn execute_agent_decision(
-        &self,
-        principal: Arc<Principal>,
-        peer: Subject,
-        target_agent: String,
-        input_message: String,
-        resume_session_id: Option<String>,
-    ) -> Result<PrincipalResponse, PrincipalManagerError> {
-        let prompt = principal
-            .agent_prompt(&target_agent)
-            .ok_or_else(|| {
-                PrincipalManagerError::InvalidDecision(format!(
-                    "agent prompt '{target_agent}' disappeared after routing"
-                ))
-            })?;
-
-        let session_id = resume_session_id.unwrap_or_else(new_session_id);
-        let sessions_dir = principal.memory.sessions_dir();
-        let capabilities = principal.capabilities().clone();
-
-        let response_text = run_agent_prompt(
-            prompt,
-            &capabilities,
-            peer.clone(),
-            input_message,
-            session_id.clone(),
-            sessions_dir,
-            self.resolver.clone(),
-        )
-        .await
-        .map_err(|e| {
-            PrincipalManagerError::RouterError(RouterError::AgentFailed(e.to_string()))
-        })?;
-
-        // Record the session artifact so future routing can resume it.
-        let artifact = SessionArtifact {
-            session_id,
-            peer,
-            title: Some(target_agent),
-            updated_at: chrono::Utc::now(),
-            summary: Some(response_text.clone()),
-        };
-        if let Err(e) = principal.memory.record_session(artifact).await {
-            tracing::warn!("failed to record principal session artifact: {e}");
-        }
-
-        Ok(PrincipalResponse::text(response_text))
     }
 }
 
@@ -361,22 +279,11 @@ impl PrincipalManager {
 #[derive(Debug, Clone)]
 pub struct PrincipalResponse {
     pub content: String,
-    pub deferred: bool,
 }
 
 impl PrincipalResponse {
     pub fn text(content: String) -> Self {
-        Self {
-            content,
-            deferred: false,
-        }
-    }
-
-    pub fn deferred(reason: String) -> Self {
-        Self {
-            content: reason,
-            deferred: true,
-        }
+        Self { content }
     }
 }
 
@@ -416,7 +323,7 @@ async fn discover_agent_prompts(
 
 fn parse_agent_role(role: Option<&str>) -> super::config::AgentRole {
     match role.unwrap_or("default").to_lowercase().as_str() {
-        "router" => super::config::AgentRole::Router,
+        "supervisor" => super::config::AgentRole::Supervisor,
         "specialist" => super::config::AgentRole::Specialist,
         _ => super::config::AgentRole::Default,
     }
@@ -501,10 +408,7 @@ mod tests {
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
-            routing: PrincipalRoutingConfig {
-                default_agent: "primary".to_string(),
-                ..Default::default()
-            },
+            routing: PrincipalRoutingConfig::default(),
             capabilities: PrincipalCapabilities::default(),
             agents: vec![PrincipalAgentRef {
                 name: "primary".to_string(),
