@@ -63,7 +63,7 @@ pub enum ServerSocket {
     },
 }
 
-/// Principal address returned by `ServerSocket::recv_from` and threaded through
+/// Subject address returned by `ServerSocket::recv_from` and threaded through
 /// the request handlers so they can `send_to` the response back. Unix domain
 /// datagram sockets return the sender's filesystem path; UDP returns a
 /// `std::net::SocketAddr`. Windows named pipes (ADR-038) are
@@ -708,7 +708,7 @@ impl IpcServer {
         // `&request.resolved_subject()` from inside the arms — compute
         // it here while `request` is still accessible. The borrow
         // released by the time the match starts (NLL).
-        let pre_resolved_subject: Option<crate::auth::principal::Principal> = match &request {
+        let pre_resolved_subject: Option<crate::auth::Subject> = match &request {
             RequestPacket::AgentGrantPermission { .. }
             | RequestPacket::AgentRevokePermission { .. }
             | RequestPacket::TeamGrantPermission { .. }
@@ -722,10 +722,10 @@ impl IpcServer {
         /// `Ok(principal)` on success. Defined inside `handle_request`
         /// to avoid threading `sink` through a free-function signature.
         async fn take_resolved_subject(
-            pre_resolved: Option<&crate::auth::principal::Principal>,
+            pre_resolved: Option<&crate::auth::Subject>,
             _request_id: u64,
             _sink: &dyn crate::ipc::response_sink::ResponseSink,
-        ) -> Result<crate::auth::principal::Principal, ()> {
+        ) -> Result<crate::auth::Subject, ()> {
             let Some(p) = pre_resolved else {
                 unreachable!("take_resolved_subject called for a non-grant/revoke variant")
             };
@@ -1548,7 +1548,7 @@ impl IpcServer {
                 match agent {
                     Some(agent_name) => {
                         let session_peer =
-                            crate::auth::principal::Principal::User("default".to_string());
+                            crate::auth::Subject::User("default".to_string());
                         match service
                             .list_sessions_with_active(&agent_name, team.as_deref(), &session_peer)
                             .await
@@ -1691,7 +1691,7 @@ impl IpcServer {
                     team.as_deref(),
                     &user,
                 );
-                let session_peer = crate::auth::principal::Principal::User(user);
+                let session_peer = crate::auth::Subject::User(user);
                 match manager.switch_session(&session_peer, &session_id).await {
                     Ok(()) => {
                         let response = ResponsePacket::SessionSwitched {

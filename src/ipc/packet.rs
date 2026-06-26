@@ -559,47 +559,47 @@ pub enum RequestPacket {
 
     // ── Ownership and Permission (ADR-039) ──
     //
-    // Grant/revoke packets carry a single `subject: Principal`.
+    // Grant/revoke packets carry a single `subject: Subject`.
     // The legacy `(subject_id, subject_type)` wire fields from ADR-033
     // were dropped in issue #30.
     #[serde(rename = "agent_transfer_owner")]
     AgentTransferOwner {
         request_id: u64,
         agent: String,
-        new_owner: crate::auth::principal::Principal,
+        new_owner: crate::auth::Subject,
     },
     #[serde(rename = "agent_grant_permission")]
     AgentGrantPermission {
         request_id: u64,
         agent: String,
-        subject: crate::auth::principal::Principal,
+        subject: crate::auth::Subject,
         permission: crate::auth::ownership::Permission,
     },
     #[serde(rename = "agent_revoke_permission")]
     AgentRevokePermission {
         request_id: u64,
         agent: String,
-        subject: crate::auth::principal::Principal,
+        subject: crate::auth::Subject,
         permission: crate::auth::ownership::Permission,
     },
     #[serde(rename = "team_transfer_owner")]
     TeamTransferOwner {
         request_id: u64,
         team: String,
-        new_owner: crate::auth::principal::Principal,
+        new_owner: crate::auth::Subject,
     },
     #[serde(rename = "team_grant_permission")]
     TeamGrantPermission {
         request_id: u64,
         team: String,
-        subject: crate::auth::principal::Principal,
+        subject: crate::auth::Subject,
         permission: crate::auth::ownership::Permission,
     },
     #[serde(rename = "team_revoke_permission")]
     TeamRevokePermission {
         request_id: u64,
         team: String,
-        subject: crate::auth::principal::Principal,
+        subject: crate::auth::Subject,
         permission: crate::auth::ownership::Permission,
     },
 }
@@ -691,17 +691,17 @@ impl RequestPacket {
         }
     }
 
-    /// Resolve the canonical `Principal` subject for a grant/revoke
+    /// Resolve the canonical `Subject` subject for a grant/revoke
     /// packet. The legacy ADR-033 wire shape was removed in issue #30;
     /// every grant/revoke packet now carries the subject inline.
     ///
     /// Only the four grant/revoke variants carry a subject. For any
-    /// other variant this method returns `Ok(Principal::User(""))` so
+    /// other variant this method returns `Ok(Subject::User(""))` so
     /// callers can use the same match arm — but in practice the server
     /// only calls this inside the grant/revoke arms.
     #[must_use]
-    pub fn resolved_subject(&self) -> crate::auth::principal::Principal {
-        use crate::auth::principal::Principal;
+    pub fn resolved_subject(&self) -> crate::auth::Subject {
+        use crate::auth::Subject;
 
         match self {
             Self::AgentGrantPermission { subject, .. }
@@ -710,7 +710,7 @@ impl RequestPacket {
             | Self::TeamRevokePermission { subject, .. } => subject.clone(),
             // Non-grant/revoke packets have no subject. Return the
             // default sentinel so the caller doesn't have to special-case.
-            _ => Principal::User(String::new()),
+            _ => Subject::User(String::new()),
         }
     }
 
@@ -2318,7 +2318,7 @@ mod tests {
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: String::new(),
-                    owner: crate::auth::principal::Principal::User(String::new()),
+                    owner: crate::auth::Subject::User(String::new()),
                     permissions: Vec::new(),
                 },
                 agent_count: 0,
@@ -2349,7 +2349,7 @@ mod tests {
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: String::new(),
-                    owner: crate::auth::principal::Principal::User(String::new()),
+                    owner: crate::auth::Subject::User(String::new()),
                     permissions: Vec::new(),
                 },
                 agent_count: 0,
@@ -3779,7 +3779,7 @@ mod tests {
                     description: Some("A new team".to_string()),
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: String::new(),
-                    owner: crate::auth::principal::Principal::User(String::new()),
+                    owner: crate::auth::Subject::User(String::new()),
                     permissions: Vec::new(),
                 },
                 path: std::path::PathBuf::from("/tmp/teams/new-team"),
@@ -3875,7 +3875,7 @@ mod tests {
                     description: None,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     host_runtime_id: String::new(),
-                    owner: crate::auth::principal::Principal::User(String::new()),
+                    owner: crate::auth::Subject::User(String::new()),
                     permissions: Vec::new(),
                 },
                 path: std::path::PathBuf::from("/tmp"),
@@ -4518,7 +4518,7 @@ mod tests {
 
     // -- issue #30: `RequestPacket::resolved_subject` --
 
-    fn grant_pkt(subject: crate::auth::principal::Principal) -> RequestPacket {
+    fn grant_pkt(subject: crate::auth::Subject) -> RequestPacket {
         RequestPacket::AgentGrantPermission {
             request_id: 1,
             agent: "a".into(),
@@ -4531,10 +4531,10 @@ mod tests {
     fn test_resolved_subject_canonical_shape() {
         // The grant carries the subject directly (ADR-039). The
         // resolver just clones it out.
-        let pkt = grant_pkt(crate::auth::principal::Principal::Agent("helper".into()));
+        let pkt = grant_pkt(crate::auth::Subject::Principal("helper".into()));
         assert_eq!(
             pkt.resolved_subject(),
-            crate::auth::principal::Principal::Agent("helper".into())
+            crate::auth::Subject::Principal("helper".into())
         );
     }
 
@@ -4544,45 +4544,45 @@ mod tests {
         let pkt = RequestPacket::TeamGrantPermission {
             request_id: 1,
             team: "t".into(),
-            subject: crate::auth::principal::Principal::Team("eng".into()),
+            subject: crate::auth::Subject::Team("eng".into()),
             permission: crate::auth::ownership::Permission::Chat,
         };
         assert_eq!(
             pkt.resolved_subject(),
-            crate::auth::principal::Principal::Team("eng".into())
+            crate::auth::Subject::Team("eng".into())
         );
 
         // Public revoke via canonical Public.
         let pkt = RequestPacket::AgentRevokePermission {
             request_id: 1,
             agent: "a".into(),
-            subject: crate::auth::principal::Principal::Public,
+            subject: crate::auth::Subject::Public,
             permission: crate::auth::ownership::Permission::Chat,
         };
         assert_eq!(
             pkt.resolved_subject(),
-            crate::auth::principal::Principal::Public
+            crate::auth::Subject::Public
         );
     }
 
     #[test]
     fn test_resolved_subject_non_grant_revoke_returns_sentinel() {
         // Any non-grant/revoke variant must not panic — returns a
-        // sentinel `Principal::User("")` that the caller can ignore.
+        // sentinel `Subject::User("")` that the caller can ignore.
         let pkt = RequestPacket::Ping { request_id: 1 };
         assert_eq!(
             pkt.resolved_subject(),
-            crate::auth::principal::Principal::User(String::new())
+            crate::auth::Subject::User(String::new())
         );
     }
 
     #[test]
     fn test_grant_serialization_carries_subject_inline() {
-        // After issue #30, the grant carries the `Principal` directly —
+        // After issue #30, the grant carries the `Subject` directly —
         // no legacy `subject_id` / `subject_type` fields exist on the
         // wire anymore. The wire must serialize `subject` and not the
         // dropped fields.
-        let pkt = grant_pkt(crate::auth::principal::Principal::Agent("helper".into()));
+        let pkt = grant_pkt(crate::auth::Subject::Principal("helper".into()));
         let json = serde_json::to_string(&pkt).unwrap();
         assert!(
             json.contains("\"subject\""),

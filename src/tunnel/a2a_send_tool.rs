@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::common::types::a2a::{
     A2aMessageRequest as MessageRequest, A2aMessageResponse as MessageResult, AgentMessageService,
 };
@@ -186,7 +186,7 @@ pub struct A2aSendTool {
     /// Optional caller agent name for annotation
     caller_agent: Option<String>,
     /// Optional caller agent DID (issue #28). When set, this is what
-    /// gets projected to `Principal::Agent(...)` on the wire so the
+    /// gets projected to `Subject::Principal(...)` on the wire so the
     /// receiving agent's session is keyed by a stable, runtime-independent
     /// identifier. Falls back to `caller_agent` (the local name) when
     /// unset — this is the legacy behavior and is fine for single-runtime
@@ -223,7 +223,7 @@ impl A2aSendTool {
 
     /// Set the caller agent DID (issue #28). Prefer this over
     /// `with_caller` when registering the tool: the DID is what flows
-    /// through to `Principal::Agent` on the wire, the name is just for
+    /// through to `Subject::Principal` on the wire, the name is just for
     /// the human-readable annotation. `caller` is also set as a
     /// back-compat fallback for the (rare) case where the DID is missing
     /// — see `build_request` for the resolution order.
@@ -262,7 +262,7 @@ impl A2aSendTool {
     }
 
     /// Build the `MessageRequest` for an A2A send, attributing the
-    /// receiving agent's session to `Principal::Agent(caller_agent_id)`
+    /// receiving agent's session to `Subject::Principal(caller_agent_id)`
     /// (issue #24).
     ///
     /// This is split out from `execute` so the validation logic is
@@ -275,8 +275,8 @@ impl A2aSendTool {
     /// cross-kind permission grant path. We refuse instead.
     pub(crate) fn build_request(&self, args: A2aSendArgs) -> Result<MessageRequest> {
         // Issue #24: a2a_send must attribute the receiving agent's
-        // session to a `Principal::Agent(caller_agent_id)`, not
-        // masquerade as a `Principal::User(caller_agent_id)`. The
+        // session to a `Subject::Principal(caller_agent_id)`, not
+        // masquerade as a `Subject::User(caller_agent_id)`. The
         // masquerade was correct before ADR-039 (no Agent principal
         // existed); after ADR-039 it lies to the audit log, breaks
         // cross-kind permission grants, and mis-classifies the
@@ -289,19 +289,19 @@ impl A2aSendTool {
         let caller_agent = validate_caller_agent(self.caller_agent.as_deref())?;
 
         // Issue #28: prefer the caller DID for the wire-side
-        // `Principal::Agent` so cross-runtime references stay
+        // `Subject::Principal` so cross-runtime references stay
         // unambiguous. Fall back to the caller name (legacy) when no
         // DID is set — fine within a single runtime, ambiguous across
         // runtimes by design. The `caller_agent` annotation is always
         // the human-readable name regardless of which one is used.
         //
-        // Review of #34: route through `Principal::agent_wire_id` so
+        // Review of #34: route through `Subject::principal_wire_id` so
         // the DID/name resolution and the empty-string guard live in
         // exactly one place. Previously the a2a_send path had its
         // own `.filter(|d| !d.is_empty())` clause that disagreed
         // subtly with `AgentConfig::wire_agent_id`.
         let wire_caller_id =
-            Principal::agent_wire_id(self.caller_agent_did.as_deref(), caller_agent);
+            Subject::principal_wire_id(self.caller_agent_did.as_deref(), caller_agent);
 
         // Issue #29 (Slice A): normalize the (target_agent, target)
         // pair to a single `TargetSpec` and short-circuit the
@@ -332,7 +332,7 @@ impl A2aSendTool {
 /// of duplicating it (review #3).
 ///
 /// The empty-string check matches the pre-fix behavior; whitespace is
-/// preserved verbatim (a `Principal::Agent("   ")` is a misconfigured
+/// preserved verbatim (a `Subject::Principal("   ")` is a misconfigured
 /// caller, but it's not a missing one — the agent operator will see
 /// it in the audit log immediately).
 pub(crate) fn validate_caller_agent(caller: Option<&str>) -> Result<&str> {
@@ -377,7 +377,7 @@ pub(crate) fn resolve_local_target(target: &TargetSpec) -> Result<&str> {
 /// `caller_agent` must be non-empty; the caller (`A2aSendTool::build_request`)
 /// has already validated this.
 ///
-/// `wire_caller_id` is the value projected into `Principal::Agent` on
+/// `wire_caller_id` is the value projected into `Subject::Principal` on
 /// the wire — typically the agent's DID (issue #28) but can be the name
 /// as a legacy fallback. `caller_agent` is preserved verbatim on
 /// `MessageRequest::caller_agent` for the human-readable annotation.
@@ -397,7 +397,7 @@ fn build_a2a_request(
     caller_agent: &str,
     wire_caller_id: &str,
 ) -> MessageRequest {
-    let caller_principal = Principal::Agent(wire_caller_id.to_string());
+    let caller_principal = Subject::Principal(wire_caller_id.to_string());
     // The `user` field is INTENTIONALLY left as the empty string for
     // a2a_send (issue #24 review #1). Any reader of
     // `MessageRequest::user` for a2a-originated calls must migrate to
@@ -497,7 +497,7 @@ Send a message to another agent and receive its response. This is the primary me
 
 impl A2aSendTool {
     /// Local-runtime dispatch — the pre-#29 path, kept verbatim.
-    /// Issue #24's `Principal::Agent` attribution still applies via
+    /// Issue #24's `Subject::Principal` attribution still applies via
     /// `build_request`.
     async fn execute_local(&self, args: A2aSendArgs) -> Result<serde_json::Value> {
         let request = self.build_request(args)?;
@@ -515,7 +515,7 @@ impl A2aSendTool {
     async fn execute_remote(&self, args: A2aSendArgs) -> Result<serde_json::Value> {
         // Validate caller identity up front. The cross-runtime path
         // requires both a `caller_agent` (for annotation) and a
-        // `caller_agent_did` (for the wire-side `Principal::Agent`
+        // `caller_agent_did` (for the wire-side `Subject::Principal`
         // attribution) — issue #24 + issue #28 together. Without a
         // DID we'd be sending a name-based caller to a remote runtime
         // that has no way to disambiguate it from a local agent of
@@ -540,7 +540,7 @@ impl A2aSendTool {
                     "a2a_send: cross-runtime dispatch requires the caller agent's DID \
                      (issue #28). Construct the tool with \
                      `A2aSendTool::with_caller_did(name, did)` so the target runtime \
-                     can attribute the call under `Principal::Agent(<did>)`.",
+                     can attribute the call under `Subject::Principal(<did>)`.",
                 ));
             }
         };
@@ -801,7 +801,7 @@ async fn resolve_remote_target(
                     runtime_id: runtime_id.clone(),
                     instance_id: String::new(),
                     agent_did: did.clone(),
-                    owner_principal: Principal::Public,
+                    owner_principal: Subject::Public,
                     exposure: ResolvedExposure::Public,
                 });
             }
@@ -1047,7 +1047,7 @@ mod tests {
         );
 
         // Whitespace is NOT empty — preserved verbatim. This is
-        // deliberate: a `Principal::Agent("   ")` is a
+        // deliberate: a `Subject::Principal("   ")` is a
         // misconfigured caller, not a missing one. The agent
         // operator sees it in the audit log immediately rather
         // than being silently coerced to `User("default")`.
@@ -1058,14 +1058,14 @@ mod tests {
     }
 
     /// The pure `build_a2a_request` helper attaches
-    /// `caller_principal = Principal::Agent(caller)` and never
-    /// `Principal::User(caller)`. This is the core fix for issue
+    /// `caller_principal = Subject::Principal(caller)` and never
+    /// `Subject::User(caller)`. This is the core fix for issue
     /// #24 — the receiving agent's session is keyed under
     /// `agent:{caller}`, not `user:{caller}`.
     ///
     /// Review of #34 (non-blocking): `caller_agent` (the
     /// human-readable name) and `wire_caller_id` (the value
-    /// projected to `Principal::Agent`) are intentionally
+    /// projected to `Subject::Principal`) are intentionally
     /// distinct here so the test exercises both the
     /// caller-annotation code path AND the wire-identifier code
     /// path on the same request. Pre-fix, both args were `"helper"`
@@ -1083,15 +1083,15 @@ mod tests {
 
         assert_eq!(
             req.caller_principal,
-            Some(Principal::Agent("did:peko:local:abc123".into())),
-            "caller_principal must be Principal::Agent(<DID>), not a User masquerade"
+            Some(Subject::Principal("did:peko:local:abc123".into())),
+            "caller_principal must be Subject::Principal(<DID>), not a User masquerade"
         );
         // Belt-and-suspenders: confirm we're not falling back to the
         // legacy user path by accident.
         assert_ne!(
             req.caller_principal,
-            Some(Principal::User("helper".into())),
-            "must not masquerade caller_agent as Principal::User (issue #24)"
+            Some(Subject::User("helper".into())),
+            "must not masquerade caller_agent as Subject::User (issue #24)"
         );
         // Issue #24 review #1: `user` must be empty so downstream
         // readers can't accidentally treat the caller as a human user.
@@ -1118,11 +1118,11 @@ mod tests {
 
         assert_eq!(
             req_a.caller_principal,
-            Some(Principal::Agent("caller_a".into()))
+            Some(Subject::Principal("caller_a".into()))
         );
         assert_eq!(
             req_b.caller_principal,
-            Some(Principal::Agent("caller_b".into()))
+            Some(Subject::Principal("caller_b".into()))
         );
         assert_ne!(
             req_a.caller_principal, req_b.caller_principal,
@@ -1132,7 +1132,7 @@ mod tests {
     }
 
     /// Issue #28: when a DID is provided as `wire_caller_id`, the
-    /// `Principal::Agent` on the wire must be the DID (not the local
+    /// `Subject::Principal` on the wire must be the DID (not the local
     /// name) so cross-runtime references are unambiguous. The
     /// `caller_agent` annotation stays as the human-readable name.
     #[test]
@@ -1147,7 +1147,7 @@ mod tests {
         );
         assert_eq!(
             req.caller_principal,
-            Some(Principal::Agent("did:peko:local:abc123".into())),
+            Some(Subject::Principal("did:peko:local:abc123".into())),
             "caller_principal must be the DID when provided (issue #28)"
         );
         assert_eq!(
@@ -1432,7 +1432,7 @@ mod tests {
             runtime_id: "did:key:zTargetRuntime".to_string(),
             instance_id: "inst-target-123".to_string(),
             agent_did: "did:peko:agent:target-keyhash".to_string(),
-            owner_principal: Principal::User("alice".to_string()),
+            owner_principal: Subject::User("alice".to_string()),
             exposure: ResolvedExposure::Public,
         }
     }
@@ -1472,7 +1472,7 @@ mod tests {
 
     /// The cross-runtime path requires a `caller_agent_did` so the
     /// target runtime can attribute the receiving session under
-    /// `Principal::Agent(<caller_did>)` (issue #28). Without a DID,
+    /// `Subject::Principal(<caller_did>)` (issue #28). Without a DID,
     /// `execute_remote` errors rather than dispatching a name-only
     /// attribution that would be ambiguous across runtimes.
     #[tokio::test]

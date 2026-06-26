@@ -57,9 +57,9 @@ pub struct AgentCreateRequest {
     pub force: bool,
     #[serde(default)]
     pub host_runtime_id: Option<String>,
-    /// Owner principal (e.g., `Principal::User("local:{runtime_did}")`).
+    /// Owner principal (e.g., `Subject::User("local:{runtime_did}")`).
     #[serde(default)]
-    pub owner: Option<crate::auth::principal::Principal>,
+    pub owner: Option<crate::auth::Subject>,
 }
 
 impl AgentCreateRequest {

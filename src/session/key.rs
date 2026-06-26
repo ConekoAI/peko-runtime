@@ -253,26 +253,26 @@ pub fn cli_session_key(agent: &str) -> String {
 /// Derive a base session key from agent and peer
 /// Format: agent:{agent}:peer:{type}:{id}
 ///
-/// After ADR-039, `Principal` is an alias for `Principal`. The key format
-/// is **byte-stable** for `Principal::User` and `Principal::Agent` —
-/// these are the only valid session peers (`Principal::is_session_peer`).
-/// For `Principal::Team` and `Principal::Public`, the function falls
+/// After ADR-039, `Subject` is an alias for `Subject`. The key format
+/// is **byte-stable** for `Subject::User` and `Subject::Principal` —
+/// these are the only valid session peers (`Subject::is_session_peer`).
+/// For `Subject::Team` and `Subject::Public`, the function falls
 /// back to `peer:user:default` and logs a warning, so a stray non-peer
 /// principal never produces an orphan key. This is the documented
 /// behavior, not a bug.
 #[must_use]
-pub fn derive_base_session_key(agent: &str, peer: &crate::auth::principal::Principal) -> String {
-    use crate::auth::principal::Principal;
+pub fn derive_base_session_key(agent: &str, peer: &crate::auth::Subject) -> String {
+    use crate::auth::Subject;
     match peer {
-        Principal::User(id) => {
+        Subject::User(id) => {
             format!("agent:{}:peer:user:{}", agent, sanitize_key_component(id))
         }
-        Principal::Agent(id) => {
+        Subject::Principal(id) => {
             format!("agent:{}:peer:agent:{}", agent, sanitize_key_component(id))
         }
-        Principal::Team(_) | Principal::Public => {
+        Subject::Team(_) | Subject::Public => {
             tracing::warn!(
-                "derive_base_session_key called with non-peer Principal {peer}; \
+                "derive_base_session_key called with non-peer Subject {peer}; \
                  falling back to peer:user:default (ADR-039)"
             );
             format!("agent:{}:peer:user:default", agent)
@@ -471,13 +471,13 @@ mod tests {
 
     #[test]
     fn test_derive_base_session_key() {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
 
-        let user_peer = Principal::User("alice".to_string());
+        let user_peer = Subject::User("alice".to_string());
         let key = derive_base_session_key("testagent", &user_peer);
         assert_eq!(key, "agent:testagent:peer:user:alice");
 
-        let agent_peer = Principal::Agent("helper".to_string());
+        let agent_peer = Subject::Principal("helper".to_string());
         let key = derive_base_session_key("testagent", &agent_peer);
         assert_eq!(key, "agent:testagent:peer:agent:helper");
     }

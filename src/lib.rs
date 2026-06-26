@@ -169,6 +169,9 @@ pub mod identity;
 /// Authentication and authorization (ADR-034)
 pub mod auth;
 
+/// Canonical actor type (ADR-041).
+pub mod subject;
+
 // ============================================================================
 // Infrastructure
 // ============================================================================

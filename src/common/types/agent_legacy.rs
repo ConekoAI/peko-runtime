@@ -237,7 +237,7 @@ mod tests {
     /// Issue #28: `wire_agent_id` must return the DID when present
     /// (cross-runtime wire) and the local name as a fallback
     /// (single-runtime back-compat). The empty-DID guard is
-    /// inherited from `Principal::agent_wire_id` (review of #34
+    /// inherited from `Subject::principal_wire_id` (review of #34
     /// concern #3) and is pinned here so the shim doesn't drift.
     #[test]
     fn test_wire_agent_id_prefers_did_over_name() {
@@ -427,7 +427,7 @@ mod tests {
 
     /// v3-cleanup (commit 2.1): the legacy `[provider]` and
     /// `owner_id` fields are gone entirely. The agent TOML carries
-    /// only soft hints and ownership metadata (`owner` as a `Principal`).
+    /// only soft hints and ownership metadata (`owner` as a `Subject`).
     #[test]
     fn test_v3_round_trip_has_no_legacy_fields() {
         let mut config = AgentConfig::default();
@@ -440,10 +440,10 @@ mod tests {
             !toml.contains("[provider]"),
             "[provider] table must NOT be serialized in v3 (PR #43 cleanup): {toml}"
         );
-        // `owner` serializes as a `Principal` inline table (ADR-039).
+        // `owner` serializes as a `Subject` inline table (ADR-039).
         assert!(
             toml.contains("owner"),
-            "owner field must be serialized as a Principal in v3 (PR #43 cleanup): {toml}"
+            "owner field must be serialized as a Subject in v3 (PR #43 cleanup): {toml}"
         );
         // Soft hints round-trip.
         assert!(toml.contains("preferred_provider_id = \"openai\""));

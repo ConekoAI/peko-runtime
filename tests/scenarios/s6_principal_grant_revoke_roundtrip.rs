@@ -1,5 +1,5 @@
 //! End-to-end scenario for grant/revoke round-trips with inline
-//! `Principal` subjects (ADR-039, post issue #30).
+//! `Subject` subjects (ADR-039, post issue #30).
 //!
 //! # Scope
 //!
@@ -7,18 +7,18 @@
 //! `tests/scenarios/s6_revoke_principal_collapse_e2e.rs`, which tested
 //! the legacy `(subject_id, subject_type)` wire shape from issue #25.
 //! That legacy shape was dropped in issue #30; grant/revoke packets now
-//! carry a single `subject: Principal`. This scenario exercises the
+//! carry a single `subject: Subject`. This scenario exercises the
 //! same persistence path (IPC → service layer → on-disk config) with
 //! the new inline shape.
 //!
 //! # What this test asserts
 //!
-//! 1. **Agent grant/revoke round-trip** — `Principal::Agent("peer-agent")`
+//! 1. **Agent grant/revoke round-trip** — `Subject::Principal("peer-agent")`
 //!    granted to an agent, then revoked via IPC; on-disk `config.toml`
 //!    shows the grant is gone.
 //! 2. **Team grant/revoke round-trip** — same with
-//!    `Principal::Team("eng")` on a team.
-//! 3. **Public grant/revoke round-trip** — `Principal::Public` granted
+//!    `Subject::Team("eng")` on a team.
+//! 3. **Public grant/revoke round-trip** — `Subject::Public` granted
 //!    to an agent, then revoked.
 //! 4. **Idempotent revoke** — revoking a principal that was never
 //!    granted returns success and leaves the permissions list empty.
@@ -36,7 +36,7 @@ use serial_test::serial;
 use std::time::Duration;
 
 use peko::auth::ownership::Permission;
-use peko::auth::principal::Principal;
+use peko::auth::Subject;
 use peko::ipc::packet::{RequestPacket, ResponsePacket};
 use peko::ipc::DaemonClient;
 
@@ -54,7 +54,7 @@ fn write_agent_config(cli: &PekoCli, agent_name: &str) {
     let toml = format!(
         r#"version = "3.0"
 name = "{agent_name}"
-description = "s6 inline-Principal grant/revoke e2e"
+description = "s6 inline-Subject grant/revoke e2e"
 auto_accept_trusted = false
 
 preferred_provider_id = "mock-llm"
@@ -80,7 +80,7 @@ fn write_team(cli: &PekoCli, team_name: &str) {
     std::fs::create_dir_all(&team_dir).expect("create team dir");
     let toml = format!(
         r#"name = "{team_name}"
-description = "s6 inline-Principal grant/revoke e2e team"
+description = "s6 inline-Subject grant/revoke e2e team"
 created_at = "2026-01-01T00:00:00Z"
 host_runtime_id = ""
 owner = {{ kind = "user", id = "local" }}
@@ -122,7 +122,7 @@ fn read_team_permissions(cli: &PekoCli, team_name: &str) -> Vec<Permission> {
 }
 
 /// Issue a grant packet and assert it succeeds.
-async fn grant_agent(client: &DaemonClient, agent: &str, subject: Principal, perm: Permission) {
+async fn grant_agent(client: &DaemonClient, agent: &str, subject: Subject, perm: Permission) {
     let packet = RequestPacket::AgentGrantPermission {
         request_id: 1,
         agent: agent.into(),
@@ -140,7 +140,7 @@ async fn grant_agent(client: &DaemonClient, agent: &str, subject: Principal, per
 }
 
 /// Issue a revoke packet and assert it succeeds.
-async fn revoke_agent(client: &DaemonClient, agent: &str, subject: Principal, perm: Permission) {
+async fn revoke_agent(client: &DaemonClient, agent: &str, subject: Subject, perm: Permission) {
     let packet = RequestPacket::AgentRevokePermission {
         request_id: 2,
         agent: agent.into(),
@@ -158,7 +158,7 @@ async fn revoke_agent(client: &DaemonClient, agent: &str, subject: Principal, pe
 }
 
 /// Issue a team grant packet and assert it succeeds.
-async fn grant_team(client: &DaemonClient, team: &str, subject: Principal, perm: Permission) {
+async fn grant_team(client: &DaemonClient, team: &str, subject: Subject, perm: Permission) {
     let packet = RequestPacket::TeamGrantPermission {
         request_id: 1,
         team: team.into(),
@@ -176,7 +176,7 @@ async fn grant_team(client: &DaemonClient, team: &str, subject: Principal, perm:
 }
 
 /// Issue a team revoke packet and assert it succeeds.
-async fn revoke_team(client: &DaemonClient, team: &str, subject: Principal, perm: Permission) {
+async fn revoke_team(client: &DaemonClient, team: &str, subject: Subject, perm: Permission) {
     let packet = RequestPacket::TeamRevokePermission {
         request_id: 2,
         team: team.into(),
@@ -197,8 +197,8 @@ async fn revoke_team(client: &DaemonClient, team: &str, subject: Principal, perm
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Agent grant/revoke round-trip with a non-User `Principal::Agent`
-/// subject. Pre-#25 the revoke handler hardcoded `Principal::User(...)`,
+/// Agent grant/revoke round-trip with a non-User `Subject::Principal`
+/// subject. Pre-#25 the revoke handler hardcoded `Subject::User(...)`,
 /// so this would have been a silent no-op.
 #[tokio::test]
 #[serial]
@@ -211,7 +211,7 @@ async fn s6_agent_subject_round_trips_through_ipc() {
     let _guard = DaemonGuard::spawn(&cli);
     let client = DaemonClient::connect().await.expect("connect daemon");
 
-    let subject = Principal::Agent("peer-agent".into());
+    let subject = Subject::Principal("peer-agent".into());
 
     grant_agent(&client, agent, subject.clone(), Permission::Chat).await;
     let perms_after_grant = read_agent_permissions(&cli, agent);
@@ -229,7 +229,7 @@ async fn s6_agent_subject_round_trips_through_ipc() {
     );
 }
 
-/// Team grant/revoke round-trip with a `Principal::Team` subject.
+/// Team grant/revoke round-trip with a `Subject::Team` subject.
 #[tokio::test]
 #[serial]
 async fn s6_team_subject_round_trips_through_ipc() {
@@ -241,7 +241,7 @@ async fn s6_team_subject_round_trips_through_ipc() {
     let _guard = DaemonGuard::spawn(&cli);
     let client = DaemonClient::connect().await.expect("connect daemon");
 
-    let subject = Principal::Team("eng".into());
+    let subject = Subject::Team("eng".into());
 
     grant_team(&client, team, subject.clone(), Permission::Chat).await;
     let perms_after_grant = read_team_permissions(&cli, team);
@@ -259,7 +259,7 @@ async fn s6_team_subject_round_trips_through_ipc() {
     );
 }
 
-/// Public grant/revoke round-trip with `Principal::Public` on an agent.
+/// Public grant/revoke round-trip with `Subject::Public` on an agent.
 #[tokio::test]
 #[serial]
 async fn s6_public_subject_round_trips_through_ipc() {
@@ -271,7 +271,7 @@ async fn s6_public_subject_round_trips_through_ipc() {
     let _guard = DaemonGuard::spawn(&cli);
     let client = DaemonClient::connect().await.expect("connect daemon");
 
-    grant_agent(&client, agent, Principal::Public, Permission::ViewSettings).await;
+    grant_agent(&client, agent, Subject::Public, Permission::ViewSettings).await;
     let perms_after_grant = read_agent_permissions(&cli, agent);
     assert_eq!(
         perms_after_grant,
@@ -279,7 +279,7 @@ async fn s6_public_subject_round_trips_through_ipc() {
         "Public grant should be persisted"
     );
 
-    revoke_agent(&client, agent, Principal::Public, Permission::ViewSettings).await;
+    revoke_agent(&client, agent, Subject::Public, Permission::ViewSettings).await;
     let perms_after_revoke = read_agent_permissions(&cli, agent);
     assert!(
         perms_after_revoke.is_empty(),
@@ -303,7 +303,7 @@ async fn s6_revoke_missing_grant_is_idempotent() {
     revoke_agent(
         &client,
         agent,
-        Principal::Agent("never-granted".into()),
+        Subject::Principal("never-granted".into()),
         Permission::Chat,
     )
     .await;

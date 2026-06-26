@@ -222,7 +222,7 @@ pub enum TunnelMessage {
     /// target's existing tunnel. The target verifies the caller's
     /// `caller_runtime_id` against the hub's allowlist (defense in
     /// depth) before attributing the receiving agent's session to
-    /// `Principal::Agent(caller_agent_did)` and dispatching.
+    /// `Subject::Principal(caller_agent_did)` and dispatching.
     ///
     /// Slice A only defines and round-trips the wire shape. Slice B
     /// adds the outbound signer (`PekoHubCredential::sign(...)` against
@@ -244,7 +244,7 @@ pub enum TunnelMessage {
         caller_runtime_id: String,
         /// The caller agent's stable DID (issue #28 form:
         /// `did:peko:agent:<keyhash>`). Projected to
-        /// `Principal::Agent(caller_agent_did)` on the target side
+        /// `Subject::Principal(caller_agent_did)` on the target side
         /// for session attribution, permission grant lookup, and the
         /// `AuditEvent.caller` field (issue #26).
         caller_agent_did: String,

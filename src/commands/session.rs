@@ -4,7 +4,7 @@
 //! `SessionService` and `SessionCompactor`. Presentation lives in
 //! `session::presentation`.
 
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::session_service::{HistoryQuery, SessionService};
@@ -138,7 +138,7 @@ pub async fn handle_session(
                         Some(team),
                         paths.user(),
                     );
-                    let peer = Principal::User(paths.user().to_string());
+                    let peer = Subject::User(paths.user().to_string());
                     let active_session_id =
                         manager.get_active_session_id(&peer).await.ok().flatten();
 
@@ -467,7 +467,7 @@ async fn switch_session(
         .await
         .map_err(|_| anyhow::anyhow!("Session '{session_id}' not found for agent '{agent}'"))?;
 
-    let peer = Principal::User(user.to_string());
+    let peer = Subject::User(user.to_string());
     manager.switch_session(&peer, session_id).await?;
 
     if json {

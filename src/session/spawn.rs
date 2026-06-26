@@ -6,7 +6,7 @@
 
 use super::overlay::SessionOverlay;
 use super::types::{OverlayType, SpawnCleanupPolicy};
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ pub struct SpawnOverlay {
     /// Parent base session key
     pub base_session_key: String,
     /// The peer this overlay belongs to (may be synthetic for isolated spawns)
-    pub peer: Principal,
+    pub peer: Subject,
     /// Parent session key (for result routing)
     pub parent_session_key: String,
     /// Task description
@@ -122,7 +122,7 @@ impl SpawnOverlay {
     /// * `isolated` - If true, doesn't inherit parent's conversation context
     pub fn new(
         base_session_key: impl Into<String>,
-        peer: Principal,
+        peer: Subject,
         parent_session_key: impl Into<String>,
         task: impl Into<String>,
         isolated: bool,
@@ -152,7 +152,7 @@ impl SpawnOverlay {
     pub fn with_id(
         spawn_id: impl Into<String>,
         base_session_key: impl Into<String>,
-        peer: Principal,
+        peer: Subject,
         parent_session_key: impl Into<String>,
         task: impl Into<String>,
         isolated: bool,
@@ -274,7 +274,7 @@ impl SpawnOverlay {
     pub fn from_stored(
         spawn_id: impl Into<String>,
         base_session_key: impl Into<String>,
-        peer: Principal,
+        peer: Subject,
         parent_session_key: impl Into<String>,
         task_description: impl Into<String>,
         created_at: DateTime<Utc>,
@@ -352,7 +352,7 @@ impl SessionOverlay for SpawnOverlay {
         &self.base_session_key
     }
 
-    fn peer(&self) -> &Principal {
+    fn peer(&self) -> &Subject {
         &self.peer
     }
 
@@ -366,7 +366,7 @@ impl SessionOverlay for SpawnOverlay {
 pub struct SpawnOverlayData {
     pub spawn_id: String,
     pub base_session_key: String,
-    pub peer: Principal,
+    pub peer: Subject,
     pub parent_session_key: String,
     pub task_description: String,
     pub created_at: DateTime<Utc>,
@@ -433,7 +433,7 @@ mod tests {
     fn test_spawn_overlay_new() {
         let overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "agent:test:peer:user:alice:overlay:cli:default",
             "Research async patterns",
             false,
@@ -455,7 +455,7 @@ mod tests {
     fn test_spawn_overlay_with_options() {
         let overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             true, // isolated
@@ -476,7 +476,7 @@ mod tests {
     fn test_spawn_status_lifecycle() {
         let mut overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,
@@ -504,7 +504,7 @@ mod tests {
     fn test_spawn_mark_failed() {
         let mut overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,
@@ -526,7 +526,7 @@ mod tests {
     fn test_spawn_mark_cancelled() {
         let mut overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,
@@ -543,7 +543,7 @@ mod tests {
     fn test_spawn_duration() {
         let mut overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,
@@ -566,7 +566,7 @@ mod tests {
         // Delete policy + terminal = cleanup
         let mut overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,
@@ -581,7 +581,7 @@ mod tests {
         // Keep policy = never cleanup
         let overlay2 = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,
@@ -598,7 +598,7 @@ mod tests {
     fn test_spawn_overlay_trait_impl() {
         let overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,
@@ -614,7 +614,7 @@ mod tests {
     fn test_spawn_to_json() {
         let overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             true,
@@ -635,7 +635,7 @@ mod tests {
     fn test_spawn_serialization() {
         let overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,
@@ -678,7 +678,7 @@ mod tests {
     fn test_elapsed() {
         let overlay = SpawnOverlay::new(
             "agent:test:peer:user:alice",
-            Principal::User("alice".to_string()),
+            Subject::User("alice".to_string()),
             "parent_key",
             "Test task",
             false,

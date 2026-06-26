@@ -10,7 +10,7 @@
 //! `tunnel::a2a_message_types` and `tunnel::a2a_send_tool` keep thin re-exports
 //! for backward compatibility with existing callers.
 
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::common::types::message::TokenUsage;
 
 /// Tool call information in response
@@ -58,7 +58,7 @@ pub struct A2aMessageRequest {
     /// Resolved caller principal for session peer attribution
     /// (issue #24). When set, this takes precedence over
     /// [`A2aMessageRequest::user`] when constructing the session peer.
-    pub caller_principal: Option<Principal>,
+    pub caller_principal: Option<Subject>,
 }
 
 impl A2aMessageRequest {
@@ -149,7 +149,7 @@ impl A2aMessageRequest {
     /// on the receiving agent so the session is keyed under
     /// `agent:{caller}` (not `user:{caller}`).
     #[must_use]
-    pub fn with_caller_principal(mut self, principal: Principal) -> Self {
+    pub fn with_caller_principal(mut self, principal: Subject) -> Self {
         self.caller_principal = Some(principal);
         self
     }
@@ -157,7 +157,7 @@ impl A2aMessageRequest {
     /// Set the resolved caller principal from an Option, rejecting
     /// principals that cannot be a session peer (Team / Public).
     #[must_use]
-    pub fn with_caller_principal_opt(mut self, principal: Option<Principal>) -> Self {
+    pub fn with_caller_principal_opt(mut self, principal: Option<Subject>) -> Self {
         self.caller_principal = principal.filter(|p| p.is_session_peer());
         self
     }

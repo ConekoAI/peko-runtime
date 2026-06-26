@@ -344,7 +344,7 @@ impl AgenticLoop {
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
     ) -> Result<AgenticResult> {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
         use crate::common::paths::PathResolver;
         use crate::session::manager::SessionManager;
 
@@ -361,8 +361,8 @@ impl AgenticLoop {
         let peer = self
             .caller_id
             .as_deref()
-            .map(|c| Principal::User(c.to_string()))
-            .unwrap_or_else(|| Principal::User("local".to_string()));
+            .map(|c| Subject::User(c.to_string()))
+            .unwrap_or_else(|| Subject::User("local".to_string()));
         let session = session_manager
             .get_or_create_base(self.agent.name(), &peer)
             .await?;
@@ -996,7 +996,7 @@ mod tests {
     use super::*;
     use crate::agents::agent_config::AgentConfig;
     use crate::agents::Agent;
-    use crate::auth::principal::Principal;
+    use crate::auth::Subject;
     use crate::common::types::provider::{ProviderConfig, ProviderType};
     use crate::extensions::framework::core::{global_core, init_global_core, ExtensionCore};
     use crate::providers::{AnyAdapter, MockAdapter, Provider};
@@ -1036,7 +1036,7 @@ mod tests {
         let mut manager = SessionManager::new()
             .with_sessions_dir_internal(temp_dir.join("data").join("sessions"))
             .with_agent_name(agent_name);
-        let peer = Principal::User("default".to_string());
+        let peer = Subject::User("default".to_string());
         let handle = manager
             .create_session(
                 agent_name,

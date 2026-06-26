@@ -192,14 +192,14 @@ impl Default for SessionCompactor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::principal::Principal;
+    use crate::auth::Subject;
     use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_dry_run_empty_session() {
         let temp = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp.path().to_path_buf());
-        let peer = Principal::User("default".to_string());
+        let peer = Subject::User("default".to_string());
         let session_id = "test-dry-run";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -218,7 +218,7 @@ mod tests {
     async fn test_compact_truncates_messages() {
         let temp = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp.path().to_path_buf());
-        let peer = Principal::User("default".to_string());
+        let peer = Subject::User("default".to_string());
         let session_id = "test-compact";
 
         storage.create_session(session_id, None).await.unwrap();

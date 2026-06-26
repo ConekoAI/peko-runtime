@@ -172,7 +172,7 @@ fn write_agent_with_perm(
     // The `[[permissions]]` block is at the top level of the agent
     // config; the runtime's `AgentConfig::permissions` deserializer
     // reads it directly. After ADR-039, `subject` and `granted_by`
-    // are `Principal` (kind/id structs). See
+    // are `Subject` (kind/id structs). See
     // [`src/auth/principal.rs`](../src/auth/principal.rs) for the
     // schema.
     let perm_block = match permitted_user_id {

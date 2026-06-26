@@ -1025,8 +1025,8 @@ impl AgentService {
     pub async fn transfer_agent_owner(
         &self,
         name: &str,
-        new_owner: crate::auth::principal::Principal,
-        caller: &crate::auth::principal::Principal,
+        new_owner: crate::auth::Subject,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);
@@ -1053,7 +1053,7 @@ impl AgentService {
         &self,
         name: &str,
         grant: crate::auth::ownership::PermissionGrant,
-        caller: &crate::auth::principal::Principal,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);
@@ -1085,9 +1085,9 @@ impl AgentService {
     pub async fn revoke_agent_permission(
         &self,
         name: &str,
-        subject: &crate::auth::principal::Principal,
+        subject: &crate::auth::Subject,
         permission: &crate::auth::ownership::Permission,
-        caller: &crate::auth::principal::Principal,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);

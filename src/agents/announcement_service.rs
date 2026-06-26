@@ -228,8 +228,8 @@ async fn resolve_parent_handle(
     let parsed = crate::session::key::parse_session_key_v2(parent_key)?;
 
     let peer = match parsed.peer_type.as_str() {
-        "user" => crate::auth::principal::Principal::User(parsed.peer_id),
-        "agent" => crate::auth::principal::Principal::Agent(parsed.peer_id),
+        "user" => crate::auth::Subject::User(parsed.peer_id),
+        "agent" => crate::auth::Subject::Principal(parsed.peer_id),
         _ => return None,
     };
 

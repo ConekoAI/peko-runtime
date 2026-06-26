@@ -9,7 +9,7 @@
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::agents::subagent_types::SubagentStatus;
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
@@ -106,7 +106,7 @@ async fn test_e2e_spawn_and_complete() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
     // Create a parent session context
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -166,7 +166,7 @@ async fn test_spawn_depth_limit() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
     // Create a parent session context
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -257,7 +257,7 @@ async fn test_spawn_depth_limit() {
     // stays 0 and the spawn is allowed.
     let other_parent_key = crate::session::key::derive_base_session_key(
         &agent_name,
-        &Principal::User("charlie".to_string()),
+        &Subject::User("charlie".to_string()),
     );
     let result = executor
         .spawn_and_execute(
@@ -281,7 +281,7 @@ async fn test_spawn_depth_limit() {
 async fn test_isolated_vs_shared_session() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -374,7 +374,7 @@ async fn test_isolated_vs_shared_session() {
 async fn test_result_format_in_registry() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -426,7 +426,7 @@ async fn test_result_format_in_registry() {
 async fn test_list_runs_functionality() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -513,7 +513,7 @@ async fn test_list_runs_functionality() {
 async fn test_cleanup_policy_tracking() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -592,7 +592,7 @@ async fn test_cleanup_policy_tracking() {
 async fn test_parent_child_relationship() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -651,8 +651,8 @@ async fn test_runs_by_parent_filtering() {
     // `route(&peer2, ...)` produces the *same* parent key. To get two
     // distinct parents we derive the base session key directly from the
     // peer, which is exactly what `create_session` and the registry do.
-    let peer1 = Principal::User("alice".to_string());
-    let peer2 = Principal::User("bob".to_string());
+    let peer1 = Subject::User("alice".to_string());
+    let peer2 = Subject::User("bob".to_string());
     let parent_key1 = crate::session::key::derive_base_session_key(&agent_name, &peer1);
     let parent_key2 = crate::session::key::derive_base_session_key(&agent_name, &peer2);
     assert_ne!(
@@ -712,7 +712,7 @@ async fn test_runs_by_parent_filtering() {
 async fn test_concurrent_runs_counting() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -798,7 +798,7 @@ async fn test_concurrent_runs_counting() {
 async fn test_executor_get_status() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -852,7 +852,7 @@ async fn test_executor_get_status() {
 async fn test_executor_get_run() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -958,7 +958,7 @@ async fn test_executor_cancel() {
 async fn test_max_concurrent_limit() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Principal::User("alice".to_string());
+    let peer = Subject::User("alice".to_string());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would

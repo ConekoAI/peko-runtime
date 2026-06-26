@@ -362,8 +362,7 @@ pub async fn handle_agent_transfer(
     json: bool,
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
-    let new_owner_principal =
-        crate::auth::principal::principal_from_string_with_default_user(&new_owner);
+    let new_owner_principal = crate::auth::subject_from_string_with_default_user(&new_owner);
     let packet = crate::ipc::RequestPacket::AgentTransferOwner {
         request_id: 1,
         agent: name.clone(),
@@ -400,9 +399,9 @@ pub async fn handle_agent_permit(
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
     let principal = if subject == "public" {
-        crate::auth::principal::Principal::Public
+        crate::auth::Subject::Public
     } else {
-        crate::auth::principal::Principal::User(subject.clone())
+        crate::auth::Subject::User(subject.clone())
     };
     let permission = parse_permission(&permission)?;
     let packet = crate::ipc::RequestPacket::AgentGrantPermission {
@@ -444,9 +443,9 @@ pub async fn handle_agent_revoke(
 ) -> anyhow::Result<()> {
     let client = crate::ipc::DaemonClient::connect().await?;
     let principal = if subject == "public" {
-        crate::auth::principal::Principal::Public
+        crate::auth::Subject::Public
     } else {
-        crate::auth::principal::Principal::User(subject.clone())
+        crate::auth::Subject::User(subject.clone())
     };
     let permission = parse_permission(&permission)?;
     let packet = crate::ipc::RequestPacket::AgentRevokePermission {

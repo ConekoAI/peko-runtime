@@ -15,7 +15,7 @@
 //! - `index`: Unified session index (sessions.json + peers.json) management
 //! - `key`: Session key derivation for scoping
 //! - `jsonl`: JSONL storage format (Peko format)
-//! - `types`: Core types (Principal, ChannelType, OverlayType)
+//! - `types`: Core types (Subject, ChannelType, OverlayType)
 //! - `overlay`: Session overlay trait and ChannelOverlay
 //! - `spawn`: Spawn overlay for subagent isolation
 //! - `base`: Base session (shared conversation context)
@@ -103,11 +103,11 @@ pub use subagent_key::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::principal::Principal;
+    use crate::auth::Subject;
 
     #[test]
     fn test_peer_re_export() {
-        let peer = Principal::User("test".to_string());
+        let peer = Subject::User("test".to_string());
         assert_eq!(peer.subject_id(), "test");
     }
 
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_derive_base_session_key_re_export() {
-        let peer = Principal::User("alice".to_string());
+        let peer = Subject::User("alice".to_string());
         let key = derive_base_session_key("test", &peer);
         assert!(key.contains("peer:user:alice"));
     }

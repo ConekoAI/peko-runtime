@@ -2,7 +2,7 @@
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::types::agent_legacy::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
@@ -152,7 +152,7 @@ impl Agent {
         // Add a2a_send tool for agent-to-agent messaging (ADR-023)
         if let Some(agent_service) = self.extension_core.services().agent_service() {
             // Issue #28: prefer `agent_did` for the wire-side
-            // `Principal::Agent`; fall back to the name for legacy agents
+            // `Subject::Principal`; fall back to the name for legacy agents
             // that predate the per-agent persistent keypair.
             //
             // Issue #29 (Slice B+C): also pull the cross-runtime a2a
@@ -1170,7 +1170,7 @@ impl Agent {
     /// and `handle` for all session operations.
     pub async fn resolve_session(
         &self,
-        peer: &Principal,
+        peer: &Subject,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
@@ -1184,7 +1184,7 @@ impl Agent {
     ///
     /// Convenience method for CLI and simple channels.
     pub async fn resolve_default_session(&self) -> Result<ResolvedSession> {
-        let peer = Principal::User("default".to_string());
+        let peer = Subject::User("default".to_string());
         self.resolve_session(&peer, ChannelType::Cli, "default")
             .await
     }
@@ -1198,7 +1198,7 @@ impl Agent {
     /// and the operations handle (`handle`).
     pub async fn spawn_session(
         &self,
-        peer: &Principal,
+        peer: &Subject,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
@@ -1220,7 +1220,7 @@ impl Agent {
     // Session management commands (CLI integration)
 
     /// Create a new session (/new command)
-    pub async fn session_new(&self, peer: &Principal) -> Result<String> {
+    pub async fn session_new(&self, peer: &Subject) -> Result<String> {
         use crate::session::manager::SessionCreateOptions;
         let mut manager = self.session_manager.write().await;
         let options = SessionCreateOptions::new().with_trigger("user");
@@ -1233,7 +1233,7 @@ impl Agent {
     }
 
     /// Branch current session (/branch command)
-    pub async fn session_branch(&self, peer: &Principal, label: Option<String>) -> Result<String> {
+    pub async fn session_branch(&self, peer: &Subject, label: Option<String>) -> Result<String> {
         let mut manager = self.session_manager.write().await;
         let session_id = manager.branch_session(peer, label).await?;
         info!("Branched session {} from peer {:?}", session_id, peer);
@@ -1241,7 +1241,7 @@ impl Agent {
     }
 
     /// Switch to a different session (/switch command)
-    pub async fn session_switch(&self, peer: &Principal, session_id: &str) -> Result<()> {
+    pub async fn session_switch(&self, peer: &Subject, session_id: &str) -> Result<()> {
         let mut manager = self.session_manager.write().await;
         manager.switch_session(peer, session_id).await?;
         info!("Switched peer {:?} to session {}", peer, session_id);
@@ -1251,7 +1251,7 @@ impl Agent {
     /// List all sessions for a peer (/sessions command)
     pub async fn session_list(
         &self,
-        peer: &Principal,
+        peer: &Subject,
     ) -> Result<Vec<crate::session::SessionEntry>> {
         let mut manager = self.session_manager.write().await;
         let sessions = manager.list_sessions_for_peer(peer).await?;
@@ -1300,7 +1300,7 @@ impl Agent {
     /// Returns (false, _) if not a command (should be processed as normal message)
     pub async fn process_session_command(
         &self,
-        peer: &Principal,
+        peer: &Subject,
         command: &str,
     ) -> Result<(bool, String)> {
         let parts: Vec<&str> = command.split_whitespace().collect();
@@ -1736,7 +1736,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
         use crate::session::types::ChannelType;
 
@@ -1756,7 +1756,7 @@ mod tests {
         let agent = Agent::new(config).await.unwrap();
 
         // Session manager should be able to route to sessions
-        let peer = Principal::User("test_user".to_string());
+        let peer = Subject::User("test_user".to_string());
         let resolved = agent
             .resolve_session(&peer, ChannelType::Cli, "default")
             .await;
@@ -1769,7 +1769,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
         use crate::session::types::ChannelType;
 
@@ -1787,7 +1787,7 @@ mod tests {
         };
 
         let agent = Agent::new(config).await.unwrap();
-        let peer = Principal::User("alice".to_string());
+        let peer = Subject::User("alice".to_string());
 
         let resolved = agent
             .resolve_session(&peer, ChannelType::Cli, "default")
@@ -1801,7 +1801,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_tool_session() {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
 
         // Force the encrypted-file identity fallback — see
@@ -1818,7 +1818,7 @@ mod tests {
         };
 
         let agent = Agent::new(config).await.unwrap();
-        let peer = Principal::User("bob".to_string());
+        let peer = Subject::User("bob".to_string());
 
         // Create a parent session first
         let parent_resolved = agent

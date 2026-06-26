@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 /// This is a fixed UUIDv4 that acts as the namespace for UUIDv5 generation.
 const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6");
 
-use crate::auth::Principal;
+use crate::auth::Subject;
 use crate::common::types::a2a::A2aMessageRequest;
 use crate::daemon::state::AppState;
 use crate::engine::AgenticEvent;
@@ -272,13 +272,13 @@ impl TunnelDispatcher {
     /// so that re-announcing an instance clears PekoHub's `allowedUsers`
     /// when the last user grant is revoked.
     ///
-    /// TODO(#16): re-derive from `Principal::User` and surface
-    /// `Principal::Agent` subjects to the hub once PekoHub accepts the
+    /// TODO(#16): re-derive from `Subject::User` and surface
+    /// `Subject::Principal` subjects to the hub once PekoHub accepts the
     /// agent principal (post #11).
     fn compute_allowed_user_ids(
         config: &crate::agents::agent_config::AgentConfig,
     ) -> Option<Vec<String>> {
-        use crate::auth::principal::{Principal, SubjectKind};
+        use crate::auth::{Subject, SubjectKind};
         let ids: Vec<String> = config
             .permissions
             .iter()
@@ -286,7 +286,7 @@ impl TunnelDispatcher {
                 g.permission.covers(&Permission::Chat) && g.subject.kind() == SubjectKind::User
             })
             .filter_map(|g| match &g.subject {
-                Principal::User(id) => {
+                Subject::User(id) => {
                     // Strip `user:` prefix if present; hub expects bare user IDs
                     Some(
                         id.strip_prefix("user:")
@@ -491,7 +491,7 @@ impl TunnelDispatcher {
             // signature against the `caller_runtime_id` they claim,
             // look up the local agent by `target_agent_did`,
             // attribute the dispatch under
-            // `Principal::Agent(caller_agent_did)`, run it, and send
+            // `Subject::Principal(caller_agent_did)`, run it, and send
             // back an `AgentToAgentResponse` carrying the
             // `A2aSendResult` payload.
             TunnelMessage::AgentToAgentRequest {
@@ -597,12 +597,12 @@ impl TunnelDispatcher {
         // event stream is attributable to a real user, not the literal
         // `"web"` placeholder that this dispatcher used to stamp on every
         // request (issue #17). The caller is projected to a typed
-        // `Principal` (issue #26) so the audit wire shape is `{kind, id}`
+        // `Subject` (issue #26) so the audit wire shape is `{kind, id}`
         // and per-user / per-agent queries can index on the kind tag.
-        // `Principal::from_bridge_user` centralizes the `user:` prefix
+        // `Subject::from_bridge_user` centralizes the `user:` prefix
         // and the `"anonymous" → Public` mapping next to the type's
         // other constructors (issue #26 review feedback).
-        let caller_principal = Principal::from_bridge_user(&caller_user);
+        let caller_principal = Subject::from_bridge_user(&caller_user);
         self.app_state
             .observability()
             .audit_with_caller(
@@ -1059,7 +1059,7 @@ impl TunnelDispatcher {
     ///    defense in depth against a hub bug or a stale forwarder.
     /// 3. Look up the local agent by `target_agent_did`.
     /// 4. Build a `MessageRequest` with `caller_principal =
-    ///    Principal::Agent(caller_agent_did)` (issue #24 + #28).
+    ///    Subject::Principal(caller_agent_did)` (issue #24 + #28).
     /// 5. Dispatch via `StatelessAgentService`.
     /// 6. Serialize the result to `A2aSendResult` and send back via
     ///    the same tunnel as an `AgentToAgentResponse`.
@@ -1162,7 +1162,7 @@ impl TunnelDispatcher {
         a2a_audit::emit_a2a_received(&received_event);
 
         // 4 + 5. Build the request and dispatch.
-        let caller_principal = Principal::Agent(caller_agent_did.clone());
+        let caller_principal = Subject::Principal(caller_agent_did.clone());
         let request = A2aMessageRequest::new(&local_agent_name, message.clone())
             .with_session_opt(session_id.clone())
             .with_team_opt(team.clone())
