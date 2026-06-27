@@ -138,7 +138,11 @@ src/
   - `tests/cli_send.rs` — `peko send` with mock LLM
   - `tests/cli_session.rs` — `peko session` with mock LLM
   - `tests/cli_basics.rs` — Offline agent/team/config commands
-  - `tests/cli_extensions.rs`, `tests/cli_extensions_l3.rs`, `tests/cli_compaction.rs` — Extension system and session compaction
+  - `tests/cli_extensions.rs`, `tests/cli_extensions_l3.rs` — Extension system
+  - `tests/cli_cron.rs` — `peko cron` create/list/delete (mock LLM)
+  - `tests/cli_subagent.rs` — `peko subagent` + `agent_spawn` (mock LLM)
+  - `tests/cli_tools.rs` — Built-in tools (Bash, Read, Write, …) (mock LLM)
+  - `tests/cli_providers.rs` — Real-LLM tier (minimax, kimi)
 - **Scenario tests** live in `tests/scenarios/` (registered explicitly in `Cargo.toml`):
   - `s1_local_agent_with_extensions` through `s6_principal_grant_revoke_roundtrip`
   - `tunnel_security` — Tunnel protocol security checks

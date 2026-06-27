@@ -15,23 +15,24 @@
         test-lib test-subagent \
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
-        test-cli-subagent test-cli-tools test-cli-compaction \
-        test-cli-extensions test-cli-providers test-cli-a2a \
-        test-scenarios-s1 test-scenarios-s2 test-scenarios-s3 test-scenarios-s4 \
+        test-cli-subagent test-cli-tools \
+        test-cli-extensions test-cli-providers \
+        test-scenarios-s1 test-scenarios-s2 test-scenarios-s4 \
         test-scenarios-s5 test-scenarios-s6 \
         test-mock-llm-sequence \
         ci
 
 # All integration test crates (live in tests/*.rs and tests/scenarios/*.rs).
+# Kept in sync with `cargo metadata` (targets of kind = ["test"]); the
+# Principal migration dropped the cli_compaction / cli_a2a /
+# s3_agent_registry_roundtrip suites.
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
-                     cli_tools cli_compaction cli_extensions cli_providers \
-                     cli_a2a \
+                     cli_tools cli_extensions cli_providers \
                      s1_local_agent_with_extensions \
                      s2_extension_registry_roundtrip \
-                     s3_agent_registry_roundtrip \
                      s4_publish_running_agent_with_permission \
                      s5_live_permit_propagation \
                      s6_principal_grant_revoke_roundtrip \
@@ -65,12 +66,11 @@ help:
 	@echo "    test-pekohub / test-tunnel / test-tunnel-e2e"
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
-	@echo "    test-cli-subagent / test-cli-tools / test-cli-compaction"
+	@echo "    test-cli-subagent / test-cli-tools"
 	@echo "    test-cli-extensions"
 	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY / KIMI_API_KEY)"
-	@echo "    test-cli-a2a (real-LLM tier — needs MINIMAX_API_KEY; 2-LLM-call flows)"
 	@echo "    test-scenarios-s1 (Phase D — local agent + ext lifecycle, mock-LLM)"
-	@echo "    test-scenarios-s2 / s3 / s4 (Phase D — registry/tunnel scenarios, mock-LLM)"
+	@echo "    test-scenarios-s2 / s4 (Phase D — registry/tunnel scenarios, mock-LLM)"
 	@echo "    test-mock-llm-sequence"
 
 # ── Tier 0: Fast unit tests ──────────────────────────────────────────────
@@ -197,19 +197,6 @@ test-cli-tools: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_tools -- --include-ignored
 
-# `peko session compact` slice. `peko session compact` is
-# truncation-based (see src/compaction/cli.rs:75), so the compaction
-# itself doesn't need a real LLM — only the multi-turn setup phase
-# does, and that's scripted via mock-LLM tool_call sequences. All
-# `#[serial]`. The 2 PS scripts that this slice replaced
-# (`compaction_cli.ps1` and `compaction_extension.ps1`) were
-# deleted in Phase E. The deferred `compaction_auto.ps1` and
-# `compaction_all.ps1` (meta-runner) stay in place — see
-# docs/integration/TESTING.md §7.
-test-cli-compaction: docker-up
-	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test cli_compaction -- --include-ignored
-
 # `peko ext install/list/info/enable/disable/uninstall` slice. All
 # `#[ignore]` (daemon required) but NOT `#[serial]` — none of these
 # tests drive the mock LLM. The L1 (lifecycle-only) PS scripts
@@ -244,17 +231,6 @@ test-cli-providers: docker-up
 	    MINIMAX_API_KEY=$(MINIMAX_API_KEY) KIMI_API_KEY=$(KIMI_API_KEY) \
 	    cargo test --test cli_providers -- --include-ignored
 
-# `peko send` with the `a2a_send` built-in tool (agent-to-agent
-# messaging). Real-LLM tier — each test is a 2-LLM-call flow
-# (delegator → a2a_send → worker). Tests early-return if
-# `MINIMAX_API_KEY` is unset, so a bare `cargo test` still passes.
-# Total wall clock is ~3-5 min for all 13 tests. See
-# docs/integration/TESTING.md §7 for the a2a migration context.
-test-cli-a2a: docker-up
-	@env -u MOCK_LLM_URL PEKOHUB_URL=$(PEKOHUB_URL) \
-	    MINIMAX_API_KEY=$(MINIMAX_API_KEY) \
-	    cargo test --test cli_a2a -- --include-ignored
-
 # ── Phase D — user-journey scenarios (mock-LLM tier) ──────────────────────
 # The D1-D4 scenarios live under tests/scenarios/. Each `sN_*.rs` file
 # is its own integration test binary (registered via [[test]] entries
@@ -276,19 +252,6 @@ test-scenarios-s1: docker-up
 test-scenarios-s2: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test s2_extension_registry_roundtrip -- --include-ignored
-
-# D3: Agent registry round-trip with auto-pulled extensions (flow 5).
-# 4 tests, all `#[ignore]` for the PekoHub + mock LLM + daemon stack.
-# Author's agent declares `extensions = [calculator-skill]` in its
-# on-disk manifest; collaborator's `peko agent pull` auto-pulls the
-# declared ext via `ensure_extensions_for_agent` (see
-# `src/commands/agent/handlers.rs:1020-1027`). One test fabricates a
-# bad ext `.source` to assert the contract that an ext-pull failure
-# is captured in `extensions.failed` but does not block the agent
-# import.
-test-scenarios-s3: docker-up
-	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test s3_agent_registry_roundtrip -- --include-ignored
 
 # D4: Publish running agent behind tunnel with permission (flow 6).
 # Lands in D4's PR.
