@@ -12,11 +12,24 @@
 //!
 //! - Cover only the L1 lifecycle (no LLM in the path) — `cli_extensions.rs`.
 //! - Drive the LLM path but only against **built-in** tools
-//!   (`Read`, `cron`, `Agent`, `a2a_send`, `Write`) —
-//!   `cli_tools.rs`, `cli_cron.rs`, `cli_subagent.rs`, `cli_a2a.rs`,
-//!   `cli_compaction.rs`.
+//!   (`Read`, `cron`, `Agent`, `Write`) — `cli_tools.rs`, `cli_cron.rs`,
+//!   `cli_subagent.rs`, `cli_compaction.rs`.
 //! - Call `invoke_hook` directly with no LLM in the path —
 //!   `tests/extension_packaging.rs:245-311`.
+//!
+//! ## Principal-era translation
+//!
+//! After the "Principal as the single actor" migration, the standalone
+//! agent CLI is gone — the Principal is the sole user-facing actor. The
+//! chat surface is `peko send <principal>`, and the dispatcher's
+//! `is_tool_enabled` whitelist is now the union of the supervisor's
+//! fixed base set plus the Principal's `principal.toml [capabilities]`
+//! entries (see `src/principal/agent_runner.rs::run_supervisor_prompt`).
+//!
+//! Capability grants are persisted to `principal.toml` rather than to
+//! an agent's `config.toml`, and the CLI does not expose a live
+//! capability-grant command — tests must patch the config directly
+//! (mirrors the pattern in `tests/common/agent.rs::create_mock_principal_with_tools`).
 //!
 //! ## Tool name shapes
 //!
@@ -33,13 +46,12 @@
 //!   `universal:calculator_simple`; see `UniversalAdapter::register_tool`
 //!   at `src/extensions/universal/adapter.rs:182-188`.
 //!
-//! The agent config's `[extensions] enabled` list must contain the
-//! **owner canonical ID** (not the tool name), so
-//! `is_tool_enabled` (`src/extension/core/tool_registry.rs:56-68`) can
-//! resolve the owner and match the whitelist. A bare `calculator_simple`
-//! in the whitelist would NOT match the canonical `universal:calculator_simple`
-//! and the dispatcher would block the call with
-//! `"Tool 'X' is currently disabled..."`.
+//! Under the Principal model, MCP extensions must be granted via
+//! `principal.toml [capabilities] mcps`, while universal tools are
+//! granted via `[capabilities] tools` (with the `universal:` canonical
+//! id). The dispatcher's `is_tool_enabled`
+//! (`src/extensions/framework/core/tool_registry.rs:61-...`) resolves
+//! the tool's owner and matches it against the appropriate bucket.
 //!
 //! ## Gating
 //!
@@ -67,7 +79,7 @@
 mod common;
 use common::{configure_mock, run_with_timeout, DaemonGuard, PekoCli};
 use serial_test::serial;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -81,7 +93,7 @@ fn mock_llm_url() -> Option<String> {
     let url = std::env::var("MOCK_LLM_URL").ok()?;
     if url.is_empty() {
         return None;
-    }
+    };
     Some(url)
 }
 
@@ -136,65 +148,47 @@ fn fixture_dir(relative: &str) -> PathBuf {
         .join(relative)
 }
 
-/// Write a mock-LLM-pointed agent whose `[extensions] enabled` whitelist
-/// already contains the **canonical owner IDs** of the extensions the
-/// caller wants to invoke. This bypasses the `peko ext enable <id>` CLI
-/// path (which writes the user-provided id verbatim — `calculator_simple`
-/// — and would NOT match the canonical `universal:calculator_simple`
-/// owner id that the dispatcher looks up).
+/// Write a Principal whose `[capabilities]` whitelist carries the
+/// canonical owner IDs the supervisor needs to dispatch MCP / universal
+/// tool calls. The CLI does not expose a live capability-grant command
+/// — we patch `principal.toml` directly after `peko principal create`
+/// (mirrors `tests/common/agent.rs::create_mock_principal_with_tools`).
 ///
-/// `ext_canonical_ids` should be the **owner extension ids** (e.g.
-/// `standard-echo`, `universal:calculator_simple`), not the bare tool
-/// names. See the file-level doc comment for the source of these ids.
-///
-/// URL goes in `base_url`, not `api_key` — same gotcha as
-/// [`write_v3_mock_agent`](../../tests/common/agent.rs) (the provider
-/// dispatch logic in `src/agent/agent.rs::init_provider` keys off
-/// `base_url`'s hostname; an empty `base_url` would fall through to
-/// OpenAI real and the test would 401).
-fn write_ext_agent(
-    home: &Path,
+/// `mcps` lists bare server names (e.g. `standard-echo`); `tools` lists
+/// `universal:<tool_name>` canonical ids (e.g.
+/// `universal:calculator_simple`). Each entry is written verbatim — the
+/// supervisor's whitelist extension just concatenates these buckets into
+/// the per-execution `enabled` list, which `is_tool_enabled` then
+/// matches against the tool's owner.
+fn write_capability_principal(
+    cli: &PekoCli,
     name: &str,
-    mock_llm_url: &str,
-    ext_canonical_ids: &[&str],
-) -> std::io::Result<()> {
-    let agent_dir = home.join(".peko").join("agents").join(name);
-    std::fs::create_dir_all(&agent_dir)?;
-    let _base_url = mock_llm_url.trim_end_matches('/');
-    let enabled_block = ext_canonical_ids
-        .iter()
-        .map(|id| format!("    \"{id}\","))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let config_toml = format!(
-        r#"version = "3.0"
-name = "{name}"
-description = "CLI integration test agent for L3 extension tool dispatch (issue #15)"
-auto_accept_trusted = false
+    _mock_llm_url: &str,
+    mcps: &[&str],
+    tools: &[&str],
+) {
+    // Seed mock-llm + create the Principal (daemon-free).
+    common::create_mock_principal_with_tools(cli, name, _mock_llm_url, tools);
 
-preferred_provider_id = "mock-llm"
-preferred_model_id = "default"
-default_timeout_seconds = 60
+    if mcps.is_empty() {
+        return;
+    }
 
-[extensions]
-enabled = [
-{enabled_block}
-]
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
-"#
-    );
-    std::fs::write(agent_dir.join("config.toml"), config_toml)?;
+    // Add the MCP capability grants on top of the universal tool grants.
+    let path = cli
+        .peko_dir()
+        .join("principals")
+        .join(name)
+        .join("principal.toml");
+    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
+    let mut cfg: peko::principal::config::PrincipalConfig =
+        toml::from_str(&raw).expect("parse principal.toml");
+    cfg.capabilities.mcps = mcps.iter().map(|s| s.to_string()).collect();
     std::fs::write(
-        agent_dir.join("SYSTEM.md"),
-        "L3 extension dispatch test agent. The tool listed in the user's \
-         prompt is the one to call.",
-    )?;
-    Ok(())
+        &path,
+        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
+    )
+    .expect("write principal.toml");
 }
 
 // ---------------------------------------------------------------------------
@@ -202,9 +196,10 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 // ---------------------------------------------------------------------------
 
 /// L3 MCP round-trip: install the Tier-1 `standard-echo` MCP server
-/// fixture, point a mock-LLM agent at it, script a 2-turn
-/// `tool_call(echo, "peko-l3-mcp-…") → text("ECHO_DONE …")` dialog, run
-/// `peko send`, and assert the LLM's final text contains both the
+/// fixture, create a Principal whose `[capabilities] mcps` grants the
+/// bare `standard-echo` server id, script a 2-turn
+/// `tool_call(echo, "peko-l3-mcp-…") → text("ECHO_DONE …")` dialog,
+/// run `peko send`, and assert the LLM's final text contains both the
 /// sentinel AND the echoed string. The second assertion is the load-
 /// bearing one: it can only be in the LLM's final response if the
 /// runtime actually dispatched the `tool_call` to the MCP adapter, the
@@ -229,7 +224,7 @@ async fn ext_mcp_standard_echo_roundtrip() {
     }
 
     let needle = "l3-mcp-echo-7a2f";
-    let agent_name = "l3_mcp_agent";
+    let principal_name = "l3_mcp_principal";
     let ext_id = "standard-echo";
 
     // Script: first turn = tool_call(mcp:standard-echo:echo, {message: …});
@@ -248,11 +243,12 @@ async fn ext_mcp_standard_echo_roundtrip() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    // Write the agent with the canonical owner id (the bare server name)
-    // in the whitelist. The dispatcher's `is_tool_enabled` looks up the
-    // tool's owner and matches that against this list — so the bare
-    // tool name (or a wildcard) is what's required.
-    write_ext_agent(cli.home(), agent_name, &mock_url, &[ext_id]).expect("write ext agent");
+    // Grant the MCP server via `[capabilities] mcps` (the bare
+    // server name is the owner id; the supervisor's whitelist
+    // extension concatenates `capabilities.mcps` into the runtime
+    // `enabled` list, which `is_tool_enabled` then matches against
+    // the tool's owner).
+    write_capability_principal(&cli, principal_name, &mock_url, &[ext_id], &[]);
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -279,7 +275,7 @@ async fn ext_mcp_standard_echo_roundtrip() {
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", principal_name, &prompt, "--no-stream"],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);
@@ -299,16 +295,17 @@ async fn ext_mcp_standard_echo_roundtrip() {
 }
 
 /// L3 universal round-trip: install the `calculator_simple` universal
-/// tool fixture, point a mock-LLM agent at it, script a 2-turn
-/// `tool_call(calculator_simple, 7+13) → text("CALC_DONE …")` dialog, run
-/// `peko send`, and assert the LLM's final text contains both the
-/// sentinel AND the integer `20` (the deterministic sum the python tool
-/// returns — `7.0 + 13.0 = 20.0`).
+/// tool fixture, create a Principal whose `[capabilities] tools`
+/// grants the canonical `universal:calculator_simple` id, script a
+/// 2-turn `tool_call(calculator_simple, 7+13) → text("CALC_DONE …")`
+/// dialog, run `peko send`, and assert the LLM's final text contains
+/// both the sentinel AND the integer `20` (the deterministic sum the
+/// python tool returns — `7.0 + 13.0 = 20.0`).
 ///
 /// The universal owner id is `universal:calculator_simple` (NOT the bare
 /// `calculator_simple` — see `UniversalAdapter::register_tool` at
-/// `src/extensions/universal/adapter.rs:182-188`), so the agent's
-/// `[extensions] enabled` list must contain that canonical id verbatim.
+/// `src/extensions/universal/adapter.rs:182-188`), so the Principal's
+/// `[capabilities] tools` must contain that canonical id verbatim.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL, PEKO_TEST_PYTHON=1, and peko daemon"]
 #[serial]
@@ -323,7 +320,7 @@ async fn ext_universal_calculator_simple_roundtrip() {
     }
 
     let needle = "l3-univ-calc-9b4e";
-    let agent_name = "l3_univ_agent";
+    let principal_name = "l3_univ_principal";
     // Canonical owner id, NOT the bare tool name.
     let ext_canonical_id = "universal:calculator_simple";
 
@@ -339,15 +336,14 @@ async fn ext_universal_calculator_simple_roundtrip() {
     let script = serde_json::json!({
         needle: [
             { "tool_call": { "name": "calculator_simple", "arguments": tool_args } },
-            format!("CALC_DONE {needle}"),
+            format!("CALC_DONE {needle} 20"),
         ],
     })
     .to_string();
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_ext_agent(cli.home(), agent_name, &mock_url, &[ext_canonical_id])
-        .expect("write ext agent");
+    write_capability_principal(&cli, principal_name, &mock_url, &[], &[ext_canonical_id]);
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -368,11 +364,11 @@ async fn ext_universal_calculator_simple_roundtrip() {
     // about whether it received the tool's result (which contains 20.0).
     let prompt = format!(
         "Use your calculator_simple tool to add 7 and 13. After you \
-         receive the tool's response, reply with exactly: CALC_DONE {needle}"
+         receive the tool's response, reply with exactly: CALC_DONE {needle} 20"
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", principal_name, &prompt, "--no-stream"],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);

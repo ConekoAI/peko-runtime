@@ -450,8 +450,8 @@ async fn permit_owner_can_chat() {
     );
 
     // The `peko login --api-key` path (which mints the API key and
-    // stores it locally) is exercised in `s2_extension_registry_roundtrip`
-    // and `s3_agent_registry_roundtrip`. The relay-side auth plugin
+    // stores it locally) is exercised in `s2_extension_registry_roundtrip`.
+    // The relay-side auth plugin
     // accepts both JWTs (`Authorization: Bearer <jwt>`) and API keys
     // (`Authorization: Bearer ph_…`) interchangeably — see
     // `pekohub/backend/src/plugins/auth.ts:73-114`. The JWT path
