@@ -30,21 +30,29 @@
 //! `provider.api_key_env` lookup reads; `KIMI_API_KEY` is the same
 //! path for Kimi.
 //!
+//! ## Principal-era target model
+//!
+//! After the "Principal as the single actor" migration, `peko send <name>`
+//! targets a **Principal** (`PrincipalSend` → `PrincipalManager::receive`),
+//! not a legacy `~/.peko/agents/<name>/` config. These tests therefore
+//! create a Principal via the real `peko principal create` command, then
+//! drive `peko send` against it.
+//!
 //! ## v3 provider catalog setup
 //!
-//! In the v3 provider model, agents only carry soft hints
-//! (`preferred_provider_id` / `preferred_model_id`). The actual provider
-//! metadata lives in `~/.peko/providers.toml`, and API keys live in the
-//! OS keychain (or fall back to env vars under
+//! In the v3 provider model, the supervisor agent only carries soft hints;
+//! the actual provider metadata lives in `~/.peko/providers.toml`, and API
+//! keys live in the OS keychain (or fall back to env vars under
 //! `PEKO_TEST_RESOLVER_BOOTSTRAP=1` in CI).
 //!
 //! Each test:
 //! 1. Creates a `PekoCli` with [`PekoCli::allow_real_llm_keys`] so the
 //!    daemon keeps `MINIMAX_API_KEY` / `KIMI_API_KEY` and enables the
 //!    env-var bootstrap.
-//! 2. Seeds `providers.toml` with the minimax or kimi catalog entry.
-//! 3. Writes the agent config with `preferred_provider_id` pointing at
-//!    that entry.
+//! 2. Seeds `providers.toml` with the minimax or kimi catalog entry as the
+//!    SOLE entry, so the supervisor's provider resolution falls through to
+//!    it (last-resort "first enabled catalog entry" rule in `LlmResolver`).
+//! 3. Creates the Principal with `peko principal create`.
 //!
 //! This bypasses `peko auth set` + `peko provider add`, both of which
 //! are exercised by other test paths.
@@ -59,7 +67,6 @@
 
 mod common;
 use common::{run_with_timeout, DaemonGuard, PekoCli};
-use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -85,6 +92,33 @@ fn minimax_api_key() -> Option<String> {
         return None;
     }
     Some(k)
+}
+
+/// Create a Principal that resolves to a real-LLM provider.
+///
+/// Unlike `common::agent::create_mock_principal`, this does NOT seed the
+/// mock-llm catalog entry — the caller seeds the real provider
+/// (minimax/kimi) as the sole catalog entry first, so the supervisor's
+/// provider resolution falls through to it.
+///
+/// The supervisor's base tool whitelist already carries `Read`
+/// (`src/principal/agent_runner.rs::run_supervisor_prompt`), so the
+/// native-tool-call test needs no extra capability grant.
+///
+/// Must be called BEFORE `DaemonGuard::spawn`: `peko principal create`
+/// writes files directly and needs no daemon.
+fn create_provider_principal(cli: &PekoCli, name: &str) {
+    let output = cli
+        .cmd()
+        .args(["principal", "create", name])
+        .output()
+        .expect("run `peko principal create`");
+    assert!(
+        output.status.success(),
+        "`peko principal create {name}` failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 /// Run a `peko …` command and return (stdout, stderr, status).
@@ -116,59 +150,6 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
-/// Write an agent config.toml that references a v3 provider catalog
-/// entry. The actual provider metadata (base_url, default_model) and
-/// API key live in `~/.peko/providers.toml` and are seeded separately
-/// before the daemon starts.
-fn write_provider_agent(home: &Path, name: &str, provider_id: &str) -> std::io::Result<()> {
-    write_tool_agent(home, name, provider_id, &[])
-}
-
-/// Write an agent config.toml that references a v3 provider catalog
-/// entry and whitelists a set of tools (bare names + canonical
-/// `builtin:tool:<name>` IDs).
-fn write_tool_agent(
-    home: &Path,
-    name: &str,
-    provider_id: &str,
-    extra_tools: &[&str],
-) -> std::io::Result<()> {
-    let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
-    std::fs::create_dir_all(&agent_dir)?;
-
-    let mut enabled = vec!["builtin:tool:Read".to_string(), "Read".to_string()];
-    enabled.extend(extra_tools.iter().map(|s| s.to_string()));
-    let enabled_toml = enabled
-        .iter()
-        .map(|s| format!("\"{s}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let config_toml = format!(
-        r#"version = "3.0"
-name = "{name}"
-description = "CLI integration test agent for the real-LLM provider smoke"
-auto_accept_trusted = false
-
-preferred_provider_id = "{provider_id}"
-preferred_model_id = "default"
-default_timeout_seconds = 300
-
-[extensions]
-enabled = [{enabled_toml}]
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
-"#
-    );
-    std::fs::write(agent_dir.join("config.toml"), config_toml)?;
-    std::fs::write(agent_dir.join("SYSTEM.md"), "")?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -189,17 +170,17 @@ async fn cli_providers_minimax_smoke() {
     };
 
     let cli = PekoCli::new().allow_real_llm_keys();
-    let agent_name = "providers_minimax_smoke";
+    let principal = "providers_minimax_smoke";
     common::agent::seed_minimax_provider_in_catalog(cli.home());
-    write_provider_agent(cli.home(), agent_name, "minimax").expect("write minimax agent");
+    create_provider_principal(&cli, principal);
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // PS script: `peko send <agent> "Hello, can you tell me a short joke?"`
+    // PS script: `peko send <principal> "Hello, can you tell me a short joke?"`
     let (out, err, status) = run(
         &cli,
         &[
             "send",
-            agent_name,
+            principal,
             "Hello, can you tell me a short joke?",
             "--no-stream",
         ],
@@ -215,7 +196,7 @@ async fn cli_providers_minimax_smoke() {
 /// `e2e_tests/providers/kimi.ps1` — end-to-end smoke against the
 /// Kimi provider. Sends a short prompt and asserts the response is
 /// non-empty (a real LLM call to `https://api.kimi.com/coding` with
-/// the configured `k2p5` model).
+/// the configured `kimi-for-coding` model).
 ///
 /// Skips when `KIMI_API_KEY` is unset.
 #[tokio::test]
@@ -227,15 +208,15 @@ async fn cli_providers_kimi_smoke() {
     };
 
     let cli = PekoCli::new().allow_real_llm_keys();
-    let agent_name = "providers_kimi_smoke";
+    let principal = "providers_kimi_smoke";
     common::agent::seed_kimi_provider_in_catalog(cli.home());
-    write_provider_agent(cli.home(), agent_name, "kimi").expect("write kimi agent");
+    create_provider_principal(&cli, principal);
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // PS script: `peko send <agent> "Hi"`
+    // PS script: `peko send <principal> "Hi"`
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, "Hi", "--no-stream"],
+        &["send", principal, "Hi", "--no-stream"],
         Duration::from_secs(45),
     );
     assert_ok(&out, &err, &status);
@@ -251,8 +232,10 @@ async fn cli_providers_kimi_smoke() {
 /// `https://api.minimaxi.com/anthropic`. This test drives the full
 /// agentic loop with a real MiniMax model and asserts that the model
 /// emits a native Anthropic-format `tool_use`/`tool_result` exchange,
-/// executing `read_file` and surfacing the file content in its final
-/// answer.
+/// executing `Read` and surfacing the file content in its final answer.
+///
+/// `Read` is in the supervisor's base tool whitelist, so no extra
+/// capability grant is needed.
 ///
 /// Skips when `MINIMAX_API_KEY` is unset.
 #[tokio::test]
@@ -264,11 +247,11 @@ async fn cli_providers_minimax_anthropic_native_tool_call() {
     };
 
     let cli = PekoCli::new().allow_real_llm_keys();
-    let agent_name = "providers_minimax_anthropic_tool_call";
+    let principal = "providers_minimax_anthropic_tool_call";
     common::agent::seed_minimax_provider_in_catalog(cli.home());
-    write_tool_agent(cli.home(), agent_name, "minimax", &[]).expect("write minimax tool agent");
+    create_provider_principal(&cli, principal);
 
-    // The daemon's `read_file` resolves relative paths against the shared
+    // The daemon's `Read` resolves relative paths against the shared
     // workspaces root, so place the sentinel file there.
     let workspace = cli.peko_dir().join("data").join("workspaces");
     std::fs::create_dir_all(&workspace).expect("create workspaces root");
@@ -280,7 +263,7 @@ async fn cli_providers_minimax_anthropic_native_tool_call() {
     let prompt = "Read the file tool_test.txt in your workspace and report its exact contents.";
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, prompt, "--no-stream"],
+        &["send", principal, prompt, "--no-stream"],
         Duration::from_secs(120),
     );
     assert_ok(&out, &err, &status);
