@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::auth::{Permission, PermissionGrant};
-use crate::tunnel::protocol::InstanceExposure;
+use crate::tunnel::protocol::{InstanceExposure, InstanceStatus};
 
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +38,14 @@ pub struct PrincipalConfig {
     /// Network exposure level for this Principal.
     #[serde(default)]
     pub exposure: InstanceExposure,
+
+    /// Persisted live status for this Principal's tunnel instance.
+    /// `None` means the daemon's runtime state is the source of truth
+    /// (typically `Online` when the daemon is up). Set by
+    /// `PrincipalSetStatus` to mark the Principal as `Busy`, `Offline`,
+    /// etc., across daemon restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<InstanceStatus>,
 
     /// Explicit permission grants on this Principal.
     #[serde(default)]

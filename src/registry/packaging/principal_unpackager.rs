@@ -525,6 +525,7 @@ mod tests {
             routing: Default::default(),
             capabilities: Default::default(),
             exposure: Default::default(),
+            status: None,
             permissions: Vec::new(),
         }
     }

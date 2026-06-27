@@ -151,6 +151,24 @@ pub enum PrincipalCommands {
         name: String,
     },
 
+    /// Set the tunnel status of a Principal's instance
+    SetStatus {
+        /// Principal name
+        name: String,
+
+        /// One of: online, offline, busy, error
+        status: String,
+    },
+
+    /// Set the tunnel exposure of a Principal's instance
+    SetExposure {
+        /// Principal name
+        name: String,
+
+        /// One of: unexposed, private, public
+        exposure: String,
+    },
+
     /// Manage agents (prompts) inside a Principal
     #[command(subcommand)]
     Agent(PrincipalAgentCommands),
@@ -240,6 +258,10 @@ pub async fn handle_principal(
             permission,
         } => revoke_permission(&name, &subject, &permission).await,
         PrincipalCommands::Permissions { name } => list_permissions(&name).await,
+        PrincipalCommands::SetStatus { name, status } => set_principal_status(&name, &status).await,
+        PrincipalCommands::SetExposure { name, exposure } => {
+            set_principal_exposure(&name, &exposure).await
+        }
         PrincipalCommands::Agent(PrincipalAgentCommands::List { name }) => {
             list_principal_agents(&name, paths).await
         }
@@ -581,6 +603,44 @@ async fn list_permissions(name: &str) -> Result<()> {
     }
 }
 
+async fn set_principal_status(name: &str, status: &str) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    let response = client.principal_set_status(name, status).await?;
+
+    match response {
+        ResponsePacket::PrincipalStatusUpdated { name, status, .. } => {
+            println!("✅ Principal '{name}' status set to '{status}'");
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to set principal status: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+async fn set_principal_exposure(name: &str, exposure: &str) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    let response = client.principal_set_exposure(name, exposure).await?;
+
+    match response {
+        ResponsePacket::PrincipalExposureUpdated {
+            name, exposure, ..
+        } => {
+            println!("✅ Principal '{name}' exposure set to '{exposure}'");
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to set principal exposure: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
 async fn list_principal_agents(name: &str, paths: &GlobalPaths) -> Result<()> {
     let agents_dir = paths.principal_agents_dir(name);
     if !agents_dir.exists() {
@@ -699,6 +759,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         routing: PrincipalRoutingConfig::default(),
         capabilities: PrincipalCapabilities::default(),
         exposure: crate::tunnel::protocol::InstanceExposure::Private,
+        status: None,
         permissions: Vec::new(),
     }
 }

@@ -593,6 +593,7 @@ mod tests {
             routing: PrincipalRoutingConfig::default(),
             capabilities: PrincipalCapabilities::default(),
             exposure: crate::tunnel::protocol::InstanceExposure::Private,
+            status: None,
             permissions: vec![PermissionGrant {
                 subject: Subject::Public,
                 permission: Permission::Chat,

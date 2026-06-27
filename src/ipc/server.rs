@@ -1103,64 +1103,6 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::TeamJoin {
-                request_id,
-                team,
-                agent,
-            } => {
-                let service = state.team_service();
-                match service
-                    .join_team(
-                        &team,
-                        &agent,
-                        crate::common::types::membership::MembershipRole::Member,
-                    )
-                    .await
-                {
-                    Ok(result) => {
-                        let response = ResponsePacket::TeamJoined {
-                            request_id,
-                            agent: result.agent,
-                            team: result.team,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::TeamLeave {
-                request_id,
-                team,
-                agent,
-            } => {
-                let service = state.team_service();
-                match service.leave_team(&team, &agent).await {
-                    Ok(result) => {
-                        let response = ResponsePacket::TeamLeft {
-                            request_id,
-                            agent: result.agent,
-                            team: result.team,
-                            was_member: result.was_member,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
             RequestPacket::TeamDelete {
                 request_id,
                 name,
@@ -1308,70 +1250,6 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::SessionGet { request_id, id: _ } => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: "SessionGet requires both agent name and session ID. Use the HTTP API for detailed session lookups.".to_string(),
-                };
-                Self::send_sink(sink, response).await?;
-            }
-
-            RequestPacket::SessionShow {
-                request_id,
-                agent,
-                team,
-                session_id,
-                history,
-            } => {
-                let service = state.session_service();
-                match service
-                    .get_session_details(&agent, team.as_deref(), &session_id)
-                    .await
-                {
-                    Ok(Some(details)) => {
-                        let history_events = if history {
-                            match service
-                                .get_history(
-                                    &agent,
-                                    team.as_deref(),
-                                    &session_id,
-                                    crate::common::services::HistoryQuery {
-                                        limit: 100,
-                                        ..Default::default()
-                                    },
-                                )
-                                .await
-                            {
-                                Ok(result) => Some(result.events),
-                                Err(_) => None,
-                            }
-                        } else {
-                            None
-                        };
-                        let response = ResponsePacket::SessionShown {
-                            request_id,
-                            session: details,
-                            history: history_events,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Ok(None) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Session '{session_id}' not found"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
             RequestPacket::SessionRemove {
                 request_id,
                 agent,
@@ -1389,44 +1267,6 @@ impl IpcServer {
                             request_id,
                             session_id,
                             deleted,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::SessionSwitch {
-                request_id,
-                agent,
-                team,
-                session_id,
-                user,
-            } => {
-                let mut manager = crate::session::SessionManager::for_cli(
-                    crate::common::paths::PathResolver::with_dirs(
-                        state.config_dir.clone(),
-                        state.data_dir.clone(),
-                        state.cache_dir.clone(),
-                    ),
-                    &agent,
-                    team.as_deref(),
-                    &user,
-                );
-                let session_peer = crate::auth::Subject::User(user);
-                match manager.switch_session(&session_peer, &session_id).await {
-                    Ok(()) => {
-                        let response = ResponsePacket::SessionSwitched {
-                            request_id,
-                            session_id,
-                            agent,
-                            team: team.unwrap_or_else(|| "default".to_string()),
                         };
                         Self::send_sink(sink, response).await?;
                     }
@@ -1877,77 +1717,6 @@ impl IpcServer {
                 Self::send_sink(sink, response).await?;
             }
 
-            RequestPacket::CronAddSimple {
-                request_id,
-                name,
-                schedule,
-                message,
-            } => {
-                let cron_db = state.data_dir.join("cron.json");
-                match crate::cron::CronScheduler::new(&cron_db) {
-                    Ok(scheduler) => {
-                        let _normalized = crate::cron::normalize_cron_expr(&schedule);
-                        let schedule_kind = crate::cron::ScheduleKind::Cron {
-                            expr: schedule.clone(),
-                            tz: None,
-                        };
-                        let next_run = match crate::cron::calculate_next_run(
-                            &schedule_kind,
-                            chrono::Utc::now(),
-                        ) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!("Invalid schedule: {e}"),
-                                };
-                                Self::send_sink(sink, response).await?;
-                                return Ok(());
-                            }
-                        };
-                        let job = crate::cron::CronJob {
-                            id: format!("cron_{}", uuid::Uuid::new_v4().simple()),
-                            name,
-                            schedule: schedule_kind,
-                            target: crate::cron::ExecutionTarget::Main,
-                            agent_id: None,
-                            message,
-                            delivery: crate::cron::DeliveryMode::None,
-                            delete_after_run: false,
-                            enabled: true,
-                            created_at: chrono::Utc::now(),
-                            next_run,
-                            last_run: None,
-                            last_status: None,
-                            run_count: 0,
-                        };
-                        match scheduler.add_job(&job) {
-                            Ok(()) => {
-                                let response = ResponsePacket::CronAddedSimple {
-                                    request_id,
-                                    job_id: job.id,
-                                };
-                                Self::send_sink(sink, response).await?;
-                            }
-                            Err(e) => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!("Failed to add job: {e}"),
-                                };
-                                Self::send_sink(sink, response).await?;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Cron DB error: {e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
             RequestPacket::SessionBranch {
                 request_id,
                 agent,
@@ -2331,134 +2100,6 @@ impl IpcServer {
                 }
             }
 
-            RequestPacket::RegistryPull {
-                request_id,
-                registry_ref,
-                team: _,
-                force,
-                registry_token,
-                registry_host,
-            } => {
-                // Build registry config
-                let host = registry_host.unwrap_or_else(|| {
-                    crate::registry::client::RegistryRef::parse_with_default(
-                        &registry_ref,
-                        None,
-                        Some(crate::registry::client::ResourceType::Agent),
-                    )
-                    .map(|r| r.host)
-                    .unwrap_or_else(|_| "pekohub.org".to_string())
-                });
-
-                let mut config = crate::registry::config::load_from_workspace(&state.data_dir);
-
-                // Add auth token if provided
-                if let Some(token) = registry_token {
-                    config.add_source(crate::registry::config::RegistrySource {
-                        url: host.clone(),
-                        priority: 1,
-                        auth: None,
-                        token: Some(token),
-                    });
-                }
-
-                let agent_registry = crate::registry::AgentRegistry::new(
-                    crate::registry::AgentRegistry::default_path(),
-                );
-                if let Err(e) = agent_registry.init().await {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("Registry init failed: {e}"),
-                    };
-                    Self::send_sink(sink, response).await?;
-                    return Ok(());
-                }
-
-                let client =
-                    crate::registry::client::RegistryClient::new(config, agent_registry.clone());
-
-                match client.pull(&registry_ref, |_| {}).await {
-                    Ok(manifest) => {
-                        // Export from registry to temp file
-                        let tag = format!("{}:{}", manifest.name, manifest.version);
-                        let temp_path = state.cache_dir.join(format!(
-                            "peko-pull-{}-{}.agent",
-                            manifest.name,
-                            std::process::id()
-                        ));
-
-                        match agent_registry.export_package(&tag, &temp_path).await {
-                            Ok(_) => {
-                                // Import using AgentService
-                                let service = state.agent_mgmt_service();
-                                let import_opts = crate::common::types::agent::AgentImportOptions {
-                                    name: None,
-                                    force,
-                                    // Registry pull path does not surface the
-                                    // unsigned opt-in to the CLI; default to
-                                    // false (secure by default).
-                                    allow_unsigned: false,
-                                };
-
-                                match service.import_agent(&temp_path, import_opts).await {
-                                    Ok(result) => {
-                                        let _ = std::fs::remove_file(&temp_path);
-                                        // Update host_runtime_id to current runtime
-                                        let config_path = result.config_path.clone();
-                                        if let Ok(content) =
-                                            tokio::fs::read_to_string(&config_path).await
-                                        {
-                                            if let Ok(mut config) = toml::from_str::<
-                                                crate::agents::agent_config::AgentConfig,
-                                            >(
-                                                &content
-                                            ) {
-                                                config.host_runtime_id =
-                                                    state.runtime_identity().runtime_did.clone();
-                                                if let Ok(updated) = toml::to_string_pretty(&config)
-                                                {
-                                                    let _ = tokio::fs::write(&config_path, updated)
-                                                        .await;
-                                                }
-                                            }
-                                        }
-                                        let response = ResponsePacket::RegistryPulled {
-                                            request_id,
-                                            name: result.name,
-                                            version: manifest.version.clone(),
-                                            digest: manifest.digest.clone(),
-                                        };
-                                        Self::send_sink(sink, response).await?;
-                                    }
-                                    Err(e) => {
-                                        let _ = std::fs::remove_file(&temp_path);
-                                        let response = ResponsePacket::Error {
-                                            request_id,
-                                            message: format!("Import failed: {e}"),
-                                        };
-                                        Self::send_sink(sink, response).await?;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!("Export failed: {e}"),
-                                };
-                                Self::send_sink(sink, response).await?;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Pull failed: {e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
             // ── Runtime (ADR-032) ──
             RequestPacket::RuntimeId { request_id } => {
                 let did = state.runtime_identity().runtime_did.clone();
@@ -2482,13 +2123,6 @@ impl IpcServer {
                             hostname: meta.host_info.hostname.clone(),
                         },
                     },
-                };
-                Self::send_sink(sink, response).await?;
-            }
-            RequestPacket::RuntimeRename { request_id, .. } => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: "Runtime rename not yet implemented".to_string(),
                 };
                 Self::send_sink(sink, response).await?;
             }
@@ -3274,6 +2908,123 @@ impl IpcServer {
                     permissions,
                 };
                 Self::send_sink(sink, response).await?;
+            }
+
+            RequestPacket::PrincipalSetStatus {
+                request_id,
+                name,
+                status,
+            } => {
+                use crate::tunnel::protocol::InstanceStatus;
+                let status_enum = match status.as_str() {
+                    "online" => InstanceStatus::Online,
+                    "offline" => InstanceStatus::Offline,
+                    "busy" => InstanceStatus::Busy,
+                    "error" => InstanceStatus::Error,
+                    other => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!(
+                                "Invalid status '{other}'. Expected: online, offline, busy, error"
+                            ),
+                        };
+                        Self::send_sink(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
+                // Persist on the Principal's config so the change survives
+                // daemon restart.
+                match state
+                    .principal_manager()
+                    .update_config(&name, |config| {
+                        config.status = Some(status_enum.clone());
+                    })
+                    .await
+                {
+                    Ok(_) => {
+                        if let Some(dispatcher) = state.tunnel_dispatcher().await {
+                            if let Err(e) =
+                                dispatcher.set_instance_status(&name, status_enum).await
+                            {
+                                warn!(
+                                    principal = %name,
+                                    "Failed to publish PrincipalSetStatus to hub: {e}"
+                                );
+                            }
+                        }
+                        let response = ResponsePacket::PrincipalStatusUpdated {
+                            request_id,
+                            name,
+                            status,
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Failed to persist status: {e}"),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
+            RequestPacket::PrincipalSetExposure {
+                request_id,
+                name,
+                exposure,
+            } => {
+                use crate::tunnel::protocol::InstanceExposure;
+                let exposure_enum = match exposure.as_str() {
+                    "unexposed" => InstanceExposure::Unexposed,
+                    "private" => InstanceExposure::Private,
+                    "public" => InstanceExposure::Public,
+                    other => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!(
+                                "Invalid exposure '{other}'. Expected: unexposed, private, public"
+                            ),
+                        };
+                        Self::send_sink(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
+                match state
+                    .principal_manager()
+                    .update_config(&name, |config| {
+                        config.exposure = exposure_enum;
+                    })
+                    .await
+                {
+                    Ok(_) => {
+                        if let Some(dispatcher) = state.tunnel_dispatcher().await {
+                            if let Err(e) =
+                                dispatcher.set_instance_exposure(&name, exposure_enum).await
+                            {
+                                warn!(
+                                    principal = %name,
+                                    "Failed to publish PrincipalSetExposure to hub: {e}"
+                                );
+                            }
+                        }
+                        let response = ResponsePacket::PrincipalExposureUpdated {
+                            request_id,
+                            name,
+                            exposure,
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Failed to persist exposure: {e}"),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
             }
 
             // ── Ownership and Permission (ADR-033) ──

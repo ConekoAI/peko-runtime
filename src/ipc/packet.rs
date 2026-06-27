@@ -200,20 +200,6 @@ pub enum RequestPacket {
         members: Option<Vec<String>>,
     },
 
-    #[serde(rename = "team_join")]
-    TeamJoin {
-        request_id: u64,
-        team: String,
-        agent: String,
-    },
-
-    #[serde(rename = "team_leave")]
-    TeamLeave {
-        request_id: u64,
-        team: String,
-        agent: String,
-    },
-
     #[serde(rename = "team_delete")]
     TeamDelete {
         request_id: u64,
@@ -236,18 +222,6 @@ pub enum RequestPacket {
         team: Option<String>,
     },
 
-    #[serde(rename = "session_get")]
-    SessionGet { request_id: u64, id: String },
-
-    #[serde(rename = "session_show")]
-    SessionShow {
-        request_id: u64,
-        agent: String,
-        team: Option<String>,
-        session_id: String,
-        history: bool,
-    },
-
     #[serde(rename = "session_remove")]
     SessionRemove {
         request_id: u64,
@@ -255,15 +229,6 @@ pub enum RequestPacket {
         team: Option<String>,
         session_id: String,
         force: bool,
-    },
-
-    #[serde(rename = "session_switch")]
-    SessionSwitch {
-        request_id: u64,
-        agent: String,
-        team: Option<String>,
-        session_id: String,
-        user: String,
     },
 
     // ─── Provider listing ───────────────────────────────────────────
@@ -325,15 +290,6 @@ pub enum RequestPacket {
     SystemClean {
         request_id: u64,
         scope: Option<String>,
-    },
-
-    /// Add a cron job (simplified — daemon constructs the CronJob)
-    #[serde(rename = "cron_add_simple")]
-    CronAddSimple {
-        request_id: u64,
-        name: String,
-        schedule: String, // cron expression
-        message: String,
     },
 
     /// Branch a session
@@ -417,27 +373,11 @@ pub enum RequestPacket {
         force: bool,
     },
 
-    /// Pull an agent from a registry
-    #[serde(rename = "registry_pull")]
-    RegistryPull {
-        request_id: u64,
-        registry_ref: String,
-        team: Option<String>,
-        force: bool,
-        registry_token: Option<String>,
-        registry_host: Option<String>,
-    },
-
     // ── Runtime (ADR-032) ──
     #[serde(rename = "runtime_id")]
     RuntimeId { request_id: u64 },
     #[serde(rename = "runtime_info")]
     RuntimeInfo { request_id: u64 },
-    #[serde(rename = "runtime_rename")]
-    RuntimeRename {
-        request_id: u64,
-        display_name: String,
-    },
     #[serde(rename = "runtime_list")]
     RuntimeList { request_id: u64 },
     #[serde(rename = "runtime_register")]
@@ -577,6 +517,30 @@ pub enum RequestPacket {
         permission: crate::auth::ownership::Permission,
     },
 
+    /// Set the live status of a Principal's tunnel instance. Persisted to
+    /// `principal.toml` so the change survives daemon restart. Delegates
+    /// to `TunnelDispatcher::set_instance_status` to publish a
+    /// `status_update` to the hub.
+    #[serde(rename = "principal_set_status")]
+    PrincipalSetStatus {
+        request_id: u64,
+        name: String,
+        /// One of: "online", "offline", "busy", "error".
+        status: String,
+    },
+
+    /// Set the exposure of a Principal's tunnel instance. Persisted to
+    /// `principal.toml` so the change survives daemon restart. Delegates
+    /// to `TunnelDispatcher::set_instance_exposure` to publish an
+    /// `exposure_update` to the hub.
+    #[serde(rename = "principal_set_exposure")]
+    PrincipalSetExposure {
+        request_id: u64,
+        name: String,
+        /// One of: "unexposed", "private", "public".
+        exposure: String,
+    },
+
     #[serde(rename = "principal_permissions")]
     PrincipalPermissions {
         request_id: u64,
@@ -610,10 +574,7 @@ impl RequestPacket {
             | Self::TeamDelete { request_id, .. }
             | Self::TeamMove { request_id, .. }
             | Self::SessionList { request_id, .. }
-            | Self::SessionGet { request_id, .. }
-            | Self::SessionShow { request_id, .. }
             | Self::SessionRemove { request_id, .. }
-            | Self::SessionSwitch { request_id, .. }
             | Self::ProviderList { request_id }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
@@ -626,7 +587,6 @@ impl RequestPacket {
             | Self::ExtensionExport { request_id, .. }
             | Self::ExtensionBundle { request_id, .. }
             | Self::SystemClean { request_id, .. }
-            | Self::CronAddSimple { request_id, .. }
             | Self::SessionBranch { request_id, .. }
             | Self::SessionCompact { request_id, .. }
             | Self::SessionSteer { request_id, .. }
@@ -636,12 +596,8 @@ impl RequestPacket {
             | Self::ExtensionUninstall { request_id, .. }
             | Self::TeamExport { request_id, .. }
             | Self::TeamImport { request_id, .. }
-            | Self::TeamJoin { request_id, .. }
-            | Self::TeamLeave { request_id, .. }
-            | Self::RegistryPull { request_id, .. }
             | Self::RuntimeId { request_id }
             | Self::RuntimeInfo { request_id }
-            | Self::RuntimeRename { request_id, .. }
             | Self::RuntimeList { request_id }
             | Self::RuntimeRegister { request_id, .. }
             | Self::RuntimeTrust { request_id, .. }
@@ -665,6 +621,8 @@ impl RequestPacket {
             | Self::PrincipalPull { request_id, .. }
             | Self::PrincipalGrantPermission { request_id, .. }
             | Self::PrincipalRevokePermission { request_id, .. }
+            | Self::PrincipalSetStatus { request_id, .. }
+            | Self::PrincipalSetExposure { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. } => *request_id,
         }
     }
@@ -879,23 +837,6 @@ pub enum ResponsePacket {
         new_name: String,
     },
 
-    /// Team join response
-    #[serde(rename = "team_joined")]
-    TeamJoined {
-        request_id: u64,
-        agent: String,
-        team: String,
-    },
-
-    /// Team leave response
-    #[serde(rename = "team_left")]
-    TeamLeft {
-        request_id: u64,
-        agent: String,
-        team: String,
-        was_member: bool,
-    },
-
     /// Session list response
     #[serde(rename = "session_list")]
     SessionList {
@@ -904,36 +845,12 @@ pub enum ResponsePacket {
         active_session: Option<String>,
     },
 
-    /// Session detail response
-    #[serde(rename = "session_get")]
-    SessionGet {
-        request_id: u64,
-        session: Option<crate::common::services::session_service::SessionDetails>,
-    },
-
-    /// Session shown response
-    #[serde(rename = "session_shown")]
-    SessionShown {
-        request_id: u64,
-        session: crate::common::services::session_service::SessionDetails,
-        history: Option<Vec<crate::common::services::session_service::HistoryEvent>>,
-    },
-
     /// Session removed response
     #[serde(rename = "session_removed")]
     SessionRemoved {
         request_id: u64,
         session_id: String,
         deleted: bool,
-    },
-
-    /// Session switched response
-    #[serde(rename = "session_switched")]
-    SessionSwitched {
-        request_id: u64,
-        session_id: String,
-        agent: String,
-        team: String,
     },
 
     /// System status response
@@ -1038,10 +955,6 @@ pub enum ResponsePacket {
         bytes_freed: u64,
     },
 
-    /// Cron job added (simplified)
-    #[serde(rename = "cron_added_simple")]
-    CronAddedSimple { request_id: u64, job_id: String },
-
     /// Session branched
     #[serde(rename = "session_branched")]
     SessionBranched {
@@ -1109,15 +1022,6 @@ pub enum ResponsePacket {
         request_id: u64,
         name: String,
         path: String,
-    },
-
-    /// Registry pull completed
-    #[serde(rename = "registry_pulled")]
-    RegistryPulled {
-        request_id: u64,
-        name: String,
-        version: String,
-        digest: String,
     },
 
     // ── Runtime (ADR-032) ──
@@ -1235,6 +1139,23 @@ pub enum ResponsePacket {
     PrincipalPermissions {
         request_id: u64,
         permissions: Vec<crate::auth::ownership::PermissionGrant>,
+    },
+
+    /// Result of `PrincipalSetStatus`. Echoes the persisted status so
+    /// callers can confirm the daemon applied the change.
+    #[serde(rename = "principal_status_updated")]
+    PrincipalStatusUpdated {
+        request_id: u64,
+        name: String,
+        status: String,
+    },
+
+    /// Result of `PrincipalSetExposure`. Echoes the persisted exposure.
+    #[serde(rename = "principal_exposure_updated")]
+    PrincipalExposureUpdated {
+        request_id: u64,
+        name: String,
+        exposure: String,
     },
 
     // ── Session inbox (steering) ─────────────────────────────────────
@@ -1427,13 +1348,8 @@ impl ResponsePacket {
             | Self::TeamCreated { request_id, .. }
             | Self::TeamDeleted { request_id, .. }
             | Self::TeamMoved { request_id, .. }
-            | Self::TeamJoined { request_id, .. }
-            | Self::TeamLeft { request_id, .. }
             | Self::SessionList { request_id, .. }
-            | Self::SessionGet { request_id, .. }
-            | Self::SessionShown { request_id, .. }
             | Self::SessionRemoved { request_id, .. }
-            | Self::SessionSwitched { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
             | Self::ProviderList { request_id, .. }
@@ -1446,7 +1362,6 @@ impl ResponsePacket {
             | Self::ExtensionExported { request_id, .. }
             | Self::ExtensionBundled { request_id, .. }
             | Self::SystemCleaned { request_id, .. }
-            | Self::CronAddedSimple { request_id, .. }
             | Self::SessionBranched { request_id, .. }
             | Self::SessionCompacted { request_id, .. }
             | Self::SessionCompactDryRun { request_id, .. }
@@ -1454,7 +1369,6 @@ impl ResponsePacket {
             | Self::ExtensionUninstalled { request_id, .. }
             | Self::TeamExported { request_id, .. }
             | Self::TeamImported { request_id, .. }
-            | Self::RegistryPulled { request_id, .. }
             | Self::RuntimeId { request_id, .. }
             | Self::RuntimeInfo { request_id, .. }
             | Self::RuntimeList { request_id, .. }
@@ -1470,6 +1384,8 @@ impl ResponsePacket {
             | Self::PrincipalPermissionGranted { request_id, .. }
             | Self::PrincipalPermissionRevoked { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
+            | Self::PrincipalStatusUpdated { request_id, .. }
+            | Self::PrincipalExposureUpdated { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
             | Self::Status { request_id, .. }
             | Self::MessageQueued { request_id, .. }
@@ -1504,13 +1420,8 @@ impl ResponsePacket {
             Self::TeamCreated { .. } => "TeamCreated",
             Self::TeamDeleted { .. } => "TeamDeleted",
             Self::TeamMoved { .. } => "TeamMoved",
-            Self::TeamJoined { .. } => "TeamJoined",
-            Self::TeamLeft { .. } => "TeamLeft",
             Self::SessionList { .. } => "SessionList",
-            Self::SessionGet { .. } => "SessionGet",
-            Self::SessionShown { .. } => "SessionShown",
             Self::SessionRemoved { .. } => "SessionRemoved",
-            Self::SessionSwitched { .. } => "SessionSwitched",
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ProviderList { .. } => "ProviderList",
@@ -1523,7 +1434,6 @@ impl ResponsePacket {
             Self::ExtensionExported { .. } => "ExtensionExported",
             Self::ExtensionBundled { .. } => "ExtensionBundled",
             Self::SystemCleaned { .. } => "SystemCleaned",
-            Self::CronAddedSimple { .. } => "CronAddedSimple",
             Self::SessionBranched { .. } => "SessionBranched",
             Self::SessionCompacted { .. } => "SessionCompacted",
             Self::SessionCompactDryRun { .. } => "SessionCompactDryRun",
@@ -1531,7 +1441,6 @@ impl ResponsePacket {
             Self::ExtensionUninstalled { .. } => "ExtensionUninstalled",
             Self::TeamExported { .. } => "TeamExported",
             Self::TeamImported { .. } => "TeamImported",
-            Self::RegistryPulled { .. } => "RegistryPulled",
             Self::RuntimeId { .. } => "RuntimeId",
             Self::RuntimeInfo { .. } => "RuntimeInfo",
             Self::RuntimeList { .. } => "RuntimeList",
@@ -1546,6 +1455,8 @@ impl ResponsePacket {
             Self::PrincipalPulled { .. } => "PrincipalPulled",
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
             Self::PrincipalPermissionRevoked { .. } => "PrincipalPermissionRevoked",
+            Self::PrincipalStatusUpdated { .. } => "PrincipalStatusUpdated",
+            Self::PrincipalExposureUpdated { .. } => "PrincipalExposureUpdated",
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",
             Self::TunnelStatus { .. } => "TunnelStatus",
             Self::Status { .. } => "Status",
@@ -2056,23 +1967,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_get_request_roundtrip() {
-        let req = RequestPacket::SessionGet {
-            request_id: 501,
-            id: "sess-123".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::SessionGet { request_id, id } => {
-                assert_eq!(request_id, 501);
-                assert_eq!(id, "sess-123");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_agent_list_response_roundtrip() {
         let resp = ResponsePacket::AgentList {
             request_id: 600,
@@ -2199,45 +2093,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_get_response_roundtrip() {
-        let resp = ResponsePacket::SessionGet {
-            request_id: 801,
-            session: Some(crate::common::services::session_service::SessionDetails {
-                info: crate::common::services::session_service::SessionInfo {
-                    id: "sess-123".to_string(),
-                    agent_name: "test-agent".to_string(),
-                    created_at: 0,
-                    updated_at: 0,
-                    turn_count: 0,
-                    message_count: 0,
-                    context_window: 0,
-                    total_input_tokens: 0,
-                    total_output_tokens: 0,
-                    parent_session_id: None,
-                    title: None,
-                    peer_type: None,
-                    peer_id: None,
-                },
-                history_summary: crate::common::services::session_service::HistorySummary::default(
-                ),
-            }),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SessionGet {
-                request_id,
-                session,
-            } => {
-                assert_eq!(request_id, 801);
-                assert!(session.is_some());
-                assert_eq!(session.unwrap().info.id, "sess-123");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_crud_request_ids() {
         let req_agent_list = RequestPacket::AgentList {
             request_id: 1,
@@ -2260,12 +2115,6 @@ mod tests {
             team: None,
         };
         assert_eq!(req_session_list.request_id(), 7);
-
-        let req_session_get = RequestPacket::SessionGet {
-            request_id: 8,
-            id: "s".to_string(),
-        };
-        assert_eq!(req_session_get.request_id(), 8);
     }
 
     #[test]
@@ -2294,12 +2143,6 @@ mod tests {
             active_session: None,
         };
         assert_eq!(resp_session_list.request_id(), 16);
-
-        let resp_session_get = ResponsePacket::SessionGet {
-            request_id: 17,
-            session: None,
-        };
-        assert_eq!(resp_session_get.request_id(), 17);
     }
 
     #[test]
@@ -2811,32 +2654,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cron_add_simple_request_roundtrip() {
-        let req = RequestPacket::CronAddSimple {
-            request_id: 1200,
-            name: "Daily Report".to_string(),
-            schedule: "0 9 * * *".to_string(),
-            message: "Generate daily report".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::CronAddSimple {
-                request_id,
-                name,
-                schedule,
-                message,
-            } => {
-                assert_eq!(request_id, 1200);
-                assert_eq!(name, "Daily Report");
-                assert_eq!(schedule, "0 9 * * *");
-                assert_eq!(message, "Generate daily report");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_session_branch_request_roundtrip() {
         let req = RequestPacket::SessionBranch {
             request_id: 1201,
@@ -2892,23 +2709,6 @@ mod tests {
                 assert_eq!(session_id, "sess-123");
                 assert!(dry_run);
                 assert_eq!(instruction, Some("Summarize".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_cron_added_simple_response_roundtrip() {
-        let resp = ResponsePacket::CronAddedSimple {
-            request_id: 2200,
-            job_id: "cron_abc123".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::CronAddedSimple { request_id, job_id } => {
-                assert_eq!(request_id, 2200);
-                assert_eq!(job_id, "cron_abc123");
             }
             _ => panic!("Wrong variant"),
         }
@@ -3006,14 +2806,6 @@ mod tests {
 
     #[test]
     fn test_new_request_ids() {
-        let req_cron = RequestPacket::CronAddSimple {
-            request_id: 1,
-            name: "n".to_string(),
-            schedule: "* * * * *".to_string(),
-            message: "m".to_string(),
-        };
-        assert_eq!(req_cron.request_id(), 1);
-
         let req_branch = RequestPacket::SessionBranch {
             request_id: 2,
             agent: "a".to_string(),
@@ -3036,12 +2828,6 @@ mod tests {
 
     #[test]
     fn test_new_response_ids() {
-        let resp_cron = ResponsePacket::CronAddedSimple {
-            request_id: 10,
-            job_id: "j".to_string(),
-        };
-        assert_eq!(resp_cron.request_id(), 10);
-
         let resp_branch = ResponsePacket::SessionBranched {
             request_id: 11,
             new_session_id: "n".to_string(),
@@ -3192,88 +2978,6 @@ mod tests {
             path: "/tmp/t".to_string(),
         };
         assert_eq!(resp_imported.request_id(), 11);
-    }
-
-    #[test]
-    fn test_registry_pull_request_roundtrip() {
-        let req = RequestPacket::RegistryPull {
-            request_id: 1400,
-            registry_ref: "my-agent:v1.0".to_string(),
-            team: Some("default".to_string()),
-            force: false,
-            registry_token: Some("token123".to_string()),
-            registry_host: Some("pekohub.org".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::RegistryPull {
-                request_id,
-                registry_ref,
-                team,
-                force,
-                registry_token,
-                registry_host,
-            } => {
-                assert_eq!(request_id, 1400);
-                assert_eq!(registry_ref, "my-agent:v1.0");
-                assert_eq!(team, Some("default".to_string()));
-                assert!(!force);
-                assert_eq!(registry_token, Some("token123".to_string()));
-                assert_eq!(registry_host, Some("pekohub.org".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_registry_pulled_response_roundtrip() {
-        let resp = ResponsePacket::RegistryPulled {
-            request_id: 2400,
-            name: "my-agent".to_string(),
-            version: "v1.0".to_string(),
-            digest: "sha256:abc123".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::RegistryPulled {
-                request_id,
-                name,
-                version,
-                digest,
-            } => {
-                assert_eq!(request_id, 2400);
-                assert_eq!(name, "my-agent");
-                assert_eq!(version, "v1.0");
-                assert_eq!(digest, "sha256:abc123");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_registry_pull_request_id() {
-        let req = RequestPacket::RegistryPull {
-            request_id: 1,
-            registry_ref: "a".to_string(),
-            team: None,
-            force: false,
-            registry_token: None,
-            registry_host: None,
-        };
-        assert_eq!(req.request_id(), 1);
-    }
-
-    #[test]
-    fn test_registry_pulled_response_id() {
-        let resp = ResponsePacket::RegistryPulled {
-            request_id: 10,
-            name: "a".to_string(),
-            version: "v1".to_string(),
-            digest: "sha256:d".to_string(),
-        };
-        assert_eq!(resp.request_id(), 10);
     }
 
     // ─── Team operations tests ──────────────────────────────────────
@@ -3483,35 +3187,6 @@ mod tests {
     // ─── Session operations tests ───────────────────────────────────
 
     #[test]
-    fn test_session_show_request_roundtrip() {
-        let req = RequestPacket::SessionShow {
-            request_id: 1600,
-            agent: "test-agent".to_string(),
-            team: Some("default".to_string()),
-            session_id: "sess-123".to_string(),
-            history: true,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::SessionShow {
-                request_id,
-                agent,
-                team,
-                session_id,
-                history,
-            } => {
-                assert_eq!(request_id, 1600);
-                assert_eq!(agent, "test-agent");
-                assert_eq!(team, Some("default".to_string()));
-                assert_eq!(session_id, "sess-123");
-                assert!(history);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_session_remove_request_roundtrip() {
         let req = RequestPacket::SessionRemove {
             request_id: 1601,
@@ -3541,83 +3216,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_switch_request_roundtrip() {
-        let req = RequestPacket::SessionSwitch {
-            request_id: 1602,
-            agent: "test-agent".to_string(),
-            team: Some("default".to_string()),
-            session_id: "sess-123".to_string(),
-            user: "alice".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::SessionSwitch {
-                request_id,
-                agent,
-                team,
-                session_id,
-                user,
-            } => {
-                assert_eq!(request_id, 1602);
-                assert_eq!(agent, "test-agent");
-                assert_eq!(team, Some("default".to_string()));
-                assert_eq!(session_id, "sess-123");
-                assert_eq!(user, "alice");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_session_shown_response_roundtrip() {
-        let resp = ResponsePacket::SessionShown {
-            request_id: 2600,
-            session: crate::common::services::session_service::SessionDetails {
-                info: crate::common::services::session_service::SessionInfo {
-                    id: "sess-123".to_string(),
-                    agent_name: "test-agent".to_string(),
-                    created_at: 0,
-                    updated_at: 0,
-                    turn_count: 0,
-                    message_count: 0,
-                    context_window: 0,
-                    total_input_tokens: 0,
-                    total_output_tokens: 0,
-                    parent_session_id: None,
-                    title: None,
-                    peer_type: None,
-                    peer_id: None,
-                },
-                history_summary: crate::common::services::session_service::HistorySummary::default(
-                ),
-            },
-            history: Some(vec![
-                crate::common::services::session_service::HistoryEvent::Message {
-                    role: "user".to_string(),
-                    content: "Hello".to_string(),
-                    timestamp: "2024-01-01T00:00:00Z".to_string(),
-                },
-            ]),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SessionShown {
-                request_id,
-                session,
-                history,
-            } => {
-                assert_eq!(request_id, 2600);
-                assert_eq!(session.info.id, "sess-123");
-                assert!(history.is_some());
-                assert_eq!(history.unwrap().len(), 1);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_session_removed_response_roundtrip() {
         let resp = ResponsePacket::SessionRemoved {
             request_id: 2601,
@@ -3641,42 +3239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_switched_response_roundtrip() {
-        let resp = ResponsePacket::SessionSwitched {
-            request_id: 2602,
-            session_id: "sess-123".to_string(),
-            agent: "test-agent".to_string(),
-            team: "default".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SessionSwitched {
-                request_id,
-                session_id,
-                agent,
-                team,
-            } => {
-                assert_eq!(request_id, 2602);
-                assert_eq!(session_id, "sess-123");
-                assert_eq!(agent, "test-agent");
-                assert_eq!(team, "default");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_session_request_ids() {
-        let req_show = RequestPacket::SessionShow {
-            request_id: 1,
-            agent: "a".to_string(),
-            team: None,
-            session_id: "s".to_string(),
-            history: false,
-        };
-        assert_eq!(req_show.request_id(), 1);
-
         let req_remove = RequestPacket::SessionRemove {
             request_id: 2,
             agent: "a".to_string(),
@@ -3685,58 +3248,16 @@ mod tests {
             force: false,
         };
         assert_eq!(req_remove.request_id(), 2);
-
-        let req_switch = RequestPacket::SessionSwitch {
-            request_id: 3,
-            agent: "a".to_string(),
-            team: None,
-            session_id: "s".to_string(),
-            user: "u".to_string(),
-        };
-        assert_eq!(req_switch.request_id(), 3);
     }
 
     #[test]
     fn test_session_response_ids() {
-        let resp_shown = ResponsePacket::SessionShown {
-            request_id: 10,
-            session: crate::common::services::session_service::SessionDetails {
-                info: crate::common::services::session_service::SessionInfo {
-                    id: "s".to_string(),
-                    agent_name: "a".to_string(),
-                    created_at: 0,
-                    updated_at: 0,
-                    turn_count: 0,
-                    message_count: 0,
-                    context_window: 0,
-                    total_input_tokens: 0,
-                    total_output_tokens: 0,
-                    parent_session_id: None,
-                    title: None,
-                    peer_type: None,
-                    peer_id: None,
-                },
-                history_summary: crate::common::services::session_service::HistorySummary::default(
-                ),
-            },
-            history: None,
-        };
-        assert_eq!(resp_shown.request_id(), 10);
-
         let resp_removed = ResponsePacket::SessionRemoved {
             request_id: 11,
             session_id: "s".to_string(),
             deleted: true,
         };
         assert_eq!(resp_removed.request_id(), 11);
-
-        let resp_switched = ResponsePacket::SessionSwitched {
-            request_id: 12,
-            session_id: "s".to_string(),
-            agent: "a".to_string(),
-            team: "t".to_string(),
-        };
-        assert_eq!(resp_switched.request_id(), 12);
     }
 
     // ─── Extension operations tests ─────────────────────────────────
@@ -4280,6 +3801,98 @@ mod tests {
                 assert_eq!(name, "helper");
                 assert_eq!(subject, crate::auth::Subject::User("bob".to_string()));
                 assert_eq!(permission, crate::auth::ownership::Permission::Chat);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_set_status_request_roundtrip() {
+        let req = RequestPacket::PrincipalSetStatus {
+            request_id: 5003,
+            name: "helper".to_string(),
+            status: "busy".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalSetStatus {
+                request_id,
+                name,
+                status,
+            } => {
+                assert_eq!(request_id, 5003);
+                assert_eq!(name, "helper");
+                assert_eq!(status, "busy");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_set_exposure_request_roundtrip() {
+        let req = RequestPacket::PrincipalSetExposure {
+            request_id: 5004,
+            name: "helper".to_string(),
+            exposure: "private".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalSetExposure {
+                request_id,
+                name,
+                exposure,
+            } => {
+                assert_eq!(request_id, 5004);
+                assert_eq!(name, "helper");
+                assert_eq!(exposure, "private");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_status_updated_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalStatusUpdated {
+            request_id: 6001,
+            name: "helper".to_string(),
+            status: "online".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalStatusUpdated {
+                request_id,
+                name,
+                status,
+            } => {
+                assert_eq!(request_id, 6001);
+                assert_eq!(name, "helper");
+                assert_eq!(status, "online");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_exposure_updated_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalExposureUpdated {
+            request_id: 6002,
+            name: "helper".to_string(),
+            exposure: "public".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalExposureUpdated {
+                request_id,
+                name,
+                exposure,
+            } => {
+                assert_eq!(request_id, 6002);
+                assert_eq!(name, "helper");
+                assert_eq!(exposure, "public");
             }
             _ => panic!("Wrong variant"),
         }

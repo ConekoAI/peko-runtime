@@ -1300,6 +1300,7 @@ mod tests {
             routing: PrincipalRoutingConfig::default(),
             capabilities: PrincipalCapabilities::default(),
             exposure,
+            status: None,
             permissions,
         }
     }

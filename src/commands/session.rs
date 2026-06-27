@@ -162,9 +162,9 @@ pub async fn handle_session(
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
-        // SessionShow and SessionSwitch remain as direct file I/O for now
-        // because they need more complex IPC packets (session history streaming,
-        // active session preference file updates).
+        // SessionShow and SessionSwitch read directly from the SessionService (no
+        // IPC round-trip) — they need access to the live in-memory session
+        // index and history, which would be expensive to serialize over IPC.
         SessionCommands::Show {
             agent,
             session_id,
@@ -275,8 +275,9 @@ pub async fn handle_session(
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
-        // SessionSwitch remains as direct file I/O — it updates the local
-        // active-session preference file, which is simpler to do locally.
+        // SessionSwitch updates the local active-session preference file directly,
+        // bypassing IPC — the file lives at a well-known path under
+        // `~/.peko/` that the daemon doesn't own.
         SessionCommands::Switch {
             agent,
             session_id,
