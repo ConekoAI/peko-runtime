@@ -52,7 +52,9 @@
 //!     ADR-019 PR.
 
 mod common;
-use common::{configure_mock, run_with_timeout, DaemonGuard, PekoCli};
+use common::{
+    configure_mock, create_mock_principal_with_tools, run_with_timeout, DaemonGuard, PekoCli,
+};
 use serial_test::serial;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -144,55 +146,13 @@ fn ensure_workspace_dir(cli: &PekoCli) {
 /// "Error: Tool 'write_file' is currently disabled..." in the
 /// parent's tool result. See `docs/integration/TESTING.md` §7 for
 /// the context.
-fn write_builtin_agent(
-    home: &std::path::Path,
-    name: &str,
-    mock_llm_url: &str,
-) -> std::io::Result<()> {
-    use std::path::Path;
-    let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
-    std::fs::create_dir_all(&agent_dir)?;
-    let _base_url = mock_llm_url.trim_end_matches('/');
-    let config_toml = format!(
-        r#"version = "3.0"
-name = "{name}"
-description = "CLI integration test agent for built-in tools"
-auto_accept_trusted = false
-
-preferred_provider_id = "mock-llm"
-preferred_model_id = "default"
-default_timeout_seconds = 60
-
-[extensions]
-enabled = [
-    "Bash",
-    "Read",
-    "Write",
-    "glob",
-    "grep",
-    "Edit",
-    "builtin:tool:Bash",
-    "builtin:tool:Read",
-    "builtin:tool:Write",
-    "builtin:tool:glob",
-    "builtin:tool:grep",
-    "builtin:tool:Edit",
-]
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
-"#
+fn write_builtin_agent(cli: &PekoCli, name: &str, mock_llm_url: &str) {
+    create_mock_principal_with_tools(
+        cli,
+        name,
+        mock_llm_url,
+        &["Bash", "Read", "Write", "glob", "grep", "Edit"],
     );
-    std::fs::write(agent_dir.join("config.toml"), config_toml)?;
-    std::fs::write(
-        agent_dir.join("SYSTEM.md"),
-        "Test agent for the built-in tools CLI integration suite. \
-         Has Bash, Read, Write, glob, grep, and Edit tools enabled.",
-    )?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +195,7 @@ async fn built_in_glob_finds_files() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_builtin_agent(cli.home(), agent_name, &mock_url).expect("write builtin agent");
+    write_builtin_agent(&cli, agent_name, &mock_url);
 
     // Pre-seed the workspace with a tiny file tree so glob has something
     // to find. Files land in <peko_dir>/data/workspaces/ (see
@@ -302,7 +262,7 @@ async fn built_in_grep_searches_content() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_builtin_agent(cli.home(), agent_name, &mock_url).expect("write builtin agent");
+    write_builtin_agent(&cli, agent_name, &mock_url);
 
     // Pre-seed the workspace with a file containing a TODO marker.
     let ws = workspace_dir(&cli);
@@ -362,7 +322,7 @@ async fn built_in_read_file_returns_content() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_builtin_agent(cli.home(), agent_name, &mock_url).expect("write builtin agent");
+    write_builtin_agent(&cli, agent_name, &mock_url);
 
     // Pre-seed the workspace with a file the LLM will read.
     let ws = workspace_dir(&cli);
@@ -425,7 +385,7 @@ async fn built_in_write_file_creates_file() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_builtin_agent(cli.home(), agent_name, &mock_url).expect("write builtin agent");
+    write_builtin_agent(&cli, agent_name, &mock_url);
     // Ensure the tool workspace root exists — the daemon's `Write`
     // auto-creates the file's *parent* directory but not the workspace
     // root itself. Pre-creating it makes the test less reliant on that
@@ -502,7 +462,7 @@ async fn built_in_edit_modifies_file() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_builtin_agent(cli.home(), agent_name, &mock_url).expect("write builtin agent");
+    write_builtin_agent(&cli, agent_name, &mock_url);
 
     // Pre-seed the workspace with a file containing the old string.
     let ws = workspace_dir(&cli);
@@ -580,7 +540,7 @@ async fn built_in_bash_executes_command() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_builtin_agent(cli.home(), agent_name, &mock_url).expect("write builtin agent");
+    write_builtin_agent(&cli, agent_name, &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
