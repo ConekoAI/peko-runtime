@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tokio::sync::Mutex;
 
 /// Principal-owned memory abstraction.
 ///
@@ -116,11 +117,26 @@ struct MemoryIndex {
 /// consolidation are deferred.
 pub struct DefaultPrincipalMemory {
     workspace_path: PathBuf,
+    /// Serializes the `load_index → mutate → save_index` sequence in
+    /// `record_session`. Without this, concurrent receives on the same
+    /// principal race to overwrite each other's index appends — last
+    /// writer wins and the index silently drops session records. This is
+    /// the production fix for the flake observed in CI on
+    /// `concurrent_receives_are_isolated` (1 of 10 sessions lost under
+    /// heavy contention; see [[test-concurrent-receives-supervisor-race]]).
+    ///
+    /// Per-principal scope is correct because `DefaultPrincipalMemory`
+    /// is owned by a single Principal — peers landing on different
+    /// principals don't share this lock.
+    index_lock: Mutex<()>,
 }
 
 impl DefaultPrincipalMemory {
     pub fn new(workspace_path: PathBuf) -> Self {
-        Self { workspace_path }
+        Self {
+            workspace_path,
+            index_lock: Mutex::new(()),
+        }
     }
 
     fn memory_dir(&self) -> PathBuf {
@@ -159,6 +175,11 @@ impl PrincipalMemory for DefaultPrincipalMemory {
         &self,
         artifact: SessionArtifact,
     ) -> Result<(), MemoryError> {
+        // Hold the index lock for the full read-modify-write so concurrent
+        // recorders don't lose updates (see [[test-concurrent-receives-supervisor-race]]
+        // for the symptom this prevents: 9/10 sessions in the index when 10
+        // peers race, because each `load_index` reads the pre-append state).
+        let _guard = self.index_lock.lock().await;
         let mut index = self.load_index().await?;
         // Remove existing record for this session_id, then append updated one.
         index.sessions.retain(|s| s.session_id != artifact.session_id);
@@ -174,6 +195,11 @@ impl PrincipalMemory for DefaultPrincipalMemory {
         &self,
         peer: &crate::auth::Subject,
     ) -> Result<Option<SessionArtifact>, MemoryError> {
+        // Acquire the lock so we don't observe an in-flight rewrite. The
+        // alternative — letting the read proceed without coordination —
+        // risks a `tokio::fs::read_to_string` of a partially-written file
+        // and a `serde_json` parse error surfaced as `MemoryError`.
+        let _guard = self.index_lock.lock().await;
         let index = self.load_index().await?;
         let peer_key = peer.to_string();
         Ok(index
@@ -184,6 +210,7 @@ impl PrincipalMemory for DefaultPrincipalMemory {
     }
 
     async fn list_sessions(&self) -> Result<Vec<SessionArtifact>, MemoryError> {
+        let _guard = self.index_lock.lock().await;
         let index = self.load_index().await?;
         Ok(index.sessions)
     }
