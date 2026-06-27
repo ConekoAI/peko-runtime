@@ -107,9 +107,7 @@ impl Subject {
     /// The bridge is the PekoHub-proxied request path. Its caller is
     /// always a pekohub *user* — but the `"anonymous"` fallback is
     /// semantically unauthenticated, not a user named "anonymous", so
-    /// it maps to `Subject::Public`. Every other value gets the
-    /// `user:{sub}` prefix that matches `CallerContext::subject()`'s
-    /// projection for `Identity::User`.
+    /// it maps to `Subject::Public`.
     ///
     /// **Prefix normalization (issue #68):** PekoHub sends the caller
     /// id as a bare numeric string (`"39"`) but its own wire format
@@ -117,13 +115,15 @@ impl Subject {
     /// (parsed via `subject_from_string_with_default_user`) strips
     /// `user:` to store `Subject::User("39")` — the bare form. Without
     /// normalization here, the inbound bridge path would produce
-    /// `Subject::User("user:39")` and the permission check would
-    /// never match the stored grant. We strip any leading `user:` so
-    /// `from_bridge_user("39")`, `from_bridge_user("user:39")`, and
-    /// `from_bridge_user("user:user:39")` all collapse to the same
-    /// `Subject::User("39")` the grant stores.
+    /// `Subject::User("user:39")` and the permission check would never
+    /// match the stored grant. We strip any leading `user:` so
+    /// `from_bridge_user("39")` and `from_bridge_user("user:39")` both
+    /// collapse to the same `Subject::User("39")` the grant stores.
+    /// (A second leading `user:` is not stripped — `strip_prefix`
+    /// removes only one occurrence, which is sufficient for the
+    /// PekoHub wire formats we observe in practice.)
     ///
-    /// Centralized here so the `user:` prefix and the anonymous
+    /// Centralized here so the prefix-strip and the anonymous
     /// special-case live next to the type's other constructors
     /// instead of being inlined at every call site.
     #[must_use]
@@ -334,39 +334,63 @@ mod tests {
         assert_eq!(Subject::Public.kind().to_string(), "public");
     }
 
-    /// Issue #26: the tunnel dispatcher stamps audit events with a
-    /// `Subject` projection of the bridge caller string. The
+    /// Issue #26 + #68: the tunnel dispatcher stamps audit events with
+    /// a `Subject` projection of the bridge caller string. The
     /// `"anonymous"` fallback is semantically unauthenticated ->
-    /// `Subject::Public`; everything else is a pekohub user with the
-    /// `user:` prefix (matching `CallerContext::subject()`'s
-    /// `Identity::User` projection).
+    /// `Subject::Public`; everything else is a pekohub user.
+    ///
+    /// **Prefix normalization (issue #68):** PekoHub sends the caller
+    /// id as a bare numeric string (`"39"`) but its own wire format
+    /// for `Subject` includes the `user:` tag. The on-disk grant
+    /// (parsed via `subject_from_string_with_default_user`) strips
+    /// `user:` to store `Subject::User("39")` — the bare form. We
+    /// collapse any leading `user:` here so the bridge and CLI paths
+    /// produce the same `Subject::User("39")` that the permission
+    /// check matches against.
     #[test]
     fn test_from_bridge_user() {
-        // Real user — gets the `user:` prefix.
+        // Bare numeric user id from PekoHub — no prefix to strip.
         assert_eq!(
-            Subject::from_bridge_user("alice"),
-            Subject::User("user:alice".to_string())
+            Subject::from_bridge_user("39"),
+            Subject::User("39".to_string())
         );
 
-        // The JWT-validated path returns a pekohub sub like
-        // `user-42`; the prefix still gets added so the kind tag is
-        // present on the wire.
+        // PekoHub's own wire format (`user:39`) collapses to the same
+        // bare form. This is the asymmetry fix for #68.
+        assert_eq!(
+            Subject::from_bridge_user("user:39"),
+            Subject::User("39".to_string())
+        );
+
+        // Double-prefix collapses one layer — `strip_prefix` only
+        // removes a single leading occurrence, so the result still
+        // carries one `user:` tag. PekoHub never sends a double-
+        // prefixed value in practice; this just pins the literal
+        // behavior so a future change to a recursive stripper is
+        // caught.
+        assert_eq!(
+            Subject::from_bridge_user("user:user:39"),
+            Subject::User("user:39".to_string())
+        );
+
+        // JWT-validated path returns a pekohub sub like `user-42`;
+        // no `user:` prefix to strip, but the kind tag is not added
+        // here — callers that need a wire-tagged Subject use
+        // `Subject::from_str`.
         assert_eq!(
             Subject::from_bridge_user("user-42"),
-            Subject::User("user:user-42".to_string())
+            Subject::User("user-42".to_string())
         );
 
         // "anonymous" fallback -> unauthenticated, not a user.
         assert_eq!(Subject::from_bridge_user("anonymous"), Subject::Public);
 
-        // Empty string is *not* a special case — it projects to
-        // `Subject::User("user:")`, distinguishable from
-        // `Subject::Public`. (Caller-side validation is responsible
-        // for not passing empty strings here; this constructor just
-        // applies the prefix.)
+        // Empty string projects to `Subject::User("")`, distinguishable
+        // from `Subject::Public`. Caller-side validation is responsible
+        // for not passing empty strings.
         assert_eq!(
             Subject::from_bridge_user(""),
-            Subject::User("user:".to_string())
+            Subject::User("".to_string())
         );
     }
 
