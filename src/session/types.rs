@@ -7,7 +7,8 @@
 //! Session ownership identity uses `crate::auth::Subject`
 //! (ADR-039). The former `Subject` type alias was removed in the
 //! `refactor/peer-to-principal-rename` cleanup; callers should now
-//! import `Subject` directly from `crate::auth::principal`.
+//! import `Subject` directly from `crate::auth` (re-exported via
+//! `crate::auth::Subject`).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

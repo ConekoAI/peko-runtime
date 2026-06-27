@@ -4,7 +4,6 @@
 //! CLI commands and API routes, ensuring consistent behavior across interfaces.
 
 pub mod agent_service;
-pub mod agent_validator;
 pub mod credentials_service;
 pub mod daemon_process_service;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
@@ -18,7 +17,6 @@ pub mod config_authority;
 pub use config_authority::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl, ConfigSource};
 
 pub use agent_service::AgentService;
-pub use agent_validator::AgentValidator;
 pub use credentials_service::CredentialsService;
 pub use daemon_process_service::{DaemonProcessService, DaemonStatus};
 pub use extension_management_service::ExtensionManagementService;

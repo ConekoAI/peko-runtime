@@ -19,8 +19,8 @@ pub use caller::{AuthMethod, CallerContext, Identity};
 pub use config::{AuthConfig, RateLimitConfig};
 pub use jwt::{JwtValidator, ValidatedJwt};
 pub use ownership::{
-    agent_resource, check_permission as check_ownership_permission, team_resource, Permission,
-    PermissionDenied, PermissionGrant, Resource as OwnedResource,
+    check_permission as check_ownership_permission, Permission, PermissionDenied,
+    PermissionGrant, Resource as OwnedResource,
 };
 pub use permissions::{check_permission, Action, AuthError, Resource};
 pub use rate_limit::{RateLimitEntry, RateLimiter};
