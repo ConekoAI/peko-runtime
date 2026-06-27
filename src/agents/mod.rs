@@ -1,8 +1,15 @@
-//! Agent runtime and multi-agent management (Stateless Architecture)
+//! Single-agent execution runtime (Stateless Architecture)
 //!
 //! This module provides:
-//! - Single agent runtime (Agent struct)
-//! - Stateless agent management (StatelessAgentManager)
+//! - Single agent runtime (`Agent` struct) — the core execution engine
+//!   used by Principal supervisors and the `Agent` subagent tool
+//! - Stateless agent management (`StatelessAgentManager`)
+//!
+//! Note: after the principal-as-single-actor migration, agent
+//! management surface (CRUD, .agent packaging) is gone. The only
+//! "agent" concept that survives at the user-facing boundary is a
+//! Principal; `Agent` here is the in-process execution primitive
+//! that turns an `AGENT.md` prompt into a chat completion.
 //! - Stateless execution service (StatelessAgentService)
 //! - Subagent spawning and management
 

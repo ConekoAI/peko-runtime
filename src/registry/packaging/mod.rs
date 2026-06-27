@@ -1,45 +1,38 @@
-//! Portable agent package system
+//! Portable principal package system
 //!
-//! Provides export/import functionality for agents as `.agent` packages.
-//! Similar to Docker containers, agents can be packaged with their
-//! identity, memory, configuration, skills, workspace, and sessions.
+//! Provides export/import functionality for Principals as `.principal`
+//! packages. After the principal-as-single-actor migration (Phases 1-5),
+//! `.principal` is the canonical archive format; `.agent` and `.team`
+//! archives were retired alongside the standalone agent CRUD surface.
+//!
+//! Similar to Docker containers, a Principal can be packaged with its
+//! identity, memory, configuration, capabilities, agent prompts, and
+//! session history.
 //!
 //! ## Package Format
 //!
-//! `.agent` files are gzip-compressed tar archives containing:
+//! `.principal` files are gzip-compressed tar archives containing:
 //! - `manifest.toml` - Package metadata and file checksums
 //! - `identity/did.json` - DID document
 //! - `identity/keys.enc` - Encrypted private keys (AES-256-GCM)
-//! - `config/agent.toml` - Agent configuration
-//! - `workspace/` - Workspace files (SYSTEM.md, AGENTS.md, etc.)
-//! - `sessions/` - Session history (optional, can be large)
+//! - `config/principal.toml` - Principal configuration (owner,
+//!   permissions, exposure, capabilities, supervisor prompt)
+//! - `workspace/agents/` - The Principal's agent prompts (`AGENT.md`)
+//! - `workspace/memory/` - Memory index and session JSONL (optional)
 //! - `extensions/` - Embedded extension packages (optional, air-gapped bundles)
-//!
-//! **Deprecated:** `skills/{name}/SKILL.md` and `mcp/` layers are legacy.
-//! Under ADR-037, skills and MCP servers are managed as extensions and
-//! recorded in `manifest.extensions`. Legacy packages containing these
-//! layers can still be imported, but new agent exports no longer emit them.
 //!
 //! ## Example
 //!
 //! ```rust,ignore
-//! use peko::registry::packaging::{export_agent, import_agent, ExportOptions, ImportOptions};
+//! use peko::registry::packaging::{PrincipalPackager, PrincipalUnpackager};
 //!
-//! // Export an agent
-//! let options = ExportOptions {
-//!     encrypt: true,
-//!     passphrase: Some("secret".to_string()),
-//!     ..Default::default()
-//! };
-//! let package_path = export_agent(config, identity, memory_path, options).await?;
+//! // Export a principal
+//! let packager = PrincipalPackager::new(workspace_path);
+//! let package_path = packager.export(options).await?;
 //!
-//! // Import an agent
-//! let options = ImportOptions {
-//!     new_name: Some("imported-agent".to_string()),
-//!     passphrase: Some("secret".to_string()),
-//!     ..Default::default()
-//! };
-//! let result = import_agent("./my-agent.agent", options).await?;
+//! // Import a principal
+//! let unpackager = PrincipalUnpackager::new(target_dir);
+//! let result = unpackager.import("./my-principal.principal", options).await?;
 //! ```
 
 #![allow(dead_code)]

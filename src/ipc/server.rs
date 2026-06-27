@@ -1556,14 +1556,12 @@ impl IpcServer {
                 ext_type,
             } => {
                 // Reload extensions from disk before listing. The
-                // `peko agent pull` auto-ext-pull path runs in the
-                // CLI process (not via IPC) — see
-                // `ensure_extensions_for_agent` at
-                // `src/commands/agent/handlers.rs:1308+` — so the
-                // daemon's in-memory manager is out of date with
-                // the on-disk extension storage. Re-reading from
-                // disk on every list keeps the daemon's view in
-                // sync with the CLI's writes. Phase D3 flow 5b is
+                // `peko principal pull` auto-ext-pull path runs in the
+                // CLI process (not via IPC) — the daemon's in-memory
+                // manager is out of date with the on-disk extension
+                // storage. Re-reading from disk on every list keeps
+                // the daemon's view in sync with the CLI's writes.
+                // Phase D3 flow 5b is
                 // the first end-to-end test that surfaced this
                 // gap (test asserts on `peko ext list` after the
                 // auto-ext-pull).

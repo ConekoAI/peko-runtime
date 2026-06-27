@@ -1,13 +1,17 @@
-//! Peko - Lightweight Multi-Agent Runtime
+//! Peko - Principal-as-actor runtime
 //!
-//! A Rust-based agent runtime with unified extension support for multi-platform messaging.
-
+//! A Rust-based runtime where each user-facing entity is a Principal
+//! (identity, memory, governance, capabilities, supervisor agent, and
+//! a workspace of agent prompts). Agents are now thin Markdown
+//! extensions (`AGENT.md`) managed by the extension framework.
+//!
 //! ## Architecture
 //!
 //! Peko uses a minimal core (~500KB-1MB) with on-demand loaded extensions:
 //!
-//! - **Core**: Agent runtime, state machine, tool registry
-//! - **Extensions**: Unified extension system (skills, tools, MCP, gateways)
+//! - **Core**: Principal runtime, supervisor routing, tool registry
+//! - **Extensions**: Unified extension system (skills, tools, MCP, gateways,
+//!   and the thin agent prompts that Principals delegate to)
 //! - **Gateways**: Messaging platform adapters (Discord, Slack, etc.) as extensions
 //!
 //! ## Quick Start
@@ -16,8 +20,9 @@
 //! # Install a gateway extension
 //! peko ext install ./discord-gateway
 //!
-//! # Run single agent
-//! peko agent
+//! # Create a principal and send a message
+//! peko principal create alice
+//! peko send alice "hello"
 //!
 //! # See all options
 //! peko --help
@@ -133,7 +138,8 @@ pub mod common;
 // Core Runtime
 // ============================================================================
 
-/// Agent runtime, lifecycle, and multi-agent management (absorbed `prompt/`)
+/// Principal runtime, supervisor lifecycle, and the workspace-of-agent-prompts
+/// model that replaced standalone multi-agent management.
 pub mod agents;
 
 /// Execution engine and state machine
@@ -220,7 +226,8 @@ pub mod commands;
 // Utilities
 // ============================================================================
 
-/// Remote registry client (push/pull) and local packaging
+/// Remote registry client (push/pull) and local `.principal` packaging
+/// (the agent packaging surface was retired in favor of Principal packages).
 /// (export/import/build/push/pull of `.agent` / `.team` archives).
 pub mod registry;
 

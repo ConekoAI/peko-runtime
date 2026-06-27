@@ -259,7 +259,7 @@ test-scenarios-s4: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test s4_publish_running_agent_with_permission -- --include-ignored
 
-# D5: Live `peko agent permit` / `peko agent revoke` propagation to
+# D5: Live `peko principal permit` / `peko principal revoke` propagation to
 # PekoHub without daemon restart (issue #16 regression).
 test-scenarios-s5: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \

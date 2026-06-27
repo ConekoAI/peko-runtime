@@ -313,7 +313,7 @@ impl AsyncTaskTransport for UnavailableAsyncTransport {
 /// but the task was never executed. Failing fast with a clear error is safer.
 pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTransport>> {
     // Use try_connect_quick (200ms timeout, no auto-start) to avoid hanging
-    // on daemon-unreachable commands like `agent list`.
+    // on daemon-unreachable commands like `peko principal list`.
     let client = match crate::ipc::ConnectionManager::try_connect_quick().await {
         Ok(conn) => crate::ipc::DaemonClient::with_connection(conn).await?,
         Err(e) => {

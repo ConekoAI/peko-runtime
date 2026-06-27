@@ -854,7 +854,7 @@ impl AgentService {
         // agent path) — so `base_dir` must be the config dir, not the
         // `agents/` root. Passing `agents_root` here would produce a
         // `agents/agents/<name>` path and the agent would never show
-        // up in `peko agent list` (which scans `<config>/agents/`).
+        // up in `peko principal list` (which scans `<config>/principals/`).
         // Phase D3 flow 5 is the first end-to-end test that exercised
         // this code path and surfaced the regression.
         let config_dir = self

@@ -83,7 +83,7 @@ pub enum ProviderType {
     ///
     /// Explicit `#[serde(rename)]` is needed because heck's snake_case
     /// splitter produces `open_a_i` for the adjacent-capitals `OpenAI`,
-    /// but the Display impl (and what users see in `peko agent create`,
+    /// but the Display impl (and what users see in `peko principal create`,
     /// logs, and config files) writes `openai`. Same situation for
     /// `OpenAICompatible` below.
     #[serde(rename = "openai")]
@@ -253,7 +253,7 @@ mod tests {
 
     /// Regression: serde's `snake_case` rename and the `Display` impl must
     /// agree for every variant, otherwise TOML configs that match the CLI's
-    /// `peko agent create` output fail to parse. Specifically, the
+    /// `peko principal create` output fail to parse. Specifically, the
     /// adjacent-capitals `OpenAI` and `OpenAICompatible` need explicit
     /// `#[serde(rename)]` because heck would otherwise produce
     /// `open_a_i` / `open_a_i_compatible`.

@@ -1,9 +1,11 @@
 //! Configuration path manipulation utilities
 //!
-//! Provides dot-notation get/set operations on `AgentConfig` via JSON intermediate
-//! representation, enabling generic CLI commands like:
-//!   peko agent config get my-agent tools.enabled
-//!   peko agent config set my-agent tools.enabled '["Bash","Read"]'
+//! Provides dot-notation get/set operations on `AgentConfig` via JSON
+//! intermediate representation. Originally intended for `peko agent
+//! config get/set`; now reached via `peko principal config get/set`
+//! once the principal surface lands that command (the helper
+//! machinery is still consumed by tests and the legacy agent import
+//! path).
 
 use crate::agents::agent_config::AgentConfig;
 use anyhow::{Context, Result};

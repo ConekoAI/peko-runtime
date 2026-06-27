@@ -17,7 +17,10 @@ Peko is a Rust-based multi-agent runtime with a unified extension architecture. 
 - **Built-in tools** (Read, Write, Edit, Bash, Agent, CronCreate/CronDelete/CronList, AsyncSpawn/AsyncOutput/AsyncStop/AsyncStatus/AsyncList, TaskCreate/TaskGet/TaskList/TaskUpdate, session, etc.)
 - **Team runtime** with A2A (agent-to-agent) messaging over an event bus
 - **Extension system** with 22 hook points for tools, skills, MCP servers, channels, and gateways
-- **Packaging** — `.agent` build/export/import, `.team` export/import, `.ext` export, registry push/pull with content-addressable storage
+- **Packaging** — `.principal` build/export/import, `.ext` export, registry push/pull with content-addressable storage
+  (the `.agent` and `.team` archive formats were retired when the
+  standalone agent CRUD surface was rescoped into the principal-as-
+  single-actor model)
 
 ---
 
@@ -94,7 +97,9 @@ src/
 │   ├── resolver.rs         # LlmResolver — precedence: override > session > agent > default > first
 │   └── core.rs             # Unified Provider type
 ├── registry/               # Local packaging/export/import and remote registry push/pull
-│   ├── packaging/          # OCI-inspired .agent/.team/.ext archive handling
+│   ├── packaging/          # OCI-inspired .principal/.ext archive handling
+│   │                       # (.agent/.team archives were retired with
+│   │                       #  the principal-as-single-actor migration)
 │   └── client.rs           # HTTP registry client
 ├── session/                # Session JSONL management, branching, indexing, compaction
 ├── tools/                  # Built-in tools and tool factory
@@ -121,7 +126,7 @@ src/
 | `extensions::framework` | Generic extension framework (ADR-017) — hook points, registries, types, managers, and shared services. Zero dependencies on concrete extension type implementations. |
 | `extensions` (sibling submodules) | Extension type implementations (MCP, Gateway, Skill, Builtin, General, Universal). Each type lives in its own directory. |
 | `identity` | DID identity, keychain, key storage, resolver, runtime identity |
-| `registry` | Local packaging/export/import (`AgentRegistry`, `.agent`/`.team`/`.ext` archives) and remote registry client |
+| `registry` | Local packaging/export/import (`PrincipalPackager`/`PrincipalUnpackager`, `.principal`/`.ext` archives) and remote registry client |
 | `session` | JSONL persistence, atomic writes, branching, `.index.json` sidecars, compaction |
 | `tools` | Built-in tool implementations and tool trait surface |
 | `providers` | LLM client abstractions (chat completions, streaming, tool calling) |
@@ -134,15 +139,19 @@ src/
 
 - **Unit tests** are co-located in `#[cfg(test)]` modules within source files.
 - **Integration tests** live in `tests/`; the legacy PowerShell `e2e_tests/` tree was renamed to `e2e_tests_archive/` and now serves as a fixture source for the new Rust integration tests.
-- **New CLI integration tests** (Phase B migration):
-  - `tests/cli_send.rs` — `peko send` with mock LLM
-  - `tests/cli_session.rs` — `peko session` with mock LLM
-  - `tests/cli_basics.rs` — Offline agent/team/config commands
+- **New CLI integration tests** (Phase B migration, then
+  retargeted for the principal-as-single-actor model in the parity
+  branch):
+  - `tests/cli_send.rs` — `peko send` (targets a Principal; mock LLM)
+  - `tests/cli_session.rs` — `peko session` over Principal sessions (mock LLM)
+  - `tests/cli_basics.rs` — Offline `peko principal`/`peko team`/`peko config`
   - `tests/cli_extensions.rs`, `tests/cli_extensions_l3.rs` — Extension system
   - `tests/cli_cron.rs` — `peko cron` create/list/delete (mock LLM)
   - `tests/cli_subagent.rs` — `peko subagent` + `agent_spawn` (mock LLM)
   - `tests/cli_tools.rs` — Built-in tools (Bash, Read, Write, …) (mock LLM)
   - `tests/cli_providers.rs` — Real-LLM tier (minimax, kimi)
+  - `tests/cli_agent_signature.rs` — Principal packager signature
+    verification (auto-discovered, run on demand via Make target)
 - **Scenario tests** live in `tests/scenarios/` (registered explicitly in `Cargo.toml`):
   - `s1_local_agent_with_extensions` through `s6_principal_grant_revoke_roundtrip`
   - `tunnel_security` — Tunnel protocol security checks
@@ -243,14 +252,14 @@ peko registry get-default
 When a default registry is configured, you can use bare references:
 
 ```bash
-# Push (resolves to pekohub.org/peko/agents/my-agent:v1.0)
-peko agent push my-agent:v1.0
+# Push (resolves to pekohub.org/peko/principals/my-principal:v1.0)
+peko principal push my-principal:v1.0
 
-# Pull (resolves to pekohub.org/peko/agents/my-agent:v1.0)
-peko agent pull my-agent:v1.0
+# Pull (resolves to pekohub.org/peko/principals/my-principal:v1.0)
+peko principal pull my-principal:v1.0
 
 # Override for a single command
-peko agent push my-agent:v1.0 --registry localhost:3000
+peko principal push my-principal:v1.0 --registry localhost:3000
 ```
 
 ### Authentication
@@ -269,7 +278,7 @@ peko logout
 Full references (`host/path:tag`) continue to work as before:
 
 ```bash
-peko agent push my-agent:v1.0 custom.registry.com/peko/agents/my-agent:v1.0
+peko principal push my-principal:v1.0 custom.registry.com/peko/principals/my-principal:v1.0
 ```
 
 ---

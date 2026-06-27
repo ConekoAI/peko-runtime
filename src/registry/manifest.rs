@@ -105,7 +105,7 @@ pub struct RegistryManifest {
     #[serde(skip)]
     pub required_mcp_servers: Option<String>,
     /// Extension dependencies declared by the agent (auto-pulled on
-    /// `peko agent pull`). Stored as a JSON string in annotations
+    /// `peko principal pull`). Stored as a JSON string in annotations
     /// for OCI compatibility; restored to a `Vec<ExtensionRef>` on
     /// deserialize.
     ///
