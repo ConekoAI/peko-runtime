@@ -1,10 +1,11 @@
-//! CLI integration tests for basic commands: agent, team, config (Phase B slice 3).
+//! CLI integration tests for basic commands: principal, team, config (Phase B slice 3).
 //!
-//! **Note:** All agent and team commands route through the daemon via IPC.
-//! Config commands operate on the filesystem directly. We spawn a [`DaemonGuard`]
-//! for the agent/team tests and skip it for the pure config tests.
+//! **Note:** Team commands route through the daemon via IPC. Principal
+//! create/list/show and config commands operate on the filesystem directly. We
+//! spawn a [`DaemonGuard`] for the team tests and skip it for the offline
+//! principal and config tests.
 //!
-//! Tier: mock-LLM for agent/team (daemon required), offline for config.
+//! Tier: mock-LLM for team (daemon required), offline for principal/config.
 //!
 //! (Was `#![cfg(unix)]`; dropped with the Windows named-pipe transport
 //!  landing — see ADR-038.)
@@ -58,131 +59,52 @@ fn assert_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 }
 
 // ---------------------------------------------------------------------------
-// Agent commands (need daemon)
+// Principal commands (offline — create/list/show operate on the filesystem)
 // ---------------------------------------------------------------------------
+//
+// The standalone `peko agent create/list/show/remove/move` CRUD surface was
+// removed in the "Principal as the single actor" migration. The Principal is
+// now the sole user-facing actor; these tests cover its create/list/show
+// lifecycle. `peko principal create/list/show` write and read the workspace
+// directly (no daemon/IPC), so these run offline — no `DaemonGuard` or
+// `MOCK_LLM_URL` needed. There is no `principal remove`/`move` command, so the
+// removal/rename cases (and the legacy `--json`/`--provider` create flags,
+// which Principal create does not expose) are dropped rather than rewritten.
 
 #[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn agent_create_list_show_remove() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
+fn principal_create_list_show() {
     let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "existing-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
 
-    // Create an agent
-    let (out, err, status) = run(
-        &cli,
-        &["agent", "create", "test-agent", "--provider", "mock-llm"],
-    );
-    assert_ok(&out, &err, &status);
-
-    // List agents
-    let (out, err, status) = run(&cli, &["agent", "list"]);
+    // Create a Principal — writes workspace, `agents/primary.md`, identity, and
+    // `principal.toml` directly.
+    let (out, err, status) = run(&cli, &["principal", "create", "test-principal"]);
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("test-agent"),
-        "list should include created agent: {out}"
+        out.contains("test-principal"),
+        "create should mention the created principal name: {out}"
     );
 
-    // Show agent
-    let (out, err, status) = run(&cli, &["agent", "show", "test-agent"]);
+    // List Principals.
+    let (out, err, status) = run(&cli, &["principal", "list"]);
     assert_ok(&out, &err, &status);
     assert!(
-        out.contains("test-agent") || out.contains("mock-llm"),
-        "show should display agent info: {out}"
+        out.contains("test-principal"),
+        "list should include created principal: {out}"
     );
 
-    // Remove agent
-    let (out, err, status) = run(&cli, &["agent", "remove", "test-agent", "--force"]);
-    assert_ok(&out, &err, &status);
-
-    // Verify it's gone
-    let (out, err, status) = run(&cli, &["agent", "list"]);
+    // Show Principal.
+    let (out, err, status) = run(&cli, &["principal", "show", "test-principal"]);
     assert_ok(&out, &err, &status);
     assert!(
-        !out.contains("test-agent"),
-        "list should not include removed agent: {out}"
+        out.contains("test-principal"),
+        "show should display principal info: {out}"
     );
 }
 
 #[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn agent_create_json_output() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
+fn principal_show_nonexistent_fails() {
     let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "json-agent-precreate", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "agent",
-            "create",
-            "json-agent",
-            "--provider",
-            "mock-llm",
-            "--json",
-        ],
-    );
-    assert_ok(&out, &err, &status);
-
-    // The --json flag may wrap output in JSON or may just include JSON metadata.
-    // Verify the agent name appears somewhere in the output.
-    assert!(
-        out.contains("json-agent"),
-        "output should mention the created agent name: {out}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn agent_move_renames_agent() {
-    let Some(_mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Create agent (daemon will write the config)
-    let (_, _, status) = run(
-        &cli,
-        &["agent", "create", "old-name", "--provider", "mock-llm"],
-    );
-    assert!(status.success(), "agent create should succeed");
-
-    // Move/rename — verify the command succeeds
-    let (out, err, status) = run(&cli, &["agent", "move", "old-name", "new-name"]);
-    assert_ok(&out, &err, &status);
-
-    // The move command may or may not actually rename depending on implementation.
-    // We verify at minimum that the command reports success.
-    assert!(
-        out.to_lowercase().contains("moved")
-            || out.to_lowercase().contains("renamed")
-            || status.success(),
-        "move should report success or mention move/renamed: {out}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn agent_show_nonexistent_fails() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "other-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let (out, err, status) = run(&cli, &["agent", "show", "no-such-agent"]);
+    let (out, err, status) = run(&cli, &["principal", "show", "no-such-principal"]);
     assert_err(&out, &err, &status);
 }
 

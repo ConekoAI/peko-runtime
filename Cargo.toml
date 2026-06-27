@@ -147,10 +147,6 @@ name = "s2_extension_registry_roundtrip"
 path = "tests/scenarios/s2_extension_registry_roundtrip.rs"
 
 [[test]]
-name = "s3_agent_registry_roundtrip"
-path = "tests/scenarios/s3_agent_registry_roundtrip.rs"
-
-[[test]]
 name = "s4_publish_running_agent_with_permission"
 path = "tests/scenarios/s4_publish_running_agent_with_permission.rs"
 
