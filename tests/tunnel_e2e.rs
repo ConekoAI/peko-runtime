@@ -10,13 +10,29 @@
 //!
 //! The test:
 //!   1. Starts PekoHub backend on a random ephemeral port (or connects to container)
-//!   2. Creates a temporary workspace with an agent config
-//!   3. Builds a real AppState (with real agent service)
+//!   2. Creates a temporary workspace with a Principal config
+//!   3. Builds a real AppState (which loads the Principal via PrincipalManager)
 //!   4. Writes tunnel credentials pointing to PekoHub
 //!   5. Starts the tunnel via AppState::start_tunnel()
 //!   6. Creates a user + runtime record in PekoHub
 //!   7. Sends POST /v1/instances/:id/chat via HTTP
 //!   8. Consumes SSE and verifies response
+//!
+//! ## Principal-era translation
+//!
+//! After the "Principal as the single actor" migration, `TunnelDispatcher::announce_instances`
+//! iterates `PrincipalManager::list_all()` — there are no agent instances to announce anymore
+//! (see `src/tunnel/dispatcher.rs:296-345`). The runtime's canonical chat surface is
+//! `peko send <principal>`, and the inbound PekoHub-proxied chat is routed to
+//! `PrincipalManager::receive`. This test therefore bootstraps a Principal on disk
+//! at `<workspace>/config/principals/<name>/principal.toml` so `AppState::with_data_dir`
+//! picks it up during the `read_dir` loop in `src/daemon/state.rs:425-440`, and the
+//! announcer finds it via `principal_manager.list_all()`.
+//!
+//! Permission grants live on `PrincipalConfig.permissions` (replacing the legacy
+//! `[[permissions]]` block at the agent config level). The user's `chat` permission
+//! is what lets the proxied request through the dispatcher's `check_request_allowed`
+//! defense-in-depth ACL.
 //!
 //! Run locally with real LLM:
 //!   cd peko-runtime
@@ -38,10 +54,21 @@ use common::{generate_jwt, generate_runtime_identity, PekohubBackend};
 // Workspace setup
 // ---------------------------------------------------------------------------
 
-/// Create a temporary workspace with an agent config
+/// Create a temporary workspace with a Principal config on disk so
+/// `AppState::with_data_dir` picks it up via the `read_dir` loop in
+/// `src/daemon/state.rs:425-440` and `PrincipalManager::list_all()`
+/// surfaces it to the tunnel announce loop.
+///
+/// On-disk layout (post-Principal migration):
+///   `<workspace>/config/principals/<name>/principal.toml`
+///
+/// The Principal carries the same `chat` permission grant that the legacy
+/// agent config used — without it the dispatcher's private-instance
+/// ACL (`compute_allowed_user_ids` → `allowed_users`) is empty and the
+/// proxied chat request is rejected with `Forbidden`.
 async fn create_test_workspace(
     workspace_dir: &std::path::Path,
-    agent_name: &str,
+    principal_name: &str,
     chat_user_id: &str,
 ) -> anyhow::Result<()> {
     let config_dir = workspace_dir.join("config");
@@ -52,24 +79,17 @@ async fn create_test_workspace(
     tokio::fs::create_dir_all(&data_dir).await?;
     tokio::fs::create_dir_all(&cache_dir).await?;
 
-    // Create agents directory
-    let agents_dir = config_dir.join("agents");
-    tokio::fs::create_dir_all(&agents_dir).await?;
-
-    // Create agent directory
-    let agent_dir = agents_dir.join(agent_name);
-    tokio::fs::create_dir_all(&agent_dir).await?;
-
     // Determine provider: use mock LLM if MOCK_LLM_URL is set, otherwise minimax.
-    // v3 splits provider config out of the agent: the agent carries only
-    // soft hints (`preferred_provider_id` / `preferred_model_id`), and the
-    // actual base_url + api_key live in the v3 provider catalog at
-    // `~/.peko/providers.toml`. We seed the catalog entry here, then write
-    // a hint-only agent config.
+    // v3 splits provider config out of the actor's identity: the agent/principal
+    // carries only soft hints, and the actual base_url + api_key live in the v3
+    // provider catalog at `<config_dir>/providers.toml`. We seed the catalog
+    // entry here, then write a Principal config that doesn't reference a
+    // provider at all — the resolver picks the default.
     //
     // This mirrors `tests/common/agent.rs::seed_mock_provider_in_catalog`
-    // + `write_v3_mock_agent` used by the cli_subagent integration suite.
-    let preferred_provider_id = if let Ok(mock_llm_url) = std::env::var("MOCK_LLM_URL") {
+    // + `create_mock_principal_with_tools` used by the cli_subagent /
+    // cli_extensions_l3 integration suites.
+    if let Ok(mock_llm_url) = std::env::var("MOCK_LLM_URL") {
         if mock_llm_url.is_empty() {
             return Err(anyhow::anyhow!("MOCK_LLM_URL is set but empty"));
         }
@@ -79,7 +99,6 @@ async fn create_test_workspace(
         // `MOCK_LLM_API_KEY` under the `PEKO_TEST_RESOLVER_BOOTSTRAP=1`
         // headless fallback (CI mode).
         seed_mock_provider_catalog(workspace_dir, &mock_llm_url, "mock-llm-test-key")?;
-        "mock-llm"
     } else {
         let api_key = std::env::var("MINIMAX_API_KEY").map_err(|_| {
             anyhow::anyhow!("MINIMAX_API_KEY or MOCK_LLM_URL environment variable not set")
@@ -89,33 +108,40 @@ async fn create_test_workspace(
         // OS keychain (or, under PEKO_TEST_RESOLVER_BOOTSTRAP=1, the
         // MINIMAX_API_KEY env var).
         seed_minimax_catalog_entry(workspace_dir, &api_key)?;
-        "minimax"
-    };
+    }
 
-    let config_toml = format!(
-        r#"version = "3.0"
-name = "{agent_name}"
-description = "E2E test agent"
-auto_accept_trusted = false
-default_timeout_seconds = 60
+    // Create the Principal's directory + principal.toml. The Principal's
+    // identity is generated lazily by `PrincipalManager::load` if the
+    // `did` field is absent, so we don't need to provision an ed25519
+    // key here — the manager takes care of it.
+    let principals_dir = config_dir.join("principals");
+    let principal_dir = principals_dir.join(principal_name);
+    tokio::fs::create_dir_all(&principal_dir).await?;
 
-preferred_provider_id = "{preferred_provider_id}"
-preferred_model_id = "default"
+    let principal_toml = format!(
+        r#"name = "{principal_name}"
+description = "E2E test principal"
 
-[extensions]
-enabled = []
+[identity]
+display_name = "E2E Test Principal"
 
-[channels]
-cli = true
+[capabilities]
+tools = []
+skills = []
+mcps = []
+agents = []
 
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
+# PekoHub's `canChat` short-circuits to 503 Service Unavailable when
+# `instance.exposure === "unexposed"`. `InstanceExposure` defaults to
+# Unexposed (`src/tunnel/protocol.rs:27-28`), so we must pin it to
+# Private here — otherwise the announce goes out as `unexposed` and
+# PekoHub rejects every chat attempt before the user/grant check.
+exposure = "private"
 
 # Grant the test user Chat permission so the runtime's private-
 # instance ACL (peko-runtime/src/tunnel/dispatcher.rs::
-# check_request_allowed) lets the request through. Without this,
-# `allowed_users` is computed as empty and the chat is rejected
-# with "Forbidden".
+# compute_allowed_user_ids) lets the request through. Without this,
+# `allowed_users` is empty and the chat is rejected with "Forbidden".
 [[permissions]]
 subject = {{ kind = "user", id = "{chat_user_id}" }}
 permission = "chat"
@@ -124,7 +150,7 @@ granted_by = {{ kind = "user", id = "system" }}
 "#
     );
 
-    tokio::fs::write(agent_dir.join("config.toml"), config_toml).await?;
+    tokio::fs::write(principal_dir.join("principal.toml"), principal_toml).await?;
 
     Ok(())
 }
@@ -289,12 +315,12 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let user_id = user_body["id"].as_i64().expect("No user id") as i32;
     let chat_user_id = user_id.to_string();
 
-    // 3. Create temporary workspace with agent config
+    // 3. Create temporary workspace with Principal config
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let workspace_path = temp_dir.path();
-    let agent_name = "e2e-test-agent";
+    let principal_name = "e2e-test-principal";
 
-    create_test_workspace(workspace_path, agent_name, &chat_user_id)
+    create_test_workspace(workspace_path, principal_name, &chat_user_id)
         .await
         .expect("Failed to create test workspace");
 
@@ -407,7 +433,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let instances = list_body["data"].as_array().expect("Expected data array");
     assert!(
         !instances.is_empty(),
-        "Agent should have been announced. Got: {:?}",
+        "Principal should have been announced. Got: {:?}",
         instances
     );
 
