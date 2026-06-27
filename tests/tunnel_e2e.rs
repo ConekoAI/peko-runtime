@@ -118,9 +118,24 @@ async fn create_test_workspace(
     let principal_dir = principals_dir.join(principal_name);
     tokio::fs::create_dir_all(&principal_dir).await?;
 
+    // TOML key-order trap: top-level scalar keys after a `[section]` block
+    // are interpreted as belonging to the most recently opened sub-table,
+    // not the root. So `exposure = "private"` placed after `[identity]`
+    // or `[capabilities]` is silently absorbed by the wrong table and
+    // the field falls back to its `#[default]` (Unexposed) — PekoHub
+    // then rejects every chat with 503 before the user-permission check.
+    // Place all root-level keys (`exposure`, `description`) BEFORE any
+    // `[section]` header.
     let principal_toml = format!(
         r#"name = "{principal_name}"
 description = "E2E test principal"
+
+# PekoHub's `canChat` short-circuits to 503 Service Unavailable when
+# `instance.exposure === "unexposed"`. `InstanceExposure` defaults to
+# Unexposed (`src/tunnel/protocol.rs:27-28`), so we must pin it to
+# Private here — otherwise the announce goes out as `unexposed` and
+# PekoHub rejects every chat attempt before the user/grant check.
+exposure = "private"
 
 [identity]
 display_name = "E2E Test Principal"
@@ -130,13 +145,6 @@ tools = []
 skills = []
 mcps = []
 agents = []
-
-# PekoHub's `canChat` short-circuits to 503 Service Unavailable when
-# `instance.exposure === "unexposed"`. `InstanceExposure` defaults to
-# Unexposed (`src/tunnel/protocol.rs:27-28`), so we must pin it to
-# Private here — otherwise the announce goes out as `unexposed` and
-# PekoHub rejects every chat attempt before the user/grant check.
-exposure = "private"
 
 # Grant the test user Chat permission so the runtime's private-
 # instance ACL (peko-runtime/src/tunnel/dispatcher.rs::
