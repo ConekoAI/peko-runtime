@@ -51,6 +51,13 @@ pub struct Agent {
     /// this registry's session inbox instead of creating a per-call one,
     /// so external callers can push steering messages into a running agent.
     inbox_registry: Option<Arc<InboxRegistry>>,
+    /// Optional principal workspace. When set, `init_builtins_async` builds the
+    /// `Agent` tool's `AgentService` with `for_principal(workspace)` so the
+    /// supervisor resolves subagents from `<workspace>/agents/<name>/AGENT.md`
+    /// instead of the global `<home>/agents/<name>/config.toml`. Without this,
+    /// `init_builtins_async` (run lazily at execution time) would clobber any
+    /// principal-scoped `Agent` tool registered on the core beforehand.
+    principal_workspace: Option<std::path::PathBuf>,
 }
 
 impl Clone for Agent {
@@ -71,6 +78,7 @@ impl Clone for Agent {
             current_session_id: Arc::clone(&self.current_session_id),
             extension_core: Arc::clone(&self.extension_core),
             inbox_registry: self.inbox_registry.clone(),
+            principal_workspace: self.principal_workspace.clone(),
         }
     }
 }
@@ -113,8 +121,17 @@ impl Agent {
         );
         tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
-        // Add Agent tool with executor and session provider
-        let agent_service = crate::common::services::AgentService::new(PathResolver::new());
+        // Add Agent tool with executor and session provider. When this agent
+        // runs as a Principal supervisor, build the service scoped to the
+        // principal workspace so subagents resolve from
+        // `<workspace>/agents/<name>/AGENT.md`. Otherwise fall back to the
+        // global agent registry.
+        let agent_service = match self.principal_workspace {
+            Some(ref workspace) => {
+                crate::common::services::AgentService::for_principal(workspace)
+            }
+            None => crate::common::services::AgentService::new(PathResolver::new()),
+        };
         tools.push(Arc::new(
             AgentTool::with_agent_service_and_session_provider(
                 self.subagent_executor.clone(),
@@ -197,14 +214,27 @@ impl Agent {
         if !whitelist.is_empty() {
             let before_count = tools.len();
             tools.retain(|tool| {
+                let tool_name = tool.name();
                 whitelist.iter().any(|pattern: &String| {
-                    if pattern.eq_ignore_ascii_case(tool.name()) {
+                    // Bare-name match (e.g. "Agent").
+                    if pattern.eq_ignore_ascii_case(tool_name) {
                         return true;
+                    }
+                    // Canonical-form match (e.g. "builtin:tool:Agent"). Whitelists
+                    // are commonly stored in canonical form, while per-agent tools
+                    // register under their bare name — match the suffix so the
+                    // canonical entry still enables the tool. Without this, spawned
+                    // subagents (whose config uses `ExtensionConfig::default()`,
+                    // canonical-only) lose the Agent/session/Task tools and cannot
+                    // delegate to nested subagents.
+                    if let Some(bare) = pattern.strip_prefix("builtin:tool:") {
+                        if bare.eq_ignore_ascii_case(tool_name) {
+                            return true;
+                        }
                     }
                     if pattern.ends_with('*') {
                         let prefix = &pattern[..pattern.len() - 1];
-                        return tool
-                            .name()
+                        return tool_name
                             .to_lowercase()
                             .starts_with(&prefix.to_lowercase());
                     }
@@ -438,6 +468,7 @@ impl Agent {
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry,
+            principal_workspace: None,
         };
 
         info!(
@@ -446,6 +477,27 @@ impl Agent {
         );
 
         Ok(agent)
+    }
+
+    /// Scope this agent's `Agent` tool to a Principal workspace.
+    ///
+    /// When set, `init_builtins_async` builds the `Agent` tool's `AgentService`
+    /// with `for_principal(workspace)`, so the supervisor resolves subagents
+    /// from `<workspace>/agents/<name>/AGENT.md`. This must be set before the
+    /// agent executes: `init_builtins_async` runs lazily inside
+    /// `prepare_execution`, so a principal-scoped `Agent` tool registered on the
+    /// core beforehand would otherwise be clobbered by the global-scoped one.
+    pub fn with_principal_workspace(mut self, workspace: std::path::PathBuf) -> Self {
+        // Also scope the subagent executor so depth-1 children (and, via the
+        // executor's own propagation, deeper descendants) resolve their
+        // subagents from this workspace. The executor is built before the
+        // workspace is known, so rebuild it here (SubagentExecutor is Clone).
+        let executor = (*self.subagent_executor)
+            .clone()
+            .with_principal_workspace(workspace.clone());
+        self.subagent_executor = Arc::new(executor);
+        self.principal_workspace = Some(workspace);
+        self
     }
 
     /// Create a new agent with an existing session manager and a shared subagent executor.
@@ -525,6 +577,7 @@ impl Agent {
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry: None,
+            principal_workspace: None,
         };
 
         info!(
@@ -1477,6 +1530,7 @@ impl Agent {
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
             inbox_registry: None,
+            principal_workspace: None,
         })
     }
 

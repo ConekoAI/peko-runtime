@@ -187,7 +187,15 @@ pub async fn run_supervisor_prompt(
         Arc::clone(&core),
         Some(inbox_registry),
     )
-    .await?;
+    .await?
+    // Scope the supervisor's `Agent` tool to this principal's workspace so
+    // subagents resolve from `<workspace>/agents/<name>/AGENT.md`. Without this,
+    // `Agent::init_builtins_async` (run lazily at execution time, inside
+    // `prepare_execution`) re-registers a globally-scoped `Agent` tool that
+    // clobbers the principal-scoped one registered below — making every
+    // `subagent_type` resolve against the global `<home>/agents/...` path and
+    // fail with "Subagent type '<name>' not found".
+    .with_principal_workspace(workspace_path.clone());
 
     // Register the principal-scoped tools after `Agent::new*` but before
     // execution so they are available on the supervisor's private core.
