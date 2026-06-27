@@ -146,8 +146,6 @@ pub fn create_mock_principal_with_tools(
     .expect("write principal.toml");
 }
 
-/// (Removed: the v3 rename already happened, so callers should use
-/// `write_v3_mock_agent` directly. The deprecated alias is removed.)
 /// Seed a `mock-llm` catalog entry pointing at `mock_llm_url`. The
 /// test harness invokes this before spawning the daemon so the
 /// daemon's `LlmResolver` finds the entry on first lookup.

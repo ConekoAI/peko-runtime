@@ -71,14 +71,6 @@ impl Principal {
         self.config.read().await.name.clone()
     }
 
-    /// Resolve a registered agent prompt by local name.
-    pub fn agent_prompt(
-        &self,
-        name: &str,
-    ) -> Option<&AgentPrompt> {
-        self.agent_prompts.get(name)
-    }
-
     /// The capabilities (tools, skills, MCPs) available to this Principal.
     pub async fn capabilities(&self) -> PrincipalCapabilities {
         self.config.read().await.capabilities.clone()

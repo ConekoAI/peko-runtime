@@ -707,22 +707,10 @@ impl AppState {
         inner.instance_count
     }
 
-    /// Update the instance count
-    pub async fn set_instance_count(&self, count: u64) {
-        let mut inner = self.inner.write().await;
-        inner.instance_count = count;
-    }
-
     /// Get the current team count
     pub async fn team_count(&self) -> u64 {
         let inner = self.inner.read().await;
         inner.team_count
-    }
-
-    /// Update the team count
-    pub async fn set_team_count(&self, count: u64) {
-        let mut inner = self.inner.write().await;
-        inner.team_count = count;
     }
 
     /// Mark the daemon as healthy (not degraded)
@@ -799,12 +787,6 @@ impl AppState {
     #[must_use]
     pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
         &self.principal_manager
-    }
-
-    /// Get the lifecycle manager
-    #[must_use]
-    pub fn lifecycle(&self) -> &Arc<LifecycleManager> {
-        &self.lifecycle
     }
 
     /// Get the session service
@@ -1413,13 +1395,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_instance_count() {
+    async fn test_instance_count_starts_at_zero() {
+        // `instance_count()` is live (read by `ipc/server.rs:1480` for the
+        // SystemStatus response). The corresponding setter was removed
+        // — it had no production callers, only this test — so the only
+        // meaningful invariant we can assert is the initial value.
         let state = create_test_state().await;
-
         assert_eq!(state.instance_count().await, 0);
-
-        state.set_instance_count(5).await;
-        assert_eq!(state.instance_count().await, 5);
     }
 
     #[tokio::test]

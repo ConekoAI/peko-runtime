@@ -766,14 +766,16 @@ impl Unpackager {
     }
 }
 
-/// Convenience function to import an agent
-pub async fn import_agent(
-    package_path: impl AsRef<Path>,
-    options: ImportOptions,
-) -> anyhow::Result<ImportResult> {
-    let unpackager = Unpackager::new(package_path);
-    unpackager.import(options).await
-}
+/// Convenience function to import an agent was removed: callers should
+/// construct `Unpackager` directly and call `.import(options)`. The free
+/// fn was a one-liner around that path with no live callers
+/// post-Principal-migration (the legacy `peko agent import` CLI path
+/// goes through `agent_service::import_agent` → `Unpackager::new(...).
+/// import(...)`).
+///
+/// `inspect_agent` is retained: it has a live caller at
+/// `agent_service.rs:1037` and at `get_package_info` in
+/// `packaging/mod.rs` (which is itself called from `agent_service.rs:899`).
 
 /// Convenience function to inspect a package
 pub async fn inspect_agent(

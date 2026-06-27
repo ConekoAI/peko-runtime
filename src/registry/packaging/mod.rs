@@ -52,7 +52,7 @@ pub mod unpackager;
 pub mod validation;
 
 pub use manifest::AgentManifest;
-pub use packager::{export_agent, ExportOptions, Packager};
+pub use packager::{ExportOptions, Packager};
 pub use principal_manifest::PrincipalManifest;
 pub use principal_packager::{export_principal, PrincipalExportOptions, PrincipalPackager, PrincipalRegistryDescriptor};
 pub use principal_unpackager::{PrincipalImportOptions, PrincipalImportResult, PrincipalUnpackager};
@@ -69,32 +69,10 @@ pub use team_unpackager::{
     TeamUnpackager,
 };
 pub use types::{compute_digest, ExtensionRef, ImageDigest, Layer, LayerDigest, LayerType};
-pub use unpackager::{import_agent, inspect_agent, ImportOptions, ImportResult, Unpackager};
+pub use unpackager::{inspect_agent, ImportOptions, ImportResult, Unpackager};
 pub use validation::{validate_package, ValidationResult};
 
-use std::io::Read;
 use std::path::Path;
-
-/// Check if a file is a valid .agent package (quick check)
-pub fn is_agent_package(path: impl AsRef<Path>) -> bool {
-    let path = path.as_ref();
-
-    // Check extension
-    if path.extension().and_then(|e| e.to_str()) != Some("agent") {
-        return false;
-    }
-
-    // Try to open and check magic bytes (gzip)
-    if let Ok(file) = std::fs::File::open(path) {
-        let mut header = [0u8; 2];
-        if std::io::Read::read_exact(&mut file.take(2), &mut header).is_ok() {
-            // Gzip magic bytes: 0x1f 0x8b
-            return header == [0x1f, 0x8b];
-        }
-    }
-
-    false
-}
 
 /// Get package info without full extraction
 pub async fn get_package_info(path: impl AsRef<Path>) -> anyhow::Result<PackageInfo> {
@@ -177,20 +155,5 @@ impl PackageInfo {
         }
 
         output
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_agent_package_extension() {
-        // Test that non-.agent files return false
-        assert!(!is_agent_package("test.txt"));
-        assert!(!is_agent_package("test.tar.gz"));
-
-        // Note: is_agent_package for "test.agent" would fail without a real file
-        // because it tries to read the gzip magic bytes
     }
 }
