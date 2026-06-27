@@ -185,46 +185,6 @@ pub enum RequestPacket {
         team_filter: Option<String>,
     },
 
-    #[serde(rename = "agent_get")]
-    AgentGet {
-        request_id: u64,
-        name: String,
-        team: Option<String>,
-    },
-
-    #[serde(rename = "agent_create")]
-    AgentCreate {
-        request_id: u64,
-        request: crate::common::types::agent::AgentCreateRequest,
-    },
-
-    #[serde(rename = "agent_delete")]
-    AgentDelete {
-        request_id: u64,
-        name: String,
-        team: Option<String>,
-        force: bool,
-    },
-
-    #[serde(rename = "agent_move")]
-    AgentMove {
-        request_id: u64,
-        old_name: String,
-        new_name: String,
-        team: Option<String>,
-    },
-
-    #[serde(rename = "agent_update")]
-    AgentUpdate {
-        request_id: u64,
-        name: String,
-        team: Option<String>,
-        model: Option<String>,
-        description: Option<String>,
-        system_prompt: Option<String>,
-        config: Option<serde_json::Value>,
-    },
-
     // ─── Team CRUD ──────────────────────────────────────────────────
     #[serde(rename = "team_list")]
     TeamList { request_id: u64 },
@@ -439,33 +399,6 @@ pub enum RequestPacket {
     #[serde(rename = "extension_uninstall")]
     ExtensionUninstall { request_id: u64, id: String },
 
-    /// Export an agent to a file
-    #[serde(rename = "agent_export")]
-    AgentExport {
-        request_id: u64,
-        name: String,
-        team: Option<String>,
-        output: Option<String>,
-        include_sessions: bool,
-        /// Embed extension packages in an `extensions/` layer (ADR-037).
-        with_extensions: bool,
-    },
-
-    /// Import an agent from a file
-    #[serde(rename = "agent_import")]
-    AgentImport {
-        request_id: u64,
-        file_path: String,
-        name: Option<String>,
-        team: Option<String>,
-        /// Allow importing an unsigned `.agent` package (issue #14).
-        /// Defaults to `false` on the wire for backward compatibility —
-        /// existing CLI clients that pre-date the flag won't accidentally
-        /// opt in.
-        #[serde(default)]
-        allow_unsigned: bool,
-    },
-
     /// Export a team
     #[serde(rename = "team_export")]
     TeamExport {
@@ -562,26 +495,6 @@ pub enum RequestPacket {
     // Grant/revoke packets carry a single `subject: Subject`.
     // The legacy `(subject_id, subject_type)` wire fields from ADR-033
     // were dropped in issue #30.
-    #[serde(rename = "agent_transfer_owner")]
-    AgentTransferOwner {
-        request_id: u64,
-        agent: String,
-        new_owner: crate::auth::Subject,
-    },
-    #[serde(rename = "agent_grant_permission")]
-    AgentGrantPermission {
-        request_id: u64,
-        agent: String,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
-    },
-    #[serde(rename = "agent_revoke_permission")]
-    AgentRevokePermission {
-        request_id: u64,
-        agent: String,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
-    },
     #[serde(rename = "team_transfer_owner")]
     TeamTransferOwner {
         request_id: u64,
@@ -601,6 +514,73 @@ pub enum RequestPacket {
         team: String,
         subject: crate::auth::Subject,
         permission: crate::auth::ownership::Permission,
+    },
+
+    // ── Principal operations ─────────────────────────────────────────
+    #[serde(rename = "principal_send")]
+    PrincipalSend {
+        request_id: u64,
+        name: String,
+        message: String,
+        user: String,
+    },
+
+    #[serde(rename = "principal_export")]
+    PrincipalExport {
+        request_id: u64,
+        name: String,
+        output: Option<String>,
+        include_sessions: bool,
+        with_extensions: bool,
+    },
+
+    #[serde(rename = "principal_import")]
+    PrincipalImport {
+        request_id: u64,
+        file_path: String,
+        name: Option<String>,
+        #[serde(default)]
+        allow_unsigned: bool,
+    },
+
+    #[serde(rename = "principal_push")]
+    PrincipalPush {
+        request_id: u64,
+        name: String,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
+    },
+
+    #[serde(rename = "principal_pull")]
+    PrincipalPull {
+        request_id: u64,
+        registry_ref: String,
+        name: Option<String>,
+        force: bool,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
+    },
+
+    #[serde(rename = "principal_grant_permission")]
+    PrincipalGrantPermission {
+        request_id: u64,
+        name: String,
+        subject: crate::auth::Subject,
+        permission: crate::auth::ownership::Permission,
+    },
+
+    #[serde(rename = "principal_revoke_permission")]
+    PrincipalRevokePermission {
+        request_id: u64,
+        name: String,
+        subject: crate::auth::Subject,
+        permission: crate::auth::ownership::Permission,
+    },
+
+    #[serde(rename = "principal_permissions")]
+    PrincipalPermissions {
+        request_id: u64,
+        name: String,
     },
 }
 
@@ -624,9 +604,6 @@ impl RequestPacket {
             | Self::ExtRestart { request_id, .. }
             | Self::ExtStatus { request_id, .. }
             | Self::AgentList { request_id, .. }
-            | Self::AgentGet { request_id, .. }
-            | Self::AgentCreate { request_id, .. }
-            | Self::AgentDelete { request_id, .. }
             | Self::TeamList { request_id }
             | Self::TeamGet { request_id, .. }
             | Self::TeamCreate { request_id, .. }
@@ -657,10 +634,6 @@ impl RequestPacket {
             | Self::SessionSteerCancel { request_id, .. }
             | Self::ExtensionInstall { request_id, .. }
             | Self::ExtensionUninstall { request_id, .. }
-            | Self::AgentExport { request_id, .. }
-            | Self::AgentImport { request_id, .. }
-            | Self::AgentMove { request_id, .. }
-            | Self::AgentUpdate { request_id, .. }
             | Self::TeamExport { request_id, .. }
             | Self::TeamImport { request_id, .. }
             | Self::TeamJoin { request_id, .. }
@@ -682,12 +655,17 @@ impl RequestPacket {
             | Self::Status { request_id }
             | Self::InstanceSetStatus { request_id, .. }
             | Self::InstanceSetExposure { request_id, .. }
-            | Self::AgentTransferOwner { request_id, .. }
-            | Self::AgentGrantPermission { request_id, .. }
-            | Self::AgentRevokePermission { request_id, .. }
             | Self::TeamTransferOwner { request_id, .. }
             | Self::TeamGrantPermission { request_id, .. }
-            | Self::TeamRevokePermission { request_id, .. } => *request_id,
+            | Self::TeamRevokePermission { request_id, .. }
+            | Self::PrincipalSend { request_id, .. }
+            | Self::PrincipalExport { request_id, .. }
+            | Self::PrincipalImport { request_id, .. }
+            | Self::PrincipalPush { request_id, .. }
+            | Self::PrincipalPull { request_id, .. }
+            | Self::PrincipalGrantPermission { request_id, .. }
+            | Self::PrincipalRevokePermission { request_id, .. }
+            | Self::PrincipalPermissions { request_id, .. } => *request_id,
         }
     }
 
@@ -704,10 +682,10 @@ impl RequestPacket {
         use crate::auth::Subject;
 
         match self {
-            Self::AgentGrantPermission { subject, .. }
-            | Self::AgentRevokePermission { subject, .. }
-            | Self::TeamGrantPermission { subject, .. }
-            | Self::TeamRevokePermission { subject, .. } => subject.clone(),
+            Self::TeamGrantPermission { subject, .. }
+            | Self::TeamRevokePermission { subject, .. }
+            | Self::PrincipalGrantPermission { subject, .. }
+            | Self::PrincipalRevokePermission { subject, .. } => subject.clone(),
             // Non-grant/revoke packets have no subject. Return the
             // default sentinel so the caller doesn't have to special-case.
             _ => Subject::User(String::new()),
@@ -864,38 +842,6 @@ pub enum ResponsePacket {
         request_id: u64,
         agents: Vec<crate::common::types::agent::AgentSummary>,
     },
-
-    /// Agent detail response
-    #[serde(rename = "agent_get")]
-    AgentGet {
-        request_id: u64,
-        agent: Option<crate::common::types::agent::AgentInfo>,
-    },
-
-    /// Agent created response
-    #[serde(rename = "agent_created")]
-    AgentCreated {
-        request_id: u64,
-        result: crate::common::types::agent::AgentCreationResult,
-    },
-
-    /// Agent deleted response
-    #[serde(rename = "agent_deleted")]
-    AgentDeleted {
-        request_id: u64,
-        result: crate::common::types::agent::AgentDeleteResult,
-    },
-
-    /// Agent moved/renamed response
-    #[serde(rename = "agent_moved")]
-    AgentMoved {
-        request_id: u64,
-        result: crate::common::types::agent::AgentRenameResult,
-    },
-
-    /// Agent updated response
-    #[serde(rename = "agent_updated")]
-    AgentUpdated { request_id: u64, name: String },
 
     /// Team list response
     #[serde(rename = "team_list")]
@@ -1149,22 +1095,6 @@ pub enum ResponsePacket {
         message: String,
     },
 
-    /// Agent exported
-    #[serde(rename = "agent_exported")]
-    AgentExported {
-        request_id: u64,
-        name: String,
-        output_path: String,
-    },
-
-    /// Agent imported
-    #[serde(rename = "agent_imported")]
-    AgentImported {
-        request_id: u64,
-        name: String,
-        config_path: String,
-    },
-
     /// Team exported
     #[serde(rename = "team_exported")]
     TeamExported {
@@ -1247,6 +1177,64 @@ pub enum ResponsePacket {
         pekohub_jwt_enabled: bool,
         api_key_enabled: bool,
         api_key_count: usize,
+    },
+
+    // ── Principal operations ─────────────────────────────────────────
+    #[serde(rename = "principal_sent")]
+    PrincipalSent {
+        request_id: u64,
+        content: String,
+    },
+
+    #[serde(rename = "principal_exported")]
+    PrincipalExported {
+        request_id: u64,
+        name: String,
+        output_path: String,
+    },
+
+    #[serde(rename = "principal_imported")]
+    PrincipalImported {
+        request_id: u64,
+        name: String,
+        config_path: String,
+    },
+
+    #[serde(rename = "principal_pushed")]
+    PrincipalPushed {
+        request_id: u64,
+        name: String,
+        digest: String,
+    },
+
+    #[serde(rename = "principal_pulled")]
+    PrincipalPulled {
+        request_id: u64,
+        name: String,
+        version: String,
+        digest: String,
+    },
+
+    #[serde(rename = "principal_permission_granted")]
+    PrincipalPermissionGranted {
+        request_id: u64,
+        name: String,
+        subject: crate::auth::Subject,
+        permission: crate::auth::ownership::Permission,
+    },
+
+    #[serde(rename = "principal_permission_revoked")]
+    PrincipalPermissionRevoked {
+        request_id: u64,
+        name: String,
+        subject: crate::auth::Subject,
+        permission: crate::auth::ownership::Permission,
+    },
+
+    #[serde(rename = "principal_permissions")]
+    PrincipalPermissions {
+        request_id: u64,
+        permissions: Vec<crate::auth::ownership::PermissionGrant>,
     },
 
     // ── Session inbox (steering) ─────────────────────────────────────
@@ -1434,9 +1422,6 @@ impl ResponsePacket {
             | Self::ExtRestarted { request_id, .. }
             | Self::ExtStatus { request_id, .. }
             | Self::AgentList { request_id, .. }
-            | Self::AgentGet { request_id, .. }
-            | Self::AgentCreated { request_id, .. }
-            | Self::AgentDeleted { request_id, .. }
             | Self::TeamList { request_id, .. }
             | Self::TeamGet { request_id, .. }
             | Self::TeamCreated { request_id, .. }
@@ -1467,10 +1452,6 @@ impl ResponsePacket {
             | Self::SessionCompactDryRun { request_id, .. }
             | Self::ExtensionInstalled { request_id, .. }
             | Self::ExtensionUninstalled { request_id, .. }
-            | Self::AgentExported { request_id, .. }
-            | Self::AgentImported { request_id, .. }
-            | Self::AgentMoved { request_id, .. }
-            | Self::AgentUpdated { request_id, .. }
             | Self::TeamExported { request_id, .. }
             | Self::TeamImported { request_id, .. }
             | Self::RegistryPulled { request_id, .. }
@@ -1481,6 +1462,14 @@ impl ResponsePacket {
             | Self::AuthApiKeyList { request_id, .. }
             | Self::AuthApiKeyRevoked { request_id, .. }
             | Self::AuthStatus { request_id, .. }
+            | Self::PrincipalSent { request_id, .. }
+            | Self::PrincipalExported { request_id, .. }
+            | Self::PrincipalImported { request_id, .. }
+            | Self::PrincipalPushed { request_id, .. }
+            | Self::PrincipalPulled { request_id, .. }
+            | Self::PrincipalPermissionGranted { request_id, .. }
+            | Self::PrincipalPermissionRevoked { request_id, .. }
+            | Self::PrincipalPermissions { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
             | Self::Status { request_id, .. }
             | Self::MessageQueued { request_id, .. }
@@ -1510,9 +1499,6 @@ impl ResponsePacket {
             Self::ExtRestarted { .. } => "ExtRestarted",
             Self::ExtStatus { .. } => "ExtStatus",
             Self::AgentList { .. } => "AgentList",
-            Self::AgentGet { .. } => "AgentGet",
-            Self::AgentCreated { .. } => "AgentCreated",
-            Self::AgentDeleted { .. } => "AgentDeleted",
             Self::TeamList { .. } => "TeamList",
             Self::TeamGet { .. } => "TeamGet",
             Self::TeamCreated { .. } => "TeamCreated",
@@ -1543,10 +1529,6 @@ impl ResponsePacket {
             Self::SessionCompactDryRun { .. } => "SessionCompactDryRun",
             Self::ExtensionInstalled { .. } => "ExtensionInstalled",
             Self::ExtensionUninstalled { .. } => "ExtensionUninstalled",
-            Self::AgentExported { .. } => "AgentExported",
-            Self::AgentImported { .. } => "AgentImported",
-            Self::AgentMoved { .. } => "AgentMoved",
-            Self::AgentUpdated { .. } => "AgentUpdated",
             Self::TeamExported { .. } => "TeamExported",
             Self::TeamImported { .. } => "TeamImported",
             Self::RegistryPulled { .. } => "RegistryPulled",
@@ -1557,6 +1539,14 @@ impl ResponsePacket {
             Self::AuthApiKeyList { .. } => "AuthApiKeyList",
             Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",
             Self::AuthStatus { .. } => "AuthStatus",
+            Self::PrincipalSent { .. } => "PrincipalSent",
+            Self::PrincipalExported { .. } => "PrincipalExported",
+            Self::PrincipalImported { .. } => "PrincipalImported",
+            Self::PrincipalPushed { .. } => "PrincipalPushed",
+            Self::PrincipalPulled { .. } => "PrincipalPulled",
+            Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
+            Self::PrincipalPermissionRevoked { .. } => "PrincipalPermissionRevoked",
+            Self::PrincipalPermissions { .. } => "PrincipalPermissions",
             Self::TunnelStatus { .. } => "TunnelStatus",
             Self::Status { .. } => "Status",
             Self::MessageQueued { .. } => "MessageQueued",
@@ -2013,112 +2003,6 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_get_request_roundtrip() {
-        let req = RequestPacket::AgentGet {
-            request_id: 301,
-            name: "test-agent".to_string(),
-            team: Some("default".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::AgentGet {
-                request_id,
-                name,
-                team,
-            } => {
-                assert_eq!(request_id, 301);
-                assert_eq!(name, "test-agent");
-                assert_eq!(team, Some("default".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_create_request_roundtrip() {
-        let request = crate::common::types::agent::AgentCreateRequest {
-            name: "new-agent".to_string(),
-            provider: "ollama".to_string(),
-            model: Some("llama3.2".to_string()),
-            description: Some("A test agent".to_string()),
-            force: false,
-            host_runtime_id: None,
-            owner: None,
-        };
-        let req = RequestPacket::AgentCreate {
-            request_id: 302,
-            request: request.clone(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::AgentCreate {
-                request_id,
-                request: decoded_request,
-            } => {
-                assert_eq!(request_id, 302);
-                assert_eq!(decoded_request.name, "new-agent");
-                assert_eq!(decoded_request.provider, "ollama");
-                assert_eq!(decoded_request.model, Some("llama3.2".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_delete_request_roundtrip() {
-        let req = RequestPacket::AgentDelete {
-            request_id: 303,
-            name: "old-agent".to_string(),
-            team: Some("default".to_string()),
-            force: true,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::AgentDelete {
-                request_id,
-                name,
-                team,
-                force,
-            } => {
-                assert_eq!(request_id, 303);
-                assert_eq!(name, "old-agent");
-                assert_eq!(team, Some("default".to_string()));
-                assert!(force);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_move_request_roundtrip() {
-        let req = RequestPacket::AgentMove {
-            request_id: 304,
-            old_name: "old-agent".to_string(),
-            new_name: "new-agent".to_string(),
-            team: Some("default".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::AgentMove {
-                request_id,
-                old_name,
-                new_name,
-                team,
-            } => {
-                assert_eq!(request_id, 304);
-                assert_eq!(old_name, "old-agent");
-                assert_eq!(new_name, "new-agent");
-                assert_eq!(team, Some("default".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_team_list_request_roundtrip() {
         let req = RequestPacket::TeamList { request_id: 400 };
         let bytes = req.to_bytes().unwrap();
@@ -2209,99 +2093,6 @@ mod tests {
                 assert_eq!(request_id, 600);
                 assert_eq!(agents.len(), 1);
                 assert_eq!(agents[0].name, "test-agent");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_get_response_roundtrip() {
-        let resp = ResponsePacket::AgentGet {
-            request_id: 601,
-            agent: Some(crate::common::types::agent::AgentInfo {
-                name: "test-agent".to_string(),
-                config: crate::agents::agent_config::AgentConfig {
-                    name: "test-agent".to_string(),
-                    ..Default::default()
-                },
-                config_path: std::path::PathBuf::from("/tmp/test-agent/config.toml"),
-                sessions_dir: std::path::PathBuf::from("/tmp/test-agent/sessions"),
-                session_count: 0,
-                memberships: vec![],
-                system_prompt: None,
-            }),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::AgentGet { request_id, agent } => {
-                assert_eq!(request_id, 601);
-                assert!(agent.is_some());
-                assert_eq!(agent.unwrap().name, "test-agent");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_created_response_roundtrip() {
-        let resp = ResponsePacket::AgentCreated {
-            request_id: 602,
-            result: crate::common::types::agent::AgentCreationResult {
-                name: "new-agent".to_string(),
-                config_path: std::path::PathBuf::from("/tmp/new-agent/config.toml"),
-                provider: "ollama".to_string(),
-            },
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::AgentCreated { request_id, result } => {
-                assert_eq!(request_id, 602);
-                assert_eq!(result.name, "new-agent");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_deleted_response_roundtrip() {
-        let resp = ResponsePacket::AgentDeleted {
-            request_id: 603,
-            result: crate::common::types::agent::AgentDeleteResult {
-                name: "old-agent".to_string(),
-                config_deleted: true,
-                sessions_deleted: true,
-            },
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::AgentDeleted { request_id, result } => {
-                assert_eq!(request_id, 603);
-                assert!(result.config_deleted);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_moved_response_roundtrip() {
-        let resp = ResponsePacket::AgentMoved {
-            request_id: 604,
-            result: crate::common::types::agent::AgentRenameResult {
-                old_name: "old-agent".to_string(),
-                new_name: "new-agent".to_string(),
-                new_config_path: std::path::PathBuf::from("/tmp/new-agent/config.toml"),
-            },
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::AgentMoved { request_id, result } => {
-                assert_eq!(request_id, 604);
-                assert_eq!(result.old_name, "old-agent");
-                assert_eq!(result.new_name, "new-agent");
             }
             _ => panic!("Wrong variant"),
         }
@@ -2454,35 +2245,6 @@ mod tests {
         };
         assert_eq!(req_agent_list.request_id(), 1);
 
-        let req_agent_get = RequestPacket::AgentGet {
-            request_id: 2,
-            name: "a".to_string(),
-            team: None,
-        };
-        assert_eq!(req_agent_get.request_id(), 2);
-
-        let req_agent_create = RequestPacket::AgentCreate {
-            request_id: 3,
-            request: crate::common::types::agent::AgentCreateRequest::new("a", "ollama"),
-        };
-        assert_eq!(req_agent_create.request_id(), 3);
-
-        let req_agent_delete = RequestPacket::AgentDelete {
-            request_id: 4,
-            name: "a".to_string(),
-            team: None,
-            force: false,
-        };
-        assert_eq!(req_agent_delete.request_id(), 4);
-
-        let req_agent_move = RequestPacket::AgentMove {
-            request_id: 4,
-            old_name: "a".to_string(),
-            new_name: "b".to_string(),
-            team: None,
-        };
-        assert_eq!(req_agent_move.request_id(), 4);
-
         let req_team_list = RequestPacket::TeamList { request_id: 5 };
         assert_eq!(req_team_list.request_id(), 5);
 
@@ -2513,42 +2275,6 @@ mod tests {
             agents: vec![],
         };
         assert_eq!(resp_agent_list.request_id(), 10);
-
-        let resp_agent_get = ResponsePacket::AgentGet {
-            request_id: 11,
-            agent: None,
-        };
-        assert_eq!(resp_agent_get.request_id(), 11);
-
-        let resp_agent_created = ResponsePacket::AgentCreated {
-            request_id: 12,
-            result: crate::common::types::agent::AgentCreationResult {
-                name: "a".to_string(),
-                config_path: std::path::PathBuf::from("/tmp"),
-                provider: "p".to_string(),
-            },
-        };
-        assert_eq!(resp_agent_created.request_id(), 12);
-
-        let resp_agent_deleted = ResponsePacket::AgentDeleted {
-            request_id: 13,
-            result: crate::common::types::agent::AgentDeleteResult {
-                name: "a".to_string(),
-                config_deleted: true,
-                sessions_deleted: false,
-            },
-        };
-        assert_eq!(resp_agent_deleted.request_id(), 13);
-
-        let resp_agent_moved = ResponsePacket::AgentMoved {
-            request_id: 13,
-            result: crate::common::types::agent::AgentRenameResult {
-                old_name: "a".to_string(),
-                new_name: "b".to_string(),
-                new_config_path: std::path::PathBuf::from("/tmp"),
-            },
-        };
-        assert_eq!(resp_agent_moved.request_id(), 13);
 
         let resp_team_list = ResponsePacket::TeamList {
             request_id: 14,
@@ -3332,152 +3058,6 @@ mod tests {
             tokens_after: 0,
         };
         assert_eq!(resp_compact.request_id(), 12);
-    }
-
-    #[test]
-    fn test_agent_export_request_roundtrip() {
-        let req = RequestPacket::AgentExport {
-            request_id: 1200,
-            name: "test-agent".to_string(),
-            team: Some("default".to_string()),
-            output: Some("/tmp/export.zip".to_string()),
-            include_sessions: true,
-            with_extensions: false,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::AgentExport {
-                request_id,
-                name,
-                team,
-                output,
-                include_sessions,
-                with_extensions,
-            } => {
-                assert_eq!(request_id, 1200);
-                assert_eq!(name, "test-agent");
-                assert_eq!(team, Some("default".to_string()));
-                assert_eq!(output, Some("/tmp/export.zip".to_string()));
-                assert!(include_sessions);
-                assert!(!with_extensions);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_import_request_roundtrip() {
-        let req = RequestPacket::AgentImport {
-            request_id: 1201,
-            file_path: "/tmp/export.zip".to_string(),
-            name: Some("renamed-agent".to_string()),
-            team: Some("default".to_string()),
-            allow_unsigned: true,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::AgentImport {
-                request_id,
-                file_path,
-                name,
-                team,
-                allow_unsigned,
-            } => {
-                assert_eq!(request_id, 1201);
-                assert_eq!(file_path, "/tmp/export.zip");
-                assert_eq!(name, Some("renamed-agent".to_string()));
-                assert_eq!(team, Some("default".to_string()));
-                assert!(allow_unsigned);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_exported_response_roundtrip() {
-        let resp = ResponsePacket::AgentExported {
-            request_id: 2200,
-            name: "test-agent".to_string(),
-            output_path: "/tmp/export.zip".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::AgentExported {
-                request_id,
-                name,
-                output_path,
-            } => {
-                assert_eq!(request_id, 2200);
-                assert_eq!(name, "test-agent");
-                assert_eq!(output_path, "/tmp/export.zip");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_imported_response_roundtrip() {
-        let resp = ResponsePacket::AgentImported {
-            request_id: 2201,
-            name: "test-agent".to_string(),
-            config_path: "/tmp/agents/test-agent/config.toml".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::AgentImported {
-                request_id,
-                name,
-                config_path,
-            } => {
-                assert_eq!(request_id, 2201);
-                assert_eq!(name, "test-agent");
-                assert_eq!(config_path, "/tmp/agents/test-agent/config.toml");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_agent_export_import_request_ids() {
-        let req_export = RequestPacket::AgentExport {
-            request_id: 1,
-            name: "a".to_string(),
-            team: None,
-            output: None,
-            include_sessions: false,
-            with_extensions: false,
-        };
-        assert_eq!(req_export.request_id(), 1);
-
-        let req_import = RequestPacket::AgentImport {
-            request_id: 2,
-            file_path: "/tmp/x.zip".to_string(),
-            name: None,
-            team: None,
-            allow_unsigned: false,
-        };
-        assert_eq!(req_import.request_id(), 2);
-    }
-
-    #[test]
-    fn test_agent_export_import_response_ids() {
-        let resp_exported = ResponsePacket::AgentExported {
-            request_id: 10,
-            name: "a".to_string(),
-            output_path: "/tmp/x.zip".to_string(),
-        };
-        assert_eq!(resp_exported.request_id(), 10);
-
-        let resp_imported = ResponsePacket::AgentImported {
-            request_id: 11,
-            name: "a".to_string(),
-            config_path: "/tmp/a/config.toml".to_string(),
-        };
-        assert_eq!(resp_imported.request_id(), 11);
     }
 
     #[test]
@@ -4519,9 +4099,9 @@ mod tests {
     // -- issue #30: `RequestPacket::resolved_subject` --
 
     fn grant_pkt(subject: crate::auth::Subject) -> RequestPacket {
-        RequestPacket::AgentGrantPermission {
+        RequestPacket::TeamGrantPermission {
             request_id: 1,
-            agent: "a".into(),
+            team: "t".into(),
             subject,
             permission: crate::auth::ownership::Permission::Chat,
         }
@@ -4553,9 +4133,9 @@ mod tests {
         );
 
         // Public revoke via canonical Public.
-        let pkt = RequestPacket::AgentRevokePermission {
+        let pkt = RequestPacket::TeamRevokePermission {
             request_id: 1,
-            agent: "a".into(),
+            team: "t".into(),
             subject: crate::auth::Subject::Public,
             permission: crate::auth::ownership::Permission::Chat,
         };
@@ -4620,5 +4200,176 @@ mod tests {
             !err_msg.contains("chunk"),
             "error must not leak field names: {err_msg}"
         );
+    }
+
+    // ─── Principal operations tests ─────────────────────────────────
+
+    #[test]
+    fn test_principal_send_request_roundtrip() {
+        let req = RequestPacket::PrincipalSend {
+            request_id: 5000,
+            name: "helper".to_string(),
+            message: "hello".to_string(),
+            user: "alice".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalSend {
+                request_id,
+                name,
+                message,
+                user,
+            } => {
+                assert_eq!(request_id, 5000);
+                assert_eq!(name, "helper");
+                assert_eq!(message, "hello");
+                assert_eq!(user, "alice");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_export_request_roundtrip() {
+        let req = RequestPacket::PrincipalExport {
+            request_id: 5001,
+            name: "helper".to_string(),
+            output: Some("/tmp/helper.principal".to_string()),
+            include_sessions: true,
+            with_extensions: false,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalExport {
+                request_id,
+                name,
+                output,
+                include_sessions,
+                with_extensions,
+            } => {
+                assert_eq!(request_id, 5001);
+                assert_eq!(name, "helper");
+                assert_eq!(output, Some("/tmp/helper.principal".to_string()));
+                assert!(include_sessions);
+                assert!(!with_extensions);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_grant_permission_request_roundtrip() {
+        let req = RequestPacket::PrincipalGrantPermission {
+            request_id: 5002,
+            name: "helper".to_string(),
+            subject: crate::auth::Subject::User("bob".to_string()),
+            permission: crate::auth::ownership::Permission::Chat,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalGrantPermission {
+                request_id,
+                name,
+                subject,
+                permission,
+            } => {
+                assert_eq!(request_id, 5002);
+                assert_eq!(name, "helper");
+                assert_eq!(subject, crate::auth::Subject::User("bob".to_string()));
+                assert_eq!(permission, crate::auth::ownership::Permission::Chat);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_sent_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalSent {
+            request_id: 6000,
+            content: "hi there".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalSent { request_id, content } => {
+                assert_eq!(request_id, 6000);
+                assert_eq!(content, "hi there");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_permissions_response_roundtrip() {
+        let grant = crate::auth::ownership::PermissionGrant {
+            subject: crate::auth::Subject::User("bob".to_string()),
+            permission: crate::auth::ownership::Permission::Chat,
+            granted_at: "2026-06-01T00:00:00Z".to_string(),
+            granted_by: crate::auth::Subject::User("alice".to_string()),
+        };
+        let resp = ResponsePacket::PrincipalPermissions {
+            request_id: 6001,
+            permissions: vec![grant],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalPermissions {
+                request_id,
+                permissions,
+            } => {
+                assert_eq!(request_id, 6001);
+                assert_eq!(permissions.len(), 1);
+                assert_eq!(permissions[0].subject, crate::auth::Subject::User("bob".to_string()));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_request_ids() {
+        let req_send = RequestPacket::PrincipalSend {
+            request_id: 1,
+            name: "p".to_string(),
+            message: "m".to_string(),
+            user: "u".to_string(),
+        };
+        assert_eq!(req_send.request_id(), 1);
+
+        let req_grant = RequestPacket::PrincipalGrantPermission {
+            request_id: 2,
+            name: "p".to_string(),
+            subject: crate::auth::Subject::Public,
+            permission: crate::auth::ownership::Permission::Chat,
+        };
+        assert_eq!(req_grant.request_id(), 2);
+
+        let req_revoke = RequestPacket::PrincipalRevokePermission {
+            request_id: 3,
+            name: "p".to_string(),
+            subject: crate::auth::Subject::Public,
+            permission: crate::auth::ownership::Permission::Chat,
+        };
+        assert_eq!(req_revoke.request_id(), 3);
+    }
+
+    #[test]
+    fn test_principal_response_ids_and_variant_names() {
+        let resp_sent = ResponsePacket::PrincipalSent {
+            request_id: 10,
+            content: "c".to_string(),
+        };
+        assert_eq!(resp_sent.request_id(), 10);
+        assert_eq!(resp_sent.variant_name(), "PrincipalSent");
+
+        let resp_perms = ResponsePacket::PrincipalPermissions {
+            request_id: 11,
+            permissions: vec![],
+        };
+        assert_eq!(resp_perms.request_id(), 11);
+        assert_eq!(resp_perms.variant_name(), "PrincipalPermissions");
     }
 }

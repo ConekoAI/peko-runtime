@@ -69,6 +69,8 @@ pub struct ChannelContext {
 pub enum ChannelKind {
     Cli,
     Http,
+    Hub,
+    A2a,
     P2p,        // principal-to-principal
     Webhook,
     Cron,

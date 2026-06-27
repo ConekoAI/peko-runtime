@@ -445,6 +445,148 @@ impl DaemonClient {
         }
     }
 
+    // ── Principal operations ─────────────────────────────────────────
+
+    /// Send a message to a Principal and stream the response.
+    ///
+    /// The server returns a `PrincipalSent` response followed by `Done`.
+    pub async fn principal_send(
+        &self,
+        name: impl Into<String>,
+        message: impl Into<String>,
+        user: impl Into<String>,
+    ) -> anyhow::Result<PacketStream> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalSend {
+            request_id,
+            name: name.into(),
+            message: message.into(),
+            user: user.into(),
+        };
+        self.send_request(packet).await
+    }
+
+    /// Export a Principal to a package.
+    pub async fn principal_export(
+        &self,
+        name: impl Into<String>,
+        output: Option<String>,
+        include_sessions: bool,
+        with_extensions: bool,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalExport {
+            request_id,
+            name: name.into(),
+            output,
+            include_sessions,
+            with_extensions,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Import a Principal from a package.
+    pub async fn principal_import(
+        &self,
+        file_path: impl Into<String>,
+        name: Option<String>,
+        allow_unsigned: bool,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalImport {
+            request_id,
+            file_path: file_path.into(),
+            name,
+            allow_unsigned,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Push a Principal package to a registry.
+    pub async fn principal_push(
+        &self,
+        name: impl Into<String>,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalPush {
+            request_id,
+            name: name.into(),
+            registry_host,
+            registry_token,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Pull a Principal package from a registry and import it.
+    pub async fn principal_pull(
+        &self,
+        registry_ref: impl Into<String>,
+        name: Option<String>,
+        force: bool,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalPull {
+            request_id,
+            registry_ref: registry_ref.into(),
+            name,
+            force,
+            registry_host,
+            registry_token,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Grant a permission on a Principal.
+    pub async fn principal_grant_permission(
+        &self,
+        name: impl Into<String>,
+        subject: crate::auth::Subject,
+        permission: crate::auth::ownership::Permission,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalGrantPermission {
+            request_id,
+            name: name.into(),
+            subject,
+            permission,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Revoke a permission from a Principal.
+    pub async fn principal_revoke_permission(
+        &self,
+        name: impl Into<String>,
+        subject: crate::auth::Subject,
+        permission: crate::auth::ownership::Permission,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalRevokePermission {
+            request_id,
+            name: name.into(),
+            subject,
+            permission,
+        };
+        self.request_response(packet).await
+    }
+
+    /// List permissions on a Principal.
+    pub async fn principal_permissions(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalPermissions {
+            request_id,
+            name: name.into(),
+        };
+        self.request_response(packet).await
+    }
+
     /// Enqueue a user steering message for the given session. Returns
     /// a `PacketStream`; the first packet is `MessageQueued`
     /// (followed by the auto-triggered run's events if

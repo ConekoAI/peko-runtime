@@ -282,6 +282,22 @@ impl PathResolver {
         self.principal_memory_dir(principal).join("sessions")
     }
 
+    /// Get a principal's identity storage directory.
+    ///
+    /// Path: `{data_dir}/principals/{principal}/identity`
+    #[must_use]
+    pub fn principal_identity_dir(&self, principal: &str) -> PathBuf {
+        self.data_dir.join("principals").join(principal).join("identity")
+    }
+
+    /// Get the path to a principal's identity storage directory.
+    ///
+    /// Alias for [`Self::principal_identity_dir`].
+    #[must_use]
+    pub fn principal_identity_path(&self, principal: &str) -> PathBuf {
+        self.principal_identity_dir(principal)
+    }
+
     /// Get the runtime directory
     ///
     /// Path: `{config_dir}/runtime`

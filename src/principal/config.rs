@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::auth::{Permission, PermissionGrant};
+use crate::tunnel::protocol::InstanceExposure;
+
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalConfig {
@@ -32,8 +35,13 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub capabilities: PrincipalCapabilities,
 
+    /// Network exposure level for this Principal.
     #[serde(default)]
-    pub agents: Vec<PrincipalAgentRef>,
+    pub exposure: InstanceExposure,
+
+    /// Explicit permission grants on this Principal.
+    #[serde(default)]
+    pub permissions: Vec<PermissionGrant>,
 }
 
 /// Thin wrapper around a DID string.
@@ -94,7 +102,7 @@ pub enum AuditLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegationGrant {
     pub to: crate::auth::Subject,
-    pub permissions: Vec<String>,
+    pub permissions: Vec<Permission>,
     pub expires_at: Option<String>,
 }
 
@@ -181,23 +189,7 @@ fn default_max_router_iterations() -> usize {
     5
 }
 
-/// Reference to an agent prompt loaded from a Markdown file.
-///
-/// Deprecated: agents are now discovered as `AGENT.md` extensions under
-/// `<principal_workspace>/agents/<name>/AGENT.md`. This struct is kept only
-/// for backward compatibility with existing `principal.toml` files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrincipalAgentRef {
-    /// Local name for this agent prompt inside the Principal.
-    pub name: String,
-
-    /// Path to the Markdown prompt file.
-    pub prompt: PathBuf,
-
-    #[serde(default)]
-    pub role: AgentRole,
-}
-
+/// Role of an agent prompt within a Principal.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentRole {

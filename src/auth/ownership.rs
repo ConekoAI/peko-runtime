@@ -65,7 +65,7 @@ pub struct PermissionGrant {
     pub granted_by: Subject,
 }
 
-/// Resource being accessed — either an agent or a team
+/// Resource being accessed — an agent, team, or principal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resource {
     /// Agent resource with ownership and permission data
@@ -81,6 +81,13 @@ pub enum Resource {
         permissions: Vec<PermissionGrant>,
         members: Vec<crate::common::types::membership::TeamMember>,
     },
+    /// Principal resource with ownership, permission data, and exposure.
+    Principal {
+        name: String,
+        owner: Subject,
+        permissions: Vec<PermissionGrant>,
+        exposure: crate::tunnel::protocol::InstanceExposure,
+    },
 }
 
 impl Resource {
@@ -90,6 +97,7 @@ impl Resource {
         match self {
             Self::Agent { name, .. } => format!("agent:{name}"),
             Self::Team { name, .. } => format!("team:{name}"),
+            Self::Principal { name, .. } => format!("principal:{name}"),
         }
     }
 
@@ -97,7 +105,9 @@ impl Resource {
     #[must_use]
     pub fn owner(&self) -> &Subject {
         match self {
-            Self::Agent { owner, .. } | Self::Team { owner, .. } => owner,
+            Self::Agent { owner, .. } | Self::Team { owner, .. } | Self::Principal { owner, .. } => {
+                owner
+            }
         }
     }
 
@@ -107,6 +117,7 @@ impl Resource {
         match self {
             Self::Agent { permissions, .. } => permissions,
             Self::Team { permissions, .. } => permissions,
+            Self::Principal { permissions, .. } => permissions,
         }
     }
 }
@@ -221,6 +232,20 @@ pub fn team_resource(
         owner: metadata.owner.clone(),
         permissions: metadata.permissions.clone(),
         members,
+    }
+}
+
+/// Build a `Resource::Principal` from a `PrincipalConfig` and name.
+#[must_use]
+pub fn principal_resource(
+    name: &str,
+    config: &crate::principal::PrincipalConfig,
+) -> Resource {
+    Resource::Principal {
+        name: name.to_string(),
+        owner: config.owner.clone(),
+        permissions: config.permissions.clone(),
+        exposure: config.exposure.clone(),
     }
 }
 
@@ -497,6 +522,37 @@ mod tests {
             }],
         };
         assert!(check_permission(&resource, Permission::Chat, &caller).is_err());
+    }
+
+    #[test]
+    fn test_principal_resource_permission_checks() {
+        let owner = Subject::User("user:123".into());
+        let resource = Resource::Principal {
+            name: "alpha".to_string(),
+            owner: owner.clone(),
+            permissions: vec![],
+            exposure: crate::tunnel::protocol::InstanceExposure::Private,
+        };
+
+        assert!(check_permission(&resource, Permission::Chat, &owner).is_ok());
+        assert!(
+            check_permission(&resource, Permission::Chat, &Subject::User("other".into())).is_err()
+        );
+
+        let grantee = Subject::User("user:456".into());
+        let resource = Resource::Principal {
+            name: "alpha".to_string(),
+            owner: owner.clone(),
+            permissions: vec![PermissionGrant {
+                subject: grantee.clone(),
+                permission: Permission::Chat,
+                granted_at: "2026-06-07T10:00:00Z".to_string(),
+                granted_by: owner.clone(),
+            }],
+            exposure: crate::tunnel::protocol::InstanceExposure::Private,
+        };
+        assert!(check_permission(&resource, Permission::Chat, &grantee).is_ok());
+        assert!(check_permission(&resource, Permission::Delete, &grantee).is_err());
     }
 
     // `principal_from_wire` was removed in issue #30; the IPC resolver

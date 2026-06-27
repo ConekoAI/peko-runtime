@@ -10,13 +10,15 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
-use crate::auth::Subject;
+use crate::auth::{Subject, subject_from_string_with_default_user};
 use crate::commands::GlobalPaths;
+use crate::common::paths::PathResolver;
+use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::principal::{
     config::{
-        AgentRole, PrincipalAgentRef, PrincipalCapabilities, PrincipalConfig,
-        PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-        PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalCapabilities, PrincipalConfig, PrincipalGovernanceConfig,
+        PrincipalIdentityConfig, PrincipalIntentConfig, PrincipalMemoryConfig,
+        PrincipalRoutingConfig,
     },
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     memory::{DefaultPrincipalMemory, PrincipalMemory},
@@ -51,9 +53,130 @@ pub enum PrincipalCommands {
         message: String,
     },
 
+    /// Export a Principal to a `.principal` package
+    Export {
+        /// Principal name
+        name: String,
+
+        /// Output file path (defaults to `<name>.principal`)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Include session history in the package
+        #[arg(long)]
+        include_sessions: bool,
+
+        /// Embed extension packages referenced by the Principal
+        #[arg(long)]
+        with_extensions: bool,
+    },
+
+    /// Import a Principal from a `.principal` package
+    Import {
+        /// Path to the `.principal` package
+        file_path: String,
+
+        /// Rename the imported Principal
+        #[arg(short, long)]
+        name: Option<String>,
+
+        /// Allow importing an unsigned package
+        #[arg(long)]
+        allow_unsigned: bool,
+    },
+
+    /// Push a Principal package to a registry
+    Push {
+        /// Principal name
+        name: String,
+
+        /// Registry host (defaults to workspace config)
+        #[arg(long)]
+        registry_host: Option<String>,
+
+        /// Registry auth token
+        #[arg(long)]
+        registry_token: Option<String>,
+    },
+
+    /// Pull a Principal package from a registry and import it
+    Pull {
+        /// Registry reference (e.g. `owner/principal:version`)
+        registry_ref: String,
+
+        /// Rename the imported Principal
+        #[arg(short, long)]
+        name: Option<String>,
+
+        /// Overwrite an existing Principal with the same name
+        #[arg(short, long)]
+        force: bool,
+
+        /// Registry host (defaults to workspace config)
+        #[arg(long)]
+        registry_host: Option<String>,
+
+        /// Registry auth token
+        #[arg(long)]
+        registry_token: Option<String>,
+    },
+
+    /// Grant a permission on a Principal
+    Permit {
+        /// Principal name
+        name: String,
+
+        /// Subject to grant permission to (e.g. `user:alice`, `public`)
+        subject: String,
+
+        /// Permission to grant (e.g. `chat`, `manage_settings`)
+        permission: String,
+    },
+
+    /// Revoke a permission from a Principal
+    Revoke {
+        /// Principal name
+        name: String,
+
+        /// Subject to revoke permission from
+        subject: String,
+
+        /// Permission to revoke
+        permission: String,
+    },
+
+    /// List permissions on a Principal
+    Permissions {
+        /// Principal name
+        name: String,
+    },
+
+    /// Manage agents (prompts) inside a Principal
+    #[command(subcommand)]
+    Agent(PrincipalAgentCommands),
+
     /// Inspect Principal memory
     #[command(subcommand)]
     Memory(PrincipalMemoryCommands),
+}
+
+/// Subcommands for `peko principal agent`.
+#[derive(Subcommand)]
+pub enum PrincipalAgentCommands {
+    /// List agent prompts in a Principal
+    List {
+        /// Principal name
+        name: String,
+    },
+
+    /// Show an agent prompt
+    Show {
+        /// Principal name
+        name: String,
+
+        /// Agent prompt name
+        agent: String,
+    },
 }
 
 /// Subcommands for `peko principal memory`.
@@ -77,6 +200,52 @@ pub async fn handle_principal(
         PrincipalCommands::List => list_principals(paths).await,
         PrincipalCommands::Show { name } => show_principal(&name, paths).await,
         PrincipalCommands::Send { name, message } => send_to_principal(&name, &message, paths).await,
+        PrincipalCommands::Export {
+            name,
+            output,
+            include_sessions,
+            with_extensions,
+        } => export_principal(&name, output, include_sessions, with_extensions).await,
+        PrincipalCommands::Import {
+            file_path,
+            name,
+            allow_unsigned,
+        } => import_principal(&file_path, name, allow_unsigned).await,
+        PrincipalCommands::Push {
+            name,
+            registry_host,
+            registry_token,
+        } => push_principal(&name, registry_host, registry_token).await,
+        PrincipalCommands::Pull {
+            registry_ref,
+            name,
+            force,
+            registry_host,
+            registry_token,
+        } => pull_principal(&registry_ref,
+            name,
+            force,
+            registry_host,
+            registry_token,
+        )
+        .await,
+        PrincipalCommands::Permit {
+            name,
+            subject,
+            permission,
+        } => grant_permission(&name, &subject, &permission).await,
+        PrincipalCommands::Revoke {
+            name,
+            subject,
+            permission,
+        } => revoke_permission(&name, &subject, &permission).await,
+        PrincipalCommands::Permissions { name } => list_permissions(&name).await,
+        PrincipalCommands::Agent(PrincipalAgentCommands::List { name }) => {
+            list_principal_agents(&name, paths).await
+        }
+        PrincipalCommands::Agent(PrincipalAgentCommands::Show { name, agent }) => {
+            show_principal_agent(&name, &agent, paths).await
+        }
         PrincipalCommands::Memory(PrincipalMemoryCommands::Session { name }) => {
             list_principal_sessions(&name, paths).await
         }
@@ -101,7 +270,7 @@ async fn create_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
 
     println!(
         "Created principal '{}' at {}",
-        principal.config.name,
+        name,
         principal.workspace_path.display()
     );
     Ok(())
@@ -138,16 +307,26 @@ async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
     let manager = build_manager(paths);
     let principal = load_principal(name, &manager, paths).await?;
 
-    println!("Principal: {}", principal.config.name);
-    println!("  DID:     {}", principal.did().0);
+    let (display_name, did) = {
+        let config = principal.config.read().await;
+        (
+            config.identity.display_name.clone().unwrap_or_else(|| config.name.clone()),
+            config.did.clone(),
+        )
+    };
+    let did_str = did.map(|d| d.0).unwrap_or_else(|| "(none)".to_string());
+
+    println!("Principal: {}", display_name);
+    println!("  DID:     {}", did_str);
     println!("  Workspace: {}", principal.workspace_path.display());
     println!("  Agents:");
-    for agent_ref in &principal.config.agents {
-        let prompt = principal.agent_prompt(&agent_ref.name);
+    for (agent_name, prompt) in &principal.agent_prompts {
         let desc = prompt
-            .and_then(|p| p.frontmatter.description.as_deref())
+            .frontmatter
+            .description
+            .as_deref()
             .unwrap_or("(no description)");
-        println!("    - {} ({}): {desc}", agent_ref.name, agent_ref.prompt.display());
+        println!("    - {} ({}): {desc}", agent_name, prompt.path.display());
     }
     Ok(())
 }
@@ -168,6 +347,285 @@ async fn send_to_principal(name: &str, message: &str, paths: &GlobalPaths) -> Re
         .context("principal receive failed")?;
 
     println!("{}", response.content);
+    Ok(())
+}
+
+async fn export_principal(
+    name: &str,
+    output: Option<String>,
+    include_sessions: bool,
+    with_extensions: bool,
+) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    let response = client
+        .principal_export(name, output, include_sessions, with_extensions)
+        .await?;
+
+    match response {
+        ResponsePacket::PrincipalExported {
+            name,
+            output_path,
+            ..
+        } => {
+            println!("Exported principal '{name}' to {output_path}");
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to export principal: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+async fn import_principal(
+    file_path: &str,
+    name: Option<String>,
+    allow_unsigned: bool,
+) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    let response = client
+        .principal_import(file_path, name, allow_unsigned)
+        .await?;
+
+    match response {
+        ResponsePacket::PrincipalImported { name, config_path, .. } => {
+            println!("Imported principal '{name}' at {config_path}");
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to import principal: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+async fn push_principal(
+    name: &str,
+    registry_host: Option<String>,
+    registry_token: Option<String>,
+) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    let response = client
+        .principal_push(name, registry_host, registry_token)
+        .await?;
+
+    match response {
+        ResponsePacket::PrincipalPushed { name, digest, .. } => {
+            println!("Pushed principal '{name}' (digest {digest})");
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to push principal: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+async fn pull_principal(
+    registry_ref: &str,
+    name: Option<String>,
+    force: bool,
+    registry_host: Option<String>,
+    registry_token: Option<String>,
+) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    let response = client
+        .principal_pull(registry_ref, name, force, registry_host, registry_token)
+        .await?;
+
+    match response {
+        ResponsePacket::PrincipalPulled {
+            name,
+            version,
+            digest,
+            ..
+        } => {
+            println!("Pulled principal '{name}' {version} (digest {digest})");
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to pull principal: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+fn parse_permission(value: &str) -> Result<crate::auth::Permission> {
+    match value.to_lowercase().as_str() {
+        "chat" => Ok(crate::auth::Permission::Chat),
+        "view_settings" | "view-settings" | "viewsettings" => {
+            Ok(crate::auth::Permission::ViewSettings)
+        }
+        "manage_settings" | "manage-settings" | "managesettings" => {
+            Ok(crate::auth::Permission::ManageSettings)
+        }
+        "manage_extensions" | "manage-extensions" | "manageextensions" => {
+            Ok(crate::auth::Permission::ManageExtensions)
+        }
+        "manage_members" | "manage-members" | "managemembers" => {
+            Ok(crate::auth::Permission::ManageMembers)
+        }
+        "expose" => Ok(crate::auth::Permission::Expose),
+        "delete" => Ok(crate::auth::Permission::Delete),
+        other => anyhow::bail!("Unknown permission: {other}"),
+    }
+}
+
+async fn grant_permission(
+    name: &str,
+    subject_str: &str,
+    permission_str: &str,
+) -> Result<()> {
+    let subject = subject_from_string_with_default_user(subject_str);
+    let permission = parse_permission(permission_str)?;
+
+    let client = DaemonClient::connect().await?;
+    let response = client
+        .principal_grant_permission(name, subject.clone(), permission.clone())
+        .await?;
+
+    match response {
+        ResponsePacket::PrincipalPermissionGranted {
+            name,
+            subject,
+            permission,
+            ..
+        } => {
+            println!(
+                "Granted {:?} on '{}' to {}",
+                permission,
+                name,
+                subject
+            );
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to grant permission: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+async fn revoke_permission(
+    name: &str,
+    subject_str: &str,
+    permission_str: &str,
+) -> Result<()> {
+    let subject = subject_from_string_with_default_user(subject_str);
+    let permission = parse_permission(permission_str)?;
+
+    let client = DaemonClient::connect().await?;
+    let response = client
+        .principal_revoke_permission(name, subject.clone(), permission.clone())
+        .await?;
+
+    match response {
+        ResponsePacket::PrincipalPermissionRevoked {
+            name,
+            subject,
+            permission,
+            ..
+        } => {
+            println!(
+                "Revoked {:?} on '{}' from {}",
+                permission,
+                name,
+                subject
+            );
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to revoke permission: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+async fn list_permissions(name: &str) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    let response = client.principal_permissions(name).await?;
+
+    match response {
+        ResponsePacket::PrincipalPermissions { permissions, .. } => {
+            if permissions.is_empty() {
+                println!("No permissions granted on principal '{name}'.");
+                return Ok(());
+            }
+            println!("Permissions on principal '{name}':");
+            for grant in permissions {
+                println!(
+                    "  {:?} for {} (granted by {} at {})",
+                    grant.permission, grant.subject, grant.granted_by, grant.granted_at
+                );
+            }
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("Failed to list permissions: {message}");
+        }
+        other => {
+            anyhow::bail!("Unexpected response from daemon: {other:?}");
+        }
+    }
+}
+
+async fn list_principal_agents(name: &str, paths: &GlobalPaths) -> Result<()> {
+    let agents_dir = paths.principal_agents_dir(name);
+    if !agents_dir.exists() {
+        println!("No agents found for principal '{name}'.");
+        return Ok(());
+    }
+
+    let mut entries = tokio::fs::read_dir(&agents_dir).await?;
+    let mut found = false;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.is_file() {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            println!("{stem}");
+            found = true;
+        }
+    }
+
+    if !found {
+        println!("No agents found for principal '{name}'.");
+    }
+    Ok(())
+}
+
+async fn show_principal_agent(
+    name: &str,
+    agent: &str,
+    paths: &GlobalPaths,
+) -> Result<()> {
+    let agents_dir = paths.principal_agents_dir(name);
+    let mut candidates = vec![agents_dir.join(format!("{agent}.md"))];
+    if !agent.ends_with(".md") {
+        candidates.push(agents_dir.join(format!("{agent}.toml")));
+    }
+
+    let path = candidates.into_iter().find(|p| p.exists());
+    let path = match path {
+        Some(p) => p,
+        None => {
+            anyhow::bail!("Agent '{agent}' not found in principal '{name}'");
+        }
+    };
+
+    let content = tokio::fs::read_to_string(&path).await?;
+    println!("{}", content);
     Ok(())
 }
 
@@ -209,8 +667,15 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
     let root = paths.principals_root_dir();
     let _ = std::fs::create_dir_all(&root);
 
-    PrincipalManager::new(
+    let resolver = PathResolver::from_overrides(
+        Some(paths.config_dir.clone()),
+        Some(paths.data_dir.clone()),
+        Some(paths.cache_dir.clone()),
+    );
+
+    PrincipalManager::with_path_resolver(
         root,
+        resolver,
         Arc::new(CliPrincipalMemoryFactory {
             data_dir: paths.data_dir.clone(),
         }),
@@ -233,11 +698,8 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
         capabilities: PrincipalCapabilities::default(),
-        agents: vec![PrincipalAgentRef {
-            name: "primary".to_string(),
-            prompt: PathBuf::from("agents/primary.md"),
-            role: AgentRole::Default,
-        }],
+        exposure: crate::tunnel::protocol::InstanceExposure::Private,
+        permissions: Vec::new(),
     }
 }
 
@@ -270,5 +732,88 @@ impl PrincipalMemoryFactory for CliPrincipalMemoryFactory {
         let memory = DefaultPrincipalMemory::new(memory_dir);
         let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
         Arc::new(memory)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::Permission;
+    use crate::commands::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn parse_permission_maps_common_names() {
+        assert_eq!(parse_permission("chat").unwrap(), Permission::Chat);
+        assert_eq!(
+            parse_permission("view-settings").unwrap(),
+            Permission::ViewSettings
+        );
+        assert_eq!(
+            parse_permission("ManageSettings").unwrap(),
+            Permission::ManageSettings
+        );
+        assert_eq!(parse_permission("EXPOSE").unwrap(), Permission::Expose);
+    }
+
+    #[test]
+    fn parse_permission_rejects_unknown() {
+        assert!(parse_permission("fly").is_err());
+    }
+
+    #[test]
+    fn principal_permit_parses_positional_args() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "permit",
+            "myprincipal",
+            "user:alice",
+            "chat",
+        ])
+        .expect("should parse principal permit");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Permit {
+                name,
+                subject,
+                permission,
+            }) => {
+                assert_eq!(name, "myprincipal");
+                assert_eq!(subject, "user:alice");
+                assert_eq!(permission, "chat");
+            }
+            _other => panic!("expected Principal permit command"),
+        }
+    }
+
+    #[test]
+    fn principal_agent_show_parses() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "principal",
+            "agent",
+            "show",
+            "myprincipal",
+            "primary",
+        ])
+        .expect("should parse principal agent show");
+
+        match cli.command {
+            Commands::Principal(PrincipalCommands::Agent(PrincipalAgentCommands::Show {
+                name,
+                agent,
+            })) => {
+                assert_eq!(name, "myprincipal");
+                assert_eq!(agent, "primary");
+            }
+            _other => panic!("expected Principal agent show command"),
+        }
+    }
+
+    #[test]
+    fn default_agent_prompt_contains_name() {
+        let prompt = default_agent_prompt("spot");
+        assert!(prompt.contains("spot"));
     }
 }

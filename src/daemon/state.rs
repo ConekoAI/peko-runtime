@@ -412,8 +412,9 @@ impl AppState {
         let principal_manager = {
             let root = path_resolver.principals_root_dir();
             let _ = std::fs::create_dir_all(&root);
-            let manager = PrincipalManager::new(
+            let manager = PrincipalManager::with_path_resolver(
                 root.clone(),
+                path_resolver.clone(),
                 Arc::new(DaemonPrincipalMemoryFactory {
                     data_dir: data_dir.clone(),
                 }),

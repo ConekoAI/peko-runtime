@@ -46,6 +46,9 @@
 
 pub mod manifest;
 pub mod packager;
+pub mod principal_manifest;
+pub mod principal_packager;
+pub mod principal_unpackager;
 pub mod signature;
 pub mod team_layer_builder;
 pub mod team_layer_reconstructor;
@@ -57,6 +60,9 @@ pub mod validation;
 
 pub use manifest::AgentManifest;
 pub use packager::{export_agent, ExportOptions, Packager};
+pub use principal_manifest::PrincipalManifest;
+pub use principal_packager::{export_principal, PrincipalExportOptions, PrincipalPackager, PrincipalRegistryDescriptor};
+pub use principal_unpackager::{PrincipalImportOptions, PrincipalImportResult, PrincipalUnpackager};
 pub use team_layer_builder::{decompose_team_archive, DecomposedTeamLayers, LayerBytes};
 pub use team_layer_reconstructor::{
     extract_team_config_index, reconstruct_agent_files, reconstruct_team, ReconstructedTeam,

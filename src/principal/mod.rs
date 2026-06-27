@@ -10,10 +10,9 @@ pub mod routers;
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use config::{
-    AgentRole, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalAgentRef,
-    PrincipalCapabilities, PrincipalConfig, PrincipalDID, PrincipalGovernanceConfig,
-    PrincipalIdentityConfig, PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
-    TtlPolicy,
+    AgentRole, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalCapabilities,
+    PrincipalConfig, PrincipalDID, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
 pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
@@ -33,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Newtype wrapper for a stable principal identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -47,7 +47,7 @@ impl PrincipalId {
 /// Runtime representation of a Principal.
 pub struct Principal {
     pub id: PrincipalId,
-    pub config: PrincipalConfig,
+    pub config: RwLock<PrincipalConfig>,
     pub workspace_path: PathBuf,
     pub memory: Arc<dyn PrincipalMemory>,
     pub router: Arc<dyn PrincipalRouter>,
@@ -55,24 +55,38 @@ pub struct Principal {
 }
 
 impl Principal {
-    /// The stable DID, falling back to a synthetic local DID if not configured.
-    pub fn did(&self) -> PrincipalDID {
-        self.config
-            .did
-            .clone()
-            .unwrap_or_else(|| synthetic_local_did(&self.config.name, &self.id))
+    /// The stable DID. New Principals always generate a real identity at
+    /// creation time, so this normally returns the configured DID.
+    pub async fn did(&self) -> PrincipalDID {
+        let config = self.config.read().await;
+        config.did.clone().unwrap_or_else(|| {
+            // Fallback for Principals created before identity generation was
+            // wired. The name is immutable, so this is stable enough.
+            synthetic_local_did(&config.name, &self.id)
+        })
+    }
+
+    /// The Principal name.
+    pub async fn name(&self) -> String {
+        self.config.read().await.name.clone()
     }
 
     /// Resolve a registered agent prompt by local name.
-    pub fn agent_prompt(&self,
+    pub fn agent_prompt(
+        &self,
         name: &str,
     ) -> Option<&AgentPrompt> {
         self.agent_prompts.get(name)
     }
 
     /// The capabilities (tools, skills, MCPs) available to this Principal.
-    pub fn capabilities(&self) -> &PrincipalCapabilities {
-        &self.config.capabilities
+    pub async fn capabilities(&self) -> PrincipalCapabilities {
+        self.config.read().await.capabilities.clone()
+    }
+
+    /// The exposure level for this Principal.
+    pub async fn exposure(&self) -> crate::tunnel::protocol::InstanceExposure {
+        self.config.read().await.exposure.clone()
     }
 }
 
