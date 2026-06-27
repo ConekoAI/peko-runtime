@@ -28,9 +28,18 @@ use crate::tools::builtin::{
 use super::{agent_prompt::AgentPrompt, config::PrincipalCapabilities};
 
 /// Build an `AgentConfig` from a thin Markdown prompt + Principal capabilities.
+///
+/// `provider_hint` is the resolved `(preferred_provider_id, preferred_model_id)`
+/// pair. The caller passes the explicit principal-config values when set, or
+/// falls back to the catalog's `default_provider_id` / `default_model_id` when
+/// the principal doesn't declare one (see [`run_supervisor_prompt`]). Without
+/// a non-`None` provider hint the supervisor's `SubagentExecutor` fails with
+/// "supervisor agent has no provider configured" — there is no other code
+/// path that can recover a provider for the supervisor at run time.
 pub fn build_agent_config(
     prompt: &AgentPrompt,
     capabilities: &PrincipalCapabilities,
+    provider_hint: (Option<String>, Option<String>),
 ) -> AgentConfig {
     let enabled_extensions: Vec<String> = capabilities
         .tools
@@ -43,6 +52,8 @@ pub fn build_agent_config(
     let mut extensions = ExtensionConfig::default();
     extensions.enabled = enabled_extensions;
 
+    let (preferred_provider_id, preferred_model_id) = provider_hint;
+
     AgentConfig {
         name: prompt.name.clone(),
         description: prompt.frontmatter.description.clone(),
@@ -53,6 +64,8 @@ pub fn build_agent_config(
             }),
         }),
         extensions: Some(extensions),
+        preferred_provider_id,
+        preferred_model_id,
         // Inherit sensible defaults for the rest.
         ..AgentConfig::default()
     }
@@ -78,7 +91,16 @@ pub async fn run_supervisor_prompt(
     inbox_registry: Arc<InboxRegistry>,
     session_creation_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> anyhow::Result<String> {
-    let mut config = build_agent_config(prompt, capabilities);
+    // Resolve provider hint: prefer the resolver's catalog default so a
+    // principal that doesn't declare `[provider]` still has a working
+    // supervisor. Without this fallback the supervisor's
+    // `SubagentExecutor::with_provider` errors with "no provider
+    // configured" the first time a chat lands (issue #69).
+    let provider_hint = match resolver.as_ref() {
+        Some(r) => r.catalog().get_default().await,
+        None => (None, None),
+    };
+    let mut config = build_agent_config(prompt, capabilities, provider_hint);
 
     // Supervisor-specific whitelist.  We include bare tool names so
     // `Agent::init_builtins_async` keeps the tools it registers, plus canonical

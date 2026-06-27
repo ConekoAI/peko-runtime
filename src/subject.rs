@@ -111,6 +111,18 @@ impl Subject {
     /// `user:{sub}` prefix that matches `CallerContext::subject()`'s
     /// projection for `Identity::User`.
     ///
+    /// **Prefix normalization (issue #68):** PekoHub sends the caller
+    /// id as a bare numeric string (`"39"`) but its own wire format
+    /// for `Subject` includes the `user:` tag. The on-disk grant
+    /// (parsed via `subject_from_string_with_default_user`) strips
+    /// `user:` to store `Subject::User("39")` — the bare form. Without
+    /// normalization here, the inbound bridge path would produce
+    /// `Subject::User("user:39")` and the permission check would
+    /// never match the stored grant. We strip any leading `user:` so
+    /// `from_bridge_user("39")`, `from_bridge_user("user:39")`, and
+    /// `from_bridge_user("user:user:39")` all collapse to the same
+    /// `Subject::User("39")` the grant stores.
+    ///
     /// Centralized here so the `user:` prefix and the anonymous
     /// special-case live next to the type's other constructors
     /// instead of being inlined at every call site.
@@ -119,7 +131,8 @@ impl Subject {
         if sub == "anonymous" {
             Self::Public
         } else {
-            Self::User(format!("user:{sub}"))
+            let bare = sub.strip_prefix("user:").unwrap_or(sub);
+            Self::User(bare.to_string())
         }
     }
 
