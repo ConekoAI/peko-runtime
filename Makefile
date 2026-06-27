@@ -15,7 +15,7 @@
         test-lib test-subagent \
         test-pekohub test-tunnel test-tunnel-e2e test-packaging test-registry \
         test-cli-send test-cli-session test-cli-basics test-cli-cron \
-        test-cli-subagent test-cli-tools \
+        test-cli-subagent test-cli-tools test-cli-agent-signature \
         test-cli-extensions test-cli-providers \
         test-scenarios-s1 test-scenarios-s2 test-scenarios-s4 \
         test-scenarios-s5 test-scenarios-s6 \
@@ -25,12 +25,14 @@
 # All integration test crates (live in tests/*.rs and tests/scenarios/*.rs).
 # Kept in sync with `cargo metadata` (targets of kind = ["test"]); the
 # Principal migration dropped the cli_compaction / cli_a2a /
-# s3_agent_registry_roundtrip suites.
+# s3_agent_registry_roundtrip suites, and the parity branch added
+# cli_agent_signature for issue #14 (manifest signature verification).
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      team_integration extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
-                     cli_tools cli_extensions cli_providers \
+                     cli_tools cli_agent_signature \
+                     cli_extensions cli_providers \
                      s1_local_agent_with_extensions \
                      s2_extension_registry_roundtrip \
                      s4_publish_running_agent_with_permission \
@@ -66,7 +68,7 @@ help:
 	@echo "    test-pekohub / test-tunnel / test-tunnel-e2e"
 	@echo "    test-packaging / test-registry / test-subagent"
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
-	@echo "    test-cli-subagent / test-cli-tools"
+	@echo "    test-cli-subagent / test-cli-tools / test-cli-agent-signature"
 	@echo "    test-cli-extensions"
 	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY / KIMI_API_KEY)"
 	@echo "    test-scenarios-s1 (Phase D — local agent + ext lifecycle, mock-LLM)"
@@ -196,6 +198,15 @@ test-cli-subagent: docker-up
 test-cli-tools: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_tools -- --include-ignored
+
+# Issue #14 — manifest signature verification on import (Principal-era).
+# Pure unit/integration tests against the in-memory `PrincipalPackager`
+# and `PrincipalUnpackager`: no daemon, no registry, no LLM. Does NOT
+# gate on `docker-up`. Kept in the mock-LLM env shape for consistency
+# with sibling CLI slices so a stray `#[ignore]` would still resolve.
+test-cli-agent-signature:
+	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test --test cli_agent_signature
 
 # `peko ext install/list/info/enable/disable/uninstall` slice. All
 # `#[ignore]` (daemon required) but NOT `#[serial]` — none of these
