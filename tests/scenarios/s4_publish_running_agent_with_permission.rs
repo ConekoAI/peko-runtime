@@ -70,7 +70,7 @@
 //!    of the fix for [issue #16](https://github.com/ConekoAI/peko-runtime/issues/16),
 //!    the `PrincipalGrantPermission` and `PrincipalRevokePermission`
 //!    IPC handlers call
-//!    `TunnelDispatcher::refresh_instance_allowed_users` after the
+//!    `TunnelDispatcher::refresh_instance_allowed_principals` after the
 //!    local config write, which re-announces the instance to PekoHub
 //!    with `allowed_user_ids` re-derived from the new
 //!    `PrincipalConfig.permissions`. PekoHub treats

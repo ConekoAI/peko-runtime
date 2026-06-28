@@ -64,8 +64,13 @@ pub struct InstanceAnnouncePayload {
     pub runtime_display_name: Option<String>,
     pub status: InstanceStatus,
     pub exposure: InstanceExposure,
+    /// Typed allow-list per ADR-041. PekoHub's post-#19 reader ignores
+    /// the legacy `allowedUsers` string-array field; the runtime now
+    /// emits `allowedPrincipals: Vec<Subject>` instead. The wire token
+    /// is `allowedPrincipals` (camelCase) and the entries are
+    /// `{kind, id}` objects.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_users: Option<Vec<String>>,
+    pub allowed_principals: Option<Vec<crate::auth::Subject>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,8 +99,11 @@ pub struct InstanceDeregisterPayload {
 pub struct ExposureUpdatePayload {
     pub instance_id: String,
     pub exposure: InstanceExposure,
+    /// Typed allow-list per ADR-041. Replaces the legacy
+    /// `allowedUserIds: Vec<String>` field that PekoHub post-#19
+    /// no longer reads.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_user_ids: Option<Vec<String>>,
+    pub allowed_principals: Option<Vec<crate::auth::Subject>>,
 }
 
 /// Payload for `status_update` messages.
@@ -457,7 +465,7 @@ mod tests {
                 runtime_display_name: Some("Test".to_string()),
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_users: Some(vec!["u1".to_string()]),
+                allowed_principals: Some(vec![crate::auth::Subject::User("u1".to_string())]),
                 capabilities: Some(vec!["c1".to_string()]),
                 metadata: Some(metadata),
             },
@@ -475,7 +483,7 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"allowedUsers\""),
+            json.contains("\"allowedPrincipals\""),
             "Expected camelCase, got: {}",
             json
         );
@@ -503,7 +511,7 @@ mod tests {
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_users: None,
+                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
             },
@@ -537,7 +545,7 @@ mod tests {
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_users: None,
+                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
             },
@@ -577,7 +585,7 @@ mod tests {
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_users: None,
+                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
             },
@@ -650,7 +658,7 @@ mod tests {
             payload: ExposureUpdatePayload {
                 instance_id: "inst-1".to_string(),
                 exposure: InstanceExposure::Public,
-                allowed_user_ids: Some(vec!["u1".to_string()]),
+                allowed_principals: Some(vec![crate::auth::Subject::User("u1".to_string())]),
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -661,7 +669,7 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"allowedUserIds\""),
+            json.contains("\"allowedPrincipals\""),
             "Expected camelCase, got: {}",
             json
         );

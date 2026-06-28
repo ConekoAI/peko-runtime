@@ -2947,7 +2947,7 @@ impl IpcServer {
                 {
                     Ok(_) => {
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                            if let Err(e) = dispatcher.refresh_instance_allowed_users(&name).await {
+                            if let Err(e) = dispatcher.refresh_instance_allowed_principals(&name).await {
                                 warn!(
                                     principal = %name,
                                     "Failed to refresh allowed_users after principal grant: {e}"
@@ -3030,7 +3030,7 @@ impl IpcServer {
                 {
                     Ok(_) => {
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                            if let Err(e) = dispatcher.refresh_instance_allowed_users(&name).await {
+                            if let Err(e) = dispatcher.refresh_instance_allowed_principals(&name).await {
                                 warn!(
                                     principal = %name,
                                     "Failed to refresh allowed_users after principal revoke: {e}"

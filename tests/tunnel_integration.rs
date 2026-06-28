@@ -347,7 +347,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             runtime_display_name: Some("Test Runtime".to_string()),
             status: InstanceStatus::Online,
             exposure: InstanceExposure::Public,
-            allowed_users: None,
+            allowed_principals: None,
             capabilities: Some(vec!["chat".to_string()]),
             metadata: None,
         },
