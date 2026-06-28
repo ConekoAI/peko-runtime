@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::engine::AgenticEvent;
 use crate::principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
-use crate::principal::agent_runner::run_supervisor_prompt;
+use crate::principal::agent_runner::{run_supervisor_prompt, run_supervisor_prompt_streaming};
 use crate::principal::memory::{PrincipalMemory, SessionArtifact};
 use crate::principal::router::{
     AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext, RouterError,
@@ -106,6 +107,59 @@ impl PrincipalRouter for SupervisorRouter {
                 self.principal_provider_id.clone(),
                 self.principal_model_id.clone(),
             ),
+        )
+        .await
+        .map_err(|e| RouterError::AgentFailed(e.to_string()))?;
+
+        // Record the supervisor session artifact so future messages from this
+        // peer can recall it as prior context.
+        let artifact = SessionArtifact {
+            session_id,
+            peer,
+            title: Some("supervisor".to_string()),
+            updated_at: chrono::Utc::now(),
+            summary: Some(response.clone()),
+        };
+        if let Err(e) = self.memory.record_session(artifact).await {
+            tracing::warn!("failed to record supervisor session artifact: {e}");
+        }
+
+        Ok(RouteDecision::Respond { response })
+    }
+
+    async fn route_streaming(
+        &self,
+        ctx: RouterContext,
+        on_event: Box<dyn Fn(AgenticEvent) + Send + Sync>,
+    ) -> Result<RouteDecision, RouterError> {
+        let peer = ctx.peer.clone();
+
+        // Same supervisor-session-id strategy as `route()` so streaming
+        // and non-streaming supervisors share continuity.
+        let session_id = supervisor_session_id(&peer);
+        let sessions_dir = self.memory.sessions_dir();
+        let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
+
+        let message = build_supervisor_message(&ctx);
+
+        let response = run_supervisor_prompt_streaming(
+            &self.supervisor_prompt,
+            &ctx.capabilities,
+            peer.clone(),
+            message,
+            session_id.clone(),
+            sessions_dir,
+            self.resolver.clone(),
+            self.workspace_path.clone(),
+            available_agents,
+            Arc::clone(&self.memory),
+            Arc::clone(&ctx.inbox_registry),
+            Arc::clone(&ctx.session_creation_lock),
+            (
+                self.principal_provider_id.clone(),
+                self.principal_model_id.clone(),
+            ),
+            on_event,
         )
         .await
         .map_err(|e| RouterError::AgentFailed(e.to_string()))?;
