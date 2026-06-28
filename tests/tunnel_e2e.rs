@@ -296,7 +296,13 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let (did, signing_key) = generate_runtime_identity();
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        // Real-LLM chat calls (minimax) routinely take 5-15s end-to-end
+        // (provider round-trip + SSE start). 10s was tight enough that
+        // any provider hiccup caused the chat request to time out before
+        // the first SSE chunk arrived (flaked in CI run #28307811834).
+        // The agent's own LLM timeout is 5 minutes, so this is well
+        // under that ceiling while leaving room for slow providers.
+        .timeout(Duration::from_secs(60))
         .no_proxy()
         .build()
         .unwrap();
