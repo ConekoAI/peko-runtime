@@ -10,6 +10,7 @@
 //! from JSONL files alone.
 
 use crate::session::jsonl::SessionStorage;
+use crate::session::safe_filename_component;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -113,7 +114,7 @@ impl SessionRecovery {
                 warn!("Failed to clean up temp files for {}: {}", session_id, e);
             } else {
                 // Check if tmp file existed and was cleaned
-                let tmp_path = dir.join(format!("{session_id}.tmp"));
+                let tmp_path = dir.join(format!("{}.tmp", safe_filename_component(&session_id)));
                 if !tmp_path.exists() {
                     report.temp_files_cleaned += 1;
                 }

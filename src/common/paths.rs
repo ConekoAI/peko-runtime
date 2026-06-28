@@ -40,6 +40,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::session::safe_filename_component;
+
 /// Environment variable override for Peko's home directory.
 const PEKO_HOME_ENV: &str = "PEKO_HOME";
 
@@ -441,7 +443,7 @@ impl PathResolver {
     #[must_use]
     pub fn agent_session_file(&self, agent: &str, team: Option<&str>, session_id: &str) -> PathBuf {
         self.agent_sessions_dir(agent, team)
-            .join(format!("{session_id}.jsonl"))
+            .join(format!("{}.jsonl", safe_filename_component(session_id)))
     }
 
     /// Get the workspaces root directory

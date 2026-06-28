@@ -11,6 +11,7 @@
 //! - Clean separation of concerns
 
 use crate::session::lock::FileLock;
+use crate::session::safe_filename_component;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -642,7 +643,9 @@ impl SessionIndex {
             self.peers_modified = true;
 
             // Delete transcript file
-            let transcript_path = self.dir.join(format!("{session_id}.jsonl"));
+            let transcript_path = self
+                .dir
+                .join(format!("{}.jsonl", safe_filename_component(&session_id)));
             if transcript_path.exists() {
                 let _ = fs::remove_file(&transcript_path).await;
             }

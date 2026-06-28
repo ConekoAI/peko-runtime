@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::debug;
 
+use crate::session::safe_filename_component;
+
 /// Session directory manager
 ///
 /// Manages session directory paths without implicit filesystem operations.
@@ -61,7 +63,8 @@ impl SessionDirectory {
     /// Get session file path
     #[must_use]
     pub fn session_file(&self, session_id: &str) -> PathBuf {
-        self.path.join(format!("{session_id}.jsonl"))
+        self.path
+            .join(format!("{}.jsonl", safe_filename_component(session_id)))
     }
 
     /// Get index file path

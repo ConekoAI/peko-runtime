@@ -46,6 +46,7 @@ use super::key::{derive_base_session_key, derive_overlay_key};
 use super::metadata::SessionMetadata;
 use super::metadata_controller::MetadataController;
 use super::overlay::{ChannelOverlay, SessionOverlay};
+use super::safe_filename_component;
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, SpawnCleanupPolicy};
 use super::unified::Session;
@@ -1068,7 +1069,11 @@ impl SessionManager {
         );
 
         // 2. Create metadata
-        let mut metadata = SessionMetadata::new(&session_id, agent, format!("{session_id}.jsonl"));
+        let mut metadata = SessionMetadata::new(
+            &session_id,
+            agent,
+            format!("{}.jsonl", safe_filename_component(&session_id)),
+        );
         if let Some(parent_id) = options.parent_session_id {
             metadata.parent_session_id = Some(parent_id);
         }
@@ -1089,7 +1094,7 @@ impl SessionManager {
             let entry = SessionEntry::with_peer(
                 session_id.clone(),
                 agent.to_string(),
-                format!("{session_id}.jsonl"),
+                format!("{}.jsonl", safe_filename_component(&session_id)),
                 peer.kind().to_string(),
                 peer.subject_id().to_string(),
             );
@@ -1318,8 +1323,11 @@ impl SessionManager {
             .await?;
 
         // Create metadata for new session
-        let mut new_metadata =
-            SessionMetadata::new(&new_session_id, &agent, format!("{new_session_id}.jsonl"));
+        let mut new_metadata = SessionMetadata::new(
+            &new_session_id,
+            &agent,
+            format!("{}.jsonl", safe_filename_component(&new_session_id)),
+        );
         new_metadata.parent_session_id = Some(parent_session_id.to_string());
         new_metadata.title = label.or_else(|| {
             parent_metadata
@@ -1443,7 +1451,7 @@ impl SessionManager {
                 } else {
                     // Create new session through metadata controller
                     let new_id = uuid::Uuid::new_v4().to_string();
-                    let transcript_file = format!("{new_id}.jsonl");
+                    let transcript_file = format!("{}.jsonl", safe_filename_component(&new_id));
                     let entry = SessionEntry::with_peer(
                         new_id.clone(),
                         agent.to_string(),
@@ -1459,7 +1467,7 @@ impl SessionManager {
             };
 
             // Check if session file exists by looking for it directly
-            let transcript_file = format!("{session_id}.jsonl");
+            let transcript_file = format!("{}.jsonl", safe_filename_component(&session_id));
             let transcript_path = sessions_dir.join(&transcript_file);
 
             let session = if transcript_path.exists() {
@@ -2796,7 +2804,9 @@ mod tests {
         let session_id = handle.session_id();
 
         // Verify JSONL file exists
-        let jsonl_path = temp.path().join(format!("{session_id}.jsonl"));
+        let jsonl_path = temp
+            .path()
+            .join(format!("{}.jsonl", safe_filename_component(session_id)));
         assert!(jsonl_path.exists(), "JSONL file should exist");
 
         // Verify metadata exists in index
@@ -2844,7 +2854,9 @@ mod tests {
         );
 
         // Verify JSONL is also deleted
-        let jsonl_path = temp.path().join(format!("{session_id}.jsonl"));
+        let jsonl_path = temp
+            .path()
+            .join(format!("{}.jsonl", safe_filename_component(&session_id)));
         assert!(!jsonl_path.exists(), "JSONL file should be deleted");
     }
 

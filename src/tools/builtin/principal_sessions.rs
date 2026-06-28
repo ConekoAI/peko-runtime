@@ -9,6 +9,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::principal::memory::{PrincipalMemory, SessionArtifact};
+use crate::session::safe_filename_component;
 use crate::tools::core::traits::Tool;
 
 /// Actions supported by `principal_sessions`.
@@ -108,7 +109,10 @@ impl PrincipalSessionsTool {
         session_id: &str,
         limit: usize,
     ) -> anyhow::Result<serde_json::Value> {
-        let path = self.memory.sessions_dir().join(format!("{session_id}.jsonl"));
+        let path = self
+            .memory
+            .sessions_dir()
+            .join(format!("{}.jsonl", safe_filename_component(session_id)));
         if !path.exists() {
             return Ok(json!({ "session_id": session_id, "total_messages": 0, "messages": [] }));
         }

@@ -5,6 +5,7 @@
 use crate::session::events::SessionEvent;
 use crate::session::events::SessionTrigger;
 use crate::session::jsonl::SessionStorage;
+use crate::session::safe_filename_component;
 use anyhow::Result;
 use std::path::PathBuf;
 use tracing::info;
@@ -62,7 +63,10 @@ impl SyncSessionStorage {
         });
 
         // Write the initial event atomically
-        let path = self.jsonl.storage_dir().join(format!("{session_id}.jsonl"));
+        let path = self
+            .jsonl
+            .storage_dir()
+            .join(format!("{}.jsonl", safe_filename_component(session_id)));
         let json = serde_json::to_string(&created_event)?;
 
         let temp_path = path.with_extension("tmp");
