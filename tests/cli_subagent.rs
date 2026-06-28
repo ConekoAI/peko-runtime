@@ -12,14 +12,34 @@
 //! | `subagent_async.ps1`       | (deferred — `_async` path requires a populated `AsyncTaskRegistry`, not directly seedable from a test)    |
 //! | `subagent_status_list.ps1` | (deferred — same reason: `task` tool reads from in-process registry)                                      |
 //!
+//! **Principal model.** After the "Principal as the single actor" migration,
+//! `peko send <name>` targets a *Principal*, whose supervisor agent
+//! (`principals/<name>/agents/primary.md`) is the parent that calls the
+//! `Agent` tool. The `Agent` tool's `subagent_type` resolves to a sibling
+//! subagent prompt at `principals/<name>/agents/<type>/AGENT.md` (see
+//! `AgentService::resolve_principal_agent`). These tests therefore:
+//!   * create the Principal via [`create_mock_principal_with_tools`], granting
+//!     the capability tools (`Agent`, `Write`, `Read`, `Bash`) that the
+//!     dispatcher's owner check requires for both the supervisor and any
+//!     subagent it spawns (subagents share the Principal's permission
+//!     boundary); and
+//!   * write a `worker` subagent prompt at
+//!     `principals/<name>/agents/worker/AGENT.md` (the resolver requires the
+//!     directory form `agents/<type>/AGENT.md` — the default `primary.md` is
+//!     a *file* and only serves as the supervisor prompt).
+//! A spawned subagent's tool whitelist comes from `ExtensionConfig::default()`
+//! (which includes `Agent`, `Write`, `Read`, `Bash`, …), so the `worker`
+//! prompt needs no tool frontmatter — `AGENT.md` has no `tools` field anyway.
+//!
 //! Each test:
 //!   1. Builds an isolated [`PekoCli`] tempdir as `HOME`.
 //!   2. Calls `POST /_test/configure` on the mock LLM to install a
 //!      scripted `MOCK_LLM_SCRIPT` (and reset the per-substring counter).
-//!   3. Spawns a plain `DaemonGuard` (no `--interval` — subagent tests
+//!   3. Creates the Principal + `worker` subagent via [`setup_principal`].
+//!   4. Spawns a plain `DaemonGuard` (no `--interval` — subagent tests
 //!      don't poll, and the child subagent's blocking LLM call goes
 //!      straight through the same mock endpoint).
-//!   4. Runs `peko send <agent> <prompt> --no-stream` and asserts on the
+//!   5. Runs `peko send <principal> <prompt> --no-stream` and asserts on the
 //!      parent's final stdout plus, where applicable, on the file the
 //!      child wrote into the tool workspace.
 //!
@@ -44,11 +64,15 @@
 //! needles are belt-and-suspenders.
 
 mod common;
-use common::{configure_mock, run_with_timeout, DaemonGuard, PekoCli};
+use common::{create_mock_principal_with_tools, configure_mock, run_with_timeout, DaemonGuard, PekoCli};
 use serial_test::serial;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
+
+/// The `subagent_type` every test spawns. Resolves to
+/// `principals/<name>/agents/worker/AGENT.md`.
+const WORKER: &str = "worker";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,77 +133,44 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
     cli.peko_dir().join("data").join("workspaces")
 }
 
-/// Write a mock-LLM-pointed agent that has the tools the subagent
-/// migration needs enabled: `Agent`, `Write`, `Read`, `Bash`, and the
-/// Async* family.
+/// Write a `worker` subagent prompt for the given Principal.
 ///
-/// **`[extensions] enabled` is a special filter.** The agent's
-/// `init_builtins_async` (in `src/agents/agent.rs`) iterates
-/// the per-agent tools and compares each whitelist pattern to
-/// `tool.name()` (e.g. `"Agent"`). The dispatcher check
-/// stores the canonical extension ID (e.g. `"builtin:tool:Agent"`).
-/// The whitelist must therefore contain BOTH the bare tool name AND the
-/// canonical extension ID — the bare name so the per-agent init registers
-/// the tool, and the canonical ID so the dispatcher's `is_tool_enabled`
-/// check at execution time resolves the owner and matches the
-/// whitelist. Omitting either one yields
-/// "Error: Tool 'Agent' is currently disabled..." in the
-/// parent's tool result. See `docs/integration/TESTING.md` §7 for
-/// the subagent migration context.
-fn write_subagent_agent(
-    home: &std::path::Path,
-    name: &str,
-    _mock_llm_url: &str,
-) -> std::io::Result<()> {
-    use std::path::Path;
-    let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
-    std::fs::create_dir_all(&agent_dir)?;
-    let config_toml = format!(
-        r#"version = "3.0"
-name = "{name}"
-description = "CLI integration test agent for subagent / Agent"
-auto_accept_trusted = false
-
-preferred_provider_id = "mock-llm"
-preferred_model_id = "default"
-default_timeout_seconds = 60
-
-[extensions]
-enabled = [
-    "Agent",
-    "Write",
-    "Read",
-    "Bash",
-    "AsyncSpawn",
-    "AsyncOutput",
-    "AsyncStatus",
-    "AsyncList",
-    "AsyncStop",
-    "builtin:tool:Agent",
-    "builtin:tool:Write",
-    "builtin:tool:Read",
-    "builtin:tool:Bash",
-    "builtin:tool:AsyncSpawn",
-    "builtin:tool:AsyncOutput",
-    "builtin:tool:AsyncStatus",
-    "builtin:tool:AsyncList",
-    "builtin:tool:AsyncStop",
-]
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
-"#
+/// `AgentService::resolve_principal_agent` resolves a `subagent_type` to
+/// `<workspace>/agents/<type>/AGENT.md` (the directory form). The supervisor
+/// prompt `agents/primary.md` created by `peko principal create` is a *file*
+/// and is NOT a valid `subagent_type`, so each test creates an explicit
+/// `worker` subagent directory here. The subagent's tool whitelist comes from
+/// `ExtensionConfig::default()` (Agent/Write/Read/Bash/…), so the prompt body
+/// and frontmatter carry no tool grants — `AGENT.md` has no `tools` field.
+fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
+    let dir = cli
+        .peko_dir()
+        .join("principals")
+        .join(principal)
+        .join("agents")
+        .join(worker);
+    std::fs::create_dir_all(&dir).expect("create worker subagent dir");
+    let agent_md = format!(
+        "---\n\
+         name: {worker}\n\
+         description: Test subagent for the cli_subagent integration suite\n\
+         ---\n\n\
+         You are a test subagent. Follow the task instructions exactly, \
+         using the Write/Read/Agent tools as directed.\n"
     );
-    std::fs::write(agent_dir.join("config.toml"), config_toml)?;
-    std::fs::write(
-        agent_dir.join("SYSTEM.md"),
-        "Test agent for the subagent CLI integration suite. \
-         Has the Agent, Write, Read, Bash, and Async* tools enabled.",
-    )?;
-    Ok(())
+    std::fs::write(dir.join("AGENT.md"), agent_md).expect("write worker AGENT.md");
+}
+
+/// Create the Principal under test and its `worker` subagent.
+///
+/// Grants the capability tools (`Agent`, `Write`, `Read`, `Bash`) the
+/// dispatcher's owner check requires. Subagents share the Principal's
+/// permission boundary, so these grants cover both the supervisor's own
+/// tool calls and any tool calls a spawned `worker` makes. Must be called
+/// BEFORE `DaemonGuard::spawn` (it only writes files).
+fn setup_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
+    create_mock_principal_with_tools(cli, name, mock_llm_url, &["Agent", "Write", "Read", "Bash"]);
+    write_worker_subagent(cli, name, WORKER);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +214,7 @@ async fn subagent_blocking_t1_write_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "subagent_type": agent_name }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER }).to_string()
             } },
             "BLOCKING_SUCCESS",
         ],
@@ -238,7 +229,7 @@ async fn subagent_blocking_t1_write_file() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_subagent_agent(cli.home(), agent_name, &mock_url).expect("write subagent agent");
+    setup_principal(&cli, agent_name, &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -302,7 +293,7 @@ async fn subagent_blocking_t2_isolated() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "subagent_type": agent_name,
+                    "subagent_type": WORKER,
                     "isolated": true,
                 }).to_string()
             } },
@@ -319,7 +310,7 @@ async fn subagent_blocking_t2_isolated() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_subagent_agent(cli.home(), agent_name, &mock_url).expect("write subagent agent");
+    setup_principal(&cli, agent_name, &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -382,7 +373,7 @@ async fn subagent_blocking_t4_inline_read() {
             } },
             // Parent turn 2: spawn the child.
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "subagent_type": agent_name }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "subagent_type": WORKER }).to_string()
             } },
             // Parent turn 3: report success. The child text was
             // `INLINE_RESULT_OK` and the parent's blocking tool
@@ -403,7 +394,7 @@ async fn subagent_blocking_t4_inline_read() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_subagent_agent(cli.home(), agent_name, &mock_url).expect("write subagent agent");
+    setup_principal(&cli, agent_name, &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -470,13 +461,13 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": agent_name }).to_string()
+                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": WORKER }).to_string()
             } },
             "NESTING_SUCCESS",
         ],
         child_a_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": agent_name }).to_string()
+                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": WORKER }).to_string()
             } },
             "CHILD_A_DONE",
         ],
@@ -491,7 +482,7 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_subagent_agent(cli.home(), agent_name, &mock_url).expect("write subagent agent");
+    setup_principal(&cli, agent_name, &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -564,19 +555,19 @@ async fn subagent_nesting_t2_depth_limit() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": agent_name }).to_string()
+                serde_json::json!({ "prompt": task_for_child_a, "subagent_type": WORKER }).to_string()
             } },
             "PARENT_DONE",
         ],
         child_a_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": agent_name }).to_string()
+                serde_json::json!({ "prompt": task_for_grandchild, "subagent_type": WORKER }).to_string()
             } },
             "CHILD_A_DONE",
         ],
         grandchild_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": "would-be-depth-3-task", "subagent_type": agent_name }).to_string()
+                serde_json::json!({ "prompt": "would-be-depth-3-task", "subagent_type": WORKER }).to_string()
             } },
             "GRANDCHILD_DONE",
         ],
@@ -585,7 +576,7 @@ async fn subagent_nesting_t2_depth_limit() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_subagent_agent(cli.home(), agent_name, &mock_url).expect("write subagent agent");
+    setup_principal(&cli, agent_name, &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -640,7 +631,7 @@ async fn subagent_isolation_t1_shared_workspace() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "subagent_type": agent_name,
+                    "subagent_type": WORKER,
                     "isolated": false,
                 }).to_string()
             } },
@@ -657,7 +648,7 @@ async fn subagent_isolation_t1_shared_workspace() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_subagent_agent(cli.home(), agent_name, &mock_url).expect("write subagent agent");
+    setup_principal(&cli, agent_name, &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -709,7 +700,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "subagent_type": agent_name,
+                    "subagent_type": WORKER,
                     "isolated": true,
                 }).to_string()
             } },
@@ -726,7 +717,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_subagent_agent(cli.home(), agent_name, &mock_url).expect("write subagent agent");
+    setup_principal(&cli, agent_name, &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(

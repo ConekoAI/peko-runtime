@@ -14,7 +14,7 @@
 //! Slice B's v1 hits the hub **anonymously**, which limits cross-runtime
 //! a2a to agents with `exposure: "public"` — the hub's
 //! `principalCanAccess` short-circuits on public exposure but otherwise
-//! requires a `Principal` to gate. There is no shared HTTP credential
+//! requires a `Subject` to gate. There is no shared HTTP credential
 //! between the runtime and the hub today: the runtime authenticates
 //! over the WebSocket tunnel via Ed25519 + nonce challenge, not over
 //! HTTP. Slice B documents this and surfaces a clean `Forbidden` error
@@ -38,7 +38,7 @@ use serde::Deserialize;
 use std::time::Duration;
 use thiserror::Error;
 
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 
 /// Hit payload returned by the hub's `/v1/agents/by-did/:did` and
 /// `/v1/agents/by-handle/:owner/:agent_name` endpoints.
@@ -66,7 +66,7 @@ pub struct AgentResolution {
     /// outbound path doesn't currently consume this, but it's part of
     /// the response contract (the hub mirrors it for client-side
     /// trust display) and audit code wants it.
-    pub owner_principal: Principal,
+    pub owner_principal: Subject,
     /// Visibility of the target instance. Drives the local-side check
     /// before issuing the outbound a2a (an unexposed agent shouldn't
     /// be addressable even if the directory leaks it).
@@ -397,7 +397,7 @@ mod tests {
             runtime_id: "did:key:zHostingRuntime".to_string(),
             instance_id: "inst-abc-123".to_string(),
             agent_did: "did:peko:agent:target-keyhash".to_string(),
-            owner_principal: Principal::User("alice".to_string()),
+            owner_principal: Subject::User("alice".to_string()),
             exposure: ResolvedExposure::Public,
         }
     }
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(decoded, sample_resolution());
     }
 
-    /// `Principal::Agent` and `Principal::Public` also decode — the
+    /// `Subject::Principal` and `Subject::Public` also decode — the
     /// hub returns these on the by-did path for agent-owned or
     /// publicly-owned instances respectively.
     #[test]
@@ -429,17 +429,17 @@ mod tests {
         for (kind_json, expected) in [
             (
                 r#"{ "kind": "user", "id": "alice" }"#,
-                Principal::User("alice".to_string()),
+                Subject::User("alice".to_string()),
             ),
             (
-                r#"{ "kind": "agent", "id": "did:peko:agent:abc" }"#,
-                Principal::Agent("did:peko:agent:abc".to_string()),
+                r#"{ "kind": "principal", "id": "did:peko:agent:abc" }"#,
+                Subject::Principal("did:peko:agent:abc".to_string()),
             ),
             (
                 r#"{ "kind": "team", "id": "eng" }"#,
-                Principal::Team("eng".to_string()),
+                Subject::Team("eng".to_string()),
             ),
-            (r#"{ "kind": "public" }"#, Principal::Public),
+            (r#"{ "kind": "public" }"#, Subject::Public),
         ] {
             let body = format!(
                 r#"{{
@@ -451,7 +451,7 @@ mod tests {
                 }}"#
             );
             let decoded: AgentResolution =
-                serde_json::from_str(&body).expect("must decode every Principal kind");
+                serde_json::from_str(&body).expect("must decode every Subject kind");
             assert_eq!(decoded.owner_principal, expected);
         }
     }

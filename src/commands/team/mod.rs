@@ -440,7 +440,7 @@ pub async fn handle_team(
             Ok(())
         }
         TeamCommands::Transfer { name, to } => {
-            let new_owner = crate::auth::principal::principal_from_string_with_default_user(&to);
+            let new_owner = crate::auth::subject_from_string_with_default_user(&to);
             let packet = crate::ipc::RequestPacket::TeamTransferOwner {
                 request_id: 1,
                 team: name.clone(),
@@ -468,9 +468,9 @@ pub async fn handle_team(
             permission,
         } => {
             let principal = if subject == "public" {
-                crate::auth::principal::Principal::Public
+                crate::auth::Subject::Public
             } else {
-                crate::auth::principal::Principal::User(subject.clone())
+                crate::auth::Subject::User(subject.clone())
             };
             let permission = parse_team_permission(&permission)?;
             let packet = crate::ipc::RequestPacket::TeamGrantPermission {
@@ -501,9 +501,9 @@ pub async fn handle_team(
             permission,
         } => {
             let principal = if subject == "public" {
-                crate::auth::principal::Principal::Public
+                crate::auth::Subject::Public
             } else {
-                crate::auth::principal::Principal::User(subject.clone())
+                crate::auth::Subject::User(subject.clone())
             };
             let permission = parse_team_permission(&permission)?;
             let packet = crate::ipc::RequestPacket::TeamRevokePermission {

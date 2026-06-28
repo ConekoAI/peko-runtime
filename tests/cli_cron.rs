@@ -31,7 +31,7 @@
 
 mod common;
 use common::agent::seed_mock_provider_in_catalog;
-use common::{configure_mock, run_with_timeout, PekoCli};
+use common::{configure_mock, create_mock_principal, run_with_timeout, PekoCli};
 use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
@@ -195,45 +195,18 @@ fn remove_jobs_with_prefix(cli: &PekoCli, prefix: &str) {
     }
 }
 
-/// Write a mock-LLM-pointed agent with the `cron` tool enabled.
+/// Create a Principal whose supervisor agent can drive the cron tool family.
 ///
-/// `write_v3_mock_agent` (in `tests/common/agent.rs`) writes an agent
-/// with `[extensions] enabled = []`, which the agent's `init_builtins_async`
-/// uses as an EXCLUSIVE whitelist — the daemon's `register_builtins`
-/// enables every built-in tool by default, but the agent's whitelist
-/// override turns the cron tool OFF for the agent, so any tool_call
-/// the LLM emits for the cron family gets rejected by the runtime's tool
-/// dispatcher. The agent-tool tests below need the cron family ON, so
-/// this helper writes a config that includes their canonical IDs
-/// (`builtin:tool:CronCreate`, etc. — see `ToolRuntime::register_builtins`).
-fn write_cron_agent(home: &std::path::Path, name: &str, mock_llm_url: &str) -> std::io::Result<()> {
-    use std::path::Path;
-    let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
-    std::fs::create_dir_all(&agent_dir)?;
-    let _base_url = mock_llm_url.trim_end_matches('/');
-    let config_toml = format!(
-        r#"version = "3.0"
-name = "{name}"
-description = "Agent-tool cron test agent"
-auto_accept_trusted = false
-
-preferred_provider_id = "mock-llm"
-preferred_model_id = "default"
-default_timeout_seconds = 60
-
-[extensions]
-enabled = ["builtin:tool:CronCreate", "builtin:tool:CronDelete", "builtin:tool:CronList"]
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
-"#
-    );
-    std::fs::write(agent_dir.join("config.toml"), config_toml)?;
-    std::fs::write(agent_dir.join("SYSTEM.md"), "")?;
-    Ok(())
+/// Under the Principal-as-single-actor model, `peko send <name>` targets a
+/// Principal, and the supervisor agent's tool whitelist already includes
+/// `CronCreate`/`CronDelete`/`CronList` (see
+/// `src/principal/agent_runner.rs::run_supervisor_prompt`). So the cron
+/// agent-tool tests just need a mock-backed Principal — no special agent
+/// config is required. `create_mock_principal` seeds `mock-llm` as the sole
+/// catalog entry and runs the real `peko principal create`.
+// (Retained as a named wrapper so the call sites read intentionally.)
+fn create_cron_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
+    create_mock_principal(cli, name, mock_llm_url);
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,7 +1020,7 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_cron_agent(cli.home(), agent_name, &mock_url).expect("write cron agent");
+    create_cron_principal(&cli, agent_name, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, job_label);
 
@@ -1130,7 +1103,7 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    write_cron_agent(cli.home(), agent_name, &mock_url).expect("write cron agent");
+    create_cron_principal(&cli, agent_name, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, job_label);
 

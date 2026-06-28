@@ -4,10 +4,11 @@
 //! - `ChannelType`: Communication channel variants
 //! - `OverlayType`: Classification of overlay kinds
 //!
-//! Session ownership identity uses `crate::auth::principal::Principal`
-//! (ADR-039). The former `Principal` type alias was removed in the
+//! Session ownership identity uses `crate::auth::Subject`
+//! (ADR-039). The former `Subject` type alias was removed in the
 //! `refactor/peer-to-principal-rename` cleanup; callers should now
-//! import `Principal` directly from `crate::auth::principal`.
+//! import `Subject` directly from `crate::auth` (re-exported via
+//! `crate::auth::Subject`).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -188,38 +189,38 @@ impl SpawnCleanupPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::principal::Principal;
+    use crate::auth::Subject;
 
     #[test]
     fn test_peer_id() {
-        let user = Principal::User("alice".to_string());
+        let user = Subject::User("alice".to_string());
         assert_eq!(user.subject_id(), "alice");
         assert_eq!(user.kind().to_string(), "user");
-        assert!(matches!(user, Principal::User(_)));
-        assert!(!matches!(user, Principal::Agent(_)));
+        assert!(matches!(user, Subject::User(_)));
+        assert!(!matches!(user, Subject::Principal(_)));
 
-        let agent = Principal::Agent("researcher".to_string());
+        let agent = Subject::Principal("researcher".to_string());
         assert_eq!(agent.subject_id(), "researcher");
-        assert_eq!(agent.kind().to_string(), "agent");
-        assert!(matches!(agent, Principal::Agent(_)));
-        assert!(!matches!(agent, Principal::User(_)));
+        assert_eq!(agent.kind().to_string(), "principal");
+        assert!(matches!(agent, Subject::Principal(_)));
+        assert!(!matches!(agent, Subject::User(_)));
     }
 
     #[test]
     fn test_peer_display() {
-        let user = Principal::User("alice".to_string());
+        let user = Subject::User("alice".to_string());
         assert_eq!(format!("{user}"), "user:alice");
 
-        let agent = Principal::Agent("helper".to_string());
-        assert_eq!(format!("{agent}"), "agent:helper");
+        let agent = Subject::Principal("helper".to_string());
+        assert_eq!(format!("{agent}"), "principal:helper");
     }
 
     #[test]
     fn test_peer_equality() {
-        let user1 = Principal::User("alice".to_string());
-        let user2 = Principal::User("alice".to_string());
-        let user3 = Principal::User("bob".to_string());
-        let agent = Principal::Agent("alice".to_string());
+        let user1 = Subject::User("alice".to_string());
+        let user2 = Subject::User("alice".to_string());
+        let user3 = Subject::User("bob".to_string());
+        let agent = Subject::Principal("alice".to_string());
 
         assert_eq!(user1, user2);
         assert_ne!(user1, user3);
@@ -231,9 +232,9 @@ mod tests {
         use std::collections::HashSet;
 
         let mut set = HashSet::new();
-        set.insert(Principal::User("alice".to_string()));
-        set.insert(Principal::User("alice".to_string())); // Duplicate
-        set.insert(Principal::User("bob".to_string()));
+        set.insert(Subject::User("alice".to_string()));
+        set.insert(Subject::User("alice".to_string())); // Duplicate
+        set.insert(Subject::User("bob".to_string()));
 
         assert_eq!(set.len(), 2);
     }
@@ -307,18 +308,18 @@ mod tests {
 
     #[test]
     fn test_serialization() {
-        // CHANGED IN ADR-039: `Principal` is now a type alias for
-        // `Principal`, which uses `#[serde(tag = "kind", content = "id")]`.
+        // CHANGED IN ADR-039: `Subject` is now a type alias for
+        // `Subject`, which uses `#[serde(tag = "kind", content = "id")]`.
         // The in-memory JSON shape changed from the pre-039 default
         // (external tagging) `{"User":"alice"}` to the canonical
         // `{"kind":"user","id":"alice"}`. The on-disk session key
         // format is unchanged (string-keyed, not JSON-tagged), so this
         // only affects in-memory serde round-trips.
-        let peer = Principal::User("alice".to_string());
+        let peer = Subject::User("alice".to_string());
         let json = serde_json::to_string(&peer).unwrap();
         assert_eq!(json, r#"{"kind":"user","id":"alice"}"#);
 
-        let peer2: Principal = serde_json::from_str(&json).unwrap();
+        let peer2: Subject = serde_json::from_str(&json).unwrap();
         assert_eq!(peer, peer2);
 
         let channel = ChannelType::Discord;

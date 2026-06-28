@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use crate::agents::agent_config::AgentConfig;
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::identity::crypto::{decrypt_with_passphrase, deserialize_encrypted};
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::registry::packaging::{
@@ -430,11 +430,11 @@ impl Unpackager {
         // Owner is the bare `"local"` string to match what
         // `CallerContext::subject()` returns for an `Identity::Local`
         // caller — otherwise `check_permission` would never match
-        // (cross-kind guard via `Principal` equality). The runtime DID
+        // (cross-kind guard via `Subject` equality). The runtime DID
         // is still recorded in `host_runtime_id` above for audit
         // purposes. (ADR-039 follow-up; this was a pre-existing
         // mismatch surfaced by the audit pass.)
-        config.owner = crate::auth::principal::Principal::User("local".to_string());
+        config.owner = crate::auth::Subject::User("local".to_string());
 
         // Note: Memory import is no longer supported as core memory has been deprecated.
         // The config.memory field no longer exists in AgentConfig.
@@ -717,7 +717,7 @@ impl Unpackager {
         let most_recent = entries.into_iter().max_by_key(|e| e.updated_at);
 
         if let Some(entry) = most_recent {
-            let peer = Principal::User("default".to_string());
+            let peer = Subject::User("default".to_string());
             let peer_key = derive_base_session_key(agent_name, &peer);
             controller
                 .ensure_peer_active(&peer_key, &entry.session_id)
@@ -766,14 +766,16 @@ impl Unpackager {
     }
 }
 
-/// Convenience function to import an agent
-pub async fn import_agent(
-    package_path: impl AsRef<Path>,
-    options: ImportOptions,
-) -> anyhow::Result<ImportResult> {
-    let unpackager = Unpackager::new(package_path);
-    unpackager.import(options).await
-}
+/// Convenience function to import an agent was removed: callers should
+/// construct `Unpackager` directly and call `.import(options)`. The free
+/// fn was a one-liner around that path with no live callers
+/// post-Principal-migration (the legacy `peko agent import` CLI path
+/// goes through `agent_service::import_agent` → `Unpackager::new(...).
+/// import(...)`).
+///
+/// `inspect_agent` is retained: it has a live caller at
+/// `agent_service.rs:1037` and at `get_package_info` in
+/// `packaging/mod.rs` (which is itself called from `agent_service.rs:899`).
 
 /// Convenience function to inspect a package
 pub async fn inspect_agent(

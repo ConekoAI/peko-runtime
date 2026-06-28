@@ -28,11 +28,11 @@ pub mod client;
 pub mod config;
 pub mod manifest;
 
-/// Local packaging for agent/team archives (`.agent` / `.team`).
+/// Local packaging for Principal archives (`.principal`).
 ///
 /// Relocated from `src/portable/` in issue #31f as part of the
 /// 9-domain reorganization. Owns the manifest format, layer model,
-/// signatures, encrypted exports, and team archive builder/reconstructor.
+/// signatures, encrypted exports, and the principal packager/unpackager.
 /// The remote registry client ([`client`]) consumes the same digest /
 /// media-type conventions as this module's local artifacts.
 pub mod packaging;

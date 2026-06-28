@@ -7,7 +7,7 @@ pub use crate::registry::packaging::types::ExtensionRef;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 
 /// Team metadata stored in team.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,9 +20,9 @@ pub struct TeamMetadata {
     pub host_runtime_id: String,
     /// Owner identity for ownership and permission model (ADR-033, ADR-039).
     ///
-    /// Canonical form is `owner = { kind, id }` (a `Principal`).
+    /// Canonical form is `owner = { kind, id }` (a `Subject`).
     #[serde(default)]
-    pub owner: Principal,
+    pub owner: Subject,
     /// Explicit permission grants on this team (ADR-033)
     #[serde(default)]
     pub permissions: Vec<crate::auth::ownership::PermissionGrant>,

@@ -1,5 +1,5 @@
 //! End-to-end user-journey scenario for [issue #16] — live
-//! `peko agent permit` / `peko agent revoke` propagation.
+//! `peko principal permit` / `peko principal revoke` propagation.
 //!
 //! # Scope
 //!
@@ -7,8 +7,8 @@
 //! CLI used to write the grant to `~/.peko/agents/<name>/config.toml`
 //! but never re-announced the instance to PekoHub, so PekoHub's
 //! `canChat` ACL stayed stale until the daemon restarted. The fix
-//! (see `src/ipc/server.rs` `AgentGrantPermission` /
-//! `AgentRevokePermission` handlers, and
+//! (see `src/ipc/server.rs` `PrincipalGrantPermission` /
+//! `PrincipalRevokePermission` handlers, and
 //! `src/tunnel/dispatcher.rs::refresh_instance_allowed_users`) makes
 //! the IPC handler call the dispatcher's `refresh_instance_allowed_users`
 //! after the local config write, which re-announces the instance with
@@ -25,13 +25,31 @@
 //!
 //! # What this test asserts
 //!
-//! - `peko agent permit <agent> <user> chat` issued against a running
-//!   daemon (no restart) causes PekoHub to allow that user's chat
-//!   within ~1s.
-//! - `peko agent revoke <agent> <user> chat` causes PekoHub to deny
-//!   that user's chat within ~1s.
-//! - The same user can be re-permitted and lose access again, with
-//!   the daemon running continuously the whole time.
+//! - `peko principal permit <principal> <subject> chat` issued against
+//!   a running daemon (no restart) causes PekoHub to allow that user's
+//!   chat within ~1s.
+//! - `peko principal revoke <principal> <subject> chat` causes PekoHub
+//!   to deny that user's chat within ~1s.
+//! - The same user can be re-permitted and lose access again, with the
+//!   daemon running continuously the whole time.
+//!
+//! # Principal-era surface
+//!
+//! After the "Principal as the single actor" migration, the standalone
+//! agent ACL CLI (`peko agent permit/revoke`, `peko agent show`) is
+//! gone; the Principal is the actor that owns permissions. The
+//! equivalent live-propagation contract is exercised via
+//! `peko principal permit <principal> <subject> <permission>` — the
+//! handler chain (`PrincipalGrantPermission` IPC →
+//! `PrincipalManager::update_config` →
+//! `TunnelDispatcher::refresh_instance_allowed_users` →
+//! `compute_allowed_user_ids` → fresh `instance_announce`) is the
+//! direct successor of the old agent path.
+//!
+//! PekoHub-side `allowedUsers` derivation lives in
+//! `src/tunnel/dispatcher.rs::compute_allowed_user_ids`: only
+//! `Permission::Chat` grants with `SubjectKind::User` subjects
+//! contribute, and the `user:` prefix is stripped.
 //!
 //! # Mock-LLM tier
 //!
@@ -63,64 +81,66 @@ fn hub_and_llm_urls() -> Option<(String, String)> {
     let hub = std::env::var("PEKOHUB_URL").ok()?;
     if hub.is_empty() {
         return None;
-    }
+    };
     let llm = std::env::var("MOCK_LLM_URL").ok()?;
     if llm.is_empty() {
         return None;
-    }
+    };
     Some((hub, llm))
 }
 
-/// Write the agent config for the s5 test.
+/// Write the Principal config for the s5 test.
 ///
-/// `owner_id` is set to `"local"` so the CLI's local-socket caller
-/// passes the owner check in `agent_service::grant_agent_permission`
-/// (the daemon's `AgentCreate` handler at
-/// `src/ipc/server.rs:1017` stamps the same default on agent
-/// creation, so this matches what a real `peko agent create` would
-/// produce). PekoHub, by contrast, resolves the instance owner via the
-/// runtime DID registered through `test/create-runtime` — `owner_id`
-/// in the agent config is the *permission-grant authority* (who can
-/// run `peko agent permit`), not the PekoHub-side instance owner.
+/// The Principal's `owner` is set to `"user:local"` so the local-socket
+/// caller passes the `ManageSettings` owner-check in the
+/// `PrincipalGrantPermission` handler. (`peko principal create` defaults
+/// to `owner = "user:default"`, which matches the `peko send` CLI
+/// caller, but not the local-socket caller that the daemon-presented
+/// CLI in this scenario uses — see also `s6_principal_grant_revoke_roundtrip`'s
+/// `create_principal` helper for the same rewrite.)
 ///
-/// The runtime's `instance_announce` reads `host_runtime_id` to
-/// surface the runtime DID, which PekoHub uses to bind the instance
-/// to the pre-registered runtime record. `allowedUsers` is derived
-/// fresh on every announce from `[[permissions]]`, so leaving it
-/// empty here gives PekoHub an `allowedUsers = []` on the first
-/// announce.
-fn write_agent(cli: &PekoCli, agent_name: &str, mock_llm_url: &str, runtime_did: &str) {
-    let agent_dir = cli.peko_dir().join("agents").join(agent_name);
-    std::fs::create_dir_all(&agent_dir).expect("create agent dir");
-    let _base_url = mock_llm_url.trim_end_matches('/');
-    let config_toml = format!(
-        r#"version = "3.0"
-name = "{agent_name}"
-description = "s5 live permit propagation agent"
-auto_accept_trusted = false
-
-preferred_provider_id = "mock-llm"
-preferred_model_id = "default"
-default_timeout_seconds = 60
-host_runtime_id = "{runtime_did}"
-owner = {{ kind = "user", id = "local" }}
-
-[extensions]
-enabled = []
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
-"#
+/// The runtime's `instance_announce` derives `allowedUsers` fresh on
+/// every announce from `[[permissions]]`, so leaving it empty here
+/// gives PekoHub an `allowedUsers = []` on the first announce.
+fn write_principal(cli: &PekoCli, principal_name: &str, _mock_llm_url: &str) {
+    // `peko principal create` writes the workspace, identity, default
+    // `agents/primary.md` prompt, and `principal.toml` — the daemon's
+    // `load_principal` requires this scaffold. The seed catalog entry
+    // (`mock-llm`) is written by `DaemonGuard::spawn` via
+    // `seed_mock_provider_in_catalog`, so `peko principal create` here
+    // is daemon-free.
+    let output = cli
+        .cmd()
+        .args(["principal", "create", principal_name])
+        .output()
+        .expect("run `peko principal create`");
+    assert!(
+        output.status.success(),
+        "`peko principal create {principal_name}` failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
-    std::fs::write(agent_dir.join("config.toml"), &config_toml).expect("write agent config.toml");
-    std::fs::write(agent_dir.join("SYSTEM.md"), "").expect("write SYSTEM.md");
+
+    // Rewrite the owner to `user:local` so the local-socket caller
+    // passes the `ManageSettings` owner-check in the grant handler.
+    let principal_toml = cli
+        .peko_dir()
+        .join("principals")
+        .join(principal_name)
+        .join("principal.toml");
+    let raw = std::fs::read_to_string(&principal_toml).expect("read principal.toml");
+    let mut cfg: peko::principal::config::PrincipalConfig =
+        toml::from_str(&raw).expect("parse principal.toml");
+    cfg.owner = peko::auth::Subject::User("local".into());
+    std::fs::write(
+        &principal_toml,
+        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
+    )
+    .expect("write principal.toml");
 }
 
-/// Write the pekohub credential at `<peko_home>/pekohub.toml` so the
-/// daemon's `peko daemon start --foreground` auto-starts the tunnel.
+/// Write the pekohub credential at `<peko_home>/runtime/pekohub.toml` so
+/// the daemon's `peko daemon start --foreground` auto-starts the tunnel.
 fn write_pekohub_credential(
     cli: &PekoCli,
     ws_url: &str,
@@ -245,29 +265,37 @@ async fn post_chat(
     (status, body)
 }
 
-/// Run `peko agent permit/revoke` in the test's isolated `HOME` /
+/// Run `peko principal permit/revoke` in the test's isolated `HOME`/
 /// `PEKO_HOME`. Asserts the exit code is 0 (i.e. the IPC handler
 /// accepted the request, including the side-effect call to
 /// `refresh_instance_allowed_users`).
-fn run_peko_agent_permit(cli: &PekoCli, agent: &str, subject_id: &str, verb: &str) {
+///
+/// After the Principal-as-single-actor migration, the agent ACL CLI is
+/// gone — the equivalent live-propagation contract is
+/// `peko principal permit|revoke <principal> <subject> <permission>`
+/// (positional). The CLI handler parses `subject` via
+/// `subject_from_string_with_default_user` (so a bare numeric user id
+/// becomes `Subject::User("local")` after the prefix default), and
+/// `permission` via `parse_permission` (so `"chat"` becomes
+/// `Permission::Chat`). Both forms are accepted positionally.
+fn run_peko_principal_permit(
+    cli: &PekoCli,
+    principal: &str,
+    subject_id: &str,
+    verb: &str,
+) {
     assert!(
         matches!(verb, "permit" | "revoke"),
         "verb must be permit|revoke"
     );
-    let mut cmd = cli.cmd();
-    cmd.arg("agent")
-        .arg(verb)
-        .arg(agent)
-        .arg("--subject")
-        .arg(subject_id)
-        .arg("--permission")
-        .arg("chat");
-    let output = cmd
+    let output = cli
+        .cmd()
+        .args(["principal", verb, principal, subject_id, "chat"])
         .output()
-        .unwrap_or_else(|e| panic!("failed to spawn `peko agent {verb}`: {e}"));
+        .unwrap_or_else(|e| panic!("failed to spawn `peko principal {verb}`: {e}"));
     assert!(
         output.status.success(),
-        "`peko agent {verb} {agent} --subject {subject_id} --permission chat` failed: \
+        "`peko principal {verb} {principal} {subject_id} chat` failed: \
          exit={:?}\nstdout={}\nstderr={}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
@@ -280,17 +308,17 @@ fn run_peko_agent_permit(cli: &PekoCli, agent: &str, subject_id: &str, verb: &st
 // ---------------------------------------------------------------------------
 
 /// Asserts that:
-/// 1. With no `[[permissions]]` on the agent, a non-owner user is
+/// 1. With no `[[permissions]]` on the Principal, a non-owner user is
 ///    denied (PekoHub `canChat` `allowedUsers` is empty).
-/// 2. `peko agent permit <agent> <user> chat` makes that user
+/// 2. `peko principal permit <principal> <user> chat` makes that user
 ///    allowed within ~1s — the IPC handler must push a fresh
-///    `exposure_update` to PekoHub.
-/// 3. `peko agent revoke <agent> <user> chat` makes that user
+///    `instance_announce` to PekoHub.
+/// 3. `peko principal revoke <principal> <user> chat` makes that user
 ///    denied again within ~1s.
 /// 4. Re-permitting allows the user again within ~1s.
 ///
 /// Throughout, the daemon is never restarted; only the tunnel
-/// `exposure_update` round-trip carries the new ACL.
+/// `instance_announce` round-trip carries the new ACL.
 #[tokio::test]
 #[ignore = "requires PEKOHUB_URL + MOCK_LLM_URL + peko daemon"]
 #[serial]
@@ -324,14 +352,14 @@ async fn permit_revoke_propagates_to_pekohub_within_1s() {
     let (did, signing_key) = generate_runtime_identity();
     register_runtime_with_pekohub(&client, &backend.url, &did, owner_id).await;
 
-    // 3. Lay down agent config + pekohub credential in an isolated HOME.
+    // 3. Lay down Principal config + pekohub credential in an isolated HOME.
     let cli = PekoCli::new();
-    let agent_name = "s5_live_permit_agent";
-    write_agent(&cli, agent_name, &mock_url, &did);
+    let principal_name = "s5_live_permit_principal";
+    write_principal(&cli, principal_name, &mock_url);
     write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
 
     // 4. Start daemon → tunnel → initial `instance_announce` with
-    //    `allowed_users = []` (no `[[permissions]]` in config).
+    //    `allowed_users = []` (no `[[permissions]]` in `principal.toml`).
     let _daemon = DaemonGuard::spawn(&cli);
     let instance_id = wait_for_announced_instance(
         &client,
@@ -349,42 +377,42 @@ async fn permit_revoke_propagates_to_pekohub_within_1s() {
         "grantee should be forbidden before any permit: body={body}"
     );
 
-    // 6. `peko agent permit` — this MUST propagate to PekoHub within 1s.
-    run_peko_agent_permit(&cli, agent_name, &grantee_id.to_string(), "permit");
-    // Give the tunnel a moment to deliver the `exposure_update` and
-    // for PekoHub to apply it. The issue acceptance criteria
+    // 6. `peko principal permit` — this MUST propagate to PekoHub within 1s.
+    run_peko_principal_permit(&cli, principal_name, &grantee_id.to_string(), "permit");
+    // Give the tunnel a moment to deliver the fresh `instance_announce`
+    // and for PekoHub to apply it. The issue acceptance criteria
     // require "within 1s"; we allow 2s for wall-clock slack in CI.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (status, body) = post_chat(&client, &backend.url, &instance_id, Some(&grantee_jwt)).await;
     assert_eq!(
         status, 200,
-        "grantee should be allowed after `peko agent permit` (issue #16 propagation): body={body}"
+        "grantee should be allowed after `peko principal permit` (issue #16 propagation): body={body}"
     );
     assert!(
         !body.trim().is_empty(),
         "grantee chat body should be non-empty: {body}"
     );
 
-    // 7. `peko agent revoke` — the security-side acceptance
+    // 7. `peko principal revoke` — the security-side acceptance
     //    criterion. The previously-allowed user must lose access
     //    within 1s, NOT keep chatting until the daemon restarts.
-    run_peko_agent_permit(&cli, agent_name, &grantee_id.to_string(), "revoke");
+    run_peko_principal_permit(&cli, principal_name, &grantee_id.to_string(), "revoke");
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (status, body) = post_chat(&client, &backend.url, &instance_id, Some(&grantee_jwt)).await;
     assert_eq!(
         status, 403,
-        "grantee should be forbidden after `peko agent revoke` (issue #16 propagation): body={body}"
+        "grantee should be forbidden after `peko principal revoke` (issue #16 propagation): body={body}"
     );
 
     // 8. Re-permit — proves the round-trip is symmetric and
     //    repeatable, and that the tunnel + PekoHub stay in sync
     //    across multiple cycles.
-    run_peko_agent_permit(&cli, agent_name, &grantee_id.to_string(), "permit");
+    run_peko_principal_permit(&cli, principal_name, &grantee_id.to_string(), "permit");
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (status, body) = post_chat(&client, &backend.url, &instance_id, Some(&grantee_jwt)).await;
     assert_eq!(
         status, 200,
-        "grantee should be allowed after second `peko agent permit`: body={body}"
+        "grantee should be allowed after second `peko principal permit`: body={body}"
     );
 
     // Sanity: pekohub's `canChat` `allowedUsers` reflects the live

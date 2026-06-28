@@ -243,6 +243,10 @@ async fn build_embedded_extensions(
 #[derive(Debug, Clone)]
 pub struct AgentService {
     resolver: PathResolver,
+    /// Optional principal workspace. When set, the `Agent` tool will first
+    /// look for subagents under `<workspace>/agents/<name>/AGENT.md` before
+    /// falling back to the global `~/.peko/agents/<name>/config.toml` layout.
+    principal_workspace: Option<PathBuf>,
 }
 
 fn build_default_agent_config(name: &str, provider: &str, model: Option<String>) -> AgentConfig {
@@ -272,7 +276,22 @@ impl AgentService {
     /// Create a new agent service with the given path resolver
     #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            principal_workspace: None,
+        }
+    }
+
+    /// Create an agent service scoped to a Principal workspace.
+    ///
+    /// Subagent resolution will prefer principal agents (`agents/<name>/AGENT.md`)
+    /// and fall back to global agents if no matching principal agent exists.
+    #[must_use]
+    pub fn for_principal(workspace: impl Into<PathBuf>) -> Self {
+        Self {
+            resolver: PathResolver::new(),
+            principal_workspace: Some(workspace.into()),
+        }
     }
 
     // ========================================================================
@@ -399,7 +418,22 @@ impl AgentService {
     ///
     /// This is the resolution hook for the `Agent` tool's `subagent_type`
     /// parameter: `subagent_type` maps to `~/.peko/agents/<name>/config.toml`.
+    ///
+    /// If a principal workspace was configured, the service first tries to
+    /// resolve the agent from `<workspace>/agents/<name>/AGENT.md`.
     pub async fn resolve_subagent_type(&self, name: &str) -> Result<AgentConfig> {
+        if let Some(ref workspace) = self.principal_workspace {
+            match self.resolve_principal_agent(name, workspace).await {
+                Ok(config) => return Ok(config),
+                Err(e) => {
+                    tracing::debug!(
+                        "Principal agent '{name}' not found in workspace '{}': {e}; falling back to global agent",
+                        workspace.display()
+                    );
+                }
+            }
+        }
+
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);
         if !config_path.exists() {
@@ -409,6 +443,37 @@ impl AgentService {
         let config: AgentConfig = toml::from_str(&content)
             .with_context(|| format!("Failed to parse agent config for '{name}'"))?;
         Ok(config)
+    }
+
+    /// Resolve a principal agent from its `AGENT.md` extension.
+    async fn resolve_principal_agent(
+        &self,
+        name: &str,
+        workspace: &Path,
+    ) -> Result<AgentConfig> {
+        let agent_md = workspace.join("agents").join(name).join("AGENT.md");
+        if !agent_md.exists() {
+            anyhow::bail!("No AGENT.md for principal agent '{name}' at {agent_md:?}");
+        }
+
+        let prompt = crate::principal::agent_prompt::load_agent_prompt(&agent_md)
+            .with_context(|| format!("Failed to load principal agent prompt '{name}'"))?;
+
+        let extensions = crate::common::types::agent_legacy::ExtensionConfig::default();
+
+        Ok(AgentConfig {
+            version: "3.0".to_string(),
+            name: prompt.name,
+            description: prompt.frontmatter.description,
+            prompt: Some(crate::agents::agent_config::PromptConfig {
+                system: Some(crate::agents::agent_config::SystemFileConfig {
+                    max_chars_per_file: 200_000,
+                    files: Some(vec![agent_md.to_string_lossy().to_string()]),
+                }),
+            }),
+            extensions: Some(extensions),
+            ..AgentConfig::default()
+        })
     }
 
     // ========================================================================
@@ -789,7 +854,7 @@ impl AgentService {
         // agent path) — so `base_dir` must be the config dir, not the
         // `agents/` root. Passing `agents_root` here would produce a
         // `agents/agents/<name>` path and the agent would never show
-        // up in `peko agent list` (which scans `<config>/agents/`).
+        // up in `peko principal list` (which scans `<config>/principals/`).
         // Phase D3 flow 5 is the first end-to-end test that exercised
         // this code path and surfaced the regression.
         let config_dir = self
@@ -1025,8 +1090,8 @@ impl AgentService {
     pub async fn transfer_agent_owner(
         &self,
         name: &str,
-        new_owner: crate::auth::principal::Principal,
-        caller: &crate::auth::principal::Principal,
+        new_owner: crate::auth::Subject,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);
@@ -1053,7 +1118,7 @@ impl AgentService {
         &self,
         name: &str,
         grant: crate::auth::ownership::PermissionGrant,
-        caller: &crate::auth::principal::Principal,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);
@@ -1085,9 +1150,9 @@ impl AgentService {
     pub async fn revoke_agent_permission(
         &self,
         name: &str,
-        subject: &crate::auth::principal::Principal,
+        subject: &crate::auth::Subject,
         permission: &crate::auth::ownership::Permission,
-        caller: &crate::auth::principal::Principal,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
         let config_path = self.resolver.agent_config(agent_name);

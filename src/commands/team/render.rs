@@ -28,7 +28,7 @@ pub(super) fn render_team_created(result: &TeamCreationResult, json: bool) {
         println!();
         println!("   You can now create agents in this team:");
         println!(
-            "     peko agent create {}/<agent-name>",
+            "     peko principal create {}/<agent-name>",
             result.metadata.name
         );
     }

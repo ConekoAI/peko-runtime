@@ -1,8 +1,8 @@
 use clap::Parser;
 use clap_complete::generate;
 use peko::commands::{
-    agent, auth, config, credential, cron, daemon, ext, init_logging, orchestration, provider,
-    registry, runtime, search, send, session, system, team, tunnel, update, Cli, Commands,
+    auth, config, credential, cron, daemon, ext, init_logging, orchestration, principal,
+    provider, registry, runtime, search, send, session, system, team, tunnel, update, Cli, Commands,
     GlobalPaths,
 };
 use peko::common::types::config::PekoConfig;
@@ -95,7 +95,7 @@ async fn run_command(
     cli_registry: Option<&str>,
 ) -> anyhow::Result<()> {
     match command {
-        Commands::Agent(cmd) => agent::handle_agent(cmd, paths, json, cli_registry).await,
+        Commands::Principal(cmd) => principal::handle_principal(cmd, paths, json).await,
         Commands::Team(cmd) => team::handle_team(cmd, paths, json, cli_registry).await,
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),

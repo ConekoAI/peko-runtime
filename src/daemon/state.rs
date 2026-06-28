@@ -18,9 +18,14 @@ use crate::common::services::{
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
+use crate::principal::{
+    factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
+    memory::{DefaultPrincipalMemory, PrincipalMemory},
+    PrincipalManager,
+};
 use crate::registry::{load_from_workspace, RegistryConfig};
 use crate::session::InboxRegistry;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::{broadcast, RwLock};
@@ -66,6 +71,22 @@ pub struct AppState {
 
     /// Stateless agent execution service
     agent_service: Arc<StatelessAgentService>,
+
+    /// Shared LLM resolver. Re-read in place via
+    /// `ProviderCatalog::reload` after `peko provider {add,remove,
+    /// set-default}` so the long-running daemon observes CLI
+    /// mutations without a restart.
+    resolver: Arc<crate::providers::LlmResolver>,
+
+    /// Shared credential vault. Re-read in place via `Vault::reload`
+    /// after `peko credential {set,delete}` for the same reason as
+    /// `resolver` above. Stored as a concrete `Vault` (not the
+    /// `SecretStore` trait object) so `reload` can mutate the inner
+    /// state without going through trait dispatch.
+    vault: Arc<crate::common::vault::Vault>,
+
+    /// Principal manager (AI Principal container lifecycle)
+    principal_manager: Arc<PrincipalManager>,
 
     /// Agent service (unified for CLI and API)
     agent_mgmt_service: Arc<AgentService>,
@@ -194,6 +215,7 @@ impl std::fmt::Debug for AppState {
             .field("config", &self.config)
             .field("config_service", &"<ConfigAuthorityImpl>")
             .field("agent_service", &"<StatelessAgentService>")
+            .field("principal_manager", &"<PrincipalManager>")
             .field("agent_mgmt_service", &"<AgentService>")
             .field("team_service", &"<TeamManagementService>")
             .field("tool_runtime", &"<ToolRuntime>")
@@ -354,8 +376,15 @@ impl AppState {
         );
 
         // Load the unified credential vault before identity/provider setup.
-        let vault = crate::common::vault::Vault::load(path_resolver.vault())
-            .map_err(|e| anyhow::anyhow!("Failed to load credential vault: {e}"))?;
+        // Wrap in Arc so both the daemon's SecretStore (passed to the
+        // LlmResolver) and the daemon's reload machinery can share the
+        // same in-memory state — `Vault::reload` mutates the interior
+        // through `RwLock`, so an Arc aliasing the same instance sees
+        // the same writes.
+        let vault = Arc::new(
+            crate::common::vault::Vault::load(path_resolver.vault())
+                .map_err(|e| anyhow::anyhow!("Failed to load credential vault: {e}"))?,
+        );
 
         // ADR-032: Initialize runtime identity, metadata, and registry
         let runtime_identity =
@@ -392,12 +421,46 @@ impl AppState {
         let catalog = crate::providers::ProviderCatalog::load_or_init(&catalog_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to load provider catalog: {e}"))?;
-        let secrets: Arc<dyn crate::common::secret_store::SecretStore> = Arc::new(vault);
+        let secrets: Arc<dyn crate::common::secret_store::SecretStore> =
+            Arc::clone(&vault) as Arc<dyn crate::common::secret_store::SecretStore>;
         let mut resolver_builder = crate::providers::LlmResolver::new(catalog, secrets);
         if std::env::var_os("PEKO_TEST_RESOLVER_BOOTSTRAP").is_some() {
             resolver_builder = resolver_builder.with_env_bootstrap();
         }
         let resolver = Arc::new(resolver_builder);
+
+        // Initialize the PrincipalManager and load any existing principals.
+        let principal_manager = {
+            let root = path_resolver.principals_root_dir();
+            let _ = std::fs::create_dir_all(&root);
+            let manager = PrincipalManager::with_path_resolver(
+                root.clone(),
+                path_resolver.clone(),
+                Arc::new(DaemonPrincipalMemoryFactory {
+                    data_dir: data_dir.clone(),
+                }),
+                Arc::new(DefaultPrincipalRouterFactory),
+            )
+            .with_resolver(resolver.clone());
+
+            if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let config_path = path.join("principal.toml");
+                        if config_path.exists() {
+                            if let Err(e) = manager.load(&config_path).await {
+                                tracing::warn!(
+                                    "Failed to load principal from {}: {e}",
+                                    config_path.display()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Arc::new(manager)
+        };
 
         let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
@@ -598,6 +661,9 @@ impl AppState {
             observability: Arc::new(Observability::new("api")),
             config_service,
             agent_service,
+            resolver,
+            vault: Arc::clone(&vault),
+            principal_manager,
             agent_mgmt_service,
             lifecycle,
             session_service,
@@ -664,22 +730,10 @@ impl AppState {
         inner.instance_count
     }
 
-    /// Update the instance count
-    pub async fn set_instance_count(&self, count: u64) {
-        let mut inner = self.inner.write().await;
-        inner.instance_count = count;
-    }
-
     /// Get the current team count
     pub async fn team_count(&self) -> u64 {
         let inner = self.inner.read().await;
         inner.team_count
-    }
-
-    /// Update the team count
-    pub async fn set_team_count(&self, count: u64) {
-        let mut inner = self.inner.write().await;
-        inner.team_count = count;
     }
 
     /// Mark the daemon as healthy (not degraded)
@@ -702,6 +756,33 @@ impl AppState {
     pub async fn set_ready(&self, ready: bool) {
         let mut inner = self.inner.write().await;
         inner.ready = ready;
+    }
+
+    /// Re-read the provider catalog and the credential vault from
+    /// disk. Called by the IPC `ProviderReload` handler so CLI
+    /// mutations (`peko provider {add,remove,set-default}`,
+    /// `peko credential {set,delete}`) are visible to the long-running
+    /// daemon without a restart.
+    ///
+    /// Returns `(providers_count, keys_count)` for the IPC response so
+    /// the caller can confirm what was reloaded. A reload that
+    /// partially fails (e.g. corrupt vault) keeps the prior in-memory
+    /// state and surfaces the error rather than blanking the daemon.
+    pub async fn reload_providers(&self) -> anyhow::Result<(usize, usize)> {
+        let providers_count = self
+            .resolver
+            .catalog()
+            .reload()
+            .await
+            .map_err(|e| anyhow::anyhow!("provider catalog reload failed: {e}"))?;
+        let keys_count = self
+            .vault
+            .reload()
+            .map_err(|e| anyhow::anyhow!("vault reload failed: {e}"))?;
+        tracing::info!(
+            "Provider reload: {providers_count} providers, {keys_count} vault entries"
+        );
+        Ok((providers_count, keys_count))
     }
 
     /// Subscribe to shutdown signals
@@ -752,10 +833,10 @@ impl AppState {
         &self.agent_service
     }
 
-    /// Get the lifecycle manager
+    /// Get the principal manager
     #[must_use]
-    pub fn lifecycle(&self) -> &Arc<LifecycleManager> {
-        &self.lifecycle
+    pub fn principal_manager(&self) -> &Arc<PrincipalManager> {
+        &self.principal_manager
     }
 
     /// Get the session service
@@ -1277,6 +1358,31 @@ impl TunnelHealth {
     }
 }
 
+/// Memory factory that places Principal memory under the data directory,
+/// outside the config directory where `principal.toml` lives.
+struct DaemonPrincipalMemoryFactory {
+    data_dir: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl PrincipalMemoryFactory for DaemonPrincipalMemoryFactory {
+    async fn create(
+        &self,
+        _principal_id: &crate::principal::PrincipalId,
+        workspace_path: &Path,
+    ) -> Arc<dyn PrincipalMemory> {
+        let name = workspace_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let memory_dir = self.data_dir.join("principals").join(name).join("memory");
+        let _ = tokio::fs::create_dir_all(&memory_dir).await;
+        let memory = DefaultPrincipalMemory::new(memory_dir);
+        let _ = tokio::fs::create_dir_all(memory.sessions_dir()).await;
+        Arc::new(memory)
+    }
+}
+
 impl Default for DaemonConfigSnapshot {
     fn default() -> Self {
         Self {
@@ -1339,13 +1445,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_instance_count() {
+    async fn test_instance_count_starts_at_zero() {
+        // `instance_count()` is live (read by `ipc/server.rs:1480` for the
+        // SystemStatus response). The corresponding setter was removed
+        // — it had no production callers, only this test — so the only
+        // meaningful invariant we can assert is the initial value.
         let state = create_test_state().await;
-
         assert_eq!(state.instance_count().await, 0);
-
-        state.set_instance_count(5).await;
-        assert_eq!(state.instance_count().await, 5);
     }
 
     #[tokio::test]

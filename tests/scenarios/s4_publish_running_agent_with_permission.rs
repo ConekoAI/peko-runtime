@@ -40,12 +40,13 @@
 //!    `peko daemon start --foreground` code path to match the
 //!    production startup sequence.
 //! 2. **Tunnel → PekoHub announce.** On tunnel connect the runtime
-//!    sends an `instance_announce` for every local agent with the
-//!    `allowed_users` resolved from `agent.config.permissions`
-//!    (see
-//!    [`src/tunnel/dispatcher.rs:160-205`](../../src/tunnel/dispatcher.rs#L160-L205)
+//!    iterates `PrincipalManager::list_all()` and sends an
+//!    `instance_announce` (type `principal`) for each local
+//!    principal, with `allowed_users` resolved from
+//!    `principal.config.permissions` (see
+//!    [`src/tunnel/dispatcher.rs:297-323`](../../src/tunnel/dispatcher.rs#L297-L323)
 //!    and
-//!    [`compute_allowed_user_ids`](../src/tunnel/dispatcher.rs:133-157)).
+//!    [`compute_allowed_user_ids`](../../src/tunnel/dispatcher.rs)).
 //!    PekoHub's `handleInstanceAnnounce` (at
 //!    [`pekohub/backend/src/services/tunnel-manager.ts:385-421`](../../../pekohub/backend/src/services/tunnel-manager.ts#L385-L421))
 //!    resolves the runtime DID to an owner via `resolveRuntimeOwner`;
@@ -58,26 +59,26 @@
 //!    `pekohub/backend/src/routes/api/instances.ts:545-607` — owner
 //!    or any user in `allowedUsers` is allowed; everyone else gets
 //!    403. Missing auth on a private instance returns 401.
-//! 4. **The runtime's instance_id is stable per (runtime_did, agent)
+//! 4. **The runtime's instance_id is stable per (runtime_did, principal)
 //!    pair** — see `TunnelDispatcher::instance_id` at
 //!    [`src/tunnel/dispatcher.rs:123-131`](../../src/tunnel/dispatcher.rs#L123-L131),
 //!    which uses a UUID v5 namespace. We don't precompute it; we
 //!    discover the instance via `GET /v1/instances?runtime_id=<did>`
 //!    and look it up by runtime_id (one instance per runtime, since
-//!    the test only creates one agent).
-//! 5. **`peko agent permit` propagates to PekoHub within ~1s.** As of
-//!    the fix for [issue #16](https://github.com/ConekoAI/peko-runtime/issues/16),
-//!    the `AgentGrantPermission` and `AgentRevokePermission` IPC
-//!    handlers call
-//!    [`TunnelDispatcher::refresh_instance_allowed_users`](../src/tunnel/dispatcher.rs)
-//!    after the local config write, which re-announces the instance
-//!    to PekoHub with `allowed_user_ids` re-derived from the new
-//!    `AgentConfig.permissions`. PekoHub treats `instance_announce`
-//!    as an upsert and refreshes `allowedUsers`; the runtime's
-//!    defense-in-depth cache is updated in the same round-trip. The
-//!    D4 test still pre-seeds the config before daemon start, but
-//!    the live `permit`/`revoke` path is now covered by
-//!    `tests/scenarios/s5_*.rs` (regression for #16).
+//!    the test only creates one principal).
+//! 5. **`peko principal permit` propagates to PekoHub within ~1s.** As
+//!    of the fix for [issue #16](https://github.com/ConekoAI/peko-runtime/issues/16),
+//!    the `PrincipalGrantPermission` and `PrincipalRevokePermission`
+//!    IPC handlers call
+//!    `TunnelDispatcher::refresh_instance_allowed_users` after the
+//!    local config write, which re-announces the instance to PekoHub
+//!    with `allowed_user_ids` re-derived from the new
+//!    `PrincipalConfig.permissions`. PekoHub treats
+//!    `instance_announce` as an upsert and refreshes `allowedUsers`;
+//!    the runtime's defense-in-depth cache is updated in the same
+//!    round-trip. The D4 test still pre-seeds the config before
+//!    daemon start, but the live `permit`/`revoke` path is now
+//!    covered by `tests/scenarios/s5_*.rs` (regression for #16).
 //!
 //! ## What the test asserts
 //!
@@ -144,81 +145,95 @@ async fn mint_api_key(
         .to_string()
 }
 
-/// Write the agent config with a pre-seeded `[[permissions]]` grant.
-/// On the FIRST `instance_announce` the runtime reads this and
-/// pushes `allowed_users` to pekohub (see
-/// [`src/tunnel/dispatcher.rs:160-205`](../../src/tunnel/dispatcher.rs#L160-L205)).
+/// Write a Principal config under `<peko_home>/principals/<name>/`
+/// with a pre-seeded `[[permissions]]` grant, then seed the
+/// `mock-llm` provider-catalog entry. On the FIRST `instance_announce`
+/// the runtime iterates `PrincipalManager::list_all()`, reads this
+/// principal's `config.permissions`, and pushes `allowed_users` to
+/// pekohub (see
+/// [`src/tunnel/dispatcher.rs:297-323`](../../src/tunnel/dispatcher.rs#L297-L323)).
 ///
-/// `owner_did` is the runtime's own DID — the runtime uses it as the
-/// `host_runtime_id` and `owner_id` fields (which the runtime also
-/// reads at announce time when looking up its own identity in the
-/// tunnel).
+/// Mirrors the pattern in `tests/scenarios/s5_live_permit_propagation.rs`
+/// and `tests/scenarios/s6_principal_grant_revoke_roundtrip.rs` —
+/// `peko principal create` scaffolds the workspace + identity, then we
+/// patch `principal.toml` for the per-test exposure + grant.
+///
+/// `owner_did` is the runtime's own DID — pekohub's `resolveRuntimeOwner`
+/// uses it to bind the principal's instance to the owner created via
+/// the `/test/create-runtime` fixture endpoint. PekoHub silently drops
+/// `instance_announce` if the runtime record is missing.
 ///
 /// `permitted_user_id` is the pekohub user_id (an integer string)
 /// that should be granted Chat permission. May be `None` for tests
 /// that only care about the owner path.
-fn write_agent_with_perm(
+fn write_principal_with_perm(
     cli: &PekoCli,
-    agent_name: &str,
+    principal_name: &str,
     mock_llm_url: &str,
-    owner_did: &str,
+    _owner_did: &str,
     permitted_user_id: Option<&str>,
-) -> PathBuf {
-    let agent_dir = cli.peko_dir().join("agents").join(agent_name);
-    std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+) {
+    use common::agent::seed_mock_provider_in_catalog;
 
-    let _base_url = mock_llm_url.trim_end_matches('/');
+    // Seed the v3 catalog with `mock-llm` so the daemon's resolver
+    // finds a provider on first lookup. (PekoHub and the mock LLM
+    // are the long-lived fixtures; this catalog entry is the local
+    // provider pointer.)
+    seed_mock_provider_in_catalog(cli.home(), mock_llm_url);
 
-    // The `[[permissions]]` block is at the top level of the agent
-    // config; the runtime's `AgentConfig::permissions` deserializer
-    // reads it directly. After ADR-039, `subject` and `granted_by`
-    // are `Principal` (kind/id structs). See
-    // [`src/auth/principal.rs`](../src/auth/principal.rs) for the
-    // schema.
-    let perm_block = match permitted_user_id {
-        Some(uid) => format!(
-            r#"
-# Pre-seeded grant for the permitted user — picked up by the
-# runtime's first `instance_announce` and pushed to pekohub as
-# `allowedUsers`. Format mirrors
-# [`tests/tunnel_e2e.rs:114-125`](../tunnel_e2e.rs#L114-L125).
-[[permissions]]
-subject = {{ kind = "user", id = "{uid}" }}
-permission = "chat"
-granted_at = "2026-01-01T00:00:00Z"
-granted_by = {{ kind = "user", id = "system" }}
-"#
-        ),
-        None => String::new(),
-    };
-
-    let config_toml = format!(
-        r#"version = "3.0"
-name = "{agent_name}"
-description = "D4 publish-with-permission agent"
-auto_accept_trusted = false
-
-preferred_provider_id = "mock-llm"
-preferred_model_id = "default"
-default_timeout_seconds = 60
-host_runtime_id = "{owner_did}"
-owner_id = "{owner_did}"
-
-[extensions]
-enabled = []
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
-{perm_block}"#
+    // Scaffold: identity, agents/primary.md, principal.toml.
+    let output = cli
+        .cmd()
+        .args(["principal", "create", principal_name])
+        .output()
+        .expect("run `peko principal create`");
+    assert!(
+        output.status.success(),
+        "`peko principal create {principal_name}` failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
 
-    let config_path = agent_dir.join("config.toml");
-    std::fs::write(&config_path, &config_toml).expect("write agent config.toml");
-    std::fs::write(agent_dir.join("SYSTEM.md"), "").expect("write SYSTEM.md");
-    config_path
+    // Patch `principal.toml` to: pin exposure to Private (so pekohub's
+    // `canChat` doesn't 503 on the unexposed default), set the owner
+    // to the local-socket caller identity, and append the pre-seeded
+    // grant for `permitted_user_id` when supplied.
+    //
+    // TOML key-order trap: root-level scalar keys (`exposure`, `owner`)
+    // MUST come BEFORE any `[section]` header. After the v3 principal
+    // migration `peko principal create` writes a well-formed file
+    // (exposure/owner/description at the top), and `to_string_pretty`
+    // preserves the field order of `PrincipalConfig`, so reading +
+    // re-serializing keeps the correct order. We then re-read the
+    // rendered file, set `exposure`/`owner`, and rewrite it; the
+    // first serialize-then-deserialize pass anchors the field order
+    // before we apply our edits.
+    let principal_toml = cli
+        .peko_dir()
+        .join("principals")
+        .join(principal_name)
+        .join("principal.toml");
+    let raw = std::fs::read_to_string(&principal_toml).expect("read principal.toml");
+    let mut cfg: peko::principal::config::PrincipalConfig =
+        toml::from_str(&raw).expect("parse principal.toml");
+
+    cfg.exposure = peko::tunnel::protocol::InstanceExposure::Private;
+    cfg.owner = peko::auth::Subject::User("local".into());
+
+    if let Some(uid) = permitted_user_id {
+        cfg.permissions.push(peko::auth::PermissionGrant {
+            subject: peko::auth::Subject::User(uid.to_string()),
+            permission: peko::auth::Permission::Chat,
+            granted_at: "2026-01-01T00:00:00Z".to_string(),
+            granted_by: peko::auth::Subject::User("system".into()),
+        });
+    }
+
+    std::fs::write(
+        &principal_toml,
+        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
+    )
+    .expect("write principal.toml");
 }
 
 /// Write `pekohub.toml` at `<cli.peko_dir()>/pekohub.toml`. The
@@ -420,15 +435,16 @@ async fn permit_owner_can_chat() {
     // 3. Register the runtime with pekohub, owned by `owner_id`.
     register_runtime_with_pekohub(&client, &backend.url, &did, owner_id).await;
 
-    // 4. Set up the per-CLI HOME: write agent config + pekohub.toml.
+    // 4. Set up the per-CLI HOME: write principal config + pekohub.toml.
     let cli = PekoCli::new();
-    let agent_name = "s4_owner_agent";
-    write_agent_with_perm(&cli, agent_name, &mock_url, &did, None);
+    let principal_name = "s4_owner_principal";
+    write_principal_with_perm(&cli, principal_name, &mock_url, &did, None);
     write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
 
     // 5. Start the daemon. It reads `pekohub.toml` from $HOME and
     //    auto-starts the tunnel, which on connect sends
-    //    `instance_announce` for every local agent.
+    //    `instance_announce` (type `principal`) for every local
+    //    principal in `PrincipalManager::list_all()`.
     let _daemon = DaemonGuard::spawn(&cli);
 
     // 6. Wait for the announced instance to land in pekohub's DB.
@@ -450,8 +466,8 @@ async fn permit_owner_can_chat() {
     );
 
     // The `peko login --api-key` path (which mints the API key and
-    // stores it locally) is exercised in `s2_extension_registry_roundtrip`
-    // and `s3_agent_registry_roundtrip`. The relay-side auth plugin
+    // stores it locally) is exercised in `s2_extension_registry_roundtrip`.
+    // The relay-side auth plugin
     // accepts both JWTs (`Authorization: Bearer <jwt>`) and API keys
     // (`Authorization: Bearer ph_…`) interchangeably — see
     // `pekohub/backend/src/plugins/auth.ts:73-114`. The JWT path
@@ -511,14 +527,14 @@ async fn permit_granted_user_chats_ungranted_forbidden() {
     // 3. Register the runtime with pekohub.
     register_runtime_with_pekohub(&client, &backend.url, &did, owner_id).await;
 
-    // 4. Set up the per-CLI HOME: agent config pre-seeds the granted
-    //    user in `[[permissions]]`; the ungranted user is NOT in
-    //    the config.
+    // 4. Set up the per-CLI HOME: principal config pre-seeds the
+    //    granted user in `[[permissions]]`; the ungranted user is NOT
+    //    in the config.
     let cli = PekoCli::new();
-    let agent_name = "s4_acl_agent";
-    write_agent_with_perm(
+    let principal_name = "s4_acl_principal";
+    write_principal_with_perm(
         &cli,
-        agent_name,
+        principal_name,
         &mock_url,
         &did,
         Some(&granted_id.to_string()),
@@ -598,8 +614,8 @@ async fn no_auth_returns_401() {
     register_runtime_with_pekohub(&client, &backend.url, &did, owner_id).await;
 
     let cli = PekoCli::new();
-    let agent_name = "s4_noauth_agent";
-    write_agent_with_perm(&cli, agent_name, &mock_url, &did, None);
+    let principal_name = "s4_noauth_principal";
+    write_principal_with_perm(&cli, principal_name, &mock_url, &did, None);
     write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
 
     let _daemon = DaemonGuard::spawn(&cli);

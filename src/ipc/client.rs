@@ -202,6 +202,21 @@ impl DaemonClient {
     }
 
     // ------------------------------------------------------------------
+    // Provider management
+    // ------------------------------------------------------------------
+
+    /// Ask the daemon to re-read `providers.toml` and `vault.enc`
+    /// from disk. Used by `peko provider {add,remove,set-default}`
+    /// and `peko credential {set,delete}` after their on-disk writes
+    /// succeed, so the long-running daemon observes CLI mutations
+    /// without a restart.
+    pub async fn reload_providers(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ProviderReload { request_id };
+        self.request_response(packet).await
+    }
+
+    // ------------------------------------------------------------------
     // Cron management
     // ------------------------------------------------------------------
 
@@ -445,69 +460,178 @@ impl DaemonClient {
         }
     }
 
-    /// Enqueue a user steering message for the given session. Returns
-    /// a `PacketStream`; the first packet is `MessageQueued`
-    /// (followed by the auto-triggered run's events if
-    /// `run_triggered = true`, or by `Done` if `run_triggered = false`).
+    // ── Principal operations ─────────────────────────────────────────
+
+    /// Send a message to a Principal and stream the response.
     ///
-    /// # Errors
-    /// Returns error if the request cannot be sent.
-    pub async fn steer_session(
+    /// The server returns a `PrincipalSent` response followed by `Done`.
+    pub async fn principal_send(
         &self,
-        session_id: impl Into<String>,
-        content: impl Into<String>,
+        name: impl Into<String>,
+        message: impl Into<String>,
+        user: impl Into<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
-        let packet = RequestPacket::SessionSteer {
+        let packet = RequestPacket::PrincipalSend {
             request_id,
-            session_id: session_id.into(),
-            content: content.into(),
+            name: name.into(),
+            message: message.into(),
+            user: user.into(),
         };
         self.send_request(packet).await
     }
 
-    /// List pending steering messages for a session.
-    ///
-    /// # Errors
-    /// Returns error if the request cannot be sent or the daemon
-    /// responds with `Error`.
-    pub async fn steer_session_list(
+    /// Export a Principal to a package.
+    pub async fn principal_export(
         &self,
-        session_id: impl Into<String>,
+        name: impl Into<String>,
+        output: Option<String>,
+        include_sessions: bool,
+        with_extensions: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
-        let packet = RequestPacket::SessionSteerList {
+        let packet = RequestPacket::PrincipalExport {
             request_id,
-            session_id: session_id.into(),
+            name: name.into(),
+            output,
+            include_sessions,
+            with_extensions,
         };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("SessionSteerList stream closed unexpectedly"),
-        }
+        self.request_response(packet).await
     }
 
-    /// Best-effort cancel of a queued steering message by id.
-    ///
-    /// # Errors
-    /// Returns error if the request cannot be sent or the daemon
-    /// responds with `Error`.
-    pub async fn steer_session_cancel(
+    /// Import a Principal from a package.
+    pub async fn principal_import(
         &self,
-        session_id: impl Into<String>,
-        message_id: uuid::Uuid,
+        file_path: impl Into<String>,
+        name: Option<String>,
+        allow_unsigned: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
-        let packet = RequestPacket::SessionSteerCancel {
+        let packet = RequestPacket::PrincipalImport {
             request_id,
-            session_id: session_id.into(),
-            message_id,
+            file_path: file_path.into(),
+            name,
+            allow_unsigned,
         };
-        let mut stream = self.send_request(packet).await?;
-        match stream.next().await {
-            Some(packet) => Ok(packet),
-            None => anyhow::bail!("SessionSteerCancel stream closed unexpectedly"),
-        }
+        self.request_response(packet).await
+    }
+
+    /// Push a Principal package to a registry.
+    pub async fn principal_push(
+        &self,
+        name: impl Into<String>,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalPush {
+            request_id,
+            name: name.into(),
+            registry_host,
+            registry_token,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Pull a Principal package from a registry and import it.
+    pub async fn principal_pull(
+        &self,
+        registry_ref: impl Into<String>,
+        name: Option<String>,
+        force: bool,
+        registry_host: Option<String>,
+        registry_token: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalPull {
+            request_id,
+            registry_ref: registry_ref.into(),
+            name,
+            force,
+            registry_host,
+            registry_token,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Grant a permission on a Principal.
+    pub async fn principal_grant_permission(
+        &self,
+        name: impl Into<String>,
+        subject: crate::auth::Subject,
+        permission: crate::auth::ownership::Permission,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalGrantPermission {
+            request_id,
+            name: name.into(),
+            subject,
+            permission,
+        };
+        self.request_response(packet).await
+    }
+
+    /// Revoke a permission from a Principal.
+    pub async fn principal_revoke_permission(
+        &self,
+        name: impl Into<String>,
+        subject: crate::auth::Subject,
+        permission: crate::auth::ownership::Permission,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalRevokePermission {
+            request_id,
+            name: name.into(),
+            subject,
+            permission,
+        };
+        self.request_response(packet).await
+    }
+
+    /// List permissions on a Principal.
+    pub async fn principal_permissions(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalPermissions {
+            request_id,
+            name: name.into(),
+        };
+        self.request_response(packet).await
+    }
+
+    /// Set the tunnel status of a Principal's instance. Persisted on the
+    /// Principal and broadcast to the hub.
+    pub async fn principal_set_status(
+        &self,
+        name: impl Into<String>,
+        status: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalSetStatus {
+            request_id,
+            name: name.into(),
+            status: status.into(),
+        };
+        self.request_response(packet).await
+    }
+
+    /// Set the tunnel exposure of a Principal's instance. Persisted on
+    /// the Principal and broadcast to the hub.
+    pub async fn principal_set_exposure(
+        &self,
+        name: impl Into<String>,
+        exposure: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalSetExposure {
+            request_id,
+            name: name.into(),
+            exposure: exposure.into(),
+        };
+        self.request_response(packet).await
     }
 }
 

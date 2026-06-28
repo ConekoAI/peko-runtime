@@ -316,6 +316,38 @@ impl ProviderCatalog {
         self.inner.read().await.clone()
     }
 
+    /// Re-read the on-disk catalog into this Arc's inner state. Used by
+    /// the daemon after a CLI mutation (`peko provider add`, etc.) so
+    /// the long-running process sees the new catalog without being
+    /// restarted. The existing `Arc<ProviderCatalog>` reference held
+    /// by the daemon stays valid — every reader goes through the
+    /// `RwLock`, so swaps are atomic with respect to in-flight reads.
+    ///
+    /// A missing or unreadable file is logged and treated as no-op so
+    /// a transient fs hiccup doesn't blank the daemon's in-memory
+    /// state. Returns the entry count after reload so callers can
+    /// confirm what they got.
+    pub async fn reload(&self) -> Result<usize> {
+        let file = if self.path.exists() {
+            match Self::read_file(&self.path) {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!(
+                        "providers.toml reload at {} failed ({e}); keeping prior in-memory state",
+                        self.path.display()
+                    );
+                    return Ok(self.inner.read().await.entries.len());
+                }
+            }
+        } else {
+            ProviderCatalogFile::default()
+        };
+        let count = file.entries.len();
+        let mut guard = self.inner.write().await;
+        *guard = file;
+        Ok(count)
+    }
+
     /// List all enabled entries.
     pub async fn list_enabled(&self) -> Vec<ProviderCatalogEntry> {
         let guard = self.inner.read().await;
@@ -637,5 +669,71 @@ mod tests {
         assert!(!entry.models.is_empty(), "template should ship models");
         // default model id must be a real declared model id
         assert!(entry.model(&entry.default_model_id).is_some());
+    }
+
+    /// `reload()` re-reads the file into the existing Arc. This is the
+    /// contract the daemon depends on: long-running processes get
+    /// fresh state without re-instantiating the catalog or breaking
+    /// the `Arc<ProviderCatalog>` reference held by the resolver.
+    #[tokio::test]
+    async fn reload_picks_up_disk_changes_through_same_arc() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        let cat = ProviderCatalog::load_or_init(&path).await.unwrap();
+
+        // Initial state: empty.
+        assert_eq!(cat.list_all().await.len(), 0);
+
+        // Write a provider to disk directly (bypassing the in-memory
+        // upsert API) — this simulates `peko provider add` on a
+        // separate process while the daemon holds the Arc.
+        let tmpl = templates::find_template("anthropic").unwrap();
+        let entry = ProviderCatalogEntry::from_template(tmpl, "anthropic", None);
+        let file = ProviderCatalogFile {
+            entries: std::iter::once(("anthropic".to_string(), entry)).collect(),
+            default_provider_id: None,
+            default_model_id: None,
+            ..Default::default()
+        };
+        std::fs::write(
+            &path,
+            toml::to_string(&file).expect("serialize provider file"),
+        )
+        .unwrap();
+
+        // Same Arc, no reload yet → still empty.
+        assert_eq!(cat.list_all().await.len(), 0);
+
+        // Reload → sees the new entry through the same Arc.
+        let count = cat.reload().await.unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(cat.list_all().await.len(), 1);
+        assert_eq!(cat.get("anthropic").await.unwrap().id, "anthropic");
+    }
+
+    /// `reload()` keeps the prior in-memory state on a read failure so
+    /// a transient fs hiccup doesn't blank the daemon.
+    #[tokio::test]
+    async fn reload_keeps_prior_state_on_read_failure() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        let cat = ProviderCatalog::load_or_init(&path).await.unwrap();
+
+        // Seed an entry.
+        let tmpl = templates::find_template("ollama").unwrap();
+        cat.upsert(ProviderCatalogEntry::from_template(tmpl, "ollama", None))
+            .await
+            .unwrap();
+        assert_eq!(cat.list_all().await.len(), 1);
+
+        // Corrupt the on-disk file.
+        std::fs::write(&path, "this is not valid toml = = =").unwrap();
+
+        // Reload should swallow the read failure and keep the
+        // in-memory entry intact.
+        let count = cat.reload().await.unwrap();
+        assert_eq!(count, 1, "should report the prior in-memory count");
+        assert_eq!(cat.list_all().await.len(), 1);
+        assert_eq!(cat.get("ollama").await.unwrap().id, "ollama");
     }
 }

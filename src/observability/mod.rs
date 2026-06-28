@@ -22,7 +22,7 @@ pub use performance::{
 };
 pub use tracer::{TraceSpan, Tracer};
 
-use crate::auth::Principal;
+use crate::auth::Subject;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -65,13 +65,13 @@ impl Observability {
     /// Log an audit event tagged with the resolved caller identity
     /// (issues #17 + #26). Prefer this over `audit` on any event that
     /// flows through a request path so the audit trail is attributable
-    /// to a real subject. The caller is a typed `Principal` (ADR-039)
+    /// to a real subject. The caller is a typed `Subject` (ADR-039)
     /// — `User` / `Agent` / `Team` / `Public` — so per-user, per-key,
     /// and per-agent audit queries can index on the kind tag instead of
     /// string-parsing the legacy `user:{sub}` convention.
     pub async fn audit_with_caller(
         &self,
-        caller: Option<&Principal>,
+        caller: Option<&Subject>,
         event_type: &str,
         agent_did: Option<&str>,
         details: serde_json::Value,
@@ -102,12 +102,12 @@ impl Observability {
     /// on any event that flows through a request path — security
     /// events are the ones operators query by user when investigating
     /// an incident, so the caller attribution matters more here than
-    /// for `Info`-level events. Use `Principal::Public` when the
+    /// for `Info`-level events. Use `Subject::Public` when the
     /// event is genuinely unauthenticated (no caller context
     /// available) rather than passing `None`.
     pub async fn audit_security_with_caller(
         &self,
-        caller: Option<&Principal>,
+        caller: Option<&Subject>,
         event_type: &str,
         agent_did: Option<&str>,
         details: serde_json::Value,
@@ -127,7 +127,7 @@ impl Observability {
         &self,
         event_type: &str,
         agent_did: Option<&str>,
-        caller: Option<&Principal>,
+        caller: Option<&Subject>,
         details: serde_json::Value,
         severity: AuditSeverity,
     ) -> Result<()> {
@@ -201,13 +201,13 @@ mod tests {
     use super::*;
 
     /// `audit_with_caller` must stamp the resolved caller as a typed
-    /// `Principal` on the emitted event so the audit trail is
+    /// `Subject` on the emitted event so the audit trail is
     /// attributable to a real subject (issues #17 + #26).
     #[tokio::test]
     async fn audit_with_caller_records_caller_principal() {
-        use crate::auth::Principal;
+        use crate::auth::Subject;
         let obs = Observability::new("tunnel");
-        let caller = Principal::User("user:user-42".to_string());
+        let caller = Subject::User("user:user-42".to_string());
         obs.audit_with_caller(
             Some(&caller),
             "tunnel_proxied_request",
@@ -241,15 +241,15 @@ mod tests {
     }
 
     /// `audit_security_with_caller` must stamp the resolved caller as a
-    /// typed `Principal` on the emitted event AND mark the event as
+    /// typed `Subject` on the emitted event AND mark the event as
     /// `AuditSeverity::Security` (issue #26 review: the audit_security
     /// half of the migration was missing — security events are the
     /// ones operators query by user when investigating an incident).
     #[tokio::test]
     async fn audit_security_with_caller_records_caller_and_severity() {
-        use crate::auth::Principal;
+        use crate::auth::Subject;
         let obs = Observability::new("tunnel");
-        let caller = Principal::User("user:alice".to_string());
+        let caller = Subject::User("user:alice".to_string());
         obs.audit_security_with_caller(
             Some(&caller),
             "permission_denied",

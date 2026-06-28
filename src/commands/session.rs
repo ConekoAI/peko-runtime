@@ -4,7 +4,7 @@
 //! `SessionService` and `SessionCompactor`. Presentation lives in
 //! `session::presentation`.
 
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::session_service::{HistoryQuery, SessionService};
@@ -138,7 +138,7 @@ pub async fn handle_session(
                         Some(team),
                         paths.user(),
                     );
-                    let peer = Principal::User(paths.user().to_string());
+                    let peer = Subject::User(paths.user().to_string());
                     let active_session_id =
                         manager.get_active_session_id(&peer).await.ok().flatten();
 
@@ -162,9 +162,9 @@ pub async fn handle_session(
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
-        // SessionShow and SessionSwitch remain as direct file I/O for now
-        // because they need more complex IPC packets (session history streaming,
-        // active session preference file updates).
+        // SessionShow and SessionSwitch read directly from the SessionService (no
+        // IPC round-trip) — they need access to the live in-memory session
+        // index and history, which would be expensive to serialize over IPC.
         SessionCommands::Show {
             agent,
             session_id,
@@ -275,8 +275,9 @@ pub async fn handle_session(
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
-        // SessionSwitch remains as direct file I/O — it updates the local
-        // active-session preference file, which is simpler to do locally.
+        // SessionSwitch updates the local active-session preference file directly,
+        // bypassing IPC — the file lives at a well-known path under
+        // `~/.peko/` that the daemon doesn't own.
         SessionCommands::Switch {
             agent,
             session_id,
@@ -467,7 +468,7 @@ async fn switch_session(
         .await
         .map_err(|_| anyhow::anyhow!("Session '{session_id}' not found for agent '{agent}'"))?;
 
-    let peer = Principal::User(user.to_string());
+    let peer = Subject::User(user.to_string());
     manager.switch_session(&peer, session_id).await?;
 
     if json {

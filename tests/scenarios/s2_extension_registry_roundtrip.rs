@@ -7,12 +7,12 @@
 //! backend in `pekohub/backend/tests/fixtures/server.ts` drives
 //! the registry side.
 //!
-//! | Rust test                                   | Flow step                                       |
-//! |---------------------------------------------|-------------------------------------------------|
-//! | `ext_push_succeeds_with_pekohub_test`       | Flow 3: author `peko ext push` → pekohub        |
-//! | `ext_pull_round_trip_two_clis`              | Flow 4: collab `peko ext pull` → enable → chat  |
-//! | `ext_pull_auto_resolves_dependencies`      | Flow 4b: pull also fetches declared deps        |
-//! | `ext_push_without_login_fails`              | Flow 3 negative: no `peko login` ⇒ 401-ish     |
+//! | Rust test                                   | Flow step                                              |
+//! |---------------------------------------------|--------------------------------------------------------|
+//! | `ext_push_succeeds_with_pekohub_test`       | Flow 3: author `peko ext push` → pekohub               |
+//! | `ext_pull_round_trip_two_clis`              | Flow 4: collab `peko ext pull` → chat via Principal    |
+//! | `ext_pull_auto_resolves_dependencies`      | Flow 4b: pull also fetches declared deps               |
+//! | `ext_push_without_login_fails`              | Flow 3 negative: no `peko login` ⇒ 401-ish            |
 //!
 //! ## Scope
 //!
@@ -56,6 +56,8 @@ use serial_test::serial;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
+
+use peko::principal::config::PrincipalConfig;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -194,12 +196,46 @@ Compute a + b.
     Ok(skill_dir)
 }
 
-/// Path to the agent's on-disk config.toml.
-fn agent_config_path(cli: &PekoCli, agent_name: &str) -> PathBuf {
+/// Path to the Principal's on-disk `principal.toml`.
+fn principal_config_path(cli: &PekoCli, principal_name: &str) -> PathBuf {
     cli.peko_dir()
-        .join("agents")
-        .join(agent_name)
-        .join("config.toml")
+        .join("principals")
+        .join(principal_name)
+        .join("principal.toml")
+}
+
+/// Create a Principal wired to the mock LLM and grant it the
+/// `calculator-skill` extension in `[capabilities] tools` (the
+/// Principal-era equivalent of the legacy
+/// `peko ext enable calculator-skill --target <agent>` flow on a
+/// standalone agent config).
+///
+/// `calculator-skill` is a Tier 1 SKILL.md, so the dispatcher's
+/// `is_tool_enabled` lookup uses the bare extension id (the same shape
+/// the legacy whitelist accepted). We write it in BOTH the bare form
+/// AND the canonical `builtin:tool:calculator-skill` form — same dual-
+/// form grant pattern as `create_mock_principal_with_tools` — so any
+/// permission check keyed on either form succeeds.
+fn create_collaborator_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
+    common::create_mock_principal_with_tools(cli, name, mock_llm_url, &["calculator-skill"]);
+
+    // Add the canonical-form alias on top. The supervisor's whitelist
+    // extension concatenates `capabilities.tools` into the per-execution
+    // `enabled` list, so the dual form is redundant in the supervisor
+    // case (the base whitelist already enumerates built-in canonical
+    // ids), but keeping the dispatcher's `is_tool_enabled` happy is the
+    // load-bearing concern here.
+    let path = principal_config_path(cli, name);
+    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
+    let mut cfg: PrincipalConfig = toml::from_str(&raw).expect("parse principal.toml");
+    cfg.capabilities
+        .tools
+        .push("builtin:tool:calculator-skill".to_string());
+    std::fs::write(
+        &path,
+        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
+    )
+    .expect("write principal.toml");
 }
 
 /// Re-pull the same ref. `peko ext pull` writes a temp `.ext` and
@@ -317,11 +353,12 @@ async fn ext_push_succeeds_with_pekohub_test() {
 /// Flow 4 (positive): collaborator pulls the extension the author
 /// pushed, installs it (the pull itself writes a temp `.ext` and
 /// pre-populates the registry source; the install copies the files
-/// into the local extension storage), enables it on a collab agent,
-/// and chats with that agent. Asserts the round-trip: collab's
-/// `peko ext list --json` shows the extension, the on-disk agent
-/// config has `calculator-skill` in `extensions.enabled`, and
-/// `peko send` echoes the mock-LLM keyword.
+/// into the local extension storage), grants the calculator-skill
+/// capability on a Principal, and chats via `peko send <principal>`.
+/// Asserts the round-trip: collab's `peko ext list --json` shows the
+/// extension, the Principal's `principal.toml` carries
+/// `calculator-skill` in `[capabilities] tools`, and `peko send`
+/// echoes the mock-LLM keyword.
 #[tokio::test]
 #[ignore = "requires PEKOHUB_URL + MOCK_LLM_URL + peko daemon"]
 #[serial]
@@ -402,31 +439,20 @@ async fn ext_pull_round_trip_two_clis() {
     );
 
     // The pull already installed the extension via IPC — no
-    // need to re-install. Continue with enable + chat.
-    // isn't exposed as a public CLI argument. The pull round-trip
-    // itself is asserted via the pull_json above.
-    let collab_agent = "s2_collab_agent";
-    common::write_v3_mock_agent(collab.home(), collab_agent, &mock_url)
-        .expect("write collab mock agent");
-
-    // The `peko ext pull` above already installed the extension
-    // via IPC (handle_ext_pull_to_temp at src/commands/ext.rs:583
-    // + the IPC ExtensionInstall call at line 594), so no separate
-    // install step is needed here. Move on to enable + list + chat.
-
-    // Enable on the collab agent.
-    let (out, err, status) = run(
-        &collab,
-        &[
-            "ext",
-            "enable",
-            "calculator-skill",
-            "--target",
-            collab_agent,
-        ],
-        Duration::from_secs(10),
-    );
-    assert_ok(&out, &err, &status);
+    // need to re-install. Continue with the chat round-trip.
+    //
+    // After the "Principal as the single actor" migration, the
+    // standalone-agent `peko ext enable <ext> --target <agent>` flow
+    // is gone: the chat surface is `peko send <principal>`, and the
+    // dispatcher's `is_tool_enabled` whitelist is the union of the
+    // supervisor's fixed base set plus the Principal's `principal.toml
+    // [capabilities] tools` entries (see
+    // `src/principal/agent_runner.rs::run_supervisor_prompt`). The CLI
+    // does not expose a live capability-grant command — we patch
+    // `principal.toml` directly via `create_collaborator_principal`
+    // (mirrors `tests/common/agent.rs::create_mock_principal_with_tools`).
+    let collab_principal = "s2_collab_principal";
+    create_collaborator_principal(&collab, collab_principal, &mock_url);
 
     // `peko ext list --json` should now show the extension. List is
     // an IPC-driven command (see ext.rs:289-295), so the daemon
@@ -438,12 +464,12 @@ async fn ext_pull_round_trip_two_clis() {
         "ext list should include the pulled extension: stdout={out} stderr={err}",
     );
 
-    // Agent config has calculator-skill in extensions.enabled.
-    let cfg = agent_config_path(&collab, collab_agent);
-    let after = std::fs::read_to_string(&cfg).expect("read collab agent config");
+    // Principal config has calculator-skill in capabilities.tools.
+    let cfg = principal_config_path(&collab, collab_principal);
+    let after = std::fs::read_to_string(&cfg).expect("read principal.toml");
     assert!(
         after.contains("calculator-skill"),
-        "collab agent config should contain calculator-skill after enable: {after}",
+        "collab principal.toml should contain calculator-skill after capability grant: {after}",
     );
 
     // Chat round-trip via the mock LLM.
@@ -451,7 +477,7 @@ async fn ext_pull_round_trip_two_clis() {
         &collab,
         &[
             "send",
-            collab_agent,
+            collab_principal,
             "Use the calculator extension to add 1+2. Respond with: S2_CHAT_OK",
             "--no-stream",
         ],

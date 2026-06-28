@@ -20,10 +20,10 @@ pub mod mock_configure;
 pub mod subprocess;
 
 pub use agent::{
-    seed_kimi_provider_in_catalog, seed_minimax_provider_in_catalog, seed_mock_provider_in_catalog,
-    write_v3_mock_agent,
+    create_mock_principal, create_mock_principal_with_tools, seed_kimi_provider_in_catalog,
+    seed_minimax_provider_in_catalog, seed_mock_provider_in_catalog, write_v3_mock_agent,
 };
-pub use auth::{create_test_user, generate_jwt, PEKOHUB_JWT_SECRET};
+pub use auth::{create_test_user, generate_jwt};
 pub use cli::PekoCli;
 pub use crypto::{generate_runtime_identity, sign_nonce};
 pub use daemon::DaemonGuard;

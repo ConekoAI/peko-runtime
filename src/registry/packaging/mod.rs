@@ -1,51 +1,47 @@
-//! Portable agent package system
+//! Portable principal package system
 //!
-//! Provides export/import functionality for agents as `.agent` packages.
-//! Similar to Docker containers, agents can be packaged with their
-//! identity, memory, configuration, skills, workspace, and sessions.
+//! Provides export/import functionality for Principals as `.principal`
+//! packages. After the principal-as-single-actor migration (Phases 1-5),
+//! `.principal` is the canonical archive format; `.agent` and `.team`
+//! archives were retired alongside the standalone agent CRUD surface.
+//!
+//! Similar to Docker containers, a Principal can be packaged with its
+//! identity, memory, configuration, capabilities, agent prompts, and
+//! session history.
 //!
 //! ## Package Format
 //!
-//! `.agent` files are gzip-compressed tar archives containing:
+//! `.principal` files are gzip-compressed tar archives containing:
 //! - `manifest.toml` - Package metadata and file checksums
 //! - `identity/did.json` - DID document
 //! - `identity/keys.enc` - Encrypted private keys (AES-256-GCM)
-//! - `config/agent.toml` - Agent configuration
-//! - `workspace/` - Workspace files (SYSTEM.md, AGENTS.md, etc.)
-//! - `sessions/` - Session history (optional, can be large)
+//! - `config/principal.toml` - Principal configuration (owner,
+//!   permissions, exposure, capabilities, supervisor prompt)
+//! - `workspace/agents/` - The Principal's agent prompts (`AGENT.md`)
+//! - `workspace/memory/` - Memory index and session JSONL (optional)
 //! - `extensions/` - Embedded extension packages (optional, air-gapped bundles)
-//!
-//! **Deprecated:** `skills/{name}/SKILL.md` and `mcp/` layers are legacy.
-//! Under ADR-037, skills and MCP servers are managed as extensions and
-//! recorded in `manifest.extensions`. Legacy packages containing these
-//! layers can still be imported, but new agent exports no longer emit them.
 //!
 //! ## Example
 //!
 //! ```rust,ignore
-//! use peko::registry::packaging::{export_agent, import_agent, ExportOptions, ImportOptions};
+//! use peko::registry::packaging::{PrincipalPackager, PrincipalUnpackager};
 //!
-//! // Export an agent
-//! let options = ExportOptions {
-//!     encrypt: true,
-//!     passphrase: Some("secret".to_string()),
-//!     ..Default::default()
-//! };
-//! let package_path = export_agent(config, identity, memory_path, options).await?;
+//! // Export a principal
+//! let packager = PrincipalPackager::new(workspace_path);
+//! let package_path = packager.export(options).await?;
 //!
-//! // Import an agent
-//! let options = ImportOptions {
-//!     new_name: Some("imported-agent".to_string()),
-//!     passphrase: Some("secret".to_string()),
-//!     ..Default::default()
-//! };
-//! let result = import_agent("./my-agent.agent", options).await?;
+//! // Import a principal
+//! let unpackager = PrincipalUnpackager::new(target_dir);
+//! let result = unpackager.import("./my-principal.principal", options).await?;
 //! ```
 
 #![allow(dead_code)]
 
 pub mod manifest;
 pub mod packager;
+pub mod principal_manifest;
+pub mod principal_packager;
+pub mod principal_unpackager;
 pub mod signature;
 pub mod team_layer_builder;
 pub mod team_layer_reconstructor;
@@ -56,7 +52,10 @@ pub mod unpackager;
 pub mod validation;
 
 pub use manifest::AgentManifest;
-pub use packager::{export_agent, ExportOptions, Packager};
+pub use packager::{ExportOptions, Packager};
+pub use principal_manifest::PrincipalManifest;
+pub use principal_packager::{export_principal, PrincipalExportOptions, PrincipalPackager, PrincipalRegistryDescriptor};
+pub use principal_unpackager::{PrincipalImportOptions, PrincipalImportResult, PrincipalUnpackager};
 pub use team_layer_builder::{decompose_team_archive, DecomposedTeamLayers, LayerBytes};
 pub use team_layer_reconstructor::{
     extract_team_config_index, reconstruct_agent_files, reconstruct_team, ReconstructedTeam,
@@ -70,32 +69,10 @@ pub use team_unpackager::{
     TeamUnpackager,
 };
 pub use types::{compute_digest, ExtensionRef, ImageDigest, Layer, LayerDigest, LayerType};
-pub use unpackager::{import_agent, inspect_agent, ImportOptions, ImportResult, Unpackager};
+pub use unpackager::{inspect_agent, ImportOptions, ImportResult, Unpackager};
 pub use validation::{validate_package, ValidationResult};
 
-use std::io::Read;
 use std::path::Path;
-
-/// Check if a file is a valid .agent package (quick check)
-pub fn is_agent_package(path: impl AsRef<Path>) -> bool {
-    let path = path.as_ref();
-
-    // Check extension
-    if path.extension().and_then(|e| e.to_str()) != Some("agent") {
-        return false;
-    }
-
-    // Try to open and check magic bytes (gzip)
-    if let Ok(file) = std::fs::File::open(path) {
-        let mut header = [0u8; 2];
-        if std::io::Read::read_exact(&mut file.take(2), &mut header).is_ok() {
-            // Gzip magic bytes: 0x1f 0x8b
-            return header == [0x1f, 0x8b];
-        }
-    }
-
-    false
-}
 
 /// Get package info without full extraction
 pub async fn get_package_info(path: impl AsRef<Path>) -> anyhow::Result<PackageInfo> {
@@ -178,20 +155,5 @@ impl PackageInfo {
         }
 
         output
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_agent_package_extension() {
-        // Test that non-.agent files return false
-        assert!(!is_agent_package("test.txt"));
-        assert!(!is_agent_package("test.tar.gz"));
-
-        // Note: is_agent_package for "test.agent" would fail without a real file
-        // because it tries to read the gzip magic bytes
     }
 }

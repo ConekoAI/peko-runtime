@@ -1,21 +1,32 @@
-//! CLI integration tests for `peko session` commands (Phase B slice 2).
+//! CLI integration tests for Principal session listing.
 //!
-//! Tests the offline session management CLI surface:
-//!   - session list       (with --json)
-//!   - session show       (with --history, --json)
-//!   - session branch     (with --label, --json)
-//!   - session switch
-//!   - session remove
-//!   - user isolation (--user / -U)
+//! After the "Principal as the single actor" migration, `peko send <name>`
+//! targets a Principal and writes its session under
+//! `{data_dir}/principals/<name>/memory/sessions/`. The per-agent session
+//! management surface that this file used to exercise —
+//! `session show / branch / switch / remove`, the `--session-id`/`--new`
+//! flags, and per-user session isolation on a shared agent — has no Principal
+//! equivalent and was removed with the migration:
+//!
+//!   * `peko session <agent>` still reads *agent* sessions
+//!     (`{data_dir}/agents/<agent>/sessions/`), which `peko send` no longer
+//!     populates, so those tests could never observe a session again.
+//!   * A Principal is owned by a single user (`user:default` for the CLI
+//!     caller); a cross-user `peko send <princ> --user alice` is denied by the
+//!     `Permission::Chat` owner check, so multi-user isolation on one
+//!     Principal is not expressible.
+//!
+//! What remains is *listing* a Principal's sessions via
+//! `peko principal memory session <name>`. That command prints one line per
+//! session in the form `{session_id} [{peer}] {title}` (it ignores `--json`),
+//! or `No sessions found for principal '<name>'.` when empty. These tests
+//! cover that surface against the current framework.
 //!
 //! All tests use the mock LLM for deterministic chat responses and the
 //! standard PekoCli + DaemonGuard harness.
-//!
-//! (Was `#![cfg(unix)]`; dropped with the Windows named-pipe transport
-//!  landing — see ADR-038.)
 
 mod common;
-use common::{run_with_timeout, write_v3_mock_agent, DaemonGuard, PekoCli};
+use common::{create_mock_principal, run_with_timeout, DaemonGuard, PekoCli};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -57,24 +68,26 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
-/// Assert non-zero exit.
-fn assert_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
-    assert!(
-        !status.success(),
-        "expected failure but succeeded\nstdout: {stdout}\nstderr: {stderr}",
-    );
-}
-
-/// Run `peko session list <agent> --json` and return parsed JSON.
-fn list_sessions_json(cli: &PekoCli, agent: &str) -> serde_json::Value {
-    let (stdout, stderr, status) = run(cli, &["session", "list", agent, "--json"]);
+/// List a Principal's sessions via `peko principal memory session <name>`,
+/// returning the parsed session lines (one per stored session).
+///
+/// The command prints `{session_id} [{peer}] {title}` per session, or a single
+/// `No sessions found …` line when empty. We treat any line containing the
+/// `[peer]` marker as a session row and ignore the empty-state message.
+fn principal_sessions(cli: &PekoCli, name: &str) -> Vec<String> {
+    let (stdout, stderr, status) = run(cli, &["principal", "memory", "session", name]);
     assert_ok(&stdout, &stderr, &status);
-    serde_json::from_str(&stdout).expect("parse session list JSON")
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains(" [") && l.contains("] "))
+        .map(str::to_string)
+        .collect()
 }
 
-/// Send a message to an agent, returning stdout.
-fn send_msg(cli: &PekoCli, agent: &str, msg: &str) -> String {
-    let (stdout, stderr, status) = run(cli, &["send", agent, msg, "--no-stream"]);
+/// Send a message to a Principal, returning stdout.
+fn send_msg(cli: &PekoCli, name: &str, msg: &str) -> String {
+    let (stdout, stderr, status) = run(cli, &["send", name, msg, "--no-stream"]);
     assert_ok(&stdout, &stderr, &status);
     stdout
 }
@@ -85,474 +98,79 @@ fn send_msg(cli: &PekoCli, agent: &str, msg: &str) -> String {
 
 #[test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_list_shows_created_sessions() {
+fn principal_session_list_shows_created_session() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
     let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "list-agent", &mock_url).expect("write mock agent");
+    create_mock_principal(&cli, "list-princ", &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Initially no sessions
-    let json = list_sessions_json(&cli, "list-agent");
-    let sessions = json
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .expect("sessions array");
-    assert!(sessions.is_empty(), "expected no sessions initially");
-
-    // Send a message — creates a session
-    send_msg(&cli, "list-agent", "Hello");
-
-    let json_after = list_sessions_json(&cli, "list-agent");
-    let sessions_after = json_after
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .expect("sessions array");
-    assert_eq!(sessions_after.len(), 1, "expected 1 session after send");
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_show_displays_session_details() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "show-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Create a session
-    send_msg(&cli, "show-agent", "Respond with: SHOW_TEST");
-
-    let json = list_sessions_json(&cli, "show-agent");
-    let session_id = json["sessions"][0]["session_id"]
-        .as_str()
-        .expect("session_id")
-        .to_string();
-
-    // Show the session explicitly
-    let (stdout, stderr, status) = run(
-        &cli,
-        &["session", "show", "show-agent", "--session-id", &session_id],
-    );
-    assert_ok(&stdout, &stderr, &status);
-    let combined = format!("{stdout}{stderr}");
+    // Initially no sessions.
     assert!(
-        combined.contains(&session_id),
-        "show output should contain session_id\noutput: {combined}"
+        principal_sessions(&cli, "list-princ").is_empty(),
+        "expected no sessions before any send"
     );
-}
 
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_show_json_output_contains_session_id() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "show-json-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
+    // A send creates exactly one session for the calling peer.
+    send_msg(&cli, "list-princ", "Hello");
 
-    send_msg(&cli, "show-json-agent", "Hello");
-
-    let json = list_sessions_json(&cli, "show-json-agent");
-    let session_id = json["sessions"][0]["session_id"]
-        .as_str()
-        .expect("session_id")
-        .to_string();
-
-    let (stdout, stderr, status) = run(
-        &cli,
-        &[
-            "session",
-            "show",
-            "show-json-agent",
-            "--session-id",
-            &session_id,
-            "--json",
-        ],
-    );
-    assert_ok(&stdout, &stderr, &status);
-
-    let show_json: serde_json::Value = serde_json::from_str(&stdout).expect("parse show JSON");
-    let shown_id = show_json
-        .get("session")
-        .and_then(|s| s.get("session_id"))
-        .and_then(|v| v.as_str())
-        .expect("session.session_id in JSON");
+    let sessions = principal_sessions(&cli, "list-princ");
     assert_eq!(
-        shown_id, session_id,
-        "JSON show should return correct session_id"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_branch_creates_child_with_parent_history() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "branch-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Create parent session with two messages
-    send_msg(&cli, "branch-agent", "First message");
-    send_msg(&cli, "branch-agent", "Second message");
-
-    let json = list_sessions_json(&cli, "branch-agent");
-    let parent_id = json["sessions"][0]["session_id"]
-        .as_str()
-        .expect("session_id")
-        .to_string();
-    let parent_msg_count = json["sessions"][0]["message_count"].as_i64().unwrap_or(0);
-
-    // Branch from explicit session
-    let (stdout, stderr, status) = run(
-        &cli,
-        &[
-            "session",
-            "branch",
-            "branch-agent",
-            "--session-id",
-            &parent_id,
-        ],
-    );
-    assert_ok(&stdout, &stderr, &status);
-
-    // Verify branched session exists with correct parent
-    let json_after = list_sessions_json(&cli, "branch-agent");
-    let sessions = json_after["sessions"].as_array().expect("sessions array");
-    assert_eq!(sessions.len(), 2, "expected 2 sessions after branch");
-
-    let branched = sessions
-        .iter()
-        .find(|s| s.get("parent_session_id").and_then(|v| v.as_str()) == Some(&parent_id))
-        .expect("branched session with parent_session_id");
-    let branched_id = branched["session_id"]
-        .as_str()
-        .expect("branched session_id");
-
-    // Verify branched session has history (message count >= parent - 2 for overhead)
-    let branched_count = branched["message_count"].as_i64().unwrap_or(0);
-    assert!(
-        branched_count >= parent_msg_count - 2,
-        "branched session should have roughly same message count as parent: parent={parent_msg_count}, branched={branched_count}"
-    );
-
-    // Verify we can show the branched session
-    let (show_out, _, show_status) = run(
-        &cli,
-        &[
-            "session",
-            "show",
-            "branch-agent",
-            "--session-id",
-            branched_id,
-        ],
-    );
-    assert!(
-        show_status.success(),
-        "show branched session should succeed: {show_out}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_branch_with_label() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "branch-label-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    send_msg(&cli, "branch-label-agent", "Hello");
-
-    let json = list_sessions_json(&cli, "branch-label-agent");
-    let parent_id = json["sessions"][0]["session_id"]
-        .as_str()
-        .expect("session_id")
-        .to_string();
-
-    // Branch with a label
-    let (stdout, stderr, status) = run(
-        &cli,
-        &[
-            "session",
-            "branch",
-            "branch-label-agent",
-            "--session-id",
-            &parent_id,
-            "--label",
-            "test-label",
-        ],
-    );
-    assert_ok(&stdout, &stderr, &status);
-
-    // Verify the label was stored (check via JSON show)
-    let json_after = list_sessions_json(&cli, "branch-label-agent");
-    let branched = json_after["sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s.get("parent_session_id").and_then(|v| v.as_str()) == Some(&parent_id))
-        .expect("branched session");
-    let branched_id = branched["session_id"].as_str().unwrap();
-
-    let (show_out, _, show_status) = run(
-        &cli,
-        &[
-            "session",
-            "show",
-            "branch-label-agent",
-            "--session-id",
-            branched_id,
-            "--json",
-        ],
-    );
-    assert!(show_status.success());
-    let show_json: serde_json::Value = serde_json::from_str(&show_out).expect("parse show JSON");
-    let title = show_json
-        .get("session")
-        .and_then(|s| s.get("title"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    assert_eq!(
-        title, "test-label",
-        "branched session title should be the label"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_switch_changes_active_session() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "switch-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Create two sessions
-    send_msg(&cli, "switch-agent", "First session");
-    // Second send with --new to create a separate session
-    let (_, _, status) = run(
-        &cli,
-        &[
-            "send",
-            "switch-agent",
-            "Second session",
-            "--new",
-            "--no-stream",
-        ],
-    );
-    assert!(status.success(), "second send with --new should succeed");
-
-    let json = list_sessions_json(&cli, "switch-agent");
-    let sessions = json["sessions"].as_array().expect("sessions array");
-    assert_eq!(sessions.len(), 2, "expected 2 sessions");
-    let session_id_1 = sessions[0]["session_id"].as_str().unwrap().to_string();
-    let session_id_2 = sessions[1]["session_id"].as_str().unwrap().to_string();
-
-    // Switch to session 1
-    let (_, _, status) = run(&cli, &["session", "switch", "switch-agent", &session_id_1]);
-    assert!(status.success(), "switch to session 1 should succeed");
-
-    // Verify active session is now session 1 via show
-    let (show_out, _, show_status) = run(&cli, &["session", "show", "switch-agent"]);
-    assert!(show_status.success());
-    assert!(
-        show_out.contains(&session_id_1),
-        "show should display active session 1: {show_out}"
-    );
-
-    // Switch to session 2
-    let (_, _, status) = run(&cli, &["session", "switch", "switch-agent", &session_id_2]);
-    assert!(status.success(), "switch to session 2 should succeed");
-
-    let (show_out2, _, show_status2) = run(&cli, &["session", "show", "switch-agent"]);
-    assert!(show_status2.success());
-    assert!(
-        show_out2.contains(&session_id_2),
-        "show should display active session 2: {show_out2}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_remove_deletes_session() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "remove-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Create a session
-    send_msg(&cli, "remove-agent", "Hello");
-
-    let json = list_sessions_json(&cli, "remove-agent");
-    let session_id = json["sessions"][0]["session_id"]
-        .as_str()
-        .expect("session_id")
-        .to_string();
-
-    // Remove the session
-    let (_, _, status) = run(
-        &cli,
-        &["session", "remove", "remove-agent", &session_id, "--force"],
-    );
-    assert!(status.success(), "remove session should succeed");
-
-    // Verify it's gone (or at least the remove command succeeded)
-    let json_after = list_sessions_json(&cli, "remove-agent");
-    let sessions_after = json_after["sessions"].as_array().unwrap();
-    // The session remove command may do a soft delete or the session may persist
-    // in some form. We verify at minimum that the command succeeded.
-    assert!(
-        sessions_after.is_empty() || sessions_after.len() <= 1,
-        "expected at most 1 session after remove, got {}: {:?}",
-        sessions_after.len(),
-        json_after
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_user_isolation_different_users_different_active_sessions() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "user-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Default user creates a session
-    send_msg(&cli, "user-agent", "Default user message");
-
-    let default_json = list_sessions_json(&cli, "user-agent");
-    let default_sessions = default_json["sessions"].as_array().unwrap();
-    assert_eq!(
-        default_sessions.len(),
+        sessions.len(),
         1,
-        "default user should have 1 session"
+        "expected 1 session after send, got: {sessions:?}"
     );
-    let default_active = default_json
-        .get("active_session")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // Alice creates a session with --user
-    let (alice_out, _, alice_status) = run(
-        &cli,
-        &[
-            "send",
-            "user-agent",
-            "Alice message",
-            "--user",
-            "alice",
-            "--no-stream",
-        ],
-    );
+    // The CLI caller is `user:default`, so the session is keyed to that peer.
     assert!(
-        alice_status.success(),
-        "alice send should succeed: {alice_out}"
+        sessions[0].contains("[user:default]"),
+        "session should be keyed to the caller peer user:default: {}",
+        sessions[0]
     );
-
-    let alice_json = {
-        let (stdout, stderr, status) = run(
-            &cli,
-            &["session", "list", "user-agent", "--user", "alice", "--json"],
-        );
-        assert_ok(&stdout, &stderr, &status);
-        serde_json::from_str::<serde_json::Value>(&stdout).expect("parse alice sessions")
-    };
-    let alice_sessions = alice_json["sessions"].as_array().unwrap();
-    let alice_active = alice_json
-        .get("active_session")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // Bob creates a session with -U (short flag)
-    let (bob_out, _, bob_status) = run(
-        &cli,
-        &[
-            "send",
-            "user-agent",
-            "Bob message",
-            "-U",
-            "bob",
-            "--no-stream",
-        ],
-    );
-    assert!(bob_status.success(), "bob send should succeed: {bob_out}");
-
-    let bob_json = {
-        let (stdout, stderr, status) = run(
-            &cli,
-            &["session", "list", "user-agent", "-U", "bob", "--json"],
-        );
-        assert_ok(&stdout, &stderr, &status);
-        serde_json::from_str::<serde_json::Value>(&stdout).expect("parse bob sessions")
-    };
-    let bob_active = bob_json
-        .get("active_session")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // All three users should have different active sessions (if isolation works)
-    if let (Some(d), Some(a), Some(b)) = (&default_active, &alice_active, &bob_active) {
-        assert_ne!(
-            d, a,
-            "default and alice should have different active sessions"
-        );
-        assert_ne!(a, b, "alice and bob should have different active sessions");
-        assert_ne!(
-            d, b,
-            "default and bob should have different active sessions"
-        );
-    } else {
-        // If active_session is not returned, that's a known limitation —
-        // the sessions themselves are still created per-user.
-        eprintln!(
-            "Note: active_session isolation not fully implemented; checking session counts instead"
-        );
-        assert!(
-            !alice_sessions.is_empty(),
-            "alice should have at least 1 session"
-        );
-    }
 }
 
 #[test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn session_show_no_active_session_reports_error() {
+fn principal_repeated_sends_collapse_into_one_session() {
     let Some(mock_url) = mock_llm_url() else {
         eprintln!("MOCK_LLM_URL not set; skipping");
         return;
     };
     let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "no-sess-agent", &mock_url).expect("write mock agent");
+    create_mock_principal(&cli, "collapse-princ", &mock_url);
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // Try to show active session when none exists
-    let (stdout, stderr, status) = run(&cli, &["session", "show", "no-sess-agent"]);
-    assert_err(&stdout, &stderr, &status);
-    let combined = format!("{stdout}{stderr}").to_lowercase();
+    // Multiple sends from the same caller reuse the same per-peer session
+    // rather than spawning new ones (there is no `--new` on `peko send`).
+    send_msg(&cli, "collapse-princ", "First message");
+    send_msg(&cli, "collapse-princ", "Second message");
+    send_msg(&cli, "collapse-princ", "Third message");
+
+    let sessions = principal_sessions(&cli, "collapse-princ");
+    assert_eq!(
+        sessions.len(),
+        1,
+        "repeated sends from one caller should collapse into a single session, got: {sessions:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
+fn principal_session_list_empty_for_unused_principal() {
+    let Some(mock_url) = mock_llm_url() else {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    };
+    let cli = PekoCli::new();
+    create_mock_principal(&cli, "unused-princ", &mock_url);
+    // No daemon / no send: listing a freshly created Principal is an offline
+    // read and must report no sessions without error.
+    let (stdout, stderr, status) =
+        run(&cli, &["principal", "memory", "session", "unused-princ"]);
+    assert_ok(&stdout, &stderr, &status);
     assert!(
-        combined.contains("no active")
-            || combined.contains("not found")
-            || combined.contains("error"),
-        "expected error about no active session, got:\nstdout: {stdout}\nstderr: {stderr}"
+        stdout.to_lowercase().contains("no sessions"),
+        "expected empty-state message, got:\nstdout: {stdout}\nstderr: {stderr}"
     );
 }

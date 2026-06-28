@@ -268,7 +268,7 @@ async fn test_cross_runtime_a2a_full_round_trip() {
             runtime_id: "did:key:zTargetRuntime".to_string(),
             instance_id: "inst-target-e2e".to_string(),
             agent_did: "did:peko:agent:target-keyhash".to_string(),
-            owner_principal: crate::auth::principal::Principal::Public,
+            owner_principal: crate::auth::Subject::Public,
             exposure: ResolvedExposure::Public,
         },
     );
@@ -363,7 +363,7 @@ async fn test_cross_runtime_a2a_hub_synthesized_error_response() {
             runtime_id: "did:key:zTargetRuntime".to_string(),
             instance_id: "inst-target-e2e".to_string(),
             agent_did: "did:peko:agent:target-keyhash".to_string(),
-            owner_principal: crate::auth::principal::Principal::Public,
+            owner_principal: crate::auth::Subject::Public,
             exposure: ResolvedExposure::Public,
         },
     );

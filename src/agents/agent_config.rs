@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::common::types::agent_legacy::{ChannelConfig, ExtensionConfig};
 
 /// Agent configuration
@@ -48,9 +48,9 @@ pub struct AgentConfig {
     pub host_runtime_id: String,
     /// Owner identity for ownership and permission model (ADR-039).
     ///
-    /// Canonical form is `owner = { kind, id }` (a `Principal`).
+    /// Canonical form is `owner = { kind, id }` (a `Subject`).
     #[serde(default)]
-    pub owner: Principal,
+    pub owner: Subject,
     /// Explicit permission grants on this agent (ADR-033)
     #[serde(default)]
     pub permissions: Vec<crate::auth::ownership::PermissionGrant>,
@@ -62,12 +62,12 @@ pub struct AgentConfig {
     /// different `agent_did` values because the keypair is generated
     /// independently per `peko_home` root.
     ///
-    /// **Wire contract:** `Principal::Agent(agent_did)` is used on the
+    /// **Wire contract:** `Subject::Principal(agent_did)` is used on the
     /// tunnel/audit/permission IPC paths so cross-runtime references
     /// (a2a_send, `PermissionGrant.subject`, PekoHub instance row) are
     /// unambiguous. When `None` (legacy agents predating #28), callers
-    /// fall back to `Principal::Agent(name)` within a single runtime —
-    /// see `Principal::agent_wire_id` for the canonical resolution.
+    /// fall back to `Subject::Principal(name)` within a single runtime —
+    /// see `Subject::principal_wire_id` for the canonical resolution.
     #[serde(default)]
     pub agent_did: Option<String>,
 
@@ -101,11 +101,11 @@ fn default_true() -> bool {
 }
 
 impl AgentConfig {
-    /// Resolve the effective `Principal` owner.
+    /// Resolve the effective `Subject` owner.
     ///
     /// Thin alias for `self.owner.clone()`.
     #[must_use]
-    pub fn resolved_owner(&self) -> Principal {
+    pub fn resolved_owner(&self) -> Subject {
         self.owner.clone()
     }
 
@@ -120,14 +120,14 @@ impl AgentConfig {
     /// runtimes by design.
     ///
     /// Review of #34 concern #3: this is a thin shim over
-    /// `Principal::agent_wire_id` (the single source of truth for the
+    /// `Subject::principal_wire_id` (the single source of truth for the
     /// resolution) and inherits its empty-DID guard. Returns an owned
     /// `String` because the unified helper takes an owned `String` —
     /// if a hot caller surfaces, a `&str` variant can be added without
     /// changing semantics.
     #[must_use]
     pub fn wire_agent_id(&self) -> String {
-        Principal::agent_wire_id(self.agent_did.as_deref(), &self.name)
+        Subject::principal_wire_id(self.agent_did.as_deref(), &self.name)
     }
 }
 
@@ -139,9 +139,9 @@ fn default_timeout_seconds_value() -> u64 {
     300
 }
 
-fn default_owner() -> Principal {
+fn default_owner() -> Subject {
     // Preserve the legacy "no owner" sentinel used in on-disk configs.
-    Principal::User(String::new())
+    Subject::User(String::new())
 }
 
 impl AgentConfig {

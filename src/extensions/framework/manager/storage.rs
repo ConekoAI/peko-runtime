@@ -130,11 +130,11 @@ impl ExtensionStorage {
 
         // Preserve the existing `.source` file across the
         // delete-and-recopy — `peko ext pull` writes `.source`
-        // first (so `peko agent export`'s extension-ref resolver
+        // first (so `peko principal export`'s extension-ref resolver
         // can see it), then IPC-installs the .ext, which calls
         // `copy_to_storage` here. Without preserving, the
         // install would erase the .source that pull just wrote,
-        // and the agent export would silently skip the ext
+        // and the principal export would silently skip the ext
         // (manifest.source = None → no ExtensionRef emitted).
         // Phase D3 flow 5b is the first end-to-end test that
         // exercised this code path and surfaced the regression.

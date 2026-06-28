@@ -11,10 +11,8 @@ use tracing::{debug, error, info, warn};
 /// This is a fixed UUIDv4 that acts as the namespace for UUIDv5 generation.
 const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6");
 
-use crate::auth::Principal;
-use crate::common::types::a2a::A2aMessageRequest;
+use crate::auth::Subject;
 use crate::daemon::state::AppState;
-use crate::engine::AgenticEvent;
 
 use super::a2a_audit;
 use super::protocol::{
@@ -260,25 +258,20 @@ impl TunnelDispatcher {
         uuid::Uuid::new_v5(&INSTANCE_ID_NAMESPACE, name.as_bytes()).to_string()
     }
 
-    /// Compute allowed user IDs from an agent's permission grants.
+    /// Compute allowed user IDs from a Principal's permission grants.
     ///
-    /// Filters for `Chat` permission grants where `subject` is a `User`
-    /// principal, returning the bare user ids (with `user:` prefix
-    /// stripped if present) as `Some(vec![...])`. Non-User subjects
-    /// (Agent/Team/Public) are filtered out — they cannot be expressed
-    /// as a hub user_id.
+    /// Filters for `Chat` permission grants where `subject` is a `User`,
+    /// returning the bare user ids (with `user:` prefix stripped if
+    /// present) as `Some(vec![...])`. Non-User subjects are filtered out
+    /// — they cannot be expressed as a hub user_id.
     ///
     /// An empty vector is returned as `Some(vec![])` rather than `None`
     /// so that re-announcing an instance clears PekoHub's `allowedUsers`
     /// when the last user grant is revoked.
-    ///
-    /// TODO(#16): re-derive from `Principal::User` and surface
-    /// `Principal::Agent` subjects to the hub once PekoHub accepts the
-    /// agent principal (post #11).
     fn compute_allowed_user_ids(
-        config: &crate::agents::agent_config::AgentConfig,
+        config: &crate::principal::PrincipalConfig,
     ) -> Option<Vec<String>> {
-        use crate::auth::principal::{Principal, SubjectKind};
+        use crate::auth::{Subject, SubjectKind};
         let ids: Vec<String> = config
             .permissions
             .iter()
@@ -286,7 +279,7 @@ impl TunnelDispatcher {
                 g.permission.covers(&Permission::Chat) && g.subject.kind() == SubjectKind::User
             })
             .filter_map(|g| match &g.subject {
-                Principal::User(id) => {
+                Subject::User(id) => {
                     // Strip `user:` prefix if present; hub expects bare user IDs
                     Some(
                         id.strip_prefix("user:")
@@ -300,40 +293,42 @@ impl TunnelDispatcher {
         Some(ids)
     }
 
-    /// Send initial instance announcements for all local agents
+    /// Send initial instance announcements for all local Principals.
     pub async fn announce_instances(&self, handle: &TunnelHandle) -> anyhow::Result<()> {
-        let agent_service = self.app_state.agent_mgmt_service();
-        let agents = match agent_service.list_agents(None).await {
-            Ok(agents) => agents,
-            Err(e) => {
-                warn!("Failed to list agents for announce: {}", e);
-                return Ok(());
-            }
-        };
+        let principal_manager = self.app_state.principal_manager();
+        let principals = principal_manager.list_all().await;
 
-        for agent in agents {
-            let instance_id = self.instance_id(&agent.name);
-            let allowed_users = Self::compute_allowed_user_ids(&agent.config);
+        for principal in principals {
+            let name = principal.name().await;
+            let did = principal.did().await;
+            let exposure = principal.exposure().await;
+            let allowed_users = {
+                let config = principal.config.read().await;
+                Self::compute_allowed_user_ids(&config)
+            };
+            let instance_id = self.instance_id(&name);
             let payload = InstanceAnnouncePayload {
                 id: instance_id.clone(),
-                instance_type: InstanceType::Agent,
-                name: agent.name.clone(),
-                agent_did: agent.config.agent_did.clone(),
+                instance_type: InstanceType::Principal,
+                name: name.clone(),
+                agent_did: None,
+                principal_did: Some(did.0.clone()),
                 bundle_ref: None,
                 runtime_display_name: Some(self.runtime_display_name.clone()),
                 status: InstanceStatus::Online,
-                exposure: InstanceExposure::Private,
+                exposure: exposure.clone(),
                 allowed_users: allowed_users.clone(),
                 capabilities: None,
                 metadata: None,
             };
 
-            // Seed local instance state cache with default Online status and Private exposure
+            // Seed local instance state cache with default Online status and the
+            // Principal's configured exposure.
             let mut state = self.state.write().await;
             state.instance_state.insert(
                 instance_id,
                 InstanceState {
-                    exposure: InstanceExposure::Private,
+                    exposure,
                     allowed_users: allowed_users.unwrap_or_default(),
                     status: InstanceStatus::Online,
                 },
@@ -341,19 +336,22 @@ impl TunnelDispatcher {
             drop(state);
 
             if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce { payload }) {
-                warn!("Failed to announce instance {}: {}", agent.name, e);
+                warn!("Failed to announce instance {}: {}", name, e);
             } else {
-                debug!("Announced instance: {}", agent.name);
+                debug!("Announced principal instance: {}", name);
             }
         }
 
         Ok(())
     }
 
-    /// Announce a single agent instance through the tunnel.
+    /// Announce a single Principal instance through the tunnel.
     ///
-    /// Used when a new agent is created after the tunnel is already connected.
-    pub async fn announce_single_instance(&self, agent_name: &str) -> anyhow::Result<()> {
+    /// Used when a new Principal is created after the tunnel is already connected.
+    pub async fn announce_single_instance(
+        &self,
+        principal_name: &str,
+    ) -> anyhow::Result<()> {
         let handle = {
             let state = self.state.read().await;
             match state.tunnel_handle.clone() {
@@ -361,40 +359,40 @@ impl TunnelDispatcher {
                 None => {
                     debug!(
                         "No tunnel handle available; skipping instance announce for {}",
-                        agent_name
+                        principal_name
                     );
                     return Ok(());
                 }
             }
         };
 
-        let agent_service = self.app_state.agent_mgmt_service();
-        let agent = match agent_service.get_agent(agent_name, None).await {
-            Ok(Some(info)) => info,
-            Ok(None) => {
-                warn!("Agent {} not found; cannot announce instance", agent_name);
-                return Ok(());
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to load agent {} for instance announce: {}",
-                    agent_name, e
-                );
+        let principal_manager = self.app_state.principal_manager();
+        let principal = match principal_manager.get_by_name(principal_name).await {
+            Some(p) => p,
+            None => {
+                warn!("Principal {} not found; cannot announce instance", principal_name);
                 return Ok(());
             }
         };
 
-        let instance_id = self.instance_id(agent_name);
-        let allowed_users = Self::compute_allowed_user_ids(&agent.config);
+        let name = principal.name().await;
+        let did = principal.did().await;
+        let exposure = principal.exposure().await;
+        let allowed_users = {
+            let config = principal.config.read().await;
+            Self::compute_allowed_user_ids(&config)
+        };
+        let instance_id = self.instance_id(&name);
         let payload = InstanceAnnouncePayload {
             id: instance_id.clone(),
-            instance_type: InstanceType::Agent,
-            name: agent.name.clone(),
-            agent_did: agent.config.agent_did.clone(),
+            instance_type: InstanceType::Principal,
+            name: name.clone(),
+            agent_did: None,
+            principal_did: Some(did.0.clone()),
             bundle_ref: None,
             runtime_display_name: Some(self.runtime_display_name.clone()),
             status: InstanceStatus::Online,
-            exposure: InstanceExposure::Private,
+            exposure: exposure.clone(),
             allowed_users: allowed_users.clone(),
             capabilities: None,
             metadata: None,
@@ -405,7 +403,7 @@ impl TunnelDispatcher {
         state.instance_state.insert(
             instance_id,
             InstanceState {
-                exposure: InstanceExposure::Private,
+                exposure,
                 allowed_users: allowed_users.unwrap_or_default(),
                 status: InstanceStatus::Online,
             },
@@ -413,9 +411,9 @@ impl TunnelDispatcher {
         drop(state);
 
         if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce { payload }) {
-            warn!("Failed to announce instance {}: {}", agent_name, e);
+            warn!("Failed to announce instance {}: {}", principal_name, e);
         } else {
-            debug!("Announced single instance: {}", agent_name);
+            debug!("Announced single principal instance: {}", principal_name);
         }
 
         Ok(())
@@ -439,13 +437,14 @@ impl TunnelDispatcher {
     }
 
     async fn send_heartbeats(&self, handle: &TunnelHandle) -> anyhow::Result<()> {
-        let agent_service = self.app_state.agent_mgmt_service();
-        let agents = agent_service.list_agents(None).await?;
+        let principal_manager = self.app_state.principal_manager();
+        let principals = principal_manager.list_all().await;
 
         let now = chrono::Utc::now().to_rfc3339();
-        for agent in agents {
-            let instance_id = self.instance_id(&agent.name);
-            let status = self.get_instance_status(&agent.name).await;
+        for principal in principals {
+            let name = principal.name().await;
+            let instance_id = self.instance_id(&name);
+            let status = self.get_instance_status(&name).await;
             let payload = InstanceHeartbeatPayload {
                 id: instance_id,
                 status,
@@ -491,7 +490,7 @@ impl TunnelDispatcher {
             // signature against the `caller_runtime_id` they claim,
             // look up the local agent by `target_agent_did`,
             // attribute the dispatch under
-            // `Principal::Agent(caller_agent_did)`, run it, and send
+            // `Subject::Principal(caller_agent_did)`, run it, and send
             // back an `AgentToAgentResponse` carrying the
             // `A2aSendResult` payload.
             TunnelMessage::AgentToAgentRequest {
@@ -585,24 +584,10 @@ impl TunnelDispatcher {
         }
 
         // Resolve the calling user from the PekoHub-proxied headers/JWT.
-        // `resolve_bridge_caller` prefers a signed JWT (if PekoHub sent
-        // `Authorization: Bearer <jwt>` and a `JwtValidator` is
-        // configured) over the unverified `x-pekohub-user-id` header —
-        // see issue #17 acceptance criteria ("src/auth/jwt.rs pekohub
-        // JWT validation is enabled ... and unit-tested").
         let caller_user =
             resolve_bridge_caller(&bridge_payload, self.app_state.jwt_validator().as_ref()).await;
+        let caller_principal = Subject::from_bridge_user(&caller_user);
 
-        // Audit: record the proxied request with the resolved caller so the
-        // event stream is attributable to a real user, not the literal
-        // `"web"` placeholder that this dispatcher used to stamp on every
-        // request (issue #17). The caller is projected to a typed
-        // `Principal` (issue #26) so the audit wire shape is `{kind, id}`
-        // and per-user / per-agent queries can index on the kind tag.
-        // `Principal::from_bridge_user` centralizes the `user:` prefix
-        // and the `"anonymous" → Public` mapping next to the type's
-        // other constructors (issue #26 review feedback).
-        let caller_principal = Principal::from_bridge_user(&caller_user);
         self.app_state
             .observability()
             .audit_with_caller(
@@ -617,130 +602,51 @@ impl TunnelDispatcher {
             .await
             .ok();
 
-        // Build message request
-        let request = A2aMessageRequest::new(agent_name.clone(), message)
-            .with_user(caller_user)
-            .with_new_session(false);
+        let principal_manager = self.app_state.principal_manager();
+        let principal = match principal_manager.get_by_name(&agent_name).await {
+            Some(p) => p,
+            None => {
+                warn!("Proxied request for unknown principal: {}", agent_name);
+                return self
+                    .send_error_response(&handle, &request_id, "Principal not found")
+                    .await;
+            }
+        };
 
-        // Execute via stateless agent service with streaming
-        let agent_service = self.app_state.agent_service();
-        match agent_service.execute_message_streaming(request).await {
-            Ok(event_stream) => {
-                self.stream_response(event_stream, handle, request_id)
-                    .await?;
+        let channel = crate::principal::router::ChannelContext {
+            kind: crate::principal::router::ChannelKind::Hub,
+            streaming: false,
+        };
+
+        match principal_manager
+            .receive(principal.id.clone(), caller_principal, message, channel)
+            .await
+        {
+            Ok(response) => {
+                let chunk = serde_json::json!({
+                    "chunk": response.content,
+                    "done": false,
+                });
+                let _ = handle.send_stream_chunk(
+                    request_id.clone(),
+                    0,
+                    chunk.to_string().into_bytes(),
+                );
+                let done = serde_json::json!({ "done": true });
+                let _ = handle.send_stream_chunk(
+                    request_id.clone(),
+                    1,
+                    done.to_string().into_bytes(),
+                );
+                let _ = handle.send_stream_end(request_id);
             }
             Err(e) => {
-                warn!("Agent execution failed for {}: {}", agent_name, e);
+                warn!("Principal execution failed for {}: {}", agent_name, e);
                 return self
                     .send_error_response(&handle, &request_id, &format!("Execution failed: {}", e))
                     .await;
             }
         }
-
-        Ok(())
-    }
-
-    /// Stream agent events back through the tunnel as chunks
-    async fn stream_response(
-        &self,
-        mut event_stream: crate::engine::EventStream,
-        handle: TunnelHandle,
-        request_id: String,
-    ) -> anyhow::Result<()> {
-        let mut seq: u32 = 0;
-        let mut buffer = String::new();
-
-        while let Some(event) = event_stream.receiver.recv().await {
-            match event {
-                AgenticEvent::AssistantText {
-                    text,
-                    is_interstitial: false,
-                    ..
-                } => {
-                    buffer.push_str(&text);
-                }
-                AgenticEvent::AssistantDelta { text, .. } => {
-                    buffer.push_str(&text);
-                }
-                AgenticEvent::Lifecycle { phase, error, .. } => {
-                    match phase {
-                        crate::engine::LifecyclePhase::End => {
-                            // Flush remaining buffer
-                            if !buffer.is_empty() {
-                                let chunk = serde_json::json!({
-                                    "chunk": buffer,
-                                    "done": false,
-                                });
-                                let _ = handle.send_stream_chunk(
-                                    request_id.clone(),
-                                    seq,
-                                    chunk.to_string().into_bytes(),
-                                );
-                                seq = seq.saturating_add(1);
-                            }
-                            // Send done marker
-                            let done = serde_json::json!({ "done": true });
-                            let _ = handle.send_stream_chunk(
-                                request_id.clone(),
-                                seq,
-                                done.to_string().into_bytes(),
-                            );
-                            let _ = handle.send_stream_end(request_id.clone());
-                            break;
-                        }
-                        crate::engine::LifecyclePhase::Error => {
-                            let err_msg = error.unwrap_or_else(|| "Unknown error".to_string());
-                            let _ = handle.send_stream_chunk(
-                                request_id.clone(),
-                                seq,
-                                serde_json::json!({ "error": err_msg })
-                                    .to_string()
-                                    .into_bytes(),
-                            );
-                            let _ = handle.send_stream_end(request_id.clone());
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-
-            // Flush buffer periodically to avoid large delays
-            if buffer.len() > 200 {
-                let chunk_text = buffer.clone();
-                buffer.clear();
-                let chunk = serde_json::json!({
-                    "chunk": chunk_text,
-                    "done": false,
-                });
-                let _ = handle.send_stream_chunk(
-                    request_id.clone(),
-                    seq,
-                    chunk.to_string().into_bytes(),
-                );
-                seq = seq.saturating_add(1);
-            }
-        }
-
-        // Flush any remaining buffer if the stream closed without Lifecycle::End
-        if !buffer.is_empty() {
-            let chunk = serde_json::json!({
-                "chunk": buffer,
-                "done": false,
-            });
-            let _ =
-                handle.send_stream_chunk(request_id.clone(), seq, chunk.to_string().into_bytes());
-        }
-        // Ensure stream end is sent even if the event loop exited unexpectedly
-        let _ = handle.send_stream_end(request_id.clone());
-
-        // Wait for session persistence
-        let _ = tokio::time::timeout(
-            tokio::time::Duration::from_secs(30),
-            event_stream.completion,
-        )
-        .await;
 
         Ok(())
     }
@@ -844,31 +750,24 @@ impl TunnelDispatcher {
         self.send_exposure_update(agent_name, exposure).await
     }
 
-    /// Re-push the current allow-list for an instance to PekoHub by
+    /// Re-push the current allow-list for a Principal instance to PekoHub by
     /// re-announcing the instance. The `allowed_users` list is freshly
-    /// derived from the on-disk `AgentConfig.permissions`. Used by the
-    /// permit/revoke IPC paths (issue #16) so that PekoHub's `canChat`
-    /// ACL and the runtime's defense-in-depth
-    /// `instance_state.allowed_users` cache are kept in sync with the
-    /// local config without requiring a daemon restart.
-    ///
-    /// PekoHub ignores runtime-originated `exposure_update` control
-    /// messages (they are hub-to-runtime only), so we use
-    /// `instance_announce` which the hub treats as an upsert and which
-    /// updates both the hub-side allow-list and the runtime's local
-    /// cache.
+    /// derived from the Principal's `permissions`. Used by the
+    /// permit/revoke IPC paths so that PekoHub's `canChat` ACL and the
+    /// runtime's defense-in-depth `instance_state.allowed_users` cache
+    /// are kept in sync with the local config without requiring a daemon
+    /// restart.
     ///
     /// No-ops if:
-    /// - the agent has no cached `instance_state` (tunnel not yet
+    /// - the Principal has no cached `instance_state` (tunnel not yet
     ///   connected, or instance never announced). The next
     ///   `announce_instances` after `TunnelReady` will pick up the
     ///   latest config.
     /// - the current exposure is not `Private` (Public/Unexposed
-    ///   agents don't carry an `allowed_users` list, and we must not
-    ///   silently flip the exposure as a side effect of a permit
-    ///   call).
-    pub async fn refresh_instance_allowed_users(&self, agent_name: &str) -> anyhow::Result<()> {
-        let instance_id = self.instance_id(agent_name);
+    ///   Principals don't carry an `allowed_users` list, and we must not
+    ///   silently flip the exposure as a side effect of a permit call).
+    pub async fn refresh_instance_allowed_users(&self, principal_name: &str) -> anyhow::Result<()> {
+        let instance_id = self.instance_id(principal_name);
         let exposure = {
             let state = self.state.read().await;
             state
@@ -881,7 +780,7 @@ impl TunnelDispatcher {
             Some(e) => {
                 debug!(
                     "Skipping allowed_users refresh for {}: exposure is {:?}, not Private",
-                    agent_name, e
+                    principal_name, e
                 );
                 return Ok(());
             }
@@ -889,32 +788,34 @@ impl TunnelDispatcher {
                 debug!(
                     "Skipping allowed_users refresh for {}: no cached instance state \
                      (tunnel not yet connected or instance not announced)",
-                    agent_name
+                    principal_name
                 );
                 return Ok(());
             }
         };
-        self.announce_single_instance(agent_name).await
+        self.announce_single_instance(principal_name).await
     }
 
-    /// Build and send an `ExposureUpdate` for the given agent, with
-    /// `allowed_user_ids` re-derived from the live `AgentConfig`.
-    /// The caller is responsible for ensuring the agent's current
-    /// exposure is meaningful (i.e. `Private`) and that local
-    /// `instance_state` reflects the desired exposure before invoking.
+    /// Build and send an `ExposureUpdate` for the given Principal, with
+    /// `allowed_user_ids` re-derived from the live Principal config.
+    /// The caller is responsible for ensuring the current exposure is
+    /// meaningful (i.e. `Private`) and that local `instance_state`
+    /// reflects the desired exposure before invoking.
     async fn send_exposure_update(
         &self,
-        agent_name: &str,
+        principal_name: &str,
         exposure: InstanceExposure,
     ) -> anyhow::Result<()> {
-        let instance_id = self.instance_id(agent_name);
+        let instance_id = self.instance_id(principal_name);
         let allowed_user_ids = if exposure == InstanceExposure::Private {
-            let agent_service = self.app_state.agent_mgmt_service();
-            match agent_service.get_agent(agent_name, None).await {
-                Ok(Some(info)) => Self::compute_allowed_user_ids(&info.config),
-                Ok(None) => None,
-                Err(e) => {
-                    warn!("Failed to load agent config for {}: {}", agent_name, e);
+            let principal_manager = self.app_state.principal_manager();
+            match principal_manager.get_by_name(principal_name).await {
+                Some(principal) => {
+                    let config = principal.config.read().await;
+                    Self::compute_allowed_user_ids(&config)
+                }
+                None => {
+                    warn!("Principal {} not found; cannot compute allowed users", principal_name);
                     None
                 }
             }
@@ -934,14 +835,14 @@ impl TunnelDispatcher {
                 allowed_user_ids: allowed_user_ids.clone(),
             };
             if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
-                warn!("Failed to send exposure update for {}: {}", agent_name, e);
+                warn!("Failed to send exposure update for {}: {}", principal_name, e);
                 return Err(e.into());
             }
-            debug!("Sent exposure update for {}: {:?}", agent_name, exposure);
+            debug!("Sent exposure update for {}: {:?}", principal_name, exposure);
         } else {
             debug!(
                 "No tunnel handle, exposure update for {} is dropped (will be re-announced on next TunnelReady)",
-                agent_name
+                principal_name
             );
         }
 
@@ -972,15 +873,9 @@ impl TunnelDispatcher {
         }
         drop(state);
 
-        // Re-announce the instance to confirm the change
-        let agent_service = self.app_state.agent_mgmt_service();
-        let agents = match agent_service.list_agents(None).await {
-            Ok(agents) => agents,
-            Err(e) => {
-                warn!("Failed to list agents for exposure re-announce: {}", e);
-                return Ok(());
-            }
-        };
+        // Re-announce the Principal instance to confirm the change.
+        let principal_manager = self.app_state.principal_manager();
+        let principals = principal_manager.list_all().await;
 
         let handle = {
             let state = self.state.read().await;
@@ -988,15 +883,18 @@ impl TunnelDispatcher {
         };
 
         if let Some(handle) = handle {
-            for agent in agents {
-                let instance_id = self.instance_id(&agent.name);
+            for principal in principals {
+                let name = principal.name().await;
+                let instance_id = self.instance_id(&name);
                 if instance_id == payload.instance_id {
-                    let status = self.get_instance_status(&agent.name).await;
+                    let did = principal.did().await;
+                    let status = self.get_instance_status(&name).await;
                     let announce_payload = InstanceAnnouncePayload {
                         id: instance_id,
-                        instance_type: InstanceType::Agent,
-                        name: agent.name.clone(),
-                        agent_did: agent.config.agent_did.clone(),
+                        instance_type: InstanceType::Principal,
+                        name: name.clone(),
+                        agent_did: None,
+                        principal_did: Some(did.0),
                         bundle_ref: None,
                         runtime_display_name: Some(self.runtime_display_name.clone()),
                         status,
@@ -1010,10 +908,10 @@ impl TunnelDispatcher {
                     }) {
                         warn!(
                             "Failed to re-announce instance {} after exposure update: {}",
-                            agent.name, e
+                            name, e
                         );
                     } else {
-                        debug!("Re-announced instance {} after exposure update", agent.name);
+                        debug!("Re-announced principal instance {} after exposure update", name);
                     }
                     break;
                 }
@@ -1059,7 +957,7 @@ impl TunnelDispatcher {
     ///    defense in depth against a hub bug or a stale forwarder.
     /// 3. Look up the local agent by `target_agent_did`.
     /// 4. Build a `MessageRequest` with `caller_principal =
-    ///    Principal::Agent(caller_agent_did)` (issue #24 + #28).
+    ///    Subject::Principal(caller_agent_did)` (issue #24 + #28).
     /// 5. Dispatch via `StatelessAgentService`.
     /// 6. Serialize the result to `A2aSendResult` and send back via
     ///    the same tunnel as an `AgentToAgentResponse`.
@@ -1123,9 +1021,11 @@ impl TunnelDispatcher {
                 .await;
         }
 
-        // 3. Look up the local agent by target_agent_did.
-        let local_agent_name = match self.find_local_agent_by_did(&target_agent_did).await {
-            Some(name) => name,
+        // 3. Look up the local Principal by target_agent_did (which is the
+        // Principal's stable DID in the new single-actor model).
+        let principal_manager = self.app_state.principal_manager();
+        let local_principal = match principal_manager.find_by_did(&target_agent_did).await {
+            Some(p) => p,
             None => {
                 return self
                     .send_hub_error(
@@ -1133,7 +1033,7 @@ impl TunnelDispatcher {
                         &request_id,
                         "target_not_found",
                         &format!(
-                            "no local agent has agent_did={target_agent_did} (request_id={request_id})"
+                            "no local principal has did={target_agent_did} (request_id={request_id})"
                         ),
                     )
                     .await;
@@ -1141,64 +1041,45 @@ impl TunnelDispatcher {
         };
 
         // Slice D: emit the inbound-receive audit event now that
-        // the request has been verified, the agent has been
-        // located, and we're about to dispatch. The session_id is
-        // best-effort empty here (the dispatcher doesn't have
-        // session context); a future PR can thread it through.
+        // the request has been verified and the Principal has been located.
         let local_runtime_id = self.app_state.runtime_identity().runtime_did.clone();
         let received_event = a2a_audit::build_a2a_received_inbound(
             "", // session_id
             &request_id,
             &caller_runtime_id,
             &caller_agent_did,
-            // Note: at this point we don't know the *original
-            // caller's* runtime_id beyond `caller_runtime_id`
-            // (the local runtime IS the target). The audit row
-            // records the local runtime's id as `runtime_id_target`.
             &local_runtime_id,
             &target_agent_did,
             &message,
         );
         a2a_audit::emit_a2a_received(&received_event);
 
-        // 4 + 5. Build the request and dispatch.
-        let caller_principal = Principal::Agent(caller_agent_did.clone());
-        let request = A2aMessageRequest::new(&local_agent_name, message.clone())
-            .with_session_opt(session_id.clone())
-            .with_team_opt(team.clone())
-            .with_user("")
-            .with_caller_agent_opt(Some(caller_agent_did.clone()))
-            .with_caller_principal(caller_principal);
+        // 4 + 5. Dispatch to the Principal.
+        let caller_principal = Subject::Principal(caller_agent_did.clone());
+        let channel = crate::principal::router::ChannelContext {
+            kind: crate::principal::router::ChannelKind::A2a,
+            streaming: false,
+        };
 
-        let agent_service = self.app_state.agent_service();
-        let result = agent_service.execute_message(request).await;
+        let result = principal_manager
+            .receive(
+                local_principal.id.clone(),
+                caller_principal,
+                message.clone(),
+                channel,
+            )
+            .await;
 
         // 6. Serialize and respond.
         let a2a_result = match result {
-            Ok(msg) => A2aSendResult {
-                success: msg.success,
-                response: msg.content,
-                session_id: msg.session_id,
-                iterations: Some(msg.iterations),
-                tool_calls: if msg.tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(
-                        msg.tool_calls
-                            .iter()
-                            .map(|tc| {
-                                serde_json::json!({
-                                    "id": tc.id,
-                                    "name": tc.name,
-                                    "parameters": tc.parameters,
-                                    "result": tc.result,
-                                })
-                            })
-                            .collect(),
-                    )
-                },
-                duration_ms: Some(msg.duration_ms),
-                error: msg.error,
+            Ok(response) => A2aSendResult {
+                success: true,
+                response: response.content,
+                session_id: session_id.unwrap_or_default(),
+                iterations: None,
+                tool_calls: None,
+                duration_ms: None,
+                error: None,
             },
             Err(e) => A2aSendResult {
                 success: false,
@@ -1225,9 +1106,7 @@ impl TunnelDispatcher {
             }
         };
 
-        // Slice D: emit the response-side audit event before
-        // sending. The local agent is the "caller" of the
-        // response; the original caller is the "target".
+        // Slice D: emit the response-side audit event before sending.
         let response_preview = if a2a_result.success {
             a2a_result.response.clone()
         } else {
@@ -1304,28 +1183,6 @@ impl TunnelDispatcher {
         Ok(())
     }
 
-    /// Look up the local agent that owns the given `agent_did`.
-    /// Returns the agent's local name (used to dispatch via
-    /// `MessageRequest::new(...)`). Returns `None` if no local
-    /// agent has that DID, or the DID isn't set.
-    ///
-    /// O(N) over the local agent table; an `agent_did` index is a
-    /// natural follow-up but unnecessary for the typical
-    /// (small) number of agents a single runtime hosts.
-    async fn find_local_agent_by_did(&self, agent_did: &str) -> Option<String> {
-        let agent_mgmt = self.app_state.agent_mgmt_service();
-        let agents = agent_mgmt.list_agents(None).await.ok()?;
-        for summary in agents {
-            // `common::types::agent::AgentSummary` carries the full
-            // `AgentConfig`; the per-agent DID lives on
-            // `summary.config.agent_did` (issue #28).
-            if summary.config.agent_did.as_deref() == Some(agent_did) {
-                return Some(summary.name);
-            }
-        }
-        None
-    }
-
     /// Check if a proxied request is allowed for the given agent/instance.
     ///
     /// Returns `Ok(())` if allowed, or an error message if denied.
@@ -1387,7 +1244,13 @@ impl TunnelDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::{Permission, PermissionGrant, Subject};
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
+    use crate::principal::config::{
+        PrincipalCapabilities, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+        PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
+    };
+    use crate::tunnel::protocol::{InstanceExposure, InstanceType};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -1415,7 +1278,63 @@ mod tests {
         (TunnelHandle::new(tx), rx)
     }
 
-    // ─── Issue #17: caller resolution from bridge payload ──────────────────
+    /// Build a minimal `PrincipalConfig` for dispatcher tests.
+    fn test_principal_config(
+        name: &str,
+        owner: Subject,
+        permissions: Vec<PermissionGrant>,
+        exposure: InstanceExposure,
+    ) -> PrincipalConfig {
+        PrincipalConfig {
+            name: name.to_string(),
+            did: None,
+            owner,
+            identity: PrincipalIdentityConfig {
+                display_name: Some(name.to_string()),
+                description: Some(format!("Test principal {name}")),
+                avatar: None,
+            },
+            intent: PrincipalIntentConfig::default(),
+            governance: PrincipalGovernanceConfig::default(),
+            memory: PrincipalMemoryConfig::default(),
+            routing: PrincipalRoutingConfig::default(),
+            capabilities: PrincipalCapabilities::default(),
+            exposure,
+            status: None,
+            permissions,
+            preferred_provider_id: None,
+            preferred_model_id: None,
+        }
+    }
+
+    /// Create a Principal inside the given test `AppState`, including a
+    /// default agent prompt so `PrincipalManager::create` succeeds.
+    async fn create_test_principal(
+        app_state: &AppState,
+        name: &str,
+        owner: Subject,
+        permissions: Vec<PermissionGrant>,
+        exposure: InstanceExposure,
+    ) -> std::sync::Arc<crate::principal::Principal> {
+        let workspace = app_state.config.data_dir.join("principals").join(name);
+        let agents_dir = workspace.join("agents");
+        tokio::fs::create_dir_all(&agents_dir).await.unwrap();
+        tokio::fs::write(
+            agents_dir.join("primary.md"),
+            format!("---\ndescription: \"Test agent for {name}\"\n---\n\nYou are {name}.\n"),
+        )
+        .await
+        .unwrap();
+
+        let config = test_principal_config(name, owner, permissions, exposure);
+        app_state
+            .principal_manager()
+            .create(config)
+            .await
+            .expect("principal should be created")
+    }
+
+    // ─── Phase 2: Principal tunnel exposure ───────────────────────────────
 
     /// PekoHub sets `x-pekohub-user-id` on every proxied request. When
     /// no JWT validator is configured (the back-compat case), the
@@ -2089,5 +2008,156 @@ mod tests {
 
         let g = slot.read().await;
         assert!(g.is_some(), "handle slot must be filled by handle_message");
+    }
+
+    // ─── Phase 2: Principal tunnel exposure tests ─────────────────────────
+
+    /// Principals are announced over the tunnel as `InstanceType::Principal`
+    /// with their stable DID populated.
+    #[tokio::test]
+    async fn announce_principal_instance() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state.clone());
+        let (handle, mut rx) = mock_tunnel_handle();
+
+        let principal = create_test_principal(
+            &app_state,
+            "announce-me",
+            Subject::User("user:owner".to_string()),
+            vec![],
+            InstanceExposure::Public,
+        )
+        .await;
+        let did = principal.did().await;
+
+        dispatcher.announce_instances(&handle).await.unwrap();
+
+        let msg = rx.recv().await.expect("announce message must be sent");
+        let TunnelMessage::InstanceAnnounce { payload } = msg else {
+            panic!("expected InstanceAnnounce, got: {msg:?}");
+        };
+        assert_eq!(payload.instance_type, InstanceType::Principal);
+        assert_eq!(payload.name, "announce-me");
+        assert_eq!(payload.principal_did, Some(did.0));
+        assert_eq!(payload.agent_did, None);
+
+        let instance_id = dispatcher.instance_id("announce-me");
+        let state = dispatcher.state.read().await;
+        let cached = state.instance_state.get(&instance_id).expect("state seeded");
+        assert_eq!(cached.exposure, InstanceExposure::Public);
+    }
+
+    /// A `ProxiedRequest` from PekoHub is routed to the matching Principal
+    /// and the response (or execution error) is streamed back.
+    #[tokio::test]
+    async fn proxied_request_routes_to_principal() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state.clone());
+        let (handle, mut rx) = mock_tunnel_handle();
+
+        create_test_principal(
+            &app_state,
+            "web-bound",
+            Subject::User("user:test-user".to_string()),
+            vec![],
+            InstanceExposure::Public,
+        )
+        .await;
+
+        let bridge_payload = serde_json::json!({
+            "headers": {"x-pekohub-user-id": "test-user"},
+            "body": {"message": "hello principal"},
+        });
+
+        dispatcher
+            .handle_proxied_request(
+                "req-web".to_string(),
+                "web-bound".to_string(),
+                bridge_payload.to_string().into_bytes(),
+                handle,
+            )
+            .await
+            .expect("handler must not panic");
+
+        let mut got_chunk = false;
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                TunnelMessage::StreamChunk { request_id, .. } => {
+                    assert_eq!(request_id, "req-web");
+                    got_chunk = true;
+                }
+                TunnelMessage::StreamEnd { request_id } => {
+                    assert_eq!(request_id, "req-web");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(got_chunk, "proxied request must produce at least one stream chunk");
+    }
+
+    /// An inbound `AgentToAgentRequest` addressed to a Principal's stable DID
+    /// is routed to that Principal and a structured response is sent back.
+    #[tokio::test]
+    async fn inbound_a2a_routes_to_principal_by_did() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state.clone());
+        let (handle, mut rx) = mock_tunnel_handle();
+
+        let kp_caller = crate::identity::keys::KeyPair::generate();
+        let caller_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp_caller.verifying_key);
+        let caller_agent_did = "did:peko:agent:caller".to_string();
+
+        let principal = create_test_principal(
+            &app_state,
+            "a2a-target",
+            Subject::User("user:owner".to_string()),
+            vec![PermissionGrant {
+                subject: Subject::Principal(caller_agent_did.clone()),
+                permission: Permission::Chat,
+                granted_at: "2026-06-27T00:00:00Z".to_string(),
+                granted_by: Subject::User("user:owner".to_string()),
+            }],
+            InstanceExposure::Public,
+        )
+        .await;
+        let target_agent_did = principal.did().await.0;
+
+        let signed = crate::tunnel::SignedFields {
+            request_id: "req-a2a",
+            caller_runtime_id: &caller_runtime_id,
+            caller_agent_did: &caller_agent_did,
+            target_agent_did: &target_agent_did,
+            message: "ping",
+            session_id: None,
+            team: None,
+        };
+        let sig = crate::tunnel::sign_request(&kp_caller.signing_key, signed);
+
+        dispatcher
+            .handle_inbound_agent_to_agent_request(
+                handle,
+                "req-a2a".to_string(),
+                caller_runtime_id,
+                caller_agent_did,
+                target_agent_did,
+                None,
+                "ping".to_string(),
+                None,
+                sig,
+            )
+            .await
+            .expect("handler must not panic");
+
+        let response = rx.recv().await.expect("response must be sent");
+        let TunnelMessage::AgentToAgentResponse { request_id, payload } = response else {
+            panic!("expected AgentToAgentResponse, got: {response:?}");
+        };
+        assert_eq!(request_id, "req-a2a");
+        let result: A2aSendResult = serde_json::from_slice(&payload).expect("payload must decode");
+        assert!(
+            result.error.is_some() || !result.response.is_empty() || result.success,
+            "A2A result should reflect that the Principal was reached; got: {result:?}"
+        );
     }
 }

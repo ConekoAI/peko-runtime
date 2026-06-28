@@ -139,6 +139,7 @@ impl SystemPromptBuilder {
         // Complex section placeholders
         values.insert(Placeholder::Tools, self.build_tools_section());
         values.insert(Placeholder::Skills, self.build_skills_section());
+        values.insert(Placeholder::Agents, self.build_agents_section());
         values.insert(Placeholder::Runtime, self.build_runtime_section());
         values.insert(Placeholder::Sandbox, self.build_sandbox_section());
         values.insert(
@@ -301,6 +302,46 @@ Constraints: never read more than one skill up front; only read after selecting.
 <available_skills>
 {skills_text}
 </available_skills>"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        String::new()
+    }
+
+    /// Build the Agents section via Extension Core hooks
+    ///
+    /// Uses the `ExtensionCore` hook system to inject agent content from registered
+    /// agent extensions. This replaces any legacy agent catalog approach.
+    fn build_agents_section(&self) -> String {
+        use crate::extensions::framework::{HookInput, HookPoint};
+
+        if let Some(ref core) = self.extension_core {
+            if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+                let hook_point = HookPoint::PromptSystemSection {
+                    section: "agents".to_string(),
+                    priority: 100,
+                };
+                let core = core.clone();
+
+                let result = tokio::task::block_in_place(move || {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        core.invoke_hook_text(hook_point, HookInput::Unit).await
+                    })
+                });
+
+                match result {
+                    Some(agents_text) if !agents_text.is_empty() => {
+                        return format!(
+                            r"## Available Agents
+When delegating, choose the most appropriate agent from the list below. Each agent has a name you can pass to the `Agent` tool as `subagent_type`.
+
+<available_agents>
+{agents_text}
+</available_agents>"
                         );
                     }
                     _ => {}

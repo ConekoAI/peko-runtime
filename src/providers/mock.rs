@@ -9,6 +9,7 @@ use super::{
 };
 use anyhow::Result;
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -31,9 +32,9 @@ pub enum MockResponse {
 pub struct MockAdapter {
     model: String,
     /// Queue of responses for `chat_with_tools`
-    chat_responses: Arc<Mutex<Vec<MockResponse>>>,
+    chat_responses: Arc<Mutex<VecDeque<MockResponse>>>,
     /// Queue of responses for `stream_with_tools`
-    stream_responses: Arc<Mutex<Vec<MockResponse>>>,
+    stream_responses: Arc<Mutex<VecDeque<MockResponse>>>,
     /// Record of all requests made (for assertions)
     recorded_requests: Arc<Mutex<Vec<RecordedRequest>>>,
 }
@@ -60,8 +61,8 @@ impl MockAdapter {
     pub fn new() -> Self {
         Self {
             model: String::new(),
-            chat_responses: Arc::new(Mutex::new(Vec::new())),
-            stream_responses: Arc::new(Mutex::new(Vec::new())),
+            chat_responses: Arc::new(Mutex::new(VecDeque::new())),
+            stream_responses: Arc::new(Mutex::new(VecDeque::new())),
             recorded_requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -69,14 +70,14 @@ impl MockAdapter {
     /// Queue a response for `chat_with_tools`
     pub fn queue_chat_response(&self, response: MockResponse) {
         if let Ok(mut queue) = self.chat_responses.lock() {
-            queue.push(response);
+            queue.push_back(response);
         }
     }
 
     /// Queue a response for `stream_with_tools`
     pub fn queue_stream_response(&self, response: MockResponse) {
         if let Ok(mut queue) = self.stream_responses.lock() {
-            queue.push(response);
+            queue.push_back(response);
         }
     }
 
@@ -197,12 +198,12 @@ impl MockAdapter {
 
     /// Pop the next chat response
     fn pop_chat_response(&self) -> Option<MockResponse> {
-        self.chat_responses.lock().ok()?.pop()
+        self.chat_responses.lock().ok()?.pop_front()
     }
 
     /// Pop the next stream response
     fn pop_stream_response(&self) -> Option<MockResponse> {
-        self.stream_responses.lock().ok()?.pop()
+        self.stream_responses.lock().ok()?.pop_front()
     }
 
     /// Record a request

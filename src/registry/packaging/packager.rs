@@ -573,16 +573,14 @@ impl Packager {
     }
 }
 
-/// Convenience function to export an agent
-pub async fn export_agent(
-    config: AgentConfig,
-    identity: Identity,
-    memory_path: Option<std::path::PathBuf>,
-    options: ExportOptions,
-) -> anyhow::Result<std::path::PathBuf> {
-    let packager = Packager::new(config, identity, memory_path);
-    packager.export(options).await
-}
+/// Convenience function to export an agent was removed: callers should
+/// construct `Packager` directly and call `.export(options)`. The free
+/// fn was a one-liner around that path with no live callers post-Principal-
+/// migration (the legacy agent export path goes through
+/// `agent_service::export_agent` → `Packager::new(...).export(...)`).
+///
+/// `Packager` itself and its `export` method are retained because the
+/// legacy `peko agent export` CLI path still consumes them.
 
 #[cfg(test)]
 mod tests {

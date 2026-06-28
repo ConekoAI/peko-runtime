@@ -65,7 +65,7 @@ impl TeamService {
         name: &str,
         description: Option<&str>,
         host_runtime_id: Option<&str>,
-        owner: Option<&crate::auth::principal::Principal>,
+        owner: Option<&crate::auth::Subject>,
     ) -> Result<TeamCreationResult> {
         // Validate team name
         if let Err(e) = validate_team_name(name) {
@@ -90,7 +90,7 @@ impl TeamService {
             host_runtime_id: host_runtime_id.unwrap_or("").to_string(),
             owner: owner
                 .cloned()
-                .unwrap_or_else(|| crate::auth::principal::Principal::User(String::new())),
+                .unwrap_or_else(|| crate::auth::Subject::User(String::new())),
             permissions: Vec::new(),
         };
 
@@ -492,8 +492,8 @@ impl TeamService {
     pub async fn transfer_team_owner(
         &self,
         name: &str,
-        new_owner: crate::auth::principal::Principal,
-        caller: &crate::auth::principal::Principal,
+        new_owner: crate::auth::Subject,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let team_dir = self.resolver.team_dir(name);
         if !team_dir.exists() {
@@ -519,7 +519,7 @@ impl TeamService {
         &self,
         name: &str,
         grant: crate::auth::ownership::PermissionGrant,
-        caller: &crate::auth::principal::Principal,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let team_dir = self.resolver.team_dir(name);
         if !team_dir.exists() {
@@ -549,9 +549,9 @@ impl TeamService {
     pub async fn revoke_team_permission(
         &self,
         name: &str,
-        subject: &crate::auth::principal::Principal,
+        subject: &crate::auth::Subject,
         permission: &crate::auth::ownership::Permission,
-        caller: &crate::auth::principal::Principal,
+        caller: &crate::auth::Subject,
     ) -> Result<()> {
         let team_dir = self.resolver.team_dir(name);
         if !team_dir.exists() {
@@ -1240,7 +1240,7 @@ async fn load_team_metadata(team_dir: &PathBuf, team_name: &str) -> TeamMetadata
         description: None,
         created_at,
         host_runtime_id: String::new(),
-        owner: crate::auth::principal::Principal::User(String::new()),
+        owner: crate::auth::Subject::User(String::new()),
         permissions: Vec::new(),
     }
 }

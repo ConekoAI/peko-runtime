@@ -22,7 +22,7 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::extensions::framework::async_exec::executor::{
     get_or_create_registry_for_agent, AsyncExecutor, AsyncResultDeliveryMode,
     AsyncResultQueueManager, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
@@ -95,6 +95,11 @@ pub struct SubagentExecutor {
     agent_config: Option<AgentConfig>,
     /// Session manager for accessing sessions
     session_manager: Arc<RwLock<SessionManager>>,
+    /// Optional principal workspace. When set, spawned subagents are scoped to
+    /// this workspace so their own `Agent` tool resolves nested subagents from
+    /// `<workspace>/agents/<name>/AGENT.md`. Propagated down the spawn tree so
+    /// delegation works at every depth, not just the first level.
+    principal_workspace: Option<std::path::PathBuf>,
 }
 
 impl SubagentExecutor {
@@ -121,6 +126,7 @@ impl SubagentExecutor {
             provider: None,
             agent_config: None,
             session_manager,
+            principal_workspace: None,
         }
     }
 
@@ -143,6 +149,7 @@ impl SubagentExecutor {
             provider: None,
             agent_config: None,
             session_manager,
+            principal_workspace: None,
         }
     }
 
@@ -165,6 +172,7 @@ impl SubagentExecutor {
             provider: None,
             agent_config: None,
             session_manager,
+            principal_workspace: None,
         }
     }
 
@@ -179,6 +187,14 @@ impl SubagentExecutor {
     #[must_use]
     pub fn with_agent_config(mut self, config: AgentConfig) -> Self {
         self.agent_config = Some(config);
+        self
+    }
+
+    /// Scope spawned subagents to a Principal workspace so nested delegation
+    /// resolves subagents from `<workspace>/agents/<name>/AGENT.md`.
+    #[must_use]
+    pub fn with_principal_workspace(mut self, workspace: std::path::PathBuf) -> Self {
+        self.principal_workspace = Some(workspace);
         self
     }
 
@@ -248,7 +264,7 @@ impl SubagentExecutor {
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
         // Create spawn session
-        let peer = Principal::Agent(format!("spawn_{}", uuid::Uuid::new_v4().simple()));
+        let peer = Subject::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()));
         let spawn_resolved = {
             let mut manager = self.session_manager.write().await;
             manager
@@ -297,6 +313,7 @@ impl SubagentExecutor {
         let agent_name = self.agent_name.clone();
         let provider_clone = self.provider.clone();
         let agent_config_clone = self.agent_config.clone();
+        let principal_workspace_clone = self.principal_workspace.clone();
         let session_manager_clone = self.session_manager.clone();
         let session_manager_for_cleanup = self.session_manager.clone();
         let extension_core_clone = crate::extensions::framework::core::global_core();
@@ -345,6 +362,7 @@ impl SubagentExecutor {
                         session_manager_clone,
                         registry_for_task,
                         extension_core_clone,
+                        principal_workspace_clone,
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -682,6 +700,7 @@ async fn execute_subagent_task(
     session_manager: Arc<RwLock<SessionManager>>,
     async_registry: SharedAsyncTaskRegistry,
     extension_core: Option<Arc<crate::extensions::framework::ExtensionCore>>,
+    principal_workspace: Option<std::path::PathBuf>,
 ) -> Result<String> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -711,8 +730,8 @@ async fn execute_subagent_task(
                 let peer_type = parts.get(peer_idx + 1).unwrap_or(&"agent");
                 let peer_id = parts.get(peer_idx + 2).unwrap_or(&"spawn");
                 let peer = match *peer_type {
-                    "agent" => Principal::Agent(peer_id.to_string()),
-                    _ => Principal::User(peer_id.to_string()),
+                    "agent" => Subject::Principal(peer_id.to_string()),
+                    _ => Subject::User(peer_id.to_string()),
                 };
 
                 let manager = session_manager.read().await;
@@ -743,24 +762,28 @@ async fn execute_subagent_task(
     });
 
     // Create a shared executor with the parent's registry so nested spawn depth
-    // is tracked correctly across the whole tree.
-    let shared_executor = Arc::new(
-        SubagentExecutor::with_registry(
-            async_registry,
-            Arc::clone(&session_manager),
-            agent_name,
-            5,
-        )
-        .with_provider(provider.clone())
-        .with_agent_config(config.clone()),
-    );
+    // is tracked correctly across the whole tree. Propagate the principal
+    // workspace so grandchildren (and deeper) resolve their subagents from the
+    // same workspace.
+    let mut shared_executor_builder = SubagentExecutor::with_registry(
+        async_registry,
+        Arc::clone(&session_manager),
+        agent_name,
+        5,
+    )
+    .with_provider(provider.clone())
+    .with_agent_config(config.clone());
+    if let Some(ref ws) = principal_workspace {
+        shared_executor_builder = shared_executor_builder.with_principal_workspace(ws.clone());
+    }
+    let shared_executor = Arc::new(shared_executor_builder);
 
     // Create a subagent that shares the parent's session manager and executor registry.
     // Pass the parent's provider through so the child can run its own LLM calls —
     // `new_with_shared_executor` no longer re-resolves a provider (the v1
     // `[provider]` fallback was removed in PR #44) and would otherwise fail
     // `execute_with_session` with "No provider configured".
-    let subagent = crate::agents::Agent::new_with_shared_executor(
+    let mut subagent = crate::agents::Agent::new_with_shared_executor(
         config,
         session_manager,
         shared_executor,
@@ -768,6 +791,12 @@ async fn execute_subagent_task(
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
+
+    // Scope the child's own `Agent` tool to the principal workspace so it can
+    // resolve and delegate to nested subagents (depth 2+).
+    if let Some(ws) = principal_workspace {
+        subagent = subagent.with_principal_workspace(ws);
+    }
 
     // If we have an extension core, ensure the subagent uses it.
     // (new_with_shared_executor already pulls from global_core(), so this
@@ -916,7 +945,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_cleanup_delete_policy() {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
         use crate::common::PathResolver;
 
         // Create a session manager with path resolver
@@ -928,7 +957,7 @@ mod tests {
         let manager = Arc::new(RwLock::new(manager));
 
         // Create a parent session
-        let parent_peer = Principal::User("parent".to_string());
+        let parent_peer = Subject::User("parent".to_string());
         {
             let mut mgr = manager.write().await;
             let parent_handle = mgr
@@ -948,7 +977,7 @@ mod tests {
             let handle = mgr
                 .create_spawn_overlay(
                     "test_agent",
-                    &Principal::Agent("child".to_string()),
+                    &Subject::Principal("child".to_string()),
                     "test task",
                     false,
                     "agent:test_agent:peer:user:parent",

@@ -1,6 +1,6 @@
 //! Caller context — resolved identity for every incoming request
 
-use super::principal::Principal;
+use super::Subject;
 use super::types::ApiKeyScope;
 
 /// Resolved identity of the caller
@@ -103,17 +103,17 @@ impl CallerContext {
         }
     }
 
-    /// Get the caller's `Principal` projection (ADR-039).
+    /// Get the caller's `Subject` projection (ADR-039).
     ///
     /// For all three `Identity` variants the legacy `subject_id()`
-    /// shape maps to a `Principal::User` value, preserving the wire
+    /// shape maps to a `Subject::User` value, preserving the wire
     /// format that has always been used for owner/grant comparisons.
     #[must_use]
-    pub fn subject(&self) -> Principal {
+    pub fn subject(&self) -> Subject {
         match &self.identity {
-            Identity::Local => Principal::User("local".to_string()),
-            Identity::User(sub) => Principal::User(format!("user:{sub}")),
-            Identity::ApiKey(key_id) => Principal::User(format!("apikey:{key_id}")),
+            Identity::Local => Subject::User("local".to_string()),
+            Identity::User(sub) => Subject::User(format!("user:{sub}")),
+            Identity::ApiKey(key_id) => Subject::User(format!("apikey:{key_id}")),
         }
     }
 

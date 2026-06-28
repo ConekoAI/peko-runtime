@@ -36,13 +36,6 @@ pub enum SystemCommands {
         #[arg(long)]
         all: bool,
     },
-
-    /// Update Peko to latest version
-    Update {
-        /// Check for updates only
-        #[arg(long)]
-        check: bool,
-    },
 }
 
 /// Helper: connect to daemon and send a request/response packet
@@ -213,14 +206,6 @@ pub async fn handle_system(
                 }
                 _ => anyhow::bail!("Unexpected response"),
             }
-        }
-        SystemCommands::Update { check } => {
-            if check {
-                println!("🔍 Checking for updates...");
-            } else {
-                println!("⬆️  Updating Peko...");
-            }
-            Ok(())
         }
     }
 }

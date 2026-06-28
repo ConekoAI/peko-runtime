@@ -375,7 +375,7 @@ impl MetadataController {
     /// - Metadata is removed from the index
     /// - JSONL file is deleted
     /// - Cache is updated
-    /// - Principal routing is cleaned up (if this session is the active one for its peer)
+    /// - Subject routing is cleaned up (if this session is the active one for its peer)
     ///
     /// Returns Ok(true) if session existed and was deleted, Ok(false) if not found.
     pub async fn delete_session(&mut self, session_id: &str) -> Result<bool> {
@@ -396,12 +396,12 @@ impl MetadataController {
         // and clear peer routing if this session is still the active one.
         // This prevents "Session not found" errors when sending without --new flag.
         if let Some(e) = entry {
-            use crate::auth::principal::Principal;
+            use crate::auth::Subject;
             use crate::session::key::derive_base_session_key;
 
             let peer = match e.peer_type.as_deref() {
-                Some("user") => e.peer_id.as_ref().map(|id| Principal::User(id.clone())),
-                Some("agent") => e.peer_id.as_ref().map(|id| Principal::Agent(id.clone())),
+                Some("user") => e.peer_id.as_ref().map(|id| Subject::User(id.clone())),
+                Some("agent") => e.peer_id.as_ref().map(|id| Subject::Principal(id.clone())),
                 _ => None,
             };
 

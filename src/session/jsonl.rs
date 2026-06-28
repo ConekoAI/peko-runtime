@@ -8,6 +8,7 @@
 use crate::common::types::message::LlmMessage;
 use crate::session::events::SessionEvent;
 use crate::session::lock::FileLock;
+use crate::session::safe_filename_component;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -510,24 +511,26 @@ impl SessionStorage {
 
     /// Get session file path
     fn session_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir.join(format!("{session_id}.jsonl"))
+        self.storage_dir.join(format!("{}.jsonl", safe_filename_component(session_id)))
     }
 
     /// Get session tmp file path
     fn session_tmp_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir.join(format!("{session_id}.tmp"))
+        self.storage_dir.join(format!("{}.tmp", safe_filename_component(session_id)))
     }
 
     /// Get index file path for a session
     #[must_use]
     pub fn index_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir.join(format!("{session_id}.index.json"))
+        self.storage_dir
+            .join(format!("{}.index.json", safe_filename_component(session_id)))
     }
 
     /// Get context cache file path for a session (ADR-022)
     #[must_use]
     pub fn context_cache_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir.join(format!("{session_id}.context.cache"))
+        self.storage_dir
+            .join(format!("{}.context.cache", safe_filename_component(session_id)))
     }
 
     // ============================================================

@@ -20,7 +20,7 @@
 //! Tests early-return if unset so `cargo test` still passes on a bare checkout.
 
 mod common;
-use common::{run_with_timeout, write_v3_mock_agent, DaemonGuard, PekoCli};
+use common::{create_mock_principal, run_with_timeout, DaemonGuard, PekoCli};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -72,28 +72,10 @@ fn assert_send_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus
     );
 }
 
-/// Run `peko session list <agent> --json` and return the parsed JSON.
-fn list_sessions_json(cli: &PekoCli, agent: &str) -> serde_json::Value {
-    let (out, _, _) = run_with_timeout(
-        || {
-            let mut c = cli.cmd();
-            c.stdout(Stdio::piped()).stderr(Stdio::piped());
-            c
-        },
-        &["session", "list", agent, "--json"],
-        Duration::from_secs(10),
-    )
-    .expect("run peko session list");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "peko session list exited non-zero (status={:?})\nstdout: {stdout}\nstderr: {stderr}",
-        out.status
-    );
-    serde_json::from_str(&stdout).expect("parse session list JSON")
-}
+// Note: session-routing tests (`--session`, `--new`, steering) were removed
+// with the "Principal as the single actor" migration — `peko send` no longer
+// exposes those flags (a Principal has a single per-peer session, resolved by
+// the daemon). Principal session listing is covered in `cli_session.rs`.
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -107,7 +89,7 @@ fn send_default_response_streams_to_stdout() {
         return;
     };
     let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "test-agent", &mock_url).expect("write mock agent");
+    create_mock_principal(&cli, "test-agent", &mock_url);
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -136,7 +118,7 @@ fn send_keyword_echo_returns_marker() {
         return;
     };
     let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "echo-agent", &mock_url).expect("write mock agent");
+    create_mock_principal(&cli, "echo-agent", &mock_url);
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -169,7 +151,7 @@ fn send_file_option_reads_message_from_file() {
         return;
     };
     let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "file-agent", &mock_url).expect("write mock agent");
+    create_mock_principal(&cli, "file-agent", &mock_url);
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -195,125 +177,6 @@ fn send_file_option_reads_message_from_file() {
 }
 
 // ---------------------------------------------------------------------------
-// --new flag (creates new session)
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn send_new_flag_creates_additional_session() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "new-agent", &mock_url).expect("write mock agent");
-
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // First send — creates session 1
-    let (stdout1, stderr1, status1) =
-        send(&cli, &["send", "new-agent", "First message", "--no-stream"]);
-    assert_send_ok(&stdout1, &stderr1, &status1);
-
-    let sessions_after_first = list_sessions_json(&cli, "new-agent");
-    let count_after_first = sessions_after_first
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    assert_eq!(count_after_first, 1, "expected 1 session after first send");
-
-    // Second send with --new — creates session 2
-    let (stdout2, stderr2, status2) = send(
-        &cli,
-        &[
-            "send",
-            "new-agent",
-            "Second message",
-            "--new",
-            "--no-stream",
-        ],
-    );
-    assert_send_ok(&stdout2, &stderr2, &status2);
-
-    let sessions_after_second = list_sessions_json(&cli, "new-agent");
-    let count_after_second = sessions_after_second
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    assert_eq!(
-        count_after_second, 2,
-        "expected 2 sessions after --new send, got {count_after_second}\n\
-         stdout: {stdout2}\nstderr: {stderr2}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// --session option (resumes specific session)
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn send_session_option_resumes_existing_session() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "sess-agent", &mock_url).expect("write mock agent");
-
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // First send — creates a session
-    let (stdout1, stderr1, status1) = send(
-        &cli,
-        &["send", "sess-agent", "First message", "--no-stream"],
-    );
-    assert_send_ok(&stdout1, &stderr1, &status1);
-
-    let sessions = list_sessions_json(&cli, "sess-agent");
-    let sess_array = sessions
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .expect("sessions array");
-    assert_eq!(sess_array.len(), 1, "expected 1 session");
-    let session_id = sess_array[0]
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .expect("session_id string")
-        .to_string();
-
-    // Second send targeting the same session — should not create a new one
-    let (stdout2, stderr2, status2) = send(
-        &cli,
-        &[
-            "send",
-            "sess-agent",
-            "Respond with: SESSION_RESUME_OK",
-            "--session",
-            &session_id,
-            "--no-stream",
-        ],
-    );
-    assert_send_ok(&stdout2, &stderr2, &status2);
-    // The mock LLM may or may not echo the keyword depending on prompt matching.
-    // The core behavior we verify is that the session count stays at 1 (resumed,
-    // not new session created).
-
-    let sessions_after = list_sessions_json(&cli, "sess-agent");
-    let count_after = sessions_after
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    assert_eq!(
-        count_after, 1,
-        "expected still 1 session after --session resume, got {count_after}"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Error cases
 // ---------------------------------------------------------------------------
 
@@ -326,7 +189,7 @@ fn send_nonexistent_agent_fails() {
     };
     let cli = PekoCli::new();
     // Do NOT write an agent config for "no-such-agent"
-    write_v3_mock_agent(cli.home(), "other-agent", &mock_url).expect("write mock agent");
+    create_mock_principal(&cli, "other-agent", &mock_url);
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -349,7 +212,7 @@ fn send_no_message_and_no_file_stdin_fails() {
         return;
     };
     let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "no-msg-agent", &mock_url).expect("write mock agent");
+    create_mock_principal(&cli, "no-msg-agent", &mock_url);
 
     let _daemon = DaemonGuard::spawn(&cli);
 
@@ -362,194 +225,5 @@ fn send_no_message_and_no_file_stdin_fails() {
             || combined.to_lowercase().contains("message")
             || combined.to_lowercase().contains("error"),
         "expected error mentioning 'required' or 'message' for missing input, got:\nstdout: {stdout}\nstderr: {stderr}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Session steering (`--session X` routes to `SessionSteer` IPC)
-// ---------------------------------------------------------------------------
-//
-// These tests pin down the routing behavior added for the
-// per-session `SessionInbox` (issue: generalize
-// `AsyncTaskCompletionQueue` to carry user steering messages).
-//
-// The CLI surfaces two routing paths through `peko send`:
-//   - `--session X` → `SessionSteer` (steering path; may auto-trigger
-//     a new run if the session is idle, or queue to an in-flight loop
-//     if it's running).
-//   - no session flag → `Execute` (default; the daemon resolves the
-//     active session or creates a new one).
-//   - `--new` → `Execute` with `new_session = true` (always fresh).
-
-/// Helper: extract the session_id from `peko session list <agent> --json`.
-fn first_session_id(cli: &PekoCli, agent: &str) -> Option<String> {
-    let sessions = list_sessions_json(cli, agent);
-    sessions
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|s| s.get("session_id"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn send_with_session_routes_through_session_steer() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "steer-agent", &mock_url).expect("write mock agent");
-
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // First send — creates a session.
-    let (out1, err1, status1) = send(&cli, &["send", "steer-agent", "Hello", "--no-stream"]);
-    assert_send_ok(&out1, &err1, &status1);
-    let session_id = first_session_id(&cli, "steer-agent").expect("session_id");
-
-    // Second send with --session → must route through SessionSteer.
-    // The session count must NOT change (no new session is created —
-    // the message is steered into the existing session).
-    let (out2, err2, status2) = send(
-        &cli,
-        &[
-            "send",
-            "steer-agent",
-            "Respond with: STEER_OK",
-            "--session",
-            &session_id,
-            "--no-stream",
-        ],
-    );
-    assert_send_ok(&out2, &err2, &status2);
-    assert!(
-        out2.contains("STEER_OK") || out2.contains("SUCCESS"),
-        "expected the LLM to see the steered message and respond\n\
-         stdout: {out2}\nstderr: {err2}"
-    );
-
-    // Session count is still 1 — steering never creates a new session.
-    let after = list_sessions_json(&cli, "steer-agent");
-    let count = after
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    assert_eq!(
-        count, 1,
-        "expected exactly 1 session after steering, got {count}\n\
-         stdout: {out2}\nstderr: {err2}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn send_default_path_creates_new_session() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "default-agent", &mock_url).expect("write mock agent");
-
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // No `--session`, no `--new` — daemon resolves the active session
-    // or creates one. After one send, exactly 1 session exists.
-    let (out, err, status) = send(&cli, &["send", "default-agent", "Hello", "--no-stream"]);
-    assert_send_ok(&out, &err, &status);
-
-    let after = list_sessions_json(&cli, "default-agent");
-    let count = after
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    assert_eq!(
-        count, 1,
-        "expected 1 session after default-path send, got {count}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn multiple_session_steers_collapse_into_same_session() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "multi-agent", &mock_url).expect("write mock agent");
-
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // First send creates the session.
-    let (out1, err1, status1) = send(&cli, &["send", "multi-agent", "Hello", "--no-stream"]);
-    assert_send_ok(&out1, &err1, &status1);
-    let session_id = first_session_id(&cli, "multi-agent").expect("session_id");
-
-    // Three more sends via --session — must all collapse into the
-    // same session (count stays at 1).
-    for i in 0..3 {
-        let msg = format!("Respond with: STEER_{i}_OK");
-        let (out, err, status) = send(
-            &cli,
-            &[
-                "send",
-                "multi-agent",
-                &msg,
-                "--session",
-                &session_id,
-                "--no-stream",
-            ],
-        );
-        assert_send_ok(&out, &err, &status);
-    }
-
-    let after = list_sessions_json(&cli, "multi-agent");
-    let count = after
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    assert_eq!(
-        count, 1,
-        "expected all 4 sends (1 default + 3 steered) to collapse into one session, got {count}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-fn session_steer_to_unknown_session_fails() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "unknown-agent", &mock_url).expect("write mock agent");
-
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let (out, err, status) = send(
-        &cli,
-        &[
-            "send",
-            "unknown-agent",
-            "Hello",
-            "--session",
-            "sess_does_not_exist_xyz",
-            "--no-stream",
-        ],
-    );
-    assert_send_err(&out, &err, &status);
-    let combined = format!("{out}{err}");
-    assert!(
-        combined.to_lowercase().contains("not found")
-            || combined.to_lowercase().contains("session"),
-        "expected an error mentioning 'session' for unknown session id\n\
-         stdout: {out}\nstderr: {err}"
     );
 }

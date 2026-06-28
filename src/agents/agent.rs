@@ -2,7 +2,7 @@
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::common::paths::PathResolver;
 use crate::common::types::agent_legacy::AgentState;
 use crate::extensions::builtin::BuiltinToolAdapter;
@@ -10,6 +10,7 @@ use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::ChannelType;
+use crate::session::InboxRegistry;
 use crate::tools::builtin::messaging::agent::DynamicSessionKeyProvider;
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
@@ -46,6 +47,17 @@ pub struct Agent {
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Extension core for skill loading and hook integration
     extension_core: Arc<ExtensionCore>,
+    /// Optional external inbox registry. When set, the agentic loop drains
+    /// this registry's session inbox instead of creating a per-call one,
+    /// so external callers can push steering messages into a running agent.
+    inbox_registry: Option<Arc<InboxRegistry>>,
+    /// Optional principal workspace. When set, `init_builtins_async` builds the
+    /// `Agent` tool's `AgentService` with `for_principal(workspace)` so the
+    /// supervisor resolves subagents from `<workspace>/agents/<name>/AGENT.md`
+    /// instead of the global `<home>/agents/<name>/config.toml`. Without this,
+    /// `init_builtins_async` (run lazily at execution time) would clobber any
+    /// principal-scoped `Agent` tool registered on the core beforehand.
+    principal_workspace: Option<std::path::PathBuf>,
 }
 
 impl Clone for Agent {
@@ -65,6 +77,8 @@ impl Clone for Agent {
             session_key_provider: Arc::clone(&self.session_key_provider),
             current_session_id: Arc::clone(&self.current_session_id),
             extension_core: Arc::clone(&self.extension_core),
+            inbox_registry: self.inbox_registry.clone(),
+            principal_workspace: self.principal_workspace.clone(),
         }
     }
 }
@@ -107,8 +121,17 @@ impl Agent {
         );
         tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
-        // Add Agent tool with executor and session provider
-        let agent_service = crate::common::services::AgentService::new(PathResolver::new());
+        // Add Agent tool with executor and session provider. When this agent
+        // runs as a Principal supervisor, build the service scoped to the
+        // principal workspace so subagents resolve from
+        // `<workspace>/agents/<name>/AGENT.md`. Otherwise fall back to the
+        // global agent registry.
+        let agent_service = match self.principal_workspace {
+            Some(ref workspace) => {
+                crate::common::services::AgentService::for_principal(workspace)
+            }
+            None => crate::common::services::AgentService::new(PathResolver::new()),
+        };
         tools.push(Arc::new(
             AgentTool::with_agent_service_and_session_provider(
                 self.subagent_executor.clone(),
@@ -152,7 +175,7 @@ impl Agent {
         // Add a2a_send tool for agent-to-agent messaging (ADR-023)
         if let Some(agent_service) = self.extension_core.services().agent_service() {
             // Issue #28: prefer `agent_did` for the wire-side
-            // `Principal::Agent`; fall back to the name for legacy agents
+            // `Subject::Principal`; fall back to the name for legacy agents
             // that predate the per-agent persistent keypair.
             //
             // Issue #29 (Slice B+C): also pull the cross-runtime a2a
@@ -191,14 +214,27 @@ impl Agent {
         if !whitelist.is_empty() {
             let before_count = tools.len();
             tools.retain(|tool| {
+                let tool_name = tool.name();
                 whitelist.iter().any(|pattern: &String| {
-                    if pattern.eq_ignore_ascii_case(tool.name()) {
+                    // Bare-name match (e.g. "Agent").
+                    if pattern.eq_ignore_ascii_case(tool_name) {
                         return true;
+                    }
+                    // Canonical-form match (e.g. "builtin:tool:Agent"). Whitelists
+                    // are commonly stored in canonical form, while per-agent tools
+                    // register under their bare name — match the suffix so the
+                    // canonical entry still enables the tool. Without this, spawned
+                    // subagents (whose config uses `ExtensionConfig::default()`,
+                    // canonical-only) lose the Agent/session/Task tools and cannot
+                    // delegate to nested subagents.
+                    if let Some(bare) = pattern.strip_prefix("builtin:tool:") {
+                        if bare.eq_ignore_ascii_case(tool_name) {
+                            return true;
+                        }
                     }
                     if pattern.ends_with('*') {
                         let prefix = &pattern[..pattern.len() - 1];
-                        return tool
-                            .name()
+                        return tool_name
                             .to_lowercase()
                             .starts_with(&prefix.to_lowercase());
                     }
@@ -341,6 +377,32 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
     ) -> Result<Self> {
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+        Self::new_with_session_manager_resolver_and_core(
+            config,
+            session_manager,
+            llm_resolver,
+            extension_core,
+            None,
+        )
+        .await
+    }
+
+    /// Create a new agent with an existing session manager, optional resolver,
+    /// a custom `ExtensionCore`, and an optional external `InboxRegistry`.
+    ///
+    /// This is the internal constructor used by the supervisor agent so its
+    /// principal-scoped tools and adapted `Agent` tool live on a dedicated
+    /// core rather than the global one. When `inbox_registry` is supplied,
+    /// the agentic loop drains that registry's session inbox, allowing the
+    /// Principal boundary to queue steering messages into a running supervisor.
+    pub async fn new_with_session_manager_resolver_and_core(
+        config: AgentConfig,
+        session_manager: Arc<TokioRwLock<SessionManager>>,
+        llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+        extension_core: Arc<ExtensionCore>,
+        inbox_registry: Option<Arc<InboxRegistry>>,
+    ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
 
         // Load or create identity
@@ -352,23 +414,11 @@ impl Agent {
         //
         // Soft-fail: the agent_dir may not exist yet for a freshly-
         // spawned subagent whose in-memory config hasn't been written.
-        // `backfill_agent_did` itself returns
-        // "Failed to persist agent_did ... (in-memory identity will
-        // still work this session)" so the next production-path
-        // `Agent::new()` call will retry the write. Hard-failing here
-        // would break unit tests that build agents against a tempdir
-        // without pre-creating `agents/<name>/`.
         let config_path = PathResolver::new().agent_config(&config.name);
         if let Err(e) = Self::backfill_agent_did(&config_path, &config, &identity.did).await {
             warn!("Could not backfill agent_did into config: {}", e);
         }
 
-        // Issue #28 review #4: surface DID rotation loudly. If the
-        // resolved identity's DID differs from the one the config
-        // claimed (a "broken state" recovery in load_or_create_identity
-        // — identity file was missing, backup restore, etc.), log both
-        // old and new so the operator can correlate audit / grant
-        // breakage to the event.
         if let Some(ref old_did) = config.agent_did {
             if old_did != &identity.did {
                 warn!(
@@ -406,9 +456,6 @@ impl Agent {
             config.name
         )));
 
-        // Global ExtensionCore is always initialized in main.rs before command dispatch.
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
-
         let agent = Self {
             config,
             state: Arc::new(RwLock::new(AgentState::Idle)),
@@ -420,6 +467,8 @@ impl Agent {
             session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
+            inbox_registry,
+            principal_workspace: None,
         };
 
         info!(
@@ -428,6 +477,27 @@ impl Agent {
         );
 
         Ok(agent)
+    }
+
+    /// Scope this agent's `Agent` tool to a Principal workspace.
+    ///
+    /// When set, `init_builtins_async` builds the `Agent` tool's `AgentService`
+    /// with `for_principal(workspace)`, so the supervisor resolves subagents
+    /// from `<workspace>/agents/<name>/AGENT.md`. This must be set before the
+    /// agent executes: `init_builtins_async` runs lazily inside
+    /// `prepare_execution`, so a principal-scoped `Agent` tool registered on the
+    /// core beforehand would otherwise be clobbered by the global-scoped one.
+    pub fn with_principal_workspace(mut self, workspace: std::path::PathBuf) -> Self {
+        // Also scope the subagent executor so depth-1 children (and, via the
+        // executor's own propagation, deeper descendants) resolve their
+        // subagents from this workspace. The executor is built before the
+        // workspace is known, so rebuild it here (SubagentExecutor is Clone).
+        let executor = (*self.subagent_executor)
+            .clone()
+            .with_principal_workspace(workspace.clone());
+        self.subagent_executor = Arc::new(executor);
+        self.principal_workspace = Some(workspace);
+        self
     }
 
     /// Create a new agent with an existing session manager and a shared subagent executor.
@@ -506,6 +576,8 @@ impl Agent {
             session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
+            inbox_registry: None,
+            principal_workspace: None,
         };
 
         info!(
@@ -1009,7 +1081,11 @@ impl Agent {
         //    daemon-global `InboxRegistry` will replace this in a
         //    follow-up once the per-call path is rewired to read from
         //    `AppState::inbox_registry` directly.
-        let async_inbox_registry = Arc::new(crate::session::InboxRegistry::new());
+        let async_inbox_registry = if let Some(ref reg) = self.inbox_registry {
+            Arc::clone(reg)
+        } else {
+            Arc::new(crate::session::InboxRegistry::new())
+        };
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
         let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
@@ -1170,7 +1246,7 @@ impl Agent {
     /// and `handle` for all session operations.
     pub async fn resolve_session(
         &self,
-        peer: &Principal,
+        peer: &Subject,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
@@ -1184,7 +1260,7 @@ impl Agent {
     ///
     /// Convenience method for CLI and simple channels.
     pub async fn resolve_default_session(&self) -> Result<ResolvedSession> {
-        let peer = Principal::User("default".to_string());
+        let peer = Subject::User("default".to_string());
         self.resolve_session(&peer, ChannelType::Cli, "default")
             .await
     }
@@ -1198,7 +1274,7 @@ impl Agent {
     /// and the operations handle (`handle`).
     pub async fn spawn_session(
         &self,
-        peer: &Principal,
+        peer: &Subject,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
@@ -1220,7 +1296,7 @@ impl Agent {
     // Session management commands (CLI integration)
 
     /// Create a new session (/new command)
-    pub async fn session_new(&self, peer: &Principal) -> Result<String> {
+    pub async fn session_new(&self, peer: &Subject) -> Result<String> {
         use crate::session::manager::SessionCreateOptions;
         let mut manager = self.session_manager.write().await;
         let options = SessionCreateOptions::new().with_trigger("user");
@@ -1233,7 +1309,7 @@ impl Agent {
     }
 
     /// Branch current session (/branch command)
-    pub async fn session_branch(&self, peer: &Principal, label: Option<String>) -> Result<String> {
+    pub async fn session_branch(&self, peer: &Subject, label: Option<String>) -> Result<String> {
         let mut manager = self.session_manager.write().await;
         let session_id = manager.branch_session(peer, label).await?;
         info!("Branched session {} from peer {:?}", session_id, peer);
@@ -1241,7 +1317,7 @@ impl Agent {
     }
 
     /// Switch to a different session (/switch command)
-    pub async fn session_switch(&self, peer: &Principal, session_id: &str) -> Result<()> {
+    pub async fn session_switch(&self, peer: &Subject, session_id: &str) -> Result<()> {
         let mut manager = self.session_manager.write().await;
         manager.switch_session(peer, session_id).await?;
         info!("Switched peer {:?} to session {}", peer, session_id);
@@ -1251,7 +1327,7 @@ impl Agent {
     /// List all sessions for a peer (/sessions command)
     pub async fn session_list(
         &self,
-        peer: &Principal,
+        peer: &Subject,
     ) -> Result<Vec<crate::session::SessionEntry>> {
         let mut manager = self.session_manager.write().await;
         let sessions = manager.list_sessions_for_peer(peer).await?;
@@ -1300,7 +1376,7 @@ impl Agent {
     /// Returns (false, _) if not a command (should be processed as normal message)
     pub async fn process_session_command(
         &self,
-        peer: &Principal,
+        peer: &Subject,
         command: &str,
     ) -> Result<(bool, String)> {
         let parts: Vec<&str> = command.split_whitespace().collect();
@@ -1453,6 +1529,8 @@ impl Agent {
             session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
             extension_core,
+            inbox_registry: None,
+            principal_workspace: None,
         })
     }
 
@@ -1736,7 +1814,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
         use crate::session::types::ChannelType;
 
@@ -1756,7 +1834,7 @@ mod tests {
         let agent = Agent::new(config).await.unwrap();
 
         // Session manager should be able to route to sessions
-        let peer = Principal::User("test_user".to_string());
+        let peer = Subject::User("test_user".to_string());
         let resolved = agent
             .resolve_session(&peer, ChannelType::Cli, "default")
             .await;
@@ -1769,7 +1847,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
         use crate::session::types::ChannelType;
 
@@ -1787,7 +1865,7 @@ mod tests {
         };
 
         let agent = Agent::new(config).await.unwrap();
-        let peer = Principal::User("alice".to_string());
+        let peer = Subject::User("alice".to_string());
 
         let resolved = agent
             .resolve_session(&peer, ChannelType::Cli, "default")
@@ -1801,7 +1879,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_tool_session() {
-        use crate::auth::principal::Principal;
+        use crate::auth::Subject;
         use crate::extensions::framework::core::ExtensionCore;
 
         // Force the encrypted-file identity fallback — see
@@ -1818,7 +1896,7 @@ mod tests {
         };
 
         let agent = Agent::new(config).await.unwrap();
-        let peer = Principal::User("bob".to_string());
+        let peer = Subject::User("bob".to_string());
 
         // Create a parent session first
         let parent_resolved = agent

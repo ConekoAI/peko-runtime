@@ -13,13 +13,6 @@ use crate::common::types::config::{
 /// Orchestration management commands
 #[derive(Subcommand)]
 pub enum OrchestrationCommands {
-    /// List registered event handlers
-    Handlers {
-        /// Filter by event type
-        #[arg(short, long)]
-        event_type: Option<String>,
-    },
-
     /// Watch a directory for changes
     Watch {
         /// Path to watch
@@ -116,27 +109,6 @@ pub enum OrchestrationCommands {
         port: u16,
     },
 
-    /// View recent events
-    Events {
-        /// Number of events to show
-        #[arg(short, long, default_value = "50")]
-        limit: usize,
-
-        /// Filter by event type
-        #[arg(short, long)]
-        event_type: Option<String>,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Replay an event by ID
-    Replay {
-        /// Event ID to replay
-        event_id: String,
-    },
-
     /// Show orchestration status
     Status {
         /// Output as JSON
@@ -155,21 +127,6 @@ pub async fn run(
     config_path: &PathBuf,
 ) -> anyhow::Result<()> {
     match cmd {
-        OrchestrationCommands::Handlers { event_type } => {
-            info!("Listing event handlers");
-
-            if let Some(et) = event_type {
-                println!("Handlers for event type: {et}");
-            } else {
-                println!("Registered event handlers:");
-            }
-
-            // TODO: Query EventRouter for registered handlers
-            println!("  (Handler introspection not yet implemented)");
-
-            Ok(())
-        }
-
         OrchestrationCommands::Watch {
             path,
             agent,
@@ -457,39 +414,6 @@ pub async fn run(
             println!("\nConfigure external services to POST to:");
             println!("  http://your-host:{port}/webhook/ingress");
             println!("\nAdd sources with: peko orchestration ingress-add");
-
-            Ok(())
-        }
-
-        OrchestrationCommands::Events {
-            limit,
-            event_type,
-            json,
-        } => {
-            info!("Showing recent events (limit: {})", limit);
-
-            if json {
-                println!("{{");
-                println!("  \"events\": [],");
-                println!("  \"note\": \"Event history requires active daemon\"");
-                println!("}}");
-            } else {
-                println!("Recent events:");
-                if let Some(et) = event_type {
-                    println!("  (filtered by type: {et})");
-                }
-                println!("  (Event history requires active daemon connection)");
-            }
-
-            Ok(())
-        }
-
-        OrchestrationCommands::Replay { event_id } => {
-            info!("Replaying event: {}", event_id);
-
-            // TODO: Query event history and replay
-            println!("Replaying event: {event_id}");
-            println!("  (Event replay requires active daemon)");
 
             Ok(())
         }

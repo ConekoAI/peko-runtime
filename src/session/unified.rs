@@ -16,7 +16,7 @@
 //! `SessionManager`**. `Session` is now an internal implementation detail.
 //! External code should use `SessionHandle` obtained from `SessionManager`.
 
-use crate::auth::principal::Principal;
+use crate::auth::Subject;
 use crate::common::types::message::ContentBlock;
 use crate::common::types::message::LlmMessage;
 use crate::engine::ToolCall;
@@ -52,7 +52,7 @@ pub struct Session {
     /// Session key for peer-based lookup
     pub session_key: String,
     /// The peer this session belongs to
-    pub peer: Principal,
+    pub peer: Subject,
     /// Storage backend for JSONL files
     storage: SessionStorage,
     /// Last message ID (for chaining)
@@ -85,7 +85,7 @@ impl Session {
         session_id: String,
         agent_name: String,
         session_key: String,
-        peer: Principal,
+        peer: Subject,
         storage: SessionStorage,
     ) -> Self {
         Self {
@@ -124,12 +124,12 @@ impl Session {
     /// * `session_id` - The session ID
     /// * `sessions_dir` - The sessions directory
     /// * `peer` - Optional peer info. If provided, restores session identity from this peer.
-    ///            If None, defaults to `Principal::User("default`")
+    ///            If None, defaults to `Subject::User("default`")
     pub async fn open_by_id(
         agent_name: &str,
         session_id: &str,
         sessions_dir: impl AsRef<std::path::Path>,
-        peer: Option<&Principal>,
+        peer: Option<&Subject>,
     ) -> Result<Self> {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
@@ -143,7 +143,7 @@ impl Session {
         // a real, resolved caller.
         let peer = peer
             .cloned()
-            .unwrap_or_else(|| Principal::User(String::new()));
+            .unwrap_or_else(|| Subject::User(String::new()));
         let session_key = crate::session::key::derive_base_session_key(agent_name, &peer);
 
         Self::from_entries(
@@ -167,7 +167,7 @@ impl Session {
         session_id: String,
         agent_name: String,
         session_key: String,
-        peer: Principal,
+        peer: Subject,
         storage: SessionStorage,
         entries: Vec<NormalizedEntry>,
     ) -> Result<Self> {
@@ -886,11 +886,11 @@ mod tests {
 
     #[test]
     fn test_derive_session_key() {
-        let peer = Principal::User("alice".to_string());
+        let peer = Subject::User("alice".to_string());
         let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:user:alice");
 
-        let peer = Principal::Agent("helper".to_string());
+        let peer = Subject::Principal("helper".to_string());
         let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
     }
@@ -902,7 +902,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::auth::principal::Principal::User("default".to_string());
+        let peer = crate::auth::Subject::User("default".to_string());
         let session_id = "test-session-123";
 
         // Create a session
@@ -1013,7 +1013,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::auth::principal::Principal::User("default".to_string());
+        let peer = crate::auth::Subject::User("default".to_string());
         let session_id = "test-build-context";
 
         // Create session and add messages
@@ -1040,7 +1040,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = crate::auth::principal::Principal::User("default".to_string());
+        let peer = crate::auth::Subject::User("default".to_string());
         let session_id = "test-build-context-compact";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1091,7 +1091,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::principal::Principal::User("default".to_string());
+        let peer = crate::auth::Subject::User("default".to_string());
         let session_id = "test-fast-context";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1122,7 +1122,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::principal::Principal::User("default".to_string());
+        let peer = crate::auth::Subject::User("default".to_string());
         let session_id = "test-fast-context-invalidate";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1153,7 +1153,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::principal::Principal::User("default".to_string());
+        let peer = crate::auth::Subject::User("default".to_string());
         let session_id = "test-update-cache";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1203,7 +1203,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::principal::Principal::User("default".to_string());
+        let peer = crate::auth::Subject::User("default".to_string());
         let session_id = "test-full-compaction";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1294,7 +1294,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = crate::auth::principal::Principal::User("default".to_string());
+        let peer = crate::auth::Subject::User("default".to_string());
         let session_id = "test-append-event";
 
         let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());

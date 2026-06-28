@@ -2,7 +2,7 @@
 //!
 //! Two-file architecture:
 //! - sessions.json: Session metadata keyed by `session_id` (`HashMap`<String, `SessionEntry`>)
-//! - peers.json: Principal routing keyed by `peer_key` (`HashMap`<String, `PeerInfo`>)
+//! - peers.json: Subject routing keyed by `peer_key` (`HashMap`<String, `PeerInfo`>)
 //!
 //! This provides:
 //! - O(1) lookup by `session_id`
@@ -11,6 +11,7 @@
 //! - Clean separation of concerns
 
 use crate::session::lock::FileLock;
+use crate::session::safe_filename_component;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -45,9 +46,9 @@ pub struct SessionEntry {
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
     pub trigger: String,
-    /// Principal type ("user" or "agent") - for session identity restoration
+    /// Subject type ("user" or "agent") - for session identity restoration
     pub peer_type: Option<String>,
-    /// Principal ID - for session identity restoration
+    /// Subject ID - for session identity restoration
     pub peer_id: Option<String>,
 }
 
@@ -142,7 +143,7 @@ impl SessionEntry {
     }
 }
 
-/// Principal routing information
+/// Subject routing information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
     /// Currently active session for this peer
@@ -185,7 +186,7 @@ impl PeerInfo {
     }
 }
 
-/// Principal index structure
+/// Subject index structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PeerIndex {
     /// `peer_key` → peer info
@@ -387,7 +388,7 @@ impl SessionIndex {
     }
 
     // =================================================================================
-    // Principal Routing Operations (O(1) for critical path)
+    // Subject Routing Operations (O(1) for critical path)
     // =================================================================================
 
     /// Get active session for peer (O(1)) - CRITICAL for message routing
@@ -436,7 +437,7 @@ impl SessionIndex {
         let peer_info = peers
             .peers
             .get_mut(peer_key)
-            .ok_or_else(|| anyhow::anyhow!("Principal {peer_key} not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("Subject {peer_key} not found"))?;
 
         peer_info.switch_to(session_id)?;
         self.peers_modified = true;
@@ -642,7 +643,9 @@ impl SessionIndex {
             self.peers_modified = true;
 
             // Delete transcript file
-            let transcript_path = self.dir.join(format!("{session_id}.jsonl"));
+            let transcript_path = self
+                .dir
+                .join(format!("{}.jsonl", safe_filename_component(&session_id)));
             if transcript_path.exists() {
                 let _ = fs::remove_file(&transcript_path).await;
             }

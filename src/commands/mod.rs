@@ -3,7 +3,7 @@
 //! This module contains all CLI subcommands for Peko.
 //! Each submodule handles a specific command category:
 //!
-//! - `agent`: Agent lifecycle management
+//! - `principal`: Principal (top-level AI actor) lifecycle management
 //! - `ext`: Extension management (tools, skills, MCP servers)
 //! - `session`: Session management and introspection
 //! - `config`: Configuration management
@@ -11,7 +11,6 @@
 //! - `daemon`: Daemon mode for cron job execution
 //! - `cron`: Cron job scheduling
 
-pub mod agent;
 pub mod agent_bootstrap;
 pub mod auth;
 pub mod config;
@@ -20,6 +19,7 @@ pub mod cron;
 pub mod daemon;
 pub mod ext;
 pub mod orchestration;
+pub mod principal;
 pub mod provider;
 pub mod registry;
 pub mod runtime;
@@ -44,11 +44,10 @@ use std::path::PathBuf;
 #[command(propagate_version = true)]
 #[command(after_help = "Examples:
   peko daemon start                          # Start the daemon
-  peko team create myteam                    # Create a new team
-  peko agent create myteam/my-agent --provider kimi  # Create agent in team
-  peko agent export my-agent -o my-agent.agent   # Export agent to package
-  peko session list myteam/my-agent          # List sessions
-  peko send myteam/my-agent \"Hello\"         # Send message
+  peko principal create myprincipal          # Create a new Principal
+  peko principal export myprincipal -o myprincipal.principal  # Export Principal
+  peko send myprincipal \"Hello\"             # Send message to a Principal
+  peko principal agent list myprincipal      # List agents in a Principal
 ")]
 pub struct Cli {
     /// Configuration directory override
@@ -94,21 +93,21 @@ pub struct Cli {
 /// Top-level commands
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Agent management commands
+    /// Principal management commands (AI Principal container)
     #[command(subcommand)]
-    Agent(agent::AgentCommands),
+    Principal(principal::PrincipalCommands),
 
     /// Team management commands
     #[command(subcommand)]
     Team(team::TeamCommands),
 
-    /// Send a message to an agent (unified command)
+    /// Send a message to a Principal (unified command)
     ///
-    /// This is the primary way to interact with agents. Examples:
-    ///   peko send myagent "Hello"
-    ///   peko send myagent --file prompt.txt
-    ///   echo "Hello" | peko send myagent --stdin
-    ///   peko send myagent "Hello" --session `sess_xxx`
+    /// This is the primary way to interact with a Principal. Examples:
+    ///   peko send myprincipal "Hello"
+    ///   peko send myprincipal --file prompt.txt
+    ///   echo "Hello" | peko send myprincipal --stdin
+    ///   peko send myprincipal "Hello" --no-stream
     Send(send::SendArgs),
 
     /// Authentication and credential management
@@ -313,6 +312,42 @@ impl GlobalPaths {
     #[must_use]
     pub fn agent_dir(&self, agent: &str) -> PathBuf {
         self.resolver.agent_dir(agent)
+    }
+
+    /// Get the principals configuration directory
+    #[must_use]
+    pub fn principals_root_dir(&self) -> PathBuf {
+        self.resolver.principals_root_dir()
+    }
+
+    /// Get a specific principal's directory
+    #[must_use]
+    pub fn principal_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_dir(principal)
+    }
+
+    /// Get principal config file path
+    #[must_use]
+    pub fn principal_config(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_config(principal)
+    }
+
+    /// Get principal agent prompts directory
+    #[must_use]
+    pub fn principal_agents_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_agents_dir(principal)
+    }
+
+    /// Get principal memory directory
+    #[must_use]
+    pub fn principal_memory_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_memory_dir(principal)
+    }
+
+    /// Get principal sessions directory
+    #[must_use]
+    pub fn principal_sessions_dir(&self, principal: &str) -> PathBuf {
+        self.resolver.principal_sessions_dir(principal)
     }
 
     /// Get agent config file path

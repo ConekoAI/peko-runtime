@@ -5,6 +5,7 @@
 //! use the same durability strategy as `SessionStorage`.
 
 use crate::session::lock::FileLock;
+use crate::session::safe_filename_component;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -104,7 +105,8 @@ impl TodoStorage {
 
     /// Path to the sidecar file for a session.
     fn sidecar_path(&self, session_key: &str) -> PathBuf {
-        self.storage_dir.join(format!("{session_key}.todos.jsonl"))
+        self.storage_dir
+            .join(format!("{}.todos.jsonl", safe_filename_component(session_key)))
     }
 
     /// Load all todos for a session.

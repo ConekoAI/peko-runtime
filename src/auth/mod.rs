@@ -11,7 +11,6 @@ pub mod config;
 pub mod jwt;
 pub mod ownership;
 pub mod permissions;
-pub mod principal;
 pub mod rate_limit;
 pub mod types;
 
@@ -20,10 +19,15 @@ pub use caller::{AuthMethod, CallerContext, Identity};
 pub use config::{AuthConfig, RateLimitConfig};
 pub use jwt::{JwtValidator, ValidatedJwt};
 pub use ownership::{
-    agent_resource, check_permission as check_ownership_permission, team_resource, Permission,
-    PermissionDenied, PermissionGrant, Resource as OwnedResource,
+    check_permission as check_ownership_permission, Permission, PermissionDenied,
+    PermissionGrant, Resource as OwnedResource,
 };
 pub use permissions::{check_permission, Action, AuthError, Resource};
-pub use principal::{Principal, PrincipalParseError, SubjectKind};
 pub use rate_limit::{RateLimitEntry, RateLimiter};
 pub use types::{ApiKeyEntry, ApiKeyScope, PekohubConfig, PekohubCredential};
+
+// ADR-041: the actor enum formerly named `Principal` is now `Subject`.
+// The auth module re-exports it for ergonomic use within the codebase.
+pub use crate::subject::{
+    subject_from_string_with_default_user, Subject, SubjectKind, SubjectParseError,
+};

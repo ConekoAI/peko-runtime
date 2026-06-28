@@ -11,11 +11,6 @@ pub enum RuntimeCommands {
     Id,
     /// Show runtime metadata
     Info,
-    /// Update display name
-    Rename {
-        /// New display name
-        display_name: String,
-    },
     /// List known runtimes
     List,
     /// Register a runtime
@@ -84,28 +79,6 @@ pub async fn handle_runtime(
                         println!("Hostname: {}", metadata.host_info.hostname);
                     }
                     Ok(())
-                }
-                crate::ipc::ResponsePacket::Error { message, .. } => {
-                    anyhow::bail!("{}", message)
-                }
-                _ => anyhow::bail!("Unexpected response"),
-            }
-        }
-        RuntimeCommands::Rename { display_name } => {
-            let client = crate::ipc::DaemonClient::connect().await?;
-            let packet = crate::ipc::RequestPacket::RuntimeRename {
-                request_id: 1,
-                display_name,
-            };
-            let response = client.request_response(packet).await?;
-            match response {
-                crate::ipc::ResponsePacket::Done { success, error, .. } => {
-                    if success {
-                        println!("✅ Runtime renamed");
-                        Ok(())
-                    } else {
-                        anyhow::bail!("{}", error.unwrap_or_else(|| "Unknown error".to_string()))
-                    }
                 }
                 crate::ipc::ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("{}", message)

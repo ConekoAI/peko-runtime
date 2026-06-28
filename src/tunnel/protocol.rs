@@ -19,20 +19,22 @@ pub enum InstanceStatus {
 }
 
 /// Exposure level of an instance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceExposure {
     Private,
     Public,
+    #[default]
     Unexposed,
 }
 
 /// Type of an instance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceType {
     Agent,
     Team,
+    Principal,
 }
 
 /// Payload for `instance_announce` messages.
@@ -51,6 +53,11 @@ pub struct InstanceAnnouncePayload {
     /// treats those by falling back to the local `name` for one release.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_did: Option<String>,
+    /// Stable per-principal DID. Principals are the new single-actor
+    /// boundary, so this is the DID exposed to PekoHub and used for
+    /// inbound A2A routing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub principal_did: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundle_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,7 +229,7 @@ pub enum TunnelMessage {
     /// target's existing tunnel. The target verifies the caller's
     /// `caller_runtime_id` against the hub's allowlist (defense in
     /// depth) before attributing the receiving agent's session to
-    /// `Principal::Agent(caller_agent_did)` and dispatching.
+    /// `Subject::Principal(caller_agent_did)` and dispatching.
     ///
     /// Slice A only defines and round-trips the wire shape. Slice B
     /// adds the outbound signer (`PekoHubCredential::sign(...)` against
@@ -244,7 +251,7 @@ pub enum TunnelMessage {
         caller_runtime_id: String,
         /// The caller agent's stable DID (issue #28 form:
         /// `did:peko:agent:<keyhash>`). Projected to
-        /// `Principal::Agent(caller_agent_did)` on the target side
+        /// `Subject::Principal(caller_agent_did)` on the target side
         /// for session attribution, permission grant lookup, and the
         /// `AuditEvent.caller` field (issue #26).
         caller_agent_did: String,
@@ -446,6 +453,7 @@ mod tests {
                 name: "test-agent".to_string(),
                 agent_did: Some("did:peko:local:abc123".to_string()),
                 bundle_ref: Some("ref".to_string()),
+                principal_did: None,
                 runtime_display_name: Some("Test".to_string()),
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -491,6 +499,7 @@ mod tests {
                 name: "minimal".to_string(),
                 agent_did: None,
                 bundle_ref: None,
+                principal_did: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -524,6 +533,7 @@ mod tests {
                 name: "helper".to_string(),
                 agent_did: Some("did:peko:local:abc123".to_string()),
                 bundle_ref: None,
+                principal_did: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -563,6 +573,7 @@ mod tests {
                 name: "legacy-helper".to_string(),
                 agent_did: None,
                 bundle_ref: None,
+                principal_did: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,

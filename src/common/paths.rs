@@ -40,6 +40,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::session::safe_filename_component;
+
 /// Environment variable override for Peko's home directory.
 const PEKO_HOME_ENV: &str = "PEKO_HOME";
 
@@ -234,6 +236,70 @@ impl PathResolver {
         self.config_dir.join("mcp.toml")
     }
 
+    /// Get the principals configuration directory
+    ///
+    /// Path: `{config_dir}/principals`
+    #[must_use]
+    pub fn principals_root_dir(&self) -> PathBuf {
+        self.config_dir.join("principals")
+    }
+
+    /// Get a specific principal's configuration directory
+    ///
+    /// Path: `{config_dir}/principals/{principal}`
+    #[must_use]
+    pub fn principal_dir(&self, principal: &str) -> PathBuf {
+        self.principals_root_dir().join(principal)
+    }
+
+    /// Get the path to a principal's config file
+    ///
+    /// Path: `{config_dir}/principals/{principal}/principal.toml`
+    #[must_use]
+    pub fn principal_config(&self, principal: &str) -> PathBuf {
+        self.principal_dir(principal).join("principal.toml")
+    }
+
+    /// Get the path to a principal's agent prompts directory
+    ///
+    /// Path: `{config_dir}/principals/{principal}/agents`
+    #[must_use]
+    pub fn principal_agents_dir(&self, principal: &str) -> PathBuf {
+        self.principal_dir(principal).join("agents")
+    }
+
+    /// Get a principal's memory directory
+    ///
+    /// Path: `{data_dir}/principals/{principal}/memory`
+    #[must_use]
+    pub fn principal_memory_dir(&self, principal: &str) -> PathBuf {
+        self.data_dir.join("principals").join(principal).join("memory")
+    }
+
+    /// Get a principal's sessions directory
+    ///
+    /// Path: `{data_dir}/principals/{principal}/memory/sessions`
+    #[must_use]
+    pub fn principal_sessions_dir(&self, principal: &str) -> PathBuf {
+        self.principal_memory_dir(principal).join("sessions")
+    }
+
+    /// Get a principal's identity storage directory.
+    ///
+    /// Path: `{data_dir}/principals/{principal}/identity`
+    #[must_use]
+    pub fn principal_identity_dir(&self, principal: &str) -> PathBuf {
+        self.data_dir.join("principals").join(principal).join("identity")
+    }
+
+    /// Get the path to a principal's identity storage directory.
+    ///
+    /// Alias for [`Self::principal_identity_dir`].
+    #[must_use]
+    pub fn principal_identity_path(&self, principal: &str) -> PathBuf {
+        self.principal_identity_dir(principal)
+    }
+
     /// Get the runtime directory
     ///
     /// Path: `{config_dir}/runtime`
@@ -314,6 +380,14 @@ impl PathResolver {
         self.data_dir.join("skills")
     }
 
+    /// Get the Agents directory
+    ///
+    /// Path: `{data_dir}/agents`
+    #[must_use]
+    pub fn agents_dir(&self) -> PathBuf {
+        self.data_dir.join("agents")
+    }
+
     // ====================================================================================
     // Data Directory Paths (sessions, workspaces, runtime data)
     // ====================================================================================
@@ -369,7 +443,7 @@ impl PathResolver {
     #[must_use]
     pub fn agent_session_file(&self, agent: &str, team: Option<&str>, session_id: &str) -> PathBuf {
         self.agent_sessions_dir(agent, team)
-            .join(format!("{session_id}.jsonl"))
+            .join(format!("{}.jsonl", safe_filename_component(session_id)))
     }
 
     /// Get the workspaces root directory

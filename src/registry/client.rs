@@ -71,6 +71,7 @@ pub enum ResourceType {
     Agent,
     Team,
     Extension,
+    Principal,
 }
 
 impl ResourceType {
@@ -81,6 +82,7 @@ impl ResourceType {
             Self::Agent => "agents",
             Self::Team => "teams",
             Self::Extension => "extensions",
+            Self::Principal => "principals",
         }
     }
 }
@@ -435,6 +437,157 @@ impl RegistryClient {
         });
 
         Ok(manifest)
+    }
+
+    /// Push a `.principal` package to a registry.
+    ///
+    /// Stores the descriptor's layer blobs and the OCI config blob (the
+    /// signed `PrincipalManifest` TOML) in the local content-addressable
+    /// registry, builds and persists a `RegistryManifest` with kind
+    /// `"principal"`, then pushes it to the remote via [`Self::push`].
+    pub async fn push_principal<F>(
+        &self,
+        descriptor: &crate::registry::packaging::PrincipalRegistryDescriptor,
+        name: &str,
+        version: &str,
+        remote_ref: &str,
+        progress: F,
+    ) -> anyhow::Result<RegistryManifest>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        use crate::registry::packaging::types::compute_digest;
+
+        // Store every layer blob (including the config blob) locally.
+        for (digest, data) in &descriptor.layer_data {
+            if !self.registry.has_layer(digest) {
+                self.registry.store_layer(digest, data).await?;
+            }
+        }
+
+        let config_digest = compute_digest(&descriptor.manifest_toml);
+        let config_size = descriptor.manifest_toml.len() as u64;
+
+        // Build the registry manifest. The config blob is the signed
+        // PrincipalManifest TOML; layers carry the prefixed content.
+        let mut manifest = RegistryManifest::new(name, version)
+            .with_kind("principal")
+            .with_ref(remote_ref)
+            .with_config(
+                config_digest.clone(),
+                config_size,
+                Some(crate::registry::manifest::PEKO_CONFIG_MEDIA_TYPE),
+            );
+        for layer in &descriptor.layers {
+            manifest.add_layer(layer.clone());
+        }
+
+        // Digest the wire JSON to obtain the content-addressable image digest.
+        let json = manifest.to_json()?;
+        let digest = ImageDigest::from_bytes(json.as_bytes());
+        manifest.digest = digest.as_str().to_string();
+
+        self.store_manifest_locally(&manifest).await?;
+
+        self.push(&digest, remote_ref, progress).await
+    }
+
+    /// Pull a `.principal` package and reconstruct the archive at
+    /// `output_path`.
+    ///
+    /// Pulls the manifest and all layers via [`Self::pull`], reads the OCI
+    /// config blob (the `PrincipalManifest` TOML) to recover the per-prefix
+    /// layer digests, then rebuilds the `.principal` tar.gz from the local
+    /// layer blobs so it can be imported with `PrincipalUnpackager`.
+    pub async fn pull_principal<F>(
+        &self,
+        registry_ref: &str,
+        output_path: &std::path::Path,
+        progress: F,
+    ) -> anyhow::Result<RegistryManifest>
+    where
+        F: FnMut(ProgressEvent),
+    {
+        use crate::registry::packaging::principal_manifest::PrincipalManifest;
+
+        let manifest = self.pull(registry_ref, progress).await?;
+
+        // The config blob is the signed PrincipalManifest TOML.
+        let config_bytes = self.registry.get_layer(&manifest.config.digest).await?;
+        let config_str = std::str::from_utf8(&config_bytes)
+            .map_err(|e| anyhow::anyhow!("principal config blob is not utf-8: {e}"))?;
+        let principal_manifest = PrincipalManifest::from_toml(config_str)?;
+
+        let layers = principal_manifest
+            .layers
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("principal manifest has no layer digests"))?;
+
+        // Reconstruct the package file map by re-prefixing each layer's
+        // files with its package prefix.
+        let mut files: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+        let prefixed = [
+            ("config", layers.config.as_ref()),
+            ("identity", layers.identity.as_ref()),
+            ("agents", layers.agents.as_ref()),
+            ("memory", layers.memory.as_ref()),
+            ("sessions", layers.sessions.as_ref()),
+            ("extensions", layers.extensions.as_ref()),
+        ];
+        for (prefix, digest) in prefixed {
+            let Some(digest) = digest else { continue };
+            let blob = self.registry.get_layer(digest).await?;
+            Self::extract_layer_into(&blob, prefix, &mut files)?;
+        }
+
+        // The manifest.toml is the config blob verbatim.
+        files.insert("manifest.toml".to_string(), config_bytes.clone());
+
+        Self::write_principal_archive(&files, output_path)?;
+
+        Ok(manifest)
+    }
+
+    /// Extract a gzipped tar layer, re-prefixing each entry with `prefix/`.
+    fn extract_layer_into(
+        blob: &[u8],
+        prefix: &str,
+        files: &mut std::collections::HashMap<String, Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        use std::io::Read;
+        let decoder = flate2::read::GzDecoder::new(blob);
+        let mut archive = tar::Archive::new(decoder);
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_string_lossy().to_string();
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)?;
+            files.insert(format!("{prefix}/{path}"), content);
+        }
+        Ok(())
+    }
+
+    /// Write the reconstructed `.principal` archive to disk.
+    fn write_principal_archive(
+        files: &std::collections::HashMap<String, Vec<u8>>,
+        output_path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tar_gz = std::fs::File::create(output_path)?;
+        let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+        for (path, content) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(path)?;
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append(&header, content.as_slice())?;
+        }
+        tar.finish()?;
+        Ok(())
     }
 
     /// Resolve authentication for a registry source

@@ -27,6 +27,13 @@ pub mod cron_list;
 pub mod fs;
 pub mod messaging;
 pub mod session;
+pub mod agent_catalog;
+pub mod principal_memory;
+pub mod principal_sessions;
+
+pub use agent_catalog::AgentCatalogTool;
+pub use principal_memory::PrincipalMemoryTool;
+pub use principal_sessions::PrincipalSessionsTool;
 pub mod task_common;
 pub mod task_create;
 pub mod task_get;
@@ -43,7 +50,7 @@ pub use cron_create::CronCreateTool;
 pub use cron_delete::CronDeleteTool;
 pub use cron_list::CronListTool;
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
-pub use messaging::{AgentTool, ChannelType, MessageConfig, MessageResult, MessageTool};
+pub use messaging::{AgentTool, ChannelType, DynamicSessionKeyProvider, MessageConfig, MessageResult, MessageTool};
 pub use session::{
     SessionCache, SessionInfo, SessionIntrospector,
     SessionRegistry as SessionIntrospectionRegistry, SessionTool,

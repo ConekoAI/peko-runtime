@@ -30,6 +30,7 @@ use crate::extensions::framework::async_exec::executor::completion_queue::Sessio
 /// shared by the IPC server, the executor, and the loop. The
 /// semaphore has a single permit; while it is held, a run is in
 /// flight for the session.
+#[derive(Debug)]
 struct InboxEntry {
     inbox: Arc<SessionInbox>,
     run_permit: Arc<Semaphore>,
@@ -64,6 +65,7 @@ impl RunPermitGuard {
 /// a [`tokio::sync::Mutex`]. Lock hold times are short (just
 /// HashMap access); the semaphore acquisition that follows is not
 /// held under the map lock.
+#[derive(Debug)]
 pub struct InboxRegistry {
     inner: Arc<Mutex<HashMap<String, InboxEntry>>>,
 }

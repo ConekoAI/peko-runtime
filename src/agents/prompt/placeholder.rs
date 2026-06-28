@@ -11,6 +11,8 @@ pub enum Placeholder {
     Tools,
     /// Skills section - {{skills}}
     Skills,
+    /// Agents section - {{agents}}
+    Agents,
     /// Runtime info (agent, host, OS, model, channel) - {{runtime}}
     Runtime,
     /// Sandbox status - {{sandbox}}
@@ -37,6 +39,7 @@ impl Placeholder {
         match self {
             Self::Tools => "{{tools}}",
             Self::Skills => "{{skills}}",
+            Self::Agents => "{{agents}}",
             Self::Runtime => "{{runtime}}",
             Self::Sandbox => "{{sandbox}}",
             Self::ModelAliases => "{{model_aliases}}",
