@@ -9,8 +9,8 @@
 //! `canChat` ACL stayed stale until the daemon restarted. The fix
 //! (see `src/ipc/server.rs` `PrincipalGrantPermission` /
 //! `PrincipalRevokePermission` handlers, and
-//! `src/tunnel/dispatcher.rs::refresh_instance_allowed_users`) makes
-//! the IPC handler call the dispatcher's `refresh_instance_allowed_users`
+//! `src/tunnel/dispatcher.rs::refresh_instance_allowed_principals`) makes
+//! the IPC handler call the dispatcher's `refresh_instance_allowed_principals`
 //! after the local config write, which re-announces the instance with
 //! the freshly-derived `allowed_user_ids` to PekoHub. PekoHub treats
 //! `instance_announce` as an upsert, updating `allowedUsers` in its
@@ -42,7 +42,7 @@
 //! `peko principal permit <principal> <subject> <permission>` — the
 //! handler chain (`PrincipalGrantPermission` IPC →
 //! `PrincipalManager::update_config` →
-//! `TunnelDispatcher::refresh_instance_allowed_users` →
+//! `TunnelDispatcher::refresh_instance_allowed_principals` →
 //! `compute_allowed_user_ids` → fresh `instance_announce`) is the
 //! direct successor of the old agent path.
 //!
@@ -268,7 +268,7 @@ async fn post_chat(
 /// Run `peko principal permit/revoke` in the test's isolated `HOME`/
 /// `PEKO_HOME`. Asserts the exit code is 0 (i.e. the IPC handler
 /// accepted the request, including the side-effect call to
-/// `refresh_instance_allowed_users`).
+/// `refresh_instance_allowed_principals`).
 ///
 /// After the Principal-as-single-actor migration, the agent ACL CLI is
 /// gone — the equivalent live-propagation contract is
@@ -425,16 +425,16 @@ async fn permit_revoke_propagates_to_pekohub_within_1s() {
         .expect("instance GET transport failed");
     assert!(resp.status().is_success(), "instance GET non-2xx");
     let instance: serde_json::Value = resp.json().await.unwrap_or_default();
-    let allowed = instance["allowedUsers"]
+    let allowed = instance["allowedPrincipals"]
         .as_array()
-        .expect("instance.allowedUsers not an array");
+        .expect("instance.allowedPrincipals not an array");
     let allowed_ids: Vec<String> = allowed
         .iter()
-        .filter_map(|v| v.as_str().map(String::from))
+        .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
         .collect();
     assert!(
         allowed_ids.iter().any(|u| u == &grantee_id.to_string()),
-        "PekoHub instance.allowedUsers should contain grantee_id after second permit; got {allowed_ids:?}"
+        "PekoHub instance.allowedPrincipals should contain grantee_id after second permit; got {allowed_ids:?}"
     );
 
     let _ = grantee_ns;

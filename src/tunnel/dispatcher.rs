@@ -131,8 +131,9 @@ fn extract_bearer_jwt(bridge_payload: &serde_json::Value) -> Option<String> {
 pub struct InstanceState {
     /// Current exposure level
     pub exposure: InstanceExposure,
-    /// Allowed user IDs (for private exposure)
-    pub allowed_users: Vec<String>,
+    /// Typed allow-list (ADR-041) — `User` and `Principal` subjects
+    /// who can chat with this instance at `private` exposure.
+    pub allowed_principals: Vec<crate::auth::Subject>,
     /// Current instance status
     pub status: InstanceStatus,
 }
@@ -141,7 +142,7 @@ impl Default for InstanceState {
     fn default() -> Self {
         Self {
             exposure: InstanceExposure::Private,
-            allowed_users: Vec::new(),
+            allowed_principals: Vec::new(),
             status: InstanceStatus::Online,
         }
     }
@@ -258,21 +259,24 @@ impl TunnelDispatcher {
         uuid::Uuid::new_v5(&INSTANCE_ID_NAMESPACE, name.as_bytes()).to_string()
     }
 
-    /// Compute allowed user IDs from a Principal's permission grants.
+    /// Compute the typed `allowedPrincipals` list for a Principal.
     ///
-    /// Filters for `Chat` permission grants where `subject` is a `User`,
-    /// returning the bare user ids (with `user:` prefix stripped if
-    /// present) as `Some(vec![...])`. Non-User subjects are filtered out
-    /// — they cannot be expressed as a hub user_id.
+    /// Filters for `Chat` permission grants where `subject` is a `User`
+    /// and normalises the `user:` prefix on the id (PekoHub post-#19
+    /// reads `allowedPrincipals: Vec<Subject>` and matches on
+    /// `{kind, id}` rather than on a bare user-id string).
     ///
-    /// An empty vector is returned as `Some(vec![])` rather than `None`
-    /// so that re-announcing an instance clears PekoHub's `allowedUsers`
-    /// when the last user grant is revoked.
-    fn compute_allowed_user_ids(
+    /// Non-User subjects (e.g. `Public`, `Team`) are dropped here — the
+    /// principal-tier allow list only authorises named callers.
+    ///
+    /// Returns `Some(vec)` even when empty so re-announcing an
+    /// instance clears PekoHub's allow list when the last grant is
+    /// revoked.
+    fn compute_allowed_principals(
         config: &crate::principal::PrincipalConfig,
-    ) -> Option<Vec<String>> {
+    ) -> Option<Vec<crate::auth::Subject>> {
         use crate::auth::{Subject, SubjectKind};
-        let ids: Vec<String> = config
+        let principals: Vec<Subject> = config
             .permissions
             .iter()
             .filter(|g| {
@@ -280,17 +284,18 @@ impl TunnelDispatcher {
             })
             .filter_map(|g| match &g.subject {
                 Subject::User(id) => {
-                    // Strip `user:` prefix if present; hub expects bare user IDs
-                    Some(
-                        id.strip_prefix("user:")
-                            .map(String::from)
-                            .unwrap_or_else(|| id.clone()),
-                    )
+                    // Strip the `user:` prefix if present; the wire
+                    // subject-id form is the bare id.
+                    let bare = id
+                        .strip_prefix("user:")
+                        .map(String::from)
+                        .unwrap_or_else(|| id.clone());
+                    Some(Subject::User(bare))
                 }
                 _ => None,
             })
             .collect();
-        Some(ids)
+        Some(principals)
     }
 
     /// Send initial instance announcements for all local Principals.
@@ -302,9 +307,9 @@ impl TunnelDispatcher {
             let name = principal.name().await;
             let did = principal.did().await;
             let exposure = principal.exposure().await;
-            let allowed_users = {
+            let allowed_principals = {
                 let config = principal.config.read().await;
-                Self::compute_allowed_user_ids(&config)
+                Self::compute_allowed_principals(&config)
             };
             let instance_id = self.instance_id(&name);
             let payload = InstanceAnnouncePayload {
@@ -317,7 +322,7 @@ impl TunnelDispatcher {
                 runtime_display_name: Some(self.runtime_display_name.clone()),
                 status: InstanceStatus::Online,
                 exposure: exposure.clone(),
-                allowed_users: allowed_users.clone(),
+                allowed_principals: allowed_principals.clone(),
                 capabilities: None,
                 metadata: None,
             };
@@ -329,7 +334,7 @@ impl TunnelDispatcher {
                 instance_id,
                 InstanceState {
                     exposure,
-                    allowed_users: allowed_users.unwrap_or_default(),
+                    allowed_principals: allowed_principals.clone().unwrap_or_default(),
                     status: InstanceStatus::Online,
                 },
             );
@@ -378,9 +383,9 @@ impl TunnelDispatcher {
         let name = principal.name().await;
         let did = principal.did().await;
         let exposure = principal.exposure().await;
-        let allowed_users = {
+        let allowed_principals = {
             let config = principal.config.read().await;
-            Self::compute_allowed_user_ids(&config)
+            Self::compute_allowed_principals(&config)
         };
         let instance_id = self.instance_id(&name);
         let payload = InstanceAnnouncePayload {
@@ -393,7 +398,7 @@ impl TunnelDispatcher {
             runtime_display_name: Some(self.runtime_display_name.clone()),
             status: InstanceStatus::Online,
             exposure: exposure.clone(),
-            allowed_users: allowed_users.clone(),
+            allowed_principals: allowed_principals.clone(),
             capabilities: None,
             metadata: None,
         };
@@ -404,7 +409,7 @@ impl TunnelDispatcher {
             instance_id,
             InstanceState {
                 exposure,
-                allowed_users: allowed_users.unwrap_or_default(),
+                allowed_principals: allowed_principals.clone().unwrap_or_default(),
                 status: InstanceStatus::Online,
             },
         );
@@ -751,10 +756,10 @@ impl TunnelDispatcher {
     }
 
     /// Re-push the current allow-list for a Principal instance to PekoHub by
-    /// re-announcing the instance. The `allowed_users` list is freshly
+    /// re-announcing the instance. The `allowed_principals` list is freshly
     /// derived from the Principal's `permissions`. Used by the
     /// permit/revoke IPC paths so that PekoHub's `canChat` ACL and the
-    /// runtime's defense-in-depth `instance_state.allowed_users` cache
+    /// runtime's defense-in-depth `instance_state.allowed_principals` cache
     /// are kept in sync with the local config without requiring a daemon
     /// restart.
     ///
@@ -764,9 +769,12 @@ impl TunnelDispatcher {
     ///   `announce_instances` after `TunnelReady` will pick up the
     ///   latest config.
     /// - the current exposure is not `Private` (Public/Unexposed
-    ///   Principals don't carry an `allowed_users` list, and we must not
+    ///   Principals don't carry an `allowed_principals` list, and we must not
     ///   silently flip the exposure as a side effect of a permit call).
-    pub async fn refresh_instance_allowed_users(&self, principal_name: &str) -> anyhow::Result<()> {
+    pub async fn refresh_instance_allowed_principals(
+        &self,
+        principal_name: &str,
+    ) -> anyhow::Result<()> {
         let instance_id = self.instance_id(principal_name);
         let exposure = {
             let state = self.state.read().await;
@@ -779,14 +787,14 @@ impl TunnelDispatcher {
             Some(e) if e == InstanceExposure::Private => {}
             Some(e) => {
                 debug!(
-                    "Skipping allowed_users refresh for {}: exposure is {:?}, not Private",
+                    "Skipping allowed_principals refresh for {}: exposure is {:?}, not Private",
                     principal_name, e
                 );
                 return Ok(());
             }
             None => {
                 debug!(
-                    "Skipping allowed_users refresh for {}: no cached instance state \
+                    "Skipping allowed_principals refresh for {}: no cached instance state \
                      (tunnel not yet connected or instance not announced)",
                     principal_name
                 );
@@ -797,7 +805,7 @@ impl TunnelDispatcher {
     }
 
     /// Build and send an `ExposureUpdate` for the given Principal, with
-    /// `allowed_user_ids` re-derived from the live Principal config.
+    /// `allowed_principals` re-derived from the live Principal config.
     /// The caller is responsible for ensuring the current exposure is
     /// meaningful (i.e. `Private`) and that local `instance_state`
     /// reflects the desired exposure before invoking.
@@ -807,15 +815,15 @@ impl TunnelDispatcher {
         exposure: InstanceExposure,
     ) -> anyhow::Result<()> {
         let instance_id = self.instance_id(principal_name);
-        let allowed_user_ids = if exposure == InstanceExposure::Private {
+        let allowed_principals = if exposure == InstanceExposure::Private {
             let principal_manager = self.app_state.principal_manager();
             match principal_manager.get_by_name(principal_name).await {
                 Some(principal) => {
                     let config = principal.config.read().await;
-                    Self::compute_allowed_user_ids(&config)
+                    Self::compute_allowed_principals(&config)
                 }
                 None => {
-                    warn!("Principal {} not found; cannot compute allowed users", principal_name);
+                    warn!("Principal {} not found; cannot compute allowed principals", principal_name);
                     None
                 }
             }
@@ -832,7 +840,7 @@ impl TunnelDispatcher {
             let payload = ExposureUpdatePayload {
                 instance_id: instance_id.clone(),
                 exposure: exposure.clone(),
-                allowed_user_ids: allowed_user_ids.clone(),
+                allowed_principals: allowed_principals.clone(),
             };
             if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
                 warn!("Failed to send exposure update for {}: {}", principal_name, e);
@@ -860,13 +868,13 @@ impl TunnelDispatcher {
         let mut state = self.state.write().await;
         if let Some(entry) = state.instance_state.get_mut(&payload.instance_id) {
             entry.exposure = payload.exposure.clone();
-            entry.allowed_users = payload.allowed_user_ids.clone().unwrap_or_default();
+            entry.allowed_principals = payload.allowed_principals.clone().unwrap_or_default();
         } else {
             state.instance_state.insert(
                 payload.instance_id.clone(),
                 InstanceState {
                     exposure: payload.exposure.clone(),
-                    allowed_users: payload.allowed_user_ids.clone().unwrap_or_default(),
+                    allowed_principals: payload.allowed_principals.clone().unwrap_or_default(),
                     status: InstanceStatus::Online,
                 },
             );
@@ -899,7 +907,7 @@ impl TunnelDispatcher {
                         runtime_display_name: Some(self.runtime_display_name.clone()),
                         status,
                         exposure: payload.exposure.clone(),
-                        allowed_users: payload.allowed_user_ids.clone(),
+                        allowed_principals: payload.allowed_principals.clone(),
                         capabilities: None,
                         metadata: None,
                     };
@@ -1227,12 +1235,16 @@ impl TunnelDispatcher {
                     anyhow::bail!("Authentication required")
                 }
 
-                if instance_state.allowed_users.iter().any(|u| u == user_id) {
+                if instance_state
+                    .allowed_principals
+                    .iter()
+                    .any(|s| matches!(s, crate::auth::Subject::User(id) if id == user_id))
+                {
                     Ok(())
                 } else {
                     warn!(
                         agent_name,
-                        user_id, "Private instance request denied: user not in allowed_users"
+                        user_id, "Private instance request denied: user not in allowed_principals"
                     );
                     anyhow::bail!("Forbidden")
                 }
@@ -1643,7 +1655,7 @@ mod tests {
         let payload = ExposureUpdatePayload {
             instance_id: instance_id.clone(),
             exposure: InstanceExposure::Public,
-            allowed_user_ids: Some(vec!["user-1".to_string()]),
+            allowed_principals: Some(vec![crate::auth::Subject::User("user-1".to_string())]),
         };
 
         dispatcher.handle_exposure_update(payload).await.unwrap();
@@ -1655,7 +1667,10 @@ mod tests {
             .get(&instance_id)
             .expect("Instance state should exist");
         assert_eq!(entry.exposure, InstanceExposure::Public);
-        assert_eq!(entry.allowed_users, vec!["user-1".to_string()]);
+        assert_eq!(
+            entry.allowed_principals,
+            vec![crate::auth::Subject::User("user-1".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -1712,7 +1727,7 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Public,
-                    allowed_users: vec![],
+                    allowed_principals: vec![],
                     status: InstanceStatus::Online,
                 },
             );
@@ -1737,7 +1752,7 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Unexposed,
-                    allowed_users: vec![],
+                    allowed_principals: vec![],
                     status: InstanceStatus::Online,
                 },
             );
@@ -1764,7 +1779,7 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_users: vec!["user-123".to_string()],
+                    allowed_principals: vec![crate::auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
@@ -1789,7 +1804,7 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_users: vec!["user-123".to_string()],
+                    allowed_principals: vec![crate::auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
@@ -1816,7 +1831,7 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_users: vec!["user-123".to_string()],
+                    allowed_principals: vec![crate::auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
