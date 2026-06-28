@@ -3,6 +3,12 @@
 //! End-to-end tests for push/pull against the real PekoHub backend
 //! running in test mode (PGlite + mock storage/search).
 //!
+//! ADR-041: the wire format moved from `kind: 'agent'` + `did:peko:agent:`
+//! to `kind: 'principal'` + `did:peko:principal:`. PekoHub's OCI
+//! handler returns `410 Gone` on legacy `bundleType='agent'`
+//! annotations, so every OCI manifest pushed in this file carries
+//! `dev.pekohub.bundleType: principal`.
+//!
 //! These tests are marked `#[ignore]` because they require:
 //!   - Node.js 22+ with tsx installed  (local mode)
 //!   - OR a running PekoHub test container (container mode via PEKOHUB_URL)
@@ -19,7 +25,9 @@
 //!   PEKOHUB_URL=http://pekohub-test:3000 cargo test --test pekohub_integration -- --ignored
 
 use peko::registry::client::ResourceType;
-use peko::registry::packaging::{manifest::AgentLayers, AgentManifest, Layer, LayerType};
+use peko::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
+use peko::registry::packaging::Layer;
+use peko::registry::packaging::LayerType;
 use peko::registry::AgentRegistry;
 use peko::registry::{
     media_types, RegistryClient, RegistryConfig, RegistryManifest, RegistryRef, RegistrySource,
@@ -69,18 +77,19 @@ fn test_registry_config_with_token(host: &str, token: &str) -> RegistryConfig {
     config
 }
 
-/// Create a minimal AgentManifest with layers for testing
+/// Create a minimal PrincipalManifest with layers for testing
 #[allow(dead_code)]
-fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
-    let mut manifest = AgentManifest::new(name, "1.0.0", "did:peko:test");
+fn create_test_manifest(name: &str) -> (PrincipalManifest, Vec<Layer>) {
+    let mut manifest =
+        PrincipalManifest::new(name, "1.0.0", "did:peko:principal:test");
 
     let config_data = b"config layer content";
     let identity_data = b"identity layer content";
-    let skills_data = b"skills layer content";
+    let agents_data = b"agents layer content";
 
     let config_digest = sha256_digest(config_data);
     let identity_digest = sha256_digest(identity_data);
-    let skills_digest = sha256_digest(skills_data);
+    let agents_digest = sha256_digest(agents_data);
 
     let layers = vec![
         Layer::new(&config_digest, LayerType::Config, config_data.len() as u64),
@@ -89,16 +98,19 @@ fn create_test_manifest(name: &str) -> (AgentManifest, Vec<Layer>) {
             LayerType::Identity,
             identity_data.len() as u64,
         ),
-        Layer::new(&skills_digest, LayerType::Skills, skills_data.len() as u64),
+        // The `agents` digest in PrincipalLayers is what pekohub
+        // stores; the `LayerType` is a packager-side tag. We use
+        // `Config` here as a placeholder — this helper isn't
+        // round-tripped through the packager in this test.
+        Layer::new(&agents_digest, LayerType::Config, agents_data.len() as u64),
     ];
 
-    manifest.layers = Some(AgentLayers {
+    manifest.layers = Some(PrincipalLayers {
         config: Some(config_digest),
         identity: Some(identity_digest),
-        skills: Some(skills_digest),
-        workspace: None,
+        agents: Some(agents_digest),
+        memory: None,
         sessions: None,
-        mcp: None,
         extensions: None,
     });
 
@@ -412,20 +424,32 @@ async fn test_registry_client_bare_ref_resolution() {
     let backend = PekohubBackend::start().await;
     let host = backend.url.strip_prefix("http://").unwrap_or(&backend.url);
 
-    // Test bare ref resolution: "my-agent:v1.0" -> "host/peko/agents/my-agent:v1.0"
+    // ADR-041: bare ref resolution now produces
+    // "host/peko/principals/<name>:<tag>" — the path segment is
+    // `principals` (was `agents`). PekoHub's directory routes
+    // /v1/principals/*; the OCI blob path mirrors that.
     let resolved =
-        RegistryRef::parse_with_default("my-agent:v1.0", Some(host), Some(ResourceType::Agent))
+        RegistryRef::parse_with_default("my-agent:v1.0", Some(host), Some(ResourceType::Principal))
             .unwrap();
     assert_eq!(resolved.host, host);
-    assert_eq!(resolved.path, "peko/agents/my-agent");
+    assert_eq!(resolved.path, "peko/principals/my-agent");
     assert_eq!(resolved.tag, "v1.0");
 
     // Test bare ref without tag defaults to "latest"
-    let resolved =
-        RegistryRef::parse_with_default("my-agent", Some(host), Some(ResourceType::Agent)).unwrap();
+    let resolved = RegistryRef::parse_with_default(
+        "my-agent",
+        Some(host),
+        Some(ResourceType::Principal),
+    )
+    .unwrap();
     assert_eq!(resolved.tag, "latest");
 
-    // Test team resource type
+    // ADR-041: the Team resource type is no longer a valid path
+    // segment — Subject::Team was removed in the clean break.
+    // Verify that the resolver still parses the input but the
+    // path uses the legacy `teams` segment for back-compat
+    // reads against pre-#82 hubs. Production writes go through
+    // Principal.
     let resolved =
         RegistryRef::parse_with_default("my-team:v2.0", Some(host), Some(ResourceType::Team))
             .unwrap();
@@ -528,7 +552,7 @@ async fn test_pekohub_search_api() {
         },
         "layers": [],
         "annotations": {
-            "dev.pekohub.metadata": r#"{"bundleType":"agent","description":"A searchable test agent","author":"test"}"#,
+            "dev.pekohub.metadata": r#"{"bundleType":"principal","description":"A searchable test principal","author":"test"}"#,
             "org.opencontainers.image.description": "A searchable test agent"
         }
     })
