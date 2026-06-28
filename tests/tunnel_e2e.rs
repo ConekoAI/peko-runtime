@@ -306,19 +306,35 @@ async fn test_e2e_tunnel_chat_with_llm() {
     //    `compute_allowed_user_ids` reads from `config.permissions`,
     //    and without a matching grant the private-instance ACL
     //    rejects the chat with "Forbidden".
+    //
+    //    external_id must be unique per run: the PekoHub test backend
+    //    persists user records across runs (no test-time reset), and a
+    //    hardcoded id collides with leftover state from prior runs.
+    //    Suffix with a process-unique nonce (random u64) — the DID itself
+    //    isn't safe to use directly since it contains `:` which some
+    //    PekoHub columns reject.
+    let run_tag = format!(
+        "{:016x}",
+        rand::random::<u64>()
+    );
     let user_resp = client
         .post(format!("{}/test/create-user", backend.url))
         .json(&serde_json::json!({
-            "external_id": "e2e-test-user",
+            "external_id": format!("e2e-test-user-{run_tag}"),
             "provider": "github",
-            "namespace": "e2etestuser",
+            "namespace": format!("e2etestuser{run_tag}"),
             "display_name": "E2E Test User",
             "email": "e2e@test.com"
         }))
         .send()
         .await
         .expect("Failed to create test user");
-    assert!(user_resp.status().is_success(), "Test user creation failed");
+    assert!(
+        user_resp.status().is_success(),
+        "Test user creation failed (status={}): {}",
+        user_resp.status(),
+        user_resp.text().await.unwrap_or_default(),
+    );
     let user_body: serde_json::Value = user_resp.json().await.unwrap();
     let user_id = user_body["id"].as_i64().expect("No user id") as i32;
     let chat_user_id = user_id.to_string();
@@ -389,7 +405,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     );
 
     // Generate JWT for authenticated requests
-    let jwt_token = generate_jwt(user_id as i64, "e2etestuser");
+    let jwt_token = generate_jwt(user_id as i64, &format!("e2etestuser{run_tag}"));
     let auth_header = format!("Bearer {jwt_token}");
 
     // 7. Write tunnel credentials next to the AppState config directory so
