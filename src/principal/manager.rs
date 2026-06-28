@@ -359,6 +359,23 @@ impl PrincipalManager {
             .clone()
     }
 
+    /// Borrow the shared `inbox_registry` and per-principal
+    /// `session_creation_lock` for callers (e.g. the streaming IPC
+    /// handler) that need to invoke the supervisor router without
+    /// going through `receive()`. Identical semantics to the values
+    /// `receive()` uses internally, so the streaming and
+    /// non-streaming paths share back-pressure.
+    pub async fn streaming_primitives(
+        &self,
+        principal_id: &PrincipalId,
+    ) -> (
+        Arc<crate::session::InboxRegistry>,
+        Arc<tokio::sync::Mutex<()>>,
+    ) {
+        let lock = self.session_creation_lock(principal_id.clone()).await;
+        (Arc::clone(&self.inbox_registry), lock)
+    }
+
     /// The main entry point: a message arrives at a Principal boundary.
     pub async fn receive(
         &self,
@@ -501,7 +518,7 @@ async fn discover_agent_prompts(
     Ok(prompts)
 }
 
-fn parse_agent_role(role: Option<&str>) -> super::config::AgentRole {
+pub fn parse_agent_role(role: Option<&str>) -> super::config::AgentRole {
     match role.unwrap_or("default").to_lowercase().as_str() {
         "supervisor" => super::config::AgentRole::Supervisor,
         "specialist" => super::config::AgentRole::Specialist,

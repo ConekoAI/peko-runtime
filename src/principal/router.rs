@@ -84,6 +84,26 @@ pub trait PrincipalRouter: Send + Sync {
         &self,
         ctx: RouterContext,
     ) -> Result<RouteDecision, RouterError>;
+
+    /// Streaming variant. The router is given an `on_event` callback
+    /// that it invokes for each `AgenticEvent` it produces (typically
+    /// `AssistantDelta` deltas as the supervisor agent's response
+    /// unfolds). The callback must be cheap and non-blocking.
+    ///
+    /// Default implementation ignores the callback and delegates to
+    /// `route()`. Routers that support streaming (the default
+    /// supervisor, and any extension that wants live tokens) override
+    /// this and forward events to the caller as they happen.
+    ///
+    /// Returns the same final `RouteDecision` that the non-streaming
+    /// `route()` would have produced.
+    async fn route_streaming(
+        &self,
+        ctx: RouterContext,
+        _on_event: Box<dyn Fn(crate::engine::AgenticEvent) + Send + Sync>,
+    ) -> Result<RouteDecision, RouterError> {
+        self.route(ctx).await
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

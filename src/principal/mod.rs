@@ -18,7 +18,7 @@ pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     PrincipalMemoryFactory, PrincipalRouterFactory,
 };
-pub use manager::{PrincipalManager, PrincipalManagerError};
+pub use manager::{parse_agent_role, PrincipalManager, PrincipalManagerError};
 pub use memory::{
     Artifact, CompactSummary, FileArtifact, MemoryArtifact, MemoryError, PrincipalMemory,
     SessionArtifact, TodoArtifact,

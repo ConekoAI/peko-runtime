@@ -11,6 +11,7 @@ use crate::common::paths::PathResolver;
 use crate::common::services::AgentService;
 use crate::common::types::agent_legacy::ExtensionConfig;
 use crate::common::types::message::LlmMessage;
+use crate::engine::AgenticEvent;
 use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
 use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::extensions::framework::core::ExtensionCore;
@@ -144,6 +145,92 @@ pub async fn run_supervisor_prompt(
     session_creation_lock: Arc<tokio::sync::Mutex<()>>,
     principal_provider_hint: (Option<String>, Option<String>),
 ) -> anyhow::Result<String> {
+    run_supervisor_prompt_with_callback(
+        prompt,
+        capabilities,
+        peer,
+        message,
+        session_id,
+        sessions_dir,
+        resolver,
+        workspace_path,
+        available_agents,
+        memory,
+        inbox_registry,
+        session_creation_lock,
+        principal_provider_hint,
+        |_event| {
+            // Non-streaming: events are ignored.
+        },
+    )
+    .await
+}
+
+/// Streaming variant of [`run_supervisor_prompt`]. The callback is invoked
+/// for every [`AgenticEvent`] emitted by the supervisor's agentic loop
+/// (e.g. `AssistantDelta` for token deltas, `ToolStart`/`ToolEnd` for tool
+/// invocations). The callback must be cheap and non-blocking; the runtime
+/// relies on it to push `PrincipalSentChunk` deltas to the IPC client
+/// without back-pressure on the agentic loop.
+///
+/// Returns the same `final_answer` string as the non-streaming variant.
+pub async fn run_supervisor_prompt_streaming<F>(
+    prompt: &AgentPrompt,
+    capabilities: &PrincipalCapabilities,
+    peer: Subject,
+    message: String,
+    session_id: String,
+    sessions_dir: PathBuf,
+    resolver: Option<Arc<LlmResolver>>,
+    workspace_path: PathBuf,
+    available_agents: Vec<AgentPromptSummary>,
+    memory: Arc<dyn PrincipalMemory>,
+    inbox_registry: Arc<InboxRegistry>,
+    session_creation_lock: Arc<tokio::sync::Mutex<()>>,
+    principal_provider_hint: (Option<String>, Option<String>),
+    on_event: F,
+) -> anyhow::Result<String>
+where
+    F: Fn(AgenticEvent) + Send + Sync + 'static,
+{
+    run_supervisor_prompt_with_callback(
+        prompt,
+        capabilities,
+        peer,
+        message,
+        session_id,
+        sessions_dir,
+        resolver,
+        workspace_path,
+        available_agents,
+        memory,
+        inbox_registry,
+        session_creation_lock,
+        principal_provider_hint,
+        on_event,
+    )
+    .await
+}
+
+async fn run_supervisor_prompt_with_callback<F>(
+    prompt: &AgentPrompt,
+    capabilities: &PrincipalCapabilities,
+    peer: Subject,
+    message: String,
+    session_id: String,
+    sessions_dir: PathBuf,
+    resolver: Option<Arc<LlmResolver>>,
+    workspace_path: PathBuf,
+    available_agents: Vec<AgentPromptSummary>,
+    memory: Arc<dyn PrincipalMemory>,
+    inbox_registry: Arc<InboxRegistry>,
+    session_creation_lock: Arc<tokio::sync::Mutex<()>>,
+    principal_provider_hint: (Option<String>, Option<String>),
+    on_event: F,
+) -> anyhow::Result<String>
+where
+    F: Fn(AgenticEvent) + Send + Sync + 'static,
+{
     // Provider-hint precedence:
     //   1. Per-principal `[provider]` from `principal.toml` (wins) —
     //      but only when the referenced provider actually exists in
@@ -364,9 +451,7 @@ pub async fn run_supervisor_prompt(
             &message,
             session,
             Some(history),
-            |_event| {
-                // Non-streaming: events are ignored.
-            },
+            on_event,
         )
         .await
         .context("supervisor agent execution failed")?;

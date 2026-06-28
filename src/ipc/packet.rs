@@ -464,8 +464,25 @@ pub enum RequestPacket {
     },
 
     // ── Principal operations ─────────────────────────────────────────
+    /// Non-streaming principal send. Returns a single `PrincipalSent`
+    /// response with the supervisor's final answer.
     #[serde(rename = "principal_send")]
     PrincipalSend {
+        request_id: u64,
+        name: String,
+        message: String,
+        user: String,
+    },
+
+    /// Streaming principal send. The daemon emits a sequence of
+    /// `PrincipalSentChunk` deltas as the supervisor agent's response
+    /// unfolds, followed by exactly one `PrincipalSentDone` carrying
+    /// the full final answer (identical content to what
+    /// `PrincipalSend` would have returned). Wire-compatible with the
+    /// `principal_send` request shape so the desktop Chat can opt in
+    /// to streaming without changing the supervisor's behavior.
+    #[serde(rename = "principal_send_stream")]
+    PrincipalSendStream {
         request_id: u64,
         name: String,
         message: String,
@@ -623,6 +640,7 @@ impl RequestPacket {
             | Self::TeamGrantPermission { request_id, .. }
             | Self::TeamRevokePermission { request_id, .. }
             | Self::PrincipalSend { request_id, .. }
+            | Self::PrincipalSendStream { request_id, .. }
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalPush { request_id, .. }
@@ -1101,8 +1119,30 @@ pub enum ResponsePacket {
     },
 
     // ── Principal operations ─────────────────────────────────────────
+    /// Non-streaming result of `PrincipalSend`. Single packet with the
+    /// supervisor's final answer.
     #[serde(rename = "principal_sent")]
     PrincipalSent {
+        request_id: u64,
+        content: String,
+    },
+
+    /// Streaming chunk of a `PrincipalSendStream` response. The daemon
+    /// emits zero or more of these as the supervisor agent produces
+    /// assistant text. The frontend appends each `delta` to the
+    /// in-flight assistant message.
+    #[serde(rename = "principal_sent_chunk")]
+    PrincipalSentChunk {
+        request_id: u64,
+        delta: String,
+    },
+
+    /// Final packet of a `PrincipalSendStream` response. Carries the
+    /// full final answer (same content the non-streaming `PrincipalSent`
+    /// would have returned) so the frontend can confirm the response
+    /// and persist it. Always followed by a `Done` packet.
+    #[serde(rename = "principal_sent_done")]
+    PrincipalSentDone {
         request_id: u64,
         content: String,
     },
@@ -1395,6 +1435,8 @@ impl ResponsePacket {
             | Self::AuthApiKeyRevoked { request_id, .. }
             | Self::AuthStatus { request_id, .. }
             | Self::PrincipalSent { request_id, .. }
+            | Self::PrincipalSentChunk { request_id, .. }
+            | Self::PrincipalSentDone { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalPushed { request_id, .. }
@@ -1468,6 +1510,8 @@ impl ResponsePacket {
             Self::AuthApiKeyRevoked { .. } => "AuthApiKeyRevoked",
             Self::AuthStatus { .. } => "AuthStatus",
             Self::PrincipalSent { .. } => "PrincipalSent",
+            Self::PrincipalSentChunk { .. } => "PrincipalSentChunk",
+            Self::PrincipalSentDone { .. } => "PrincipalSentDone",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalPushed { .. } => "PrincipalPushed",
@@ -3768,6 +3812,88 @@ mod tests {
             }
             _ => panic!("Wrong variant"),
         }
+    }
+
+    /// `principal_send_stream` round-trips losslessly through the
+    /// JSON wire format, so the desktop and the daemon can negotiate
+    /// the streaming variant without a separate codec.
+    #[test]
+    fn test_principal_send_stream_request_roundtrip() {
+        let req = RequestPacket::PrincipalSendStream {
+            request_id: 5100,
+            name: "helper".to_string(),
+            message: "stream please".to_string(),
+            user: "alice".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalSendStream {
+                request_id,
+                name,
+                message,
+                user,
+            } => {
+                assert_eq!(request_id, 5100);
+                assert_eq!(name, "helper");
+                assert_eq!(message, "stream please");
+                assert_eq!(user, "alice");
+            }
+            _ => panic!("Wrong variant"),
+        }
+        // The wire tag must match the CLI spelling so the desktop
+        // can route the JSON packet to the right daemon handler.
+        let raw = String::from_utf8(bytes).unwrap();
+        assert!(
+            raw.contains("\"type\":\"principal_send_stream\""),
+            "wire tag missing: {raw}"
+        );
+    }
+
+    /// Streaming chunk packets carry the request_id and a single
+    /// delta string. Multiple chunks are expected on the wire before
+    /// a `PrincipalSentDone` settles the run.
+    #[test]
+    fn test_principal_sent_chunk_roundtrip() {
+        let resp = ResponsePacket::PrincipalSentChunk {
+            request_id: 5100,
+            delta: "Hello, ".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalSentChunk { request_id, delta } => {
+                assert_eq!(request_id, 5100);
+                assert_eq!(delta, "Hello, ");
+            }
+            _ => panic!("Wrong variant"),
+        }
+        let raw = String::from_utf8(bytes).unwrap();
+        assert!(raw.contains("\"type\":\"principal_sent_chunk\""));
+    }
+
+    /// Final streaming packet carries the full final answer (same
+    /// content the non-streaming `PrincipalSent` would have returned).
+    #[test]
+    fn test_principal_sent_done_roundtrip() {
+        let resp = ResponsePacket::PrincipalSentDone {
+            request_id: 5100,
+            content: "Hello, world!".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalSentDone {
+                request_id,
+                content,
+            } => {
+                assert_eq!(request_id, 5100);
+                assert_eq!(content, "Hello, world!");
+            }
+            _ => panic!("Wrong variant"),
+        }
+        let raw = String::from_utf8(bytes).unwrap();
+        assert!(raw.contains("\"type\":\"principal_sent_done\""));
     }
 
     #[test]

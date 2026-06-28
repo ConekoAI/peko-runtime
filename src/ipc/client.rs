@@ -481,6 +481,25 @@ impl DaemonClient {
         self.send_request(packet).await
     }
 
+    /// Streaming variant of [`principal_send`]. The server emits zero
+    /// or more `PrincipalSentChunk` deltas followed by a single
+    /// `PrincipalSentDone` carrying the full final answer, then `Done`.
+    pub async fn principal_send_stream(
+        &self,
+        name: impl Into<String>,
+        message: impl Into<String>,
+        user: impl Into<String>,
+    ) -> anyhow::Result<PacketStream> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalSendStream {
+            request_id,
+            name: name.into(),
+            message: message.into(),
+            user: user.into(),
+        };
+        self.send_request(packet).await
+    }
+
     /// Export a Principal to a package.
     pub async fn principal_export(
         &self,

@@ -39,7 +39,7 @@ use crate::auth::caller::CallerContext;
 use crate::auth::config::enforce_auth_for_public_bind;
 use crate::auth::permissions::AuthError;
 use crate::daemon::state::AppState;
-use crate::principal::{Principal, router::{ChannelContext, ChannelKind}};
+use crate::principal::{Principal, RouteDecision, RouterError, router::{ChannelContext, ChannelKind}};
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
 #[derive(Clone)]
@@ -2587,6 +2587,170 @@ impl IpcServer {
                 }
             }
 
+            // Streaming variant of `PrincipalSend`. The supervisor
+            // router's `route_streaming` emits `AgenticEvent`s; we
+            // forward `AssistantDelta` (and the related streaming
+            // events) as `PrincipalSentChunk` packets, and on completion
+            // emit a single `PrincipalSentDone` carrying the full
+            // final answer — identical to what `PrincipalSent` would
+            // have returned — followed by the standard `Done`.
+            //
+            // The supervisor runs in a `tokio::spawn`'d task that
+            // pushes events into a bounded `mpsc::channel` and the
+            // final `RouteDecision` into a `oneshot`. The handler
+            // task drains the channel, writes each `PrincipalSentChunk`
+            // to the sink, and finally awaits the oneshot for the
+            // `PrincipalSentDone` payload. This keeps the callback
+            // `Send + Sync + 'static` (it only holds an `mpsc::Sender`)
+            // and avoids the `&dyn ResponseSink` lifetime problem.
+            RequestPacket::PrincipalSendStream {
+                request_id,
+                name,
+                message,
+                user,
+            } => {
+                let _manager = state.principal_manager().clone();
+                let principal = match Self::load_principal(&state, &name).await {
+                    Some(p) => p,
+                    None => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Principal '{}' not found", name),
+                        };
+                        Self::send_sink(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
+                let peer = crate::auth::Subject::User(user);
+                let channel = ChannelContext {
+                    kind: ChannelKind::Cli,
+                    streaming: true,
+                };
+
+                // Construct the RouterContext the supervisor router expects.
+                let router_ctx = match Self::build_principal_router_ctx(
+                    &state,
+                    &principal,
+                    peer.clone(),
+                    message.clone(),
+                    channel,
+                )
+                .await
+                {
+                    Ok(ctx) => ctx,
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("Failed to build router context: {e}"),
+                        };
+                        Self::send_sink(sink, response).await?;
+                        let done = ResponsePacket::Done {
+                            request_id,
+                            success: false,
+                            error: Some(e.to_string()),
+                        };
+                        Self::send_sink(sink, done).await?;
+                        return Ok(());
+                    }
+                };
+
+                // Bounded channel for streaming events. Capacity
+                // 256; a slow client back-pressures the supervisor
+                // (events are dropped on `try_send` failure).
+                let (event_tx, mut event_rx) =
+                    tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(256);
+
+                // Oneshot for the final RouteDecision.
+                let (result_tx, result_rx) =
+                    tokio::sync::oneshot::channel::<Result<RouteDecision, RouterError>>();
+
+                let on_event = move |event: crate::engine::AgenticEvent| {
+                    let _ = event_tx.try_send(event);
+                };
+
+                // Run the supervisor in a background task. When the
+                // task completes, the event_tx is dropped, closing
+                // the channel and signalling the handler to flush.
+                let router = Arc::clone(&principal.router);
+                let supervisor_handle = tokio::spawn(async move {
+                    let result = router.route_streaming(router_ctx, Box::new(on_event)).await;
+                    let _ = result_tx.send(result);
+                });
+
+                // Drain the channel into `PrincipalSentChunk` packets
+                // until the supervisor task finishes (channel closes).
+                while let Some(event) = event_rx.recv().await {
+                    let delta = match event {
+                        crate::engine::AgenticEvent::AssistantDelta { text, .. } => text,
+                        crate::engine::AgenticEvent::AssistantText { text, .. } => text,
+                        _ => continue,
+                    };
+                    let packet = ResponsePacket::PrincipalSentChunk {
+                        request_id,
+                        delta,
+                    };
+                    if let Err(e) = Self::send_sink(sink, packet).await {
+                        tracing::warn!(
+                            "failed to send PrincipalSentChunk: {e}; aborting stream"
+                        );
+                        // Drop the supervisor task — it will be
+                        // cancelled when the handler returns.
+                        supervisor_handle.abort();
+                        let done = ResponsePacket::Done {
+                            request_id,
+                            success: false,
+                            error: Some(format!("sink write failed: {e}")),
+                        };
+                        Self::send_sink(sink, done).await?;
+                        return Ok(());
+                    }
+                }
+
+                // The channel closed because the supervisor task
+                // dropped `event_tx`. Await the result.
+                let route_result = match result_rx.await {
+                    Ok(r) => r,
+                    Err(_) => Err(RouterError::AgentFailed(
+                        "supervisor task died before producing a result".into(),
+                    )),
+                };
+                let _ = supervisor_handle.await;
+
+                match route_result {
+                    Ok(decision) => {
+                        let content = match decision {
+                            RouteDecision::Respond { response } => response,
+                        };
+                        let done_packet = ResponsePacket::PrincipalSentDone {
+                            request_id,
+                            content,
+                        };
+                        Self::send_sink(sink, done_packet).await?;
+                        let done = ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        };
+                        Self::send_sink(sink, done).await?;
+                    }
+                    Err(e) => {
+                        let message = e.to_string();
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: message.clone(),
+                        };
+                        Self::send_sink(sink, response).await?;
+                        let done = ResponsePacket::Done {
+                            request_id,
+                            success: false,
+                            error: Some(message),
+                        };
+                        Self::send_sink(sink, done).await?;
+                    }
+                }
+            }
+
             RequestPacket::PrincipalExport {
                 request_id,
                 name,
@@ -4093,6 +4257,101 @@ impl IpcServer {
         }
 
         manager.get_by_name(name).await
+    }
+
+    /// Build a [`RouterContext`] for a single principal-receive call.
+    ///
+    /// Mirrors the body of `PrincipalManager::receive` but is callable
+    /// from the streaming IPC handler, which needs the context before
+    /// invoking the router. The shared `inbox_registry` and
+    /// `session_creation_lock` are taken from the principal manager.
+    async fn build_principal_router_ctx(
+        state: &AppState,
+        principal: &Arc<Principal>,
+        peer: crate::auth::Subject,
+        message: String,
+        channel: ChannelContext,
+    ) -> anyhow::Result<crate::principal::router::RouterContext> {
+        use crate::auth::ownership::{check_permission, Permission, Resource};
+        use crate::principal::parse_agent_role;
+        use crate::principal::router::{
+            AgentPromptSummary, ContextInjection, ContextInjectionKind, RouterContext,
+        };
+
+        let manager = state.principal_manager();
+
+        // Enforce principal-level permissions before routing.
+        let resource = {
+            let config = principal.config.read().await;
+            Resource::Principal {
+                name: config.name.clone(),
+                owner: config.owner.clone(),
+                permissions: config.permissions.clone(),
+                exposure: config.exposure.clone(),
+            }
+        };
+        if let Err(denied) = check_permission(&resource, Permission::Chat, &peer) {
+            anyhow::bail!(denied.to_string());
+        }
+
+        // Recall the most recent session for this peer.
+        let latest_session = principal
+            .memory
+            .find_latest_session_for_peer(&peer)
+            .await
+            .map_err(|e| anyhow::anyhow!("principal memory lookup failed: {e}"))?;
+
+        let mut recalled_context = Vec::new();
+        if let Some(artifact) = latest_session {
+            recalled_context.push(ContextInjection {
+                kind: ContextInjectionKind::Session,
+                id: artifact.session_id.clone(),
+                content: artifact.summary.unwrap_or_default(),
+            });
+        }
+
+        let (available_agents, routing, capabilities, intent, governance, principal_name) = {
+            let config = principal.config.read().await;
+            let available_agents: Vec<AgentPromptSummary> = principal
+                .agent_prompts
+                .values()
+                .map(|p| AgentPromptSummary {
+                    name: p.name.clone(),
+                    role: parse_agent_role(p.frontmatter.role.as_deref()),
+                    description: p.frontmatter.description.clone(),
+                })
+                .collect();
+            (
+                available_agents,
+                config.routing.clone(),
+                config.capabilities.clone(),
+                config.intent.clone(),
+                config.governance.clone(),
+                config.name.clone(),
+            )
+        };
+
+        // Borrow the manager's `inbox_registry` and `session_creation_lock`
+        // so the streaming path shares the same back-pressure as the
+        // non-streaming `PrincipalSend` path.
+        let (inbox_registry, session_creation_lock) =
+            manager.streaming_primitives(&principal.id).await;
+
+        Ok(RouterContext {
+            principal_id: principal.id.clone(),
+            principal_name,
+            peer,
+            message,
+            channel,
+            routing,
+            recalled_context,
+            available_agents,
+            capabilities,
+            intent,
+            governance,
+            inbox_registry,
+            session_creation_lock,
+        })
     }
 
     /// Send a response packet back to the client via the per-request sink.
