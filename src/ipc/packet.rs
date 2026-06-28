@@ -235,6 +235,13 @@ pub enum RequestPacket {
     #[serde(rename = "provider_list")]
     ProviderList { request_id: u64 },
 
+    /// Re-read the provider catalog and the credential vault from
+    /// disk. Sent by `peko provider {add,remove,set-default}` and
+    /// `peko credential {set,delete}` so the long-running daemon
+    /// observes CLI mutations without a restart.
+    #[serde(rename = "provider_reload")]
+    ProviderReload { request_id: u64 },
+
     // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
     #[serde(rename = "extension_list")]
     ExtensionList {
@@ -576,6 +583,7 @@ impl RequestPacket {
             | Self::SessionList { request_id, .. }
             | Self::SessionRemove { request_id, .. }
             | Self::ProviderList { request_id }
+            | Self::ProviderReload { request_id }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
@@ -880,6 +888,15 @@ pub enum ResponsePacket {
     ProviderList {
         request_id: u64,
         providers: Vec<ProviderInfo>,
+    },
+
+    /// Provider reload response. Reports the post-reload entry counts
+    /// so the CLI can confirm what was reloaded.
+    #[serde(rename = "provider_reloaded")]
+    ProviderReloaded {
+        request_id: u64,
+        providers_count: usize,
+        keys_count: usize,
     },
 
     /// Extension list response
@@ -1353,6 +1370,7 @@ impl ResponsePacket {
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
             | Self::ProviderList { request_id, .. }
+            | Self::ProviderReloaded { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnabled { request_id, .. }
             | Self::ExtensionDisabled { request_id, .. }
@@ -1425,6 +1443,7 @@ impl ResponsePacket {
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ProviderList { .. } => "ProviderList",
+            Self::ProviderReloaded { .. } => "ProviderReloaded",
             Self::ExtensionList { .. } => "ExtensionList",
             Self::ExtensionEnabled { .. } => "ExtensionEnabled",
             Self::ExtensionDisabled { .. } => "ExtensionDisabled",

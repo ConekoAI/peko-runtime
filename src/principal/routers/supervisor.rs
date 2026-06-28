@@ -40,22 +40,36 @@ pub struct SupervisorRouter {
     resolver: Option<Arc<LlmResolver>>,
     supervisor_prompt: AgentPrompt,
     workspace_path: PathBuf,
+    /// Per-Principal provider preference from `principal.toml`. When
+    /// `Some`, it overrides the global catalog default for any LLM call
+    /// routed through this Principal's supervisor. When `None`, the
+    /// catalog default wins.
+    principal_provider_id: Option<String>,
+    principal_model_id: Option<String>,
 }
 
 impl SupervisorRouter {
     /// Create a new supervisor router for the given Principal workspace.
+    ///
+    /// `principal_provider_id` / `principal_model_id` are the values from
+    /// `PrincipalConfig::preferred_provider_id` / `preferred_model_id`.
+    /// Pass `None, None` to inherit the global catalog default.
     #[must_use]
     pub fn new(
         memory: Arc<dyn PrincipalMemory>,
         resolver: Option<Arc<LlmResolver>>,
         supervisor_prompt: AgentPrompt,
         workspace_path: PathBuf,
+        principal_provider_id: Option<String>,
+        principal_model_id: Option<String>,
     ) -> Self {
         Self {
             memory,
             resolver,
             supervisor_prompt,
             workspace_path,
+            principal_provider_id,
+            principal_model_id,
         }
     }
 }
@@ -88,6 +102,10 @@ impl PrincipalRouter for SupervisorRouter {
             Arc::clone(&self.memory),
             Arc::clone(&ctx.inbox_registry),
             Arc::clone(&ctx.session_creation_lock),
+            (
+                self.principal_provider_id.clone(),
+                self.principal_model_id.clone(),
+            ),
         )
         .await
         .map_err(|e| RouterError::AgentFailed(e.to_string()))?;

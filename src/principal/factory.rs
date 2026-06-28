@@ -74,6 +74,8 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
             resolver,
             prompt,
             workspace_path.to_path_buf(),
+            config.preferred_provider_id.clone(),
+            config.preferred_model_id.clone(),
         ))
     }
 }

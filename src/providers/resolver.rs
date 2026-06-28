@@ -746,6 +746,52 @@ mod tests {
         assert_eq!(env_var_candidates("my-custom"), vec!["MY_CUSTOM_API_KEY"]);
     }
 
+    /// End-to-end of the daemon reload path: the resolver holds an
+    /// `Arc<ProviderCatalog>` whose inner state can change under it.
+    /// Simulates a `peko provider add ... --default` happening on a
+    /// separate process while the daemon is running — the file is
+    /// rewritten under the Arc, the daemon-side caller invokes
+    /// `reload()`, and the resolver immediately observes the new
+    /// default.
+    #[tokio::test]
+    async fn reload_arc_makes_resolver_observe_new_default() {
+        let (_dir, cat) = tempdir_catalog().await;
+        // Seed only openai, no default.
+        cat.upsert(ProviderCatalogEntry::from_template(
+            templates::find_template("openai").unwrap(),
+            "openai",
+            None,
+        ))
+        .await
+        .unwrap();
+        let r = resolver(cat.clone());
+        let choice = r.resolve(ResolveRequest::default()).await.unwrap();
+        assert_eq!(choice.entry.id, "openai");
+        assert_eq!(choice.source, ResolveSource::FirstEnabled);
+
+        // Write a brand-new catalog to disk under the same path
+        // (simulates `peko provider add` from another process) and
+        // reload.
+        let path = cat.path().to_path_buf();
+        let mut new_file = crate::providers::catalog::ProviderCatalogFile::default();
+        let tmpl = templates::find_template("anthropic").unwrap();
+        new_file.entries.insert(
+            "anthropic".to_string(),
+            ProviderCatalogEntry::from_template(tmpl, "anthropic", None),
+        );
+        new_file.default_provider_id = Some("anthropic".into());
+        new_file.default_model_id = Some(tmpl.default_model.into());
+        std::fs::write(&path, toml::to_string(&new_file).unwrap()).unwrap();
+
+        let count = cat.reload().await.unwrap();
+        assert_eq!(count, 1);
+
+        // Same resolver, same Arc — now sees the new default.
+        let choice = r.resolve(ResolveRequest::default()).await.unwrap();
+        assert_eq!(choice.entry.id, "anthropic");
+        assert_eq!(choice.source, ResolveSource::RuntimeDefault);
+    }
+
     // ensure we cover the unsupported-feature in cargo features
     #[allow(dead_code)]
     fn _format_check(_: ApiFormat) {}

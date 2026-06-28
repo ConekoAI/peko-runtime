@@ -600,6 +600,8 @@ mod tests {
                 granted_at: chrono::Utc::now().to_rfc3339(),
                 granted_by: Subject::User("test-owner".to_string()),
             }],
+            preferred_provider_id: None,
+            preferred_model_id: None,
         }
     }
 

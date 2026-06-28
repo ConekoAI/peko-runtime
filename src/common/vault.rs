@@ -271,6 +271,53 @@ impl Vault {
         &self.path
     }
 
+    /// Re-read the vault file from disk and swap the in-memory state.
+    /// Used by the daemon after a CLI mutation (`peko credential set`,
+    /// etc.) so the long-running process sees new keys without being
+    /// restarted.
+    ///
+    /// The same `unlock_method` (keychain or passphrase) is reused — if
+    /// the user has switched methods they'd need a full daemon
+    /// restart, which is acceptable. On failure we keep the prior
+    /// in-memory state so a transient fs hiccup doesn't blank the
+    /// daemon. Returns the entry count after reload.
+    pub fn reload(&self) -> Result<usize> {
+        let bytes = std::fs::read(&self.path)
+            .with_context(|| format!("failed to read vault: {}", self.path.display()))?;
+        let envelope: VaultEnvelope =
+            serde_json::from_slice(&bytes).with_context(|| "failed to parse vault envelope")?;
+        if envelope.version != VAULT_VERSION {
+            anyhow::bail!(
+                "unsupported vault version: {} (expected {})",
+                envelope.version,
+                VAULT_VERSION
+            );
+        }
+        let dek = match self.unlock_method {
+            UnlockMethod::Passphrase => {
+                let passphrase = Self::passphrase_from_env_or_test_fallback()
+                    .ok_or(VaultError::NoPassphrase)?;
+                let salt = envelope
+                    .salt
+                    .as_deref()
+                    .ok_or_else(|| VaultError::Backend("passphrase-mode vault missing salt".into()))?;
+                Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?
+            }
+            UnlockMethod::Keychain => Self::retrieve_dek_from_keychain()?,
+        };
+        let plaintext = Self::decrypt(&envelope, &dek)?;
+        let file: VaultFile =
+            serde_json::from_slice(&plaintext).with_context(|| "failed to parse vault contents")?;
+
+        let count = file.entries.len();
+        let mut guard = self.inner.write().map_err(|e| {
+            anyhow::anyhow!("vault reload: failed to acquire write lock: {e}")
+        })?;
+        guard.file = file;
+        guard.dek = dek;
+        Ok(count)
+    }
+
     /// Return how the vault was unlocked.
     #[must_use]
     pub fn unlock_method(&self) -> UnlockMethod {
@@ -1020,6 +1067,51 @@ mod tests {
         assert!(vault.delete_provider_key("openai").unwrap());
         assert!(vault.get_provider_key("openai").is_none());
         assert!(!vault.delete_provider_key("openai").unwrap());
+    }
+
+    /// `reload()` re-reads the on-disk file so a separate process
+    /// that wrote to the vault (e.g. `peko credential set`) becomes
+    /// visible to the long-running daemon that holds this Vault
+    /// instance. Mirrors `ProviderCatalog::reload`.
+    #[test]
+    fn reload_picks_up_keys_written_by_another_holder() {
+        use std::sync::Arc;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(VAULT_FILE_NAME);
+
+        // Holder 1: daemon-side. Loads the empty vault, keeps it
+        // open. It does not see the keys we'll add below.
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "test-reload");
+        let holder1 = Arc::new(Vault::for_test(dir.path(), "test-reload"));
+        assert_eq!(holder1.list_providers().len(), 0);
+
+        // Holder 2: simulates `peko credential set`. Writes keys via
+        // its own Vault instance, then closes.
+        let holder2 = Vault::for_test(dir.path(), "test-reload");
+        holder2
+            .set_provider_key("anthropic", &SecretString::new("sk-ant-reload".into()))
+            .unwrap();
+        holder2
+            .set_provider_key("openai", &SecretString::new("sk-openai-reload".into()))
+            .unwrap();
+        assert!(path.exists(), "vault file should be persisted");
+
+        // Holder 1 still has zero keys (no reload yet).
+        assert_eq!(holder1.list_providers().len(), 0);
+
+        // Reload → holder1 sees both keys, decrypted correctly.
+        let count = holder1.reload().unwrap();
+        assert_eq!(count, 2);
+        let mut keys: Vec<String> = holder1.list_providers();
+        keys.sort();
+        assert_eq!(keys, vec!["anthropic", "openai"]);
+
+        let stored = holder1
+            .get_provider_key("anthropic")
+            .expect("anthropic key should be readable after reload");
+        assert_eq!(stored.expose_secret(), "sk-ant-reload");
+
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
     }
 
     #[test]

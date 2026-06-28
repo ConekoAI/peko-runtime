@@ -295,7 +295,62 @@ async fn create_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
         name,
         principal.workspace_path.display()
     );
+
+    // Surface the missing-provider pitfall here, at moment of creation, so the
+    // user doesn't have to discover it two commands later when `peko send`
+    // fails with a stack-of-wrappers error (issue #69). The check consults
+    // the actual source of truth — the `ProviderCatalog` — so it stops
+    // firing once the user has run `peko provider add ... --default`.
+    if !any_provider_configured(paths, name).await {
+        eprintln!("{}", missing_provider_message(name));
+    }
+
     Ok(())
+}
+
+/// Build the warning string for the no-provider-configured case.
+/// Pure so tests can assert on its content; the caller is responsible
+/// for emitting it.
+fn missing_provider_message(name: &str) -> String {
+    format!(
+        "⚠️  No LLM provider configured. `peko send {name} ...` will fail\n\
+         until you add one:\n\
+           peko provider add --template anthropic --key \"$YOUR_KEY\" --default\n\
+         Or pick from the curated list:\n\
+           peko provider templates"
+    )
+}
+
+/// True if there's at least one provider the principal can route through:
+///
+/// 1. A runtime default set in the provider catalog (set via
+///    `peko provider set-default` or `--default` on add). This is
+///    what 99% of principals inherit — they don't need their own
+///    override.
+/// 2. A per-principal `preferred_provider_id` in the new principal's
+///    own `principal.toml` (already persisted by the time we get
+///    here only if the user ran a follow-up edit; we re-read the
+///    file to catch that case).
+async fn any_provider_configured(paths: &GlobalPaths, name: &str) -> bool {
+    use crate::providers::catalog::ProviderCatalog;
+    let cat_path = paths.config_dir.join(ProviderCatalog::FILENAME);
+    if let Ok(cat) = ProviderCatalog::load_or_init(&cat_path).await {
+        let (default_pid, _) = cat.get_default().await;
+        if default_pid.is_some() {
+            return true;
+        }
+    }
+    // No catalog default → check whether the new principal's own
+    // `principal.toml` pins a provider. We re-read so users who
+    // hand-edited before the next `peko principal show` aren't
+    // ignored.
+    let principal_toml = paths.principal_config(name);
+    if let Ok(text) = tokio::fs::read_to_string(&principal_toml).await {
+        if text.contains("preferred_provider_id") {
+            return true;
+        }
+    }
+    false
 }
 
 async fn list_principals(paths: &GlobalPaths) -> Result<()> {
@@ -329,11 +384,13 @@ async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
     let manager = build_manager(paths);
     let principal = load_principal(name, &manager, paths).await?;
 
-    let (display_name, did) = {
+    let (display_name, did, preferred_provider_id, preferred_model_id) = {
         let config = principal.config.read().await;
         (
             config.identity.display_name.clone().unwrap_or_else(|| config.name.clone()),
             config.did.clone(),
+            config.preferred_provider_id.clone(),
+            config.preferred_model_id.clone(),
         )
     };
     let did_str = did.map(|d| d.0).unwrap_or_else(|| "(none)".to_string());
@@ -341,6 +398,20 @@ async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
     println!("Principal: {}", display_name);
     println!("  DID:     {}", did_str);
     println!("  Workspace: {}", principal.workspace_path.display());
+
+    // Show where the supervisor will route its LLM calls. Surface the
+    // resolved (principal-or-default) choice so users can confirm their
+    // override took effect without trawling two config files.
+    let provider_line = match (preferred_provider_id, preferred_model_id) {
+        (Some(pid), Some(mid)) => format!("{pid} / {mid} (per-principal)"),
+        (Some(pid), None) => format!("{pid} (per-principal, default model)"),
+        (None, _) => match default_provider_summary(paths).await {
+            Some(line) => format!("{line} (inherited from default)"),
+            None => "(none — run `peko provider add`)".to_string(),
+        },
+    };
+    println!("  Provider: {provider_line}");
+
     println!("  Agents:");
     for (agent_name, prompt) in &principal.agent_prompts {
         let desc = prompt
@@ -351,6 +422,20 @@ async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
         println!("    - {} ({}): {desc}", agent_name, prompt.path.display());
     }
     Ok(())
+}
+
+/// Resolve the runtime default `(provider_id, model_id)` from the
+/// provider catalog on disk. Returns `None` when no catalog exists or
+/// no default is set.
+async fn default_provider_summary(paths: &GlobalPaths) -> Option<String> {
+    use crate::providers::catalog::ProviderCatalog;
+    let path = paths.config_dir.join(ProviderCatalog::FILENAME);
+    let cat = ProviderCatalog::load_or_init(&path).await.ok()?;
+    let (pid, mid) = cat.get_default().await;
+    let pid = pid?;
+    let fallback = cat.get(&pid).await.map(|e| e.default_model_id);
+    let mid = mid.or(fallback)?;
+    Some(format!("{pid} / {mid}"))
 }
 
 async fn send_to_principal(name: &str, message: &str, paths: &GlobalPaths) -> Result<()> {
@@ -761,6 +846,11 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         exposure: crate::tunnel::protocol::InstanceExposure::Private,
         status: None,
         permissions: Vec::new(),
+        // Principals inherit the global provider default unless the user
+        // explicitly pins one. `peko principal set-provider <name> ...`
+        // will populate these.
+        preferred_provider_id: None,
+        preferred_model_id: None,
     }
 }
 
@@ -876,5 +966,85 @@ mod tests {
     fn default_agent_prompt_contains_name() {
         let prompt = default_agent_prompt("spot");
         assert!(prompt.contains("spot"));
+    }
+
+    #[tokio::test]
+    async fn any_provider_configured_recognises_catalog_default() {
+        use crate::commands::Cli;
+        use crate::providers::catalog::{ModelInfo, ProviderCatalog, ProviderCatalogEntry};
+        use crate::providers::templates;
+        use clap::Parser;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("PEKO_MASTER_PASSPHRASE", "test-any-provider");
+
+        let cli = Cli::parse_from([
+            "peko",
+            "--config-dir",
+            dir.path().join("config").to_str().unwrap(),
+            "--data-dir",
+            dir.path().join("data").to_str().unwrap(),
+            "--cache-dir",
+            dir.path().join("cache").to_str().unwrap(),
+            "principal",
+            "list",
+        ]);
+        let paths = GlobalPaths::from_cli(&cli);
+
+        // Empty catalog → not configured.
+        let cat_path = paths.config_dir.join(ProviderCatalog::FILENAME);
+        let cat = ProviderCatalog::load_or_init(&cat_path).await.unwrap();
+        assert!(!any_provider_configured(&paths, "alice").await);
+
+        // Seed an entry but don't set it as default → still not configured.
+        let tmpl = templates::find_template("anthropic").unwrap();
+        cat.upsert(ProviderCatalogEntry::from_template(tmpl, "anthropic", None))
+            .await
+            .unwrap();
+        assert!(!any_provider_configured(&paths, "alice").await);
+
+        // Set as default → configured.
+        cat.set_default(Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
+            .await
+            .unwrap();
+        assert!(any_provider_configured(&paths, "alice").await);
+
+        // Sanity: a principal file with `preferred_provider_id` also counts,
+        // even when the catalog has no default.
+        let _ = cat.set_default(None, None).await;
+        let principal_path = paths.principal_config("alice");
+        tokio::fs::create_dir_all(principal_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &principal_path,
+            "name = \"alice\"\npreferred_provider_id = \"ollama\"\n",
+        )
+        .await
+        .unwrap();
+        assert!(any_provider_configured(&paths, "alice").await);
+
+        // Keep the compiler quiet about the unused ModelInfo import — it's
+        // here to make the test resilient if we later add catalog helpers
+        // that need it.
+        let _: Option<ModelInfo> = None;
+    }
+
+    /// The warning now points at `peko provider add` and does NOT
+    /// advise manual TOML editing (which doesn't configure anything).
+    #[test]
+    fn missing_provider_message_points_at_command_not_toml() {
+        let msg = missing_provider_message("alice");
+        assert!(msg.contains("peko provider add"), "got: {msg}");
+        assert!(
+            !msg.contains("[provider] block"),
+            "warning should not suggest TOML editing: {msg}"
+        );
+        assert!(
+            !msg.contains("~/.peko/config.toml"),
+            "warning should not mention the global config: {msg}"
+        );
+        // Names the principal so the user knows which one is affected.
+        assert!(msg.contains("alice"), "warning should name the principal: {msg}");
     }
 }

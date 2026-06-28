@@ -202,6 +202,21 @@ impl DaemonClient {
     }
 
     // ------------------------------------------------------------------
+    // Provider management
+    // ------------------------------------------------------------------
+
+    /// Ask the daemon to re-read `providers.toml` and `vault.enc`
+    /// from disk. Used by `peko provider {add,remove,set-default}`
+    /// and `peko credential {set,delete}` after their on-disk writes
+    /// succeed, so the long-running daemon observes CLI mutations
+    /// without a restart.
+    pub async fn reload_providers(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::ProviderReload { request_id };
+        self.request_response(packet).await
+    }
+
+    // ------------------------------------------------------------------
     // Cron management
     // ------------------------------------------------------------------
 

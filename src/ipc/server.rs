@@ -1311,6 +1311,26 @@ impl IpcServer {
                 Self::send_sink(sink, response).await?;
             }
 
+            RequestPacket::ProviderReload { request_id } => {
+                match state.reload_providers().await {
+                    Ok((providers_count, keys_count)) => {
+                        let response = ResponsePacket::ProviderReloaded {
+                            request_id,
+                            providers_count,
+                            keys_count,
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("provider reload failed: {e}"),
+                        };
+                        Self::send_sink(sink, response).await?;
+                    }
+                }
+            }
+
             RequestPacket::SystemStatus { request_id } => {
                 let response = ResponsePacket::SystemStatus {
                     request_id,

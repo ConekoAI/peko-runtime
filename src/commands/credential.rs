@@ -92,16 +92,31 @@ async fn set_cmd(vault: &Vault, provider: &str, key: Option<String>) -> Result<(
         .set_provider_key(provider, &secret)
         .with_context(|| format!("failed to store key for '{provider}' in vault"))?;
     println!("Stored key for '{provider}' in the vault.");
+    notify_daemon_reload().await;
     Ok(())
 }
 
 async fn delete_cmd(vault: &Vault, provider: &str) -> Result<()> {
     if vault.delete_provider_key(provider)? {
         println!("Removed key for '{provider}'.");
+        notify_daemon_reload().await;
     } else {
         println!("No key stored for '{provider}'.");
     }
     Ok(())
+}
+
+/// Tell the running daemon to re-read the vault so the in-flight
+/// supervisor sees the key just stored/deleted. Silent on connection
+/// failure (daemon may not be running; the next `peko daemon start`
+/// will pick up the new state from disk).
+async fn notify_daemon_reload() {
+    let Ok(client) = crate::ipc::DaemonClient::connect().await else {
+        return;
+    };
+    if let Err(e) = client.reload_providers().await {
+        eprintln!("Daemon reload failed: {e}");
+    }
 }
 
 async fn list_cmd(vault: &Vault) -> Result<()> {

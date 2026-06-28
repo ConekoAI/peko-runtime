@@ -1302,6 +1302,8 @@ mod tests {
             exposure,
             status: None,
             permissions,
+            preferred_provider_id: None,
+            preferred_model_id: None,
         }
     }
 
