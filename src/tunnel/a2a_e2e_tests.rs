@@ -52,14 +52,14 @@ use crate::tunnel::{PendingA2aResponses, TunnelHandle, TunnelMessage};
 /// wire-shape contract without depending on a live LLM.
 fn synthesize_target_response(
     request: &TunnelMessage,
-    expected_target_agent_did: &str,
+    expected_target_principal_did: &str,
     target_response_text: &str,
 ) -> Result<Vec<u8>, String> {
     let TunnelMessage::AgentToAgentRequest {
         request_id,
         caller_runtime_id,
-        caller_agent_did,
-        target_agent_did,
+        caller_principal_did,
+        target_principal_did,
         session_id: _,
         message,
         team: _,
@@ -69,12 +69,12 @@ fn synthesize_target_response(
         return Err(format!("expected AgentToAgentRequest, got: {request:?}"));
     };
 
-    if target_agent_did != expected_target_agent_did {
+    if target_principal_did != expected_target_principal_did {
         let err = HubA2AErrorResponse {
             kind: "error".to_string(),
             code: "target_not_found".to_string(),
             message: format!(
-                "no local agent has agent_did={target_agent_did} (request_id={request_id})"
+                "no local agent has agent_did={target_principal_did} (request_id={request_id})"
             ),
         };
         return serde_json::to_vec(&err).map_err(|e| format!("serialize error: {e}"));
@@ -91,8 +91,8 @@ fn synthesize_target_response(
     let signed = SignedFields {
         request_id,
         caller_runtime_id,
-        caller_agent_did,
-        target_agent_did,
+        caller_principal_did,
+        target_principal_did,
         message,
         session_id: None,
         team: None,
@@ -104,7 +104,7 @@ fn synthesize_target_response(
     // Synthesize a successful A2aSendResult.
     let result = A2aSendResult {
         success: true,
-        response: format!("echo from {expected_target_agent_did}: {target_response_text}"),
+        response: format!("echo from {expected_target_principal_did}: {target_response_text}"),
         session_id: format!("agent:target-agent:session:e2e-{}", request_id),
         iterations: Some(1),
         tool_calls: None,
@@ -121,7 +121,7 @@ fn synthesize_target_response(
 async fn run_test_hub(
     mut caller_outbound: mpsc::UnboundedReceiver<TunnelMessage>,
     caller_pending: Arc<PendingA2aResponses>,
-    expected_target_agent_did: &'static str,
+    expected_target_principal_did: &'static str,
     target_response_text: &'static str,
 ) {
     while let Some(msg) = caller_outbound.recv().await {
@@ -129,7 +129,7 @@ async fn run_test_hub(
             TunnelMessage::AgentToAgentRequest { .. } => {
                 let payload = match synthesize_target_response(
                     &msg,
-                    expected_target_agent_did,
+                    expected_target_principal_did,
                     target_response_text,
                 ) {
                     Ok(p) => p,
@@ -197,7 +197,7 @@ async fn build_caller(
     //    constructor.
 
     let kp = KeyPair::generate();
-    let caller_agent_did = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+    let caller_principal_did = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
     let runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
 
     let tunnel_slot = Arc::new(tokio::sync::RwLock::new(Some(TunnelHandle::new(
@@ -219,7 +219,7 @@ async fn build_caller(
     let service = build_minimal_service().await;
 
     A2aSendTool::new(service.clone())
-        .with_caller_did("caller-agent", &caller_agent_did)
+        .with_caller_did("caller-agent", &caller_principal_did)
         .with_cross_runtime(ctx)
 }
 
@@ -355,7 +355,7 @@ async fn test_cross_runtime_a2a_hub_synthesized_error_response() {
     // resolve_remote_target will return NotFound before the hub
     // is reached. To exercise the hub's error path, register
     // the DID so the caller's resolve succeeds, then have the
-    // hub's `expected_target_agent_did` mismatch it (so the hub
+    // hub's `expected_target_principal_did` mismatch it (so the hub
     // synthesizes a `target_not_found`).
     directory.register_did(
         "did:peko:agent:target-keyhash",
@@ -372,7 +372,7 @@ async fn test_cross_runtime_a2a_hub_synthesized_error_response() {
     let hub_pending = caller_pending.clone();
     let hub_task = tokio::spawn(async move {
         // Note: the hub expects a DIFFERENT DID than what the
-        // directory returns, so the hub's "expected_target_agent_did"
+        // directory returns, so the hub's "expected_target_principal_did"
         // check fails and a `target_not_found` is synthesized.
         run_test_hub(
             caller_outbound_rx,
@@ -421,7 +421,7 @@ async fn test_cross_runtime_a2a_hub_synthesized_error_response() {
 }
 
 /// Edge case: the caller's `runtime_id_hint` is honored, so the
-/// directory is not consulted. The hub's `expected_target_agent_did`
+/// directory is not consulted. The hub's `expected_target_principal_did`
 /// check still runs against the caller-supplied hint's
 /// resolution — the test pins that the hint path still
 /// produces a valid signed envelope.
