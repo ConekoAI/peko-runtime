@@ -1003,25 +1003,37 @@ impl IpcServer {
                 Self::handle_ext_status(request_id, extension_id, state, sink, peer).await?;
             }
 
-            // ─── Agent CRUD ─────────────────────────────────────────────────
-            RequestPacket::AgentList {
-                request_id,
-                team_filter,
-            } => {
-                let service = state.agent_mgmt_service();
-                match service.list_agents(team_filter.as_deref()).await {
-                    Ok(agents) => {
-                        let response = ResponsePacket::AgentList { request_id, agents };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
+            // ─── Principal CRUD (post-migration actor surface) ────────────
+            // The principal-as-single-actor migration (audit C1) replaced
+            // the legacy `AgentList` IPC handler. Actor listing/show is
+            // now served by `PrincipalManager::list_all` / `get_by_name`,
+            // which read the post-migration `<workspace>/principals/...`
+            // tree — the on-disk truth — instead of the legacy per-agent
+            // mirror directories.
+            RequestPacket::PrincipalList { request_id } => {
+                let principal_manager = state.principal_manager();
+                let mut principals = Vec::new();
+                for p in principal_manager.list_all().await {
+                    principals.push(p.summary().await);
                 }
+                let response = ResponsePacket::PrincipalList {
+                    request_id,
+                    principals,
+                };
+                Self::send_sink(sink, response).await?;
+            }
+
+            RequestPacket::PrincipalGet { request_id, name } => {
+                let principal_manager = state.principal_manager();
+                let principal = match principal_manager.get_by_name(&name).await {
+                    Some(p) => Some(p.summary().await),
+                    None => None,
+                };
+                let response = ResponsePacket::PrincipalGet {
+                    request_id,
+                    principal,
+                };
+                Self::send_sink(sink, response).await?;
             }
 
             // ─── Team CRUD ──────────────────────────────────────────────────
