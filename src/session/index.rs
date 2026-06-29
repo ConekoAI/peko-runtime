@@ -14,11 +14,41 @@ use crate::session::lock::FileLock;
 use crate::session::safe_filename_component;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, info};
+
+/// Process-global registry of per-directory serialization locks.
+///
+/// Every [`SessionIndex`] is short-lived — `SessionManager` opens a fresh one
+/// per turn (see `principal/agent_runner.rs`), so multiple instances for the
+/// same principal point at the same `sessions.json` / `peers.json` while each
+/// holds its own ~30s in-memory cache. Without a shared serialization point,
+/// two instances read the index, mutate their own cache, and each writes the
+/// *whole* map back — last writer wins and the other's freshly-added session
+/// is silently lost (the production race behind the flaky
+/// `concurrent_receives_are_isolated`; see issue #89).
+///
+/// The cross-process `FileLock` does not help here: it guards against other
+/// OS processes, but the lost-update happens between two tasks in the *same*
+/// process, each reading a stale cache. We need an in-process lock that
+/// serializes the read-modify-write, keyed by the index directory so writers
+/// to different principals never contend.
+static INDEX_DIR_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+/// Get (or create) the shared serialization lock for an index directory.
+fn dir_lock(dir: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let registry = INDEX_DIR_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = registry.lock().unwrap();
+    map.entry(dir.to_path_buf())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
 
 /// Default cache TTL (30 seconds)
 pub const DEFAULT_CACHE_TTL_MS: u64 = 30_000;
@@ -230,6 +260,13 @@ pub struct SessionIndex {
     cache_ttl: Duration,
     sessions_loaded_at: Option<SystemTime>,
     peers_loaded_at: Option<SystemTime>,
+    // Pending changes made by *this* instance since the last save. The save
+    // path re-reads the on-disk index under the shared lock and applies only
+    // these deltas, so a concurrent writer's entries are never clobbered.
+    dirty_session_ids: HashSet<String>,
+    removed_session_ids: HashSet<String>,
+    dirty_peer_keys: HashSet<String>,
+    removed_peer_keys: HashSet<String>,
 }
 
 impl SessionIndex {
@@ -250,6 +287,10 @@ impl SessionIndex {
             cache_ttl: Duration::from_millis(DEFAULT_CACHE_TTL_MS),
             sessions_loaded_at: None,
             peers_loaded_at: None,
+            dirty_session_ids: HashSet::new(),
+            removed_session_ids: HashSet::new(),
+            dirty_peer_keys: HashSet::new(),
+            removed_peer_keys: HashSet::new(),
         }
     }
 
@@ -371,9 +412,12 @@ impl SessionIndex {
 
     /// Insert or update session (O(1))
     pub async fn insert(&mut self, entry: SessionEntry) -> Result<()> {
+        let session_id = entry.session_id.clone();
         let sessions = self.load_sessions_mut().await?;
-        sessions.insert(entry.session_id.clone(), entry);
+        sessions.insert(session_id.clone(), entry);
         self.sessions_modified = true;
+        self.removed_session_ids.remove(&session_id);
+        self.dirty_session_ids.insert(session_id);
         Ok(())
     }
 
@@ -383,6 +427,8 @@ impl SessionIndex {
         let removed = sessions.remove(session_id);
         if removed.is_some() {
             self.sessions_modified = true;
+            self.dirty_session_ids.remove(session_id);
+            self.removed_session_ids.insert(session_id.to_string());
         }
         Ok(removed)
     }
@@ -441,6 +487,8 @@ impl SessionIndex {
 
         peer_info.switch_to(session_id)?;
         self.peers_modified = true;
+        self.removed_peer_keys.remove(peer_key);
+        self.dirty_peer_keys.insert(peer_key.to_string());
 
         info!("Switched {} to session {}", peer_key, session_id);
         Ok(())
@@ -452,6 +500,8 @@ impl SessionIndex {
 
         if peers.peers.remove(peer_key).is_some() {
             self.peers_modified = true;
+            self.dirty_peer_keys.remove(peer_key);
+            self.removed_peer_keys.insert(peer_key.to_string());
             info!("Cleared peer routing for {}", peer_key);
         }
 
@@ -466,6 +516,8 @@ impl SessionIndex {
         let sessions = self.load_sessions_mut().await?;
         sessions.insert(session_id.clone(), entry);
         self.sessions_modified = true;
+        self.removed_session_ids.remove(&session_id);
+        self.dirty_session_ids.insert(session_id.clone());
 
         // Update peers.json
         let peers = self.load_peers_mut().await?;
@@ -477,6 +529,8 @@ impl SessionIndex {
         peer_info.add_session(session_id.clone());
         let active_id = peer_info.active_session_id.clone();
         self.peers_modified = true;
+        self.removed_peer_keys.remove(peer_key);
+        self.dirty_peer_keys.insert(peer_key.to_string());
 
         info!(
             "Created session {} for peer {}, active_session_id={}",
@@ -501,6 +555,8 @@ impl SessionIndex {
         }
         peer_info.active_session_id = session_id.to_string();
         self.peers_modified = true;
+        self.removed_peer_keys.remove(peer_key);
+        self.dirty_peer_keys.insert(peer_key.to_string());
 
         info!("Ensured peer {} active session: {}", peer_key, session_id);
         Ok(())
@@ -541,12 +597,9 @@ impl SessionIndex {
         if !self.sessions_modified {
             return Ok(());
         }
-
-        let sessions = self.load_sessions().await?;
-        let sessions_clone = sessions.clone();
-        self.save_sessions_internal(&sessions_clone).await?;
-        self.sessions_modified = false;
-        Ok(())
+        let lock = dir_lock(&self.dir);
+        let _guard = lock.lock().await;
+        self.merge_save_sessions().await
     }
 
     /// Save peers.json if modified
@@ -554,50 +607,159 @@ impl SessionIndex {
         if !self.peers_modified {
             return Ok(());
         }
-
-        let peers = self.load_peers().await?;
-        let peers_clone = peers.clone();
-        self.save_peers_internal(&peers_clone).await?;
-        self.peers_modified = false;
-        Ok(())
+        let lock = dir_lock(&self.dir);
+        let _guard = lock.lock().await;
+        self.merge_save_peers().await
     }
 
-    /// Save both if modified
+    /// Save both if modified.
+    ///
+    /// Acquires the per-directory serialization lock once and merges both
+    /// files under it, so a concurrent saver on the same directory can't
+    /// interleave a sessions write with our peers write.
     pub async fn save(&mut self) -> Result<()> {
-        self.save_sessions().await?;
-        self.save_peers().await?;
+        if !self.sessions_modified && !self.peers_modified {
+            return Ok(());
+        }
+        let lock = dir_lock(&self.dir);
+        let _guard = lock.lock().await;
+        if self.sessions_modified {
+            self.merge_save_sessions().await?;
+        }
+        if self.peers_modified {
+            self.merge_save_peers().await?;
+        }
         Ok(())
     }
 
-    /// Internal: Save sessions.json
-    async fn save_sessions_internal(&self, sessions: &HashMap<String, SessionEntry>) -> Result<()> {
+    /// Merge this instance's session deltas onto the current on-disk index
+    /// and write the result atomically.
+    ///
+    /// Caller MUST hold the per-directory lock from [`dir_lock`]. We re-read
+    /// `sessions.json` fresh (ignoring our possibly-stale cache), apply only
+    /// the entries this instance inserted/removed, then write. This is what
+    /// prevents lost updates: a concurrent instance's entries that we never
+    /// touched are read back from disk and preserved rather than clobbered by
+    /// a whole-map overwrite of our stale cache.
+    async fn merge_save_sessions(&mut self) -> Result<()> {
         self.ensure_dir().await?;
 
-        let _lock = FileLock::acquire(&self.sessions_path, 5000).await?;
+        // Cross-process guard (other OS processes); the dir lock guards
+        // other tasks in this process.
+        let _file_lock = FileLock::acquire(&self.sessions_path, 5000).await?;
 
-        let json = serde_json::to_string_pretty(sessions)?;
-        let temp_path = self.sessions_path.with_extension("tmp");
+        let mut on_disk = Self::read_sessions_file(&self.sessions_path).await?;
 
-        fs::write(&temp_path, json).await?;
-        fs::rename(&temp_path, &self.sessions_path).await?;
+        if let Some(cache) = self.sessions_cache.as_ref() {
+            for id in &self.dirty_session_ids {
+                if let Some(entry) = cache.get(id) {
+                    on_disk.insert(id.clone(), entry.clone());
+                }
+            }
+        }
+        for id in &self.removed_session_ids {
+            on_disk.remove(id);
+        }
 
-        debug!("Saved sessions.json: {} entries", sessions.len());
+        Self::write_json_atomic(&self.sessions_path, &on_disk).await?;
+
+        let len = on_disk.len();
+        // The merged map is now the authoritative state; adopt it as our
+        // cache so subsequent reads within the TTL stay consistent.
+        self.sessions_cache = Some(on_disk);
+        self.sessions_loaded_at = Some(SystemTime::now());
+        self.sessions_modified = false;
+        self.dirty_session_ids.clear();
+        self.removed_session_ids.clear();
+
+        debug!("Saved sessions.json: {} entries", len);
         Ok(())
     }
 
-    /// Internal: Save peers.json
-    async fn save_peers_internal(&self, peers: &PeerIndex) -> Result<()> {
+    /// Merge this instance's peer-routing deltas onto the current on-disk
+    /// index and write atomically. See [`Self::merge_save_sessions`].
+    async fn merge_save_peers(&mut self) -> Result<()> {
         self.ensure_dir().await?;
 
-        let _lock = FileLock::acquire(&self.peers_path, 5000).await?;
+        let _file_lock = FileLock::acquire(&self.peers_path, 5000).await?;
 
-        let json = serde_json::to_string_pretty(peers)?;
-        let temp_path = self.peers_path.with_extension("tmp");
+        let mut on_disk = Self::read_peers_file(&self.peers_path).await?;
 
-        fs::write(&temp_path, json).await?;
-        fs::rename(&temp_path, &self.peers_path).await?;
+        if let Some(cache) = self.peers_cache.as_ref() {
+            for key in &self.dirty_peer_keys {
+                if let Some(info) = cache.peers.get(key) {
+                    on_disk.peers.insert(key.clone(), info.clone());
+                }
+            }
+        }
+        for key in &self.removed_peer_keys {
+            on_disk.peers.remove(key);
+        }
 
-        debug!("Saved peers.json: {} peers", peers.peers.len());
+        Self::write_json_atomic(&self.peers_path, &on_disk).await?;
+
+        let len = on_disk.peers.len();
+        self.peers_cache = Some(on_disk);
+        self.peers_loaded_at = Some(SystemTime::now());
+        self.peers_modified = false;
+        self.dirty_peer_keys.clear();
+        self.removed_peer_keys.clear();
+
+        debug!("Saved peers.json: {} peers", len);
+        Ok(())
+    }
+
+    /// Read and parse sessions.json directly from disk (no cache).
+    async fn read_sessions_file(path: &Path) -> Result<HashMap<String, SessionEntry>> {
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+        let content = fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read sessions index: {}", path.display()))?;
+        if content.trim().is_empty() {
+            return Ok(HashMap::new());
+        }
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse sessions index: {}", path.display()))
+    }
+
+    /// Read and parse peers.json directly from disk (no cache).
+    async fn read_peers_file(path: &Path) -> Result<PeerIndex> {
+        if !path.exists() {
+            return Ok(PeerIndex::default());
+        }
+        let content = fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read peers index: {}", path.display()))?;
+        if content.trim().is_empty() {
+            return Ok(PeerIndex::default());
+        }
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse peers index: {}", path.display()))
+    }
+
+    /// Serialize `value` and write it to `path` atomically: write a sibling
+    /// temp file, fsync it, then `rename(2)` over the target. A reader sees
+    /// either the old file or the new one, never a torn write. The temp name
+    /// is per-process so a leftover from a crashed run can't collide with a
+    /// live writer's rename (the `ENOENT` race in issue #89). Writers are
+    /// serialized by the per-directory lock, so the fixed per-process suffix
+    /// is safe.
+    async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+        let json = serde_json::to_string_pretty(value)?;
+        let temp_path = path.with_extension(format!("{}.tmp", std::process::id()));
+
+        let mut file = fs::File::create(&temp_path)
+            .await
+            .with_context(|| format!("Failed to create temp index file: {}", temp_path.display()))?;
+        file.write_all(json.as_bytes()).await?;
+        file.sync_all().await?;
+        drop(file);
+
+        fs::rename(&temp_path, path)
+            .await
+            .with_context(|| format!("Failed to rename index file into place: {}", path.display()))?;
         Ok(())
     }
 
@@ -632,15 +794,31 @@ impl SessionIndex {
             let sessions = self.load_sessions_mut().await?;
             sessions.remove(&session_id);
             self.sessions_modified = true;
+            self.dirty_session_ids.remove(&session_id);
+            self.removed_session_ids.insert(session_id.clone());
 
-            // Remove from peers
+            // Remove from peers. Capture the key set before/after so we can
+            // record which peers were modified vs. dropped — the merge-save
+            // path applies these deltas onto the fresh on-disk index.
             let peers = self.load_peers_mut().await?;
+            let before: HashSet<String> = peers.peers.keys().cloned().collect();
             for peer_info in peers.peers.values_mut() {
                 peer_info.session_ids.retain(|id| id != &session_id);
             }
             // Remove empty peers
             peers.peers.retain(|_, p| !p.session_ids.is_empty());
+            let after: HashSet<String> = peers.peers.keys().cloned().collect();
             self.peers_modified = true;
+            // Surviving peers had their session list edited → dirty.
+            for key in &after {
+                self.removed_peer_keys.remove(key);
+                self.dirty_peer_keys.insert(key.clone());
+            }
+            // Peers that disappeared (no sessions left) → removed.
+            for key in before.difference(&after) {
+                self.dirty_peer_keys.remove(key);
+                self.removed_peer_keys.insert(key.clone());
+            }
 
             // Delete transcript file
             let transcript_path = self
@@ -673,6 +851,66 @@ impl SessionIndex {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Regression test for issue #89: concurrent `SessionIndex` instances on
+    /// the same directory must not lose each other's writes.
+    ///
+    /// Before the per-directory serialization lock + delta-merge save, each
+    /// instance read its own (possibly empty) cache, mutated it, and wrote the
+    /// *whole* map back — so N peers racing to create sessions left only the
+    /// last writer's entry. Here we spawn N tasks, each opening its own index
+    /// (mirroring the per-turn instances in `agent_runner.rs`) and inserting a
+    /// distinct session, then assert all N survive on disk.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_inserts_do_not_lose_updates() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().to_path_buf();
+        let n = 25;
+
+        let mut handles = Vec::with_capacity(n);
+        for i in 0..n {
+            let dir = dir.clone();
+            handles.push(tokio::spawn(async move {
+                // Fresh instance per task — independent caches, same files.
+                let mut index = SessionIndex::open(&dir);
+                let id = format!("sess_{i}");
+                let entry = SessionEntry::with_peer(
+                    id.clone(),
+                    "testagent".to_string(),
+                    format!("{id}.jsonl"),
+                    "user",
+                    format!("peer-{i}"),
+                );
+                index
+                    .create_for_peer(entry, &format!("user:peer-{i}"))
+                    .await
+                    .unwrap();
+                index.save().await.unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // A fresh reader must see every session and every peer routing.
+        let mut reader = SessionIndex::open(&dir);
+        let all = reader.list_all().await.unwrap();
+        assert_eq!(all.len(), n, "all concurrent sessions should survive");
+        for i in 0..n {
+            assert!(
+                reader.get(&format!("sess_{i}")).await.unwrap().is_some(),
+                "session sess_{i} was lost"
+            );
+            assert!(
+                reader
+                    .get_active_for_peer(&format!("user:peer-{i}"))
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "peer routing user:peer-{i} was lost"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_session_entry_crud() {
