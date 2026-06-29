@@ -890,7 +890,7 @@ mod tests {
         let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:user:alice");
 
-        let peer = Subject::Principal("helper".to_string());
+        let peer = Subject::Principal("helper".into());
         let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
     }

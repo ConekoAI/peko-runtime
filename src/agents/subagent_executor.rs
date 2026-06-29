@@ -264,7 +264,7 @@ impl SubagentExecutor {
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
         // Create spawn session
-        let peer = Subject::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()));
+        let peer = Subject::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()).into());
         let spawn_resolved = {
             let mut manager = self.session_manager.write().await;
             manager
@@ -730,7 +730,7 @@ async fn execute_subagent_task(
                 let peer_type = parts.get(peer_idx + 1).unwrap_or(&"agent");
                 let peer_id = parts.get(peer_idx + 2).unwrap_or(&"spawn");
                 let peer = match *peer_type {
-                    "agent" => Subject::Principal(peer_id.to_string()),
+                    "agent" => Subject::Principal(peer_id.to_string().into()),
                     _ => Subject::User(peer_id.to_string()),
                 };
 
@@ -977,7 +977,7 @@ mod tests {
             let handle = mgr
                 .create_spawn_overlay(
                     "test_agent",
-                    &Subject::Principal("child".to_string()),
+                    &Subject::Principal("child".into()),
                     "test task",
                     false,
                     "agent:test_agent:peer:user:parent",

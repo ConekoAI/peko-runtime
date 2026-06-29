@@ -1,6 +1,16 @@
 //! Team Packager for creating portable team packages
 //!
-//! Exports teams to `.team` files (tar.gz archives containing multiple agents)
+//! Exports teams to `.team` files (tar.gz archives containing multiple agents).
+//!
+//! **REMAINS — pre-Principal team concept, retained intentionally.**
+//! The `peko team {create,list,show,export,import}` CLI surface still drives
+//! this packager. After the principal-as-single-actor migration, the
+//! post-migration actor surface is `Principal` and the canonical packager
+//! is `PrincipalPackager` / `PrincipalUnpackager` (see `principal_packager.rs`).
+//! The team path is retained for users with existing `.team` archives on
+//! disk and for the team-scoped IPC variants (`RequestPacket::Team*`).
+//! Do NOT delete without first deciding on migration tooling for existing
+//! `.team` archives. Audit finding H5.
 
 use crate::agents::agent_config::AgentConfig;
 use crate::identity::Identity;

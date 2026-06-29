@@ -433,7 +433,7 @@ mod tests {
             ),
             (
                 r#"{ "kind": "principal", "id": "did:peko:agent:abc" }"#,
-                Subject::Principal("did:peko:agent:abc".to_string()),
+                Subject::Principal("did:peko:agent:abc".into()),
             ),
             (
                 r#"{ "kind": "team", "id": "eng" }"#,

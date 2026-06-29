@@ -71,6 +71,32 @@ pub struct PrincipalConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PrincipalDID(pub String);
 
+impl PrincipalDID {
+    /// Borrow the inner DID string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for PrincipalDID {
+    fn from(s: String) -> Self {
+        PrincipalDID(s)
+    }
+}
+
+impl From<&str> for PrincipalDID {
+    fn from(s: &str) -> Self {
+        PrincipalDID(s.to_string())
+    }
+}
+
+impl std::fmt::Display for PrincipalDID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrincipalCapabilities {
     #[serde(default)]

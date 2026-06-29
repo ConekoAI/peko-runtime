@@ -199,7 +199,7 @@ mod tests {
         assert!(matches!(user, Subject::User(_)));
         assert!(!matches!(user, Subject::Principal(_)));
 
-        let agent = Subject::Principal("researcher".to_string());
+        let agent = Subject::Principal("researcher".into());
         assert_eq!(agent.subject_id(), "researcher");
         assert_eq!(agent.kind().to_string(), "principal");
         assert!(matches!(agent, Subject::Principal(_)));
@@ -211,7 +211,7 @@ mod tests {
         let user = Subject::User("alice".to_string());
         assert_eq!(format!("{user}"), "user:alice");
 
-        let agent = Subject::Principal("helper".to_string());
+        let agent = Subject::Principal("helper".into());
         assert_eq!(format!("{agent}"), "principal:helper");
     }
 
@@ -220,7 +220,7 @@ mod tests {
         let user1 = Subject::User("alice".to_string());
         let user2 = Subject::User("alice".to_string());
         let user3 = Subject::User("bob".to_string());
-        let agent = Subject::Principal("alice".to_string());
+        let agent = Subject::Principal("alice".into());
 
         assert_eq!(user1, user2);
         assert_ne!(user1, user3);

@@ -1063,7 +1063,7 @@ impl TunnelDispatcher {
         a2a_audit::emit_a2a_received(&received_event);
 
         // 4 + 5. Dispatch to the Principal.
-        let caller_principal = Subject::Principal(caller_principal_did.clone());
+        let caller_principal = Subject::Principal(caller_principal_did.clone().into());
         let channel = crate::principal::router::ChannelContext {
             kind: crate::principal::router::ChannelKind::A2a,
             streaming: false,
@@ -2128,7 +2128,7 @@ mod tests {
             "a2a-target",
             Subject::User("user:owner".to_string()),
             vec![PermissionGrant {
-                subject: Subject::Principal(caller_principal_did.clone()),
+                subject: Subject::Principal(caller_principal_did.clone().into()),
                 permission: Permission::Chat,
                 granted_at: "2026-06-27T00:00:00Z".to_string(),
                 granted_by: Subject::User("user:owner".to_string()),

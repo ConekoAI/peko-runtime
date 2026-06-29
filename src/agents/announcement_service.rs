@@ -229,7 +229,7 @@ async fn resolve_parent_handle(
 
     let peer = match parsed.peer_type.as_str() {
         "user" => crate::auth::Subject::User(parsed.peer_id),
-        "agent" => crate::auth::Subject::Principal(parsed.peer_id),
+        "agent" => crate::auth::Subject::Principal(parsed.peer_id.into()),
         _ => return None,
     };
 
