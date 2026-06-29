@@ -376,19 +376,22 @@ impl PrincipalManager {
         (Arc::clone(&self.inbox_registry), lock)
     }
 
-    /// The main entry point: a message arrives at a Principal boundary.
-    pub async fn receive(
+    /// Build the `RouterContext` for a message arriving at a Principal
+    /// boundary. This is the single point of truth for permission checks,
+    /// session recall, and the principal's per-message view of its
+    /// configuration — both the one-shot `receive` path and the streaming
+    /// `PrincipalSendStream` path funnel through here so the two can never
+    /// drift (audit H1).
+    ///
+    /// Returns the assembled `RouterContext` ready to hand to a
+    /// `PrincipalRouter::route` / `route_streaming` call.
+    pub async fn build_router_context(
         &self,
-        principal_id: PrincipalId,
+        principal: &Arc<Principal>,
         peer: Subject,
         message: String,
-        _channel: ChannelContext,
-    ) -> Result<PrincipalResponse, PrincipalManagerError> {
-        let principal = self
-            .get(principal_id)
-            .await
-            .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
-
+        channel: ChannelContext,
+    ) -> Result<RouterContext, PrincipalManagerError> {
         // Enforce Principal-level permissions before any routing or session work.
         let resource = {
             let config = principal.config.read().await;
@@ -440,12 +443,12 @@ impl PrincipalManager {
             )
         };
 
-        let ctx = RouterContext {
+        Ok(RouterContext {
             principal_id: principal.id.clone(),
             principal_name,
-            peer: peer.clone(),
+            peer,
             message,
-            channel: _channel,
+            channel,
             routing,
             recalled_context,
             available_agents,
@@ -454,14 +457,32 @@ impl PrincipalManager {
             governance,
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: self.session_creation_lock(principal.id.clone()).await,
-        };
+        })
+    }
+
+    /// The main entry point: a message arrives at a Principal boundary.
+    pub async fn receive(
+        &self,
+        principal_id: PrincipalId,
+        peer: Subject,
+        message: String,
+        channel: ChannelContext,
+    ) -> Result<PrincipalResponse, PrincipalManagerError> {
+        let principal = self
+            .get(principal_id)
+            .await
+            .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
+
+        let ctx = self
+            .build_router_context(&principal, peer, message, channel)
+            .await?;
 
         // Serial queue per peer: only one supervisor run may be active for a
         // given peer/session at a time.  If a message arrives while the
         // supervisor is already running, queue it as a steering message in the
         // same session inbox; the active run will drain it on its next
         // iteration.
-        let session_id = super::routers::supervisor::supervisor_session_id(&peer);
+        let session_id = super::routers::supervisor::supervisor_session_id(&ctx.peer);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await?;

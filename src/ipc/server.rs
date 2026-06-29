@@ -2621,14 +2621,15 @@ impl IpcServer {
                 };
 
                 // Construct the RouterContext the supervisor router expects.
-                let router_ctx = match Self::build_principal_router_ctx(
-                    &state,
-                    &principal,
-                    peer.clone(),
-                    message.clone(),
-                    channel,
-                )
-                .await
+                // Audit H1: the streaming path now uses the same
+                // `PrincipalManager::build_router_context` helper as
+                // the one-shot `PrincipalManager::receive` path, so
+                // permission checks, session recall, and per-message
+                // configuration can't drift between the two.
+                let router_ctx = match state
+                    .principal_manager()
+                    .build_router_context(&principal, peer.clone(), message.clone(), channel)
+                    .await
                 {
                     Ok(ctx) => ctx,
                     Err(e) => {
@@ -4057,100 +4058,6 @@ impl IpcServer {
         manager.get_by_name(name).await
     }
 
-    /// Build a [`RouterContext`] for a single principal-receive call.
-    ///
-    /// Mirrors the body of `PrincipalManager::receive` but is callable
-    /// from the streaming IPC handler, which needs the context before
-    /// invoking the router. The shared `inbox_registry` and
-    /// `session_creation_lock` are taken from the principal manager.
-    async fn build_principal_router_ctx(
-        state: &AppState,
-        principal: &Arc<Principal>,
-        peer: crate::auth::Subject,
-        message: String,
-        channel: ChannelContext,
-    ) -> anyhow::Result<crate::principal::router::RouterContext> {
-        use crate::auth::ownership::{check_permission, Permission, Resource};
-        use crate::principal::parse_agent_role;
-        use crate::principal::router::{
-            AgentPromptSummary, ContextInjection, ContextInjectionKind, RouterContext,
-        };
-
-        let manager = state.principal_manager();
-
-        // Enforce principal-level permissions before routing.
-        let resource = {
-            let config = principal.config.read().await;
-            Resource::Principal {
-                name: config.name.clone(),
-                owner: config.owner.clone(),
-                permissions: config.permissions.clone(),
-                exposure: config.exposure.clone(),
-            }
-        };
-        if let Err(denied) = check_permission(&resource, Permission::Chat, &peer) {
-            anyhow::bail!(denied.to_string());
-        }
-
-        // Recall the most recent session for this peer.
-        let latest_session = principal
-            .memory
-            .find_latest_session_for_peer(&peer)
-            .await
-            .map_err(|e| anyhow::anyhow!("principal memory lookup failed: {e}"))?;
-
-        let mut recalled_context = Vec::new();
-        if let Some(artifact) = latest_session {
-            recalled_context.push(ContextInjection {
-                kind: ContextInjectionKind::Session,
-                id: artifact.session_id.clone(),
-                content: artifact.summary.unwrap_or_default(),
-            });
-        }
-
-        let (available_agents, routing, capabilities, intent, governance, principal_name) = {
-            let config = principal.config.read().await;
-            let available_agents: Vec<AgentPromptSummary> = principal
-                .agent_prompts
-                .values()
-                .map(|p| AgentPromptSummary {
-                    name: p.name.clone(),
-                    role: parse_agent_role(p.frontmatter.role.as_deref()),
-                    description: p.frontmatter.description.clone(),
-                })
-                .collect();
-            (
-                available_agents,
-                config.routing.clone(),
-                config.capabilities.clone(),
-                config.intent.clone(),
-                config.governance.clone(),
-                config.name.clone(),
-            )
-        };
-
-        // Borrow the manager's `inbox_registry` and `session_creation_lock`
-        // so the streaming path shares the same back-pressure as the
-        // non-streaming `PrincipalSend` path.
-        let (inbox_registry, session_creation_lock) =
-            manager.streaming_primitives(&principal.id).await;
-
-        Ok(RouterContext {
-            principal_id: principal.id.clone(),
-            principal_name,
-            peer,
-            message,
-            channel,
-            routing,
-            recalled_context,
-            available_agents,
-            capabilities,
-            intent,
-            governance,
-            inbox_registry,
-            session_creation_lock,
-        })
-    }
 
     /// Send a response packet back to the client via the per-request sink.
     ///
