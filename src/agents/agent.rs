@@ -250,54 +250,69 @@ impl Agent {
         ext_config.enabled = self.config.extension_whitelist();
         self.extension_core.set_tool_config(ext_config).await;
 
-        // Load Universal Tools from extensions directory (where `peko ext install` puts them)
-        let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
-        tracing::info!(
-            "Checking for Universal Tools in extensions directory: {}",
-            extensions_dir.display()
-        );
-        if extensions_dir.exists() {
-            tracing::info!(
-                "Loading Universal Tools from '{}' for agent '{}'...",
-                extensions_dir.display(),
+        // Load Universal Tools from extensions directory (where `peko ext install` puts them).
+        //
+        // A fresh `Agent` is constructed per execution but they all share
+        // the daemon-global `ExtensionCore`, so this scan only needs to run
+        // once per core. Skip the dir walk + `ExtensionManager` rebuild once
+        // the core is warm — otherwise this re-walks disk on every run.
+        if self.extension_core.universal_extensions_loaded() {
+            tracing::debug!(
+                "Universal extensions already loaded on shared core; skipping rescan for agent '{}'",
                 self.config.name
             );
-            // Use ExtensionManager for unified tool discovery
-            use crate::extensions::framework::manager::ExtensionManager;
-            use crate::extensions::BuiltInAdapters;
-            let mut manager = ExtensionManager::with_core(self.extension_core.clone());
-            for adapter in BuiltInAdapters::new().adapters() {
-                manager.register_adapter(adapter);
-            }
-            match manager.load_from_directory(&extensions_dir).await {
-                Ok(loaded_ids) => {
-                    if loaded_ids.is_empty() {
-                        tracing::debug!("No extensions found in {}", extensions_dir.display());
-                    } else {
-                        tracing::info!(
-                            "✅ Loaded {} extensions: {:?}",
-                            loaded_ids.len(),
-                            loaded_ids
-                                .iter()
-                                .map(std::string::ToString::to_string)
-                                .collect::<Vec<_>>()
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "❌ Failed to load extensions from {}: {:#}",
-                        extensions_dir.display(),
-                        e
-                    );
-                    // Continue without extensions
-                }
-            }
         } else {
-            tracing::debug!(
-                "Extensions directory not found at {} - no universal tools to load",
+            let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
+            tracing::info!(
+                "Checking for Universal Tools in extensions directory: {}",
                 extensions_dir.display()
             );
+            if extensions_dir.exists() {
+                tracing::info!(
+                    "Loading Universal Tools from '{}' for agent '{}'...",
+                    extensions_dir.display(),
+                    self.config.name
+                );
+                // Use ExtensionManager for unified tool discovery
+                use crate::extensions::framework::manager::ExtensionManager;
+                use crate::extensions::BuiltInAdapters;
+                let mut manager = ExtensionManager::with_core(self.extension_core.clone());
+                for adapter in BuiltInAdapters::new().adapters() {
+                    manager.register_adapter(adapter);
+                }
+                match manager.load_from_directory(&extensions_dir).await {
+                    Ok(loaded_ids) => {
+                        if loaded_ids.is_empty() {
+                            tracing::debug!("No extensions found in {}", extensions_dir.display());
+                        } else {
+                            tracing::info!(
+                                "✅ Loaded {} extensions: {:?}",
+                                loaded_ids.len(),
+                                loaded_ids
+                                    .iter()
+                                    .map(std::string::ToString::to_string)
+                                    .collect::<Vec<_>>()
+                            );
+                        }
+                        // Mark the core warm so later executions skip the rescan.
+                        // Only on success so a transient failure is retried next run.
+                        self.extension_core.mark_universal_extensions_loaded();
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "❌ Failed to load extensions from {}: {:#}",
+                            extensions_dir.display(),
+                            e
+                        );
+                        // Continue without extensions
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "Extensions directory not found at {} - no universal tools to load",
+                    extensions_dir.display()
+                );
+            }
         }
 
         // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
@@ -801,147 +816,6 @@ impl Agent {
 
         self.set_state(AgentState::Idle);
         result
-    }
-
-    /// Execute with a channel-based event interface.
-    ///
-    /// Directly creates an `AgenticLoop` and returns a receiver for async streaming.
-    pub async fn execute_streaming(
-        &self,
-        prompt: &str,
-    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
-        let Some(provider) = self.provider_arc() else {
-            return Err(anyhow::anyhow!("No provider configured"));
-        };
-
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(10000);
-        let prompt = prompt.to_string();
-
-        self.prepare_execution().await?;
-
-        let agent_arc = Arc::new(self.clone());
-        let event_tx_clone = event_tx.clone();
-        let extension_core = self.extension_core();
-
-        let provider_for_loop = provider.clone();
-        let agent_for_loop = agent_arc.clone();
-        let extension_core_for_loop = extension_core.clone();
-        tokio::task::spawn_local(async move {
-            // Construct the per-call wiring from inside the spawned task
-            // since we cannot borrow `self` here. We rely on the agent's
-            // session cell being already populated by prepare_execution
-            // or by the caller; if it is None, the spawn-side just
-            // stamps "unknown" via AsyncSpawnTool's session-key fallback.
-            //
-            // We need the agent's current session id cell; replicate the
-            // wiring by recreating the same queue + executor + AsyncSpawn/
-            // AsyncOutput tools locally here.
-            //
-            // The executor and the loop share a per-call `InboxRegistry`
-            // and a single inbox pre-populated for this session, so
-            // completions land in the inbox the loop drains at the next
-            // iteration. The daemon-global `InboxRegistry` will replace
-            // this once the per-call path is rewired to use
-            // `AppState::inbox_registry` directly.
-            let async_inbox_registry = Arc::new(crate::session::InboxRegistry::new());
-            let streaming_session_key = "streaming".to_string();
-            let async_completion_queue = async_inbox_registry
-                .get_or_create(&streaming_session_key)
-                .await;
-            let async_executor = Arc::new(
-                crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
-                    .with_inbox_registry(async_inbox_registry.clone()),
-            );
-            // Snapshot the registry so the per-agent AsyncStatus/AsyncList/
-            // AsyncStop tools can be bound to it after `async_executor` is
-            // moved into AsyncOutputTool below.
-            let async_registry = async_executor.clone_registry();
-            let core_weak = Arc::downgrade(&extension_core_for_loop);
-            let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
-                async_executor.clone(),
-                core_weak.clone(),
-                Some(agent_for_loop.identity.did.clone()),
-            ));
-            let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::with_executor(
-                async_executor,
-            ));
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
-                    &extension_core_for_loop,
-                    spawn_tool,
-                )
-                .await
-            {
-                warn!(
-                    "Failed to register per-agent AsyncSpawnTool (streaming): {}",
-                    e
-                );
-            }
-            if let Err(e) =
-                crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
-                    &extension_core_for_loop,
-                    output_tool,
-                )
-                .await
-            {
-                warn!(
-                    "Failed to register per-agent AsyncOutputTool (streaming): {}",
-                    e
-                );
-            }
-
-            // Register the per-agent introspection trio so the agent only
-            // sees its own async tasks (session isolation). Previously these
-            // tools were registered globally and could enumerate tasks across
-            // all agents.
-            for (tool_name, tool) in [
-                (
-                    "AsyncStatus",
-                    Arc::new(crate::tools::builtin::AsyncStatusTool::with_registry(
-                        async_registry.clone(),
-                    )) as Arc<dyn Tool>,
-                ),
-                (
-                    "AsyncList",
-                    Arc::new(crate::tools::builtin::AsyncListTool::with_registry(
-                        async_registry.clone(),
-                    )),
-                ),
-                (
-                    "AsyncStop",
-                    Arc::new(crate::tools::builtin::AsyncStopTool::with_registry(
-                        async_registry.clone(),
-                    )),
-                ),
-            ] {
-                if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-                    &extension_core_for_loop,
-                    tool,
-                )
-                .await
-                {
-                    warn!("Failed to register per-agent {tool_name}Tool: {e}");
-                }
-            }
-
-            let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
-                agent_for_loop,
-                provider_for_loop,
-                extension_core_for_loop,
-            )
-            .await
-            .with_async_completion_queue(async_completion_queue);
-
-            let _result = loop_
-                .run(&prompt, move |event| {
-                    if event_tx_clone.try_send(event).is_err() {
-                        warn!("Agent event dropped (channel full)");
-                    }
-                })
-                .await;
-        });
-
-        Ok(event_rx)
     }
 
     /// Execute with streaming support using the provided session.

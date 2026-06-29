@@ -135,12 +135,18 @@ impl LifecycleManager {
 
     /// Get active execution for an agent
     pub async fn get_agent_execution(&self, agent_name: &str) -> Option<ExecutionRecord> {
-        let by_agent = self.by_agent.read().await;
-        let active = self.active.read().await;
+        // Resolve the execution id and drop the `by_agent` guard before
+        // touching `active`. Holding both at once here (by_agent → active)
+        // inverted the order used by `clear_all` (active → by_agent), which
+        // is a classic lock-order inversion that can deadlock under
+        // concurrency. Never hold both locks simultaneously.
+        let execution_id = {
+            let by_agent = self.by_agent.read().await;
+            by_agent.get(agent_name).cloned()
+        }?;
 
-        by_agent
-            .get(agent_name)
-            .and_then(|id| active.get(id).cloned())
+        let active = self.active.read().await;
+        active.get(&execution_id).cloned()
     }
 
     /// List all active executions
