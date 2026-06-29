@@ -268,7 +268,7 @@ pub fn derive_base_session_key(agent: &str, peer: &crate::auth::Subject) -> Stri
             format!("agent:{}:peer:user:{}", agent, sanitize_key_component(id))
         }
         Subject::Principal(id) => {
-            format!("agent:{}:peer:agent:{}", agent, sanitize_key_component(id))
+            format!("agent:{}:peer:agent:{}", agent, sanitize_key_component(id.as_str()))
         }
         Subject::Team(_) | Subject::Public => {
             tracing::warn!(
@@ -477,7 +477,7 @@ mod tests {
         let key = derive_base_session_key("testagent", &user_peer);
         assert_eq!(key, "agent:testagent:peer:user:alice");
 
-        let agent_peer = Subject::Principal("helper".to_string());
+        let agent_peer = Subject::Principal("helper".into());
         let key = derive_base_session_key("testagent", &agent_peer);
         assert_eq!(key, "agent:testagent:peer:agent:helper");
     }

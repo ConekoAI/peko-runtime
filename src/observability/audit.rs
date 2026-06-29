@@ -391,7 +391,7 @@ mod tests {
             component: "tunnel".to_string(),
             event_type: "tunnel_proxied_request".to_string(),
             agent_did: Some("agent-a".to_string()),
-            caller: Some(Subject::Principal("helper".to_string())),
+            caller: Some(Subject::Principal("helper".into())),
             details: serde_json::json!({}),
             severity: AuditSeverity::Info,
         };
@@ -410,7 +410,7 @@ mod tests {
         // the `Subject` survives — guards against accidental
         // string-conversion regressions on the audit wire format.
         let parsed: AuditEvent = serde_json::from_value(v.clone()).unwrap();
-        assert_eq!(parsed.caller, Some(Subject::Principal("helper".to_string())));
+        assert_eq!(parsed.caller, Some(Subject::Principal("helper".into())));
 
         // User caller — also projects cleanly.
         let with_user_caller = AuditEvent {

@@ -15,6 +15,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::principal::PrincipalDID;
+
 /// A runtime actor: a user, a principal, a team, or the public.
 ///
 /// `User` and `Principal` are valid session peers (they have an id you can
@@ -24,13 +26,23 @@ use serde::{Deserialize, Serialize};
 ///
 /// Wire format: `{ "kind": "user" | "principal" | "team" | "public", "id": "..." }`
 /// via `#[serde(tag = "kind", content = "id")]`.
+///
+/// **Audit H6:** `Principal` carries a typed [`PrincipalDID`] newtype
+/// rather than a bare `String`. This gives the principal id a
+/// compile-time distinction from a plain name (a `String` name can no
+/// longer be passed where a principal DID is expected) and provides a
+/// single place to hang DID validation should we choose to enforce it.
+/// `User` and `Team` remain plain `String` because their wire values
+/// are not DIDs (pekoHub user ids and team names respectively).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "lowercase")]
 pub enum Subject {
     /// A pekohub user or local DID.
     User(String),
-    /// An AI principal, identified by name or DID.
-    Principal(String),
+    /// An AI principal, identified by its stable DID. Typed as
+    /// [`PrincipalDID`] so the principal id surface can carry validation
+    /// in one place.
+    Principal(PrincipalDID),
     /// A team id; resolves to a set of member subjects at check time.
     Team(String),
     /// Unauthenticated public access.
@@ -87,7 +99,8 @@ impl Subject {
     #[must_use]
     pub fn subject_id(&self) -> &str {
         match self {
-            Self::User(id) | Self::Principal(id) | Self::Team(id) => id,
+            Self::User(id) | Self::Team(id) => id,
+            Self::Principal(id) => id.as_str(),
             Self::Public => "public",
         }
     }
@@ -198,7 +211,7 @@ impl FromStr for Subject {
         }
         match kind {
             "user" => Ok(Self::User(id.to_string())),
-            "principal" => Ok(Self::Principal(id.to_string())),
+            "principal" => Ok(Self::Principal(PrincipalDID::from(id))),
             "team" => Ok(Self::Team(id.to_string())),
             other => Err(SubjectParseError(format!("unknown kind '{other}'"))),
         }

@@ -397,7 +397,7 @@ fn build_a2a_request(
     caller_agent: &str,
     wire_caller_id: &str,
 ) -> MessageRequest {
-    let caller_principal = Subject::Principal(wire_caller_id.to_string());
+    let caller_principal = Subject::Principal(wire_caller_id.to_string().into());
     // The `user` field is INTENTIONALLY left as the empty string for
     // a2a_send (issue #24 review #1). Any reader of
     // `MessageRequest::user` for a2a-originated calls must migrate to

@@ -1159,7 +1159,7 @@ impl SessionManager {
             {
                 // Restore peer from entry
                 match (entry.peer_type.as_deref(), entry.peer_id) {
-                    (Some("agent"), Some(id)) => Subject::Principal(id),
+                    (Some("agent"), Some(id)) => Subject::Principal(id.into()),
                     (Some("user"), Some(id)) => Subject::User(id),
                     // Legacy data (pre-#17): entry has no peer info recorded.
                     // Empty sender_id is the right fallback — it's
@@ -1618,7 +1618,7 @@ impl SessionManager {
     ) -> Result<SessionHandle> {
         // Always create a new base session for the child
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
-        let spawn_peer = Subject::Principal(spawn_id);
+        let spawn_peer = Subject::Principal(spawn_id.into());
         let child_base = self.get_or_create_base(agent, &spawn_peer).await?;
 
         // If not isolated, copy parent's context to child's session
@@ -1672,7 +1672,7 @@ impl SessionManager {
     ) -> Result<SessionHandle> {
         // Always create a new base session for the child (no shared JSONL file)
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
-        let spawn_peer = Subject::Principal(spawn_id);
+        let spawn_peer = Subject::Principal(spawn_id.into());
         let child_base = self.get_or_create_base(agent, &spawn_peer).await?;
 
         // If not isolated, copy parent's context to child's session
@@ -1738,7 +1738,7 @@ impl SessionManager {
             let peer_id = parts.get(peer_idx + 2)?;
 
             let peer = match *peer_type {
-                "agent" => Subject::Principal(peer_id.to_string()),
+                "agent" => Subject::Principal(peer_id.to_string().into()),
                 _ => Subject::User(peer_id.to_string()),
             };
 
@@ -1875,7 +1875,7 @@ impl SessionManager {
             // `test_wildcard_peer_type_resolves_to_user_peer` in
             // `tests/principal_back_compat.rs`.
             let peer = match parsed.peer_type.as_str() {
-                "agent" => Subject::Principal(parsed.peer_id),
+                "agent" => Subject::Principal(parsed.peer_id.into()),
                 "user" => Subject::User(parsed.peer_id),
                 _ => Subject::User(parsed.peer_id),
             };
