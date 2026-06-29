@@ -55,6 +55,14 @@ pub struct ExtensionCore {
     /// value per agent prevents concurrent agents from overwriting each
     /// other's session key — the bug addressed in issue #68.
     session_keys: Arc<RwLock<HashMap<String, String>>>,
+
+    /// Set once the universal extensions directory has been scanned and
+    /// its tools registered on this core. A fresh `Agent` is built per
+    /// execution but they all share the daemon-global core, so without
+    /// this guard `Agent::init_builtins_async` re-walks the extensions
+    /// dir and rebuilds an `ExtensionManager` on every single run. Tool
+    /// registration is idempotent, so loading once per core is correct.
+    universal_extensions_loaded: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for ExtensionCore {
@@ -80,6 +88,7 @@ impl ExtensionCore {
             services,
             tool_instances: Arc::new(RwLock::new(HashMap::new())),
             session_keys: Arc::new(RwLock::new(HashMap::new())),
+            universal_extensions_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -91,7 +100,25 @@ impl ExtensionCore {
             services,
             tool_instances: Arc::new(RwLock::new(HashMap::new())),
             session_keys: Arc::new(RwLock::new(HashMap::new())),
+            universal_extensions_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Whether the universal extensions directory has already been scanned
+    /// and loaded onto this core. Used by `Agent::init_builtins_async` to
+    /// skip the expensive per-execution dir walk + `ExtensionManager`
+    /// rebuild once the shared core is warm.
+    #[must_use]
+    pub fn universal_extensions_loaded(&self) -> bool {
+        self.universal_extensions_loaded
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark the universal extensions as loaded on this core. Called after a
+    /// successful directory scan so subsequent executions skip the rescan.
+    pub fn mark_universal_extensions_loaded(&self) {
+        self.universal_extensions_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Get the hook registry

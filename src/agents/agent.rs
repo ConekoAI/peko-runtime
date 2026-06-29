@@ -250,54 +250,69 @@ impl Agent {
         ext_config.enabled = self.config.extension_whitelist();
         self.extension_core.set_tool_config(ext_config).await;
 
-        // Load Universal Tools from extensions directory (where `peko ext install` puts them)
-        let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
-        tracing::info!(
-            "Checking for Universal Tools in extensions directory: {}",
-            extensions_dir.display()
-        );
-        if extensions_dir.exists() {
-            tracing::info!(
-                "Loading Universal Tools from '{}' for agent '{}'...",
-                extensions_dir.display(),
+        // Load Universal Tools from extensions directory (where `peko ext install` puts them).
+        //
+        // A fresh `Agent` is constructed per execution but they all share
+        // the daemon-global `ExtensionCore`, so this scan only needs to run
+        // once per core. Skip the dir walk + `ExtensionManager` rebuild once
+        // the core is warm — otherwise this re-walks disk on every run.
+        if self.extension_core.universal_extensions_loaded() {
+            tracing::debug!(
+                "Universal extensions already loaded on shared core; skipping rescan for agent '{}'",
                 self.config.name
             );
-            // Use ExtensionManager for unified tool discovery
-            use crate::extensions::framework::manager::ExtensionManager;
-            use crate::extensions::BuiltInAdapters;
-            let mut manager = ExtensionManager::with_core(self.extension_core.clone());
-            for adapter in BuiltInAdapters::new().adapters() {
-                manager.register_adapter(adapter);
-            }
-            match manager.load_from_directory(&extensions_dir).await {
-                Ok(loaded_ids) => {
-                    if loaded_ids.is_empty() {
-                        tracing::debug!("No extensions found in {}", extensions_dir.display());
-                    } else {
-                        tracing::info!(
-                            "✅ Loaded {} extensions: {:?}",
-                            loaded_ids.len(),
-                            loaded_ids
-                                .iter()
-                                .map(std::string::ToString::to_string)
-                                .collect::<Vec<_>>()
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "❌ Failed to load extensions from {}: {:#}",
-                        extensions_dir.display(),
-                        e
-                    );
-                    // Continue without extensions
-                }
-            }
         } else {
-            tracing::debug!(
-                "Extensions directory not found at {} - no universal tools to load",
+            let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
+            tracing::info!(
+                "Checking for Universal Tools in extensions directory: {}",
                 extensions_dir.display()
             );
+            if extensions_dir.exists() {
+                tracing::info!(
+                    "Loading Universal Tools from '{}' for agent '{}'...",
+                    extensions_dir.display(),
+                    self.config.name
+                );
+                // Use ExtensionManager for unified tool discovery
+                use crate::extensions::framework::manager::ExtensionManager;
+                use crate::extensions::BuiltInAdapters;
+                let mut manager = ExtensionManager::with_core(self.extension_core.clone());
+                for adapter in BuiltInAdapters::new().adapters() {
+                    manager.register_adapter(adapter);
+                }
+                match manager.load_from_directory(&extensions_dir).await {
+                    Ok(loaded_ids) => {
+                        if loaded_ids.is_empty() {
+                            tracing::debug!("No extensions found in {}", extensions_dir.display());
+                        } else {
+                            tracing::info!(
+                                "✅ Loaded {} extensions: {:?}",
+                                loaded_ids.len(),
+                                loaded_ids
+                                    .iter()
+                                    .map(std::string::ToString::to_string)
+                                    .collect::<Vec<_>>()
+                            );
+                        }
+                        // Mark the core warm so later executions skip the rescan.
+                        // Only on success so a transient failure is retried next run.
+                        self.extension_core.mark_universal_extensions_loaded();
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "❌ Failed to load extensions from {}: {:#}",
+                            extensions_dir.display(),
+                            e
+                        );
+                        // Continue without extensions
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "Extensions directory not found at {} - no universal tools to load",
+                    extensions_dir.display()
+                );
+            }
         }
 
         // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
