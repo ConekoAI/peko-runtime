@@ -1082,14 +1082,22 @@ impl SessionManager {
         }
         metadata.trigger = options.trigger;
 
-        // 3. Store metadata (via shared controller)
-        self.metadata_controller
-            .write()
-            .await
-            .create_metadata(metadata)
-            .await?;
-
-        // 4. Update peer routing in index via metadata controller
+        // 3 + 4. Store metadata AND update the peer-routing index AND save
+        // the index, all under a single `metadata_controller` write lock.
+        //
+        // The pre-M7 sequence acquired `metadata_controller.write()` three
+        // times — `create_metadata`, `create_for_peer`, `save_index` —
+        // releasing the lock between each call. Under heavy concurrency
+        // (e.g. `concurrent_receives_are_isolated`), two sessions for
+        // distinct peers would interleave and the trailing
+        // `save_index` could overwrite a concurrent peer's index update
+        // with a stale view, surfacing as a transient
+        // `RouterError(AgentFailed("failed to create supervisor session"))`
+        // and forcing the test to retry. Holding the lock for the full
+        // metadata+index sequence eliminates the race at its source
+        // (audit M7).
+        let mut controller = self.metadata_controller.write().await;
+        controller.create_metadata(metadata).await?;
         if self.index.is_some() {
             let entry = SessionEntry::with_peer(
                 session_id.clone(),
@@ -1098,13 +1106,10 @@ impl SessionManager {
                 peer.kind().to_string(),
                 peer.subject_id().to_string(),
             );
-            self.metadata_controller
-                .write()
-                .await
-                .create_for_peer(entry, &session_key)
-                .await?;
-            self.metadata_controller.write().await.save_index().await?;
+            controller.create_for_peer(entry, &session_key).await?;
+            controller.save_index().await?;
         }
+        drop(controller);
 
         // 5. Cache and return handle
         let arc = Arc::new(RwLock::new(session));
