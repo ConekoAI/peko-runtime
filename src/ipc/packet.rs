@@ -69,26 +69,15 @@ pub const CLI_TIMEOUT_SECS: u64 = 60;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum RequestPacket {
-    /// Execute an agent message and stream the response
-    #[serde(rename = "execute")]
-    Execute {
-        /// Unique request ID (monotonic counter or random)
-        request_id: u64,
-        /// Agent name
-        agent: String,
-        /// Team name
-        team: String,
-        /// Message to send
-        message: String,
-        /// Optional session ID to resume
-        session_id: Option<String>,
-        /// Start a new session
-        new_session: bool,
-        /// Enable streaming response
-        stream: bool,
-        /// User identifier for session isolation
-        user: String,
-    },
+    /// Execute an agent message and stream the response — retired in
+    /// the principal-as-single-actor migration (audit C4). The legacy
+    /// Execute path went through `StatelessAgentService` directly,
+    /// bypassing `PrincipalManager` permission checks, session
+    /// creation, and supervisor routing. All chat traffic is now
+    /// routed through `PrincipalSend` (one-shot) or
+    /// `PrincipalSendStream` (streaming) — both go through
+    /// `PrincipalManager::receive` and produce principal-scoped
+    /// sessions and audit trails.
 
     /// Spawn an async background task
     #[serde(rename = "async_spawn")]
@@ -585,8 +574,7 @@ impl RequestPacket {
     #[must_use]
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::Execute { request_id, .. }
-            | Self::AsyncSpawn { request_id, .. }
+            Self::AsyncSpawn { request_id, .. }
             | Self::AsyncCancel { request_id, .. }
             | Self::Ping { request_id }
             | Self::Shutdown { request_id, .. }
@@ -1584,34 +1572,30 @@ mod tests {
 
     #[test]
     fn test_request_serialization_roundtrip() {
-        let req = RequestPacket::Execute {
+        // Replaced from the retired `RequestPacket::Execute` (audit C4).
+        // Round-trip coverage now uses `PrincipalSend` so the test
+        // exercises a real post-migration actor-shape envelope.
+        let req = RequestPacket::PrincipalSend {
             request_id: 42,
-            agent: "test-agent".to_string(),
-            team: "default".to_string(),
+            name: "helper".to_string(),
             message: "Hello".to_string(),
-            session_id: None,
-            new_session: false,
-            stream: true,
-            user: "default".to_string(),
+            user: "alice".to_string(),
         };
 
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
 
         match decoded {
-            RequestPacket::Execute {
+            RequestPacket::PrincipalSend {
                 request_id,
-                agent,
-                team,
+                name,
                 message,
-                stream,
-                ..
+                user,
             } => {
                 assert_eq!(request_id, 42);
-                assert_eq!(agent, "test-agent");
-                assert_eq!(team, "default");
+                assert_eq!(name, "helper");
                 assert_eq!(message, "Hello");
-                assert!(stream);
+                assert_eq!(user, "alice");
             }
             _ => panic!("Wrong variant"),
         }

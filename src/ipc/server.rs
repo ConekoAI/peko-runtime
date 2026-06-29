@@ -751,31 +751,11 @@ impl IpcServer {
                 state.request_shutdown(force).await;
             }
 
-            RequestPacket::Execute {
-                request_id,
-                agent,
-                team,
-                message,
-                session_id,
-                new_session,
-                stream,
-                user,
-            } => {
-                Self::handle_execute(
-                    request_id,
-                    agent,
-                    team,
-                    message,
-                    session_id,
-                    new_session,
-                    stream,
-                    user,
-                    state,
-                    sink,
-                    peer,
-                )
-                .await?;
-            }
+            // `RequestPacket::Execute` was retired in audit C4. All
+            // chat traffic now flows through `PrincipalSend` (one-shot)
+            // and `PrincipalSendStream` (streaming) below — both go
+            // through `PrincipalManager::receive` and produce
+            // principal-scoped sessions and audit trails.
 
             RequestPacket::AsyncSpawn {
                 request_id,
@@ -3341,203 +3321,6 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Handle an Execute request — run the agentic loop and stream responses
-    async fn handle_execute(
-        request_id: u64,
-        agent: String,
-        team: String,
-        message: String,
-        session_id: Option<String>,
-        new_session: bool,
-        stream_enabled: bool,
-        user: String,
-        state: AppState,
-        sink: &dyn ResponseSink,
-        _peer: &PeerAddr,
-    ) -> anyhow::Result<()> {
-        use crate::common::types::a2a::A2aMessageRequest;
-        use crate::engine::{AgenticEvent, LifecyclePhase};
-
-        tracing::info!(
-            "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}, session_id={:?}, new_session={}",
-            request_id,
-            agent,
-            user,
-            stream_enabled,
-            session_id,
-            new_session
-        );
-
-        let agent_service = state.agent_service().clone();
-
-        let request = A2aMessageRequest::new(&agent, message)
-            .with_team(&team)
-            .with_session_opt(session_id)
-            .with_new_session(new_session)
-            .with_user(&user);
-
-        // Start the agentic loop — wrap in catch_unwind-like error handling
-        // so the client always gets a response even if execution fails
-        let mut event_stream = match agent_service.execute_message_streaming(request).await {
-            Ok(stream) => stream,
-            Err(e) => {
-                let error_packet = ResponsePacket::Error {
-                    request_id,
-                    message: format!("Failed to start agent execution: {e}"),
-                };
-                Self::send_sink(sink, error_packet).await?;
-                let done_packet = ResponsePacket::Done {
-                    request_id,
-                    success: false,
-                    error: Some(e.to_string()),
-                };
-                Self::send_sink(sink, done_packet).await?;
-                return Ok(());
-            }
-        };
-
-        // Stream events back as packets
-        let mut seq = 0u32;
-        let mut heartbeat = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
-        // Buffer for non-streaming mode: accumulate all text and send at the end
-        let mut non_streaming_buffer = String::new();
-
-        loop {
-            info!("IPC: waiting for event...");
-            tokio::select! {
-                maybe_event = event_stream.receiver.recv() => {
-                    info!("IPC: received event from channel: {:?}", maybe_event.is_some());
-                    match maybe_event {
-                        Some(event) => {
-                            match event {
-                                AgenticEvent::AssistantDelta { text, .. } => {
-                                    if stream_enabled {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: text,
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                        seq += 1;
-                                    } else {
-                                        // Accumulate for non-streaming mode
-                                        non_streaming_buffer.push_str(&text);
-                                    }
-                                }
-                                AgenticEvent::AssistantText { text, .. } => {
-                                    // Full block text (non-streaming mode)
-                                    if stream_enabled {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: text,
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                        seq += 1;
-                                    } else {
-                                        non_streaming_buffer.push_str(&text);
-                                    }
-                                }
-                                AgenticEvent::ToolStart { name, .. } => {
-                                    if stream_enabled {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: format!("\n[Running tool: {}]\n", name),
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                        seq += 1;
-                                    }
-                                }
-                                AgenticEvent::ToolEnd { result, success, .. } => {
-                                    info!("IPC: received ToolEnd event, stream_enabled={}", stream_enabled);
-                                    if stream_enabled {
-                                        let output = if success {
-                                            result.to_string()
-                                        } else {
-                                            format!("[Tool failed: {}]", result)
-                                        };
-                                        info!("Sending ToolEnd result to client: len={}, output={}", output.len(), output);
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: format!("\n[Tool result]: {}\n", output),
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                    }
-                                }
-                                AgenticEvent::Lifecycle { phase: LifecyclePhase::End, .. } => {
-                                    // In non-streaming mode, send accumulated text before Done
-                                    if !stream_enabled && !non_streaming_buffer.is_empty() {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: std::mem::take(&mut non_streaming_buffer),
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                    }
-                                    let packet = ResponsePacket::Done {
-                                        request_id,
-                                        success: true,
-                                        error: None,
-                                    };
-                                    Self::send_sink(sink, packet).await?;
-                                    break;
-                                }
-                                AgenticEvent::Lifecycle { phase: LifecyclePhase::Error, error, .. } => {
-                                    // In non-streaming mode, send accumulated text before Done (even on error)
-                                    if !stream_enabled && !non_streaming_buffer.is_empty() {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: std::mem::take(&mut non_streaming_buffer),
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                    }
-                                    let packet = ResponsePacket::Done {
-                                        request_id,
-                                        success: false,
-                                        error,
-                                    };
-                                    Self::send_sink(sink, packet).await?;
-                                    break;
-                                }
-                                _ => {
-                                    // Ignore other events (Thinking, Status, Usage, etc.)
-                                }
-                            }
-                        }
-                        None => {
-                            // In non-streaming mode, send accumulated text before Done
-                            if !stream_enabled && !non_streaming_buffer.is_empty() {
-                                let packet = ResponsePacket::Text {
-                                    request_id,
-                                    seq,
-                                    chunk: std::mem::take(&mut non_streaming_buffer),
-                                };
-                                Self::send_sink(sink, packet).await?;
-                            }
-                            let packet = ResponsePacket::Done {
-                                request_id,
-                                success: true,
-                                error: None,
-                            };
-                            Self::send_sink(sink, packet).await?;
-                            break;
-                        }
-                    }
-                }
-
-                _ = heartbeat.tick() => {
-                    let packet = ResponsePacket::Heartbeat { request_id };
-                    Self::send_sink(sink, packet).await?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Handle an AsyncSpawn request
     async fn handle_async_spawn(
         request_id: u64,
@@ -3726,9 +3509,12 @@ impl IpcServer {
             }
         };
 
-        // Forward events to the sink (mirrors handle_execute's loop
-        // but stripped of the streaming-vs-buffered split — the
-        // steering path always streams).
+        // Forward events to the sink. The steering path always
+        // streams, so we don't buffer — every event hits the wire
+        // as soon as it's available. The `handle_execute` shape
+        // (audit C4) used to do both buffered and streaming; that
+        // path was retired with the legacy `RequestPacket::Execute`
+        // variant.
         let mut heartbeat = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
         loop {
             tokio::select! {

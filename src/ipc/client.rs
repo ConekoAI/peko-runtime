@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tracing::{debug, trace};
+use tracing::trace;
 
 use super::connection::{ConnectionHandle, ConnectionManager};
 use super::packet::{RequestPacket, ResponsePacket};
@@ -74,46 +74,20 @@ impl DaemonClient {
         Ok(stream)
     }
 
-    /// Execute an agent message
+    /// Execute an agent message — retired in audit C4.
     ///
-    /// Sends an `Execute` request and returns a stream of response packets.
-    /// The caller should iterate the stream to receive text chunks, heartbeats,
-    /// and the final `Done` packet.
+    /// The legacy `Execute` path went through `StatelessAgentService`
+    /// directly, bypassing `PrincipalManager` permission checks,
+    /// session creation, and supervisor routing. All chat traffic is
+    /// now routed through `send_to_principal` /
+    /// `stream_from_principal` (one-shot and streaming
+    /// `PrincipalSend` / `PrincipalSendStream` IPC variants) so the
+    /// same client code goes through the principal-scoped path.
     ///
-    /// # Errors
-    /// Returns error if the request cannot be sent
-    pub async fn execute(
-        &self,
-        agent: impl Into<String>,
-        team: impl Into<String>,
-        message: impl Into<String>,
-        session_id: Option<String>,
-        new_session: bool,
-        stream: bool,
-        user: impl Into<String>,
-    ) -> anyhow::Result<PacketStream> {
-        let request_id = self.next_id();
-        let agent_str: String = agent.into();
-        let team_str: String = team.into();
-        let user_str: String = user.into();
-        debug!(
-            "Execute request {}: agent={} team={} user={} stream={}",
-            request_id, agent_str, team_str, user_str, stream
-        );
-
-        let packet = RequestPacket::Execute {
-            request_id,
-            agent: agent_str,
-            team: team_str,
-            message: message.into(),
-            session_id,
-            new_session,
-            stream,
-            user: user_str,
-        };
-
-        self.send_request(packet).await
-    }
+    /// No production code called this method after the
+    /// principal-as-single-actor migration; the only reference was
+    /// the ADR-021 example. Removed to make the back-door path
+    /// literally uncallable.
 
     /// Spawn an async background task
     ///
