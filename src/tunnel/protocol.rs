@@ -237,12 +237,12 @@ pub enum TunnelMessage {
     /// target's existing tunnel. The target verifies the caller's
     /// `caller_runtime_id` against the hub's allowlist (defense in
     /// depth) before attributing the receiving agent's session to
-    /// `Subject::Principal(caller_agent_did)` and dispatching.
+    /// `Subject::Principal(caller_principal_did)` and dispatching.
     ///
     /// Slice A only defines and round-trips the wire shape. Slice B
     /// adds the outbound signer (`PekoHubCredential::sign(...)` against
     /// the canonical pre-image `request_id || caller_runtime_id ||
-    /// caller_agent_did || target_agent_did || message || session_id?`).
+    /// caller_principal_did || target_principal_did || message || session_id?`).
     /// Slice C adds the inbound verifier + dispatcher route.
     #[serde(rename = "agent_to_agent_request", rename_all = "camelCase")]
     AgentToAgentRequest {
@@ -259,21 +259,21 @@ pub enum TunnelMessage {
         caller_runtime_id: String,
         /// The caller agent's stable DID (issue #28 form:
         /// `did:peko:agent:<keyhash>`). Projected to
-        /// `Subject::Principal(caller_agent_did)` on the target side
+        /// `Subject::Principal(caller_principal_did)` on the target side
         /// for session attribution, permission grant lookup, and the
         /// `AuditEvent.caller` field (issue #26).
-        caller_agent_did: String,
+        caller_principal_did: String,
         /// The **target** agent's stable DID. The target runtime
         /// resolves this against its local agent table
         /// (`AgentConfig.agent_did`) to find the agent name to
-        /// dispatch on. A missing target_agent_did on the receiving
+        /// dispatch on. A missing target_principal_did on the receiving
         /// side is a 404 — the hub-side directory should have caught
         /// this, so it most often indicates a stale resolution
         /// cached on the caller.
-        target_agent_did: String,
+        target_principal_did: String,
         /// Optional session ID to resume on the target side. When
         /// absent, the target runtime allocates a fresh session
-        /// keyed under `peer: agent:<caller_agent_did>`.
+        /// keyed under `peer: agent:<caller_principal_did>`.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         /// The message body to deliver to the target agent.
@@ -738,8 +738,8 @@ mod tests {
         let msg = TunnelMessage::AgentToAgentRequest {
             request_id: "req-abc-123".to_string(),
             caller_runtime_id: "did:key:zRuntime1".to_string(),
-            caller_agent_did: "did:peko:agent:caller-hash".to_string(),
-            target_agent_did: "did:peko:agent:target-hash".to_string(),
+            caller_principal_did: "did:peko:agent:caller-hash".to_string(),
+            target_principal_did: "did:peko:agent:target-hash".to_string(),
             session_id: Some("sess-xyz".to_string()),
             message: "review this PR".to_string(),
             team: Some("default".to_string()),
@@ -762,12 +762,12 @@ mod tests {
             "field callerRuntimeId must be camelCase, got: {json}"
         );
         assert!(
-            json.contains("\"callerAgentDid\""),
-            "field callerAgentDid must be camelCase, got: {json}"
+            json.contains("\"callerPrincipalDid\""),
+            "field callerPrincipalDid must be camelCase, got: {json}"
         );
         assert!(
-            json.contains("\"targetAgentDid\""),
-            "field targetAgentDid must be camelCase, got: {json}"
+            json.contains("\"targetPrincipalDid\""),
+            "field targetPrincipalDid must be camelCase, got: {json}"
         );
         assert!(
             json.contains("\"sessionId\""),
@@ -783,8 +783,8 @@ mod tests {
             TunnelMessage::AgentToAgentRequest {
                 request_id,
                 caller_runtime_id,
-                caller_agent_did,
-                target_agent_did,
+                caller_principal_did,
+                target_principal_did,
                 session_id,
                 message,
                 team,
@@ -792,8 +792,8 @@ mod tests {
             } => {
                 assert_eq!(request_id, "req-abc-123");
                 assert_eq!(caller_runtime_id, "did:key:zRuntime1");
-                assert_eq!(caller_agent_did, "did:peko:agent:caller-hash");
-                assert_eq!(target_agent_did, "did:peko:agent:target-hash");
+                assert_eq!(caller_principal_did, "did:peko:agent:caller-hash");
+                assert_eq!(target_principal_did, "did:peko:agent:target-hash");
                 assert_eq!(session_id.as_deref(), Some("sess-xyz"));
                 assert_eq!(message, "review this PR");
                 assert_eq!(team.as_deref(), Some("default"));
@@ -813,8 +813,8 @@ mod tests {
         let msg = TunnelMessage::AgentToAgentRequest {
             request_id: "req-min".to_string(),
             caller_runtime_id: "did:key:zRuntime1".to_string(),
-            caller_agent_did: "did:peko:agent:caller-hash".to_string(),
-            target_agent_did: "did:peko:agent:target-hash".to_string(),
+            caller_principal_did: "did:peko:agent:caller-hash".to_string(),
+            target_principal_did: "did:peko:agent:target-hash".to_string(),
             session_id: None,
             message: "hi".to_string(),
             team: None,

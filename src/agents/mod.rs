@@ -1,9 +1,11 @@
 //! Single-agent execution runtime (Stateless Architecture)
 //!
 //! This module provides:
+//! Single-agent execution runtime (Stateless Architecture)
+//!
+//! This module provides:
 //! - Single agent runtime (`Agent` struct) — the core execution engine
 //!   used by Principal supervisors and the `Agent` subagent tool
-//! - Stateless agent management (`StatelessAgentManager`)
 //!
 //! Note: after the principal-as-single-actor migration, agent
 //! management surface (CRUD, .agent packaging) is gone. The only
@@ -16,10 +18,6 @@
 // Single agent runtime
 mod agent;
 pub use agent::Agent;
-
-// Stateless manager (primary architecture)
-pub mod stateless_manager;
-pub use stateless_manager::{StatelessAgentManager, StatelessManagerEvent};
 
 // Stateless execution service
 pub mod stateless_service;

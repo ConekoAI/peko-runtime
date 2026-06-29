@@ -376,19 +376,22 @@ impl PrincipalManager {
         (Arc::clone(&self.inbox_registry), lock)
     }
 
-    /// The main entry point: a message arrives at a Principal boundary.
-    pub async fn receive(
+    /// Build the `RouterContext` for a message arriving at a Principal
+    /// boundary. This is the single point of truth for permission checks,
+    /// session recall, and the principal's per-message view of its
+    /// configuration — both the one-shot `receive` path and the streaming
+    /// `PrincipalSendStream` path funnel through here so the two can never
+    /// drift (audit H1).
+    ///
+    /// Returns the assembled `RouterContext` ready to hand to a
+    /// `PrincipalRouter::route` / `route_streaming` call.
+    pub async fn build_router_context(
         &self,
-        principal_id: PrincipalId,
+        principal: &Arc<Principal>,
         peer: Subject,
         message: String,
-        _channel: ChannelContext,
-    ) -> Result<PrincipalResponse, PrincipalManagerError> {
-        let principal = self
-            .get(principal_id)
-            .await
-            .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
-
+        channel: ChannelContext,
+    ) -> Result<RouterContext, PrincipalManagerError> {
         // Enforce Principal-level permissions before any routing or session work.
         let resource = {
             let config = principal.config.read().await;
@@ -440,12 +443,12 @@ impl PrincipalManager {
             )
         };
 
-        let ctx = RouterContext {
+        Ok(RouterContext {
             principal_id: principal.id.clone(),
             principal_name,
-            peer: peer.clone(),
+            peer,
             message,
-            channel: _channel,
+            channel,
             routing,
             recalled_context,
             available_agents,
@@ -454,14 +457,32 @@ impl PrincipalManager {
             governance,
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: self.session_creation_lock(principal.id.clone()).await,
-        };
+        })
+    }
+
+    /// The main entry point: a message arrives at a Principal boundary.
+    pub async fn receive(
+        &self,
+        principal_id: PrincipalId,
+        peer: Subject,
+        message: String,
+        channel: ChannelContext,
+    ) -> Result<PrincipalResponse, PrincipalManagerError> {
+        let principal = self
+            .get(principal_id)
+            .await
+            .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
+
+        let ctx = self
+            .build_router_context(&principal, peer, message, channel)
+            .await?;
 
         // Serial queue per peer: only one supervisor run may be active for a
         // given peer/session at a time.  If a message arrives while the
         // supervisor is already running, queue it as a steering message in the
         // same session inbox; the active run will drain it on its next
         // iteration.
-        let session_id = super::routers::supervisor::supervisor_session_id(&peer);
+        let session_id = super::routers::supervisor::supervisor_session_id(&ctx.peer);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await?;
@@ -699,32 +720,18 @@ mod tests {
             let id = id.clone();
             let handle = tokio::spawn(async move {
                 let peer = Subject::User(format!("concurrent-{i}"));
-                // `SessionManager::create_session` can return a transient
-                // `RouterError(AgentFailed("failed to create supervisor session"))`
-                // under heavy concurrency when two tasks race to create
-                // distinct sessions against the same `metadata_controller`
-                // and the underlying JSONL write trips on an OS-level
-                // file-create race. The contract this test asserts is
-                // **isolation** (each peer gets a session), not that
-                // every receive is a one-shot — so retry transient
-                // supervisor-creation failures and re-queue the adapter
-                // response before giving up. Each task uses a distinct
-                // peer, so the isolation invariant is preserved across
-                // retries (different session ids, different response text).
-                for attempt in 0..3 {
-                    match manager
-                        .receive(id.clone(), peer.clone(), format!("hello {i}"), cli_channel())
-                        .await
-                    {
-                        Ok(resp) => return Ok::<_, PrincipalManagerError>(resp),
-                        Err(e) if attempt < 2 && is_transient_supervisor_error(&e) => {
-                            eprintln!("retrying concurrent receive {i} after: {e}");
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-                unreachable!("retry loop should have returned or propagated the error")
+                // M7 fix: `SessionManager::create_session` now holds the
+                // `metadata_controller` write lock for the full
+                // create-metadata + create-for-peer + save-index sequence,
+                // so two peers can no longer interleave their index
+                // updates. The previous test had a retry loop on the
+                // transient `AgentFailed("failed to create supervisor
+                // session")` race; with the lock held end-to-end the
+                // race can't happen, and this receive is a one-shot.
+                manager
+                    .receive(id.clone(), peer.clone(), format!("hello {i}"), cli_channel())
+                    .await
+                    .map_err(|e| -> PrincipalManagerError { e })
             });
             handles.push(handle);
         }
@@ -756,22 +763,6 @@ mod tests {
             peers as usize,
             "concurrent peers should each get a distinct session"
         );
-    }
-
-    /// Recognize the transient `AgentFailed("failed to create supervisor
-    /// session")` shape from `src/principal/agent_runner.rs:196`. Used by
-    /// the concurrent-receives retry loop to distinguish flaky races
-    /// from real, structural failures.
-    ///
-    /// Uses Debug rather than Display because the relevant substring
-    /// ("failed to create supervisor session") is the inner context
-    /// string, which the thiserror Display impls (RouterError →
-    /// PrincipalManagerError) wrap into a "router error: routing agent
-    /// failed: ..." prefix. Debug gives the full struct shape
-    /// `RouterError(AgentFailed("..."))` so the substring is directly
-    /// findable.
-    fn is_transient_supervisor_error(e: &PrincipalManagerError) -> bool {
-        format!("{e:?}").contains("failed to create supervisor session")
     }
 
     #[tokio::test(flavor = "multi_thread")]

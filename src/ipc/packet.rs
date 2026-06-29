@@ -69,26 +69,15 @@ pub const CLI_TIMEOUT_SECS: u64 = 60;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum RequestPacket {
-    /// Execute an agent message and stream the response
-    #[serde(rename = "execute")]
-    Execute {
-        /// Unique request ID (monotonic counter or random)
-        request_id: u64,
-        /// Agent name
-        agent: String,
-        /// Team name
-        team: String,
-        /// Message to send
-        message: String,
-        /// Optional session ID to resume
-        session_id: Option<String>,
-        /// Start a new session
-        new_session: bool,
-        /// Enable streaming response
-        stream: bool,
-        /// User identifier for session isolation
-        user: String,
-    },
+    /// Execute an agent message and stream the response — retired in
+    /// the principal-as-single-actor migration (audit C4). The legacy
+    /// Execute path went through `StatelessAgentService` directly,
+    /// bypassing `PrincipalManager` permission checks, session
+    /// creation, and supervisor routing. All chat traffic is now
+    /// routed through `PrincipalSend` (one-shot) or
+    /// `PrincipalSendStream` (streaming) — both go through
+    /// `PrincipalManager::receive` and produce principal-scoped
+    /// sessions and audit trails.
 
     /// Spawn an async background task
     #[serde(rename = "async_spawn")]
@@ -179,11 +168,19 @@ pub enum RequestPacket {
     },
 
     // ─── Agent CRUD ─────────────────────────────────────────────────
-    #[serde(rename = "agent_list")]
-    AgentList {
-        request_id: u64,
-        team_filter: Option<String>,
-    },
+    // `AgentList` was retired in the principal-as-single-actor migration
+    // (audit C1). Use `PrincipalList` / `PrincipalGet` below for the
+    // post-migration actor surface.
+
+    // ─── Principal CRUD (post-migration actor surface) ────────────
+    /// List all loaded Principals.
+    #[serde(rename = "principal_list")]
+    PrincipalList { request_id: u64 },
+
+    /// Look up a single Principal by name. Returns `ResponsePacket::PrincipalGet`
+    /// on hit, or `ResponsePacket::Error` with `principal_not_found` on miss.
+    #[serde(rename = "principal_get")]
+    PrincipalGet { request_id: u64, name: String },
 
     // ─── Team CRUD ──────────────────────────────────────────────────
     #[serde(rename = "team_list")]
@@ -577,8 +574,7 @@ impl RequestPacket {
     #[must_use]
     pub fn request_id(&self) -> u64 {
         match self {
-            Self::Execute { request_id, .. }
-            | Self::AsyncSpawn { request_id, .. }
+            Self::AsyncSpawn { request_id, .. }
             | Self::AsyncCancel { request_id, .. }
             | Self::Ping { request_id }
             | Self::Shutdown { request_id, .. }
@@ -591,7 +587,8 @@ impl RequestPacket {
             | Self::ExtStop { request_id, .. }
             | Self::ExtRestart { request_id, .. }
             | Self::ExtStatus { request_id, .. }
-            | Self::AgentList { request_id, .. }
+            | Self::PrincipalList { request_id }
+            | Self::PrincipalGet { request_id, .. }
             | Self::TeamList { request_id }
             | Self::TeamGet { request_id, .. }
             | Self::TeamCreate { request_id, .. }
@@ -820,11 +817,24 @@ pub enum ResponsePacket {
         last_error: Option<String>,
     },
 
-    /// Agent list response
-    #[serde(rename = "agent_list")]
-    AgentList {
+    /// Agent list response — retired in the principal-as-single-actor
+    /// migration (audit C1). Replaced by `PrincipalList` below.
+
+    /// Principal list response — the post-migration actor surface.
+    /// Replaces the legacy `AgentList` response shape; see audit C1.
+    #[serde(rename = "principal_list")]
+    PrincipalList {
         request_id: u64,
-        agents: Vec<crate::common::types::agent::AgentSummary>,
+        principals: Vec<crate::principal::PrincipalSummary>,
+    },
+
+    /// Principal get response — single Principal summary by name.
+    /// Replaces the legacy `AgentList` filtered-by-name lookup that the
+    /// CLI used to assemble a "team show" view.
+    #[serde(rename = "principal_get")]
+    PrincipalGet {
+        request_id: u64,
+        principal: Option<crate::principal::PrincipalSummary>,
     },
 
     /// Team list response
@@ -1399,7 +1409,8 @@ impl ResponsePacket {
             | Self::ExtStopped { request_id, .. }
             | Self::ExtRestarted { request_id, .. }
             | Self::ExtStatus { request_id, .. }
-            | Self::AgentList { request_id, .. }
+            | Self::PrincipalList { request_id, .. }
+            | Self::PrincipalGet { request_id, .. }
             | Self::TeamList { request_id, .. }
             | Self::TeamGet { request_id, .. }
             | Self::TeamCreated { request_id, .. }
@@ -1474,7 +1485,8 @@ impl ResponsePacket {
             Self::ExtStopped { .. } => "ExtStopped",
             Self::ExtRestarted { .. } => "ExtRestarted",
             Self::ExtStatus { .. } => "ExtStatus",
-            Self::AgentList { .. } => "AgentList",
+            Self::PrincipalList { .. } => "PrincipalList",
+            Self::PrincipalGet { .. } => "PrincipalGet",
             Self::TeamList { .. } => "TeamList",
             Self::TeamGet { .. } => "TeamGet",
             Self::TeamCreated { .. } => "TeamCreated",
@@ -1560,34 +1572,30 @@ mod tests {
 
     #[test]
     fn test_request_serialization_roundtrip() {
-        let req = RequestPacket::Execute {
+        // Replaced from the retired `RequestPacket::Execute` (audit C4).
+        // Round-trip coverage now uses `PrincipalSend` so the test
+        // exercises a real post-migration actor-shape envelope.
+        let req = RequestPacket::PrincipalSend {
             request_id: 42,
-            agent: "test-agent".to_string(),
-            team: "default".to_string(),
+            name: "helper".to_string(),
             message: "Hello".to_string(),
-            session_id: None,
-            new_session: false,
-            stream: true,
-            user: "default".to_string(),
+            user: "alice".to_string(),
         };
 
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
 
         match decoded {
-            RequestPacket::Execute {
+            RequestPacket::PrincipalSend {
                 request_id,
-                agent,
-                team,
+                name,
                 message,
-                stream,
-                ..
+                user,
             } => {
                 assert_eq!(request_id, 42);
-                assert_eq!(agent, "test-agent");
-                assert_eq!(team, "default");
+                assert_eq!(name, "helper");
                 assert_eq!(message, "Hello");
-                assert!(stream);
+                assert_eq!(user, "alice");
             }
             _ => panic!("Wrong variant"),
         }
@@ -1957,20 +1965,30 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_list_request_roundtrip() {
-        let req = RequestPacket::AgentList {
-            request_id: 300,
-            team_filter: Some("default".to_string()),
+    fn test_principal_list_request_roundtrip() {
+        let req = RequestPacket::PrincipalList { request_id: 300 };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalList { request_id } => {
+                assert_eq!(request_id, 300);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_get_request_roundtrip() {
+        let req = RequestPacket::PrincipalGet {
+            request_id: 301,
+            name: "helper".to_string(),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::AgentList {
-                request_id,
-                team_filter,
-            } => {
-                assert_eq!(request_id, 300);
-                assert_eq!(team_filter, Some("default".to_string()));
+            RequestPacket::PrincipalGet { request_id, name } => {
+                assert_eq!(request_id, 301);
+                assert_eq!(name, "helper");
             }
             _ => panic!("Wrong variant"),
         }
@@ -2030,26 +2048,81 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_list_response_roundtrip() {
-        let resp = ResponsePacket::AgentList {
+    fn test_principal_list_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalList {
             request_id: 600,
-            agents: vec![crate::common::types::agent::AgentSummary {
-                name: "test-agent".to_string(),
-                config: crate::agents::agent_config::AgentConfig {
-                    name: "test-agent".to_string(),
-                    ..Default::default()
-                },
-                config_path: std::path::PathBuf::from("/tmp/test-agent/config.toml"),
-                memberships: vec![],
+            principals: vec![crate::principal::PrincipalSummary {
+                name: "helper".to_string(),
+                did: crate::principal::config::PrincipalDID("did:peko:local:helper".to_string()),
+                owner: crate::auth::Subject::User("alice".to_string()),
+                description: Some("test principal".to_string()),
+                exposure: crate::tunnel::protocol::InstanceExposure::default(),
+                status: None,
+                capabilities: crate::principal::config::PrincipalCapabilities::default(),
+                agent_prompt_count: 0,
+                workspace_path: "/tmp/helper".to_string(),
             }],
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::AgentList { request_id, agents } => {
+            ResponsePacket::PrincipalList {
+                request_id,
+                principals,
+            } => {
                 assert_eq!(request_id, 600);
-                assert_eq!(agents.len(), 1);
-                assert_eq!(agents[0].name, "test-agent");
+                assert_eq!(principals.len(), 1);
+                assert_eq!(principals[0].name, "helper");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_get_response_roundtrip() {
+        let resp = ResponsePacket::PrincipalGet {
+            request_id: 601,
+            principal: Some(crate::principal::PrincipalSummary {
+                name: "helper".to_string(),
+                did: crate::principal::config::PrincipalDID("did:peko:local:helper".to_string()),
+                owner: crate::auth::Subject::User("alice".to_string()),
+                description: None,
+                exposure: crate::tunnel::protocol::InstanceExposure::default(),
+                status: None,
+                capabilities: crate::principal::config::PrincipalCapabilities::default(),
+                agent_prompt_count: 2,
+                workspace_path: "/tmp/helper".to_string(),
+            }),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalGet {
+                request_id,
+                principal,
+            } => {
+                assert_eq!(request_id, 601);
+                let p = principal.expect("principal should be present");
+                assert_eq!(p.name, "helper");
+                assert_eq!(p.agent_prompt_count, 2);
+            }
+            _ => panic!("Wrong variant"),
+        }
+
+        // And the miss case — `principal: None` round-trips cleanly.
+        let miss = ResponsePacket::PrincipalGet {
+            request_id: 602,
+            principal: None,
+        };
+        let bytes = miss.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalGet {
+                request_id,
+                principal,
+            } => {
+                assert_eq!(request_id, 602);
+                assert!(principal.is_none());
             }
             _ => panic!("Wrong variant"),
         }
@@ -2157,11 +2230,14 @@ mod tests {
 
     #[test]
     fn test_crud_request_ids() {
-        let req_agent_list = RequestPacket::AgentList {
-            request_id: 1,
-            team_filter: None,
+        let req_principal_list = RequestPacket::PrincipalList { request_id: 1 };
+        assert_eq!(req_principal_list.request_id(), 1);
+
+        let req_principal_get = RequestPacket::PrincipalGet {
+            request_id: 2,
+            name: "helper".to_string(),
         };
-        assert_eq!(req_agent_list.request_id(), 1);
+        assert_eq!(req_principal_get.request_id(), 2);
 
         let req_team_list = RequestPacket::TeamList { request_id: 5 };
         assert_eq!(req_team_list.request_id(), 5);
@@ -2182,11 +2258,17 @@ mod tests {
 
     #[test]
     fn test_crud_response_ids() {
-        let resp_agent_list = ResponsePacket::AgentList {
+        let resp_principal_list = ResponsePacket::PrincipalList {
             request_id: 10,
-            agents: vec![],
+            principals: vec![],
         };
-        assert_eq!(resp_agent_list.request_id(), 10);
+        assert_eq!(resp_principal_list.request_id(), 10);
+
+        let resp_principal_get = ResponsePacket::PrincipalGet {
+            request_id: 11,
+            principal: None,
+        };
+        assert_eq!(resp_principal_get.request_id(), 11);
 
         let resp_team_list = ResponsePacket::TeamList {
             request_id: 14,

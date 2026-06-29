@@ -493,16 +493,16 @@ impl TunnelDispatcher {
             // Issue #29 (Slice C): inbound `AgentToAgentRequest` from
             // a peer runtime (proxied by pekohub). Verify the caller's
             // signature against the `caller_runtime_id` they claim,
-            // look up the local agent by `target_agent_did`,
+            // look up the local agent by `target_principal_did`,
             // attribute the dispatch under
-            // `Subject::Principal(caller_agent_did)`, run it, and send
+            // `Subject::Principal(caller_principal_did)`, run it, and send
             // back an `AgentToAgentResponse` carrying the
             // `A2aSendResult` payload.
             TunnelMessage::AgentToAgentRequest {
                 request_id,
                 caller_runtime_id,
-                caller_agent_did,
-                target_agent_did,
+                caller_principal_did,
+                target_principal_did,
                 session_id,
                 message,
                 team,
@@ -512,8 +512,8 @@ impl TunnelDispatcher {
                     handle,
                     request_id,
                     caller_runtime_id,
-                    caller_agent_did,
-                    target_agent_did,
+                    caller_principal_did,
+                    target_principal_did,
                     session_id,
                     message,
                     team,
@@ -963,9 +963,9 @@ impl TunnelDispatcher {
     /// 2. Re-verify the signature on the canonical pre-image — the
     ///    hub's source-allowlist is the primary gate; this is
     ///    defense in depth against a hub bug or a stale forwarder.
-    /// 3. Look up the local agent by `target_agent_did`.
+    /// 3. Look up the local agent by `target_principal_did`.
     /// 4. Build a `MessageRequest` with `caller_principal =
-    ///    Subject::Principal(caller_agent_did)` (issue #24 + #28).
+    ///    Subject::Principal(caller_principal_did)` (issue #24 + #28).
     /// 5. Dispatch via `StatelessAgentService`.
     /// 6. Serialize the result to `A2aSendResult` and send back via
     ///    the same tunnel as an `AgentToAgentResponse`.
@@ -980,8 +980,8 @@ impl TunnelDispatcher {
         handle: TunnelHandle,
         request_id: String,
         caller_runtime_id: String,
-        caller_agent_did: String,
-        target_agent_did: String,
+        caller_principal_did: String,
+        target_principal_did: String,
         session_id: Option<String>,
         message: String,
         team: Option<String>,
@@ -1009,8 +1009,8 @@ impl TunnelDispatcher {
         let signed = SignedFields {
             request_id: &request_id,
             caller_runtime_id: &caller_runtime_id,
-            caller_agent_did: &caller_agent_did,
-            target_agent_did: &target_agent_did,
+            caller_principal_did: &caller_principal_did,
+            target_principal_did: &target_principal_did,
             message: &message,
             session_id: session_id.as_deref(),
             team: team.as_deref(),
@@ -1029,10 +1029,10 @@ impl TunnelDispatcher {
                 .await;
         }
 
-        // 3. Look up the local Principal by target_agent_did (which is the
+        // 3. Look up the local Principal by target_principal_did (which is the
         // Principal's stable DID in the new single-actor model).
         let principal_manager = self.app_state.principal_manager();
-        let local_principal = match principal_manager.find_by_did(&target_agent_did).await {
+        let local_principal = match principal_manager.find_by_did(&target_principal_did).await {
             Some(p) => p,
             None => {
                 return self
@@ -1041,7 +1041,7 @@ impl TunnelDispatcher {
                         &request_id,
                         "target_not_found",
                         &format!(
-                            "no local principal has did={target_agent_did} (request_id={request_id})"
+                            "no local principal has did={target_principal_did} (request_id={request_id})"
                         ),
                     )
                     .await;
@@ -1055,15 +1055,15 @@ impl TunnelDispatcher {
             "", // session_id
             &request_id,
             &caller_runtime_id,
-            &caller_agent_did,
+            &caller_principal_did,
             &local_runtime_id,
-            &target_agent_did,
+            &target_principal_did,
             &message,
         );
         a2a_audit::emit_a2a_received(&received_event);
 
         // 4 + 5. Dispatch to the Principal.
-        let caller_principal = Subject::Principal(caller_agent_did.clone());
+        let caller_principal = Subject::Principal(caller_principal_did.clone());
         let channel = crate::principal::router::ChannelContext {
             kind: crate::principal::router::ChannelKind::A2a,
             streaming: false,
@@ -1127,9 +1127,9 @@ impl TunnelDispatcher {
             "", // session_id
             &request_id,
             &caller_runtime_id,
-            &caller_agent_did,
+            &caller_principal_did,
             &local_runtime_id,
-            &target_agent_did,
+            &target_principal_did,
             &response_preview,
         );
         a2a_audit::emit_a2a_sent(&sent_response_event);
@@ -1913,8 +1913,8 @@ mod tests {
         let signed = crate::tunnel::SignedFields {
             request_id: "req-bad-sig",
             caller_runtime_id: &caller_did,
-            caller_agent_did: "did:peko:agent:caller",
-            target_agent_did: "did:peko:agent:target",
+            caller_principal_did: "did:peko:agent:caller",
+            target_principal_did: "did:peko:agent:target",
             message: "hi",
             session_id: None,
             team: None,
@@ -2121,14 +2121,14 @@ mod tests {
 
         let kp_caller = crate::identity::keys::KeyPair::generate();
         let caller_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp_caller.verifying_key);
-        let caller_agent_did = "did:peko:agent:caller".to_string();
+        let caller_principal_did = "did:peko:agent:caller".to_string();
 
         let principal = create_test_principal(
             &app_state,
             "a2a-target",
             Subject::User("user:owner".to_string()),
             vec![PermissionGrant {
-                subject: Subject::Principal(caller_agent_did.clone()),
+                subject: Subject::Principal(caller_principal_did.clone()),
                 permission: Permission::Chat,
                 granted_at: "2026-06-27T00:00:00Z".to_string(),
                 granted_by: Subject::User("user:owner".to_string()),
@@ -2136,13 +2136,13 @@ mod tests {
             InstanceExposure::Public,
         )
         .await;
-        let target_agent_did = principal.did().await.0;
+        let target_principal_did = principal.did().await.0;
 
         let signed = crate::tunnel::SignedFields {
             request_id: "req-a2a",
             caller_runtime_id: &caller_runtime_id,
-            caller_agent_did: &caller_agent_did,
-            target_agent_did: &target_agent_did,
+            caller_principal_did: &caller_principal_did,
+            target_principal_did: &target_principal_did,
             message: "ping",
             session_id: None,
             team: None,
@@ -2154,8 +2154,8 @@ mod tests {
                 handle,
                 "req-a2a".to_string(),
                 caller_runtime_id,
-                caller_agent_did,
-                target_agent_did,
+                caller_principal_did,
+                target_principal_did,
                 None,
                 "ping".to_string(),
                 None,

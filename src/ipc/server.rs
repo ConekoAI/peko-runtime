@@ -751,31 +751,11 @@ impl IpcServer {
                 state.request_shutdown(force).await;
             }
 
-            RequestPacket::Execute {
-                request_id,
-                agent,
-                team,
-                message,
-                session_id,
-                new_session,
-                stream,
-                user,
-            } => {
-                Self::handle_execute(
-                    request_id,
-                    agent,
-                    team,
-                    message,
-                    session_id,
-                    new_session,
-                    stream,
-                    user,
-                    state,
-                    sink,
-                    peer,
-                )
-                .await?;
-            }
+            // `RequestPacket::Execute` was retired in audit C4. All
+            // chat traffic now flows through `PrincipalSend` (one-shot)
+            // and `PrincipalSendStream` (streaming) below — both go
+            // through `PrincipalManager::receive` and produce
+            // principal-scoped sessions and audit trails.
 
             RequestPacket::AsyncSpawn {
                 request_id,
@@ -1003,25 +983,37 @@ impl IpcServer {
                 Self::handle_ext_status(request_id, extension_id, state, sink, peer).await?;
             }
 
-            // ─── Agent CRUD ─────────────────────────────────────────────────
-            RequestPacket::AgentList {
-                request_id,
-                team_filter,
-            } => {
-                let service = state.agent_mgmt_service();
-                match service.list_agents(team_filter.as_deref()).await {
-                    Ok(agents) => {
-                        let response = ResponsePacket::AgentList { request_id, agents };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
+            // ─── Principal CRUD (post-migration actor surface) ────────────
+            // The principal-as-single-actor migration (audit C1) replaced
+            // the legacy `AgentList` IPC handler. Actor listing/show is
+            // now served by `PrincipalManager::list_all` / `get_by_name`,
+            // which read the post-migration `<workspace>/principals/...`
+            // tree — the on-disk truth — instead of the legacy per-agent
+            // mirror directories.
+            RequestPacket::PrincipalList { request_id } => {
+                let principal_manager = state.principal_manager();
+                let mut principals = Vec::new();
+                for p in principal_manager.list_all().await {
+                    principals.push(p.summary().await);
                 }
+                let response = ResponsePacket::PrincipalList {
+                    request_id,
+                    principals,
+                };
+                Self::send_sink(sink, response).await?;
+            }
+
+            RequestPacket::PrincipalGet { request_id, name } => {
+                let principal_manager = state.principal_manager();
+                let principal = match principal_manager.get_by_name(&name).await {
+                    Some(p) => Some(p.summary().await),
+                    None => None,
+                };
+                let response = ResponsePacket::PrincipalGet {
+                    request_id,
+                    principal,
+                };
+                Self::send_sink(sink, response).await?;
             }
 
             // ─── Team CRUD ──────────────────────────────────────────────────
@@ -2629,14 +2621,15 @@ impl IpcServer {
                 };
 
                 // Construct the RouterContext the supervisor router expects.
-                let router_ctx = match Self::build_principal_router_ctx(
-                    &state,
-                    &principal,
-                    peer.clone(),
-                    message.clone(),
-                    channel,
-                )
-                .await
+                // Audit H1: the streaming path now uses the same
+                // `PrincipalManager::build_router_context` helper as
+                // the one-shot `PrincipalManager::receive` path, so
+                // permission checks, session recall, and per-message
+                // configuration can't drift between the two.
+                let router_ctx = match state
+                    .principal_manager()
+                    .build_router_context(&principal, peer.clone(), message.clone(), channel)
+                    .await
                 {
                     Ok(ctx) => ctx,
                     Err(e) => {
@@ -3329,203 +3322,6 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Handle an Execute request — run the agentic loop and stream responses
-    async fn handle_execute(
-        request_id: u64,
-        agent: String,
-        team: String,
-        message: String,
-        session_id: Option<String>,
-        new_session: bool,
-        stream_enabled: bool,
-        user: String,
-        state: AppState,
-        sink: &dyn ResponseSink,
-        _peer: &PeerAddr,
-    ) -> anyhow::Result<()> {
-        use crate::common::types::a2a::A2aMessageRequest;
-        use crate::engine::{AgenticEvent, LifecyclePhase};
-
-        tracing::info!(
-            "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}, session_id={:?}, new_session={}",
-            request_id,
-            agent,
-            user,
-            stream_enabled,
-            session_id,
-            new_session
-        );
-
-        let agent_service = state.agent_service().clone();
-
-        let request = A2aMessageRequest::new(&agent, message)
-            .with_team(&team)
-            .with_session_opt(session_id)
-            .with_new_session(new_session)
-            .with_user(&user);
-
-        // Start the agentic loop — wrap in catch_unwind-like error handling
-        // so the client always gets a response even if execution fails
-        let mut event_stream = match agent_service.execute_message_streaming(request).await {
-            Ok(stream) => stream,
-            Err(e) => {
-                let error_packet = ResponsePacket::Error {
-                    request_id,
-                    message: format!("Failed to start agent execution: {e}"),
-                };
-                Self::send_sink(sink, error_packet).await?;
-                let done_packet = ResponsePacket::Done {
-                    request_id,
-                    success: false,
-                    error: Some(e.to_string()),
-                };
-                Self::send_sink(sink, done_packet).await?;
-                return Ok(());
-            }
-        };
-
-        // Stream events back as packets
-        let mut seq = 0u32;
-        let mut heartbeat = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
-        // Buffer for non-streaming mode: accumulate all text and send at the end
-        let mut non_streaming_buffer = String::new();
-
-        loop {
-            info!("IPC: waiting for event...");
-            tokio::select! {
-                maybe_event = event_stream.receiver.recv() => {
-                    info!("IPC: received event from channel: {:?}", maybe_event.is_some());
-                    match maybe_event {
-                        Some(event) => {
-                            match event {
-                                AgenticEvent::AssistantDelta { text, .. } => {
-                                    if stream_enabled {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: text,
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                        seq += 1;
-                                    } else {
-                                        // Accumulate for non-streaming mode
-                                        non_streaming_buffer.push_str(&text);
-                                    }
-                                }
-                                AgenticEvent::AssistantText { text, .. } => {
-                                    // Full block text (non-streaming mode)
-                                    if stream_enabled {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: text,
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                        seq += 1;
-                                    } else {
-                                        non_streaming_buffer.push_str(&text);
-                                    }
-                                }
-                                AgenticEvent::ToolStart { name, .. } => {
-                                    if stream_enabled {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: format!("\n[Running tool: {}]\n", name),
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                        seq += 1;
-                                    }
-                                }
-                                AgenticEvent::ToolEnd { result, success, .. } => {
-                                    info!("IPC: received ToolEnd event, stream_enabled={}", stream_enabled);
-                                    if stream_enabled {
-                                        let output = if success {
-                                            result.to_string()
-                                        } else {
-                                            format!("[Tool failed: {}]", result)
-                                        };
-                                        info!("Sending ToolEnd result to client: len={}, output={}", output.len(), output);
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: format!("\n[Tool result]: {}\n", output),
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                    }
-                                }
-                                AgenticEvent::Lifecycle { phase: LifecyclePhase::End, .. } => {
-                                    // In non-streaming mode, send accumulated text before Done
-                                    if !stream_enabled && !non_streaming_buffer.is_empty() {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: std::mem::take(&mut non_streaming_buffer),
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                    }
-                                    let packet = ResponsePacket::Done {
-                                        request_id,
-                                        success: true,
-                                        error: None,
-                                    };
-                                    Self::send_sink(sink, packet).await?;
-                                    break;
-                                }
-                                AgenticEvent::Lifecycle { phase: LifecyclePhase::Error, error, .. } => {
-                                    // In non-streaming mode, send accumulated text before Done (even on error)
-                                    if !stream_enabled && !non_streaming_buffer.is_empty() {
-                                        let packet = ResponsePacket::Text {
-                                            request_id,
-                                            seq,
-                                            chunk: std::mem::take(&mut non_streaming_buffer),
-                                        };
-                                        Self::send_sink(sink, packet).await?;
-                                    }
-                                    let packet = ResponsePacket::Done {
-                                        request_id,
-                                        success: false,
-                                        error,
-                                    };
-                                    Self::send_sink(sink, packet).await?;
-                                    break;
-                                }
-                                _ => {
-                                    // Ignore other events (Thinking, Status, Usage, etc.)
-                                }
-                            }
-                        }
-                        None => {
-                            // In non-streaming mode, send accumulated text before Done
-                            if !stream_enabled && !non_streaming_buffer.is_empty() {
-                                let packet = ResponsePacket::Text {
-                                    request_id,
-                                    seq,
-                                    chunk: std::mem::take(&mut non_streaming_buffer),
-                                };
-                                Self::send_sink(sink, packet).await?;
-                            }
-                            let packet = ResponsePacket::Done {
-                                request_id,
-                                success: true,
-                                error: None,
-                            };
-                            Self::send_sink(sink, packet).await?;
-                            break;
-                        }
-                    }
-                }
-
-                _ = heartbeat.tick() => {
-                    let packet = ResponsePacket::Heartbeat { request_id };
-                    Self::send_sink(sink, packet).await?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Handle an AsyncSpawn request
     async fn handle_async_spawn(
         request_id: u64,
@@ -3714,9 +3510,12 @@ impl IpcServer {
             }
         };
 
-        // Forward events to the sink (mirrors handle_execute's loop
-        // but stripped of the streaming-vs-buffered split — the
-        // steering path always streams).
+        // Forward events to the sink. The steering path always
+        // streams, so we don't buffer — every event hits the wire
+        // as soon as it's available. The `handle_execute` shape
+        // (audit C4) used to do both buffered and streaming; that
+        // path was retired with the legacy `RequestPacket::Execute`
+        // variant.
         let mut heartbeat = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
         loop {
             tokio::select! {
@@ -4259,100 +4058,6 @@ impl IpcServer {
         manager.get_by_name(name).await
     }
 
-    /// Build a [`RouterContext`] for a single principal-receive call.
-    ///
-    /// Mirrors the body of `PrincipalManager::receive` but is callable
-    /// from the streaming IPC handler, which needs the context before
-    /// invoking the router. The shared `inbox_registry` and
-    /// `session_creation_lock` are taken from the principal manager.
-    async fn build_principal_router_ctx(
-        state: &AppState,
-        principal: &Arc<Principal>,
-        peer: crate::auth::Subject,
-        message: String,
-        channel: ChannelContext,
-    ) -> anyhow::Result<crate::principal::router::RouterContext> {
-        use crate::auth::ownership::{check_permission, Permission, Resource};
-        use crate::principal::parse_agent_role;
-        use crate::principal::router::{
-            AgentPromptSummary, ContextInjection, ContextInjectionKind, RouterContext,
-        };
-
-        let manager = state.principal_manager();
-
-        // Enforce principal-level permissions before routing.
-        let resource = {
-            let config = principal.config.read().await;
-            Resource::Principal {
-                name: config.name.clone(),
-                owner: config.owner.clone(),
-                permissions: config.permissions.clone(),
-                exposure: config.exposure.clone(),
-            }
-        };
-        if let Err(denied) = check_permission(&resource, Permission::Chat, &peer) {
-            anyhow::bail!(denied.to_string());
-        }
-
-        // Recall the most recent session for this peer.
-        let latest_session = principal
-            .memory
-            .find_latest_session_for_peer(&peer)
-            .await
-            .map_err(|e| anyhow::anyhow!("principal memory lookup failed: {e}"))?;
-
-        let mut recalled_context = Vec::new();
-        if let Some(artifact) = latest_session {
-            recalled_context.push(ContextInjection {
-                kind: ContextInjectionKind::Session,
-                id: artifact.session_id.clone(),
-                content: artifact.summary.unwrap_or_default(),
-            });
-        }
-
-        let (available_agents, routing, capabilities, intent, governance, principal_name) = {
-            let config = principal.config.read().await;
-            let available_agents: Vec<AgentPromptSummary> = principal
-                .agent_prompts
-                .values()
-                .map(|p| AgentPromptSummary {
-                    name: p.name.clone(),
-                    role: parse_agent_role(p.frontmatter.role.as_deref()),
-                    description: p.frontmatter.description.clone(),
-                })
-                .collect();
-            (
-                available_agents,
-                config.routing.clone(),
-                config.capabilities.clone(),
-                config.intent.clone(),
-                config.governance.clone(),
-                config.name.clone(),
-            )
-        };
-
-        // Borrow the manager's `inbox_registry` and `session_creation_lock`
-        // so the streaming path shares the same back-pressure as the
-        // non-streaming `PrincipalSend` path.
-        let (inbox_registry, session_creation_lock) =
-            manager.streaming_primitives(&principal.id).await;
-
-        Ok(RouterContext {
-            principal_id: principal.id.clone(),
-            principal_name,
-            peer,
-            message,
-            channel,
-            routing,
-            recalled_context,
-            available_agents,
-            capabilities,
-            intent,
-            governance,
-            inbox_registry,
-            session_creation_lock,
-        })
-    }
 
     /// Send a response packet back to the client via the per-request sink.
     ///

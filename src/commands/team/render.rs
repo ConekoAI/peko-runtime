@@ -88,21 +88,20 @@ pub(super) fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
 
 pub(super) fn render_team_show(
     team: &TeamInfo,
-    agents: &[(String, crate::agents::agent_config::AgentConfig)],
+    principal: Option<&crate::principal::PrincipalSummary>,
     json: bool,
 ) {
     if json {
-        let agents_json: Vec<_> = agents
-            .iter()
-            .map(|(name, config)| {
-                serde_json::json!({
-                    "name": name,
-                    "preferred_provider": config.preferred_provider_id,
-                    "preferred_model": config.preferred_model_id,
-                    "description": config.description,
-                })
+        let principal_json = principal.map(|p| {
+            serde_json::json!({
+                "name": p.name,
+                "did": p.did.0,
+                "owner": p.owner.to_string(),
+                "exposure": format!("{:?}", p.exposure),
+                "agent_prompt_count": p.agent_prompt_count,
+                "workspace_path": p.workspace_path,
             })
-            .collect();
+        });
 
         println!(
             "{}",
@@ -111,8 +110,13 @@ pub(super) fn render_team_show(
                 "path": team.path.display().to_string(),
                 "description": team.metadata.description.clone(),
                 "created_at": team.metadata.created_at.clone(),
-                "agents": agents_json,
                 "agent_count": team.agent_count,
+                // The post-migration actor view (audit C1) — the
+                // Principal that owns this team, looked up via
+                // PrincipalManager rather than the legacy per-agent
+                // mirror. `null` for a team with no associated
+                // Principal (legacy data only).
+                "principal": principal_json,
             })
         );
     } else {
@@ -127,22 +131,20 @@ pub(super) fn render_team_show(
         println!("   Path: {}", team.path.display());
         println!();
 
-        if team.agent_count == 0 {
-            println!("   No agents in this team.");
-            println!(
-                "   Create one with: peko team create {}/<agent-name>",
-                team.name
-            );
-        } else {
-            println!("   Agents ({}):", team.agent_count);
-            for (agent_name, config) in agents {
-                println!("   📦 {agent_name}");
-                if let Some(ref desc) = config.description {
-                    println!("      {desc}");
-                }
+        match principal {
+            Some(p) => {
+                println!("   Principal (post-migration actor view):");
+                println!("     Name: {}", p.name);
+                println!("     DID:  {}", p.did.0);
+                println!("     Owner: {}", p.owner);
+                println!("     Agent prompts: {}", p.agent_prompt_count);
+                println!("     Workspace: {}", p.workspace_path);
+            }
+            None => {
+                println!("   No Principal owns this team (legacy team only).");
                 println!(
-                    "      Preferred provider: {}",
-                    config.preferred_provider_id.as_deref().unwrap_or("<none>")
+                    "   Create one with: peko principal create {}",
+                    team.name
                 );
             }
         }

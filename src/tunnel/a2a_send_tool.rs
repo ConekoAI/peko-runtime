@@ -191,7 +191,7 @@ pub struct A2aSendTool {
     /// identifier. Falls back to `caller_agent` (the local name) when
     /// unset — this is the legacy behavior and is fine for single-runtime
     /// use but ambiguous across runtimes.
-    caller_agent_did: Option<String>,
+    caller_principal_did: Option<String>,
     /// Optional cross-runtime context (issue #29 Slice B). When set,
     /// `Remote*` `TargetSpec` variants dispatch over the tunnel via
     /// the hub directory; when unset they error with a structured
@@ -209,7 +209,7 @@ impl A2aSendTool {
         Self {
             agent_service,
             caller_agent: None,
-            caller_agent_did: None,
+            caller_principal_did: None,
             cross_runtime: None,
         }
     }
@@ -230,7 +230,7 @@ impl A2aSendTool {
     #[must_use]
     pub fn with_caller_did(mut self, caller: impl Into<String>, did: impl Into<String>) -> Self {
         self.caller_agent = Some(caller.into());
-        self.caller_agent_did = Some(did.into());
+        self.caller_principal_did = Some(did.into());
         self
     }
 
@@ -301,7 +301,7 @@ impl A2aSendTool {
         // own `.filter(|d| !d.is_empty())` clause that disagreed
         // subtly with `AgentConfig::wire_agent_id`.
         let wire_caller_id =
-            Subject::principal_wire_id(self.caller_agent_did.as_deref(), caller_agent);
+            Subject::principal_wire_id(self.caller_principal_did.as_deref(), caller_agent);
 
         // Issue #29 (Slice A): normalize the (target_agent, target)
         // pair to a single `TargetSpec` and short-circuit the
@@ -515,7 +515,7 @@ impl A2aSendTool {
     async fn execute_remote(&self, args: A2aSendArgs) -> Result<serde_json::Value> {
         // Validate caller identity up front. The cross-runtime path
         // requires both a `caller_agent` (for annotation) and a
-        // `caller_agent_did` (for the wire-side `Subject::Principal`
+        // `caller_principal_did` (for the wire-side `Subject::Principal`
         // attribution) — issue #24 + issue #28 together. Without a
         // DID we'd be sending a name-based caller to a remote runtime
         // that has no way to disambiguate it from a local agent of
@@ -533,7 +533,7 @@ impl A2aSendTool {
             Ok(s) => s,
             Err(err) => return Ok(remote_error_value(&err.to_string())),
         };
-        let caller_agent_did = match self.caller_agent_did.as_deref().filter(|s| !s.is_empty()) {
+        let caller_principal_did = match self.caller_principal_did.as_deref().filter(|s| !s.is_empty()) {
             Some(s) => s,
             None => {
                 return Ok(remote_error_value(
@@ -572,7 +572,7 @@ impl A2aSendTool {
             )));
         }
 
-        let target_agent_did = if resolution.agent_did.is_empty() {
+        let target_principal_did = if resolution.agent_did.is_empty() {
             // The hub returns an empty `agent_did` only on the
             // by-handle path for pre-#34 rows. We refuse to dispatch:
             // without a DID the target runtime has no stable
@@ -593,8 +593,8 @@ impl A2aSendTool {
         let signed = SignedFields {
             request_id: &request_id,
             caller_runtime_id: &ctx.caller_runtime_id,
-            caller_agent_did,
-            target_agent_did,
+            caller_principal_did,
+            target_principal_did,
             message: &args.message,
             session_id,
             team,
@@ -604,8 +604,8 @@ impl A2aSendTool {
         let envelope = TunnelMessage::AgentToAgentRequest {
             request_id: request_id.clone(),
             caller_runtime_id: ctx.caller_runtime_id.clone(),
-            caller_agent_did: caller_agent_did.to_string(),
-            target_agent_did: target_agent_did.to_string(),
+            caller_principal_did: caller_principal_did.to_string(),
+            target_principal_did: target_principal_did.to_string(),
             session_id: args.session_id.clone(),
             message: args.message.clone(),
             team: args.team.clone(),
@@ -663,9 +663,9 @@ impl A2aSendTool {
             "", // session_id — see comment above
             &request_id,
             &ctx.caller_runtime_id,
-            caller_agent_did,
+            caller_principal_did,
             &resolution.runtime_id,
-            target_agent_did,
+            target_principal_did,
             &args.message,
         );
         a2a_audit::emit_a2a_sent(&sent_event);
@@ -732,9 +732,9 @@ impl A2aSendTool {
                     "", // session_id — see earlier comment
                     &request_id,
                     &ctx.caller_runtime_id,
-                    caller_agent_did,
+                    caller_principal_did,
                     &resolution.runtime_id,
-                    target_agent_did,
+                    target_principal_did,
                     &result.response,
                 );
                 a2a_audit::emit_a2a_received(&received_event);
@@ -748,7 +748,7 @@ impl A2aSendTool {
         // path right now — it's the human-readable annotation the
         // local execute_local path prepends to the message. The
         // target runtime decides whether to add its own annotation
-        // based on the wire-side `caller_agent_did`; surfacing the
+        // based on the wire-side `caller_principal_did`; surfacing the
         // local name to the wire would leak runtime-specific naming
         // and is not part of the issue #29 contract.
         //
@@ -1470,7 +1470,7 @@ mod tests {
         );
     }
 
-    /// The cross-runtime path requires a `caller_agent_did` so the
+    /// The cross-runtime path requires a `caller_principal_did` so the
     /// target runtime can attribute the receiving session under
     /// `Subject::Principal(<caller_did>)` (issue #28). Without a DID,
     /// `execute_remote` errors rather than dispatching a name-only

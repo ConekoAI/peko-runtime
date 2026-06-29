@@ -80,6 +80,48 @@ impl Principal {
     pub async fn exposure(&self) -> crate::tunnel::protocol::InstanceExposure {
         self.config.read().await.exposure.clone()
     }
+
+    /// Build a lightweight summary for list/show IPC responses.
+    ///
+    /// The principal-as-single-actor migration made `Principal` the
+    /// only actor in the system. IPC list/show surfaces that used to
+    /// return per-agent summaries (e.g. `AgentList`) now return
+    /// `PrincipalSummary` so the CLI sees the on-disk truth instead
+    /// of legacy mirror directories.
+    pub async fn summary(&self) -> PrincipalSummary {
+        let config = self.config.read().await;
+        PrincipalSummary {
+            name: config.name.clone(),
+            did: self.did().await,
+            owner: config.owner.clone(),
+            description: config.identity.description.clone(),
+            exposure: config.exposure.clone(),
+            status: config.status.clone(),
+            capabilities: config.capabilities.clone(),
+            agent_prompt_count: self.agent_prompts.len(),
+            workspace_path: self.workspace_path.display().to_string(),
+        }
+    }
+}
+
+/// Lightweight projection of a `Principal` for IPC list/show responses.
+///
+/// The runtime formerly returned `Vec<AgentSummary>` from its
+/// `AgentList` IPC; after the principal-as-single-actor migration the
+/// actor surface is `Principal`. `PrincipalSummary` is the canonical
+/// wire-form shape for the post-migration `PrincipalList` /
+/// `PrincipalGet` IPC variants — see audit finding C1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrincipalSummary {
+    pub name: String,
+    pub did: PrincipalDID,
+    pub owner: crate::auth::Subject,
+    pub description: Option<String>,
+    pub exposure: crate::tunnel::protocol::InstanceExposure,
+    pub status: Option<crate::tunnel::protocol::InstanceStatus>,
+    pub capabilities: PrincipalCapabilities,
+    pub agent_prompt_count: usize,
+    pub workspace_path: String,
 }
 
 fn synthetic_local_did(name: &str, id: &PrincipalId) -> PrincipalDID {

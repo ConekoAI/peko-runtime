@@ -234,20 +234,23 @@ pub async fn handle_team(
                 _ => anyhow::bail!("Unexpected response"),
             };
 
-            let agents_packet = crate::ipc::RequestPacket::AgentList {
+            // Post-migration actor view (audit C1): look up the
+            // Principal that owns this team via the post-migration
+            // `PrincipalGet` IPC. The legacy `AgentList` lookup was
+            // retired — see packet.rs:PrincipalList.
+            let principal_packet = crate::ipc::RequestPacket::PrincipalGet {
                 request_id: 2,
-                team_filter: Some(name.clone()),
+                name: name.clone(),
             };
-            let agents_response = ipc_request(agents_packet).await?;
-            let agents: Vec<(String, crate::agents::agent_config::AgentConfig)> =
-                match agents_response {
-                    crate::ipc::ResponsePacket::AgentList { agents, .. } => {
-                        agents.into_iter().map(|a| (a.name, a.config)).collect()
-                    }
-                    _ => Vec::new(),
-                };
+            let principal = match ipc_request(principal_packet).await? {
+                crate::ipc::ResponsePacket::PrincipalGet {
+                    principal: Some(p),
+                    ..
+                } => Some(p),
+                _ => None,
+            };
 
-            render::render_team_show(&team_info, &agents, json);
+            render::render_team_show(&team_info, principal.as_ref(), json);
             Ok(())
         }
         TeamCommands::Remove { name, force } => {

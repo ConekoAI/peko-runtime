@@ -47,9 +47,9 @@ pub fn build_a2a_sent_outbound(
     session_id: &str,
     request_id: &str,
     caller_runtime_id: &str,
-    caller_agent_did: &str,
+    caller_principal_did: &str,
     target_runtime_id: &str,
-    target_agent_did: &str,
+    target_principal_did: &str,
     message: &str,
 ) -> A2aSentEvent {
     A2aSentEvent {
@@ -64,9 +64,9 @@ pub fn build_a2a_sent_outbound(
             "session_id": session_id,
             "message_preview": preview(message),
         }),
-        caller_did: Some(caller_agent_did.to_string()),
+        caller_did: Some(caller_principal_did.to_string()),
         runtime_id_caller: Some(caller_runtime_id.to_string()),
-        target_did: Some(target_agent_did.to_string()),
+        target_did: Some(target_principal_did.to_string()),
         runtime_id_target: Some(target_runtime_id.to_string()),
         request_id: Some(request_id.to_string()),
     }
@@ -82,9 +82,9 @@ pub fn build_a2a_received_inbound(
     session_id: &str,
     request_id: &str,
     caller_runtime_id: &str,
-    caller_agent_did: &str,
+    caller_principal_did: &str,
     target_runtime_id: &str,
-    target_agent_did: &str,
+    target_principal_did: &str,
     message: &str,
 ) -> A2aReceivedEvent {
     A2aReceivedEvent {
@@ -96,9 +96,9 @@ pub fn build_a2a_received_inbound(
             "session_id": session_id,
             "message_preview": preview(message),
         }),
-        caller_did: Some(caller_agent_did.to_string()),
+        caller_did: Some(caller_principal_did.to_string()),
         runtime_id_caller: Some(caller_runtime_id.to_string()),
-        target_did: Some(target_agent_did.to_string()),
+        target_did: Some(target_principal_did.to_string()),
         runtime_id_target: Some(target_runtime_id.to_string()),
         request_id: Some(request_id.to_string()),
     }
@@ -115,9 +115,9 @@ pub fn build_a2a_sent_response(
     session_id: &str,
     request_id: &str,
     caller_runtime_id: &str,
-    caller_agent_did: &str,
+    caller_principal_did: &str,
     target_runtime_id: &str,
-    target_agent_did: &str,
+    target_principal_did: &str,
     response_preview: &str,
 ) -> A2aSentEvent {
     A2aSentEvent {
@@ -132,9 +132,9 @@ pub fn build_a2a_sent_response(
         // The local agent is the "caller" of the response
         // (it's initiating the response send), and the original
         // caller is the "target" of the response.
-        caller_did: Some(target_agent_did.to_string()),
+        caller_did: Some(target_principal_did.to_string()),
         runtime_id_caller: Some(target_runtime_id.to_string()),
-        target_did: Some(caller_agent_did.to_string()),
+        target_did: Some(caller_principal_did.to_string()),
         runtime_id_target: Some(caller_runtime_id.to_string()),
         request_id: Some(request_id.to_string()),
     }
@@ -149,9 +149,9 @@ pub fn build_a2a_received_response(
     session_id: &str,
     request_id: &str,
     caller_runtime_id: &str,
-    caller_agent_did: &str,
+    caller_principal_did: &str,
     target_runtime_id: &str,
-    target_agent_did: &str,
+    target_principal_did: &str,
     response_preview: &str,
 ) -> A2aReceivedEvent {
     A2aReceivedEvent {
@@ -166,9 +166,9 @@ pub fn build_a2a_received_response(
         // The local agent is the "target" of the response
         // (the response is coming back to it). The remote
         // agent is the "caller" (it initiated the response).
-        caller_did: Some(target_agent_did.to_string()),
+        caller_did: Some(target_principal_did.to_string()),
         runtime_id_caller: Some(target_runtime_id.to_string()),
-        target_did: Some(caller_agent_did.to_string()),
+        target_did: Some(caller_principal_did.to_string()),
         runtime_id_target: Some(caller_runtime_id.to_string()),
         request_id: Some(request_id.to_string()),
     }

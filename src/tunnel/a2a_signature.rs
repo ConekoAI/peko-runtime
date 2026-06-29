@@ -28,8 +28,8 @@
 //!   [4 bytes BE u32 = len("a2a:v1")] || "a2a:v1"
 //!   [4 bytes BE u32 = len(request_id)] || request_id
 //!   [4 bytes BE u32 = len(caller_runtime_id)] || caller_runtime_id
-//!   [4 bytes BE u32 = len(caller_agent_did)] || caller_agent_did
-//!   [4 bytes BE u32 = len(target_agent_did)] || target_agent_did
+//!   [4 bytes BE u32 = len(caller_principal_did)] || caller_principal_did
+//!   [4 bytes BE u32 = len(target_principal_did)] || target_principal_did
 //!   [4 bytes BE u32 = len(message)] || message
 //!   [1 byte presence]
 //!     if 0x01:  [4 bytes BE u32 = len(session_id)] || session_id
@@ -71,8 +71,8 @@ pub const A2A_SIGNATURE_DOMAIN: &str = "a2a:v1";
 pub struct SignedFields<'a> {
     pub request_id: &'a str,
     pub caller_runtime_id: &'a str,
-    pub caller_agent_did: &'a str,
-    pub target_agent_did: &'a str,
+    pub caller_principal_did: &'a str,
+    pub target_principal_did: &'a str,
     pub message: &'a str,
     pub session_id: Option<&'a str>,
     pub team: Option<&'a str>,
@@ -88,8 +88,8 @@ pub fn canonical_pre_image(fields: SignedFields<'_>) -> Vec<u8> {
     let estimated = A2A_SIGNATURE_DOMAIN.len()
         + fields.request_id.len()
         + fields.caller_runtime_id.len()
-        + fields.caller_agent_did.len()
-        + fields.target_agent_did.len()
+        + fields.caller_principal_did.len()
+        + fields.target_principal_did.len()
         + fields.message.len()
         + fields.session_id.map_or(0, str::len)
         + fields.team.map_or(0, str::len)
@@ -100,8 +100,8 @@ pub fn canonical_pre_image(fields: SignedFields<'_>) -> Vec<u8> {
     push_lp(&mut out, A2A_SIGNATURE_DOMAIN);
     push_lp(&mut out, fields.request_id);
     push_lp(&mut out, fields.caller_runtime_id);
-    push_lp(&mut out, fields.caller_agent_did);
-    push_lp(&mut out, fields.target_agent_did);
+    push_lp(&mut out, fields.caller_principal_did);
+    push_lp(&mut out, fields.target_principal_did);
     push_lp(&mut out, fields.message);
     push_opt_lp(&mut out, fields.session_id);
     push_opt_lp(&mut out, fields.team);
@@ -189,8 +189,8 @@ mod tests {
         SignedFields {
             request_id: "req-abc-123",
             caller_runtime_id: "did:key:zCaller",
-            caller_agent_did: "did:peko:agent:caller-hash",
-            target_agent_did: "did:peko:agent:target-hash",
+            caller_principal_did: "did:peko:agent:caller-hash",
+            target_principal_did: "did:peko:agent:target-hash",
             message: "review this",
             session_id: Some("sess-xyz"),
             team: Some("default"),
@@ -270,16 +270,16 @@ mod tests {
                 },
             ),
             (
-                "caller_agent_did",
+                "caller_principal_did",
                 SignedFields {
-                    caller_agent_did: "did:peko:agent:other-caller",
+                    caller_principal_did: "did:peko:agent:other-caller",
                     ..sample_fields()
                 },
             ),
             (
-                "target_agent_did",
+                "target_principal_did",
                 SignedFields {
-                    target_agent_did: "did:peko:agent:other-target",
+                    target_principal_did: "did:peko:agent:other-target",
                     ..sample_fields()
                 },
             ),
@@ -348,16 +348,16 @@ mod tests {
                 },
             ),
             (
-                "caller_agent_did",
+                "caller_principal_did",
                 SignedFields {
-                    caller_agent_did: "did:peko:agent:evil-caller",
+                    caller_principal_did: "did:peko:agent:evil-caller",
                     ..sample_fields()
                 },
             ),
             (
-                "target_agent_did",
+                "target_principal_did",
                 SignedFields {
-                    target_agent_did: "did:peko:agent:evil-target",
+                    target_principal_did: "did:peko:agent:evil-target",
                     ..sample_fields()
                 },
             ),
