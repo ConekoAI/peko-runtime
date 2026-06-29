@@ -164,7 +164,23 @@ impl DefaultPrincipalMemory {
         }
         let contents = serde_json::to_string_pretty(index)
             .map_err(|e| MemoryError::Serialization(e.to_string()))?;
-        tokio::fs::write(&path, contents).await?;
+
+        // Write atomically: a plain `tokio::fs::write` truncates the index
+        // and writes in place, so a crash mid-write leaves a partially
+        // written / corrupt `memory_index.json`. Instead write to a sibling
+        // temp file, flush it to disk, then `rename(2)` over the index —
+        // rename is atomic on the same filesystem, so a reader either sees
+        // the old index or the new one, never a torn write. Writers are
+        // serialized per-principal by `index_lock`, so a fixed temp name is
+        // safe within the process; a leftover temp from a crashed run is
+        // simply overwritten on the next save.
+        use tokio::io::AsyncWriteExt;
+        let tmp_path = path.with_extension("json.tmp");
+        let mut tmp = tokio::fs::File::create(&tmp_path).await?;
+        tmp.write_all(contents.as_bytes()).await?;
+        tmp.sync_all().await?;
+        drop(tmp);
+        tokio::fs::rename(&tmp_path, &path).await?;
         Ok(())
     }
 }
