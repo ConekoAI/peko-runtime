@@ -1,6 +1,11 @@
 //! Team Unpackager for importing portable team packages
 //!
-//! Extracts and imports .team files into the local peko runtime
+//! Extracts and imports .team files into the local peko runtime.
+//!
+//! **REMAINS — pre-Principal team concept, retained intentionally.**
+//! See `team_packager.rs` for the rationale. The post-migration equivalent
+//! for new actor surfaces is `PrincipalUnpackager` in `principal_unpackager.rs`.
+//! Audit finding H5.
 
 use crate::registry::packaging::team_packager::TeamManifest;
 use crate::registry::packaging::{ImportOptions as AgentImportOptions, Unpackager};

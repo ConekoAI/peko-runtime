@@ -3,6 +3,9 @@
 //! Provides utilities to pull a team's `RegistryManifest` and reconstruct
 //! each agent's files from its content-addressable layers, enabling direct
 //! in-memory import without creating a temporary `.team` file.
+//!
+//! **REMAINS — pre-Principal team concept, retained intentionally.**
+//! See `team_packager.rs` for the rationale. Audit finding H5.
 
 use crate::registry::packaging::team_packager::{AgentLayerRef, TeamAgentIndex};
 use crate::registry::packaging::types::LayerType;

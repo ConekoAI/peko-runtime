@@ -6,6 +6,9 @@
 //!
 //! This enables cross-team deduplication: shared agents between teams reuse
 //! the same layer digests and are skipped during registry push.
+//!
+//! **REMAINS — pre-Principal team concept, retained intentionally.**
+//! See `team_packager.rs` for the rationale. Audit finding H5.
 
 use crate::registry::packaging::team_packager::{
     AgentLayerRef, TeamAgentIndex, TeamInfo, TeamManifest,
