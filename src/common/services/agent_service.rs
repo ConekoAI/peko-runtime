@@ -8,7 +8,7 @@
 use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
 use crate::commands::agent_bootstrap::AgentBootstrap;
 use crate::common::identifiers::{
-    parse_agent_identifier_with_override, validate_agent_name, ValidationError,
+    parse_agent_name, validate_agent_name, ValidationError,
 };
 use crate::common::paths::PathResolver;
 use crate::common::types::agent::{
@@ -119,7 +119,7 @@ impl AgentService {
 
     /// Get a specific agent by name.
     pub async fn get_agent(&self, name: &str, _team: Option<&str>) -> Result<Option<AgentInfo>> {
-        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let agent_name = parse_agent_name(name)?;
 
         let config_path = self.resolver.agent_config(agent_name);
         if !config_path.exists() {
@@ -129,7 +129,7 @@ impl AgentService {
         let content = tokio::fs::read_to_string(&config_path).await?;
         let config: AgentConfig = toml::from_str(&content)?;
 
-        let sessions_dir = self.resolver.agent_personal_sessions_dir(agent_name);
+        let sessions_dir = self.resolver.agent_sessions_dir(agent_name);
         let mut session_count = 0;
         if sessions_dir.exists() {
             if let Ok(mut entries) = tokio::fs::read_dir(&sessions_dir).await {
@@ -151,7 +151,7 @@ impl AgentService {
             .and_then(|s| s.files.as_ref())
             .and_then(|files| files.first())
             .and_then(|file| {
-                let workspace_dir = self.resolver.agent_workspace(agent_name, None);
+                let workspace_dir = self.resolver.agent_workspace(agent_name);
                 let path = workspace_dir.join(file);
                 std::fs::read_to_string(&path).ok()
             });
@@ -187,7 +187,7 @@ impl AgentService {
             }
         }
 
-        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let agent_name = parse_agent_name(name)?;
         let config_path = self.resolver.agent_config(agent_name);
         if !config_path.exists() {
             anyhow::bail!("Subagent type '{name}' not found at {config_path:?}");
@@ -286,7 +286,7 @@ impl AgentService {
         tokio::fs::create_dir_all(&agent_dir).await?;
 
         // Create personal workspace directory
-        let workspace_dir = self.resolver.agent_personal_workspace(name);
+        let workspace_dir = self.resolver.agent_workspace(name);
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
         // Build config with workspace set
@@ -320,7 +320,7 @@ impl AgentService {
         _team: Option<&str>,
         opts: AgentDeleteOptions,
     ) -> Result<AgentDeleteResult> {
-        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let agent_name = parse_agent_name(name)?;
 
         let config_path = self.resolver.agent_config(agent_name);
         if !config_path.exists() {
@@ -332,13 +332,13 @@ impl AgentService {
         tokio::fs::remove_dir_all(agent_dir).await?;
 
         // Remove personal sessions and workspaces
-        let personal_sessions = self.resolver.agent_personal_sessions_dir(agent_name);
+        let personal_sessions = self.resolver.agent_sessions_dir(agent_name);
         let had_sessions = personal_sessions.exists();
         if had_sessions {
             tokio::fs::remove_dir_all(&personal_sessions).await.ok();
         }
 
-        let personal_workspace = self.resolver.agent_personal_workspace(agent_name);
+        let personal_workspace = self.resolver.agent_workspace(agent_name);
         if personal_workspace.exists() {
             tokio::fs::remove_dir_all(&personal_workspace).await.ok();
         }
@@ -377,7 +377,7 @@ impl AgentService {
             anyhow::bail!("Invalid new agent name '{new_name}': {e}");
         }
 
-        let (_, old_agent_name) = parse_agent_identifier_with_override(old_name, None)?;
+        let old_agent_name = parse_agent_name(old_name)?;
 
         let old_config_path = self.resolver.agent_config(old_agent_name);
         if !old_config_path.exists() {
@@ -431,7 +431,7 @@ impl AgentService {
         _team: Option<&str>,
         update: AgentUpdateRequest,
     ) -> Result<AgentInfo> {
-        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let agent_name = parse_agent_name(name)?;
 
         let config_path = self.resolver.agent_config(agent_name);
         if !config_path.exists() {
@@ -465,7 +465,7 @@ impl AgentService {
                     }),
                 });
                 // Write the system prompt to a SYSTEM.md file in the agent workspace
-                let workspace_dir = self.resolver.agent_workspace(agent_name, None);
+                let workspace_dir = self.resolver.agent_workspace(agent_name);
                 tokio::fs::create_dir_all(&workspace_dir).await.ok();
                 let system_md_path = workspace_dir.join("SYSTEM.md");
                 tokio::fs::write(&system_md_path, &system_prompt).await?;
@@ -495,7 +495,7 @@ impl AgentService {
 
     #[must_use]
     pub fn agent_exists(&self, name: &str) -> bool {
-        if let Ok((_, agent_name)) = parse_agent_identifier_with_override(name, None) {
+        if let Ok(agent_name) = parse_agent_name(name) {
             self.resolver.agent_exists(agent_name)
         } else {
             false
@@ -519,7 +519,7 @@ impl AgentService {
         new_owner: crate::auth::Subject,
         caller: &crate::auth::Subject,
     ) -> Result<()> {
-        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let agent_name = parse_agent_name(name)?;
         let config_path = self.resolver.agent_config(agent_name);
         if !config_path.exists() {
             anyhow::bail!("Agent '{agent_name}' not found");
@@ -546,7 +546,7 @@ impl AgentService {
         grant: crate::auth::ownership::PermissionGrant,
         caller: &crate::auth::Subject,
     ) -> Result<()> {
-        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let agent_name = parse_agent_name(name)?;
         let config_path = self.resolver.agent_config(agent_name);
         if !config_path.exists() {
             anyhow::bail!("Agent '{agent_name}' not found");
@@ -580,7 +580,7 @@ impl AgentService {
         permission: &crate::auth::ownership::Permission,
         caller: &crate::auth::Subject,
     ) -> Result<()> {
-        let (_, agent_name) = parse_agent_identifier_with_override(name, None)?;
+        let agent_name = parse_agent_name(name)?;
         let config_path = self.resolver.agent_config(agent_name);
         if !config_path.exists() {
             anyhow::bail!("Agent '{agent_name}' not found");
@@ -646,9 +646,6 @@ fn map_agent_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
         ValidationError::Empty => anyhow::anyhow!("Agent name cannot be empty"),
         ValidationError::TooLong(max) => {
             anyhow::anyhow!("Agent name '{name}' exceeds maximum length of {max} characters")
-        }
-        ValidationError::Reserved(reserved) => {
-            anyhow::anyhow!("'{reserved}' is a reserved name and cannot be used")
         }
         ValidationError::ContainsPathSeparators => {
             anyhow::anyhow!("Agent name cannot contain path separators (/ or \\)")

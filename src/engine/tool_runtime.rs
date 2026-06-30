@@ -166,7 +166,7 @@ impl ToolRuntime {
         path_resolver: &PathResolver,
     ) -> Result<()> {
         let workspace = path_resolver
-            .agent_workspace(".", None)
+            .agent_workspace(".")
             .parent()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));

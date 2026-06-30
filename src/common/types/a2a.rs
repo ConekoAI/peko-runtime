@@ -34,8 +34,6 @@ pub struct ToolCallInfo {
 pub struct A2aMessageRequest {
     /// Agent name
     pub agent_name: String,
-    /// Team (optional)
-    pub team: Option<String>,
     /// Message content
     pub message: String,
     /// Session ID (optional - creates new if not provided)
@@ -71,7 +69,6 @@ impl A2aMessageRequest {
     pub fn new(agent_name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             agent_name: agent_name.into(),
-            team: None,
             message: message.into(),
             session_id: None,
             new_session: false,
@@ -88,12 +85,6 @@ impl A2aMessageRequest {
         self
     }
 
-    /// Set team
-    pub fn with_team(mut self, team: impl Into<String>) -> Self {
-        self.team = Some(team.into());
-        self
-    }
-
     /// Set session ID
     pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
@@ -104,13 +95,6 @@ impl A2aMessageRequest {
     #[must_use]
     pub fn with_session_opt(mut self, session_id: Option<String>) -> Self {
         self.session_id = session_id;
-        self
-    }
-
-    /// Set team from Option (preserves None)
-    #[must_use]
-    pub fn with_team_opt(mut self, team: Option<String>) -> Self {
-        self.team = team;
         self
     }
 

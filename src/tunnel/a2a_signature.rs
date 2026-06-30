@@ -34,9 +34,6 @@
 //!   [1 byte presence]
 //!     if 0x01:  [4 bytes BE u32 = len(session_id)] || session_id
 //!     if 0x00:  (nothing further)
-//!   [1 byte presence]
-//!     if 0x01:  [4 bytes BE u32 = len(team)] || team
-//!     if 0x00:  (nothing further)
 //! ```
 //!
 //! The leading `"a2a:v1"` domain-separation tag makes it impossible for
@@ -75,16 +72,15 @@ pub struct SignedFields<'a> {
     pub target_principal_did: &'a str,
     pub message: &'a str,
     pub session_id: Option<&'a str>,
-    pub team: Option<&'a str>,
 }
 
 /// Build the deterministic pre-image bytes that get signed / verified
 /// for an a2a request. See module docs for the byte layout.
 #[must_use]
 pub fn canonical_pre_image(fields: SignedFields<'_>) -> Vec<u8> {
-    // Tight capacity hint: 1 domain + 4 required + up to 2 optional,
+    // Tight capacity hint: 1 domain + 4 required + up to 1 optional,
     // each with a 4-byte length prefix and a presence byte on the
-    // optionals. Slightly over-allocates rather than reallocates.
+    // optional. Slightly over-allocates rather than reallocates.
     let estimated = A2A_SIGNATURE_DOMAIN.len()
         + fields.request_id.len()
         + fields.caller_runtime_id.len()
@@ -92,9 +88,8 @@ pub fn canonical_pre_image(fields: SignedFields<'_>) -> Vec<u8> {
         + fields.target_principal_did.len()
         + fields.message.len()
         + fields.session_id.map_or(0, str::len)
-        + fields.team.map_or(0, str::len)
-        + (4 * 7) // length prefixes (domain + 4 required + 2 optional fields)
-        + 2; // presence bytes
+        + (4 * 6) // length prefixes (domain + 4 required + 1 optional field)
+        + 1; // presence byte
     let mut out = Vec::with_capacity(estimated);
 
     push_lp(&mut out, A2A_SIGNATURE_DOMAIN);
@@ -104,7 +99,6 @@ pub fn canonical_pre_image(fields: SignedFields<'_>) -> Vec<u8> {
     push_lp(&mut out, fields.target_principal_did);
     push_lp(&mut out, fields.message);
     push_opt_lp(&mut out, fields.session_id);
-    push_opt_lp(&mut out, fields.team);
     out
 }
 
@@ -193,7 +187,6 @@ mod tests {
             target_principal_did: "did:peko:agent:target-hash",
             message: "review this",
             session_id: Some("sess-xyz"),
-            team: Some("default"),
         }
     }
 
@@ -297,13 +290,6 @@ mod tests {
                     ..sample_fields()
                 },
             ),
-            (
-                "team",
-                SignedFields {
-                    team: Some("different-team"),
-                    ..sample_fields()
-                },
-            ),
         ];
         for (name, fields) in cases {
             assert_ne!(
@@ -375,13 +361,6 @@ mod tests {
                     ..sample_fields()
                 },
             ),
-            (
-                "team",
-                SignedFields {
-                    team: None,
-                    ..sample_fields()
-                },
-            ),
         ];
         for (name, tampered) in tampers {
             verify_request(&kp.verifying_key, tampered, &sig).expect_err(&format!(
@@ -440,12 +419,10 @@ mod tests {
         let kp = KeyPair::generate();
         let with_none = SignedFields {
             session_id: None,
-            team: None,
             ..sample_fields()
         };
         let with_empty = SignedFields {
             session_id: Some(""),
-            team: Some(""),
             ..sample_fields()
         };
 

@@ -505,7 +505,6 @@ impl TunnelDispatcher {
                 target_principal_did,
                 session_id,
                 message,
-                team,
                 signature,
             } => {
                 self.handle_inbound_agent_to_agent_request(
@@ -516,7 +515,6 @@ impl TunnelDispatcher {
                     target_principal_did,
                     session_id,
                     message,
-                    team,
                     signature,
                 )
                 .await?;
@@ -984,7 +982,6 @@ impl TunnelDispatcher {
         target_principal_did: String,
         session_id: Option<String>,
         message: String,
-        team: Option<String>,
         signature: String,
     ) -> anyhow::Result<()> {
         // 1. Derive the verifying key from the caller's runtime_id.
@@ -1013,7 +1010,6 @@ impl TunnelDispatcher {
             target_principal_did: &target_principal_did,
             message: &message,
             session_id: session_id.as_deref(),
-            team: team.as_deref(),
         };
         if let Err(e) = verify_request(&verifying_key, signed, &signature) {
             warn!(
@@ -1867,7 +1863,6 @@ mod tests {
                 "did:peko:agent:target".to_string(),
                 None,
                 "hi".to_string(),
-                None,
                 "sig".to_string(),
             )
             .await
@@ -1917,7 +1912,6 @@ mod tests {
             target_principal_did: "did:peko:agent:target",
             message: "hi",
             session_id: None,
-            team: None,
         };
         let sig = crate::tunnel::sign_request(&kp_attacker.signing_key, signed);
 
@@ -1930,7 +1924,6 @@ mod tests {
                 "did:peko:agent:target".to_string(),
                 None,
                 "hi".to_string(),
-                None,
                 sig,
             )
             .await
@@ -2145,7 +2138,6 @@ mod tests {
             target_principal_did: &target_principal_did,
             message: "ping",
             session_id: None,
-            team: None,
         };
         let sig = crate::tunnel::sign_request(&kp_caller.signing_key, signed);
 
@@ -2158,7 +2150,6 @@ mod tests {
                 target_principal_did,
                 None,
                 "ping".to_string(),
-                None,
                 sig,
             )
             .await

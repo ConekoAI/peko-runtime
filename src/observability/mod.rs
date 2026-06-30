@@ -66,7 +66,7 @@ impl Observability {
     /// (issues #17 + #26). Prefer this over `audit` on any event that
     /// flows through a request path so the audit trail is attributable
     /// to a real subject. The caller is a typed `Subject` (ADR-039)
-    /// — `User` / `Agent` / `Team` / `Public` — so per-user, per-key,
+    /// — `User` / `Principal` / `Public` — so per-user, per-key,
     /// and per-agent audit queries can index on the kind tag instead of
     /// string-parsing the legacy `user:{sub}` convention.
     pub async fn audit_with_caller(
@@ -254,7 +254,7 @@ mod tests {
             Some(&caller),
             "permission_denied",
             Some("agent-a"),
-            serde_json::json!({"resource": "team:eng"}),
+            serde_json::json!({"resource": "principal:eng"}),
         )
         .await
         .unwrap();
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(e.severity, AuditSeverity::Security);
         assert_eq!(e.event_type, "permission_denied");
         assert_eq!(e.agent_did.as_deref(), Some("agent-a"));
-        assert_eq!(e.details["resource"], "team:eng");
+        assert_eq!(e.details["resource"], "principal:eng");
     }
 
     /// `audit_security` (no caller) must leave `caller` unset — backward

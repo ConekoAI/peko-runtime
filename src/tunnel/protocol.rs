@@ -33,7 +33,6 @@ pub enum InstanceExposure {
 #[serde(rename_all = "snake_case")]
 pub enum InstanceType {
     Agent,
-    Team,
     Principal,
 }
 
@@ -278,11 +277,6 @@ pub enum TunnelMessage {
         session_id: Option<String>,
         /// The message body to deliver to the target agent.
         message: String,
-        /// Optional team name to scope the target agent's session
-        /// within. When absent, the target runtime uses its default
-        /// team. Mirrors the local `a2a_send` semantics.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        team: Option<String>,
         /// Ed25519 signature, base64url-encoded, over the canonical
         /// pre-image (see Slice B comment above). The target derives
         /// the verifying public key from `caller_runtime_id`
@@ -742,7 +736,6 @@ mod tests {
             target_principal_did: "did:peko:agent:target-hash".to_string(),
             session_id: Some("sess-xyz".to_string()),
             message: "review this PR".to_string(),
-            team: Some("default".to_string()),
             signature: "base64url-sig".to_string(),
         };
         let bytes = msg.to_bytes().unwrap();
@@ -787,7 +780,6 @@ mod tests {
                 target_principal_did,
                 session_id,
                 message,
-                team,
                 signature,
             } => {
                 assert_eq!(request_id, "req-abc-123");
@@ -796,16 +788,15 @@ mod tests {
                 assert_eq!(target_principal_did, "did:peko:agent:target-hash");
                 assert_eq!(session_id.as_deref(), Some("sess-xyz"));
                 assert_eq!(message, "review this PR");
-                assert_eq!(team.as_deref(), Some("default"));
                 assert_eq!(signature, "base64url-sig");
             }
             other => panic!("Expected AgentToAgentRequest, got: {other:?}"),
         }
     }
 
-    /// Minimal `AgentToAgentRequest` — no `session_id`, no `team`.
-    /// Both Option fields must be omitted from the wire form so
-    /// pre-#29 PekoHub doesn't see "unknown null field"; this is the
+    /// Minimal `AgentToAgentRequest` — no `session_id`.
+    /// The Option field must be omitted from the wire form so
+    /// pre-#29 PekoHub doesn't see an unknown null field; this is the
     /// same back-compat shape the existing `bundleRef` / `metadata`
     /// fields use elsewhere in this enum.
     #[test]
@@ -817,7 +808,6 @@ mod tests {
             target_principal_did: "did:peko:agent:target-hash".to_string(),
             session_id: None,
             message: "hi".to_string(),
-            team: None,
             signature: "sig".to_string(),
         };
         let bytes = msg.to_bytes().unwrap();
@@ -827,18 +817,11 @@ mod tests {
             !json.contains("sessionId"),
             "session_id must be omitted from the wire when None; got: {json}"
         );
-        assert!(
-            !json.contains("\"team\""),
-            "team must be omitted from the wire when None; got: {json}"
-        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
-            TunnelMessage::AgentToAgentRequest {
-                session_id, team, ..
-            } => {
+            TunnelMessage::AgentToAgentRequest { session_id, .. } => {
                 assert!(session_id.is_none());
-                assert!(team.is_none());
             }
             other => panic!("Expected AgentToAgentRequest, got: {other:?}"),
         }

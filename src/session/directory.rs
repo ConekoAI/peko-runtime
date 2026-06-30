@@ -25,11 +25,11 @@ impl SessionDirectory {
         Self { path }
     }
 
-    /// Create from agent name and team using `PathResolver`
+    /// Create from agent name using `PathResolver`
     #[must_use]
-    pub fn for_agent(agent_name: &str, team: Option<&str>) -> Self {
+    pub fn for_agent(agent_name: &str) -> Self {
         let resolver = crate::common::paths::PathResolver::new();
-        let path = resolver.agent_sessions_dir(agent_name, team);
+        let path = resolver.agent_sessions_dir(agent_name);
         Self::new(path)
     }
 
@@ -119,11 +119,11 @@ mod tests {
 
     #[test]
     fn test_for_agent() {
-        let dir = SessionDirectory::for_agent("myagent", Some("myteam"));
+        let dir = SessionDirectory::for_agent("myagent");
         let path = dir.path();
         let path_str = path.to_string_lossy();
 
-        assert!(path_str.contains("myteam"));
+        assert!(path_str.contains("personal"));
         assert!(path_str.contains("myagent"));
     }
 }

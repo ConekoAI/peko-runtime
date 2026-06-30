@@ -208,7 +208,7 @@ pub struct StatelessAgentService {
     default_timeout: Duration,
     /// Execution metrics
     metrics: RwLock<ExecutionMetrics>,
-    /// Path resolver for team-aware paths
+    /// Path resolver for agent data paths
     path_resolver: PathResolver,
     /// v3 LLM resolver. Required in production (every `peko send`
     /// goes through `LlmResolver::build`); may be `None` only in
@@ -267,7 +267,7 @@ impl StatelessAgentService {
         };
 
         info!(
-            "StatelessAgentService initialized with team-aware paths (resolver: {})",
+            "StatelessAgentService initialized (resolver: {})",
             if service.resolver.is_some() {
                 "wired"
             } else {
@@ -347,11 +347,9 @@ impl StatelessAgentService {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
-        let team = request.team.as_deref();
         let mut session_manager = SessionManager::for_cli(
             self.path_resolver.clone(),
             &request.agent_name,
-            team,
             &request.user,
         );
         if let Some(principal) = request.caller_principal.as_ref() {
@@ -361,7 +359,6 @@ impl StatelessAgentService {
         let resolved = session_manager
             .resolve_session(
                 &request.agent_name,
-                team,
                 ChannelType::Http,
                 "default",
                 request.session_id.clone(),
@@ -436,11 +433,9 @@ impl StatelessAgentService {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
-        let team = request.team.as_deref();
         let mut session_manager = SessionManager::for_cli(
             self.path_resolver.clone(),
             &request.agent_name,
-            team,
             &request.user,
         );
         if let Some(principal) = request.caller_principal.as_ref() {
@@ -450,7 +445,6 @@ impl StatelessAgentService {
         let resolved = session_manager
             .resolve_session(
                 &request.agent_name,
-                team,
                 ChannelType::Http,
                 "default",
                 request.session_id.clone(),
@@ -541,12 +535,9 @@ impl StatelessAgentService {
 
         // 2. Open the specific session by ID
         // This ensures we write to the correct session file
-        // ExecutionRequest does not carry team context; use personal context (None)
-        let team = None;
         let mut session_manager = SessionManager::for_cli(
             self.path_resolver.clone(),
             &request.agent_name,
-            team,
             &request.user,
         );
         if let Some(principal) = request.caller_principal.as_ref() {
@@ -798,12 +789,9 @@ impl StatelessAgentService {
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
         // Open the specific session by ID (same logic as execute_inner)
-        // ExecutionRequest does not carry team context; use personal context (None)
-        let team = None;
         let mut session_manager = SessionManager::for_cli(
             self.path_resolver.clone(),
             &request.agent_name,
-            team,
             &request.user,
         );
         if let Some(principal) = request.caller_principal.as_ref() {
@@ -1195,14 +1183,12 @@ mod tests {
     #[test]
     fn test_message_request_builder() {
         let request = MessageRequest::new("my-agent", "Hello")
-            .with_team("default")
             .with_session("sess_123")
             .with_new_session(false)
             .with_timeout(60);
 
         assert_eq!(request.agent_name, "my-agent");
         assert_eq!(request.message, "Hello");
-        assert_eq!(request.team, Some("default".to_string()));
         assert_eq!(request.session_id, Some("sess_123".to_string()));
         assert!(!request.new_session);
         assert_eq!(request.timeout_secs, Some(60));
@@ -1214,7 +1200,6 @@ mod tests {
 
         assert_eq!(request.agent_name, "my-agent");
         assert_eq!(request.message, "Hello");
-        assert_eq!(request.team, None);
         assert_eq!(request.session_id, None);
         assert!(!request.new_session);
         assert_eq!(request.timeout_secs, None);

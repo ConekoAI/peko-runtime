@@ -256,10 +256,9 @@ pub fn cli_session_key(agent: &str) -> String {
 /// After ADR-039, `Subject` is an alias for `Subject`. The key format
 /// is **byte-stable** for `Subject::User` and `Subject::Principal` —
 /// these are the only valid session peers (`Subject::is_session_peer`).
-/// For `Subject::Team` and `Subject::Public`, the function falls
-/// back to `peer:user:default` and logs a warning, so a stray non-peer
-/// principal never produces an orphan key. This is the documented
-/// behavior, not a bug.
+/// For `Subject::Public`, the function falls back to `peer:user:default`
+/// and logs a warning, so a stray non-peer subject never produces an
+/// orphan key. This is the documented behavior, not a bug.
 #[must_use]
 pub fn derive_base_session_key(agent: &str, peer: &crate::auth::Subject) -> String {
     use crate::auth::Subject;
@@ -270,7 +269,7 @@ pub fn derive_base_session_key(agent: &str, peer: &crate::auth::Subject) -> Stri
         Subject::Principal(id) => {
             format!("agent:{}:peer:agent:{}", agent, sanitize_key_component(id.as_str()))
         }
-        Subject::Team(_) | Subject::Public => {
+        Subject::Public => {
             tracing::warn!(
                 "derive_base_session_key called with non-peer Subject {peer}; \
                  falling back to peer:user:default (ADR-039)"

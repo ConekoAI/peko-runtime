@@ -201,7 +201,7 @@ impl SystemPromptService {
             .clone()
             .or_else(|| {
                 let resolver = crate::common::paths::PathResolver::new();
-                Some(resolver.agent_personal_workspace(agent.name()))
+                Some(resolver.agent_workspace(agent.name()))
             })
             .unwrap_or_else(|| PathBuf::from("."))
     }
