@@ -29,7 +29,7 @@
 # cli_agent_signature for issue #14 (manifest signature verification).
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
-                     team_integration extension_packaging \
+                     extension_packaging \
                      cli_send cli_session cli_basics cli_cron cli_subagent \
                      cli_tools cli_agent_signature \
                      cli_extensions cli_providers \
@@ -110,8 +110,8 @@ docker-down:
 # dual-mode tests to the real provider.
 #
 # --include-ignored runs BOTH the hub-gated #[ignore] tests AND the
-# always-on pure-Rust tests in team_integration / extension_packaging
-# (10) plus the 6 offline CLI tests in cli_basics.
+# always-on pure-Rust tests in extension_packaging (10) plus the 6
+# offline CLI tests in cli_basics.
 # Plain --ignored would skip those 16 always-on tests entirely.
 
 test-integration: docker-up

@@ -12,8 +12,7 @@ use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 use crate::agents::lifecycle::LifecycleManager;
 use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::services::{
-    AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService, TeamManagementService,
-    TeamService,
+    AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService,
 };
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
@@ -96,9 +95,6 @@ pub struct AppState {
 
     /// Session service (unified for CLI and API)
     session_service: Arc<SessionService>,
-
-    /// Team management service (unified for CLI and API)
-    team_service: Arc<TeamManagementService>,
 
     /// Tool runtime for async task execution (ADR-020)
     pub tool_runtime: Arc<ToolRuntime>,
@@ -217,7 +213,6 @@ impl std::fmt::Debug for AppState {
             .field("agent_service", &"<StatelessAgentService>")
             .field("principal_manager", &"<PrincipalManager>")
             .field("agent_mgmt_service", &"<AgentService>")
-            .field("team_service", &"<TeamManagementService>")
             .field("tool_runtime", &"<ToolRuntime>")
             .field("async_task_executor", &"<AsyncExecutor>")
             .field("inbox_registry", &"<InboxRegistry>")
@@ -248,8 +243,6 @@ struct AppStateInner {
     pub degraded: bool,
     /// Number of running instances (cached)
     pub instance_count: u64,
-    /// Number of teams (cached)
-    pub team_count: u64,
     /// Whether the daemon is ready to serve requests
     pub ready: bool,
 }
@@ -478,11 +471,6 @@ impl AppState {
         let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
 
         // Create unified services
-        let team_service = Arc::new(TeamManagementService::new(
-            TeamService::new(path_resolver_clone.clone()),
-            path_resolver_clone.clone(),
-        ));
-
         let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone.clone()));
 
         // ADR-021: Initialize global ExtensionCore FIRST so ToolRuntime can register
@@ -667,7 +655,6 @@ impl AppState {
             agent_mgmt_service,
             lifecycle,
             session_service,
-            team_service,
             tool_runtime,
             async_task_executor,
             inbox_registry,
@@ -728,12 +715,6 @@ impl AppState {
     pub async fn instance_count(&self) -> u64 {
         let inner = self.inner.read().await;
         inner.instance_count
-    }
-
-    /// Get the current team count
-    pub async fn team_count(&self) -> u64 {
-        let inner = self.inner.read().await;
-        inner.team_count
     }
 
     /// Mark the daemon as healthy (not degraded)
@@ -843,12 +824,6 @@ impl AppState {
     #[must_use]
     pub fn session_service(&self) -> &Arc<SessionService> {
         &self.session_service
-    }
-
-    /// Get the team management service (unified)
-    #[must_use]
-    pub fn team_service(&self) -> &Arc<TeamManagementService> {
-        &self.team_service
     }
 
     /// Get the agent management service (unified)

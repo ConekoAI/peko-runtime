@@ -182,35 +182,6 @@ pub enum RequestPacket {
     #[serde(rename = "principal_get")]
     PrincipalGet { request_id: u64, name: String },
 
-    // ─── Team CRUD ──────────────────────────────────────────────────
-    #[serde(rename = "team_list")]
-    TeamList { request_id: u64 },
-
-    #[serde(rename = "team_get")]
-    TeamGet { request_id: u64, name: String },
-
-    #[serde(rename = "team_create")]
-    TeamCreate {
-        request_id: u64,
-        name: String,
-        description: Option<String>,
-        members: Option<Vec<String>>,
-    },
-
-    #[serde(rename = "team_delete")]
-    TeamDelete {
-        request_id: u64,
-        name: String,
-        force: bool,
-    },
-
-    #[serde(rename = "team_move")]
-    TeamMove {
-        request_id: u64,
-        old_name: String,
-        new_name: String,
-    },
-
     // ─── Session CRUD ───────────────────────────────────────────────
     #[serde(rename = "session_list")]
     SessionList {
@@ -359,24 +330,6 @@ pub enum RequestPacket {
     #[serde(rename = "extension_uninstall")]
     ExtensionUninstall { request_id: u64, id: String },
 
-    /// Export a team
-    #[serde(rename = "team_export")]
-    TeamExport {
-        request_id: u64,
-        name: String,
-        output: Option<String>,
-        include_sessions: bool,
-    },
-
-    /// Import a team
-    #[serde(rename = "team_import")]
-    TeamImport {
-        request_id: u64,
-        file_path: String,
-        name: Option<String>,
-        force: bool,
-    },
-
     // ── Runtime (ADR-032) ──
     #[serde(rename = "runtime_id")]
     RuntimeId { request_id: u64 },
@@ -439,27 +392,6 @@ pub enum RequestPacket {
     // Grant/revoke packets carry a single `subject: Subject`.
     // The legacy `(subject_id, subject_type)` wire fields from ADR-033
     // were dropped in issue #30.
-    #[serde(rename = "team_transfer_owner")]
-    TeamTransferOwner {
-        request_id: u64,
-        team: String,
-        new_owner: crate::auth::Subject,
-    },
-    #[serde(rename = "team_grant_permission")]
-    TeamGrantPermission {
-        request_id: u64,
-        team: String,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
-    },
-    #[serde(rename = "team_revoke_permission")]
-    TeamRevokePermission {
-        request_id: u64,
-        team: String,
-        subject: crate::auth::Subject,
-        permission: crate::auth::ownership::Permission,
-    },
-
     // ── Principal operations ─────────────────────────────────────────
     /// Non-streaming principal send. Returns a single `PrincipalSent`
     /// response with the supervisor's final answer.
@@ -589,11 +521,6 @@ impl RequestPacket {
             | Self::ExtStatus { request_id, .. }
             | Self::PrincipalList { request_id }
             | Self::PrincipalGet { request_id, .. }
-            | Self::TeamList { request_id }
-            | Self::TeamGet { request_id, .. }
-            | Self::TeamCreate { request_id, .. }
-            | Self::TeamDelete { request_id, .. }
-            | Self::TeamMove { request_id, .. }
             | Self::SessionList { request_id, .. }
             | Self::SessionRemove { request_id, .. }
             | Self::ProviderList { request_id }
@@ -616,8 +543,6 @@ impl RequestPacket {
             | Self::SessionSteerCancel { request_id, .. }
             | Self::ExtensionInstall { request_id, .. }
             | Self::ExtensionUninstall { request_id, .. }
-            | Self::TeamExport { request_id, .. }
-            | Self::TeamImport { request_id, .. }
             | Self::RuntimeId { request_id }
             | Self::RuntimeInfo { request_id }
             | Self::RuntimeList { request_id }
@@ -633,9 +558,6 @@ impl RequestPacket {
             | Self::Status { request_id }
             | Self::InstanceSetStatus { request_id, .. }
             | Self::InstanceSetExposure { request_id, .. }
-            | Self::TeamTransferOwner { request_id, .. }
-            | Self::TeamGrantPermission { request_id, .. }
-            | Self::TeamRevokePermission { request_id, .. }
             | Self::PrincipalSend { request_id, .. }
             | Self::PrincipalSendStream { request_id, .. }
             | Self::PrincipalExport { request_id, .. }
@@ -663,9 +585,7 @@ impl RequestPacket {
         use crate::auth::Subject;
 
         match self {
-            Self::TeamGrantPermission { subject, .. }
-            | Self::TeamRevokePermission { subject, .. }
-            | Self::PrincipalGrantPermission { subject, .. }
+            Self::PrincipalGrantPermission { subject, .. }
             | Self::PrincipalRevokePermission { subject, .. } => subject.clone(),
             // Non-grant/revoke packets have no subject. Return the
             // default sentinel so the caller doesn't have to special-case.
@@ -829,48 +749,10 @@ pub enum ResponsePacket {
     },
 
     /// Principal get response — single Principal summary by name.
-    /// Replaces the legacy `AgentList` filtered-by-name lookup that the
-    /// CLI used to assemble a "team show" view.
     #[serde(rename = "principal_get")]
     PrincipalGet {
         request_id: u64,
         principal: Option<crate::principal::PrincipalSummary>,
-    },
-
-    /// Team list response
-    #[serde(rename = "team_list")]
-    TeamList {
-        request_id: u64,
-        teams: Vec<crate::common::types::team::TeamInfo>,
-    },
-
-    /// Team detail response
-    #[serde(rename = "team_get")]
-    TeamGet {
-        request_id: u64,
-        team: Option<crate::common::types::team::TeamInfo>,
-    },
-
-    /// Team created response
-    #[serde(rename = "team_created")]
-    TeamCreated {
-        request_id: u64,
-        result: crate::common::types::team::TeamCreationResult,
-    },
-
-    /// Team deleted response
-    #[serde(rename = "team_deleted")]
-    TeamDeleted {
-        request_id: u64,
-        result: crate::common::types::team::TeamDeletionResult,
-    },
-
-    /// Team moved response
-    #[serde(rename = "team_moved")]
-    TeamMoved {
-        request_id: u64,
-        old_name: String,
-        new_name: String,
     },
 
     /// Session list response
@@ -897,7 +779,6 @@ pub enum ResponsePacket {
         uptime_secs: u64,
         degraded: bool,
         instance_count: u64,
-        team_count: u64,
         ready: bool,
     },
 
@@ -1051,22 +932,6 @@ pub enum ResponsePacket {
         request_id: u64,
         id: String,
         message: String,
-    },
-
-    /// Team exported
-    #[serde(rename = "team_exported")]
-    TeamExported {
-        request_id: u64,
-        name: String,
-        output_path: String,
-    },
-
-    /// Team imported
-    #[serde(rename = "team_imported")]
-    TeamImported {
-        request_id: u64,
-        name: String,
-        path: String,
     },
 
     // ── Runtime (ADR-032) ──
@@ -1411,11 +1276,6 @@ impl ResponsePacket {
             | Self::ExtStatus { request_id, .. }
             | Self::PrincipalList { request_id, .. }
             | Self::PrincipalGet { request_id, .. }
-            | Self::TeamList { request_id, .. }
-            | Self::TeamGet { request_id, .. }
-            | Self::TeamCreated { request_id, .. }
-            | Self::TeamDeleted { request_id, .. }
-            | Self::TeamMoved { request_id, .. }
             | Self::SessionList { request_id, .. }
             | Self::SessionRemoved { request_id, .. }
             | Self::SystemStatus { request_id, .. }
@@ -1436,8 +1296,6 @@ impl ResponsePacket {
             | Self::SessionCompactDryRun { request_id, .. }
             | Self::ExtensionInstalled { request_id, .. }
             | Self::ExtensionUninstalled { request_id, .. }
-            | Self::TeamExported { request_id, .. }
-            | Self::TeamImported { request_id, .. }
             | Self::RuntimeId { request_id, .. }
             | Self::RuntimeInfo { request_id, .. }
             | Self::RuntimeList { request_id, .. }
@@ -1487,11 +1345,6 @@ impl ResponsePacket {
             Self::ExtStatus { .. } => "ExtStatus",
             Self::PrincipalList { .. } => "PrincipalList",
             Self::PrincipalGet { .. } => "PrincipalGet",
-            Self::TeamList { .. } => "TeamList",
-            Self::TeamGet { .. } => "TeamGet",
-            Self::TeamCreated { .. } => "TeamCreated",
-            Self::TeamDeleted { .. } => "TeamDeleted",
-            Self::TeamMoved { .. } => "TeamMoved",
             Self::SessionList { .. } => "SessionList",
             Self::SessionRemoved { .. } => "SessionRemoved",
             Self::SystemStatus { .. } => "SystemStatus",
@@ -1512,8 +1365,6 @@ impl ResponsePacket {
             Self::SessionCompactDryRun { .. } => "SessionCompactDryRun",
             Self::ExtensionInstalled { .. } => "ExtensionInstalled",
             Self::ExtensionUninstalled { .. } => "ExtensionUninstalled",
-            Self::TeamExported { .. } => "TeamExported",
-            Self::TeamImported { .. } => "TeamImported",
             Self::RuntimeId { .. } => "RuntimeId",
             Self::RuntimeInfo { .. } => "RuntimeInfo",
             Self::RuntimeList { .. } => "RuntimeList",
@@ -1995,36 +1846,6 @@ mod tests {
     }
 
     #[test]
-    fn test_team_list_request_roundtrip() {
-        let req = RequestPacket::TeamList { request_id: 400 };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::TeamList { request_id } => {
-                assert_eq!(request_id, 400);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_get_request_roundtrip() {
-        let req = RequestPacket::TeamGet {
-            request_id: 401,
-            name: "default".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::TeamGet { request_id, name } => {
-                assert_eq!(request_id, 401);
-                assert_eq!(name, "default");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_session_list_request_roundtrip() {
         let req = RequestPacket::SessionList {
             request_id: 500,
@@ -2129,68 +1950,6 @@ mod tests {
     }
 
     #[test]
-    fn test_team_list_response_roundtrip() {
-        let resp = ResponsePacket::TeamList {
-            request_id: 700,
-            teams: vec![crate::common::types::team::TeamInfo {
-                name: "default".to_string(),
-                metadata: crate::common::types::team::TeamMetadata {
-                    name: "default".to_string(),
-                    description: None,
-                    created_at: "2024-01-01T00:00:00Z".to_string(),
-                    host_runtime_id: String::new(),
-                    owner: crate::auth::Subject::User(String::new()),
-                    permissions: Vec::new(),
-                },
-                agent_count: 0,
-                members: vec![],
-                path: std::path::PathBuf::from("/tmp/teams/default"),
-            }],
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::TeamList { request_id, teams } => {
-                assert_eq!(request_id, 700);
-                assert_eq!(teams.len(), 1);
-                assert_eq!(teams[0].name, "default");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_get_response_roundtrip() {
-        let resp = ResponsePacket::TeamGet {
-            request_id: 701,
-            team: Some(crate::common::types::team::TeamInfo {
-                name: "default".to_string(),
-                metadata: crate::common::types::team::TeamMetadata {
-                    name: "default".to_string(),
-                    description: None,
-                    created_at: "2024-01-01T00:00:00Z".to_string(),
-                    host_runtime_id: String::new(),
-                    owner: crate::auth::Subject::User(String::new()),
-                    permissions: Vec::new(),
-                },
-                agent_count: 0,
-                members: vec![],
-                path: std::path::PathBuf::from("/tmp/teams/default"),
-            }),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::TeamGet { request_id, team } => {
-                assert_eq!(request_id, 701);
-                assert!(team.is_some());
-                assert_eq!(team.unwrap().name, "default");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_session_list_response_roundtrip() {
         let resp = ResponsePacket::SessionList {
             request_id: 800,
@@ -2239,15 +1998,6 @@ mod tests {
         };
         assert_eq!(req_principal_get.request_id(), 2);
 
-        let req_team_list = RequestPacket::TeamList { request_id: 5 };
-        assert_eq!(req_team_list.request_id(), 5);
-
-        let req_team_get = RequestPacket::TeamGet {
-            request_id: 6,
-            name: "t".to_string(),
-        };
-        assert_eq!(req_team_get.request_id(), 6);
-
         let req_session_list = RequestPacket::SessionList {
             request_id: 7,
             agent: None,
@@ -2269,18 +2019,6 @@ mod tests {
             principal: None,
         };
         assert_eq!(resp_principal_get.request_id(), 11);
-
-        let resp_team_list = ResponsePacket::TeamList {
-            request_id: 14,
-            teams: vec![],
-        };
-        assert_eq!(resp_team_list.request_id(), 14);
-
-        let resp_team_get = ResponsePacket::TeamGet {
-            request_id: 15,
-            team: None,
-        };
-        assert_eq!(resp_team_get.request_id(), 15);
 
         let resp_session_list = ResponsePacket::SessionList {
             request_id: 16,
@@ -2324,7 +2062,6 @@ mod tests {
             uptime_secs: 12345,
             degraded: false,
             instance_count: 3,
-            team_count: 2,
             ready: true,
         };
         let bytes = resp.to_bytes().unwrap();
@@ -2336,7 +2073,6 @@ mod tests {
                 uptime_secs,
                 degraded,
                 instance_count,
-                team_count,
                 ready,
             } => {
                 assert_eq!(request_id, 902);
@@ -2344,7 +2080,6 @@ mod tests {
                 assert_eq!(uptime_secs, 12345);
                 assert!(!degraded);
                 assert_eq!(instance_count, 3);
-                assert_eq!(team_count, 2);
                 assert!(ready);
             }
             _ => panic!("Wrong variant"),
@@ -2415,7 +2150,6 @@ mod tests {
             uptime_secs: 0,
             degraded: false,
             instance_count: 0,
-            team_count: 0,
             ready: false,
         };
         assert_eq!(resp_status.request_id(), 10);
@@ -2991,344 +2725,6 @@ mod tests {
         assert_eq!(resp_compact.request_id(), 12);
     }
 
-    #[test]
-    fn test_team_export_request_roundtrip() {
-        let req = RequestPacket::TeamExport {
-            request_id: 1300,
-            name: "my-team".to_string(),
-            output: Some("/tmp/export.team".to_string()),
-            include_sessions: true,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::TeamExport {
-                request_id,
-                name,
-                output,
-                include_sessions,
-            } => {
-                assert_eq!(request_id, 1300);
-                assert_eq!(name, "my-team");
-                assert_eq!(output, Some("/tmp/export.team".to_string()));
-                assert!(include_sessions);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_import_request_roundtrip() {
-        let req = RequestPacket::TeamImport {
-            request_id: 1301,
-            file_path: "/tmp/import.team".to_string(),
-            name: Some("new-team".to_string()),
-            force: false,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::TeamImport {
-                request_id,
-                file_path,
-                name,
-                force,
-            } => {
-                assert_eq!(request_id, 1301);
-                assert_eq!(file_path, "/tmp/import.team");
-                assert_eq!(name, Some("new-team".to_string()));
-                assert!(!force);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_exported_response_roundtrip() {
-        let resp = ResponsePacket::TeamExported {
-            request_id: 2300,
-            name: "my-team".to_string(),
-            output_path: "/tmp/export.team".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::TeamExported {
-                request_id,
-                name,
-                output_path,
-            } => {
-                assert_eq!(request_id, 2300);
-                assert_eq!(name, "my-team");
-                assert_eq!(output_path, "/tmp/export.team");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_imported_response_roundtrip() {
-        let resp = ResponsePacket::TeamImported {
-            request_id: 2301,
-            name: "new-team".to_string(),
-            path: "/tmp/teams/new-team".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::TeamImported {
-                request_id,
-                name,
-                path,
-            } => {
-                assert_eq!(request_id, 2301);
-                assert_eq!(name, "new-team");
-                assert_eq!(path, "/tmp/teams/new-team");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_export_import_request_ids() {
-        let req_export = RequestPacket::TeamExport {
-            request_id: 1,
-            name: "t".to_string(),
-            output: None,
-            include_sessions: false,
-        };
-        assert_eq!(req_export.request_id(), 1);
-
-        let req_import = RequestPacket::TeamImport {
-            request_id: 2,
-            file_path: "/tmp/f.team".to_string(),
-            name: None,
-            force: false,
-        };
-        assert_eq!(req_import.request_id(), 2);
-    }
-
-    #[test]
-    fn test_team_export_import_response_ids() {
-        let resp_exported = ResponsePacket::TeamExported {
-            request_id: 10,
-            name: "t".to_string(),
-            output_path: "/tmp/e.team".to_string(),
-        };
-        assert_eq!(resp_exported.request_id(), 10);
-
-        let resp_imported = ResponsePacket::TeamImported {
-            request_id: 11,
-            name: "t".to_string(),
-            path: "/tmp/t".to_string(),
-        };
-        assert_eq!(resp_imported.request_id(), 11);
-    }
-
-    // ─── Team operations tests ──────────────────────────────────────
-
-    #[test]
-    fn test_team_create_request_roundtrip() {
-        let req = RequestPacket::TeamCreate {
-            request_id: 1500,
-            name: "new-team".to_string(),
-            description: Some("A new team".to_string()),
-            members: None,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::TeamCreate {
-                request_id,
-                name,
-                description,
-                ..
-            } => {
-                assert_eq!(request_id, 1500);
-                assert_eq!(name, "new-team");
-                assert_eq!(description, Some("A new team".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_delete_request_roundtrip() {
-        let req = RequestPacket::TeamDelete {
-            request_id: 1501,
-            name: "old-team".to_string(),
-            force: true,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::TeamDelete {
-                request_id,
-                name,
-                force,
-            } => {
-                assert_eq!(request_id, 1501);
-                assert_eq!(name, "old-team");
-                assert!(force);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_move_request_roundtrip() {
-        let req = RequestPacket::TeamMove {
-            request_id: 1502,
-            old_name: "old-team".to_string(),
-            new_name: "new-team".to_string(),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::TeamMove {
-                request_id,
-                old_name,
-                new_name,
-            } => {
-                assert_eq!(request_id, 1502);
-                assert_eq!(old_name, "old-team");
-                assert_eq!(new_name, "new-team");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_created_response_roundtrip() {
-        let resp = ResponsePacket::TeamCreated {
-            request_id: 2500,
-            result: crate::common::types::team::TeamCreationResult {
-                metadata: crate::common::types::team::TeamMetadata {
-                    name: "new-team".to_string(),
-                    description: Some("A new team".to_string()),
-                    created_at: "2024-01-01T00:00:00Z".to_string(),
-                    host_runtime_id: String::new(),
-                    owner: crate::auth::Subject::User(String::new()),
-                    permissions: Vec::new(),
-                },
-                path: std::path::PathBuf::from("/tmp/teams/new-team"),
-            },
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::TeamCreated { request_id, result } => {
-                assert_eq!(request_id, 2500);
-                assert_eq!(result.metadata.name, "new-team");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_deleted_response_roundtrip() {
-        let resp = ResponsePacket::TeamDeleted {
-            request_id: 2501,
-            result: crate::common::types::team::TeamDeletionResult {
-                name: "old-team".to_string(),
-                agents_deleted: 3,
-            },
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::TeamDeleted { request_id, result } => {
-                assert_eq!(request_id, 2501);
-                assert_eq!(result.name, "old-team");
-                assert_eq!(result.agents_deleted, 3);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_moved_response_roundtrip() {
-        let resp = ResponsePacket::TeamMoved {
-            request_id: 2502,
-            old_name: "old-team".to_string(),
-            new_name: "new-team".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::TeamMoved {
-                request_id,
-                old_name,
-                new_name,
-            } => {
-                assert_eq!(request_id, 2502);
-                assert_eq!(old_name, "old-team");
-                assert_eq!(new_name, "new-team");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_team_request_ids() {
-        let req_create = RequestPacket::TeamCreate {
-            request_id: 1,
-            name: "t".to_string(),
-            description: None,
-            members: None,
-        };
-        assert_eq!(req_create.request_id(), 1);
-
-        let req_delete = RequestPacket::TeamDelete {
-            request_id: 2,
-            name: "t".to_string(),
-            force: false,
-        };
-        assert_eq!(req_delete.request_id(), 2);
-
-        let req_move = RequestPacket::TeamMove {
-            request_id: 3,
-            old_name: "a".to_string(),
-            new_name: "b".to_string(),
-        };
-        assert_eq!(req_move.request_id(), 3);
-    }
-
-    #[test]
-    fn test_team_response_ids() {
-        let resp_created = ResponsePacket::TeamCreated {
-            request_id: 10,
-            result: crate::common::types::team::TeamCreationResult {
-                metadata: crate::common::types::team::TeamMetadata {
-                    name: "t".to_string(),
-                    description: None,
-                    created_at: "2024-01-01T00:00:00Z".to_string(),
-                    host_runtime_id: String::new(),
-                    owner: crate::auth::Subject::User(String::new()),
-                    permissions: Vec::new(),
-                },
-                path: std::path::PathBuf::from("/tmp"),
-            },
-        };
-        assert_eq!(resp_created.request_id(), 10);
-
-        let resp_deleted = ResponsePacket::TeamDeleted {
-            request_id: 11,
-            result: crate::common::types::team::TeamDeletionResult {
-                name: "t".to_string(),
-                agents_deleted: 0,
-            },
-        };
-        assert_eq!(resp_deleted.request_id(), 11);
-
-        let resp_moved = ResponsePacket::TeamMoved {
-            request_id: 12,
-            old_name: "a".to_string(),
-            new_name: "b".to_string(),
-        };
-        assert_eq!(resp_moved.request_id(), 12);
-    }
-
     // ─── Session operations tests ───────────────────────────────────
 
     #[test]
@@ -3765,9 +3161,9 @@ mod tests {
     // -- issue #30: `RequestPacket::resolved_subject` --
 
     fn grant_pkt(subject: crate::auth::Subject) -> RequestPacket {
-        RequestPacket::TeamGrantPermission {
+        RequestPacket::PrincipalGrantPermission {
             request_id: 1,
-            team: "t".into(),
+            name: "p".into(),
             subject,
             permission: crate::auth::ownership::Permission::Chat,
         }
@@ -3785,23 +3181,11 @@ mod tests {
     }
 
     #[test]
-    fn test_resolved_subject_team_and_public_variants() {
-        // Team grant.
-        let pkt = RequestPacket::TeamGrantPermission {
-            request_id: 1,
-            team: "t".into(),
-            subject: crate::auth::Subject::Team("eng".into()),
-            permission: crate::auth::ownership::Permission::Chat,
-        };
-        assert_eq!(
-            pkt.resolved_subject(),
-            crate::auth::Subject::Team("eng".into())
-        );
-
+    fn test_resolved_subject_public_variant() {
         // Public revoke via canonical Public.
-        let pkt = RequestPacket::TeamRevokePermission {
+        let pkt = RequestPacket::PrincipalRevokePermission {
             request_id: 1,
-            team: "t".into(),
+            name: "p".into(),
             subject: crate::auth::Subject::Public,
             permission: crate::auth::ownership::Permission::Chat,
         };

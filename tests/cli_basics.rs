@@ -1,27 +1,16 @@
-//! CLI integration tests for basic commands: principal, team, config (Phase B slice 3).
+//! CLI integration tests for basic commands: principal and config (Phase B slice 3).
 //!
-//! **Note:** Team commands route through the daemon via IPC. Principal
-//! create/list/show and config commands operate on the filesystem directly. We
-//! spawn a [`DaemonGuard`] for the team tests and skip it for the offline
-//! principal and config tests.
-//!
-//! Tier: mock-LLM for team (daemon required), offline for principal/config.
+//! Principal create/list/show and config commands operate on the filesystem
+//! directly, so these tests run offline — no `DaemonGuard` or `MOCK_LLM_URL`
+//! needed.
 //!
 //! (Was `#![cfg(unix)]`; dropped with the Windows named-pipe transport
 //!  landing — see ADR-038.)
 
 mod common;
-use common::{run_with_timeout, write_v3_mock_agent, DaemonGuard, PekoCli};
+use common::{run_with_timeout, PekoCli};
 use std::process::Stdio;
 use std::time::Duration;
-
-fn mock_llm_url() -> Option<String> {
-    let url = std::env::var("MOCK_LLM_URL").ok()?;
-    if url.is_empty() {
-        return None;
-    }
-    Some(url)
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,131 +94,6 @@ fn principal_create_list_show() {
 fn principal_show_nonexistent_fails() {
     let cli = PekoCli::new();
     let (out, err, status) = run(&cli, &["principal", "show", "no-such-principal"]);
-    assert_err(&out, &err, &status);
-}
-
-// ---------------------------------------------------------------------------
-// Team commands (need daemon)
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn team_create_list_show_remove() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "team-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Create a team
-    let (out, err, status) = run(&cli, &["team", "create", "test-team"]);
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.to_lowercase().contains("created") || out.to_lowercase().contains("team"),
-        "create output should mention creation: {out}"
-    );
-
-    // List teams
-    let (out, err, status) = run(&cli, &["team", "list"]);
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("test-team"),
-        "list should include created team: {out}"
-    );
-
-    // Show team
-    let (out, err, status) = run(&cli, &["team", "show", "test-team"]);
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("test-team"),
-        "show should display team name: {out}"
-    );
-
-    // Remove team
-    let (out, err, status) = run(&cli, &["team", "remove", "test-team", "--force"]);
-    assert_ok(&out, &err, &status);
-
-    // Verify it's gone
-    let (out, err, status) = run(&cli, &["team", "list"]);
-    assert_ok(&out, &err, &status);
-    assert!(
-        !out.contains("test-team"),
-        "list should not include removed team: {out}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn team_create_with_description() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "desc-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let (out, err, status) = run(
-        &cli,
-        &[
-            "team",
-            "create",
-            "desc-team",
-            "--description",
-            "A team for testing",
-        ],
-    );
-    assert_ok(&out, &err, &status);
-
-    // Show should include description
-    let (out, _, status) = run(&cli, &["team", "show", "desc-team"]);
-    assert!(status.success());
-    assert!(
-        out.contains("A team for testing") || out.contains("desc-team"),
-        "show should reflect team info: {out}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn team_move_renames_team() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "move-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let (_, _, status) = run(&cli, &["team", "create", "old-team"]);
-    assert!(status.success());
-
-    let (out, err, status) = run(&cli, &["team", "move", "old-team", "new-team"]);
-    assert_ok(&out, &err, &status);
-
-    // Verify the command reports success
-    assert!(
-        out.to_lowercase().contains("moved")
-            || out.to_lowercase().contains("renamed")
-            || status.success(),
-        "move should report success or mention move/renamed: {out}"
-    );
-}
-
-#[test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon (Unix only)"]
-fn team_show_nonexistent_fails() {
-    let Some(mock_url) = mock_llm_url() else {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    };
-    let cli = PekoCli::new();
-    write_v3_mock_agent(cli.home(), "show-agent", &mock_url).expect("write mock agent");
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let (out, err, status) = run(&cli, &["team", "show", "no-such-team"]);
     assert_err(&out, &err, &status);
 }
 
