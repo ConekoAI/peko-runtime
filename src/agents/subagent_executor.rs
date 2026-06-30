@@ -516,6 +516,17 @@ impl SubagentExecutor {
         let wait_result = {
             let start = tokio::time::Instant::now();
             let timeout = Duration::from_secs(timeout_secs);
+
+            // Register a completion waiter so we block on a notification
+            // instead of busy-polling every 50ms. A buffer of 1 ensures a
+            // completion that lands between registration and `recv()` is not
+            // lost.
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<AsyncTaskStatus>(1);
+            {
+                let mut registry = self.registry().write().await;
+                registry.register_waiter(&run_id, tx).await?;
+            }
+
             loop {
                 // Check status with a brief lock acquisition
                 let status = {
@@ -539,15 +550,20 @@ impl SubagentExecutor {
                         break Err(anyhow::anyhow!("Run {run_id} not found in async registry"));
                     }
                     _ => {
-                        // Still running, sleep and poll again
+                        // Still running — fall through and wait for a
+                        // completion notification or the remaining timeout.
                     }
                 }
 
-                if start.elapsed() >= timeout {
+                let remaining = timeout.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
                     break Ok(WaitResult::Timeout);
                 }
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                // Block until the task signals completion or the timeout
+                // window closes. A spurious or late wakeup simply re-checks
+                // status on the next iteration.
+                let _ = tokio::time::timeout(remaining, rx.recv()).await;
             }
         };
 
