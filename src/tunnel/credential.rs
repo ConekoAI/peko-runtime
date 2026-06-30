@@ -15,6 +15,25 @@ use crate::common::paths::PathResolver;
 use crate::common::vault::Vault;
 use secrecy::ExposeSecret;
 
+/// Optional TLS configuration for the PekoHub WebSocket tunnel.
+///
+/// When absent, the tunnel uses the default rustls/WebPKI trust store.
+/// When present, the runtime can be configured to use a custom CA,
+/// present a client certificate (mTLS), and/or pin the hub certificate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TunnelTlsConfig {
+    /// Path to a PEM-encoded custom CA certificate.
+    pub ca_path: Option<PathBuf>,
+    /// Path to a PEM-encoded client certificate for mTLS.
+    pub cert_path: Option<PathBuf>,
+    /// Path to a PEM-encoded private key for the client certificate.
+    pub key_path: Option<PathBuf>,
+    /// Base64-encoded SHA-256 fingerprint of the expected hub
+    /// end-entity certificate (SPKI pin).
+    pub pinned_cert_sha256: Option<String>,
+}
+
 /// On-disk PekoHub credential format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +42,9 @@ pub struct PekoHubCredential {
     pub url: String,
     /// Runtime DID (did:key format)
     pub runtime_id: String,
+    /// Optional TLS configuration for the tunnel connection.
+    #[serde(default)]
+    pub tls: Option<TunnelTlsConfig>,
 }
 
 impl PekoHubCredential {
@@ -147,6 +169,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            tls: None,
         };
 
         cred.save_to_file(&path).unwrap();
@@ -172,12 +195,41 @@ mod tests {
     }
 
     #[test]
+    fn test_tls_config_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("pekohub.toml");
+
+        let cred = PekoHubCredential {
+            url: "wss://pekohub.org/v1/tunnel".to_string(),
+            runtime_id: "did:key:z6MkTest".to_string(),
+            tls: Some(TunnelTlsConfig {
+                ca_path: Some(std::path::PathBuf::from("/etc/peko/ca.pem")),
+                cert_path: Some(std::path::PathBuf::from("/etc/peko/client.crt")),
+                key_path: Some(std::path::PathBuf::from("/etc/peko/client.key")),
+                pinned_cert_sha256: Some("abc123".to_string()),
+            }),
+        };
+
+        cred.save_to_file(&path).unwrap();
+        let loaded = PekoHubCredential::from_file(&path).unwrap();
+
+        assert_eq!(loaded.url, cred.url);
+        assert_eq!(loaded.runtime_id, cred.runtime_id);
+        let tls = loaded.tls.expect("TLS config should be present");
+        assert_eq!(tls.ca_path, Some(std::path::PathBuf::from("/etc/peko/ca.pem")));
+        assert_eq!(tls.cert_path, Some(std::path::PathBuf::from("/etc/peko/client.crt")));
+        assert_eq!(tls.key_path, Some(std::path::PathBuf::from("/etc/peko/client.key")));
+        assert_eq!(tls.pinned_cert_sha256, Some("abc123".to_string()));
+    }
+
+    #[test]
     fn test_resolve_private_key_with_vault() {
         let temp = TempDir::new().unwrap();
         let vault = Vault::for_test(temp.path(), "tunnel-test");
         let cred = PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            tls: None,
         };
 
         cred.resolve_private_key(&vault).unwrap_err();

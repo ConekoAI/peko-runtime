@@ -117,7 +117,7 @@ fn synthesize_target_response(
 /// the caller's pending registry. Returns when the caller's
 /// outbound is closed (test cleanup).
 async fn run_test_hub(
-    mut caller_outbound: mpsc::UnboundedReceiver<TunnelMessage>,
+    mut caller_outbound: mpsc::Receiver<TunnelMessage>,
     caller_pending: Arc<PendingA2aResponses>,
     expected_target_principal_did: &'static str,
     target_response_text: &'static str,
@@ -168,7 +168,7 @@ async fn run_test_hub(
 async fn build_caller(
     directory: Arc<FakeAgentDirectory>,
     pending: Arc<PendingA2aResponses>,
-    outbound_tx: mpsc::UnboundedSender<TunnelMessage>,
+    outbound_tx: mpsc::Sender<TunnelMessage>,
 ) -> A2aSendTool {
     // We don't build a full `StatelessAgentService` for the
     // caller because the cross-runtime path never calls it. The
@@ -272,7 +272,7 @@ async fn test_cross_runtime_a2a_full_round_trip() {
     );
 
     // ── caller's outbound sink + hub forwarder ──────────────────
-    let (caller_outbound_tx, caller_outbound_rx) = mpsc::unbounded_channel::<TunnelMessage>();
+    let (caller_outbound_tx, caller_outbound_rx) = mpsc::channel::<TunnelMessage>(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
 
     // The hub reads from the caller's outbound and completes the
     // caller's pending oneshot with the synthesized response.
@@ -365,7 +365,7 @@ async fn test_cross_runtime_a2a_hub_synthesized_error_response() {
         },
     );
 
-    let (caller_outbound_tx, caller_outbound_rx) = mpsc::unbounded_channel::<TunnelMessage>();
+    let (caller_outbound_tx, caller_outbound_rx) = mpsc::channel::<TunnelMessage>(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
     let hub_pending = caller_pending.clone();
     let hub_task = tokio::spawn(async move {
         // Note: the hub expects a DIFFERENT DID than what the
@@ -428,7 +428,7 @@ async fn test_cross_runtime_a2a_runtime_id_hint_round_trip() {
     // Intentionally do NOT register the DID in the directory;
     // the hint path must skip the lookup.
 
-    let (caller_outbound_tx, caller_outbound_rx) = mpsc::unbounded_channel::<TunnelMessage>();
+    let (caller_outbound_tx, caller_outbound_rx) = mpsc::channel::<TunnelMessage>(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
     let hub_pending = caller_pending.clone();
     let hub_task = tokio::spawn(async move {
         run_test_hub(

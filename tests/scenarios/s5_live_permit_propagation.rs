@@ -168,6 +168,7 @@ fn write_pekohub_credential(
     let cred = peko::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
+        tls: None,
     };
     let path = cli.peko_dir().join("runtime").join("pekohub.toml");
     std::fs::create_dir_all(path.parent().unwrap()).expect("create runtime dir");
