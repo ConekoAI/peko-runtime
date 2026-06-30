@@ -527,5 +527,31 @@ async fn test_e2e_tunnel_chat_with_llm() {
         "Expected response to contain keywords. Got: {full_text}"
     );
 
+    // Regression guard for the double-encoding bug: each streamed chunk
+    // must be RAW assistant text, not a JSON object. If the runtime ever
+    // re-wraps chunks as `{"chunk":..,"done":..}` again, that inner JSON
+    // would leak into `full_text` here.
+    assert!(
+        !full_text.contains("\"done\"") && !full_text.contains("\"chunk\""),
+        "Streamed chunks should be raw text, not JSON-wrapped. Got: {full_text}"
+    );
+
+    // Streaming coverage: the mock LLM emits the canned response
+    // word-by-word, so a genuinely streamed answer arrives as multiple
+    // SSE chunks. If the runtime regressed to buffering the whole answer
+    // into a single chunk (the old `streaming: false` behaviour, or the
+    // `!streamed_any` fallback firing because no deltas were forwarded),
+    // we'd see exactly one chunk here. We only assert this under the mock
+    // LLM, whose chunk count is deterministic; a real provider may chunk
+    // differently.
+    if std::env::var_os("MOCK_LLM_URL").is_some() {
+        assert!(
+            chunks.len() >= 2,
+            "Expected multiple streamed chunks (real token streaming), got {}: {:?}",
+            chunks.len(),
+            chunks
+        );
+    }
+
     // Test completes successfully if we reach here
 }
