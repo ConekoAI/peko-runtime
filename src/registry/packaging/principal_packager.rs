@@ -45,6 +45,9 @@ pub struct PrincipalRegistryDescriptor {
     pub layers: Vec<Layer>,
     /// Layer content indexed by digest (includes the config blob)
     pub layer_data: HashMap<String, Vec<u8>>,
+    /// Raw `identity/did.json` bytes, used to pre-validate the manifest
+    /// signature before pushing to a registry.
+    pub did_doc: Vec<u8>,
 }
 
 /// Packager for creating `.principal` packages.
@@ -156,6 +159,7 @@ impl PrincipalPackager {
             manifest_toml,
             layers,
             layer_data,
+            did_doc: files.get("identity/did.json").cloned().unwrap_or_default(),
         })
     }
 

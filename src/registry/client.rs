@@ -3,6 +3,7 @@
 //! HTTP client for pushing and pulling images from remote registries.
 //! Implements OCI-inspired distribution protocol.
 
+use crate::registry::agent_registry::encode_tag;
 use crate::registry::config::{RegistryConfig, RegistrySource, ResolvedAuth};
 use crate::registry::manifest::RegistryManifest;
 use crate::registry::media_types;
@@ -12,6 +13,16 @@ use reqwest::Client;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
+
+/// Maximum time to establish a TCP/TLS connection to a registry.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum time for a single HTTP request, including body transfer.
+/// Large enough for sizable layer blobs over slow links, but bounded
+/// so a stalled registry can't hang a pull/push forever.
+#[allow(clippy::duration_suboptimal_units)] // 300s reads clearly as the request budget
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Registry client for push/pull operations
 #[derive(Debug, Clone)]
@@ -263,8 +274,14 @@ impl RegistryClient {
 
     /// Create a new registry client
     pub fn new(config: RegistryConfig, registry: AgentRegistry) -> Self {
+        // Bound connect and overall request time so a hung or slow
+        // registry can't block a pull/push indefinitely. The request
+        // timeout covers a full request including the body transfer, so
+        // it is generous enough for large layer blobs over slow links.
         let http = Client::builder()
             .no_proxy()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .unwrap_or_else(|_| Client::new());
         Self {
@@ -457,6 +474,20 @@ impl RegistryClient {
         F: FnMut(ProgressEvent),
     {
         use crate::registry::packaging::types::compute_digest;
+
+        // Pre-validate the manifest signature before uploading anything.
+        // Signature verification otherwise happens only on the pull/import
+        // side, so without this an unsigned or tampered principal package
+        // could be pushed to a registry. We require a valid signature here
+        // (allow_unsigned = false); the binding check inside ensures the
+        // DID, public key, and signature all agree.
+        crate::registry::packaging::principal_unpackager::verify_principal_signature(
+            &descriptor.manifest_toml,
+            &descriptor.did_doc,
+            false,
+            name,
+        )
+        .map_err(|e| anyhow::anyhow!("refusing to push '{name}': {e}"))?;
 
         // Store every layer blob (including the config blob) locally.
         for (digest, data) in &descriptor.layer_data {
@@ -937,7 +968,7 @@ impl RegistryClient {
         if !manifest.r#ref.is_empty() {
             let tags_dir = self.registry.root_path().join("tags");
             tokio::fs::create_dir_all(&tags_dir).await?;
-            let tag_path = tags_dir.join(sanitize_tag(&manifest.r#ref));
+            let tag_path = tags_dir.join(encode_tag(&manifest.r#ref));
             tokio::fs::write(&tag_path, &manifest.digest).await?;
         }
 
@@ -969,11 +1000,6 @@ impl RegistryClient {
             .join("registry_manifests")
             .join(digest.dir_name())
     }
-}
-
-/// Sanitize a tag for use as a filename
-fn sanitize_tag(tag: &str) -> String {
-    tag.replace(['/', ':', '\\', '<', '>', '|', '*', '?', '"'], "_")
 }
 
 #[cfg(test)]
@@ -1069,12 +1095,21 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_tag() {
-        assert_eq!(sanitize_tag("test:v1.0"), "test_v1.0");
-        assert_eq!(sanitize_tag("a/b/c"), "a_b_c");
-        assert_eq!(sanitize_tag("path\\to\\tag"), "path_to_tag");
-        assert_eq!(sanitize_tag("tag<with>chars"), "tag_with_chars");
-        assert_eq!(sanitize_tag("tag|with*chars?"), "tag_with_chars_");
+    fn test_encode_tag_roundtrip() {
+        // Distinct tags that previously collided to the same filename
+        // must now produce distinct, reversible filenames.
+        let a = encode_tag("a/b");
+        let b = encode_tag("a:b");
+        let c = encode_tag("a_b");
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+        for tag in ["test:v1.0", "a/b/c", "path\\to\\tag", "tag<with>chars"] {
+            assert_eq!(
+                crate::registry::agent_registry::decode_tag(&encode_tag(tag)),
+                tag
+            );
+        }
     }
 
     #[tokio::test]
