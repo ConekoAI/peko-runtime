@@ -474,6 +474,38 @@ async fn test_e2e_tunnel_chat_with_llm() {
     // The runtime defaults to Private exposure; pekohub now forwards
     // the authenticated user's id via x-pekohub-user-id so the runtime's
     // defense-in-depth ACL allows the chat through.
+
+    // Under the mock LLM, force a deterministic MULTI-WORD response so the
+    // streaming assertion below is meaningful. The mock streams its answer
+    // word-by-word, so a multi-word phrase arrives as multiple SSE chunks
+    // iff genuine token streaming is working end-to-end. (The default mock
+    // response in CI is the single word "SUCCESS", which would stream as
+    // one chunk regardless, and so could not distinguish streaming from a
+    // single buffered chunk.)
+    //
+    // We drive this through `MOCK_LLM_SCRIPT` (re-read per request by the
+    // mock) rather than `DEFAULT_RESPONSE` (bound once at mock startup, so
+    // /_test/configure can't change it). The script maps a substring of
+    // our prompt to the multi-word reply, leaving every other prompt on
+    // the unchanged default.
+    let mock_multi_word = "Peko tunnel works";
+    if let Some(mock_url) = std::env::var_os("MOCK_LLM_URL") {
+        let mock_url = mock_url.to_string_lossy().to_string();
+        let script =
+            serde_json::json!({ mock_multi_word: mock_multi_word }).to_string();
+        let cfg = client
+            .post(format!("{}/_test/configure", mock_url.trim_end_matches('/')))
+            .json(&serde_json::json!({ "MOCK_LLM_SCRIPT": script }))
+            .send()
+            .await
+            .expect("Failed to configure mock LLM");
+        assert!(
+            cfg.status().is_success(),
+            "Mock LLM /_test/configure failed (status={})",
+            cfg.status()
+        );
+    }
+
     let chat_resp = client
         .post(format!("{}/v1/instances/{instance_id}/chat", backend.url))
         .header("Authorization", &auth_header)
@@ -536,14 +568,14 @@ async fn test_e2e_tunnel_chat_with_llm() {
         "Streamed chunks should be raw text, not JSON-wrapped. Got: {full_text}"
     );
 
-    // Streaming coverage: the mock LLM emits the canned response
-    // word-by-word, so a genuinely streamed answer arrives as multiple
-    // SSE chunks. If the runtime regressed to buffering the whole answer
-    // into a single chunk (the old `streaming: false` behaviour, or the
-    // `!streamed_any` fallback firing because no deltas were forwarded),
-    // we'd see exactly one chunk here. We only assert this under the mock
-    // LLM, whose chunk count is deterministic; a real provider may chunk
-    // differently.
+    // Streaming coverage: under the mock LLM we configured a multi-word
+    // response above, which the mock streams word-by-word. A genuinely
+    // streamed answer therefore arrives as multiple SSE chunks. If the
+    // runtime regressed to buffering the whole answer into a single chunk
+    // (the old `streaming: false` behaviour, or the `!streamed_any`
+    // fallback firing because no deltas were forwarded), we'd see exactly
+    // one chunk here. Only asserted under the mock, whose chunk count is
+    // deterministic; a real provider may chunk differently.
     if std::env::var_os("MOCK_LLM_URL").is_some() {
         assert!(
             chunks.len() >= 2,
