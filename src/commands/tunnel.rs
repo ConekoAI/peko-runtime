@@ -170,6 +170,7 @@ async fn handle_tunnel_setup(
     let credential = crate::tunnel::PekoHubCredential {
         url: hub_url.clone(),
         runtime_id: runtime_did.clone(),
+        tls: None,
     };
 
     // Save credential to file

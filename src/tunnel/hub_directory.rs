@@ -476,6 +476,7 @@ mod tests {
         let cred = crate::tunnel::PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:zRuntime".to_string(),
+            tls: None,
         };
         let client = HubAgentDirectoryClient::from_credential(&cred).unwrap();
         assert_eq!(client.base_url, "https://pekohub.org");
@@ -486,6 +487,7 @@ mod tests {
         let cred = crate::tunnel::PekoHubCredential {
             url: "ws://localhost:4000/v1/tunnel".to_string(),
             runtime_id: "did:key:zRuntime".to_string(),
+            tls: None,
         };
         let client = HubAgentDirectoryClient::from_credential(&cred).unwrap();
         assert_eq!(client.base_url, "http://localhost:4000");
@@ -496,6 +498,7 @@ mod tests {
         let cred = crate::tunnel::PekoHubCredential {
             url: "ftp://pekohub.org/".to_string(),
             runtime_id: "did:key:zRuntime".to_string(),
+            tls: None,
         };
         assert!(matches!(
             HubAgentDirectoryClient::from_credential(&cred),

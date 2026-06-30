@@ -11,13 +11,17 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
 use futures::{SinkExt, StreamExt};
 use rand::RngCore;
+use sha2::Digest;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, timeout};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async, connect_async_tls_with_config, tungstenite::client::IntoClientRequest,
+    tungstenite::Message, Connector,
+};
 use tracing::{debug, error, info, trace, warn};
 
 use super::backoff::ExponentialBackoff;
-use super::credential::PekoHubCredential;
+use super::credential::{PekoHubCredential, TunnelTlsConfig};
 use super::protocol::TunnelMessage;
 use crate::common::vault::Vault;
 
@@ -40,24 +44,37 @@ pub enum TunnelError {
     Io(#[from] std::io::Error),
 }
 
+/// Default size of the outbound tunnel message buffer. A fast producer
+/// will get `try_send` errors once this limit is reached instead of
+/// growing memory without bound.
+pub const TUNNEL_OUTBOUND_BUFFER_SIZE: usize = 1024;
+
+/// Default number of consecutive heartbeats that may be sent without an
+/// acknowledgement before the tunnel treats the connection as dead.
+/// Timeout = (max_missed + 1) * heartbeat_interval.
+pub const DEFAULT_MAX_MISSED_HEARTBEATS: u32 = 3;
+
 /// Handle to an active tunnel connection, used to send responses back to PekoHub.
 #[derive(Clone, Debug)]
 pub struct TunnelHandle {
-    tx: mpsc::UnboundedSender<TunnelMessage>,
+    tx: mpsc::Sender<TunnelMessage>,
 }
 
 impl TunnelHandle {
     /// Create a new handle from a sender (test-only).
     #[cfg(test)]
-    pub fn new(tx: mpsc::UnboundedSender<TunnelMessage>) -> Self {
+    pub fn new(tx: mpsc::Sender<TunnelMessage>) -> Self {
         Self { tx }
     }
 
-    /// Send a message through the tunnel
+    /// Send a message through the tunnel.
+    ///
+    /// Returns an error immediately if the outbound buffer is full or the
+    /// channel has been closed.
     pub fn send(&self, msg: TunnelMessage) -> anyhow::Result<()> {
         self.tx
-            .send(msg)
-            .map_err(|_| anyhow::anyhow!("Tunnel channel closed"))
+            .try_send(msg)
+            .map_err(|e| anyhow::anyhow!("Tunnel send failed: {e}"))
     }
 
     /// Send a proxied response back to PekoHub
@@ -137,6 +154,9 @@ pub struct TunnelClient {
     /// Maximum number of consecutive reconnect attempts before giving up
     /// (issue #8: avoids infinite retry loop when PekoHub is permanently down).
     max_reconnect_attempts: u32,
+    /// Maximum consecutive heartbeats that may go unacknowledged before the
+    /// connection is treated as dead.
+    max_missed_heartbeats: u32,
     /// Optional callback for handling proxied requests
     request_handler: Option<
         Arc<
@@ -159,6 +179,13 @@ pub struct TunnelClient {
                 + Sync,
         >,
     >,
+    /// Outbound message sender shared with all handles.
+    tx: mpsc::Sender<TunnelMessage>,
+    /// Outbound message receiver. Guarded by a mutex so each connection's
+    /// write loop can take ownership of it while the tunnel is connected; on
+    /// reconnect the next write loop acquires the same receiver and drains
+    /// any messages that accumulated while disconnected.
+    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<TunnelMessage>>>,
 }
 
 impl TunnelClient {
@@ -184,6 +211,7 @@ impl TunnelClient {
 
     fn new_with_options(credential: PekoHubCredential, max_reconnect_attempts: u32) -> Self {
         let hub_url = credential.url.clone();
+        let (tx, rx) = mpsc::channel(TUNNEL_OUTBOUND_BUFFER_SIZE);
         Self {
             hub_url,
             credential,
@@ -197,8 +225,11 @@ impl TunnelClient {
                 heartbeat_interval_secs: 30,
             })),
             max_reconnect_attempts,
+            max_missed_heartbeats: DEFAULT_MAX_MISSED_HEARTBEATS,
             request_handler: None,
             on_status: None,
+            tx,
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
         }
     }
 
@@ -299,7 +330,16 @@ impl TunnelClient {
     async fn connect_and_serve(&mut self) -> Result<(), TunnelError> {
         info!("Connecting to PekoHub tunnel: {}", self.hub_url);
 
-        let (ws_stream, response) = connect_async(&self.hub_url).await?;
+        let connector = Self::build_tls_connector(self.credential.tls.as_ref())?;
+        let req = self
+            .hub_url
+            .clone()
+            .into_client_request()
+            .map_err(|e| TunnelError::AuthFailed(format!("Invalid hub URL: {e}")))?;
+        let (ws_stream, response) = match connector {
+            Some(connector) => connect_async_tls_with_config(req, None, false, Some(connector)).await?,
+            None => connect_async(req).await?,
+        };
         info!("WebSocket connected, status: {:?}", response.status());
 
         let (mut write, mut read) = ws_stream.split();
@@ -400,9 +440,8 @@ impl TunnelClient {
         };
 
         // 3. Forward TunnelReady to handler so dispatcher can announce instances
-        let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<TunnelMessage>();
         let handle = TunnelHandle {
-            tx: internal_tx.clone(),
+            tx: self.tx.clone(),
         };
 
         if let Some(handler) = &self.request_handler {
@@ -415,29 +454,44 @@ impl TunnelClient {
             .await;
         }
 
-        // 4. Start heartbeat + read loops
+        // 4. Start heartbeat + read + write loops
         let state = self.state.clone();
         let request_handler = self.request_handler.clone();
+        let max_missed = self.max_missed_heartbeats;
+        let rx = self.rx.clone();
 
         // Heartbeat loop
-        let heartbeat_tx = internal_tx.clone();
+        let heartbeat_tx = self.tx.clone();
         let heartbeat_state = state.clone();
-        let heartbeat_handle = tokio::spawn(async move {
-            let mut tick = interval(Duration::from_secs(heartbeat_interval as u64));
-            loop {
-                tick.tick().await;
-                let seq = {
-                    let mut s = heartbeat_state.write().await;
-                    s.heartbeat_seq += 1;
-                    s.heartbeat_seq
-                };
-                let msg = TunnelMessage::Heartbeat { seq };
-                if heartbeat_tx.send(msg).is_err() {
-                    break;
+        let heartbeat_handle = if heartbeat_interval == 0 {
+            // Heartbeats disabled by hub configuration.
+            tokio::spawn(async move { std::future::pending::<()>().await })
+        } else {
+            tokio::spawn(async move {
+                let mut tick = interval(Duration::from_secs(heartbeat_interval as u64));
+                loop {
+                    tick.tick().await;
+                    let seq = {
+                        let mut s = heartbeat_state.write().await;
+                        if s.missed_heartbeats >= max_missed {
+                            error!(
+                                "Heartbeat timeout after {} missed heartbeats; closing tunnel",
+                                s.missed_heartbeats
+                            );
+                            break;
+                        }
+                        s.heartbeat_seq += 1;
+                        s.missed_heartbeats += 1;
+                        s.heartbeat_seq
+                    };
+                    let msg = TunnelMessage::Heartbeat { seq };
+                    if heartbeat_tx.try_send(msg).is_err() {
+                        break;
+                    }
+                    trace!("Sent heartbeat seq={}", seq);
                 }
-                trace!("Sent heartbeat seq={}", seq);
-            }
-        });
+            })
+        };
 
         // Read loop: process incoming WebSocket messages
         let read_state = state.clone();
@@ -449,7 +503,6 @@ impl TunnelClient {
                             Self::handle_incoming_message(
                                 msg,
                                 &read_state,
-                                &internal_tx,
                                 request_handler.as_ref(),
                                 &handle,
                             )
@@ -465,7 +518,6 @@ impl TunnelClient {
                                 Self::handle_incoming_message(
                                     msg,
                                     &read_state,
-                                    &internal_tx,
                                     request_handler.as_ref(),
                                     &handle,
                                 )
@@ -482,7 +534,7 @@ impl TunnelClient {
                     }
                     Some(Ok(Message::Ping(_data))) => {
                         trace!("Received WebSocket ping");
-                        let _ = internal_tx.send(TunnelMessage::HeartbeatAck { seq: 0 });
+                        let _ = handle.send(TunnelMessage::HeartbeatAck { seq: 0 });
                     }
                     Some(Ok(Message::Pong(_))) => {
                         trace!("Received WebSocket pong");
@@ -502,7 +554,8 @@ impl TunnelClient {
 
         // Write loop: send messages from internal channel to WebSocket
         let write_handle = tokio::spawn(async move {
-            while let Some(msg) = internal_rx.recv().await {
+            let mut rx = rx.lock().await;
+            while let Some(msg) = rx.recv().await {
                 let bytes = match msg.to_bytes() {
                     Ok(b) => b,
                     Err(e) => {
@@ -537,7 +590,6 @@ impl TunnelClient {
     async fn handle_incoming_message(
         msg: TunnelMessage,
         state: &Arc<RwLock<TunnelState>>,
-        _internal_tx: &mpsc::UnboundedSender<TunnelMessage>,
         request_handler: Option<
             &Arc<
                 dyn Fn(
@@ -678,6 +730,186 @@ impl TunnelClient {
             None => self.credential.resolve_private_key_default(),
         }
     }
+
+    /// Build a rustls connector from the optional `[tls]` config.
+    ///
+    /// When no TLS config is present, returns `None` so the default
+    /// WebPKI trust store is used. When present, loads custom CA,
+    /// client cert/key for mTLS, and optionally installs a certificate
+    /// pin verifier.
+    fn build_tls_connector(
+        tls: Option<&TunnelTlsConfig>,
+    ) -> Result<Option<Connector>, TunnelError> {
+        let Some(tls) = tls else {
+            return Ok(None);
+        };
+
+        let mut roots = rustls::RootCertStore::empty();
+
+        // Load custom CA if provided, otherwise fall back to WebPKI roots.
+        if let Some(ca_path) = &tls.ca_path {
+            let ca_pem = std::fs::read(ca_path)
+                .map_err(|e| TunnelError::AuthFailed(format!("Failed to read CA file: {e}")))?;
+            let certs = rustls_pemfile::certs(&mut ca_pem.as_slice())
+                .map_err(|e| TunnelError::AuthFailed(format!("Failed to parse CA file: {e}")))?;
+            if certs.is_empty() {
+                return Err(TunnelError::AuthFailed(
+                    "CA file contains no valid certificates".to_string(),
+                ));
+            }
+            for cert in certs {
+                roots.add(cert.into()).map_err(|e| {
+                    TunnelError::AuthFailed(format!("Failed to add CA certificate: {e}"))
+                })?;
+            }
+        } else {
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        }
+
+        let roots = Arc::new(roots);
+
+        // Build the default WebPKI verifier up front; the pinning wrapper
+        // delegates chain validation to it.
+        let default_verifier = rustls::client::WebPkiServerVerifier::builder(roots.clone())
+            .build()
+            .map_err(|e| TunnelError::AuthFailed(format!("Failed to build TLS verifier: {e}")))?;
+
+        let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
+
+        // mTLS client certificate.
+        let mut config = if let (Some(cert_path), Some(key_path)) =
+            (&tls.cert_path, &tls.key_path)
+        {
+            let cert_chain = load_cert_chain(cert_path)?;
+            let key = load_private_key(key_path)?;
+            builder
+                .with_client_auth_cert(cert_chain, key)
+                .map_err(|e| TunnelError::AuthFailed(format!("Invalid client cert/key: {e}")))?
+        } else {
+            builder.with_no_client_auth()
+        };
+
+        // Certificate pinning wraps the default verifier.
+        if let Some(pinned_sha256) = &tls.pinned_cert_sha256 {
+            let expected = BASE64
+                .decode(pinned_sha256)
+                .map_err(|e| TunnelError::AuthFailed(format!("Invalid pinned_cert_sha256: {e}")))?;
+            config
+                .dangerous()
+                .set_certificate_verifier(Arc::new(PinningServerCertVerifier {
+                    inner: default_verifier,
+                    expected,
+                }));
+        }
+
+        Ok(Some(Connector::Rustls(Arc::new(config))))
+    }
+}
+
+/// Load a PEM-encoded certificate chain from disk.
+fn load_cert_chain(
+    path: &std::path::Path,
+) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, TunnelError> {
+    let pem = std::fs::read(path)
+        .map_err(|e| TunnelError::AuthFailed(format!("Failed to read client cert: {e}")))?;
+    let certs = rustls_pemfile::certs(&mut pem.as_slice())
+        .map_err(|e| TunnelError::AuthFailed(format!("Failed to parse client cert: {e}")))?;
+    if certs.is_empty() {
+        return Err(TunnelError::AuthFailed(
+            "Client cert file contains no valid certificates".to_string(),
+        ));
+    }
+    Ok(certs.into_iter().map(|c| c.into()).collect())
+}
+
+/// Load a PEM-encoded private key from disk.
+fn load_private_key(
+    path: &std::path::Path,
+) -> Result<rustls::pki_types::PrivateKeyDer<'static>, TunnelError> {
+    let pem = std::fs::read(path)
+        .map_err(|e| TunnelError::AuthFailed(format!("Failed to read private key: {e}")))?;
+
+    if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut pem.as_slice())
+        .map_err(|e| TunnelError::AuthFailed(format!("Failed to parse PKCS#8 key: {e}")))?
+        .into_iter()
+        .next()
+    {
+        return Ok(rustls::pki_types::PrivateKeyDer::try_from(key)
+            .map_err(|e| TunnelError::AuthFailed(format!("Invalid PKCS#8 key: {e}")))?);
+    }
+
+    if let Some(key) = rustls_pemfile::rsa_private_keys(&mut pem.as_slice())
+        .map_err(|e| TunnelError::AuthFailed(format!("Failed to parse RSA key: {e}")))?
+        .into_iter()
+        .next()
+    {
+        return Ok(rustls::pki_types::PrivateKeyDer::try_from(key)
+            .map_err(|e| TunnelError::AuthFailed(format!("Invalid RSA key: {e}")))?);
+    }
+
+    Err(TunnelError::AuthFailed(
+        "No supported private key found in key file".to_string(),
+    ))
+}
+
+/// Verifier that delegates to the default WebPKI verifier and then checks
+/// the end-entity certificate fingerprint against a configured pin.
+#[derive(Debug)]
+struct PinningServerCertVerifier {
+    inner: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+    expected: Vec<u8>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinningServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        )?;
+
+        let actual = sha2::Sha256::digest(end_entity.as_ref());
+        if actual.as_slice() != self.expected {
+            return Err(rustls::Error::General(
+                "server certificate does not match configured pin".to_string(),
+            ));
+        }
+
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner
+            .verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner
+            .verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
 }
 
 /// Spawn a tunnel client in the background and return a handle
@@ -689,8 +921,9 @@ where
     let mut client = TunnelClient::new(credential);
     client.on_request(request_handler);
 
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let handle = TunnelHandle { tx };
+    let handle = TunnelHandle {
+        tx: client.tx.clone(),
+    };
 
     tokio::spawn(client.run());
 
@@ -724,7 +957,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tunnel_handle_send() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(TUNNEL_OUTBOUND_BUFFER_SIZE);
         let handle = TunnelHandle { tx };
 
         handle.send(TunnelMessage::Heartbeat { seq: 1 }).unwrap();
@@ -736,10 +969,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_tunnel_handle_send_fails_when_buffer_full() {
+        let (tx, _rx) = mpsc::channel(1);
+        let handle = TunnelHandle { tx };
+
+        handle.send(TunnelMessage::Heartbeat { seq: 1 }).unwrap();
+        assert!(handle.send(TunnelMessage::Heartbeat { seq: 2 }).is_err());
+    }
+
+    #[tokio::test]
     async fn test_tunnel_client_creation() {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            tls: None,
         };
         let client = TunnelClient::new(cred);
         assert!(!client.is_ready().await);
@@ -747,6 +990,82 @@ mod tests {
             client.max_reconnect_attempts(),
             DEFAULT_MAX_RECONNECT_ATTEMPTS
         );
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_timeout_exits_loop() {
+        let cred = PekoHubCredential {
+            url: "wss://example.com/v1/tunnel".to_string(),
+            runtime_id: "did:key:z6MkTest".to_string(),
+            tls: None,
+        };
+        let client = TunnelClient::new(cred);
+
+        // Simulate the server's advertised heartbeat interval.
+        {
+            let mut s = client.state.write().await;
+            s.heartbeat_interval_secs = 1;
+        }
+
+        let tx = client.tx.clone();
+        let state = client.state.clone();
+        let max_missed = client.max_missed_heartbeats;
+        let heartbeat_interval = 1;
+
+        let heartbeat_handle = tokio::spawn(async move {
+            let mut tick = interval(Duration::from_secs(heartbeat_interval as u64));
+            loop {
+                tick.tick().await;
+                let seq = {
+                    let mut s = state.write().await;
+                    if s.missed_heartbeats >= max_missed {
+                        break;
+                    }
+                    s.heartbeat_seq += 1;
+                    s.missed_heartbeats += 1;
+                    s.heartbeat_seq
+                };
+                if tx.try_send(TunnelMessage::Heartbeat { seq }).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let timeout = tokio::time::timeout(Duration::from_secs(10), heartbeat_handle).await;
+        assert!(timeout.is_ok(), "heartbeat loop did not exit on timeout");
+
+        let s = client.state.read().await;
+        assert!(s.missed_heartbeats >= DEFAULT_MAX_MISSED_HEARTBEATS);
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_ack_resets_missed_count() {
+        let cred = PekoHubCredential {
+            url: "wss://example.com/v1/tunnel".to_string(),
+            runtime_id: "did:key:z6MkTest".to_string(),
+            tls: None,
+        };
+        let client = TunnelClient::new(cred);
+
+        {
+            let mut s = client.state.write().await;
+            s.missed_heartbeats = 2;
+        }
+
+        let handle = TunnelHandle {
+            tx: client.tx.clone(),
+        };
+        TunnelClient::handle_incoming_message(
+            TunnelMessage::HeartbeatAck { seq: 5 },
+            &client.state,
+            None,
+            &handle,
+        )
+        .await;
+
+        let s = client.state.read().await;
+        assert_eq!(s.missed_heartbeats, 0);
+        assert_eq!(s.last_ack_seq, 5);
     }
 
     /// Issue #8: when the tunnel cannot reach PekoHub, `run()` must stop
@@ -760,6 +1079,7 @@ mod tests {
         let cred = PekoHubCredential {
             url: "ws://127.0.0.1:1/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            tls: None,
         };
         let mut client = TunnelClient::new_with(cred, 2);
 
@@ -806,8 +1126,41 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
+            tls: None,
         };
         let client = TunnelClient::new_with(cred, 7);
         assert_eq!(client.max_reconnect_attempts(), 7);
+    }
+
+    #[test]
+    fn test_build_tls_connector_none_uses_default() {
+        assert!(TunnelClient::build_tls_connector(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_build_tls_connector_rejects_missing_ca_file() {
+        let tls = TunnelTlsConfig {
+            ca_path: Some(std::path::PathBuf::from("/nonexistent/ca.pem")),
+            cert_path: None,
+            key_path: None,
+            pinned_cert_sha256: None,
+        };
+        let result = TunnelClient::build_tls_connector(Some(&tls));
+        match result {
+            Err(e) => assert!(e.to_string().contains("Failed to read CA file")),
+            Ok(_) => panic!("expected error for missing CA file"),
+        }
+    }
+
+    #[test]
+    fn test_build_tls_connector_builds_with_pin_only() {
+        let tls = TunnelTlsConfig {
+            ca_path: None,
+            cert_path: None,
+            key_path: None,
+            pinned_cert_sha256: Some(BASE64.encode([0u8; 32])),
+        };
+        let connector = TunnelClient::build_tls_connector(Some(&tls)).unwrap();
+        assert!(matches!(connector, Some(Connector::Rustls(_))));
     }
 }

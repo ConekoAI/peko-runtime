@@ -426,6 +426,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let cred = peko::tunnel::PekoHubCredential {
         url: backend.ws_url.clone(),
         runtime_id: did.clone(),
+        tls: None,
     };
     cred.save_to_file(&cred_path)
         .expect("Failed to save credentials");

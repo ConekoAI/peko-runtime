@@ -1382,14 +1382,14 @@ mod tests {
         service_timeout: Duration,
     ) -> (
         Arc<CrossRuntimeA2aCtx>,
-        tokio::sync::mpsc::UnboundedReceiver<TunnelMessage>,
+        tokio::sync::mpsc::Receiver<TunnelMessage>,
         std::sync::Arc<crate::tunnel::hub_directory::FakeAgentDirectory>,
     ) {
         use crate::identity::keys::KeyPair;
         use crate::tunnel::hub_directory::FakeAgentDirectory;
         use crate::tunnel::PendingA2aResponses;
 
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
         let tunnel = Arc::new(RwLock::new(Some(TunnelHandle::new(tx)))); // #[cfg(test)] ctor
         let fake_dir = std::sync::Arc::new(FakeAgentDirectory::new());
         let pending = std::sync::Arc::new(PendingA2aResponses::new());

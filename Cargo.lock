@@ -2001,6 +2001,8 @@ dependencies = [
  "reqwest",
  "rpassword",
  "rsa",
+ "rustls",
+ "rustls-pemfile",
  "scopeguard",
  "secrecy",
  "serde",
@@ -2024,6 +2026,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+ "webpki-roots 0.26.11",
  "which",
  "windows-sys 0.52.0",
 ]

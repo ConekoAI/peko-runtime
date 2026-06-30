@@ -97,6 +97,9 @@ tokio-stream = "0.1"
 # WebSocket tunnel (ADR-035)
 tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+rustls = "0.22"
+rustls-pemfile = "1"
+webpki-roots = "0.26"
 
 # Windows system calls
 # `Win32_System_Pipes`           : CreateNamedPipeW (ADR-038, named-pipe transport)

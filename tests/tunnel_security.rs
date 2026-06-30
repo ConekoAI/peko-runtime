@@ -33,6 +33,7 @@ fn test_pekohub_credential_does_not_contain_raw_key() {
     let cred = PekoHubCredential {
         url: "wss://pekohub.org/v1/tunnel".to_string(),
         runtime_id: "did:key:z6MkTest".to_string(),
+        tls: None,
     };
 
     cred.save_to_file(&path).unwrap();
@@ -235,6 +236,7 @@ fn test_credential_resolve_private_key_from_vault() {
     let cred = PekoHubCredential {
         url: "wss://example.com".to_string(),
         runtime_id: "did:key:z6MkTest".to_string(),
+        tls: None,
     };
 
     vault
@@ -253,6 +255,7 @@ fn test_credential_resolve_private_key_missing() {
     let cred = PekoHubCredential {
         url: "wss://example.com".to_string(),
         runtime_id: "did:key:z6MkTest".to_string(),
+        tls: None,
     };
 
     let result = cred.resolve_private_key(&vault);

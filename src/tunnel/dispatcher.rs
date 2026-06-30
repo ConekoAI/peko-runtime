@@ -28,6 +28,26 @@ use crate::tunnel::a2a_send_tool::{A2aSendResult, HubA2AErrorResponse};
 
 use crate::auth::ownership::Permission;
 
+/// Errors returned by [`resolve_bridge_caller`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BridgeCallerError {
+    /// A JWT was presented but could not be validated.
+    InvalidJwt,
+    /// No verified or unverified caller could be determined.
+    NoCaller,
+}
+
+impl std::fmt::Display for BridgeCallerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BridgeCallerError::InvalidJwt => write!(f, "invalid JWT"),
+            BridgeCallerError::NoCaller => write!(f, "no caller identity provided"),
+        }
+    }
+}
+
+impl std::error::Error for BridgeCallerError {}
+
 /// Resolve the calling user from a PekoHub-proxied bridge payload (issue #17).
 ///
 /// PekoHub is the security boundary: it must set `Authorization: Bearer <jwt>`
@@ -41,17 +61,17 @@ use crate::auth::ownership::Permission;
 ///
 /// Falls back to the unverified `x-pekohub-user-id` header only when no
 /// JWT is present (back-compat with deployments that haven't enabled
-/// pekohub JWT validation yet) or when JWT validation fails. In both
-/// cases the caller is logged with `(unverified)` so downstream audit
-/// consumers know the identity wasn't cryptographically checked.
+/// pekohub JWT validation yet).
 ///
-/// Returns `"anonymous"` when neither a JWT nor a `x-pekohub-user-id`
-/// header is present or usable — never the literal `"web"` that the
-/// dispatcher used to hard-code.
+/// If a JWT is present but validation fails, or if no validator is
+/// configured, the function returns [`BridgeCallerError::InvalidJwt`] so
+/// the request can be rejected instead of silently trusting a tampered
+/// token. If no JWT and no header are present, returns
+/// [`BridgeCallerError::NoCaller`].
 pub(crate) async fn resolve_bridge_caller(
     bridge_payload: &serde_json::Value,
     jwt_validator: Option<&crate::auth::jwt::JwtValidator>,
-) -> String {
+) -> Result<String, BridgeCallerError> {
     // 1. Try the signed JWT first.
     if let Some(jwt) = extract_bearer_jwt(bridge_payload) {
         if let Some(validator) = jwt_validator {
@@ -69,26 +89,23 @@ pub(crate) async fn resolve_bridge_caller(
                             );
                         }
                     }
-                    return validated.sub;
+                    return Ok(validated.sub);
                 }
                 Err(e) => {
-                    warn!(
-                        "JWT validation failed ({}); falling back to x-pekohub-user-id header \
-                         (unverified)",
-                        e
-                    );
+                    warn!("JWT validation failed ({}); rejecting request", e);
+                    return Err(BridgeCallerError::InvalidJwt);
                 }
             }
-        } else {
-            debug!(
-                "Authorization: Bearer <jwt> present but no JWT validator configured; \
-                 falling back to x-pekohub-user-id header (unverified)"
-            );
         }
+        warn!(
+            "Authorization: Bearer <jwt> present but no JWT validator configured; \
+             rejecting request"
+        );
+        return Err(BridgeCallerError::InvalidJwt);
     }
 
-    // 2. Fall back to the unverified hub-asserted header.
-    header_user(bridge_payload).unwrap_or_else(|| "anonymous".to_string())
+    // 2. Fall back to the unverified hub-asserted header only when no JWT was present.
+    header_user(bridge_payload).ok_or(BridgeCallerError::NoCaller)
 }
 
 /// Pull the unverified `x-pekohub-user-id` header out of the bridge payload.
@@ -455,7 +472,9 @@ impl TunnelDispatcher {
                 status,
                 timestamp: now.clone(),
             };
-            let _ = handle.send(TunnelMessage::InstanceHeartbeat { payload });
+            if let Err(e) = handle.send(TunnelMessage::InstanceHeartbeat { payload }) {
+                warn!("Failed to send instance heartbeat: {}", e);
+            }
         }
         Ok(())
     }
@@ -587,8 +606,20 @@ impl TunnelDispatcher {
         }
 
         // Resolve the calling user from the PekoHub-proxied headers/JWT.
-        let caller_user =
-            resolve_bridge_caller(&bridge_payload, self.app_state.jwt_validator().as_ref()).await;
+        let caller_user = match resolve_bridge_caller(
+            &bridge_payload,
+            self.app_state.jwt_validator().as_ref(),
+        )
+        .await
+        {
+            Ok(caller) => caller,
+            Err(e) => {
+                warn!("Tunnel caller resolution failed for {}: {}", agent_name, e);
+                return self
+                    .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
+                    .await;
+            }
+        };
         let caller_principal = Subject::from_bridge_user(&caller_user);
 
         self.app_state
@@ -630,18 +661,24 @@ impl TunnelDispatcher {
                     "chunk": response.content,
                     "done": false,
                 });
-                let _ = handle.send_stream_chunk(
+                if let Err(e) = handle.send_stream_chunk(
                     request_id.clone(),
                     0,
                     chunk.to_string().into_bytes(),
-                );
+                ) {
+                    warn!("Failed to send response chunk: {}", e);
+                }
                 let done = serde_json::json!({ "done": true });
-                let _ = handle.send_stream_chunk(
+                if let Err(e) = handle.send_stream_chunk(
                     request_id.clone(),
                     1,
                     done.to_string().into_bytes(),
-                );
-                let _ = handle.send_stream_end(request_id);
+                ) {
+                    warn!("Failed to send response done chunk: {}", e);
+                }
+                if let Err(e) = handle.send_stream_end(request_id) {
+                    warn!("Failed to send stream end: {}", e);
+                }
             }
             Err(e) => {
                 warn!("Principal execution failed for {}: {}", agent_name, e);
@@ -662,12 +699,16 @@ impl TunnelDispatcher {
         message: &str,
     ) -> anyhow::Result<()> {
         let error_json = serde_json::json!({ "error": message });
-        let _ = handle.send_stream_chunk(
+        if let Err(e) = handle.send_stream_chunk(
             request_id.to_string(),
             0,
             error_json.to_string().into_bytes(),
-        );
-        let _ = handle.send_stream_end(request_id.to_string());
+        ) {
+            warn!("Failed to send error response chunk: {}", e);
+        }
+        if let Err(e) = handle.send_stream_end(request_id.to_string()) {
+            warn!("Failed to send error stream end: {}", e);
+        }
         Ok(())
     }
 
@@ -1204,8 +1245,8 @@ impl TunnelDispatcher {
             Some(s) => s.clone(),
             None => {
                 // No state cached yet — agent was never announced or exposure
-                // was never set. Default to allowing (backward compat).
-                return Ok(());
+                // was never set. Default to denying (security fix).
+                anyhow::bail!("Instance state not yet available; request denied");
             }
         };
         drop(state);
@@ -1281,8 +1322,8 @@ mod tests {
         .unwrap()
     }
 
-    fn mock_tunnel_handle() -> (TunnelHandle, mpsc::UnboundedReceiver<TunnelMessage>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    fn mock_tunnel_handle() -> (TunnelHandle, mpsc::Receiver<TunnelMessage>) {
+        let (tx, rx) = mpsc::channel(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
         (TunnelHandle::new(tx), rx)
     }
 
@@ -1354,46 +1395,56 @@ mod tests {
         let payload = serde_json::json!({
             "headers": {"x-pekohub-user-id": "user-42"},
         });
-        assert_eq!(resolve_bridge_caller(&payload, None).await, "user-42");
+        assert_eq!(
+            resolve_bridge_caller(&payload, None).await.unwrap(),
+            "user-42"
+        );
     }
 
-    /// Missing header → `"anonymous"` (not `"web"`, not the empty
-    /// string). Downstream code treats `"anonymous"` as "no real user
-    /// asserted", so per-user permission checks stay conservative.
+    /// Missing header → rejected (no anonymous callers).
     #[tokio::test]
-    async fn resolve_bridge_caller_falls_back_to_anonymous_when_header_missing() {
+    async fn resolve_bridge_caller_rejects_anonymous_when_header_missing() {
         let payload = serde_json::json!({"body": {"message": "hi"}});
-        assert_eq!(resolve_bridge_caller(&payload, None).await, "anonymous");
+        assert_eq!(
+            resolve_bridge_caller(&payload, None).await,
+            Err(BridgeCallerError::NoCaller)
+        );
     }
 
-    /// Empty string header → `"anonymous"`. Defends against PekoHub
-    /// bugs that emit `x-pekohub-user-id:` (empty value).
+    /// Empty string header → rejected.
     #[tokio::test]
-    async fn resolve_bridge_caller_falls_back_to_anonymous_when_header_empty() {
+    async fn resolve_bridge_caller_rejects_anonymous_when_header_empty() {
         let payload = serde_json::json!({
             "headers": {"x-pekohub-user-id": ""},
         });
-        assert_eq!(resolve_bridge_caller(&payload, None).await, "anonymous");
+        assert_eq!(
+            resolve_bridge_caller(&payload, None).await,
+            Err(BridgeCallerError::NoCaller)
+        );
     }
 
-    /// Whitespace-only header → `"anonymous"`. Catches header values
-    /// that look populated to a JSON parse but are semantically empty.
+    /// Whitespace-only header → rejected.
     #[tokio::test]
-    async fn resolve_bridge_caller_falls_back_to_anonymous_when_header_whitespace() {
+    async fn resolve_bridge_caller_rejects_anonymous_when_header_whitespace() {
         let payload = serde_json::json!({
             "headers": {"x-pekohub-user-id": "   "},
         });
-        assert_eq!(resolve_bridge_caller(&payload, None).await, "anonymous");
+        assert_eq!(
+            resolve_bridge_caller(&payload, None).await,
+            Err(BridgeCallerError::NoCaller)
+        );
     }
 
-    /// Non-string header (e.g. number) → `"anonymous"`. Catches PekoHub
-    /// sending a typed value the runtime can't attribute.
+    /// Non-string header (e.g. number) → rejected.
     #[tokio::test]
-    async fn resolve_bridge_caller_falls_back_to_anonymous_when_header_not_string() {
+    async fn resolve_bridge_caller_rejects_anonymous_when_header_not_string() {
         let payload = serde_json::json!({
             "headers": {"x-pekohub-user-id": 12345},
         });
-        assert_eq!(resolve_bridge_caller(&payload, None).await, "anonymous");
+        assert_eq!(
+            resolve_bridge_caller(&payload, None).await,
+            Err(BridgeCallerError::NoCaller)
+        );
     }
 
     // ─── Issue #17: JWT wiring (signed identity) ───────────────────────────
@@ -1465,17 +1516,15 @@ mod tests {
             },
         });
         assert_eq!(
-            resolve_bridge_caller(&payload, Some(&validator)).await,
+            resolve_bridge_caller(&payload, Some(&validator)).await.unwrap(),
             "user-jwt"
         );
     }
 
-    /// Tampered JWT (signature doesn't verify) → falls back to the
-    /// unverified `x-pekohub-user-id` header (issue #17 acceptance
-    /// criteria: "unit-tested with at least one positive and one
-    /// tampered-signature case").
+    /// Tampered JWT (signature doesn't verify) → rejected instead of
+    /// falling back to the unverified header.
     #[tokio::test]
-    async fn resolve_bridge_caller_falls_back_on_tampered_jwt() {
+    async fn resolve_bridge_caller_rejects_tampered_jwt() {
         let (validator, _signing_key) = ed25519_validator();
         // Sign with a *different* key — the signature won't verify.
         let mut bytes = [0u8; 32];
@@ -1491,15 +1540,14 @@ mod tests {
         });
         assert_eq!(
             resolve_bridge_caller(&payload, Some(&validator)).await,
-            "user-hub-fallback"
+            Err(BridgeCallerError::InvalidJwt)
         );
     }
 
-    /// JWT present but no validator configured → falls back to the
-    /// unverified hub header (back-compat for runtimes that haven't
-    /// enabled pekohub JWT validation).
+    /// JWT present but no validator configured → rejected instead of
+    /// trusting the unverified hub header.
     #[tokio::test]
-    async fn resolve_bridge_caller_falls_back_when_no_validator_configured() {
+    async fn resolve_bridge_caller_rejects_when_no_validator_configured() {
         let (_validator, signing_key) = ed25519_validator();
         let jwt = mint_jwt(&signing_key, "user-jwt");
 
@@ -1509,7 +1557,10 @@ mod tests {
                 "x-pekohub-user-id": "user-hub",
             },
         });
-        assert_eq!(resolve_bridge_caller(&payload, None).await, "user-hub");
+        assert_eq!(
+            resolve_bridge_caller(&payload, None).await,
+            Err(BridgeCallerError::InvalidJwt)
+        );
     }
 
     /// Header-only (no JWT) → uses the hub header (unverified). This is
@@ -1522,8 +1573,19 @@ mod tests {
             "headers": {"x-pekohub-user-id": "user-hub"},
         });
         assert_eq!(
-            resolve_bridge_caller(&payload, Some(&validator)).await,
+            resolve_bridge_caller(&payload, Some(&validator)).await.unwrap(),
             "user-hub"
+        );
+    }
+
+    /// No JWT and no header → rejected (no anonymous callers).
+    #[tokio::test]
+    async fn resolve_bridge_caller_rejects_anonymous() {
+        let (validator, _signing_key) = ed25519_validator();
+        let payload = serde_json::json!({"headers": {}});
+        assert_eq!(
+            resolve_bridge_caller(&payload, Some(&validator)).await,
+            Err(BridgeCallerError::NoCaller)
         );
     }
 
@@ -1540,7 +1602,7 @@ mod tests {
             },
         });
         assert_eq!(
-            resolve_bridge_caller(&payload, Some(&validator)).await,
+            resolve_bridge_caller(&payload, Some(&validator)).await.unwrap(),
             "user-jwt"
         );
     }
@@ -1840,6 +1902,20 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Forbidden"));
+    }
+
+    #[tokio::test]
+    async fn test_check_request_allowed_missing_state_denies() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(app_state);
+
+        let bridge_payload = serde_json::json!({"headers": {"x-pekohub-user-id": "user-123"}});
+        let result = dispatcher
+            .check_request_allowed("unknown-agent", &bridge_payload)
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Instance state not yet available"));
     }
 
     // -- Issue #29 (Slice C): inbound AgentToAgentRequest + Response -----
