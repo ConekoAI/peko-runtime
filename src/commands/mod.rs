@@ -9,7 +9,6 @@
 //! - `config`: Configuration management
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Daemon mode for cron job execution
-//! - `cron`: Cron job scheduling
 
 pub mod agent_bootstrap;
 pub mod auth;
@@ -27,7 +26,6 @@ pub mod search;
 pub mod send;
 pub mod session;
 pub mod system;
-pub mod team;
 pub mod tunnel;
 
 pub mod update;
@@ -97,10 +95,6 @@ pub enum Commands {
     #[command(subcommand)]
     Principal(principal::PrincipalCommands),
 
-    /// Team management commands
-    #[command(subcommand)]
-    Team(team::TeamCommands),
-
     /// Send a message to a Principal (unified command)
     ///
     /// This is the primary way to interact with a Principal. Examples:
@@ -150,7 +144,7 @@ pub enum Commands {
     #[command(subcommand)]
     Provider(provider::ProviderCommands),
 
-    /// Search the PekoHub registry for agents, teams, and extensions
+    /// Search the PekoHub registry for principals and extensions
     #[command(subcommand)]
     Search(search::SearchCommands),
 
@@ -290,18 +284,6 @@ impl GlobalPaths {
         &self.services
     }
 
-    /// Get teams configuration directory
-    #[must_use]
-    pub fn teams_dir(&self) -> PathBuf {
-        self.resolver.teams_dir()
-    }
-
-    /// Get a specific team's directory
-    #[must_use]
-    pub fn team_dir(&self, team: &str) -> PathBuf {
-        self.resolver.team_dir(team)
-    }
-
     /// Get the top-level agents root directory
     #[must_use]
     pub fn agents_root_dir(&self) -> PathBuf {
@@ -358,8 +340,8 @@ impl GlobalPaths {
 
     /// Get agent sessions directory
     #[must_use]
-    pub fn agent_sessions_dir(&self, name: &str, team: Option<&str>) -> PathBuf {
-        self.resolver.agent_sessions_dir(name, team)
+    pub fn agent_sessions_dir(&self, name: &str) -> PathBuf {
+        self.resolver.agent_sessions_dir(name, None)
     }
 
     /// Get tools directory
@@ -377,27 +359,13 @@ impl GlobalPaths {
     /// Get agent workspace directory
     ///
     /// Returns the path to an agent's workspace directory.
-    /// Format: `<data_dir>/workspaces/<agent>/<context>`
+    /// Format: `<data_dir>/workspaces/<agent>/personal`
     ///
     /// # Arguments
     /// * `agent` - The agent name
-    /// * `team` - Optional team context (defaults to "personal")
     #[must_use]
-    pub fn agent_workspace(&self, agent: &str, team: Option<&str>) -> PathBuf {
-        self.resolver.agent_workspace(agent, team)
-    }
-
-    /// Get agent workspace directory with explicit team
-    ///
-    /// Same as `agent_workspace` but requires an explicit team.
-    /// This is useful when the team is already known.
-    ///
-    /// # Arguments
-    /// * `agent` - The agent name
-    /// * `team` - The team name
-    #[must_use]
-    pub fn agent_workspace_with_team(&self, agent: &str, team: &str) -> PathBuf {
-        self.resolver.agent_workspace_with_team(agent, team)
+    pub fn agent_workspace(&self, agent: &str) -> PathBuf {
+        self.resolver.agent_workspace(agent, None)
     }
 
     /// Get the user identifier for session isolation

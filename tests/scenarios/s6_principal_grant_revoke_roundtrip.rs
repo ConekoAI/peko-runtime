@@ -13,21 +13,17 @@
 //!
 //! After the Principal-as-single-actor migration the standalone agent
 //! permission packets were removed; the Principal is now the actor that
-//! owns permissions. This scenario therefore exercises
-//! `PrincipalGrantPermission`/`PrincipalRevokePermission` for the
-//! Principal cases and `TeamGrantPermission`/`TeamRevokePermission` for
-//! the team case.
+//! owns permissions. This scenario exercises
+//! `PrincipalGrantPermission`/`PrincipalRevokePermission`.
 //!
 //! # What this test asserts
 //!
 //! 1. **Principal grant/revoke round-trip** — `Subject::Principal("peer")`
 //!    granted to a Principal, then revoked via IPC; on-disk
 //!    `principal.toml` shows the grant is gone.
-//! 2. **Team grant/revoke round-trip** — same with
-//!    `Subject::Team("eng")` on a team.
-//! 3. **Public grant/revoke round-trip** — `Subject::Public` granted
+//! 2. **Public grant/revoke round-trip** — `Subject::Public` granted
 //!    to a Principal, then revoked.
-//! 4. **Idempotent revoke** — revoking a subject that was never
+//! 3. **Idempotent revoke** — revoking a subject that was never
 //!    granted returns success and leaves the permissions list empty.
 //!
 //! # Why this test does not need PekoHub
@@ -91,22 +87,6 @@ fn create_principal(cli: &PekoCli, name: &str) {
     .expect("write principal.toml");
 }
 
-/// Pre-write a team under the test's isolated `<HOME>/.peko`. Mirrors
-/// the structure `peko team create` produces.
-fn write_team(cli: &PekoCli, team_name: &str) {
-    let team_dir = cli.peko_dir().join("teams").join(team_name);
-    std::fs::create_dir_all(&team_dir).expect("create team dir");
-    let toml = format!(
-        r#"name = "{team_name}"
-description = "s6 inline-Subject grant/revoke e2e team"
-created_at = "2026-01-01T00:00:00Z"
-host_runtime_id = ""
-owner = {{ kind = "user", id = "local" }}
-"#
-    );
-    std::fs::write(team_dir.join("team.toml"), toml).expect("write team.toml");
-}
-
 /// Read the principal config from disk and return the granted permissions.
 fn read_principal_permissions(cli: &PekoCli, name: &str) -> Vec<Permission> {
     let path = cli
@@ -118,22 +98,6 @@ fn read_principal_permissions(cli: &PekoCli, name: &str) -> Vec<Permission> {
     let cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
     cfg.permissions
-        .iter()
-        .map(|g| g.permission.clone())
-        .collect()
-}
-
-/// Read the team metadata from disk and return the granted permissions.
-fn read_team_permissions(cli: &PekoCli, team_name: &str) -> Vec<Permission> {
-    let path = cli
-        .peko_dir()
-        .join("teams")
-        .join(team_name)
-        .join("team.toml");
-    let raw = std::fs::read_to_string(&path).expect("read team.toml");
-    let meta: peko::common::types::team::TeamMetadata =
-        toml::from_str(&raw).expect("parse team.toml");
-    meta.permissions
         .iter()
         .map(|g| g.permission.clone())
         .collect()
@@ -175,42 +139,6 @@ async fn revoke_principal(client: &DaemonClient, name: &str, subject: Subject, p
     );
 }
 
-/// Issue a team grant packet and assert it succeeds.
-async fn grant_team(client: &DaemonClient, team: &str, subject: Subject, perm: Permission) {
-    let packet = RequestPacket::TeamGrantPermission {
-        request_id: 1,
-        team: team.into(),
-        subject,
-        permission: perm,
-    };
-    let resp = client
-        .request_response(packet)
-        .await
-        .expect("team grant succeeds");
-    assert!(
-        matches!(resp, ResponsePacket::Done { success: true, .. }),
-        "expected Done with success=true, got: {resp:?}"
-    );
-}
-
-/// Issue a team revoke packet and assert it succeeds.
-async fn revoke_team(client: &DaemonClient, team: &str, subject: Subject, perm: Permission) {
-    let packet = RequestPacket::TeamRevokePermission {
-        request_id: 2,
-        team: team.into(),
-        subject,
-        permission: perm,
-    };
-    let resp = client
-        .request_response(packet)
-        .await
-        .expect("team revoke succeeds");
-    assert!(
-        matches!(resp, ResponsePacket::Done { success: true, .. }),
-        "expected Done with success=true, got: {resp:?}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -244,36 +172,6 @@ async fn s6_principal_subject_round_trips_through_ipc() {
     assert!(
         perms_after_revoke.is_empty(),
         "Principal-issued grant should have been revoked; on-disk permissions: {perms_after_revoke:?}"
-    );
-}
-
-/// Team grant/revoke round-trip with a `Subject::Team` subject.
-#[tokio::test]
-#[serial]
-async fn s6_team_subject_round_trips_through_ipc() {
-    let cli = PekoCli::new();
-    cli.install_ipc_endpoint_env();
-    let team = "s6-team";
-    write_team(&cli, team);
-
-    let _guard = DaemonGuard::spawn(&cli);
-    let client = DaemonClient::connect().await.expect("connect daemon");
-
-    let subject = Subject::Team("eng".into());
-
-    grant_team(&client, team, subject.clone(), Permission::Chat).await;
-    let perms_after_grant = read_team_permissions(&cli, team);
-    assert_eq!(
-        perms_after_grant,
-        vec![Permission::Chat],
-        "team grant should be persisted"
-    );
-
-    revoke_team(&client, team, subject, Permission::Chat).await;
-    let perms_after_revoke = read_team_permissions(&cli, team);
-    assert!(
-        perms_after_revoke.is_empty(),
-        "Team-issued grant should have been revoked; on-disk permissions: {perms_after_revoke:?}"
     );
 }
 

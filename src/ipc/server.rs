@@ -710,9 +710,7 @@ impl IpcServer {
         // it here while `request` is still accessible. The borrow
         // released by the time the match starts (NLL).
         let pre_resolved_subject: Option<crate::auth::Subject> = match &request {
-            RequestPacket::TeamGrantPermission { .. }
-            | RequestPacket::TeamRevokePermission { .. }
-            | RequestPacket::PrincipalGrantPermission { .. }
+            RequestPacket::PrincipalGrantPermission { .. }
             | RequestPacket::PrincipalRevokePermission { .. } => Some(request.resolved_subject()),
             _ => None,
         };
@@ -1016,190 +1014,6 @@ impl IpcServer {
                 Self::send_sink(sink, response).await?;
             }
 
-            // ─── Team CRUD ──────────────────────────────────────────────────
-            RequestPacket::TeamList { request_id } => {
-                let service = state.team_service();
-                match service.list_teams().await {
-                    Ok(teams) => {
-                        let response = ResponsePacket::TeamList { request_id, teams };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::TeamGet { request_id, name } => {
-                let service = state.team_service();
-                match service.get_team(&name).await {
-                    Ok(team) => {
-                        let response = ResponsePacket::TeamGet { request_id, team };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::TeamCreate {
-                request_id,
-                name,
-                description,
-                members,
-            } => {
-                let service = state.team_service();
-                let host_runtime_id = state.runtime_identity().runtime_did.clone();
-                let owner = caller.subject();
-                match service
-                    .create_team(
-                        &name,
-                        description.as_deref(),
-                        Some(&host_runtime_id),
-                        Some(&owner),
-                    )
-                    .await
-                {
-                    Ok(result) => {
-                        // Auto-join members if provided
-                        if let Some(member_names) = members {
-                            for agent_name in member_names {
-                                let _ = service
-                                    .join_team(
-                                        &name,
-                                        &agent_name,
-                                        crate::common::types::membership::MembershipRole::Member,
-                                    )
-                                    .await;
-                            }
-                        }
-                        let response = ResponsePacket::TeamCreated { request_id, result };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::TeamDelete {
-                request_id,
-                name,
-                force: _,
-            } => {
-                let service = state.team_service();
-                match service.delete_team(&name).await {
-                    Ok(result) => {
-                        let response = ResponsePacket::TeamDeleted { request_id, result };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::TeamMove {
-                request_id,
-                old_name,
-                new_name,
-            } => {
-                let service = state.team_service();
-                match service.move_team(&old_name, &new_name).await {
-                    Ok(_) => {
-                        let response = ResponsePacket::TeamMoved {
-                            request_id,
-                            old_name,
-                            new_name,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::TeamExport {
-                request_id,
-                name,
-                output,
-                include_sessions,
-            } => {
-                let service = state.team_service();
-                match service
-                    .export_team(&name, output, !include_sessions, false, false)
-                    .await
-                {
-                    Ok(result) => {
-                        let response = ResponsePacket::TeamExported {
-                            request_id,
-                            name: result.name,
-                            output_path: result.output_path.to_string_lossy().to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::TeamImport {
-                request_id,
-                file_path,
-                name,
-                force,
-            } => {
-                let service = state.team_service();
-                let host_runtime_id = state.runtime_identity().runtime_did.clone();
-                match service
-                    .import_team(&file_path, name, force, true, Some(&host_runtime_id))
-                    .await
-                {
-                    Ok(result) => {
-                        let response = ResponsePacket::TeamImported {
-                            request_id,
-                            name: result.name,
-                            path: result.path.to_string_lossy().to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
             // ─── Session CRUD ───────────────────────────────────────────────
             RequestPacket::SessionList {
                 request_id,
@@ -1330,7 +1144,6 @@ impl IpcServer {
                     uptime_secs: state.uptime_seconds(),
                     degraded: state.is_degraded().await,
                     instance_count: state.instance_count().await,
-                    team_count: state.team_count().await,
                     ready: state.is_ready().await,
                 };
                 Self::send_sink(sink, response).await?;
@@ -1517,7 +1330,7 @@ impl IpcServer {
                         }
                     }
                     Some(ref target_str) if target_str.contains('/') => {
-                        // Legacy compound scope: "team/agent" — resolves to agent
+                        // Legacy compound scope: "namespace/agent" — resolves to agent
                         let parts: Vec<&str> = target_str.split('/').collect();
                         let agent_name = if parts.len() == 2 {
                             parts[1]
@@ -1536,27 +1349,14 @@ impl IpcServer {
                     }
                     Some(ref target_str) => {
                         let config_service = state.config_service();
-                        // Under ADR-031, bare names are agent scope if the agent exists,
-                        // otherwise team scope for backward compatibility.
-                        let agent_config_path = state
-                            .config_dir
-                            .join("agents")
-                            .join(target_str)
-                            .join("config.toml");
-                        if agent_config_path.exists() {
-                            match config_service.enable_tool_sync(target_str, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' enabled for agent '{target_str}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to enable extension for agent: {e}"
-                                )),
-                            }
-                        } else {
-                            match config_service.enable_tool_for_team(target_str, &canonical_id) {
-                                Ok(count) => Ok(format!("Extension '{canonical_id}' enabled for {count} agent(s) in team '{target_str}'")),
-                                Err(e) => Err(anyhow::anyhow!("Failed to enable extension for team: {e}")),
-                            }
+                        // Agent scope only; bare names must resolve to an existing agent config.
+                        match config_service.enable_tool_sync(target_str, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' enabled for agent '{target_str}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to enable extension for agent '{target_str}': {e}"
+                            )),
                         }
                     }
                 };
@@ -1623,7 +1423,7 @@ impl IpcServer {
                         }
                     }
                     Some(ref target_str) if target_str.contains('/') => {
-                        // Legacy compound scope: "team/agent" — resolves to agent
+                        // Legacy compound scope: "namespace/agent" — resolves to agent
                         let parts: Vec<&str> = target_str.split('/').collect();
                         let agent_name = if parts.len() == 2 {
                             parts[1]
@@ -1642,27 +1442,14 @@ impl IpcServer {
                     }
                     Some(ref target_str) => {
                         let config_service = state.config_service();
-                        // Under ADR-031, bare names are agent scope if the agent exists,
-                        // otherwise team scope for backward compatibility.
-                        let agent_config_path = state
-                            .config_dir
-                            .join("agents")
-                            .join(target_str)
-                            .join("config.toml");
-                        if agent_config_path.exists() {
-                            match config_service.disable_tool_sync(target_str, &canonical_id) {
-                                Ok(()) => Ok(format!(
-                                    "Extension '{canonical_id}' disabled for agent '{target_str}'"
-                                )),
-                                Err(e) => Err(anyhow::anyhow!(
-                                    "Failed to disable extension for agent: {e}"
-                                )),
-                            }
-                        } else {
-                            match config_service.disable_tool_for_team(target_str, &canonical_id) {
-                                Ok(count) => Ok(format!("Extension '{canonical_id}' disabled for {count} agent(s) in team '{target_str}'")),
-                                Err(e) => Err(anyhow::anyhow!("Failed to disable extension for team: {e}")),
-                            }
+                        // Agent scope only; bare names must resolve to an existing agent config.
+                        match config_service.disable_tool_sync(target_str, &canonical_id) {
+                            Ok(()) => Ok(format!(
+                                "Extension '{canonical_id}' disabled for agent '{target_str}'"
+                            )),
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to disable extension for agent '{target_str}': {e}"
+                            )),
                         }
                     }
                 };
@@ -3205,118 +2992,9 @@ impl IpcServer {
             }
 
             // ── Ownership and Permission (ADR-033) ──
-            RequestPacket::TeamTransferOwner {
-                request_id,
-                team,
-                new_owner,
-            } => {
-                let service = crate::common::services::TeamService::new(
-                    state.team_service().resolver().clone(),
-                );
-                let caller_principal = caller.subject();
-                match service
-                    .transfer_team_owner(&team, new_owner, &caller_principal)
-                    .await
-                {
-                    Ok(()) => {
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("{e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-            RequestPacket::TeamGrantPermission {
-                request_id,
-                team,
-                permission,
-                ..
-            } => {
-                let subject =
-                    match take_resolved_subject(pre_resolved_subject.as_ref(), request_id, sink)
-                        .await
-                    {
-                        Ok(s) => s,
-                        Err(()) => return Ok(()),
-                    };
-                let service = crate::common::services::TeamService::new(
-                    state.team_service().resolver().clone(),
-                );
-                let caller_principal = caller.subject();
-                let grant = crate::auth::ownership::PermissionGrant {
-                    subject,
-                    permission,
-                    granted_at: chrono::Utc::now().to_rfc3339(),
-                    granted_by: caller_principal.clone(),
-                };
-                match service
-                    .grant_team_permission(&team, grant, &caller_principal)
-                    .await
-                {
-                    Ok(()) => {
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("{e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-            RequestPacket::TeamRevokePermission {
-                request_id,
-                team,
-                permission,
-                ..
-            } => {
-                let subject =
-                    match take_resolved_subject(pre_resolved_subject.as_ref(), request_id, sink)
-                        .await
-                    {
-                        Ok(s) => s,
-                        Err(()) => return Ok(()),
-                    };
-                let service = crate::common::services::TeamService::new(
-                    state.team_service().resolver().clone(),
-                );
-                let caller_principal = caller.subject();
-                match service
-                    .revoke_team_permission(&team, &subject, &permission, &caller_principal)
-                    .await
-                {
-                    Ok(()) => {
-                        let response = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("{e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
+            // NOTE: Team transfer/grant/revoke packets were removed along with
+            // the team management concept. Only principal-scoped permission ops
+            // remain here.
         }
 
         Ok(())

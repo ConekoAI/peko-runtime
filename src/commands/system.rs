@@ -62,7 +62,6 @@ pub async fn handle_system(
                     uptime_secs,
                     degraded,
                     instance_count,
-                    team_count,
                     ready,
                     ..
                 } => {
@@ -75,7 +74,6 @@ pub async fn handle_system(
                                 "uptime_secs": uptime_secs,
                                 "degraded": degraded,
                                 "instance_count": instance_count,
-                                "team_count": team_count,
                                 "ready": ready,
                             })
                         );
@@ -87,7 +85,6 @@ pub async fn handle_system(
                         if degraded {
                             println!("  ⚠️ Degraded mode");
                         }
-                        println!("  Teams: {team_count}");
                         println!("  Instances: {instance_count}");
                         if resources {
                             println!("  (Resource usage not yet implemented)");

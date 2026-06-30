@@ -9,8 +9,6 @@ pub mod daemon_process_service;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub mod extension_management_service;
 pub mod session_service;
-pub mod team_management_service;
-pub mod team_service;
 
 // ConfigAuthority - the new central config system
 pub mod config_authority;
@@ -25,8 +23,6 @@ pub use session_service::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,
     SessionInfo, SessionService,
 };
-pub use team_management_service::TeamManagementService;
-pub use team_service::TeamService;
 
 /// Backward-compatible alias for `ServiceContainer`.
 #[deprecated(since = "0.2.0", note = "Use ServiceContainer instead")]
@@ -45,8 +41,6 @@ use crate::common::paths::PathResolver;
 pub struct ServiceContainer {
     agent: AgentService,
     agent_config: ConfigAuthorityImpl,
-    team: TeamService,
-    team_management: TeamManagementService,
     extension_management: ExtensionManagementService,
 }
 
@@ -54,12 +48,9 @@ impl ServiceContainer {
     /// Create a new service container with the given path resolver
     #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
-        let team_service = TeamService::new(resolver.clone());
         Self {
             agent: AgentService::new(resolver.clone()),
             agent_config: ConfigAuthorityImpl::new(resolver.clone()),
-            team: team_service.clone(),
-            team_management: TeamManagementService::new(team_service.clone(), resolver.clone()),
             extension_management: ExtensionManagementService::new(resolver),
         }
     }
@@ -72,16 +63,6 @@ impl ServiceContainer {
     /// Get the agent configuration service
     pub fn agent_config(&self) -> &ConfigAuthorityImpl {
         &self.agent_config
-    }
-
-    /// Get the team service (filesystem operations)
-    pub fn team(&self) -> &TeamService {
-        &self.team
-    }
-
-    /// Get the team management service (unified operations)
-    pub fn team_management(&self) -> &TeamManagementService {
-        &self.team_management
     }
 
     /// Get the extension management service (registry push/pull)

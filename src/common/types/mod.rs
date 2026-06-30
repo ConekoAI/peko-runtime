@@ -10,22 +10,11 @@ pub mod agent;
 pub mod agent_legacy;
 pub mod config;
 pub mod extension;
-pub mod membership;
 pub mod message;
 pub mod provider;
 pub mod task;
-pub mod team;
 
 pub use agent::{
     AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult,
-    AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult, AgentInfo,
-    AgentRenameResult, AgentSummary, AgentUpdateRequest,
-};
-pub use membership::{
-    AgentMembership, AgentMemberships, MembershipRole, TeamJoinResult, TeamLeaveResult, TeamMember,
-    TeamMembers,
-};
-pub use team::{
-    TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamExtConfig, TeamImportResult,
-    TeamInfo, TeamMetadata, TeamMoveResult,
+    AgentInfo, AgentRenameResult, AgentSummary, AgentUpdateRequest,
 };
