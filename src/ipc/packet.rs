@@ -187,14 +187,12 @@ pub enum RequestPacket {
     SessionList {
         request_id: u64,
         agent: Option<String>,
-        team: Option<String>,
     },
 
     #[serde(rename = "session_remove")]
     SessionRemove {
         request_id: u64,
         agent: String,
-        team: Option<String>,
         session_id: String,
         force: bool,
     },
@@ -272,7 +270,6 @@ pub enum RequestPacket {
     SessionBranch {
         request_id: u64,
         agent: String,
-        team: Option<String>,
         session_id: String,
         label: Option<String>,
     },
@@ -282,7 +279,6 @@ pub enum RequestPacket {
     SessionCompact {
         request_id: u64,
         agent: String,
-        team: Option<String>,
         session_id: String,
         dry_run: bool,
         instruction: Option<String>,
@@ -1850,7 +1846,6 @@ mod tests {
         let req = RequestPacket::SessionList {
             request_id: 500,
             agent: Some("test-agent".to_string()),
-            team: Some("test-team".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -1858,11 +1853,9 @@ mod tests {
             RequestPacket::SessionList {
                 request_id,
                 agent,
-                team,
             } => {
                 assert_eq!(request_id, 500);
                 assert_eq!(agent, Some("test-agent".to_string()));
-                assert_eq!(team, Some("test-team".to_string()));
             }
             _ => panic!("Wrong variant"),
         }
@@ -2001,7 +1994,6 @@ mod tests {
         let req_session_list = RequestPacket::SessionList {
             request_id: 7,
             agent: None,
-            team: None,
         };
         assert_eq!(req_session_list.request_id(), 7);
     }
@@ -2537,7 +2529,6 @@ mod tests {
         let req = RequestPacket::SessionBranch {
             request_id: 1201,
             agent: "test-agent".to_string(),
-            team: Some("default".to_string()),
             session_id: "sess-123".to_string(),
             label: Some("feature-x".to_string()),
         };
@@ -2547,13 +2538,11 @@ mod tests {
             RequestPacket::SessionBranch {
                 request_id,
                 agent,
-                team,
                 session_id,
                 label,
             } => {
                 assert_eq!(request_id, 1201);
                 assert_eq!(agent, "test-agent");
-                assert_eq!(team, Some("default".to_string()));
                 assert_eq!(session_id, "sess-123");
                 assert_eq!(label, Some("feature-x".to_string()));
             }
@@ -2566,7 +2555,6 @@ mod tests {
         let req = RequestPacket::SessionCompact {
             request_id: 1202,
             agent: "test-agent".to_string(),
-            team: None,
             session_id: "sess-123".to_string(),
             dry_run: true,
             instruction: Some("Summarize".to_string()),
@@ -2577,14 +2565,12 @@ mod tests {
             RequestPacket::SessionCompact {
                 request_id,
                 agent,
-                team,
                 session_id,
                 dry_run,
                 instruction,
             } => {
                 assert_eq!(request_id, 1202);
                 assert_eq!(agent, "test-agent");
-                assert_eq!(team, None);
                 assert_eq!(session_id, "sess-123");
                 assert!(dry_run);
                 assert_eq!(instruction, Some("Summarize".to_string()));
@@ -2688,7 +2674,6 @@ mod tests {
         let req_branch = RequestPacket::SessionBranch {
             request_id: 2,
             agent: "a".to_string(),
-            team: None,
             session_id: "s".to_string(),
             label: None,
         };
@@ -2697,7 +2682,6 @@ mod tests {
         let req_compact = RequestPacket::SessionCompact {
             request_id: 3,
             agent: "a".to_string(),
-            team: None,
             session_id: "s".to_string(),
             dry_run: false,
             instruction: None,
@@ -2732,7 +2716,6 @@ mod tests {
         let req = RequestPacket::SessionRemove {
             request_id: 1601,
             agent: "test-agent".to_string(),
-            team: None,
             session_id: "sess-123".to_string(),
             force: false,
         };
@@ -2742,13 +2725,11 @@ mod tests {
             RequestPacket::SessionRemove {
                 request_id,
                 agent,
-                team,
                 session_id,
                 force,
             } => {
                 assert_eq!(request_id, 1601);
                 assert_eq!(agent, "test-agent");
-                assert_eq!(team, None);
                 assert_eq!(session_id, "sess-123");
                 assert!(!force);
             }
@@ -2784,7 +2765,6 @@ mod tests {
         let req_remove = RequestPacket::SessionRemove {
             request_id: 2,
             agent: "a".to_string(),
-            team: None,
             session_id: "s".to_string(),
             force: false,
         };

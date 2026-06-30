@@ -27,8 +27,8 @@ pub struct AuditEvent {
     pub agent_did: Option<String>,
     /// Resolved caller identity as a typed `Subject` (ADR-039).
     /// Populated on every event that flows through the request path so
-    /// the audit trail is attributable to a real subject — User / Agent /
-    /// Team / Public. `None` only on legacy events that pre-date the
+    /// the audit trail is attributable to a real subject — `User` /
+    /// `Principal` / `Public`. `None` only on legacy events that pre-date the
     /// per-user attribution plumbing (issue #17) or on system-emitted
     /// events with no caller context (use `Subject::User("local")` —
     /// via `CallerContext::local().subject()` — or `Subject::Public`

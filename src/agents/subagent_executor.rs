@@ -951,7 +951,7 @@ mod tests {
         // Create a session manager with path resolver
         let path_resolver = PathResolver::new();
         let manager = SessionManager::new()
-            .with_path_resolver(path_resolver, "test_agent", None)
+            .with_path_resolver(path_resolver, "test_agent")
             .await
             .unwrap();
         let manager = Arc::new(RwLock::new(manager));

@@ -79,16 +79,6 @@ impl DaemonClient {
     /// The legacy `Execute` path went through `StatelessAgentService`
     /// directly, bypassing `PrincipalManager` permission checks,
     /// session creation, and supervisor routing. All chat traffic is
-    /// now routed through `send_to_principal` /
-    /// `stream_from_principal` (one-shot and streaming
-    /// `PrincipalSend` / `PrincipalSendStream` IPC variants) so the
-    /// same client code goes through the principal-scoped path.
-    ///
-    /// No production code called this method after the
-    /// principal-as-single-actor migration; the only reference was
-    /// the ADR-021 example. Removed to make the back-door path
-    /// literally uncallable.
-
     /// Spawn an async background task
     ///
     /// # Errors

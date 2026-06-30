@@ -62,7 +62,7 @@ pub struct AgentResolution {
     /// because the lookup key is the DID. Callers MUST treat
     /// empty-string as "no DID known".
     pub agent_did: String,
-    /// Resolved owner principal (User / Agent / Team / Public). The
+    /// Resolved owner principal (`User` / `Principal` / `Public`). The
     /// outbound path doesn't currently consume this, but it's part of
     /// the response contract (the hub mirrors it for client-side
     /// trust display) and audit code wants it.
@@ -434,10 +434,6 @@ mod tests {
             (
                 r#"{ "kind": "principal", "id": "did:peko:agent:abc" }"#,
                 Subject::Principal("did:peko:agent:abc".into()),
-            ),
-            (
-                r#"{ "kind": "team", "id": "eng" }"#,
-                Subject::Team("eng".to_string()),
             ),
             (r#"{ "kind": "public" }"#, Subject::Public),
         ] {

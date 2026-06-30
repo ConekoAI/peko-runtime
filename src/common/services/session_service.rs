@@ -42,7 +42,7 @@ pub struct SessionInfo {
     pub total_output_tokens: usize,
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
-    /// Subject type (`"user"`, `"agent"`, `"team"`, or `"public"`).
+    /// Subject type (`"user"`, `"agent"`, or `"public"`).
     ///
     /// Reflects the `Subject` kind on the session's peer after
     /// ADR-039. For a2a-spawned sessions this is `"agent"` (issue #24).
@@ -186,9 +186,8 @@ impl SessionService {
     pub async fn list_sessions(
         &self,
         agent_name: &str,
-        team: Option<&str>,
     ) -> Result<Vec<SessionInfo>> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         if !sessions_dir.exists() {
             return Ok(vec![]);
@@ -220,13 +219,12 @@ impl SessionService {
     pub async fn list_sessions_with_active(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         peer: &crate::auth::Subject,
     ) -> Result<(Vec<SessionInfo>, Option<String>)> {
-        let sessions = self.list_sessions(agent_name, team).await?;
+        let sessions = self.list_sessions(agent_name).await?;
 
         let active_session = if !sessions.is_empty() {
-            let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+            let sessions_dir = self.get_sessions_dir(agent_name).await?;
             let mut controller = MetadataController::new(&sessions_dir);
             let peer_key = crate::session::key::derive_base_session_key(agent_name, peer);
             controller
@@ -245,10 +243,9 @@ impl SessionService {
     pub async fn get_session(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         session_id: &str,
     ) -> Result<Option<SessionInfo>> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         if !sessions_dir.exists() {
             return Ok(None);
@@ -267,11 +264,10 @@ impl SessionService {
     pub async fn get_history(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         session_id: &str,
         query: HistoryQuery,
     ) -> Result<HistoryResult> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let sessions_dir = self.get_sessions_dir(agent_name).await?;
         let storage = SyncSessionStorage::new(sessions_dir);
 
         // Verify session exists
@@ -326,13 +322,12 @@ impl SessionService {
     pub async fn branch_session(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         parent_session_id: &str,
         label: Option<String>,
     ) -> Result<BranchResult> {
         // Use SessionManager for branching
         let mut manager =
-            SessionManager::for_cli(self.path_resolver.clone(), agent_name, team, "default");
+            SessionManager::for_cli(self.path_resolver.clone(), agent_name, "default");
 
         // Verify parent exists
         let _parent_metadata = manager
@@ -367,10 +362,9 @@ impl SessionService {
     pub async fn delete_session(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         session_id: &str,
     ) -> Result<bool> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         // Use SyncSessionStorage for deletion
         let storage = SyncSessionStorage::new(sessions_dir.clone());
@@ -406,10 +400,9 @@ impl SessionService {
     pub async fn get_session_details(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         session_id: &str,
     ) -> Result<Option<SessionDetails>> {
-        let info = match self.get_session(agent_name, team, session_id).await? {
+        let info = match self.get_session(agent_name, session_id).await? {
             Some(info) => info,
             None => return Ok(None),
         };
@@ -418,7 +411,6 @@ impl SessionService {
         let history = self
             .get_history(
                 agent_name,
-                team,
                 session_id,
                 HistoryQuery {
                     include_tool_calls: true,
@@ -455,10 +447,9 @@ impl SessionService {
     pub async fn session_exists(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         session_id: &str,
     ) -> Result<bool> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         if !sessions_dir.exists() {
             return Ok(false);
@@ -472,10 +463,10 @@ impl SessionService {
     /// that don't know the agent name (e.g. `SessionSteer` which
     /// only carries `session_id` and `content`).
     ///
-    /// Walks the `{data_dir}/sessions/` tree, trying each
-    /// `{agent}/personal` and `{agent}/{team}` directory until it
-    /// finds one whose metadata index has the session id. Returns the
-    /// first match (session ids are globally unique by UUID).
+    /// Walks the `{data_dir}/sessions/` tree, looking in each
+    /// `{agent}/personal` directory until it finds one whose metadata
+    /// index has the session id. Returns the first match (session ids
+    /// are globally unique by UUID).
     pub async fn get_session_metadata(
         &self,
         session_id: &str,
@@ -506,32 +497,24 @@ impl SessionService {
                 Err(_) => continue,
             };
 
-            // Enumerate team subdirectories under each agent dir.
-            // `personal` and any explicit team name (e.g. "engineering")
-            // are both candidates.
-            let subdirs = match std::fs::read_dir(&agent_path) {
-                Ok(rd) => rd,
-                Err(_) => continue,
-            };
-            for sub_entry in subdirs.flatten() {
-                let sub_path = sub_entry.path();
-                if !sub_path.is_dir() {
-                    continue;
+            let personal_path = agent_path.join("personal");
+            if !personal_path.is_dir() {
+                continue;
+            }
+
+            let controller = Arc::new(RwLock::new(MetadataController::new(personal_path)));
+            let mut guard = controller.write().await;
+            match guard.get_metadata(session_id, false).await {
+                Ok(Some(m)) => {
+                    debug!(
+                        "get_session_metadata: found {session_id} under agent='{agent_name}'"
+                    );
+                    return Ok(m);
                 }
-                let controller = Arc::new(RwLock::new(MetadataController::new(sub_path.clone())));
-                let mut guard = controller.write().await;
-                match guard.get_metadata(session_id, false).await {
-                    Ok(Some(m)) => {
-                        debug!(
-                            "get_session_metadata: found {session_id} under agent='{agent_name}'"
-                        );
-                        return Ok(m);
-                    }
-                    Ok(None) => continue,
-                    Err(e) => {
-                        last_err = Some(e);
-                        continue;
-                    }
+                Ok(None) => continue,
+                Err(e) => {
+                    last_err = Some(e);
+                    continue;
                 }
             }
         }
@@ -543,7 +526,6 @@ impl SessionService {
     pub async fn resolve_session_id(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         user: &str,
         session_id: Option<String>,
     ) -> Result<String> {
@@ -551,7 +533,7 @@ impl SessionService {
             Some(id) => Ok(id),
             None => {
                 let mut manager =
-                    SessionManager::for_cli(self.path_resolver.clone(), agent_name, team, user);
+                    SessionManager::for_cli(self.path_resolver.clone(), agent_name, user);
                 let peer = Subject::User(user.to_string());
                 match manager.get_active_session_id(&peer).await? {
                     Some(id) => Ok(id),
@@ -569,11 +551,10 @@ impl SessionService {
     pub async fn open_session(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         session_id: &str,
         user: &str,
     ) -> Result<crate::session::unified::Session> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let sessions_dir = self.get_sessions_dir(agent_name).await?;
         let peer = Subject::User(user.to_string());
         crate::session::unified::Session::open_by_id(
             agent_name,
@@ -589,9 +570,8 @@ impl SessionService {
     pub async fn list_sessions_synced(
         &self,
         agent_name: &str,
-        team: Option<&str>,
     ) -> Result<Vec<SessionInfo>> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         if !sessions_dir.exists() {
             return Ok(vec![]);
@@ -609,10 +589,9 @@ impl SessionService {
     pub async fn get_session_synced(
         &self,
         agent_name: &str,
-        team: Option<&str>,
         session_id: &str,
     ) -> Result<Option<SessionInfo>> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+        let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         if !sessions_dir.exists() {
             return Ok(None);
@@ -624,8 +603,8 @@ impl SessionService {
     }
 
     /// Get sessions directory for an agent
-    pub async fn get_sessions_dir(&self, agent_name: &str, team: Option<&str>) -> Result<PathBuf> {
-        let sessions_dir = self.path_resolver.agent_sessions_dir(agent_name, team);
+    pub async fn get_sessions_dir(&self, agent_name: &str) -> Result<PathBuf> {
+        let sessions_dir = self.path_resolver.agent_sessions_dir(agent_name);
         Ok(sessions_dir)
     }
 

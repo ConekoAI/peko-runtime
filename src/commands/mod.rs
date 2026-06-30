@@ -341,7 +341,7 @@ impl GlobalPaths {
     /// Get agent sessions directory
     #[must_use]
     pub fn agent_sessions_dir(&self, name: &str) -> PathBuf {
-        self.resolver.agent_sessions_dir(name, None)
+        self.resolver.agent_sessions_dir(name)
     }
 
     /// Get tools directory
@@ -365,7 +365,7 @@ impl GlobalPaths {
     /// * `agent` - The agent name
     #[must_use]
     pub fn agent_workspace(&self, agent: &str) -> PathBuf {
-        self.resolver.agent_workspace(agent, None)
+        self.resolver.agent_workspace(agent)
     }
 
     /// Get the user identifier for session isolation

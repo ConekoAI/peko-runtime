@@ -348,7 +348,7 @@ impl Agent {
         // Initialize session manager with path resolver
         let path_resolver = PathResolver::new();
         let session_manager = SessionManager::new()
-            .with_path_resolver(path_resolver, &config.name, None)
+            .with_path_resolver(path_resolver, &config.name)
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
         Self::new_with_session_manager_and_resolver(config, session_manager, None).await
@@ -368,7 +368,7 @@ impl Agent {
     ) -> Result<Self> {
         let path_resolver = PathResolver::new();
         let session_manager = SessionManager::new()
-            .with_path_resolver(path_resolver, &config.name, None)
+            .with_path_resolver(path_resolver, &config.name)
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
         Self::new_with_session_manager_and_resolver(config, session_manager, Some(resolver)).await
@@ -1355,7 +1355,7 @@ impl Agent {
             temp_dir.join("cache"),
         );
         let session_manager = SessionManager::new()
-            .with_path_resolver(path_resolver, &config.name, None)
+            .with_path_resolver(path_resolver, &config.name)
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
 

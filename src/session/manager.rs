@@ -547,9 +547,8 @@ impl SessionManager {
         mut self,
         path_resolver: PathResolver,
         agent_name: &str,
-        team: Option<&str>,
     ) -> Result<Self> {
-        let sessions_dir = path_resolver.agent_sessions_dir(agent_name, team);
+        let sessions_dir = path_resolver.agent_sessions_dir(agent_name);
 
         // Ensure directory exists
         tokio::fs::create_dir_all(&sessions_dir).await.ok();
@@ -568,12 +567,11 @@ impl SessionManager {
     /// Create a `SessionManager` for CLI operations (offline)
     ///
     /// This is the PRIMARY factory method for creating a `SessionManager`.
-    /// It ensures proper team-aware path resolution and consistent behavior.
+    /// It ensures proper personal path resolution and consistent behavior.
     ///
     /// # Arguments
     /// * `path_resolver` - The path resolver for consistent path resolution
     /// * `agent_name` - The agent name
-    /// * `team` - Optional team name (defaults to "default")
     /// * `user` - User identifier for session isolation (defaults to "default")
     ///
     /// # Example
@@ -581,7 +579,6 @@ impl SessionManager {
     /// let manager = SessionManager::for_cli(
     ///     path_resolver,
     ///     "myagent",
-    ///     Some("myteam"),
     ///     "alice"
     /// );
     /// ```
@@ -589,10 +586,9 @@ impl SessionManager {
     pub fn for_cli(
         path_resolver: PathResolver,
         agent_name: &str,
-        team: Option<&str>,
         user: &str,
     ) -> Self {
-        let sessions_dir = path_resolver.agent_sessions_dir(agent_name, team);
+        let sessions_dir = path_resolver.agent_sessions_dir(agent_name);
         Self::new()
             .with_sessions_dir_internal(sessions_dir)
             .with_agent_name(agent_name)
@@ -678,20 +674,20 @@ impl SessionManager {
     /// to the legacy `Subject::User(user)` form.
     ///
     /// **Issue #24 review #2:** if `peer_principal` is set to a
-    /// non-session-peer principal (`Subject::Team` or
-    /// `Subject::Public`), this method REFUSES and logs a warning
-    /// rather than silently falling back to `Subject::User(user)`.
-    /// `with_peer_principal_opt` is the validated setter that filters
-    /// out non-peer principals at the call site; this is the
-    /// authoritative guard so the two entry points can't diverge.
+    /// non-session-peer subject (`Subject::Public`), this method REFUSES
+    /// and logs a warning rather than silently falling back to
+    /// `Subject::User(user)`. `with_peer_principal_opt` is the validated
+    /// setter that filters out non-peer principals at the call site;
+    /// this is the authoritative guard so the two entry points can't
+    /// diverge.
     #[must_use]
     pub fn peer(&self) -> Subject {
         match &self.peer_principal {
             Some(p) if p.is_session_peer() => p.clone(),
             Some(p) => {
-                // Per ADR-039: Team/Public are not valid session
-                // peers. We refuse rather than fall back to the
-                // legacy `Subject::User(user)` form because the legacy
+                // Per ADR-039: Public is not a valid session peer.
+                // We refuse rather than fall back to the legacy
+                // `Subject::User(user)` form because the legacy
                 // form silently re-introduces the masquerade the
                 // post-#24 caller is trying to avoid (review #2).
                 // The validated setter `with_peer_principal_opt`
@@ -752,7 +748,6 @@ impl SessionManager {
     ///
     /// # Arguments
     /// * `agent_name` - Name of the agent
-    /// * `team` - Optional team name
     /// * `channel` - Channel type (Cli, Http, etc.)
     /// * `channel_id` - Channel identifier (used as peer ID)
     /// * `session_id` - Optional specific session ID to resume
@@ -763,7 +758,6 @@ impl SessionManager {
     pub async fn resolve_session(
         &mut self,
         agent_name: &str,
-        team: Option<&str>,
         channel: ChannelType,
         channel_id: &str,
         session_id: Option<String>,
@@ -778,14 +772,14 @@ impl SessionManager {
         };
 
         info!(
-            "Resolving session for agent '{}' (team: {:?}) with strategy {:?}, session_id={:?}, force_new={}",
-            agent_name, team, strategy, session_id, force_new
+            "Resolving session for agent '{}' with strategy {:?}, session_id={:?}, force_new={}",
+            agent_name, strategy, session_id, force_new
         );
 
         match strategy {
             ResolutionStrategy::ForceNew => {
                 let (ctx, handle, session_id) = self
-                    .create_fresh_session(agent_name, team, channel, channel_id)
+                    .create_fresh_session(agent_name, channel, channel_id)
                     .await?;
                 Ok(ResolvedSession {
                     context: ctx,
@@ -797,7 +791,7 @@ impl SessionManager {
             ResolutionStrategy::Specific => {
                 let sid = session_id.unwrap();
                 let (ctx, handle) = self
-                    .resume_specific_session(agent_name, team, channel, channel_id, &sid)
+                    .resume_specific_session(agent_name, channel, channel_id, &sid)
                     .await?;
                 Ok(ResolvedSession {
                     context: ctx,
@@ -807,7 +801,7 @@ impl SessionManager {
                 })
             }
             ResolutionStrategy::AutoResume => {
-                self.auto_resume_session(agent_name, team, channel, channel_id)
+                self.auto_resume_session(agent_name, channel, channel_id)
                     .await
             }
         }
@@ -817,7 +811,6 @@ impl SessionManager {
     async fn auto_resume_session(
         &mut self,
         agent_name: &str,
-        team: Option<&str>,
         channel: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
@@ -845,7 +838,7 @@ impl SessionManager {
                 session_id, peer_key
             );
             let (ctx, handle) = self
-                .resume_specific_session(agent_name, team, channel, channel_id, &session_id)
+                .resume_specific_session(agent_name, channel, channel_id, &session_id)
                 .await?;
             return Ok(ResolvedSession {
                 context: ctx,
@@ -861,7 +854,7 @@ impl SessionManager {
             agent_name, peer_key
         );
         let (ctx, handle, session_id) = self
-            .create_fresh_session(agent_name, team, channel, channel_id)
+            .create_fresh_session(agent_name, channel, channel_id)
             .await?;
         Ok(ResolvedSession {
             context: ctx,
@@ -878,7 +871,6 @@ impl SessionManager {
     async fn create_fresh_session(
         &mut self,
         agent_name: &str,
-        _team: Option<&str>,
         channel: ChannelType,
         channel_id: &str,
     ) -> Result<(super::context::SessionContext, SessionHandle, String)> {
@@ -914,7 +906,6 @@ impl SessionManager {
     async fn resume_specific_session(
         &mut self,
         agent_name: &str,
-        _team: Option<&str>,
         channel: ChannelType,
         channel_id: &str,
         session_id: &str,
@@ -972,7 +963,7 @@ impl SessionManager {
             .map(|a| a.to_string())
             .or_else(|| self.agent_name.clone())
             .unwrap_or_else(|| "default".to_string());
-        self.resolve_session(&agent_name, None, channel_type, channel_id, None, false)
+        self.resolve_session(&agent_name, channel_type, channel_id, None, false)
             .await
     }
 
@@ -984,7 +975,7 @@ impl SessionManager {
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
-        self.resolve_session(agent, None, channel_type, channel_id, None, false)
+        self.resolve_session(agent, channel_type, channel_id, None, false)
             .await
     }
 
@@ -2606,8 +2597,8 @@ mod tests {
         assert_eq!(entry.peer_id.as_deref(), Some("alice"));
     }
 
-    /// `peer()` refuses to silently masquerade a non-peer principal
-    /// (review #2). A `Subject::Team` set via the raw setter is
+    /// `peer()` refuses to silently masquerade a non-peer subject
+    /// (review #2). A `Subject::Public` set via the raw setter is
     /// warned and surfaced as `Subject::User("")` rather than coerced
     /// into the legacy form, which would silently re-introduce the
     /// post-#24 masquerade.
@@ -2615,11 +2606,11 @@ mod tests {
     fn test_peer_refuses_non_session_peer_principal_issue_24_review_2() {
         let manager = SessionManager::new()
             .with_user("alice")
-            .with_peer_principal(Subject::Team("engineering".into()));
+            .with_peer_principal(Subject::Public);
 
         let peer = manager.peer();
-        // Must NOT be the team principal masquerading as a user
-        // (the legacy fall-back); must NOT be Subject::Team (not a
+        // Must NOT be the public subject masquerading as a user
+        // (the legacy fall-back); must NOT be Subject::Public (not a
         // valid session peer). Must be the empty-user sentinel so
         // the session key still derives to a valid bucket.
         assert_eq!(
@@ -2633,7 +2624,7 @@ mod tests {
         // guarding here.
         let manager2 = SessionManager::new()
             .with_user("alice")
-            .with_peer_principal_opt(Some(Subject::Team("engineering".into())));
+            .with_peer_principal_opt(Some(Subject::Public));
         assert_eq!(
             manager2.peer(),
             Subject::User("alice".into()),

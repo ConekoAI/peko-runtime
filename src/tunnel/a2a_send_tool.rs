@@ -8,8 +8,7 @@
 //! {
 //!   "target_agent": "analyzer",
 //!   "message": "Review this code for bugs",
-//!   "session_id": "optional-session-to-resume",
-//!   "team": "optional-team"
+//!   "session_id": "optional-session-to-resume"
 //! }
 //! ```
 //!
@@ -101,8 +100,8 @@ pub enum TargetSpec {
     /// endpoint (pekohub#14).
     #[serde(rename_all = "snake_case")]
     RemoteByHandle {
-        /// User namespace (for `User` owners) or team handle
-        /// (for `Team` owners — gated on pekohub#8).
+        /// User namespace (for `User` owners) or principal handle
+        /// (for `Principal` owners).
         owner: String,
         /// Agent name within that owner's namespace.
         agent_name: String,
@@ -141,9 +140,6 @@ pub struct A2aSendArgs {
     /// Optional session ID to resume
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// Optional team for the target agent
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team: Option<String>,
 }
 
 impl A2aSendArgs {
@@ -316,7 +312,6 @@ impl A2aSendTool {
             &local_name,
             args.message,
             args.session_id,
-            args.team,
             caller_agent,
             &wire_caller_id,
         );
@@ -393,7 +388,6 @@ fn build_a2a_request(
     target_agent: &str,
     message: String,
     session_id: Option<String>,
-    team: Option<String>,
     caller_agent: &str,
     wire_caller_id: &str,
 ) -> MessageRequest {
@@ -407,7 +401,6 @@ fn build_a2a_request(
     // call," which is the correct semantic.
     MessageRequest::new(target_agent, message)
         .with_session_opt(session_id)
-        .with_team_opt(team)
         .with_user("")
         .with_caller_agent_opt(Some(caller_agent.to_string()))
         .with_caller_principal(caller_principal)
@@ -437,8 +430,7 @@ Send a message to another agent and receive its response. This is the primary me
 {
   "target_agent": "analyzer",
   "message": "Review this code for bugs",
-  "session_id": "optional-session-to-resume",
-  "team": "optional-team"
+  "session_id": "optional-session-to-resume"
 }
 ```
 
@@ -469,10 +461,6 @@ Send a message to another agent and receive its response. This is the primary me
                 "session_id": {
                     "type": "string",
                     "description": "Optional session ID to resume an existing conversation"
-                },
-                "team": {
-                    "type": "string",
-                    "description": "Optional team name for the target agent"
                 }
             },
             "required": ["target_agent", "message"]
@@ -589,7 +577,6 @@ impl A2aSendTool {
 
         let request_id = uuid::Uuid::new_v4().to_string();
         let session_id = args.session_id.as_deref();
-        let team = args.team.as_deref();
         let signed = SignedFields {
             request_id: &request_id,
             caller_runtime_id: &ctx.caller_runtime_id,
@@ -597,7 +584,6 @@ impl A2aSendTool {
             target_principal_did,
             message: &args.message,
             session_id,
-            team,
         };
         let signature = sign_request(&ctx.signing_key, signed);
 
@@ -608,7 +594,6 @@ impl A2aSendTool {
             target_principal_did: target_principal_did.to_string(),
             session_id: args.session_id.clone(),
             message: args.message.clone(),
-            team: args.team.clone(),
             signature,
         };
 
@@ -977,7 +962,6 @@ mod tests {
         assert_eq!(args.target_agent, "analyzer");
         assert_eq!(args.message, "Review this code");
         assert_eq!(args.session_id, Some("sess_123".to_string()));
-        assert_eq!(args.team, None);
     }
 
     #[test]
@@ -1076,7 +1060,6 @@ mod tests {
             "analyzer",
             "review this".to_string(),
             Some("sess-1".to_string()),
-            None,
             "helper",
             "did:peko:local:abc123",
         );
@@ -1106,15 +1089,14 @@ mod tests {
         assert_eq!(req.session_id.as_deref(), Some("sess-1"));
         assert_eq!(req.agent_name, "analyzer");
         assert_eq!(req.message, "review this");
-        assert_eq!(req.team, None);
     }
 
     /// Two distinct callers produce two distinct principals — the
     /// session-key isolation invariant the issue's tests rely on.
     #[test]
     fn test_build_a2a_request_distinguishes_callers() {
-        let req_a = build_a2a_request("target", "hi".into(), None, None, "caller_a", "caller_a");
-        let req_b = build_a2a_request("target", "hi".into(), None, None, "caller_b", "caller_b");
+        let req_a = build_a2a_request("target", "hi".into(), None, "caller_a", "caller_a");
+        let req_b = build_a2a_request("target", "hi".into(), None, "caller_b", "caller_b");
 
         assert_eq!(
             req_a.caller_principal,
@@ -1140,7 +1122,6 @@ mod tests {
         let req = build_a2a_request(
             "analyzer",
             "review this".to_string(),
-            None,
             None,
             "helper",
             "did:peko:local:abc123",
@@ -1454,7 +1435,6 @@ mod tests {
             }),
             message: "hi".to_string(),
             session_id: None,
-            team: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1490,7 +1470,6 @@ mod tests {
             }),
             message: "hi".to_string(),
             session_id: None,
-            team: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1526,7 +1505,6 @@ mod tests {
             }),
             message: "hi".to_string(),
             session_id: None,
-            team: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1570,7 +1548,6 @@ mod tests {
             }),
             message: "hi".to_string(),
             session_id: None,
-            team: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1642,7 +1619,6 @@ mod tests {
             }),
             message: "review this PR".to_string(),
             session_id: None,
-            team: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1703,7 +1679,6 @@ mod tests {
             }),
             message: "hi".to_string(),
             session_id: None,
-            team: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1749,7 +1724,6 @@ mod tests {
             }),
             message: "hi".to_string(),
             session_id: None,
-            team: None,
         };
         let start = std::time::Instant::now();
         let value = tool
@@ -1799,7 +1773,6 @@ mod tests {
             }),
             message: "hi".to_string(),
             session_id: None,
-            team: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())
@@ -1859,7 +1832,6 @@ mod tests {
             }),
             message: "hi".to_string(),
             session_id: None,
-            team: None,
         };
         let value = tool
             .execute(serde_json::to_value(args).unwrap())

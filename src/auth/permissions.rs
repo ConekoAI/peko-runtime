@@ -9,9 +9,9 @@ use super::types::ApiKeyScope;
 /// Actions that can be performed on resources
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Read agents, sessions, teams, extensions
+    /// Read agents, sessions, extensions
     Read,
-    /// Create, update, delete agents, sessions, teams, extensions
+    /// Create, update, delete agents, sessions, extensions
     Write,
     /// Administrative operations (system clean, shutdown, runtime config)
     Admin,
@@ -35,10 +35,6 @@ impl Action {
 /// Resource being accessed
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resource {
-    /// Agent resource
-    Agent { name: String, team: Option<String> },
-    /// Team resource
-    Team { name: String },
     /// Session resource
     Session { id: String },
     /// Extension resource

@@ -6,7 +6,6 @@
 
 use crate::auth::Subject;
 use crate::commands::GlobalPaths;
-use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::session_service::{HistoryQuery, SessionService};
 use crate::session::presentation::{
     history_event_to_display, render_branch_success, render_compact_dry_run,
@@ -58,8 +57,6 @@ pub enum SessionCommands {
     /// List sessions for an agent (offline)
     List {
         agent: String,
-        #[arg(short, long)]
-        team: Option<String>,
         #[arg(long)]
         all: bool,
     },
@@ -68,8 +65,6 @@ pub enum SessionCommands {
         agent: String,
         #[arg(short, long)]
         session_id: Option<String>,
-        #[arg(short, long)]
-        team: Option<String>,
         #[arg(long)]
         history: bool,
     },
@@ -79,8 +74,6 @@ pub enum SessionCommands {
         #[arg(short, long)]
         session_id: Option<String>,
         #[arg(short, long)]
-        team: Option<String>,
-        #[arg(short, long)]
         label: Option<String>,
     },
     /// Remove a session (offline - removes session files)
@@ -88,24 +81,18 @@ pub enum SessionCommands {
         agent: String,
         session_id: String,
         #[arg(short, long)]
-        team: Option<String>,
-        #[arg(short, long)]
         force: bool,
     },
     /// Switch active session (offline - updates preference file)
     Switch {
         agent: String,
         session_id: String,
-        #[arg(short, long)]
-        team: Option<String>,
     },
     /// Compact a session (offline - summarizes old messages)
     Compact {
         agent: String,
         #[arg(short, long)]
         session_id: Option<String>,
-        #[arg(short, long)]
-        team: Option<String>,
         #[arg(long)]
         dry_run: bool,
         #[arg(short, long)]
@@ -122,20 +109,18 @@ pub async fn handle_session(
     let service = SessionService::new(paths.resolver().clone());
 
     match cmd {
-        SessionCommands::List { agent, team, .. } => {
-            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+        SessionCommands::List { agent, .. } => {
+            let agent_name = agent;
             let packet = crate::ipc::RequestPacket::SessionList {
                 request_id: 1,
-                agent: Some(agent_name.to_string()),
-                team: Some(team.to_string()),
+                agent: Some(agent_name.clone()),
             };
             let response = ipc_request(packet).await?;
             match response {
                 crate::ipc::ResponsePacket::SessionList { sessions, .. } => {
                     let mut manager = crate::session::SessionManager::for_cli(
                         paths.resolver.clone(),
-                        agent_name,
-                        Some(team),
+                        &agent_name,
                         paths.user(),
                     );
                     let peer = Subject::User(paths.user().to_string());
@@ -145,15 +130,13 @@ pub async fn handle_session(
                     if json {
                         render_session_list_json(
                             &sessions,
-                            team,
-                            agent_name,
+                            &agent_name,
                             active_session_id.as_deref(),
                         )?;
                     } else {
                         render_session_list(
                             &sessions,
-                            team,
-                            agent_name,
+                            &agent_name,
                             active_session_id.as_deref(),
                         );
                     }
@@ -168,35 +151,32 @@ pub async fn handle_session(
         SessionCommands::Show {
             agent,
             session_id,
-            team,
             history,
         } => {
-            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            let agent_name = agent;
             let resolved = service
-                .resolve_session_id(agent_name, Some(team), paths.user(), session_id)
+                .resolve_session_id(&agent_name, paths.user(), session_id)
                 .await?;
             if !json {
                 println!("📋 Using active session: {resolved}");
             }
-            show_session(&service, team, agent_name, &resolved, history, json).await
+            show_session(&service, &agent_name, &resolved, history, json).await
         }
         SessionCommands::Branch {
             agent,
             session_id,
-            team,
             label,
         } => {
-            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            let agent_name = agent;
             let resolved = service
-                .resolve_session_id(agent_name, Some(team), paths.user(), session_id)
+                .resolve_session_id(&agent_name, paths.user(), session_id)
                 .await?;
             if !json {
                 println!("🌿 Branching from active session: {resolved}");
             }
             let packet = crate::ipc::RequestPacket::SessionBranch {
                 request_id: 1,
-                agent: agent_name.to_string(),
-                team: Some(team.to_string()),
+                agent: agent_name.clone(),
                 session_id: resolved.clone(),
                 label: label.clone(),
             };
@@ -216,8 +196,7 @@ pub async fn handle_session(
                         println!("{}", serde_json::to_string_pretty(&result)?);
                     } else {
                         render_branch_success(
-                            team,
-                            agent_name,
+                            &agent_name,
                             &resolved,
                             &new_session_id,
                             label.as_deref(),
@@ -231,10 +210,9 @@ pub async fn handle_session(
         SessionCommands::Remove {
             agent,
             session_id,
-            team,
             force,
         } => {
-            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            let agent_name = agent;
 
             // Confirmation prompt (CLI-specific)
             if !force {
@@ -252,8 +230,7 @@ pub async fn handle_session(
 
             let packet = crate::ipc::RequestPacket::SessionRemove {
                 request_id: 1,
-                agent: agent_name.to_string(),
-                team: Some(team.to_string()),
+                agent: agent_name,
                 session_id: session_id.clone(),
                 force,
             };
@@ -278,32 +255,25 @@ pub async fn handle_session(
         // SessionSwitch updates the local active-session preference file directly,
         // bypassing IPC — the file lives at a well-known path under
         // `~/.peko/` that the daemon doesn't own.
-        SessionCommands::Switch {
-            agent,
-            session_id,
-            team,
-        } => {
-            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
-            switch_session(paths, team, agent_name, &session_id, paths.user(), json).await
+        SessionCommands::Switch { agent, session_id } => {
+            switch_session(paths, &agent, &session_id, paths.user(), json).await
         }
         SessionCommands::Compact {
             agent,
             session_id,
-            team,
             dry_run,
             instruction,
         } => {
-            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            let agent_name = agent;
             let resolved = service
-                .resolve_session_id(agent_name, Some(team), paths.user(), session_id)
+                .resolve_session_id(&agent_name, paths.user(), session_id)
                 .await?;
             if !json {
                 println!("📦 Using active session: {resolved}");
             }
             let packet = crate::ipc::RequestPacket::SessionCompact {
                 request_id: 1,
-                agent: agent_name.to_string(),
-                team: Some(team.to_string()),
+                agent: agent_name,
                 session_id: resolved.clone(),
                 dry_run,
                 instruction: instruction.clone(),
@@ -391,14 +361,13 @@ pub async fn handle_session(
 
 async fn show_session(
     service: &SessionService,
-    team: &str,
     agent: &str,
     session_id: &str,
     show_history: bool,
     json: bool,
 ) -> anyhow::Result<()> {
     let Some(entry) = service
-        .get_session_synced(agent, Some(team), session_id)
+        .get_session_synced(agent, session_id)
         .await?
     else {
         return Err(anyhow::anyhow!(
@@ -407,7 +376,7 @@ async fn show_session(
     };
 
     let history_events = if show_history {
-        load_session_history(service, agent, team, session_id)
+        load_session_history(service, agent, session_id)
             .await
             .ok()
     } else {
@@ -418,7 +387,7 @@ async fn show_session(
         let events_slice = history_events.as_deref();
         render_session_show_json(&entry, events_slice)?;
     } else {
-        render_session_details(&entry, team, agent);
+        render_session_details(&entry, agent);
         if let Some(mut events) = history_events {
             events.reverse();
             render_session_history(&events);
@@ -436,11 +405,10 @@ async fn show_session(
 async fn load_session_history(
     service: &SessionService,
     agent: &str,
-    team: &str,
     session_id: &str,
 ) -> Result<Vec<crate::session::presentation::HistoryDisplayEntry>> {
     let result = service
-        .get_history(agent, Some(team), session_id, HistoryQuery::default())
+        .get_history(agent, session_id, HistoryQuery::default())
         .await?;
     Ok(result
         .events
@@ -451,17 +419,16 @@ async fn load_session_history(
 
 async fn switch_session(
     paths: &GlobalPaths,
-    team: &str,
     agent: &str,
     session_id: &str,
     user: &str,
     json: bool,
 ) -> anyhow::Result<()> {
-    let sessions_dir = paths.resolver().agent_sessions_dir(agent, Some(team));
+    let sessions_dir = paths.resolver().agent_sessions_dir(agent);
     tokio::fs::create_dir_all(&sessions_dir).await?;
 
     let mut manager =
-        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team), user);
+        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, user);
 
     let _ = manager
         .get_session_metadata(session_id)
@@ -473,10 +440,10 @@ async fn switch_session(
 
     if json {
         println!(
-            "{{\"success\": true, \"session_id\": \"{session_id}\", \"agent\": \"{agent}\", \"team\": \"{team}\"}}"
+            "{{\"success\": true, \"session_id\": \"{session_id}\", \"agent\": \"{agent}\"}}"
         );
     } else {
-        render_switch_success(team, agent, session_id);
+        render_switch_success(agent, session_id);
     }
     Ok(())
 }
@@ -490,7 +457,6 @@ mod tests {
         let cmd = SessionCommands::Compact {
             agent: "test-agent".to_string(),
             session_id: Some("sess_123".to_string()),
-            team: Some("test-team".to_string()),
             dry_run: true,
             instruction: Some("preserve API decisions".to_string()),
         };
@@ -499,13 +465,12 @@ mod tests {
             SessionCommands::Compact {
                 agent,
                 session_id,
-                team,
                 dry_run,
                 instruction,
+                ..
             } => {
                 assert_eq!(agent, "test-agent");
                 assert_eq!(session_id, Some("sess_123".to_string()));
-                assert_eq!(team, Some("test-team".to_string()));
                 assert!(dry_run);
                 assert_eq!(instruction, Some("preserve API decisions".to_string()));
             }
@@ -518,7 +483,6 @@ mod tests {
         let cmd = SessionCommands::Compact {
             agent: "myagent".to_string(),
             session_id: None,
-            team: None,
             dry_run: false,
             instruction: None,
         };

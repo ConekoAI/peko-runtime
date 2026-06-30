@@ -5,9 +5,9 @@
 //! entity, so the actor enum is renamed to `Subject`.
 //!
 //! A `Subject` is any actor that can initiate an action or appear in an
-//! ownership/grant record: a user, an AI principal, a team, or the public.
+//! ownership/grant record: a user, an AI principal, or the public.
 //!
-//! Display format: `"user:{id}" | "principal:{id}" | "team:{id}" | "public"`.
+//! Display format: `"user:{id}" | "principal:{id}" | "public"`.
 //! FromStr is the inverse. Round-trips are byte-stable.
 
 use std::fmt;
@@ -17,14 +17,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::principal::PrincipalDID;
 
-/// A runtime actor: a user, a principal, a team, or the public.
+/// A runtime actor: a user, a principal, or the public.
 ///
 /// `User` and `Principal` are valid session peers (they have an id you can
-/// key a session on). `Team` and `Public` are *not* — `Team` resolves
-/// to a set of members at check time, and `Public` has no identity.
+/// key a session on). `Public` is not — it has no identity.
 /// See `Subject::is_session_peer`.
 ///
-/// Wire format: `{ "kind": "user" | "principal" | "team" | "public", "id": "..." }`
+/// Wire format: `{ "kind": "user" | "principal" | "public", "id": "..." }`
 /// via `#[serde(tag = "kind", content = "id")]`.
 ///
 /// **Audit H6:** `Principal` carries a typed [`PrincipalDID`] newtype
@@ -32,8 +31,7 @@ use crate::principal::PrincipalDID;
 /// compile-time distinction from a plain name (a `String` name can no
 /// longer be passed where a principal DID is expected) and provides a
 /// single place to hang DID validation should we choose to enforce it.
-/// `User` and `Team` remain plain `String` because their wire values
-/// are not DIDs (pekoHub user ids and team names respectively).
+/// `User` remains a plain `String` because its wire value is not a DID.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "lowercase")]
 pub enum Subject {
@@ -43,8 +41,6 @@ pub enum Subject {
     /// [`PrincipalDID`] so the principal id surface can carry validation
     /// in one place.
     Principal(PrincipalDID),
-    /// A team id; resolves to a set of member subjects at check time.
-    Team(String),
     /// Unauthenticated public access.
     Public,
 }
@@ -66,7 +62,6 @@ impl Default for Subject {
 pub enum SubjectKind {
     User,
     Principal,
-    Team,
     Public,
 }
 
@@ -75,7 +70,6 @@ impl fmt::Display for SubjectKind {
         match self {
             Self::User => f.write_str("user"),
             Self::Principal => f.write_str("principal"),
-            Self::Team => f.write_str("team"),
             Self::Public => f.write_str("public"),
         }
     }
@@ -88,7 +82,6 @@ impl Subject {
         match self {
             Self::User(_) => SubjectKind::User,
             Self::Principal(_) => SubjectKind::Principal,
-            Self::Team(_) => SubjectKind::Team,
             Self::Public => SubjectKind::Public,
         }
     }
@@ -99,7 +92,7 @@ impl Subject {
     #[must_use]
     pub fn subject_id(&self) -> &str {
         match self {
-            Self::User(id) | Self::Team(id) => id,
+            Self::User(id) => id,
             Self::Principal(id) => id.as_str(),
             Self::Public => "public",
         }
@@ -107,8 +100,8 @@ impl Subject {
 
     /// True if this subject can be used as a session peer.
     ///
-    /// Only `User` and `Principal` carry a per-session identity. `Team`
-    /// and `Public` are routing buckets, not peer identities.
+    /// Only `User` and `Principal` carry a per-session identity. `Public`
+    /// is not a peer identity.
     #[must_use]
     pub fn is_session_peer(&self) -> bool {
         matches!(self, Self::User(_) | Self::Principal(_))
@@ -175,7 +168,6 @@ impl fmt::Display for Subject {
         match self {
             Self::User(id) => write!(f, "user:{id}"),
             Self::Principal(id) => write!(f, "principal:{id}"),
-            Self::Team(id) => write!(f, "team:{id}"),
             Self::Public => f.write_str("public"),
         }
     }
@@ -197,7 +189,7 @@ impl FromStr for Subject {
     type Err = SubjectParseError;
 
     /// Parse a `Subject` from its `Display` format:
-    /// `"kind:id"` (e.g. `"user:alice"`, `"principal:helper"`, `"team:eng"`)
+    /// `"kind:id"` (e.g. `"user:alice"`, `"principal:helper"`)
     /// or `"public"`. Empty id is rejected.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "public" {
@@ -212,7 +204,6 @@ impl FromStr for Subject {
         match kind {
             "user" => Ok(Self::User(id.to_string())),
             "principal" => Ok(Self::Principal(PrincipalDID::from(id))),
-            "team" => Ok(Self::Team(id.to_string())),
             other => Err(SubjectParseError(format!("unknown kind '{other}'"))),
         }
     }
@@ -228,8 +219,8 @@ impl FromStr for Subject {
 /// **Asymmetric prefix handling (intentional):**
 /// - `"user:alice"` → `Subject::User("alice")` (the `user:` prefix is
 ///   stripped)
-/// - `"principal:helper"` / `"team:eng"` / `"public"` → resolved via
-///   `Subject::from_str` (the full string is the kind:id pair)
+/// - `"principal:helper"` / `"public"` → resolved via
+///   `Subject::from_str` (the full string is the kind:id pair or public)
 /// - bare `"alice"` → `Subject::User("alice")` (fallback when the
 ///   string has no `:` separator)
 ///
@@ -255,7 +246,6 @@ mod tests {
         for p in [
             Subject::User("alice".into()),
             Subject::Principal("helper".into()),
-            Subject::Team("engineering".into()),
             Subject::Public,
         ] {
             let s = p.to_string();
@@ -271,7 +261,6 @@ mod tests {
             Subject::Principal("helper".into()).to_string(),
             "principal:helper"
         );
-        assert_eq!(Subject::Team("eng".into()).to_string(), "team:eng");
         assert_eq!(Subject::Public.to_string(), "public");
     }
 
@@ -285,10 +274,6 @@ mod tests {
             Subject::from_str("principal:helper").unwrap(),
             Subject::Principal("helper".into())
         );
-        assert_eq!(
-            Subject::from_str("team:eng").unwrap(),
-            Subject::Team("eng".into())
-        );
         assert_eq!(Subject::from_str("public").unwrap(), Subject::Public);
     }
 
@@ -298,7 +283,6 @@ mod tests {
         assert!(Subject::from_str("alice").is_err()); // no kind:id
         assert!(Subject::from_str("user:").is_err()); // empty id
         assert!(Subject::from_str("principal:").is_err());
-        assert!(Subject::from_str("team:").is_err());
         assert!(Subject::from_str("admin:root").is_err()); // unknown kind
     }
 
@@ -306,7 +290,6 @@ mod tests {
     fn test_kind() {
         assert_eq!(Subject::User("a".into()).kind(), SubjectKind::User);
         assert_eq!(Subject::Principal("a".into()).kind(), SubjectKind::Principal);
-        assert_eq!(Subject::Team("a".into()).kind(), SubjectKind::Team);
         assert_eq!(Subject::Public.kind(), SubjectKind::Public);
     }
 
@@ -314,21 +297,18 @@ mod tests {
     fn test_subject_id_and_equality() {
         assert_eq!(Subject::User("alice".into()).subject_id(), "alice");
         assert_eq!(Subject::Principal("alice".into()).subject_id(), "alice");
-        assert_eq!(Subject::Team("eng".into()).subject_id(), "eng");
         assert_eq!(Subject::Public.subject_id(), "public");
 
         // Same kind + same id -> equal
         assert_eq!(Subject::User("a".into()), Subject::User("a".into()));
         // Different kind, same id -> not equal (cross-kind guard)
         assert_ne!(Subject::User("a".into()), Subject::Principal("a".into()));
-        assert_ne!(Subject::Team("a".into()), Subject::Principal("a".into()));
     }
 
     #[test]
     fn test_is_session_peer() {
         assert!(Subject::User("a".into()).is_session_peer());
         assert!(Subject::Principal("a".into()).is_session_peer());
-        assert!(!Subject::Team("a".into()).is_session_peer());
         assert!(!Subject::Public.is_session_peer());
     }
 
@@ -343,7 +323,6 @@ mod tests {
             Subject::Principal("helper".into()).kind().to_string(),
             "principal"
         );
-        assert_eq!(Subject::Team("eng".into()).kind().to_string(), "team");
         assert_eq!(Subject::Public.kind().to_string(), "public");
     }
 
@@ -403,7 +382,7 @@ mod tests {
         // for not passing empty strings.
         assert_eq!(
             Subject::from_bridge_user(""),
-            Subject::User("".to_string())
+            Subject::User(String::new())
         );
     }
 

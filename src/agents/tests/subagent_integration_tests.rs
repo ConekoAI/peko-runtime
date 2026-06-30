@@ -88,7 +88,7 @@ async fn create_test_components() -> (Arc<RwLock<SessionManager>>, SharedAsyncTa
         temp_path.join("cache"),
     );
     let session_manager = SessionManager::new()
-        .with_path_resolver(path_resolver, &agent_name, None)
+        .with_path_resolver(path_resolver, &agent_name)
         .await
         .unwrap();
     let session_manager = Arc::new(RwLock::new(session_manager));

@@ -356,7 +356,7 @@ impl AgenticLoop {
         // local-trust peer.
         let path_resolver = PathResolver::new();
         let mut session_manager = SessionManager::new()
-            .with_path_resolver(path_resolver, self.agent.name(), None)
+            .with_path_resolver(path_resolver, self.agent.name())
             .await?;
         let peer = self
             .caller_id

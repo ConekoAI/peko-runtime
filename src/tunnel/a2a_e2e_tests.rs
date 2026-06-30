@@ -62,7 +62,6 @@ fn synthesize_target_response(
         target_principal_did,
         session_id: _,
         message,
-        team: _,
         signature,
     } = request
     else {
@@ -95,7 +94,6 @@ fn synthesize_target_response(
         target_principal_did,
         message,
         session_id: None,
-        team: None,
     };
     if let Err(e) = verify_request(&caller_vk, signed, signature) {
         return Err(format!("signature did not verify: {e}"));
@@ -306,7 +304,6 @@ async fn test_cross_runtime_a2a_full_round_trip() {
         }),
         message: "review this PR".to_string(),
         session_id: None,
-        team: None,
     };
     let value = a2a_tool
         .execute(serde_json::to_value(args).unwrap())
@@ -398,7 +395,6 @@ async fn test_cross_runtime_a2a_hub_synthesized_error_response() {
         }),
         message: "hi".to_string(),
         session_id: None,
-        team: None,
     };
     let value = a2a_tool
         .execute(serde_json::to_value(args).unwrap())
@@ -462,7 +458,6 @@ async fn test_cross_runtime_a2a_runtime_id_hint_round_trip() {
         }),
         message: "hi".to_string(),
         session_id: None,
-        team: None,
     };
     let value = a2a_tool
         .execute(serde_json::to_value(args).unwrap())

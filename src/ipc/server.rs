@@ -1018,7 +1018,6 @@ impl IpcServer {
             RequestPacket::SessionList {
                 request_id,
                 agent,
-                team,
             } => {
                 let service = state.session_service();
                 match agent {
@@ -1026,7 +1025,7 @@ impl IpcServer {
                         let session_peer =
                             crate::auth::Subject::User("default".to_string());
                         match service
-                            .list_sessions_with_active(&agent_name, team.as_deref(), &session_peer)
+                            .list_sessions_with_active(&agent_name, &session_peer)
                             .await
                         {
                             Ok((sessions, active_session)) => {
@@ -1059,13 +1058,12 @@ impl IpcServer {
             RequestPacket::SessionRemove {
                 request_id,
                 agent,
-                team,
                 session_id,
                 force: _,
             } => {
                 let service = state.session_service();
                 match service
-                    .delete_session(&agent, team.as_deref(), &session_id)
+                    .delete_session(&agent, &session_id)
                     .await
                 {
                     Ok(deleted) => {
@@ -1519,13 +1517,12 @@ impl IpcServer {
             RequestPacket::SessionBranch {
                 request_id,
                 agent,
-                team,
                 session_id,
                 label,
             } => {
                 let service = state.session_service();
                 match service
-                    .branch_session(&agent, team.as_deref(), &session_id, label)
+                    .branch_session(&agent, &session_id, label)
                     .await
                 {
                     Ok(result) => {
@@ -1549,13 +1546,12 @@ impl IpcServer {
             RequestPacket::SessionCompact {
                 request_id,
                 agent,
-                team,
                 session_id,
                 dry_run,
                 instruction,
             } => {
                 let service = state.session_service();
-                let sessions_dir = match service.get_sessions_dir(&agent, team.as_deref()).await {
+                let sessions_dir = match service.get_sessions_dir(&agent).await {
                     Ok(d) => d,
                     Err(e) => {
                         let response = ResponsePacket::Error {
@@ -1575,7 +1571,7 @@ impl IpcServer {
                     return Ok(());
                 }
                 let mut session = match service
-                    .open_session(&agent, team.as_deref(), &session_id, "default")
+                    .open_session(&agent, &session_id, "default")
                     .await
                 {
                     Ok(s) => s,
@@ -3096,12 +3092,9 @@ impl IpcServer {
 
         // 2. Open the session by (agent, session_id). We pass an
         //    empty `user` so we don't fabricate a fake caller — the
-        //    session record already has its real peer. Team is
-        //    unavailable from cross-agent metadata, so we open under
-        //    the personal (None) team namespace; this matches the
-        //    `execute_streaming` path's default.
+        //    session record already has its real peer.
         let session = match session_service
-            .open_session(&agent_name, None, session_id, "")
+            .open_session(&agent_name, session_id, "")
             .await
         {
             Ok(s) => Arc::new(tokio::sync::RwLock::new(s)),

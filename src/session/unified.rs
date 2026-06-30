@@ -839,11 +839,10 @@ impl Session {
     /// List available sessions for an agent
     pub async fn list_sessions(
         agent_name: &str,
-        team: Option<&str>,
     ) -> Result<Vec<(String, std::time::SystemTime)>> {
         // Use PathResolver for consistent path resolution
         let resolver = crate::common::paths::PathResolver::new();
-        let storage_dir = resolver.agent_sessions_dir(agent_name, team);
+        let storage_dir = resolver.agent_sessions_dir(agent_name);
 
         let mut sessions = Vec::new();
 

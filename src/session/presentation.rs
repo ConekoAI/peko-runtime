@@ -136,7 +136,6 @@ pub fn format_history_event(index: usize, event: &HistoryDisplayEntry) -> String
 /// Render session list output
 pub fn render_session_list(
     sessions: &[SessionInfo],
-    team: &str,
     agent: &str,
     active_session_id: Option<&str>,
 ) {
@@ -147,8 +146,7 @@ pub fn render_session_list(
     }
 
     println!(
-        "📋 Sessions for {}/{} ({} found):",
-        team,
+        "📋 Sessions for {} ({} found):",
         agent,
         sessions.len()
     );
@@ -186,12 +184,10 @@ pub fn render_session_list(
 /// Render session list as JSON
 pub fn render_session_list_json(
     sessions: &[SessionInfo],
-    team: &str,
     agent: &str,
     active_session_id: Option<&str>,
 ) -> anyhow::Result<()> {
     let output = serde_json::json!({
-        "team": team,
         "agent": agent,
         "sessions": sessions,
         "active_session": active_session_id,
@@ -205,9 +201,8 @@ pub fn render_session_list_json(
 // ================================================================================
 
 /// Render session details output
-pub fn render_session_details(entry: &SessionInfo, team: &str, agent: &str) {
+pub fn render_session_details(entry: &SessionInfo, agent: &str) {
     println!("📊 Session Details");
-    println!("   Team: {team}");
     println!("   Agent: {agent}");
     println!("   Session ID: {}", entry.id);
     if let Some(ref title) = entry.title {
@@ -263,7 +258,6 @@ pub fn render_session_show_json(
 
 /// Render branch success
 pub fn render_branch_success(
-    team: &str,
     agent: &str,
     session_id: &str,
     new_session_id: &str,
@@ -277,7 +271,7 @@ pub fn render_branch_success(
     }
     println!();
     println!("   The branched session contains a copy of the parent's history.");
-    println!("   Switch to it with: peko session switch {team}/{agent} {new_session_id}");
+    println!("   Switch to it with: peko session switch {agent} {new_session_id}");
 }
 
 /// Render delete confirmation prompt
@@ -302,8 +296,8 @@ pub fn render_delete_success(session_id: &str, deleted: bool) {
 }
 
 /// Render switch success
-pub fn render_switch_success(team: &str, agent: &str, session_id: &str) {
-    println!("✅ Switched active session for '{team}/{agent}' to '{session_id}'");
+pub fn render_switch_success(agent: &str, session_id: &str) {
+    println!("✅ Switched active session for '{agent}' to '{session_id}'");
     println!();
     println!("   Future 'peko send' commands will use this session.");
 }

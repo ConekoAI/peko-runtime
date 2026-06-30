@@ -125,11 +125,10 @@ impl MaintenanceScheduler {
 /// Run maintenance for a specific agent
 pub async fn maintain_agent(
     agent_name: &str,
-    team: Option<&str>,
     config: &MaintenanceConfig,
 ) -> anyhow::Result<crate::session::index::MaintenanceReport> {
     let resolver = PathResolver::new();
-    let sessions_dir = resolver.agent_sessions_dir(agent_name, team);
+    let sessions_dir = resolver.agent_sessions_dir(agent_name);
 
     let mut controller = MetadataController::new(&sessions_dir);
     controller.maintenance(config).await

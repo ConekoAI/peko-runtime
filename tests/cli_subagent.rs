@@ -27,9 +27,9 @@
 //!     `principals/<name>/agents/worker/AGENT.md` (the resolver requires the
 //!     directory form `agents/<type>/AGENT.md` — the default `primary.md` is
 //!     a *file* and only serves as the supervisor prompt).
-//! A spawned subagent's tool whitelist comes from `ExtensionConfig::default()`
-//! (which includes `Agent`, `Write`, `Read`, `Bash`, …), so the `worker`
-//! prompt needs no tool frontmatter — `AGENT.md` has no `tools` field anyway.
+//!     A spawned subagent's tool whitelist comes from `ExtensionConfig::default()`
+//!     (which includes `Agent`, `Write`, `Read`, `Bash`, …), so the `worker`
+//!     prompt needs no tool frontmatter — `AGENT.md` has no `tools` field anyway.
 //!
 //! Each test:
 //!   1. Builds an isolated [`PekoCli`] tempdir as `HOME`.
