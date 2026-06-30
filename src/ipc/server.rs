@@ -2566,12 +2566,19 @@ impl IpcServer {
                 file_path,
                 name,
                 allow_unsigned,
+                force,
             } => {
+                let trust_policy = if force {
+                    crate::registry::packaging::TrustPolicy::AllowUntrusted
+                } else {
+                    crate::registry::packaging::TrustPolicy::Tofu
+                };
                 match Self::import_principal_package(
                     &state,
                     std::path::Path::new(&file_path),
                     name.clone(),
                     allow_unsigned,
+                    trust_policy,
                 )
                 .await
                 {
@@ -3530,6 +3537,7 @@ impl IpcServer {
         file_path: &std::path::Path,
         new_name: Option<String>,
         allow_unsigned: bool,
+        trust_policy: crate::registry::packaging::TrustPolicy,
     ) -> anyhow::Result<crate::registry::packaging::PrincipalImportResult> {
         let unpackager = crate::registry::packaging::PrincipalUnpackager::new(
             file_path,
@@ -3539,6 +3547,9 @@ impl IpcServer {
         let opts = crate::registry::packaging::PrincipalImportOptions {
             new_name,
             allow_unsigned,
+            force: trust_policy == crate::registry::packaging::TrustPolicy::AllowUntrusted,
+            trust_store: Some(state.trust_store().clone()),
+            trust_policy,
             ..Default::default()
         };
         let result = unpackager.import(opts).await?;
@@ -3671,8 +3682,13 @@ impl IpcServer {
             &temp_path,
             new_name,
             // Pulled packages are signed at export; honor force for overwrite
-            // but require a valid signature.
+            // and trust pinning override.
             false,
+            if force {
+                crate::registry::packaging::TrustPolicy::AllowUntrusted
+            } else {
+                crate::registry::packaging::TrustPolicy::Tofu
+            },
         )
         .await;
         let _ = std::fs::remove_file(&temp_path);

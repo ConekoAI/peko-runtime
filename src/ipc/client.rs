@@ -489,6 +489,7 @@ impl DaemonClient {
         file_path: impl Into<String>,
         name: Option<String>,
         allow_unsigned: bool,
+        force: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalImport {
@@ -496,6 +497,7 @@ impl DaemonClient {
             file_path: file_path.into(),
             name,
             allow_unsigned,
+            force,
         };
         self.request_response(packet).await
     }
