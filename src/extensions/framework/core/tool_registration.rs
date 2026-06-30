@@ -6,24 +6,28 @@
 //! It also provides default handler implementations for the companion hooks that
 //! `ExtensionCore::register_tool()` auto-generates:
 //! - [`AutoPromptHandler`] — injects tool description into system prompt
-//! - [`AutoAsyncHandler`] — returns an async receipt (delegates to sync execution)
-//! - [`AutoStatusHandler`] — returns `Pending` status
-//! - [`AutoCancelHandler`] — returns `false` (cancellation not supported by default)
+//! - [`AutoAsyncHandler`] — passes through to the executor-backed async fallback
+//! - [`AutoStatusHandler`] — passes through to executor status tracking
+//! - [`AutoCancelHandler`] — passes through to executor cancellation
 //!
-//! These handlers are intentionally simple and generic. Adapters that need custom
-//! behaviour should provide their own execution handler; the registry handles the rest.
+//! These handlers are intentionally simple and generic. With the exception of the
+//! prompt handler, they all return [`HookResult::PassThrough`]: a tool with no custom
+//! async support has no *native* async handler, so the async bridge must fall back to
+//! its executor (which actually spawns, tracks, and cancels the background work).
+//! Returning a concrete default here would shadow that fallback and strand the task.
+//! Adapters that need real native async should register their own higher-priority
+//! handler; the registry handles the rest.
 
 use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::types::{
-    AsyncReceipt, AsyncTaskStatus, ExtensionId, HookId, HookOutput, HookResult, ToolMetadata,
+    ExtensionId, HookId, HookOutput, HookResult, ToolMetadata,
 };
 use async_trait::async_trait;
 #[cfg(test)]
 use std::sync::Arc;
 use tracing::debug;
-use uuid::Uuid;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ToolRegistration composite
@@ -130,9 +134,12 @@ impl HookHandler for AutoPromptHandler {
 
 /// Default handler for `ToolExecuteAsync`.
 ///
-/// Returns an [`AsyncReceipt`] with a generated task ID.  The actual execution
-/// is expected to be performed by the synchronous `ToolExecute` handler; this
-/// handler merely provides the async plumbing.
+/// Returns [`HookResult::PassThrough`]: a tool with no custom async support has no
+/// *native* async execution, so the async bridge falls back to its executor, which
+/// runs the synchronous `ToolExecute` handler in the background and issues a receipt
+/// for a task that actually exists. Returning a fabricated receipt here would mark the
+/// tool as natively-async, bypass that fallback, and strand the caller polling a task
+/// that never runs. Adapters with real native async register a higher-priority handler.
 #[derive(Debug, Clone)]
 pub(crate) struct AutoAsyncHandler {
     tool_name: String,
@@ -152,31 +159,11 @@ impl AutoAsyncHandler {
 
 #[async_trait]
 impl HookHandler for AutoAsyncHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        // Validate this is the right tool
-        match ctx.as_tool_call() {
-            Some((tool_name, _, _)) if tool_name != self.tool_name => {
-                return HookResult::PassThrough;
-            }
-            None => return HookResult::PassThrough,
-            _ => {}
-        }
-
-        debug!(tool_name = %self.tool_name, "Auto-async execution: returning receipt");
-
-        let task_id = format!("auto:{}:{}", self.tool_name, Uuid::new_v4());
-
-        let receipt = AsyncReceipt {
-            task_id,
-            estimated_duration_secs: None,
-            task_file: None,
-            metadata: Some(serde_json::json!({
-                "tool_name": self.tool_name,
-                "auto_generated": true,
-            })),
-        };
-
-        HookResult::Continue(HookOutput::Receipt(receipt))
+    async fn handle(&self, _ctx: HookContext) -> HookResult {
+        // No native async support — defer to the executor-backed fallback in the
+        // async bridge. See module docs for why a default receipt must not be returned.
+        debug!(tool_name = %self.tool_name, "Auto-async: passing through to executor fallback");
+        HookResult::PassThrough
     }
 
     fn hook_point(&self) -> HookPoint {
@@ -200,8 +187,10 @@ impl HookHandler for AutoAsyncHandler {
 
 /// Default handler for `ToolCheckStatus`.
 ///
-/// Returns [`AsyncTaskStatus::Pending`] — adapters that support true async
-/// tracking should override this via a custom handler.
+/// Returns [`HookResult::PassThrough`] so the async bridge consults the executor,
+/// which holds the real status of fallback-spawned tasks. Returning a hardcoded
+/// `Pending` here would shadow the executor and report every task as perpetually
+/// pending. Adapters with native async tracking register a higher-priority handler.
 #[derive(Debug, Clone)]
 pub(crate) struct AutoStatusHandler {
     tool_name: String,
@@ -221,19 +210,10 @@ impl AutoStatusHandler {
 
 #[async_trait]
 impl HookHandler for AutoStatusHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        // Validate this is the right tool
-        match ctx.as_task_status() {
-            Some((_, tool_name)) if tool_name != self.tool_name => {
-                return HookResult::PassThrough;
-            }
-            None => return HookResult::PassThrough,
-            _ => {}
-        }
-
-        debug!(tool_name = %self.tool_name, "Auto-status check: returning Pending");
-
-        HookResult::Continue(HookOutput::TaskStatus(AsyncTaskStatus::Pending))
+    async fn handle(&self, _ctx: HookContext) -> HookResult {
+        // No native status tracking — defer to the executor registry in the async bridge.
+        debug!(tool_name = %self.tool_name, "Auto-status: passing through to executor fallback");
+        HookResult::PassThrough
     }
 
     fn hook_point(&self) -> HookPoint {
@@ -257,7 +237,9 @@ impl HookHandler for AutoStatusHandler {
 
 /// Default handler for `ToolCancel`.
 ///
-/// Returns `false` — cancellation is not supported by default.
+/// Returns [`HookResult::PassThrough`] so the async bridge delegates cancellation to
+/// the executor, which can actually cancel fallback-spawned tasks. Returning a
+/// hardcoded `false` here would shadow the executor and make every task uncancellable.
 #[derive(Debug, Clone)]
 pub(crate) struct AutoCancelHandler {
     tool_name: String,
@@ -277,19 +259,10 @@ impl AutoCancelHandler {
 
 #[async_trait]
 impl HookHandler for AutoCancelHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
-        // Validate this is the right tool
-        match ctx.as_task_cancel() {
-            Some((_, tool_name)) if tool_name != self.tool_name => {
-                return HookResult::PassThrough;
-            }
-            None => return HookResult::PassThrough,
-            _ => {}
-        }
-
-        debug!(tool_name = %self.tool_name, "Auto-cancel: returning false");
-
-        HookResult::Continue(HookOutput::Bool(false))
+    async fn handle(&self, _ctx: HookContext) -> HookResult {
+        // No native cancellation — defer to the executor in the async bridge.
+        debug!(tool_name = %self.tool_name, "Auto-cancel: passing through to executor fallback");
+        HookResult::PassThrough
     }
 
     fn hook_point(&self) -> HookPoint {
@@ -369,39 +342,12 @@ mod tests {
             Arc::new(ExtensionServices::new()),
         );
 
-        let result = handler.handle(ctx).await;
-        match result {
-            HookResult::Continue(HookOutput::Receipt(receipt)) => {
-                assert!(receipt.task_id.starts_with("auto:test_tool:"));
-            }
-            _ => panic!("Expected Continue with Receipt, got {result:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_auto_async_handler_wrong_tool() {
-        let meta = sample_metadata("test_tool");
-        let handler = AutoAsyncHandler::from_metadata(&meta, 100);
-
-        let ctx = HookContext::new(
-            HookPoint::ToolExecuteAsync {
-                tool_name: "other_tool".to_string(),
-            },
-            crate::extensions::framework::types::HookInput::ToolCall {
-                tool_name: "other_tool".to_string(),
-                params: serde_json::json!({}),
-                workspace: None,
-                agent_id: None,
-                session_id: None,
-                caller_id: None,
-            },
-            Arc::new(ExtensionServices::new()),
-        );
-
+        // The default handler has no native async support; it must pass through so the
+        // async bridge falls back to its executor (which actually spawns the work).
         let result = handler.handle(ctx).await;
         assert!(
             matches!(result, HookResult::PassThrough),
-            "Expected PassThrough for wrong tool, got {result:?}"
+            "Expected PassThrough so the executor fallback runs, got {result:?}"
         );
     }
 
@@ -421,11 +367,12 @@ mod tests {
             Arc::new(ExtensionServices::new()),
         );
 
+        // Must pass through so the executor reports the real task status.
         let result = handler.handle(ctx).await;
-        match result {
-            HookResult::Continue(HookOutput::TaskStatus(AsyncTaskStatus::Pending)) => {}
-            _ => panic!("Expected Continue with Pending, got {result:?}"),
-        }
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "Expected PassThrough so the executor reports real status, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -444,11 +391,12 @@ mod tests {
             Arc::new(ExtensionServices::new()),
         );
 
+        // Must pass through so the executor can actually cancel the task.
         let result = handler.handle(ctx).await;
-        match result {
-            HookResult::Continue(HookOutput::Bool(false)) => {}
-            _ => panic!("Expected Continue with Bool(false), got {result:?}"),
-        }
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "Expected PassThrough so the executor handles cancellation, got {result:?}"
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@
 
 use serde_json::Value;
 use std::collections::HashMap;
+use tracing::warn;
 
 /// State for a tool call being constructed from a stream
 #[derive(Debug, Clone, Default)]
@@ -19,6 +20,10 @@ pub struct StreamingToolCall {
     pub is_complete: bool,
     /// Parsed arguments (available once complete)
     pub parsed_arguments: Option<Value>,
+    /// Whether the arguments only parsed after heuristic JSON recovery was applied.
+    /// When true, `parsed_arguments` may differ from what the model actually emitted
+    /// (e.g. a truncated stream was closed off); callers should treat it as suspect.
+    pub arguments_recovered: bool,
 }
 
 impl StreamingToolCall {
@@ -30,6 +35,7 @@ impl StreamingToolCall {
             arguments_json: String::new(),
             is_complete: false,
             parsed_arguments: None,
+            arguments_recovered: false,
         }
     }
 
@@ -58,7 +64,7 @@ impl StreamingToolCall {
             return Err(ToolCallParseError::MissingName);
         }
 
-        // Try to parse the accumulated JSON
+        // Try to parse the accumulated JSON as-is first.
         match serde_json::from_str::<Value>(&self.arguments_json) {
             Ok(parsed) => {
                 self.parsed_arguments = Some(parsed);
@@ -66,12 +72,24 @@ impl StreamingToolCall {
                 Ok(())
             }
             Err(e) => {
-                // Try to fix common JSON issues
+                // The raw JSON did not parse. Attempt a best-effort heuristic repair
+                // (balancing delimiters, stripping a trailing comma). This can produce
+                // valid-but-wrong arguments from a truncated stream, so it is never
+                // silent: we flag the call and warn so callers/telemetry can react.
                 let fixed = self.try_fix_json();
                 match serde_json::from_str::<Value>(&fixed) {
                     Ok(parsed) => {
                         self.parsed_arguments = Some(parsed);
                         self.is_complete = true;
+                        self.arguments_recovered = true;
+                        warn!(
+                            tool = self.name.as_deref().unwrap_or("unknown"),
+                            error = %e,
+                            raw = %truncate_for_log(&self.arguments_json),
+                            recovered = %truncate_for_log(&fixed),
+                            "tool call arguments parsed only after heuristic JSON recovery; \
+                             arguments may differ from what the model emitted"
+                        );
                         Ok(())
                     }
                     Err(_) => Err(ToolCallParseError::InvalidJson(e.to_string())),
@@ -80,31 +98,58 @@ impl StreamingToolCall {
         }
     }
 
-    /// Attempt to fix common JSON formatting issues
+    /// Attempt to fix common JSON formatting issues.
+    ///
+    /// Delimiter counting is string-aware: braces, brackets, and quotes that appear
+    /// inside string literals are ignored, so arguments whose values legitimately
+    /// contain `{`, `}`, `[`, or `]` are not miscounted and corrupted.
     fn try_fix_json(&self) -> String {
         let mut fixed = self.arguments_json.trim().to_string();
 
-        // Add missing closing braces
-        let open_braces = fixed.chars().filter(|&c| c == '{').count();
-        let close_braces = fixed.chars().filter(|&c| c == '}').count();
-        for _ in 0..(open_braces.saturating_sub(close_braces)) {
-            fixed.push('}');
-        }
-
-        // Add missing closing brackets
-        let open_brackets = fixed.chars().filter(|&c| c == '[').count();
-        let close_brackets = fixed.chars().filter(|&c| c == ']').count();
-        for _ in 0..(open_brackets.saturating_sub(close_brackets)) {
-            fixed.push(']');
-        }
-
-        // Handle trailing commas
+        // Strip a single trailing comma first (before balancing) so we don't
+        // produce an invalid `[1,2,]` / `{"a":1,}` by appending a closer after it.
         if fixed.ends_with(',') {
             fixed.pop();
-            // May need to add closing brace if this was the only issue
-            if !fixed.ends_with('}') {
-                fixed.push('}');
+        }
+
+        // Count unmatched openers, ignoring delimiters inside string literals.
+        let (mut open_braces, mut open_brackets) = (0i32, 0i32);
+        let mut in_string = false;
+        let mut escaped = false;
+        for c in fixed.chars() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+                continue;
             }
+            match c {
+                '"' => in_string = true,
+                '{' => open_braces += 1,
+                '}' => open_braces -= 1,
+                '[' => open_brackets += 1,
+                ']' => open_brackets -= 1,
+                _ => {}
+            }
+        }
+
+        // If the string was left open, close it before balancing containers.
+        if in_string {
+            fixed.push('"');
+        }
+
+        // Append missing closers in the correct order is ambiguous for interleaved
+        // structures, but for the common truncation cases (object/array cut short)
+        // brackets close before braces.
+        for _ in 0..open_brackets.max(0) {
+            fixed.push(']');
+        }
+        for _ in 0..open_braces.max(0) {
+            fixed.push('}');
         }
 
         fixed
@@ -129,6 +174,20 @@ impl StreamingToolCall {
                 &self.arguments_json[..self.arguments_json.len().min(50)]
             )
         }
+    }
+}
+
+/// Truncate a string for log output so a large arguments blob doesn't flood logs.
+fn truncate_for_log(s: &str) -> String {
+    const MAX: usize = 200;
+    if s.len() <= MAX {
+        s.to_string()
+    } else {
+        let mut end = MAX;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}… ({} bytes)", &s[..end], s.len())
     }
 }
 
@@ -381,9 +440,80 @@ mod tests {
         assert!(call.parsed_arguments.is_some());
     }
 
-    // TODO: Fix test_json_fixing - JSON recovery logic needs work
-    // #[test]
-    // fn test_json_fixing() { ... }
+    #[test]
+    fn test_json_recovery_closes_truncated_object() {
+        // A stream cut off before the closing brace should recover and be flagged.
+        let mut call = StreamingToolCall::new("tc_1");
+        call.set_name("web_search");
+        call.update_arguments(r#"{"query": "rust async""#);
+
+        call.finalize().unwrap();
+        assert!(call.is_complete);
+        assert!(call.arguments_recovered, "recovery flag must be set");
+        assert_eq!(
+            call.parsed_arguments.unwrap()["query"],
+            serde_json::json!("rust async")
+        );
+    }
+
+    #[test]
+    fn test_json_recovery_strips_trailing_comma() {
+        let mut call = StreamingToolCall::new("tc_1");
+        call.set_name("tool");
+        call.update_arguments(r#"{"a": 1,"#);
+
+        call.finalize().unwrap();
+        assert!(call.arguments_recovered);
+        assert_eq!(call.parsed_arguments.unwrap()["a"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn test_clean_json_is_not_flagged_as_recovered() {
+        let mut call = StreamingToolCall::new("tc_1");
+        call.set_name("tool");
+        call.update_arguments(r#"{"a": 1}"#);
+
+        call.finalize().unwrap();
+        assert!(
+            !call.arguments_recovered,
+            "well-formed JSON must not be marked recovered"
+        );
+    }
+
+    #[test]
+    fn test_recovery_does_not_miscount_braces_inside_strings() {
+        // Braces inside a string value must not be treated as structural delimiters.
+        // The object is already balanced; recovery (if it ran) must not append a stray `}`.
+        let mut call = StreamingToolCall::new("tc_1");
+        call.set_name("write");
+        call.update_arguments(r#"{"body": "func() { return [1]; }"}"#);
+
+        call.finalize().unwrap();
+        assert!(
+            !call.arguments_recovered,
+            "balanced JSON with braces in a string must parse without recovery"
+        );
+        assert_eq!(
+            call.parsed_arguments.unwrap()["body"],
+            serde_json::json!("func() { return [1]; }")
+        );
+    }
+
+    #[test]
+    fn test_recovery_closes_open_string_with_braces() {
+        // Truncated mid-string: only the string and object need closing; the `{`
+        // inside the string must not inflate the brace count.
+        let mut call = StreamingToolCall::new("tc_1");
+        call.set_name("write");
+        call.update_arguments(r#"{"body": "open { brace"#);
+
+        call.finalize().unwrap();
+        assert!(call.arguments_recovered);
+        assert_eq!(
+            call.parsed_arguments.unwrap()["body"],
+            serde_json::json!("open { brace")
+        );
+    }
 
     #[test]
     fn test_parser_multiple_calls() {
