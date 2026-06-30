@@ -15,12 +15,20 @@ pub struct RateLimitEntry {
     burst_remaining: u32,
 }
 
+/// Internal shared state: the per-identity buckets plus the timestamp of
+/// the last eviction sweep.
+struct RateLimiterState {
+    buckets: HashMap<String, RateLimitEntry>,
+    /// When buckets were last pruned of fully-expired entries.
+    last_prune: Instant,
+}
+
 /// In-memory sliding-window rate limiter
 ///
 /// Tracks per-identity request counts. Restarting the daemon resets counters.
 #[derive(Clone)]
 pub struct RateLimiter {
-    inner: Arc<RwLock<HashMap<String, RateLimitEntry>>>,
+    inner: Arc<RwLock<RateLimiterState>>,
     /// Requests per minute for JWT users
     jwt_limit: u32,
     /// Requests per minute for API keys
@@ -38,7 +46,10 @@ impl RateLimiter {
     #[must_use]
     pub fn new(jwt_limit: u32, api_key_limit: u32, jwt_burst: u32, api_key_burst: u32) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(HashMap::new())),
+            inner: Arc::new(RwLock::new(RateLimiterState {
+                buckets: HashMap::new(),
+                last_prune: Instant::now(),
+            })),
             jwt_limit,
             api_key_limit,
             jwt_burst,
@@ -68,10 +79,23 @@ impl RateLimiter {
             self.api_key_burst
         };
 
-        let mut map = self.inner.write().await;
+        let mut state = self.inner.write().await;
         let now = Instant::now();
 
-        match map.get_mut(bucket) {
+        // Opportunistically evict fully-expired buckets so the map does not
+        // grow unbounded across distinct identities. A bucket whose window
+        // has fully elapsed carries no live state — the next request from
+        // that identity would reset it anyway — so dropping it is safe.
+        // Sweeping at most once per window keeps this O(n) cost amortized.
+        if now.duration_since(state.last_prune) >= self.window {
+            let window = self.window;
+            state
+                .buckets
+                .retain(|_, e| now.duration_since(e.window_start) < window);
+            state.last_prune = now;
+        }
+
+        match state.buckets.get_mut(bucket) {
             Some(entry) => {
                 if now.duration_since(entry.window_start) >= self.window {
                     // New window
@@ -90,7 +114,7 @@ impl RateLimiter {
                 }
             }
             None => {
-                map.insert(
+                state.buckets.insert(
                     bucket.to_string(),
                     RateLimitEntry {
                         window_start: now,
@@ -105,8 +129,8 @@ impl RateLimiter {
 
     /// Get current count for a bucket (for diagnostics)
     pub async fn current_count(&self, bucket: &str) -> u32 {
-        let map = self.inner.read().await;
-        map.get(bucket).map(|e| e.count).unwrap_or(0)
+        let state = self.inner.read().await;
+        state.buckets.get(bucket).map(|e| e.count).unwrap_or(0)
     }
 }
 

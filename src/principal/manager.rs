@@ -301,11 +301,15 @@ impl PrincipalManager {
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
 
-        {
+        // Apply the update under the write lock, then snapshot and release
+        // the lock before touching disk so config readers are not blocked
+        // for the duration of the (async) file write.
+        let snapshot = {
             let mut config = principal.config.write().await;
             update(&mut config);
-            self.persist_config(&principal.workspace_path, &config).await?;
-        }
+            config.clone()
+        };
+        self.persist_config(&principal.workspace_path, &snapshot).await?;
 
         Ok(principal)
     }

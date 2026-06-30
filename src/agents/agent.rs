@@ -843,6 +843,15 @@ impl Agent {
             return Err(anyhow::anyhow!("No provider configured"));
         };
 
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
         // Initialize tool config on ExtensionCore
         let mut ext_config = self.config.extensions.clone().unwrap_or_default();
         ext_config.enabled = self.config.extension_whitelist();
@@ -855,7 +864,10 @@ impl Agent {
             *current = Some(session_id);
         }
 
-        self.prepare_execution().await?;
+        if let Err(e) = self.prepare_execution().await {
+            self.set_state(AgentState::Idle);
+            return Err(e);
+        }
 
         let agent_arc = Arc::new(self.clone());
         // Per-call wiring: fresh completion queue + executor + per-agent
@@ -865,15 +877,25 @@ impl Agent {
         // `Agent::execute` for how the three `execute_*` paths cooperate
         // to ensure mid-iteration `AsyncSpawn` calls see a real session key.
         let session_id = self.current_session_id.read().await.clone();
-        let loop_ = self
+        let loop_ = match self
             .build_agentic_loop(agent_arc, provider, session_id, caller_id)
-            .await?;
+            .await
+        {
+            Ok(loop_) => loop_,
+            Err(e) => {
+                self.set_state(AgentState::Idle);
+                return Err(e);
+            }
+        };
 
         let streaming_config = crate::engine::OrchestratorConfig::live();
 
-        loop_
+        let result = loop_
             .run_streaming_with_resume(prompt, on_event, session, history, streaming_config)
-            .await
+            .await;
+
+        self.set_state(AgentState::Idle);
+        result
     }
 
     /// Like [`Self::execute_streaming_with_session`] but skips the
