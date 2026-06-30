@@ -387,12 +387,12 @@ impl PrincipalUnpackager {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum SignatureStatus {
+pub(crate) enum SignatureStatus {
     Verified,
     AllowedUnsigned,
 }
 
-fn verify_principal_signature(
+pub(crate) fn verify_principal_signature(
     manifest_bytes: &[u8],
     did_doc_bytes: &[u8],
     allow_unsigned: bool,
