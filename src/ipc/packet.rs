@@ -430,6 +430,8 @@ pub enum RequestPacket {
         name: Option<String>,
         #[serde(default)]
         allow_unsigned: bool,
+        #[serde(default)]
+        force: bool,
     },
 
     #[serde(rename = "principal_push")]

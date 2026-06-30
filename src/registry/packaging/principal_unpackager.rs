@@ -4,13 +4,17 @@
 #![allow(dead_code)]
 
 use crate::auth::Subject;
+use crate::common::paths::PathResolver;
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::principal::config::{PrincipalConfig, PrincipalDID};
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
+use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Import options for a Principal package.
 #[derive(Debug, Clone)]
@@ -25,6 +29,10 @@ pub struct PrincipalImportOptions {
     pub allow_unsigned: bool,
     /// Force overwrite an existing Principal
     pub force: bool,
+    /// Daemon-wide trust store used for TOFU pinning.
+    pub trust_store: Option<Arc<RwLock<TrustStore>>>,
+    /// How to handle trust pinning conflicts.
+    pub trust_policy: TrustPolicy,
 }
 
 impl Default for PrincipalImportOptions {
@@ -35,6 +43,8 @@ impl Default for PrincipalImportOptions {
             import_sessions: true,
             allow_unsigned: false,
             force: false,
+            trust_store: None,
+            trust_policy: TrustPolicy::Tofu,
         }
     }
 }
@@ -104,24 +114,47 @@ impl PrincipalUnpackager {
         let did_doc_bytes = files
             .get("identity/did.json")
             .ok_or_else(|| anyhow::anyhow!("Missing identity/did.json"))?;
-        match verify_principal_signature(
+        let (signature_status, public_key_multibase) = match verify_principal_signature(
             &manifest_bytes,
             did_doc_bytes,
             options.allow_unsigned,
             &manifest.principal.name,
         ) {
-            Ok(SignatureStatus::Verified) => {
+            Ok((SignatureStatus::Verified, pk)) => {
                 tracing::debug!(
                     "principal manifest signature verified for '{}'",
                     manifest.principal.name
                 );
+                (SignatureStatus::Verified, pk)
             }
-            Ok(SignatureStatus::AllowedUnsigned) => {}
+            Ok((SignatureStatus::AllowedUnsigned, _)) => (SignatureStatus::AllowedUnsigned, String::new()),
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "[signature_verification_failed] Manifest signature check failed: {e}"
                 ));
             }
+        };
+
+        let trust_name = options
+            .new_name
+            .as_ref()
+            .unwrap_or(&manifest.principal.name)
+            .clone();
+        if signature_status == SignatureStatus::Verified {
+            let resolver = PathResolver::with_dirs(
+                self.config_dir.clone(),
+                self.data_dir.clone(),
+                self.data_dir.clone(),
+            );
+            enforce_trust_pinning(
+                options.trust_store.as_ref(),
+                options.trust_policy,
+                &resolver,
+                &trust_name,
+                &manifest.principal.did,
+                &public_key_multibase,
+            )
+            .await?;
         }
 
         let validation = validate_package_for_principal(&manifest, &files);
@@ -364,7 +397,7 @@ fn verify_principal_signature(
     did_doc_bytes: &[u8],
     allow_unsigned: bool,
     name: &str,
-) -> anyhow::Result<SignatureStatus> {
+) -> anyhow::Result<(SignatureStatus, String)> {
     use crate::identity::DIDDocument;
     use base64::Engine;
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -381,7 +414,7 @@ fn verify_principal_signature(
                 "principal package '{}' is not signed; importing anyway because allow_unsigned is set",
                 name
             );
-            return Ok(SignatureStatus::AllowedUnsigned);
+            return Ok((SignatureStatus::AllowedUnsigned, String::new()));
         }
         anyhow::bail!("manifest is not signed");
     }
@@ -433,6 +466,25 @@ fn verify_principal_signature(
     let mut public_key_arr = [0u8; 32];
     public_key_arr.copy_from_slice(&public_key);
 
+    // Binding check: the DID in the manifest must identify the public key
+    // shipped in the DID document. Without this, a replaced package can
+    // still self-verify by embedding any new keypair.
+    if did_doc.id != manifest.principal.did {
+        anyhow::bail!(
+            "[identity_binding_failed] DID document id '{}' does not match manifest principal DID '{}'",
+            did_doc.id,
+            manifest.principal.did
+        );
+    }
+    let parsed_did = Identity::parse_did(&manifest.principal.did)
+        .map_err(|e| anyhow::anyhow!("[identity_binding_failed] invalid manifest DID: {e}"))?;
+    let expected_key_hash = blake3::hash(&public_key).to_hex().to_string()[..16].to_string();
+    if parsed_did.key_hash != expected_key_hash {
+        anyhow::bail!(
+            "[identity_binding_failed] manifest DID key hash does not match the public key in identity/did.json"
+        );
+    }
+
     let verifying_key = VerifyingKey::from_bytes(&public_key_arr)
         .map_err(|e| anyhow::anyhow!("ed25519 signature verification failed: {e}"))?;
     let sig = Signature::from_bytes(&signature);
@@ -440,7 +492,52 @@ fn verify_principal_signature(
         .verify(&signed_bytes, &sig)
         .map_err(|e| anyhow::anyhow!("ed25519 signature verification failed: {e}"))?;
 
-    Ok(SignatureStatus::Verified)
+    Ok((SignatureStatus::Verified, multibase.clone()))
+}
+
+async fn enforce_trust_pinning(
+    trust_store: Option<&Arc<RwLock<TrustStore>>>,
+    trust_policy: TrustPolicy,
+    resolver: &PathResolver,
+    name: &str,
+    did: &str,
+    public_key_multibase: &str,
+) -> anyhow::Result<()> {
+    let Some(store) = trust_store else {
+        tracing::debug!("no trust store configured; skipping TOFU pinning");
+        return Ok(());
+    };
+
+    let mut store = store.write().await;
+    match store.is_trusted(name, did) {
+        TrustStatus::Unknown => {
+            store.pin(name.to_string(), did.to_string(), Some(public_key_multibase.to_string()));
+            store.save(resolver)?;
+            tracing::info!("Pinned principal '{}' to DID {} on first import", name, did);
+        }
+        TrustStatus::Trusted => {
+            tracing::debug!("principal '{}' is already pinned to DID {}", name, did);
+        }
+        TrustStatus::Mismatch { expected, actual } => {
+            if trust_policy == TrustPolicy::AllowUntrusted {
+                store.pin(name.to_string(), actual.clone(), Some(public_key_multibase.to_string()));
+                store.save(resolver)?;
+                tracing::warn!(
+                    "Overriding trust pin for principal '{}' from {} to {}",
+                    name,
+                    expected,
+                    actual
+                );
+            } else {
+                anyhow::bail!(
+                    "[trust_pinning_failed] principal '{}' was previously imported with DID {expected}, but this package is signed by DID {actual}. Use --force to accept the new identity.",
+                    name
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_package_for_principal(

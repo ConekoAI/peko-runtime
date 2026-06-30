@@ -41,6 +41,7 @@ pub mod manifest;
 pub mod principal_manifest;
 pub mod principal_packager;
 pub mod principal_unpackager;
+pub mod trust_store;
 pub mod types;
 pub mod validation;
 
@@ -48,5 +49,6 @@ pub use manifest::AgentManifest;
 pub use principal_manifest::PrincipalManifest;
 pub use principal_packager::{export_principal, PrincipalExportOptions, PrincipalPackager, PrincipalRegistryDescriptor};
 pub use principal_unpackager::{PrincipalImportOptions, PrincipalImportResult, PrincipalUnpackager};
+pub use trust_store::{TrustPolicy, TrustStatus, TrustStore};
 pub use types::{compute_digest, ExtensionRef, ImageDigest, Layer, LayerDigest, LayerType};
 pub use validation::{validate_package, ValidationResult};

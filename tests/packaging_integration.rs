@@ -347,6 +347,7 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
         // passes without an opt-in.
         allow_unsigned: false,
         force: false,
+        ..Default::default()
     };
 
     let import_result = unpackager.import(import_options).await.unwrap();

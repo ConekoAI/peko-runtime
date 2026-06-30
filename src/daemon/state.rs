@@ -144,6 +144,10 @@ pub struct AppState {
     pub known_runtimes:
         std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>>,
 
+    /// Trust store for principal package publisher pinning (issue #91).
+    pub trust_store:
+        std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
+
     /// Auth configuration (ADR-034)
     auth_config: crate::auth::config::AuthConfig,
 
@@ -395,6 +399,9 @@ impl AppState {
             crate::tunnel::known_runtimes::TrustLevel::SelfRuntime,
         );
         let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
+
+        let trust_store = crate::registry::packaging::TrustStore::load_or_create(&path_resolver)?;
+        let trust_store = std::sync::Arc::new(tokio::sync::RwLock::new(trust_store));
 
         // v3-cleanup: ADR-032 / ADR-033 / provider-catalog migration
         // runners were deleted; the runtime now expects every agent
@@ -669,6 +676,7 @@ impl AppState {
             runtime_identity,
             runtime_metadata,
             known_runtimes,
+            trust_store,
             auth_config,
             api_key_store,
             api_key_verifier,
@@ -932,6 +940,14 @@ impl AppState {
         &self,
     ) -> &std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>> {
         &self.known_runtimes
+    }
+
+    /// Get the trust store for principal package import (issue #91).
+    #[must_use]
+    pub fn trust_store(
+        &self,
+    ) -> &std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>> {
+        &self.trust_store
     }
 
     /// Get the count of registered agents

@@ -83,6 +83,11 @@ pub enum PrincipalCommands {
         /// Allow importing an unsigned package
         #[arg(long)]
         allow_unsigned: bool,
+
+        /// Override trust pinning if the package's DID differs from a
+        /// previously imported package with the same name.
+        #[arg(short, long)]
+        force: bool,
     },
 
     /// Push a Principal package to a registry
@@ -228,7 +233,8 @@ pub async fn handle_principal(
             file_path,
             name,
             allow_unsigned,
-        } => import_principal(&file_path, name, allow_unsigned).await,
+            force,
+        } => import_principal(&file_path, name, allow_unsigned, force).await,
         PrincipalCommands::Push {
             name,
             registry_host,
@@ -490,10 +496,11 @@ async fn import_principal(
     file_path: &str,
     name: Option<String>,
     allow_unsigned: bool,
+    force: bool,
 ) -> Result<()> {
     let client = DaemonClient::connect().await?;
     let response = client
-        .principal_import(file_path, name, allow_unsigned)
+        .principal_import(file_path, name, allow_unsigned, force)
         .await?;
 
     match response {

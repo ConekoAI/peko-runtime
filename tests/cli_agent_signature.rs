@@ -1,7 +1,7 @@
 //! Issue #14 — manifest signature verification on import (Principal-era).
 //!
 //! Builds a real `.principal` package, then exercises the unpackager's
-//! signature gate with five scenarios:
+//! signature gate with eight scenarios:
 //!
 //!   1. green: signed manifest imports successfully
 //!   2. red:   tampered manifest byte fails with signature_verification_failed
@@ -9,6 +9,10 @@
 //!   4. red:   wrong-key signature fails (signed by author A, claims author B)
 //!   5. red:   `--force` does NOT bypass signature (a security check, not a format check)
 //!   6. green: `--allow-unsigned` permits an unsigned import
+//!   7. green: first import pins the principal name to the publisher DID (issue #91)
+//!   8. red:   importing the same name with a different DID fails with trust_pinning_failed
+//!   9. green: `--force` overrides trust pinning and updates the pin (issue #91)
+//!  10. red:   a manifest DID that does not bind to the shipped key fails with identity_binding_failed (issue #91)
 //!
 //! These tests run without a daemon or registry — they call the
 //! [`peko::registry::packaging::PrincipalUnpackager`] directly against an
@@ -38,15 +42,21 @@
 //! by `packaging_integration::test_full_packaging_pipeline`.)
 //!
 //! See: <https://github.com/ConekoAI/peko-runtime/issues/14>
+//! See: <https://github.com/ConekoAI/peko-runtime/issues/91>
 
 use base64::Engine;
 use peko::identity::keys::KeyPair;
 use peko::identity::{DIDDocument, Identity, VerificationMethod};
 use peko::registry::packaging::principal_manifest::PrincipalManifest;
-use peko::registry::packaging::{PrincipalImportOptions, PrincipalImportResult, PrincipalUnpackager};
+use peko::registry::packaging::{
+    PrincipalImportOptions, PrincipalImportResult, PrincipalUnpackager, TrustPolicy, TrustStatus,
+    TrustStore,
+};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use tempfile::TempDir;
+use tokio::sync::RwLock;
 
 // ── Test fixture builders ───────────────────────────────────────────
 
@@ -179,13 +189,23 @@ fn build_files_map(
     files
 }
 
-fn import_options(allow_unsigned: bool, force: bool) -> PrincipalImportOptions {
+fn import_options(
+    allow_unsigned: bool,
+    force: bool,
+    trust_store: Option<Arc<RwLock<TrustStore>>>,
+) -> PrincipalImportOptions {
     PrincipalImportOptions {
         new_name: Some("imported-sig-test".to_string()),
         rotate_keys: false,
         import_sessions: false,
         allow_unsigned,
         force,
+        trust_store,
+        trust_policy: if force {
+            TrustPolicy::AllowUntrusted
+        } else {
+            TrustPolicy::Tofu
+        },
     }
 }
 
@@ -259,7 +279,7 @@ async fn signed_manifest_imports_successfully() {
     );
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
-    let result = run_import(&files, import_options(false, false))
+    let result = run_import(&files, import_options(false, false, None))
         .await
         .expect("signed manifest should import");
     assert_eq!(result.name, "imported-sig-test");
@@ -280,7 +300,7 @@ async fn tampered_manifest_byte_fails_signature_check() {
     tamper_principal_name(&mut manifest_bytes);
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
-    let err = run_import(&files, import_options(false, false))
+    let err = run_import(&files, import_options(false, false, None))
         .await
         .expect_err("tampered manifest should be rejected");
     let msg = err.to_string();
@@ -306,7 +326,7 @@ async fn stripped_signature_fails_when_not_allowed() {
     let manifest_bytes = manifest.to_toml().unwrap().into_bytes();
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
-    let err = run_import(&files, import_options(false, false))
+    let err = run_import(&files, import_options(false, false, None))
         .await
         .expect_err("unsigned manifest should be rejected");
     let msg = err.to_string();
@@ -346,7 +366,7 @@ async fn wrong_key_signature_is_rejected() {
     );
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
-    let err = run_import(&files, import_options(false, false))
+    let err = run_import(&files, import_options(false, false, None))
         .await
         .expect_err("wrong-key signature should be rejected");
     let msg = err.to_string();
@@ -372,7 +392,7 @@ async fn force_flag_does_not_bypass_signature() {
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
     // force: true must NOT bypass signature verification.
-    let err = run_import(&files, import_options(false, true))
+    let err = run_import(&files, import_options(false, true, None))
         .await
         .expect_err("force should NOT bypass signature failure");
     let msg = err.to_string();
@@ -397,10 +417,209 @@ async fn allow_unsigned_permits_unsigned_import() {
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
     // allow_unsigned: true should let the import succeed.
-    let result = run_import(&files, import_options(true, false))
+    let result = run_import(&files, import_options(true, false, None))
         .await
         .expect("allow_unsigned should permit unsigned import");
     assert_eq!(result.name, "imported-sig-test");
+}
+
+fn empty_trust_store() -> Arc<RwLock<TrustStore>> {
+    Arc::new(RwLock::new(TrustStore::new()))
+}
+
+#[tokio::test]
+async fn first_import_pins_did() {
+    let (signer, did_doc, did) = fresh_identity();
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &did_doc);
+    let manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
+    let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
+
+    let store = empty_trust_store();
+    let _ = run_import(
+        &files,
+        import_options(false, false, Some(store.clone())),
+    )
+    .await
+    .expect("signed manifest should import and pin");
+
+    let store = store.read().await;
+    assert_eq!(
+        store.is_trusted("imported-sig-test", &did),
+        TrustStatus::Trusted
+    );
+}
+
+#[tokio::test]
+async fn same_name_with_different_did_fails() {
+    let store = empty_trust_store();
+
+    // First import: DID A.
+    let (signer_a, did_doc_a, did_a) = fresh_identity();
+    let (did_json_a, config_bytes_a, keys_bytes_a, _) =
+        build_file_contents(&signer_a, &did_doc_a);
+    let manifest_bytes_a = build_signed_manifest(
+        &signer_a,
+        "sig-test",
+        &did_a,
+        &did_json_a,
+        &config_bytes_a,
+        &keys_bytes_a,
+    );
+    let files_a = build_files_map(
+        &manifest_bytes_a,
+        &did_json_a,
+        &config_bytes_a,
+        &keys_bytes_a,
+    );
+    run_import(
+        &files_a,
+        import_options(false, false, Some(store.clone())),
+    )
+    .await
+    .expect("first import should succeed");
+
+    // Second import: same name, different DID B.
+    let (signer_b, did_doc_b, did_b) = fresh_identity();
+    let (did_json_b, config_bytes_b, keys_bytes_b, _) =
+        build_file_contents(&signer_b, &did_doc_b);
+    let manifest_bytes_b = build_signed_manifest(
+        &signer_b,
+        "sig-test",
+        &did_b,
+        &did_json_b,
+        &config_bytes_b,
+        &keys_bytes_b,
+    );
+    let files_b = build_files_map(
+        &manifest_bytes_b,
+        &did_json_b,
+        &config_bytes_b,
+        &keys_bytes_b,
+    );
+    let err = run_import(
+        &files_b,
+        import_options(false, false, Some(store.clone())),
+    )
+    .await
+    .expect_err("second import with a different DID should be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("trust_pinning_failed"),
+        "expected trust_pinning_failed, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn force_allows_did_change() {
+    let store = empty_trust_store();
+
+    let (signer_a, did_doc_a, did_a) = fresh_identity();
+    let (did_json_a, config_bytes_a, keys_bytes_a, _) =
+        build_file_contents(&signer_a, &did_doc_a);
+    let manifest_bytes_a = build_signed_manifest(
+        &signer_a,
+        "sig-test",
+        &did_a,
+        &did_json_a,
+        &config_bytes_a,
+        &keys_bytes_a,
+    );
+    let files_a = build_files_map(
+        &manifest_bytes_a,
+        &did_json_a,
+        &config_bytes_a,
+        &keys_bytes_a,
+    );
+    run_import(
+        &files_a,
+        import_options(false, false, Some(store.clone())),
+    )
+    .await
+    .unwrap();
+
+    let (signer_b, did_doc_b, did_b) = fresh_identity();
+    let (did_json_b, config_bytes_b, keys_bytes_b, _) =
+        build_file_contents(&signer_b, &did_doc_b);
+    let manifest_bytes_b = build_signed_manifest(
+        &signer_b,
+        "sig-test",
+        &did_b,
+        &did_json_b,
+        &config_bytes_b,
+        &keys_bytes_b,
+    );
+    let files_b = build_files_map(
+        &manifest_bytes_b,
+        &did_json_b,
+        &config_bytes_b,
+        &keys_bytes_b,
+    );
+    let result = run_import(
+        &files_b,
+        import_options(false, true, Some(store.clone())),
+    )
+    .await
+    .expect("force should allow a DID change");
+    assert_eq!(result.name, "imported-sig-test");
+
+    let store = store.read().await;
+    assert_eq!(
+        store.is_trusted("imported-sig-test", &did_b),
+        TrustStatus::Trusted
+    );
+}
+
+#[tokio::test]
+async fn binding_mismatch_fails() {
+    // Signer keypair signs a manifest whose DID does not identify that key.
+    let (signer, _, _) = fresh_identity();
+    let (_, _other_doc, other_did) = fresh_identity();
+
+    let mismatched_doc = DIDDocument {
+        context: vec!["https://www.w3.org/ns/did/v1".into()],
+        id: other_did.clone(),
+        verification_method: vec![VerificationMethod {
+            id: format!("{other_did}#keys-1"),
+            key_type: "Ed25519VerificationKey2020".into(),
+            controller: other_did.clone(),
+            public_key_multibase: format!(
+                "z{}",
+                bs58::encode(signer.verifying_key.as_bytes()).into_string()
+            ),
+        }],
+        authentication: vec![format!("{other_did}#keys-1")],
+        assertion_method: vec![format!("{other_did}#keys-1")],
+        service: vec![],
+        created: "2026-06-17T00:00:00Z".into(),
+        updated: "2026-06-17T00:00:00Z".into(),
+    };
+
+    let (did_json, config_bytes, keys_bytes, _) = build_file_contents(&signer, &mismatched_doc);
+    let manifest_bytes = build_signed_manifest(
+        &signer,
+        "sig-test",
+        &other_did,
+        &did_json,
+        &config_bytes,
+        &keys_bytes,
+    );
+    let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
+
+    let err = run_import(&files, import_options(false, false, None))
+        .await
+        .expect_err("manifest DID that does not bind to the shipped key should fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("identity_binding_failed"),
+        "expected identity_binding_failed, got: {msg}"
+    );
 }
 
 #[test]
