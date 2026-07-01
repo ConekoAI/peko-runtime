@@ -231,18 +231,21 @@ impl Provider {
         tokio::spawn(async move {
             let mut sse_stream = crate::providers::transport::sse::SseParser::parse_stream(stream);
             while let Some(result) = sse_stream.next().await {
-                // The `[DONE]` sentinel marks the logical end of an
-                // OpenAI-style SSE stream. Some providers hold the HTTP
-                // connection open (keep-alive) after emitting it instead of
-                // closing the byte stream, so relying on `sse_stream.next()`
-                // returning `None` to terminate can block forever — which
-                // stalls the agentic loop and, in turn, hangs `peko send`
-                // after the final token. Detect the sentinel and stop once
-                // its `Done` event has been forwarded. Usage chunks arrive
-                // *before* `[DONE]`, so they are still delivered. Providers
-                // that don't emit the sentinel are unaffected and still
-                // terminate on connection close.
-                let is_done = matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
+                // The OpenAI-style `[DONE]` sentinel and the Anthropic-style
+                // `message_stop` event (which `parse_sse_event` maps to
+                // `StreamEvent::Done`) both mark the logical end of the
+                // stream. Some providers hold the HTTP connection open
+                // (keep-alive) after emitting them instead of closing the
+                // byte stream, so relying on `sse_stream.next()` returning
+                // `None` to terminate can block forever — stalling the
+                // agentic loop and hanging `peko send` after the final
+                // token. Stop once the canonical Done has been forwarded.
+                // Usage chunks arrive *before* Done, so they are still
+                // delivered. Providers that neither emit a Done event nor
+                // close the connection will still hang; the only safe
+                // mitigation there is the per-request HTTP timeout.
+                let is_openai_done =
+                    matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
 
                 let output = match result {
                     Ok(event) => match adapter.parse_sse_event(&model_id_owned, &event.data) {
@@ -253,13 +256,18 @@ impl Provider {
                     Err(e) => Some(Err(e)),
                 };
 
+                let is_done_event = matches!(
+                    &output,
+                    Some(Ok(crate::providers::StreamEvent::Done { .. }))
+                );
+
                 if let Some(event) = output {
                     if tx.send(event).await.is_err() {
                         break;
                     }
                 }
 
-                if is_done {
+                if is_openai_done || is_done_event {
                     break;
                 }
             }

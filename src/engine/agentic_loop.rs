@@ -694,7 +694,9 @@ impl AgenticLoop {
                             }
                         }
                     }
-                    None => break,
+                    None => {
+                        break;
+                    }
                 }
             }
 

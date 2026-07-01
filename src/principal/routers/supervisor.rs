@@ -166,6 +166,8 @@ impl PrincipalRouter for SupervisorRouter {
 
         // Record the supervisor session artifact so future messages from this
         // peer can recall it as prior context.
+        // Record the supervisor session artifact so future messages from this
+        // peer can recall it as prior context.
         let artifact = SessionArtifact {
             session_id,
             peer,
