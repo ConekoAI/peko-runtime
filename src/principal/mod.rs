@@ -1,6 +1,7 @@
 pub mod agent_prompt;
 pub mod agent_runner;
 pub mod config;
+pub mod context;
 pub mod factory;
 pub mod manager;
 pub mod memory;
@@ -9,6 +10,7 @@ pub mod routers;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
+pub use context::PrincipalContext;
 pub use config::{
     AgentRole, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalCapabilities,
     PrincipalConfig, PrincipalDID, PrincipalGovernanceConfig, PrincipalIdentityConfig,

@@ -1,13 +1,14 @@
-//! Supervisor-based Principal router.
+//! Root-agent-based Principal router (formerly the "supervisor" router).
 //!
-//! The `SupervisorRouter` runs a normal agent prompt (the built-in supervisor
-//! agent, or a user-supplied override) in a peer-scoped session.  The supervisor
-//! agent does the actual orchestration: it inspects principal memory/sessions,
-//! chooses specialist agents from the catalog, and delegates via the existing
-//! `Agent` tool and async task tools.
+//! The `SupervisorRouter` runs a normal agent prompt (the built-in root
+//! agent, or a user-supplied override) in a peer-scoped session.  The
+//! root agent does the actual orchestration: it inspects principal
+//! memory/sessions, chooses specialist agents from the catalog, and
+//! delegates via the existing `Agent` tool and async task tools.
 //!
-//! From the Principal boundary's point of view, the supervisor simply returns a
-//! `RouteDecision::Respond` containing the supervisor agent's final answer.
+//! From the Principal boundary's point of view, the root agent simply
+//! returns a `RouteDecision::Respond` containing the agent's final
+//! answer.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,25 +18,30 @@ use async_trait::async_trait;
 use crate::engine::AgenticEvent;
 use crate::principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
 use crate::principal::agent_runner::{run_supervisor_prompt, run_supervisor_prompt_streaming};
+use crate::principal::context::PrincipalContext;
 use crate::principal::memory::{PrincipalMemory, SessionArtifact};
 use crate::principal::router::{
     AgentPromptSummary, PrincipalRouter, RouteDecision, RouterContext, RouterError,
 };
 use crate::providers::LlmResolver;
 
-/// Load the compiled-in supervisor agent prompt.
+/// Load the compiled-in root agent prompt.
 pub fn default_supervisor_prompt() -> AgentPrompt {
     let content = include_str!("../../resources/agents/supervisor/AGENT.md");
     parse_agent_prompt("supervisor", PathBuf::from("builtin:supervisor"), content)
 }
 
-/// Stable supervisor session id for a peer.
+/// Stable root-agent session id for a peer.
 #[must_use]
 pub fn supervisor_session_id(peer: &crate::auth::Subject) -> String {
     format!("supervisor:{peer}")
 }
 
-/// A Principal router powered by a supervisor agentic loop.
+/// A Principal router powered by a root-agent agentic loop.
+///
+/// Holds a cached `PrincipalContext` for the principal's lifetime; the
+/// shared per-principal `ExtensionCore` lives on the context and is
+/// reused across messages.
 pub struct SupervisorRouter {
     memory: Arc<dyn PrincipalMemory>,
     resolver: Option<Arc<LlmResolver>>,
@@ -43,7 +49,7 @@ pub struct SupervisorRouter {
     workspace_path: PathBuf,
     /// Per-Principal provider preference from `principal.toml`. When
     /// `Some`, it overrides the global catalog default for any LLM call
-    /// routed through this Principal's supervisor. When `None`, the
+    /// routed through this Principal's root agent. When `None`, the
     /// catalog default wins.
     principal_provider_id: Option<String>,
     principal_model_id: Option<String>,
@@ -73,46 +79,54 @@ impl SupervisorRouter {
             principal_model_id,
         }
     }
+
+    /// Build a `PrincipalContext` from the router's already-resolved
+    /// state plus the per-call `RouterContext` (which carries the
+    /// per-message pieces: inbox registry, session-creation lock, and
+    /// the current capabilities snapshot).
+    fn build_context(
+        &self,
+        ctx: &RouterContext,
+    ) -> PrincipalContext {
+        let principal_ctx = PrincipalContext::new(
+            self.workspace_path.clone(),
+            Arc::clone(&self.memory),
+            Arc::clone(&ctx.inbox_registry),
+            Arc::clone(&ctx.session_creation_lock),
+            Arc::new(ctx.capabilities.clone()),
+            self.resolver.clone(),
+            (
+                self.principal_provider_id.clone(),
+                self.principal_model_id.clone(),
+            ),
+        );
+        principal_ctx.set_root_prompt(self.supervisor_prompt.clone());
+        principal_ctx
+    }
 }
 
 #[async_trait]
 impl PrincipalRouter for SupervisorRouter {
     async fn route(&self, ctx: RouterContext) -> Result<RouteDecision, RouterError> {
         let peer = ctx.peer.clone();
-
-        // Keep one supervisor session per peer so the supervisor conversation
-        // continues across `receive` calls.  Using a stable id prevents us from
-        // accidentally resuming a specialist session that happens to be the
-        // latest session for this peer.
         let session_id = supervisor_session_id(&peer);
-        let sessions_dir = self.memory.sessions_dir();
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
-
         let message = build_supervisor_message(&ctx);
+        let principal_ctx = self.build_context(&ctx);
 
         let response = run_supervisor_prompt(
             &self.supervisor_prompt,
-            &ctx.capabilities,
             peer.clone(),
             message,
             session_id.clone(),
-            sessions_dir,
-            self.resolver.clone(),
-            self.workspace_path.clone(),
             available_agents,
-            Arc::clone(&self.memory),
-            Arc::clone(&ctx.inbox_registry),
-            Arc::clone(&ctx.session_creation_lock),
-            (
-                self.principal_provider_id.clone(),
-                self.principal_model_id.clone(),
-            ),
+            &principal_ctx,
         )
         .await
         .map_err(|e| RouterError::AgentFailed(e.to_string()))?;
 
-        // Record the supervisor session artifact so future messages from this
-        // peer can recall it as prior context.
+        // Record the root-agent session artifact so future messages
+        // from this peer can recall it as prior context.
         let artifact = SessionArtifact {
             session_id,
             peer,
@@ -121,7 +135,7 @@ impl PrincipalRouter for SupervisorRouter {
             summary: Some(response.clone()),
         };
         if let Err(e) = self.memory.record_session(artifact).await {
-            tracing::warn!("failed to record supervisor session artifact: {e}");
+            tracing::warn!("failed to record root-agent session artifact: {e}");
         }
 
         Ok(RouteDecision::Respond { response })
@@ -133,41 +147,25 @@ impl PrincipalRouter for SupervisorRouter {
         on_event: Box<dyn Fn(AgenticEvent) + Send + Sync>,
     ) -> Result<RouteDecision, RouterError> {
         let peer = ctx.peer.clone();
-
-        // Same supervisor-session-id strategy as `route()` so streaming
-        // and non-streaming supervisors share continuity.
         let session_id = supervisor_session_id(&peer);
-        let sessions_dir = self.memory.sessions_dir();
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
-
         let message = build_supervisor_message(&ctx);
+        let principal_ctx = self.build_context(&ctx);
 
         let response = run_supervisor_prompt_streaming(
             &self.supervisor_prompt,
-            &ctx.capabilities,
             peer.clone(),
             message,
             session_id.clone(),
-            sessions_dir,
-            self.resolver.clone(),
-            self.workspace_path.clone(),
             available_agents,
-            Arc::clone(&self.memory),
-            Arc::clone(&ctx.inbox_registry),
-            Arc::clone(&ctx.session_creation_lock),
-            (
-                self.principal_provider_id.clone(),
-                self.principal_model_id.clone(),
-            ),
+            &principal_ctx,
             on_event,
         )
         .await
         .map_err(|e| RouterError::AgentFailed(e.to_string()))?;
 
-        // Record the supervisor session artifact so future messages from this
-        // peer can recall it as prior context.
-        // Record the supervisor session artifact so future messages from this
-        // peer can recall it as prior context.
+        // Record the root-agent session artifact so future messages
+        // from this peer can recall it as prior context.
         let artifact = SessionArtifact {
             session_id,
             peer,
@@ -176,7 +174,7 @@ impl PrincipalRouter for SupervisorRouter {
             summary: Some(response.clone()),
         };
         if let Err(e) = self.memory.record_session(artifact).await {
-            tracing::warn!("failed to record supervisor session artifact: {e}");
+            tracing::warn!("failed to record root-agent session artifact: {e}");
         }
 
         Ok(RouteDecision::Respond { response })
@@ -220,7 +218,7 @@ mod tests {
         assert_eq!(prompt.name, "supervisor");
         assert!(
             prompt.body.contains("agent_catalog"),
-            "supervisor prompt should mention agent_catalog"
+            "root agent prompt should mention agent_catalog"
         );
     }
 
