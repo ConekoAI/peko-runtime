@@ -12,9 +12,25 @@
 //!    use and stored in the OS keychain under service `peko`, account
 //!    `vault-key`.
 //! 2. **Master passphrase fallback** — when the OS keychain is unavailable
-//!    (headless/CI), the DEK is derived from `PEKO_MASTER_PASSPHRASE` using
-//!    Argon2id. A vault created this way stores a salt in its envelope and
-//!    can only be unlocked with the same passphrase.
+//!    (headless/CI), or when the user has set `PEKO_MASTER_PASSPHRASE` and
+//!    migrated with `peko vault migrate --to passphrase`, the DEK is
+//!    derived from `PEKO_MASTER_PASSPHRASE` using Argon2id. A vault created
+//!    this way stores a salt in its envelope and can only be unlocked with
+//!    the same passphrase.
+//!
+//! # Switching modes
+//!
+//! The on-disk mode is determined by whether the envelope has a `salt`
+//! field. To switch, run `peko vault migrate --to <passphrase|keychain>`.
+//! The subcommand re-encrypts the vault under a new DEK and updates the
+//! keychain entry as needed. It refuses to run while a peko daemon is
+//! reachable over IPC, because the daemon holds a long-lived `Arc<Vault>`
+//! whose unlock method is set at construction time.
+//!
+//! The `PEKO_UNLOCK_METHOD` env var is an *assertion* of the expected mode
+//! for the current process (`auto` / `passphrase` / `keychain`). A
+//! mismatch with the on-disk envelope is a hard error pointing at
+//! `peko vault migrate`. The env var never mutates the envelope on disk.
 //!
 //! # Contents
 //!
@@ -56,8 +72,68 @@ pub const KEYCHAIN_ACCOUNT: &str = "vault-key";
 /// Environment variable used for passphrase-based vault unlock.
 pub const MASTER_PASSPHRASE_ENV: &str = "PEKO_MASTER_PASSPHRASE";
 
+/// Environment variable asserting which unlock method the current process
+/// expects for the on-disk vault.
+///
+/// Values: `auto` (default — trust the on-disk envelope), `passphrase`,
+/// `keychain`. A mismatch with the on-disk envelope is a hard error
+/// pointing the user at `peko vault migrate`. The env var never mutates
+/// the envelope on disk; the explicit subcommand does that.
+pub const UNLOCK_METHOD_ENV: &str = "PEKO_UNLOCK_METHOD";
+
 /// Current vault file format version.
 pub const VAULT_VERSION: u32 = 1;
+
+/// Per-process assertion of which unlock method the caller expects.
+///
+/// `Auto` is the historical default and trusts the on-disk envelope.
+/// The other variants cause `Vault::load` to error if the envelope's
+/// stored mode does not match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnlockMethodOverride {
+    /// Trust the on-disk envelope (current behavior).
+    Auto,
+    /// Require passphrase mode.
+    Passphrase,
+    /// Require keychain mode.
+    Keychain,
+}
+
+impl UnlockMethodOverride {
+    /// Parse the env var. Missing or empty string returns `Auto`.
+    pub fn from_env() -> Self {
+        match std::env::var(UNLOCK_METHOD_ENV) {
+            Ok(s) if !s.is_empty() => match s.to_ascii_lowercase().as_str() {
+                "auto" => Self::Auto,
+                "passphrase" => Self::Passphrase,
+                "keychain" => Self::Keychain,
+                other => {
+                    // Surface the bad value rather than silently falling
+                    // back to Auto — a typo here would otherwise be invisible.
+                    tracing::warn!(
+                        "{}={other:?} is not a valid unlock method; expected auto|passphrase|keychain; falling back to auto",
+                        UNLOCK_METHOD_ENV,
+                    );
+                    Self::Auto
+                }
+            },
+            _ => Self::Auto,
+        }
+    }
+
+    /// Convert into the corresponding `UnlockMethod`, if concrete.
+    ///
+    /// `Auto` has no concrete value and returns `None` — callers fall
+    /// through to the on-disk envelope.
+    #[must_use]
+    pub fn as_unlock_method(self) -> Option<UnlockMethod> {
+        match self {
+            Self::Auto => None,
+            Self::Passphrase => Some(UnlockMethod::Passphrase),
+            Self::Keychain => Some(UnlockMethod::Keychain),
+        }
+    }
+}
 
 /// AES-GCM nonce length in bytes.
 const NONCE_LENGTH: usize = 12;
@@ -180,15 +256,34 @@ impl Vault {
     ///
     /// Preferentially uses the OS keychain. If the keychain is unavailable
     /// and the vault does not yet exist, falls back to
-    /// `PEKO_MASTER_PASSPHRASE`.
+    /// `PEKO_MASTER_PASSPHRASE`. The caller can override the on-disk
+    /// mode decision via `PEKO_UNLOCK_METHOD`; a mismatch with the
+    /// envelope is a hard error.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        Self::load_with_override(path, UnlockMethodOverride::from_env())
+    }
+
+    /// Like [`Self::load`], but with an explicit override.
+    ///
+    /// `UnlockMethodOverride::Auto` is the historical default — trust
+    /// whatever the on-disk envelope says. `Passphrase` and `Keychain`
+    /// assert a specific mode and error if it doesn't match the
+    /// envelope's salt field.
+    ///
+    /// The `peko vault migrate` subcommand uses this with `Auto` so the
+    /// migration can proceed regardless of what the user has set in
+    /// `PEKO_UNLOCK_METHOD`.
+    pub fn load_with_override(
+        path: impl AsRef<Path>,
+        method_override: UnlockMethodOverride,
+    ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
         if path.exists() {
-            return Self::load_existing(path);
+            return Self::load_existing_with_override(path, method_override);
         }
 
-        Self::create_new(path)
+        Self::create_new_with_override(path, method_override)
     }
 
     /// Load an existing passphrase-protected vault using the provided
@@ -691,6 +786,112 @@ impl Vault {
         Ok(())
     }
 
+    /// Re-encrypt the vault under a different unlock mode.
+    ///
+    /// This is the on-disk format switch: it rewrites the envelope under a
+    /// new DEK (passphrase-derived or freshly generated) and updates the
+    /// keychain entry as needed. It is the only path that mutates the
+    /// envelope's unlock mode; the `PEKO_UNLOCK_METHOD` env var only
+    /// *asserts* the mode and never rewrites.
+    ///
+    /// When `target` is the same as the current mode, this method still
+    /// re-encrypts: passing `target = Passphrase` with a new passphrase
+    /// rotates the passphrase. The "no-op when already in target mode"
+    /// check is a *policy* decision that lives in the `peko vault migrate`
+    /// CLI subcommand, not in this primitive.
+    ///
+    /// The migration is mostly atomic: the new envelope is written via the
+    /// existing temp-file-then-rename helper before the old keychain entry
+    /// is touched. If the process dies between the rename and the keychain
+    /// cleanup, the on-disk state is already consistent and the orphaned
+    /// keychain entry is harmless.
+    ///
+    /// Callers (the `peko vault migrate` subcommand) are responsible for
+    /// refusing to run while a peko daemon is reachable over IPC, since
+    /// the daemon holds a long-lived `Arc<Vault>` whose `unlock_method`
+    /// field is not mutable via `reload()`.
+    pub fn migrate(
+        &mut self,
+        target: UnlockMethod,
+        passphrase: Option<&SecretString>,
+    ) -> Result<UnlockMethod> {
+        // Step 1: build the new DEK.
+        let (new_dek, new_salt): (Vec<u8>, Option<Vec<u8>>) = match target {
+            UnlockMethod::Keychain => {
+                let dek = Self::generate_dek();
+                Self::store_dek_in_keychain(&dek)?;
+                (dek, None)
+            }
+            UnlockMethod::Passphrase => {
+                let pw = passphrase.ok_or(VaultError::NoPassphrase)?;
+                let mut salt = vec![0u8; 32];
+                OsRng.fill_bytes(&mut salt);
+                let dek = Self::derive_key_from_passphrase(pw.expose_secret(), &salt)?;
+                (dek, Some(salt))
+            }
+        };
+
+        // Step 2: snapshot the current plaintext. This is what we'll
+        // re-encrypt under the new DEK.
+        let file = {
+            let guard = self
+                .inner
+                .read()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            guard.file.clone()
+        };
+
+        // Step 3: write the new envelope atomically. After this point
+        // the on-disk state matches `target` and a process crash here
+        // is recoverable: the old keychain DEK (if any) is still
+        // available, but the envelope no longer accepts it. Recovery
+        // is to run `peko vault migrate --to keychain` from the same
+        // passphrase, which will regenerate a keychain DEK and re-write
+        // the (already-passphrase) envelope — a no-op for the
+        // plaintext but a no-op-correctness fix.
+        Self::write_envelope(&self.path, &new_dek, new_salt.as_deref(), &file)?;
+
+        // Step 4: clean up the old keychain entry when leaving keychain
+        // mode. Best-effort — a leftover keychain entry is harmless
+        // (the new envelope doesn't use it) but we surface the failure
+        // so the operator knows to clean up manually if needed.
+        if self.unlock_method == UnlockMethod::Keychain && target == UnlockMethod::Passphrase {
+            if let Err(e) = Self::delete_dek_from_keychain() {
+                tracing::warn!(
+                    "failed to delete old vault DEK from keychain: {e}; \
+                     remove it manually with Keychain Access (service '{KEYCHAIN_SERVICE}', \
+                     account '{KEYCHAIN_ACCOUNT}') for a fully clean state"
+                );
+            }
+        }
+
+        // Step 5: update in-memory state.
+        {
+            let mut guard = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            guard.dek = new_dek;
+            guard.salt = new_salt.clone();
+            // `file` is unchanged.
+        }
+        self.unlock_method = target;
+
+        info!(
+            "Migrated vault at {} from {:?} to {:?} mode",
+            self.path.display(),
+            // self.unlock_method was just reassigned, so capture the
+            // *previous* mode for the log line.
+            if target == UnlockMethod::Keychain {
+                UnlockMethod::Passphrase
+            } else {
+                UnlockMethod::Keychain
+            },
+            target
+        );
+        Ok(target)
+    }
+
     // ------------------------------------------------------------------
     // SecretStore trait integration
     // ------------------------------------------------------------------
@@ -730,7 +931,7 @@ impl Vault {
     // Internal helpers
     // ------------------------------------------------------------------
 
-    fn load_existing(path: PathBuf) -> Result<Self> {
+    fn load_existing_with_override(path: PathBuf, method_override: UnlockMethodOverride) -> Result<Self> {
         let bytes = std::fs::read(&path)
             .with_context(|| format!("failed to read vault: {}", path.display()))?;
         let envelope: VaultEnvelope =
@@ -744,10 +945,30 @@ impl Vault {
             );
         }
 
-        let (dek, unlock_method, salt) = if let Some(salt) = envelope.salt.as_deref() {
+        // The on-disk envelope determines which mode the vault unlocks in.
+        // `PEKO_UNLOCK_METHOD` is an *assertion* by the caller, not a switch —
+        // a mismatch is a hard error pointing at `peko vault migrate`.
+        let on_disk_mode = if envelope.salt.is_some() {
+            UnlockMethod::Passphrase
+        } else {
+            UnlockMethod::Keychain
+        };
+        let override_method = method_override.as_unlock_method();
+        if let Some(requested) = override_method {
+            if requested != on_disk_mode {
+                anyhow::bail!(
+                    "{UNLOCK_METHOD_ENV}={requested:?} does not match the vault's current mode ({on_disk_mode:?}); \
+                     run `peko vault migrate --to {requested:?}` to switch, \
+                     or unset {UNLOCK_METHOD_ENV} to use the existing mode"
+                );
+            }
+        }
+
+        let (dek, unlock_method, salt) = if envelope.salt.is_some() {
             // Passphrase mode.
             let passphrase =
                 Self::passphrase_from_env_or_test_fallback().ok_or(VaultError::NoPassphrase)?;
+            let salt = envelope.salt.as_deref().expect("checked above");
             let dek = Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?;
             (dek, UnlockMethod::Passphrase, Some(salt.to_vec()))
         } else {
@@ -767,7 +988,7 @@ impl Vault {
         })
     }
 
-    fn create_new(path: PathBuf) -> Result<Self> {
+    fn create_new_with_override(path: PathBuf, method_override: UnlockMethodOverride) -> Result<Self> {
         // In test builds, never probe or use the OS keychain. Tests run in
         // parallel and may be executed headless, so always derive the DEK from
         // PEKO_MASTER_PASSPHRASE (if set) or the test fallback. This avoids
@@ -775,6 +996,7 @@ impl Vault {
         // CI deterministic.
         #[cfg(test)]
         {
+            let _ = method_override; // unused in test build
             let passphrase = Self::passphrase_from_env_or_test_fallback()
                 .expect("test passphrase fallback is always available");
             Self::with_passphrase(&path, &passphrase)
@@ -785,25 +1007,61 @@ impl Vault {
             let keychain = crate::identity::keychain::KeychainStorage::with_service(
                 KEYCHAIN_SERVICE.to_string(),
             );
-            let (file, dek, salt, unlock_method) = if keychain.is_available() {
-                // If a DEK already exists in the keychain, reuse it so that a
-                // deleted vault file can be recreated without destroying the
-                // key needed to decrypt any backups of the old file.
-                let dek = match Self::try_retrieve_dek_from_keychain() {
-                    Ok(Some(dek)) => dek,
-                    Ok(None) => {
-                        let dek = Self::generate_dek();
-                        Self::store_dek_in_keychain(&dek)?;
-                        dek
+            let (file, dek, salt, unlock_method) = match method_override.as_unlock_method() {
+                // Caller asserted passphrase: skip the keychain probe and
+                // derive the DEK from `PEKO_MASTER_PASSPHRASE`. This is the
+                // path that lets a developer on macOS avoid keychain ACL
+                // prompts even on a fresh install.
+                Some(UnlockMethod::Passphrase) => {
+                    let passphrase = Self::passphrase_from_env_or_test_fallback()
+                        .ok_or(VaultError::NoPassphrase)?;
+                    let (file, dek, salt) = Self::new_file_with_passphrase(&passphrase)?;
+                    (file, dek, Some(salt), UnlockMethod::Passphrase)
+                }
+                // Caller asserted keychain: require it to actually be
+                // available rather than silently downgrading.
+                Some(UnlockMethod::Keychain) => {
+                    if !keychain.is_available() {
+                        anyhow::bail!(
+                            "{UNLOCK_METHOD_ENV}=keychain but the OS keychain is unavailable; \
+                             remove the override to allow passphrase fallback"
+                        );
                     }
-                    Err(e) => return Err(e),
-                };
-                (VaultFile::default(), dek, None, UnlockMethod::Keychain)
-            } else {
-                let passphrase =
-                    Self::passphrase_from_env_or_test_fallback().ok_or(VaultError::NoPassphrase)?;
-                let (file, dek, salt) = Self::new_file_with_passphrase(&passphrase)?;
-                (file, dek, Some(salt), UnlockMethod::Passphrase)
+                    let dek = match Self::try_retrieve_dek_from_keychain() {
+                        Ok(Some(dek)) => dek,
+                        Ok(None) => {
+                            let dek = Self::generate_dek();
+                            Self::store_dek_in_keychain(&dek)?;
+                            dek
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    (VaultFile::default(), dek, None, UnlockMethod::Keychain)
+                }
+                // Default: prefer keychain when available, fall back to
+                // passphrase (unchanged from pre-override behavior).
+                None => {
+                    if keychain.is_available() {
+                        // If a DEK already exists in the keychain, reuse it so that a
+                        // deleted vault file can be recreated without destroying the
+                        // key needed to decrypt any backups of the old file.
+                        let dek = match Self::try_retrieve_dek_from_keychain() {
+                            Ok(Some(dek)) => dek,
+                            Ok(None) => {
+                                let dek = Self::generate_dek();
+                                Self::store_dek_in_keychain(&dek)?;
+                                dek
+                            }
+                            Err(e) => return Err(e),
+                        };
+                        (VaultFile::default(), dek, None, UnlockMethod::Keychain)
+                    } else {
+                        let passphrase = Self::passphrase_from_env_or_test_fallback()
+                            .ok_or(VaultError::NoPassphrase)?;
+                        let (file, dek, salt) = Self::new_file_with_passphrase(&passphrase)?;
+                        (file, dek, Some(salt), UnlockMethod::Passphrase)
+                    }
+                }
             };
 
             let vault = Self {
@@ -956,6 +1214,21 @@ impl Vault {
             .ok_or_else(|| anyhow::anyhow!("no vault DEK found in OS keychain"))
     }
 
+    /// Delete the vault DEK from the OS keychain. Treats "no such entry"
+    /// as success — the goal is a clean state, and the entry may already
+    /// be gone.
+    fn delete_dek_from_keychain() -> Result<()> {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+            .with_context(|| "failed to create keychain entry for vault DEK deletion")?;
+        match entry.delete_password() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(anyhow::anyhow!(e)
+                .context("failed to delete vault DEK from OS keychain")
+                .into()),
+        }
+    }
+
     fn derive_key_from_passphrase(passphrase: &str, salt: &[u8]) -> Result<Vec<u8>> {
         let argon2 = Argon2::new(
             argon2::Algorithm::Argon2id,
@@ -1074,6 +1347,7 @@ mod tests {
     /// visible to the long-running daemon that holds this Vault
     /// instance. Mirrors `ProviderCatalog::reload`.
     #[test]
+    #[serial_test::serial]
     fn reload_picks_up_keys_written_by_another_holder() {
         use std::sync::Arc;
         let dir = TempDir::new().unwrap();
@@ -1175,5 +1449,172 @@ mod tests {
 
         assert!(vault.delete("openai").unwrap());
         assert!(vault.get("openai").unwrap().is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // migrate() + UnlockMethodOverride
+    // ------------------------------------------------------------------
+
+    /// Migrating a passphrase vault to a *different* passphrase
+    /// re-encrypts the envelope under a fresh salt + new DEK. The
+    /// old passphrase can no longer unlock it.
+    ///
+    /// Note: the underlying `migrate()` always re-encrypts even when
+    /// `target == self.unlock_method()`. The "no-op when already in
+    /// target mode" check is a policy decision that lives in the CLI
+    /// subcommand, not in this primitive, so calling code that *wants*
+    /// to rotate the passphrase without leaving passphrase mode can
+    /// do so via this method.
+    #[test]
+    #[serial_test::serial]
+    fn migrate_passphrase_to_passphrase_with_new_pw() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(VAULT_FILE_NAME);
+
+        // Create and seed the original passphrase vault.
+        let old_pw = SecretString::new("old-passphrase".into());
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "old-passphrase");
+        let mut vault = Vault::with_passphrase(&path, &old_pw).unwrap();
+        vault
+            .set_provider_key("openai", &SecretString::new("sk-keep".into()))
+            .unwrap();
+        let path_buf = path.clone();
+
+        // Migrate to a new passphrase.
+        let new_pw = SecretString::new("new-passphrase".into());
+        let result = vault
+            .migrate(UnlockMethod::Passphrase, Some(&new_pw))
+            .expect("migrate should succeed");
+        assert_eq!(result, UnlockMethod::Passphrase);
+
+        // Old passphrase must NOT unlock the new envelope.
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "old-passphrase");
+        let err = Vault::load_with_override(&path_buf, UnlockMethodOverride::Auto)
+            .expect_err("old passphrase should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("decrypt") || msg.contains("wrong key"),
+            "unexpected error message: {msg}"
+        );
+
+        // New passphrase unlocks and the entry survives.
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "new-passphrase");
+        let reloaded = Vault::load(&path_buf).expect("new passphrase should unlock");
+        let key = reloaded
+            .get_provider_key("openai")
+            .expect("entry should survive the migration");
+        assert_eq!(key.expose_secret(), "sk-keep");
+
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
+    }
+
+    /// `PEKO_UNLOCK_METHOD=passphrase` is a no-op when the envelope is
+    /// already in passphrase mode — the env var is just an assertion.
+    #[test]
+    #[serial_test::serial]
+    fn override_accepts_matching_envelope() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(VAULT_FILE_NAME);
+
+        let pw = SecretString::new("test-passphrase".into());
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "test-passphrase");
+        let seed = Vault::with_passphrase(&path, &pw).unwrap();
+        seed.set_provider_key("anthropic", &SecretString::new("sk-ant".into()))
+            .unwrap();
+
+        std::env::set_var(UNLOCK_METHOD_ENV, "passphrase");
+        let loaded = Vault::load(&path).expect("matching override should load cleanly");
+        let key = loaded
+            .get_provider_key("anthropic")
+            .expect("entry should be readable");
+        assert_eq!(key.expose_secret(), "sk-ant");
+
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
+        std::env::remove_var(UNLOCK_METHOD_ENV);
+    }
+
+    /// `PEKO_UNLOCK_METHOD=keychain` against a passphrase-mode envelope
+    /// is a hard error that points the user at the migration subcommand.
+    #[test]
+    #[serial_test::serial]
+    fn override_rejects_mismatched_envelope() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(VAULT_FILE_NAME);
+
+        let pw = SecretString::new("test-passphrase".into());
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "test-passphrase");
+        let seed = Vault::with_passphrase(&path, &pw).unwrap();
+        seed.set_provider_key("openai", &SecretString::new("sk-1".into()))
+            .unwrap();
+
+        std::env::set_var(UNLOCK_METHOD_ENV, "keychain");
+        let err = Vault::load(&path).expect_err("mismatched override should error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("peko vault migrate"),
+            "error should point at the migration subcommand, got: {msg}"
+        );
+        // Debug-formatted UnlockMethod is "Keychain"; compare case-insensitively
+        // so the assertion survives any future Debug-format tweak.
+        assert!(
+            msg.to_lowercase().contains("keychain"),
+            "error should name the requested mode, got: {msg}"
+        );
+
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
+        std::env::remove_var(UNLOCK_METHOD_ENV);
+    }
+
+    /// A typo in `PEKO_UNLOCK_METHOD` logs a warning and falls back to
+    /// `Auto` (i.e. the on-disk envelope is trusted). We can observe
+    /// the fallback by setting a bogus value against a passphrase-mode
+    /// envelope: the load must succeed.
+    #[test]
+    #[serial_test::serial]
+    fn override_invalid_value_falls_back_to_auto() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(VAULT_FILE_NAME);
+
+        let pw = SecretString::new("test-passphrase".into());
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "test-passphrase");
+        let seed = Vault::with_passphrase(&path, &pw).unwrap();
+        seed.set_provider_key("openai", &SecretString::new("sk-x".into()))
+            .unwrap();
+
+        std::env::set_var(UNLOCK_METHOD_ENV, "biometric-or-whatever");
+        let loaded = Vault::load(&path).expect("invalid override should fall back to Auto");
+        assert_eq!(loaded.unlock_method(), UnlockMethod::Passphrase);
+        let _ = loaded.get_provider_key("openai").expect("entry should be readable");
+
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
+        std::env::remove_var(UNLOCK_METHOD_ENV);
+    }
+
+    /// `Vault::load_with_override(_, Auto)` is the explicit form of
+    /// the env-var-bypass used by the `peko vault migrate` subcommand:
+    /// it loads the on-disk state regardless of what the user has set
+    /// in `PEKO_UNLOCK_METHOD`.
+    #[test]
+    #[serial_test::serial]
+    fn load_with_override_auto_bypasses_env_var() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(VAULT_FILE_NAME);
+
+        let pw = SecretString::new("test-passphrase".into());
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "test-passphrase");
+        let seed = Vault::with_passphrase(&path, &pw).unwrap();
+        seed.set_provider_key("openai", &SecretString::new("sk-y".into()))
+            .unwrap();
+
+        // Set the override to the *wrong* mode. `load_with_override(Auto)`
+        // must still succeed — it observes the on-disk envelope.
+        std::env::set_var(UNLOCK_METHOD_ENV, "keychain");
+        let loaded = Vault::load_with_override(&path, UnlockMethodOverride::Auto)
+            .expect("explicit Auto should bypass the env var");
+        assert_eq!(loaded.unlock_method(), UnlockMethod::Passphrase);
+        let _ = loaded.get_provider_key("openai").expect("entry should be readable");
+
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
+        std::env::remove_var(UNLOCK_METHOD_ENV);
     }
 }
