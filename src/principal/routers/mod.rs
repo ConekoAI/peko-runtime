@@ -1,3 +1,3 @@
-pub mod supervisor;
+pub mod root;
 
-pub use supervisor::{SupervisorRouter, default_supervisor_prompt};
+pub use root::{RootRouter, default_root_prompt};

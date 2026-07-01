@@ -36,8 +36,8 @@ pub trait PrincipalMemory: Send + Sync {
     /// Get the path to the principal's session directory.
     fn sessions_dir(&self) -> PathBuf;
 
-    /// Get the supervisor agent's dedicated session path.
-    fn supervisor_session_path(&self) -> PathBuf;
+    /// Get the root agent's dedicated session path.
+    fn root_session_path(&self) -> PathBuf;
 }
 
 #[derive(Debug, Clone)]
@@ -123,7 +123,7 @@ pub struct DefaultPrincipalMemory {
     /// writer wins and the index silently drops session records. This is
     /// the production fix for the flake observed in CI on
     /// `concurrent_receives_are_isolated` (1 of 10 sessions lost under
-    /// heavy contention; see [[test-concurrent-receives-supervisor-race]]).
+    /// heavy contention; see [[test-concurrent-receives-root-race]]).
     ///
     /// Per-principal scope is correct because `DefaultPrincipalMemory`
     /// is owned by a single Principal — peers landing on different
@@ -192,7 +192,7 @@ impl PrincipalMemory for DefaultPrincipalMemory {
         artifact: SessionArtifact,
     ) -> Result<(), MemoryError> {
         // Hold the index lock for the full read-modify-write so concurrent
-        // recorders don't lose updates (see [[test-concurrent-receives-supervisor-race]]
+        // recorders don't lose updates (see [[test-concurrent-receives-root-race]]
         // for the symptom this prevents: 9/10 sessions in the index when 10
         // peers race, because each `load_index` reads the pre-append state).
         let _guard = self.index_lock.lock().await;
@@ -250,7 +250,7 @@ impl PrincipalMemory for DefaultPrincipalMemory {
         self.memory_dir().join("sessions")
     }
 
-    fn supervisor_session_path(&self) -> PathBuf {
-        self.sessions_dir().join("supervisor.jsonl")
+    fn root_session_path(&self) -> PathBuf {
+        self.sessions_dir().join("root.jsonl")
     }
 }

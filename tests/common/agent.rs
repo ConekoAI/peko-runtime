@@ -58,11 +58,11 @@ system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
 /// therefore create a Principal, not an agent.
 ///
 /// Steps:
-///  1. Seed `mock-llm` as the sole catalog entry, so the supervisor agent's
+///  1. Seed `mock-llm` as the sole catalog entry, so the root agent's
 ///     provider resolution falls through to it (last-resort "first enabled
 ///     catalog entry" rule in `LlmResolver`).
 ///  2. Run the real `peko principal create <name>` command, exercising the
-///     actual framework: it writes the workspace, `agents/primary.md`
+///     actual framework: it writes the workspace, `agents/root/AGENT.md`
 ///     prompt, identity, and `principal.toml`.
 ///
 /// No owner rewrite is needed: `peko principal create` defaults the owner to
@@ -81,10 +81,10 @@ pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
 /// Like [`create_mock_principal`], but additionally grants the Principal a set
 /// of capability tools.
 ///
-/// The supervisor agent's tool whitelist is the union of a fixed base set
+/// The root agent's tool whitelist is the union of a fixed base set
 /// (`Read`, `glob`, `grep`, `session`, `Cron*`, `Task*` — see
-/// `src/principal/agent_runner.rs::run_supervisor_prompt`) and the Principal's
-/// `[capabilities] tools`. Tests that drive the supervisor into calling tools
+/// `src/principal/agent_runner.rs::run_root_agent_prompt`) and the Principal's
+/// `[capabilities] tools`. Tests that drive the root agent into calling tools
 /// outside the base set (e.g. `Write`, `Bash`, `Agent`) must grant them here,
 /// or the runtime's tool dispatcher rejects the tool_call.
 ///
@@ -115,7 +115,7 @@ pub fn create_mock_principal_with_tools(
         return;
     }
 
-    // Patch the Principal's capability tools so the supervisor whitelist
+    // Patch the Principal's capability tools so the root agent's whitelist
     // includes them. We rewrite `principal.toml` directly rather than going
     // through a CLI grant path so the helper stays a single, daemon-free
     // setup step (callable before `DaemonGuard::spawn`).
@@ -124,7 +124,7 @@ pub fn create_mock_principal_with_tools(
     // per-agent `init_builtins_async` registers the tool) and the canonical
     // `builtin:tool:<name>` extension ID (so the dispatcher's
     // `is_tool_enabled` owner check passes at execution time). Granting only
-    // one form yields a silently-disabled tool. (The supervisor's fixed base
+    // one form yields a silently-disabled tool. (The root agent's fixed base
     // whitelist already carries both forms for Read/glob/grep/session/Cron*/
     // Task*; capability tools must supply both themselves.)
     let path = cli

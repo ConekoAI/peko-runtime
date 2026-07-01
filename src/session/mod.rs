@@ -103,7 +103,7 @@ pub use subagent_key::{
 /// Sanitize a string for use as a single filename component on every platform.
 ///
 /// Session ids and todo session keys are canonically written with `:`
-/// separators (e.g. `agent:test:cli:default`, `supervisor:User(alice)`).
+/// separators (e.g. `agent:test:cli:default`, `root:User(alice)`).
 /// Unix file systems accept those characters, but Windows reserves
 /// `< > : " / \ | ? *` (and control chars 0-31) in NTFS filenames, so any
 /// code path that derives a filename from a session id crashes at
@@ -153,8 +153,8 @@ mod safe_filename_tests {
         // Apply to the exact session-key forms used in the Windows-failing
         // tests and verify the rewritten form has no NTFS-reserved chars.
         let todo_key = "agent:test:cli:default";
-        let supervisor_key = "supervisor:User(alice)";
-        for input in [todo_key, supervisor_key] {
+        let root_key = "root:User(alice)";
+        for input in [todo_key, root_key] {
             let out = safe_filename_component(input);
             for ch in out.chars() {
                 assert!(
@@ -183,8 +183,8 @@ mod safe_filename_tests {
         // `(` and `)` are legal in NTFS; only the truly-reserved chars are
         // rewritten. This guards against an over-broad sanitizer.
         assert_eq!(
-            safe_filename_component("supervisor:User(alice)"),
-            "supervisor-User(alice)"
+            safe_filename_component("root:User(alice)"),
+            "root-User(alice)"
         );
     }
 

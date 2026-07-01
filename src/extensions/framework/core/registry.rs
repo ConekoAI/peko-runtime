@@ -150,6 +150,15 @@ impl ExtensionCore {
         self.tool_registry.is_tool_enabled(tool_name).await
     }
 
+    /// Resolve bare tool names to their canonical `extension_id` form.
+    ///
+    /// See [`ToolRegistry::resolve_canonical_ids`] for the contract.
+    /// This is what the principal's `capabilities` go through before
+    /// landing in `ExtensionConfig.enabled`.
+    pub async fn resolve_canonical_ids(&self, names: &[String]) -> Vec<String> {
+        self.tool_registry.resolve_canonical_ids(names).await
+    }
+
     /// Wait for background async tasks to complete
     pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
         self.services.wait_for_async_tasks(timeout).await;

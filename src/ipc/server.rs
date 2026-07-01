@@ -2362,7 +2362,7 @@ impl IpcServer {
                 }
             }
 
-            // Streaming variant of `PrincipalSend`. The supervisor
+            // Streaming variant of `PrincipalSend`. The root agent
             // router's `route_streaming` emits `AgenticEvent`s; we
             // forward `AssistantDelta` (and the related streaming
             // events) as `PrincipalSentChunk` packets, and on completion
@@ -2370,7 +2370,7 @@ impl IpcServer {
             // final answer — identical to what `PrincipalSent` would
             // have returned — followed by the standard `Done`.
             //
-            // The supervisor runs in a `tokio::spawn`'d task that
+            // The root agent runs in a `tokio::spawn`'d task that
             // pushes events into a bounded `mpsc::channel` and the
             // final `RouteDecision` into a `oneshot`. The handler
             // task drains the channel, writes each `PrincipalSentChunk`
@@ -2403,7 +2403,7 @@ impl IpcServer {
                     streaming: true,
                 };
 
-                // Construct the RouterContext the supervisor router expects.
+                // Construct the RouterContext the root router expects.
                 // Audit H1: the streaming path now uses the same
                 // `PrincipalManager::build_router_context` helper as
                 // the one-shot `PrincipalManager::receive` path, so
@@ -2432,7 +2432,7 @@ impl IpcServer {
                 };
 
                 // Bounded channel for streaming events. Capacity
-                // 256; a slow client back-pressures the supervisor
+                // 256; a slow client back-pressures the root agent
                 // (events are dropped on `try_send` failure).
                 let (event_tx, mut event_rx) =
                     tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(256);
@@ -2445,17 +2445,17 @@ impl IpcServer {
                     let _ = event_tx.try_send(event);
                 };
 
-                // Run the supervisor in a background task. When the
+                // Run the root agent in a background task. When the
                 // task completes, the event_tx is dropped, closing
                 // the channel and signalling the handler to flush.
                 let router = Arc::clone(&principal.router);
-                let supervisor_handle = tokio::spawn(async move {
+                let root_agent_handle = tokio::spawn(async move {
                     let result = router.route_streaming(router_ctx, Box::new(on_event)).await;
                     let _ = result_tx.send(result);
                 });
 
                 // Drain the channel into `PrincipalSentChunk` packets
-                // until the supervisor task finishes (channel closes).
+                // until the root agent task finishes (channel closes).
                 while let Some(event) = event_rx.recv().await {
                     let delta = match event {
                         crate::engine::AgenticEvent::AssistantDelta { text, .. } => text,
@@ -2470,9 +2470,9 @@ impl IpcServer {
                         tracing::warn!(
                             "failed to send PrincipalSentChunk: {e}; aborting stream"
                         );
-                        // Drop the supervisor task — it will be
+                        // Drop the root agent task — it will be
                         // cancelled when the handler returns.
-                        supervisor_handle.abort();
+                        root_agent_handle.abort();
                         let done = ResponsePacket::Done {
                             request_id,
                             success: false,
@@ -2483,15 +2483,15 @@ impl IpcServer {
                     }
                 }
 
-                // The channel closed because the supervisor task
+                // The channel closed because the root agent task
                 // dropped `event_tx`. Await the result.
                 let route_result = match result_rx.await {
                     Ok(r) => r,
                     Err(_) => Err(RouterError::AgentFailed(
-                        "supervisor task died before producing a result".into(),
+                        "root-agent task died before producing a result".into(),
                     )),
                 };
-                let _ = supervisor_handle.await;
+                let _ = root_agent_handle.await;
 
                 match route_result {
                     Ok(decision) => {

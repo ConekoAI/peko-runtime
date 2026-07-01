@@ -194,25 +194,26 @@ impl Default for AgentConfig {
 }
 
 /// Prompt configuration
+///
+/// The agent's system prompt is a single Markdown body. `{{placeholder}}`
+/// tokens in the body are replaced by `SystemPromptBuilder` at prompt
+/// build time with rendered sections (tools, skills, agents, runtime,
+/// self-update). See `agents::prompt::builder` for the full placeholder
+/// grammar.
+///
+/// Two production sources for the body:
+///   - A compiled-in agent extension (e.g. `builtin:agent:root`) — the
+///     body comes from `AgentPrompt.body` at construction time and is
+///     never read from disk.
+///   - A user-authored agent extension on disk (`<workspace>/agents/<name>.md`)
+///     — same path; the agent runner loads the markdown and the body
+///     ends up here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PromptConfig {
-    /// System file configuration (formerly bootstrap)
-    #[serde(alias = "bootstrap")] // Backward compatibility
-    pub system: Option<SystemFileConfig>,
-}
-
-/// System file configuration
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SystemFileConfig {
-    /// Maximum characters per file
-    #[serde(default = "default_max_chars")]
-    pub max_chars_per_file: usize,
-    /// Custom system files to load
-    pub files: Option<Vec<String>>,
-}
-
-fn default_max_chars() -> usize {
-    20_000
+    /// The agent's system prompt template (Markdown).
+    ///
+    /// Empty is allowed and falls back to `"You are <name>."` at
+    /// build time so agents without an authored prompt still run.
+    pub body: String,
 }

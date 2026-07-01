@@ -519,7 +519,12 @@ mod tests {
     #[tokio::test]
     async fn test_agent_tool_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let executor = Arc::new(SubagentExecutor::new(manager, "test_agent", 5));
+        let executor = Arc::new(SubagentExecutor::new(
+            manager,
+            "test_agent",
+            5,
+            crate::principal::PrincipalId::generate(),
+        ));
         let tool = AgentTool::new(executor);
 
         assert_eq!(tool.name(), "Agent");
@@ -528,7 +533,12 @@ mod tests {
     #[tokio::test]
     async fn test_agent_tool_with_session_provider() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let executor = Arc::new(SubagentExecutor::new(manager, "test_agent", 5));
+        let executor = Arc::new(SubagentExecutor::new(
+            manager,
+            "test_agent",
+            5,
+            crate::principal::PrincipalId::generate(),
+        ));
 
         let provider = Box::new(StaticSessionKeyProvider::new("test:session:key"));
         let tool = AgentTool::with_session_provider(executor, provider);

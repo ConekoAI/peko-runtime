@@ -40,7 +40,7 @@
 //!
 //! ## v3 provider catalog setup
 //!
-//! In the v3 provider model, the supervisor agent only carries soft hints;
+//! In the v3 provider model, the root agent only carries soft hints;
 //! the actual provider metadata lives in `~/.peko/providers.toml`, and API
 //! keys live in the OS keychain (or fall back to env vars under
 //! `PEKO_TEST_RESOLVER_BOOTSTRAP=1` in CI).
@@ -50,7 +50,7 @@
 //!    daemon keeps `MINIMAX_API_KEY` / `KIMI_API_KEY` and enables the
 //!    env-var bootstrap.
 //! 2. Seeds `providers.toml` with the minimax or kimi catalog entry as the
-//!    SOLE entry, so the supervisor's provider resolution falls through to
+//!    SOLE entry, so the root agent's provider resolution falls through to
 //!    it (last-resort "first enabled catalog entry" rule in `LlmResolver`).
 //! 3. Creates the Principal with `peko principal create`.
 //!
@@ -98,11 +98,11 @@ fn minimax_api_key() -> Option<String> {
 ///
 /// Unlike `common::agent::create_mock_principal`, this does NOT seed the
 /// mock-llm catalog entry — the caller seeds the real provider
-/// (minimax/kimi) as the sole catalog entry first, so the supervisor's
+/// (minimax/kimi) as the sole catalog entry first, so the root agent's
 /// provider resolution falls through to it.
 ///
-/// The supervisor's base tool whitelist already carries `Read`
-/// (`src/principal/agent_runner.rs::run_supervisor_prompt`), so the
+/// The root agent's base tool whitelist already carries `Read`
+/// (`src/principal/agent_runner.rs::run_root_agent_prompt`), so the
 /// native-tool-call test needs no extra capability grant.
 ///
 /// Must be called BEFORE `DaemonGuard::spawn`: `peko principal create`
@@ -234,7 +234,7 @@ async fn cli_providers_kimi_smoke() {
 /// emits a native Anthropic-format `tool_use`/`tool_result` exchange,
 /// executing `Read` and surfacing the file content in its final answer.
 ///
-/// `Read` is in the supervisor's base tool whitelist, so no extra
+/// `Read` is in the root agent's base tool whitelist, so no extra
 /// capability grant is needed.
 ///
 /// Skips when `MINIMAX_API_KEY` is unset.

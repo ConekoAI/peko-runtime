@@ -34,7 +34,7 @@ use super::{
     a2a_signature::{verify_request, SignedFields},
     did_key::did_key_to_verifying_key,
 };
-use crate::tunnel::a2a_send_tool::{A2aSendResult, HubA2AErrorResponse};
+use crate::tunnel::principal_send_tool::{HubErrorResponse, PrincipalSendResult};
 
 use crate::auth::ownership::Permission;
 
@@ -556,7 +556,7 @@ impl TunnelDispatcher {
             // attribute the dispatch under
             // `Subject::Principal(caller_principal_did)`, run it, and send
             // back an `AgentToAgentResponse` carrying the
-            // `A2aSendResult` payload.
+            // `PrincipalSendResult` payload.
             TunnelMessage::AgentToAgentRequest {
                 request_id,
                 caller_runtime_id,
@@ -579,7 +579,7 @@ impl TunnelDispatcher {
                 .await?;
             }
             // Inbound `AgentToAgentResponse` for a request the
-            // outbound `A2aSendTool` path registered in the pending
+            // outbound `PrincipalSendTool` path registered in the pending
             // registry. Complete the oneshot so the outbound
             // `execute_remote` unblocks and decodes the payload.
             TunnelMessage::AgentToAgentResponse {
@@ -705,7 +705,7 @@ impl TunnelDispatcher {
             streaming: true,
         };
 
-        // Bounded channel: a slow tunnel back-pressures the supervisor
+        // Bounded channel: a slow tunnel back-pressures the root agent
         // (events drop on `try_send` failure rather than growing memory).
         let (event_tx, mut event_rx) =
             tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(256);
@@ -1104,10 +1104,10 @@ impl TunnelDispatcher {
     /// 4. Build a `MessageRequest` with `caller_principal =
     ///    Subject::Principal(caller_principal_did)` (issue #24 + #28).
     /// 5. Dispatch via `StatelessAgentService`.
-    /// 6. Serialize the result to `A2aSendResult` and send back via
+    /// 6. Serialize the result to `PrincipalSendResult` and send back via
     ///    the same tunnel as an `AgentToAgentResponse`.
     ///
-    /// Every error path sends a structured `HubA2AErrorResponse`
+    /// Every error path sends a structured `HubErrorResponse`
     /// back to the caller so the caller can distinguish "target
     /// not found" from "target rejected me" from "I'm broken"
     /// rather than waiting for a timeout.
@@ -1215,7 +1215,7 @@ impl TunnelDispatcher {
 
         // 6. Serialize and respond.
         let a2a_result = match result {
-            Ok(response) => A2aSendResult {
+            Ok(response) => PrincipalSendResult {
                 success: true,
                 response: response.content,
                 session_id: session_id.unwrap_or_default(),
@@ -1224,7 +1224,7 @@ impl TunnelDispatcher {
                 duration_ms: None,
                 error: None,
             },
-            Err(e) => A2aSendResult {
+            Err(e) => PrincipalSendResult {
                 success: false,
                 response: String::new(),
                 session_id: String::new(),
@@ -1243,7 +1243,7 @@ impl TunnelDispatcher {
                         &handle,
                         &request_id,
                         "internal_error",
-                        &format!("failed to serialize A2aSendResult: {e}"),
+                        &format!("failed to serialize PrincipalSendResult: {e}"),
                     )
                     .await;
             }
@@ -1278,7 +1278,7 @@ impl TunnelDispatcher {
 
     /// Handle an inbound `AgentToAgentResponse` — the half of the
     /// round-trip that completes the `oneshot::Receiver` the
-    /// outbound `A2aSendTool` is awaiting on. Issue #29 Slice C.
+    /// outbound `PrincipalSendTool` is awaiting on. Issue #29 Slice C.
     async fn handle_inbound_agent_to_agent_response(
         &self,
         request_id: String,
@@ -1300,7 +1300,7 @@ impl TunnelDispatcher {
         Ok(())
     }
 
-    /// Synthesize a `HubA2AErrorResponse` and send it back to the
+    /// Synthesize a `HubErrorResponse` and send it back to the
     /// caller over the live tunnel handle. Used by
     /// `handle_inbound_agent_to_agent_request` on every error
     /// path so the caller's `execute_remote` decodes a structured
@@ -1313,12 +1313,12 @@ impl TunnelDispatcher {
         code: &str,
         message: &str,
     ) -> anyhow::Result<()> {
-        let payload = serde_json::to_vec(&HubA2AErrorResponse {
+        let payload = serde_json::to_vec(&HubErrorResponse {
             kind: "error".to_string(),
             code: code.to_string(),
             message: message.to_string(),
         })
-        .map_err(|e| anyhow::anyhow!("failed to serialize HubA2AErrorResponse: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to serialize HubErrorResponse: {e}"))?;
         handle.send(TunnelMessage::AgentToAgentResponse {
             request_id: request_id.to_string(),
             payload,
@@ -2078,7 +2078,7 @@ mod tests {
 
     /// `handle_inbound_agent_to_agent_request` rejects a request with
     /// a malformed caller_runtime_id (cannot be parsed as a did:key)
-    /// by sending back an `internal_error` `HubA2AErrorResponse`
+    /// by sending back an `internal_error` `HubErrorResponse`
     /// rather than crashing the dispatcher.
     #[tokio::test]
     async fn test_inbound_agent_to_agent_request_rejects_malformed_caller_did() {
@@ -2101,7 +2101,7 @@ mod tests {
             .expect("handler must not panic; errors are reported via the response");
 
         // The handler should have sent back a structured
-        // HubA2AErrorResponse. Drain the response and check the shape.
+        // HubErrorResponse. Drain the response and check the shape.
         let response = rx.recv().await.expect("response must be sent");
         let TunnelMessage::AgentToAgentResponse {
             request_id,
@@ -2111,8 +2111,8 @@ mod tests {
             panic!("expected AgentToAgentResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-malformed");
-        let err: HubA2AErrorResponse =
-            serde_json::from_slice(&payload).expect("payload must be a HubA2AErrorResponse");
+        let err: HubErrorResponse =
+            serde_json::from_slice(&payload).expect("payload must be a HubErrorResponse");
         assert_eq!(err.kind, "error");
         assert_eq!(err.code, "internal_error");
         assert!(
@@ -2125,7 +2125,7 @@ mod tests {
     /// `handle_inbound_agent_to_agent_request` rejects a request with
     /// an invalid signature (key is well-formed but signature bytes
     /// don't verify) by sending back a `forbidden`
-    /// `HubA2AErrorResponse`.
+    /// `HubErrorResponse`.
     #[tokio::test]
     async fn test_inbound_agent_to_agent_request_rejects_bad_signature() {
         let app_state = create_test_app_state().await;
@@ -2170,7 +2170,7 @@ mod tests {
             panic!("expected AgentToAgentResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-bad-sig");
-        let err: HubA2AErrorResponse =
+        let err: HubErrorResponse =
             serde_json::from_slice(&payload).expect("payload must decode");
         assert_eq!(err.code, "forbidden");
         assert!(
@@ -2182,7 +2182,7 @@ mod tests {
 
     /// `handle_inbound_agent_to_agent_response` completes the
     /// matching pending oneshot on the `PendingA2aResponses`
-    /// registry so the outbound `A2aSendTool` awaiter unblocks.
+    /// registry so the outbound `PrincipalSendTool` awaiter unblocks.
     #[tokio::test]
     async fn test_inbound_agent_to_agent_response_completes_pending() {
         let app_state = create_test_app_state().await;
@@ -2392,7 +2392,7 @@ mod tests {
             panic!("expected AgentToAgentResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-a2a");
-        let result: A2aSendResult = serde_json::from_slice(&payload).expect("payload must decode");
+        let result: PrincipalSendResult = serde_json::from_slice(&payload).expect("payload must decode");
         assert!(
             result.error.is_some() || !result.response.is_empty() || result.success,
             "A2A result should reflect that the Principal was reached; got: {result:?}"

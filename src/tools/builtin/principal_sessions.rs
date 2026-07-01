@@ -1,7 +1,7 @@
 //! Principal-wide session introspection tool
 //!
-//! Provides `principal_sessions` for the supervisor agent to inspect sessions
-//! across the whole Principal namespace (not just the supervisor's own session).
+//! Provides `principal_sessions` for the root agent agent to inspect sessions
+//! across the whole Principal namespace (not just the root agent's own session).
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -270,8 +270,8 @@ mod tests {
             std::env::temp_dir()
         }
 
-        fn supervisor_session_path(&self) -> std::path::PathBuf {
-            std::env::temp_dir().join("supervisor.jsonl")
+        fn root_session_path(&self) -> std::path::PathBuf {
+            std::env::temp_dir().join("root.jsonl")
         }
     }
 

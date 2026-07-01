@@ -1,11 +1,11 @@
 //! System prompt generation and management
 //!
-//! Provides OpenClaw-compatible prompt assembly with:
-//! - Bootstrap file injection (AGENTS.md, SOUL.md, etc.)
-//! - Multi-section prompt building
-//! - Prompt modes (full, minimal, none)
+//! Each agent's system prompt is a single Markdown body (see
+//! [`crate::agents::agent_config::PromptConfig::body`]). At build time
+//! `SystemPromptService` runs the body through `SystemPromptBuilder`
+//! which replaces `{{placeholder}}` tokens with rendered sections
+//! (tools, skills, agents, runtime, self-update).
 
-pub mod bootstrap;
 pub mod builder;
 pub mod placeholder;
 pub mod service;

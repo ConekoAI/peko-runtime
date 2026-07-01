@@ -22,9 +22,9 @@
 //! After the "Principal as the single actor" migration, the standalone
 //! agent CLI is gone — the Principal is the sole user-facing actor. The
 //! chat surface is `peko send <principal>`, and the dispatcher's
-//! `is_tool_enabled` whitelist is now the union of the supervisor's
+//! `is_tool_enabled` whitelist is now the union of the root agent's
 //! fixed base set plus the Principal's `principal.toml [capabilities]`
-//! entries (see `src/principal/agent_runner.rs::run_supervisor_prompt`).
+//! entries (see `src/principal/agent_runner.rs::run_root_agent_prompt`).
 //!
 //! Capability grants are persisted to `principal.toml` rather than to
 //! an agent's `config.toml`, and the CLI does not expose a live
@@ -149,7 +149,7 @@ fn fixture_dir(relative: &str) -> PathBuf {
 }
 
 /// Write a Principal whose `[capabilities]` whitelist carries the
-/// canonical owner IDs the supervisor needs to dispatch MCP / universal
+/// canonical owner IDs the root agent needs to dispatch MCP / universal
 /// tool calls. The CLI does not expose a live capability-grant command
 /// — we patch `principal.toml` directly after `peko principal create`
 /// (mirrors `tests/common/agent.rs::create_mock_principal_with_tools`).
@@ -157,7 +157,7 @@ fn fixture_dir(relative: &str) -> PathBuf {
 /// `mcps` lists bare server names (e.g. `standard-echo`); `tools` lists
 /// `universal:<tool_name>` canonical ids (e.g.
 /// `universal:calculator_simple`). Each entry is written verbatim — the
-/// supervisor's whitelist extension just concatenates these buckets into
+/// root agent's whitelist extension just concatenates these buckets into
 /// the per-execution `enabled` list, which `is_tool_enabled` then
 /// matches against the tool's owner.
 fn write_capability_principal(
@@ -244,7 +244,7 @@ async fn ext_mcp_standard_echo_roundtrip() {
 
     let cli = PekoCli::new();
     // Grant the MCP server via `[capabilities] mcps` (the bare
-    // server name is the owner id; the supervisor's whitelist
+    // server name is the owner id; the root agent's whitelist
     // extension concatenates `capabilities.mcps` into the runtime
     // `enabled` list, which `is_tool_enabled` then matches against
     // the tool's owner).

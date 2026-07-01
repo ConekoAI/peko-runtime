@@ -7,7 +7,7 @@
 //! dependency graph acyclic: both the bootstrap side
 //! (`extension::core::ExtensionServices` holds the ctx as an
 //! optional slot) and the consumer side
-//! (`tools::builtin::messaging::a2a_send::A2aSendTool`) import it
+//! (`tools::builtin::messaging::a2a_send::PrincipalSendTool`) import it
 //! from here.
 
 use std::sync::Arc;
@@ -20,13 +20,13 @@ use crate::tunnel::hub_directory::AgentDirectory;
 use crate::tunnel::{PendingA2aResponses, TunnelHandle};
 
 /// Cross-runtime a2a dispatch context. Holds the dependencies the
-/// outbound `a2a_send` path needs: the directory client to resolve
+/// outbound `principal_send` path needs: the directory client to resolve
 /// the target, the pending registry to correlate the response, the
 /// signing key for the envelope, the caller's runtime_id, the live
 /// tunnel handle slot, and the per-call response timeout.
 ///
 /// Built once at daemon-state startup (Slice B' / B+C) and held
-/// behind an `Arc` so every per-agent `A2aSendTool` instance shares
+/// behind an `Arc` so every per-agent `PrincipalSendTool` instance shares
 /// the same registry, signing key, and tunnel slot.
 pub struct CrossRuntimeA2aCtx {
     /// Directory client (`HubAgentDirectoryClient` in production,

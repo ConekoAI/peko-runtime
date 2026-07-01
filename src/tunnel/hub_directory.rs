@@ -30,7 +30,7 @@
 //! tests and the Slice E E2E harness wire [`FakeAgentDirectory`] or an
 //! in-process server. The trait is small on purpose — adding methods
 //! is a follow-up, not an upfront design (YAGNI; the existing surface
-//! is exactly what the outbound `a2a_send` path needs).
+//! is exactly what the outbound `principal_send` path needs).
 
 use async_trait::async_trait;
 use reqwest::StatusCode;
@@ -112,7 +112,7 @@ pub enum DirectoryError {
 
 /// The minimal interface the outbound a2a path needs. Hold this trait
 /// behind `Arc<dyn AgentDirectory>` (it's `Send + Sync`) so the same
-/// `A2aSendTool` instance can be cheaply cloned across the tool
+/// `PrincipalSendTool` instance can be cheaply cloned across the tool
 /// registry without re-allocating the underlying HTTP client.
 #[async_trait]
 pub trait AgentDirectory: Send + Sync {

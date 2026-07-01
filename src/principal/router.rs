@@ -44,10 +44,10 @@ pub struct RouterContext {
     pub capabilities: super::PrincipalCapabilities,
     pub intent: super::PrincipalIntentConfig,
     pub governance: super::PrincipalGovernanceConfig,
-    /// Shared inbox registry so the router can wire the supervisor agent
+    /// Shared inbox registry so the router can wire the root agent
     /// to the same inbox the Principal boundary pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
-    /// Per-principal lock held during supervisor session creation so concurrent
+    /// Per-principal lock held during root-agent session creation so concurrent
     /// peers do not race on shared session metadata/index writes.
     pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
 }
@@ -87,12 +87,12 @@ pub trait PrincipalRouter: Send + Sync {
 
     /// Streaming variant. The router is given an `on_event` callback
     /// that it invokes for each `AgenticEvent` it produces (typically
-    /// `AssistantDelta` deltas as the supervisor agent's response
+    /// `AssistantDelta` deltas as the root agent's response
     /// unfolds). The callback must be cheap and non-blocking.
     ///
     /// Default implementation ignores the callback and delegates to
-    /// `route()`. Routers that support streaming (the default
-    /// supervisor, and any extension that wants live tokens) override
+    /// `route()`. Routers that support streaming (the canonical
+    /// root-agent router, and any extension that wants live tokens) override
     /// this and forward events to the caller as they happen.
     ///
     /// Returns the same final `RouteDecision` that the non-streaming
@@ -104,6 +104,12 @@ pub trait PrincipalRouter: Send + Sync {
     ) -> Result<RouteDecision, RouterError> {
         self.route(ctx).await
     }
+
+    /// Phase 4b: bind the local runtime's `runtime_id` (used by
+    /// `principal_send` envelopes). Default implementation is a no-op
+    /// (the canonical `RootRouter` overrides). Routers that don't
+    /// need a runtime id ignore the call.
+    fn set_caller_runtime_id(&self, _runtime_id: String) {}
 }
 
 #[derive(Debug, thiserror::Error)]

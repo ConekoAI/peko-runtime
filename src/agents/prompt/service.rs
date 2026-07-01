@@ -21,7 +21,10 @@ pub struct SystemPromptService;
 impl SystemPromptService {
     /// Build the initial system prompt for an agent.
     ///
-    /// Includes bootstrap file injection and skill loading.
+    /// The agent's prompt body comes from `AgentConfig::prompt.body`
+    /// (set by `build_agent_config` from the resolved `AgentPrompt`).
+    /// Placeholders in the body are replaced with rendered sections
+    /// (tools, skills, agents, runtime).
     pub async fn build(agent: &Agent, extension_core: &Arc<ExtensionCore>) -> String {
         info!(
             "Building initial system prompt for agent '{}'",
@@ -35,20 +38,18 @@ impl SystemPromptService {
         let _ = Self::load_and_register_agents(agent, extension_core).await;
 
         let workspace_dir = Self::resolve_workspace(agent);
-
-        // Extract custom bootstrap files from agent config if specified
-        let bootstrap_files = agent
+        let body = agent
             .config
             .prompt
             .as_ref()
-            .and_then(|p| p.system.as_ref())
-            .and_then(|s| s.files.clone());
+            .map(|p| p.body.clone())
+            .unwrap_or_default();
 
         SystemPromptBuilder::new(agent.name())
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
             .with_extension_core(Arc::clone(extension_core))
-            .with_system_files(bootstrap_files)
+            .with_body(body)
             .build()
     }
 

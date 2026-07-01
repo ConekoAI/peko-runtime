@@ -130,6 +130,33 @@ impl ToolRegistry {
     pub async fn list_tool_names(&self) -> Vec<String> {
         self.tool_index.keys().await
     }
+
+    /// Resolve a list of bare tool names to their canonical
+    /// `extension_id` form.
+    ///
+    /// For each input name, if the registry knows the tool's owning
+    /// `extension_id` (e.g. `"Read"` → `"builtin:tool:Read"`), the
+    /// canonical form is returned. For unknown names — typically
+    /// extension-provided skills or MCPs whose canonical ID is
+    /// already the bare name — the bare name is returned unchanged.
+    ///
+    /// This is what the principal's `capabilities` go through before
+    /// they land in `ExtensionConfig.enabled`: the core's whitelist
+    /// check ([`Self::is_tool_enabled`]) prefers the canonical form,
+    /// and the bare-name fallback is a defensive escape hatch the
+    /// Phase-4 cleanup is moving away from.
+    pub async fn resolve_canonical_ids(&self, names: &[String]) -> Vec<String> {
+        let owners = self.tool_owners.read().await;
+        names
+            .iter()
+            .map(|name| {
+                owners
+                    .get(name)
+                    .map(|ext_id| ext_id.0.clone())
+                    .unwrap_or_else(|| name.clone())
+            })
+            .collect()
+    }
 }
 
 impl Default for ToolRegistry {

@@ -1,13 +1,13 @@
 //! A2A message request/response types and the `AgentMessageService` trait.
 //!
 //! These types were originally defined in `tunnel::a2a_message_types` and the
-//! trait lived in `tunnel::a2a_send_tool`. They were promoted to
+//! trait lived in `tunnel::principal_send_tool`. They were promoted to
 //! `common::types::a2a` so `src/extensions/framework/` can hold a trait-object
 //! reference to an agent message service without depending on the concrete
 //! `agents::StatelessAgentService` or on `tunnel` types (Issue 015/020 boundary
 //! Rule 5).
 //!
-//! `tunnel::a2a_message_types` and `tunnel::a2a_send_tool` keep thin re-exports
+//! `tunnel::a2a_message_types` and `tunnel::principal_send_tool` keep thin re-exports
 //! for backward compatibility with existing callers.
 
 use crate::auth::Subject;

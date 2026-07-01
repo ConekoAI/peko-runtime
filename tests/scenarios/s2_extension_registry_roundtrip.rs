@@ -219,9 +219,9 @@ fn principal_config_path(cli: &PekoCli, principal_name: &str) -> PathBuf {
 fn create_collaborator_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
     common::create_mock_principal_with_tools(cli, name, mock_llm_url, &["calculator-skill"]);
 
-    // Add the canonical-form alias on top. The supervisor's whitelist
+    // Add the canonical-form alias on top. The root agent's whitelist
     // extension concatenates `capabilities.tools` into the per-execution
-    // `enabled` list, so the dual form is redundant in the supervisor
+    // `enabled` list, so the dual form is redundant in the root agent
     // case (the base whitelist already enumerates built-in canonical
     // ids), but keeping the dispatcher's `is_tool_enabled` happy is the
     // load-bearing concern here.
@@ -445,9 +445,9 @@ async fn ext_pull_round_trip_two_clis() {
     // standalone-agent `peko ext enable <ext> --target <agent>` flow
     // is gone: the chat surface is `peko send <principal>`, and the
     // dispatcher's `is_tool_enabled` whitelist is the union of the
-    // supervisor's fixed base set plus the Principal's `principal.toml
+    // root agent's fixed base set plus the Principal's `principal.toml
     // [capabilities] tools` entries (see
-    // `src/principal/agent_runner.rs::run_supervisor_prompt`). The CLI
+    // `src/principal/agent_runner.rs::run_root_agent_prompt`). The CLI
     // does not expose a live capability-grant command — we patch
     // `principal.toml` directly via `create_collaborator_principal`
     // (mirrors `tests/common/agent.rs::create_mock_principal_with_tools`).

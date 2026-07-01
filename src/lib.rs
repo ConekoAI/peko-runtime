@@ -1,7 +1,7 @@
 //! Peko - Principal-as-actor runtime
 //!
 //! A Rust-based runtime where each user-facing entity is a Principal
-//! (identity, memory, governance, capabilities, supervisor agent, and
+//! (identity, memory, governance, capabilities, root agent, and
 //! a workspace of agent prompts). Agents are now thin Markdown
 //! extensions (`AGENT.md`) managed by the extension framework.
 //!
@@ -9,7 +9,7 @@
 //!
 //! Peko uses a minimal core (~500KB-1MB) with on-demand loaded extensions:
 //!
-//! - **Core**: Principal runtime, supervisor routing, tool registry
+//! - **Core**: Principal runtime, root-agent routing, tool registry
 //! - **Extensions**: Unified extension system (skills, tools, MCP, gateways,
 //!   and the thin agent prompts that Principals delegate to)
 //! - **Gateways**: Messaging platform adapters (Discord, Slack, etc.) as extensions
@@ -138,7 +138,7 @@ pub mod common;
 // Core Runtime
 // ============================================================================
 
-/// Principal runtime, supervisor lifecycle, and the workspace-of-agent-prompts
+/// Principal runtime, root-agent lifecycle, and the workspace-of-agent-prompts
 /// model that replaced standalone multi-agent management.
 pub mod agents;
 

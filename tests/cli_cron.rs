@@ -31,7 +31,9 @@
 
 mod common;
 use common::agent::seed_mock_provider_in_catalog;
-use common::{configure_mock, create_mock_principal, run_with_timeout, PekoCli};
+use common::{
+    configure_mock, create_mock_principal_with_tools, run_with_timeout, PekoCli,
+};
 use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
@@ -195,18 +197,31 @@ fn remove_jobs_with_prefix(cli: &PekoCli, prefix: &str) {
     }
 }
 
-/// Create a Principal whose supervisor agent can drive the cron tool family.
+/// Create a Principal whose root agent can drive the cron tool family.
 ///
 /// Under the Principal-as-single-actor model, `peko send <name>` targets a
-/// Principal, and the supervisor agent's tool whitelist already includes
+/// Principal, and the root agent's tool whitelist already includes
 /// `CronCreate`/`CronDelete`/`CronList` (see
-/// `src/principal/agent_runner.rs::run_supervisor_prompt`). So the cron
+/// `src/principal/agent_runner.rs::run_root_agent_prompt`). So the cron
 /// agent-tool tests just need a mock-backed Principal — no special agent
 /// config is required. `create_mock_principal` seeds `mock-llm` as the sole
 /// catalog entry and runs the real `peko principal create`.
 // (Retained as a named wrapper so the call sites read intentionally.)
+//
+// Pre-Phase-4a the root agent had a fixed base whitelist that
+// included `CronCreate`, `CronDelete`, `CronList` (see the old
+// `write_cron_agent` helper). After Phase 4a the principal's
+// `capabilities.tools` is the only source of truth, so the cron
+// principal must explicitly grant the cron tools — otherwise the
+// dispatcher rejects the LLM's tool_call as "Tool 'CronCreate' is
+// currently disabled" and the daemon's cron DB stays empty.
 fn create_cron_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
-    create_mock_principal(cli, name, mock_llm_url);
+    create_mock_principal_with_tools(
+        cli,
+        name,
+        mock_llm_url,
+        &["CronCreate", "CronDelete", "CronList"],
+    );
 }
 
 // ---------------------------------------------------------------------------

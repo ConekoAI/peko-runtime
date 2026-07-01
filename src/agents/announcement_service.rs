@@ -265,6 +265,7 @@ mod tests {
             manager.clone(),
             "test",
             5,
+            crate::principal::PrincipalId::generate(),
         ));
 
         let service = AnnouncementService::new(executor, manager, 5);

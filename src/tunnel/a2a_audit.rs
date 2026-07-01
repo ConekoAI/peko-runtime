@@ -31,12 +31,12 @@ use tracing::info;
 use crate::session::events::{A2aMessageType, A2aReceivedEvent, A2aSentEvent, EventEnvelope};
 
 /// Construct an `A2aSentEvent` for the outbound side — emitted
-/// after `A2aSendTool::execute_remote` has successfully sent
+/// after `PrincipalSendTool::execute_remote` has successfully sent
 /// the `AgentToAgentRequest` over the tunnel. The event is the
 /// call-side audit row for "agent X on runtime R1 sent a message
 /// to agent Y on runtime R2".
 ///
-/// `session_id` is the *local* session the outbound `a2a_send`
+/// `session_id` is the *local* session the outbound `principal_send`
 /// call originated from (correlates the audit row with the
 /// caller's session log). It's not stored on the event itself
 /// because `EventEnvelope` only carries `{id, ts}`; the value is
@@ -141,7 +141,7 @@ pub fn build_a2a_sent_response(
 }
 
 /// Construct an `A2aReceivedEvent` for the response side — emitted
-/// in `A2aSendTool::execute_remote` after the
+/// in `PrincipalSendTool::execute_remote` after the
 /// `AgentToAgentResponse` has been received. Symmetric to
 /// `build_a2a_received_inbound` but on the *calling* runtime.
 #[allow(clippy::too_many_arguments)]

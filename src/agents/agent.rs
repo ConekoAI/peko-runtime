@@ -53,11 +53,17 @@ pub struct Agent {
     inbox_registry: Option<Arc<InboxRegistry>>,
     /// Optional principal workspace. When set, `init_builtins_async` builds the
     /// `Agent` tool's `AgentService` with `for_principal(workspace)` so the
-    /// supervisor resolves subagents from `<workspace>/agents/<name>/AGENT.md`
+    /// root agent resolves subagents from `<workspace>/agents/<name>/AGENT.md`
     /// instead of the global `<home>/agents/<name>/config.toml`. Without this,
     /// `init_builtins_async` (run lazily at execution time) would clobber any
     /// principal-scoped `Agent` tool registered on the core beforehand.
     principal_workspace: Option<std::path::PathBuf>,
+    /// Caller principal's stable DID. Bound at construction by
+    /// `with_caller_principal_did` so `principal_send` can attribute
+    /// the outbound request under
+    /// `Subject::Principal(caller_principal_did)` on the wire.
+    /// `None` means the tool is not registered.
+    caller_principal_did: Option<String>,
 }
 
 impl Clone for Agent {
@@ -79,6 +85,7 @@ impl Clone for Agent {
             extension_core: Arc::clone(&self.extension_core),
             inbox_registry: self.inbox_registry.clone(),
             principal_workspace: self.principal_workspace.clone(),
+            caller_principal_did: self.caller_principal_did.clone(),
         }
     }
 }
@@ -122,7 +129,7 @@ impl Agent {
         tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
         // Add Agent tool with executor and session provider. When this agent
-        // runs as a Principal supervisor, build the service scoped to the
+        // runs as a Principal root agent, build the service scoped to the
         // principal workspace so subagents resolve from
         // `<workspace>/agents/<name>/AGENT.md`. Otherwise fall back to the
         // global agent registry.
@@ -172,41 +179,45 @@ impl Agent {
         // to the agent's own `AsyncExecutor` registry so each agent only sees its
         // own async tasks (session isolation).
 
-        // Add a2a_send tool for agent-to-agent messaging (ADR-023)
-        if let Some(agent_service) = self.extension_core.services().agent_service() {
-            // Issue #28: prefer `agent_did` for the wire-side
-            // `Subject::Principal`; fall back to the name for legacy agents
-            // that predate the per-agent persistent keypair.
-            //
-            // Issue #29 (Slice B+C): also pull the cross-runtime a2a
-            // ctx from the extension services (set by the daemon-state
-            // after `start_tunnel`). If the runtime hasn't initialized
-            // cross-runtime dispatch yet (offline runtime, no PekoHub
-            // credential, or this PR's bootstrap hasn't shipped), the
-            // ctx is `None` and the tool falls back to the local-only
-            // path — same behavior as pre-#29.
-            //
-            // Cycle 5 (refactor/clippy-cleanup-rust196): coerce the
-            // concrete service arc into the `AgentMessageService`
-            // trait object so the tool is constructed through the
-            // `build_tool` factory rather than directly binding to the
-            // concrete `StatelessAgentService` type.
-            let dyn_service: Arc<dyn crate::common::types::a2a::AgentMessageService> =
-                agent_service;
+        // Add principal_send tool for principal-to-principal cross-runtime
+        // messaging. Replaces the legacy `a2a_send` tool (ADR-023 +
+        // root-agent unification): the target is now a Principal DID
+        // (not an agent name on a target runtime), and dispatch flows
+        // through the tunnel even when caller and target share a daemon.
+        //
+        // Both the caller's principal DID and the cross-runtime ctx
+        // must be present; otherwise the tool is intentionally not
+        // registered (no fall-back local-only path — `principal_send`
+        // is exclusively cross-runtime).
+        //
+        // The ctx is pulled from extension services (set by the
+        // daemon-state after `start_tunnel`). For pre-#29 runtimes /
+        // test harnesses without cross-runtime dispatch, the ctx is
+        // `None` and the tool is omitted — same gating as before.
+        if let Some(caller_did) = self.caller_principal_did.as_ref() {
             let cross_ctx = self
                 .extension_core
                 .services()
                 .cross_runtime_a2a_ctx()
                 .and_then(|ctx| Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok());
-            let tool = crate::tunnel::a2a_send_tool::build_tool(
-                dyn_service,
-                Some(&self.config.name),
-                self.config.agent_did.as_deref(),
-                cross_ctx,
-            );
-            tools.push(tool);
+            if let Some(ctx) = cross_ctx {
+                tools.push(crate::tunnel::principal_send_tool::build_tool(
+                    caller_did.clone(),
+                    ctx,
+                ));
+            } else {
+                tracing::debug!(
+                    "CrossRuntimeA2aCtx not available on ExtensionCore — \
+                     principal_send tool will not be registered for agent {}",
+                    self.config.name
+                );
+            }
         } else {
-            tracing::warn!("StatelessAgentService not available on ExtensionCore — a2a_send tool will not be registered");
+            tracing::debug!(
+                "Caller identity not bound on agent {} — \
+                 principal_send tool will not be registered",
+                self.config.name
+            );
         }
 
         // Filter based on agent config extension whitelist
@@ -387,35 +398,45 @@ impl Agent {
 
     /// Like `new_with_session_manager`, but also accepts an optional
     /// `LlmResolver` (v3+).
+    ///
+    /// Used for one-off CLI invocations that don't share a principal
+    /// scope: the agent constructs a synthetic `PrincipalId` so its
+    /// `SubagentExecutor` carries a stable identity even though no real
+    /// principal owns the call.
     pub async fn new_with_session_manager_and_resolver(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
     ) -> Result<Self> {
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
-        Self::new_with_session_manager_resolver_and_core(
+        Self::new_with_session_manager_resolver(
             config,
             session_manager,
             llm_resolver,
-            extension_core,
+            crate::principal::PrincipalId::generate(),
             None,
         )
         .await
     }
 
-    /// Create a new agent with an existing session manager, optional resolver,
-    /// a custom `ExtensionCore`, and an optional external `InboxRegistry`.
+    /// Create a new agent with an existing session manager, optional
+    /// `LlmResolver`, the spawning principal's id, and an optional
+    /// external `InboxRegistry`.
     ///
-    /// This is the internal constructor used by the supervisor agent so its
-    /// principal-scoped tools and adapted `Agent` tool live on a dedicated
-    /// core rather than the global one. When `inbox_registry` is supplied,
-    /// the agentic loop drains that registry's session inbox, allowing the
-    /// Principal boundary to queue steering messages into a running supervisor.
-    pub async fn new_with_session_manager_resolver_and_core(
+    /// There is no per-agent `ExtensionCore` — the global
+    /// [`crate::extensions::framework::core::global_core`] is used for
+    /// every agent of the principal. Per-agent visibility is enforced
+    /// by each agent's own capability whitelist. `principal_id` is the
+    /// spawning principal's runtime id, carried so the agent's
+    /// `SubagentExecutor` and any descendant spawns inherit the same
+    /// principal scope. When `inbox_registry` is supplied, the agentic
+    /// loop drains that registry's session inbox, allowing the
+    /// Principal boundary to queue steering messages into a running
+    /// root agent.
+    pub async fn new_with_session_manager_resolver(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
-        extension_core: Arc<ExtensionCore>,
+        principal_id: crate::principal::PrincipalId,
         inbox_registry: Option<Arc<InboxRegistry>>,
     ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
@@ -450,11 +471,19 @@ impl Agent {
         // Initialize provider if configured
         let provider = Self::init_provider(&config, llm_resolver.as_ref()).await?;
 
+        // Single global ExtensionCore — every agent of the principal
+        // shares it. `principal_id` is the spawning principal's
+        // runtime id; descendant subagents inherit it via the
+        // shared `SubagentExecutor`.
+        let extension_core =
+            global_core().expect("Global ExtensionCore not initialized");
+
         // Initialize subagent executor
         let subagent_executor_base = SubagentExecutor::new(
             Arc::clone(&session_manager),
             config.name.clone(),
             5, // max_concurrent
+            principal_id,
         );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
@@ -484,6 +513,7 @@ impl Agent {
             extension_core,
             inbox_registry,
             principal_workspace: None,
+            caller_principal_did: None,
         };
 
         info!(
@@ -497,7 +527,7 @@ impl Agent {
     /// Scope this agent's `Agent` tool to a Principal workspace.
     ///
     /// When set, `init_builtins_async` builds the `Agent` tool's `AgentService`
-    /// with `for_principal(workspace)`, so the supervisor resolves subagents
+    /// with `for_principal(workspace)`, so the root agent resolves subagents
     /// from `<workspace>/agents/<name>/AGENT.md`. This must be set before the
     /// agent executes: `init_builtins_async` runs lazily inside
     /// `prepare_execution`, so a principal-scoped `Agent` tool registered on the
@@ -515,6 +545,20 @@ impl Agent {
         self
     }
 
+    /// Bind the caller's principal identity for `principal_send`.
+    ///
+    /// `principal_did` is the Principal's stable DID (used as
+    /// `caller_principal_did` on the wire). When `None`, the
+    /// `principal_send` tool is not registered (the agent lacks the
+    /// identity needed to attribute cross-principal calls). The local
+    /// runtime id is taken from `CrossRuntimeA2aCtx::caller_runtime_id`
+    /// at registration time, so this builder does not need it.
+    #[must_use]
+    pub fn with_caller_principal_did(mut self, principal_did: Option<String>) -> Self {
+        self.caller_principal_did = principal_did;
+        self
+    }
+
     /// Create a new agent with an existing session manager and a shared subagent executor.
     ///
     /// Used for subagent execution where the child must share the parent's
@@ -528,6 +572,14 @@ impl Agent {
     /// before the child could call any tool. Passing the parent's already-
     /// resolved provider lets the child run its own LLM calls against the
     /// same provider/catalog entry.
+    ///
+    /// Tools resolve from the daemon-global
+    /// [`crate::extensions::framework::core::global_core`] — there is no
+    /// per-agent core. The shared executor carries the spawning
+    /// principal's DID so descendant spawns inherit the same principal
+    /// scope; the agent's own `extension_core` field is initialised to
+    /// the global core for backward-compatible access by `extension_core()`
+    /// callers.
     pub async fn new_with_shared_executor(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
@@ -535,6 +587,8 @@ impl Agent {
         inherited_provider: Option<Arc<crate::providers::Provider>>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
+        let extension_core =
+            global_core().expect("Global ExtensionCore not initialized");
 
         let identity = Self::load_or_create_identity(&config).await?;
 
@@ -578,7 +632,11 @@ impl Agent {
             config.name
         )));
 
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+        // The caller supplies the `ExtensionCore` directly — typically the
+        // principal's per-principal core, so subagents share infrastructure
+        // with the principal's root agent instead of falling through to the
+        // daemon-global core. Phase 2 fix; before this, every subagent
+        // silently bypassed the principal's tool bag.
 
         let agent = Self {
             config,
@@ -593,6 +651,7 @@ impl Agent {
             extension_core,
             inbox_registry: None,
             principal_workspace: None,
+            caller_principal_did: None,
         };
 
         info!(
@@ -1396,8 +1455,19 @@ impl Agent {
 
         let provider = Self::init_provider(&config, None).await?;
 
-        let subagent_executor_base =
-            SubagentExecutor::new(Arc::clone(&session_manager), config.name.clone(), 5);
+        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
+            "agent:{}:cli:default",
+            config.name
+        )));
+
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+
+        let subagent_executor_base = SubagentExecutor::new(
+            Arc::clone(&session_manager),
+            config.name.clone(),
+            5,
+            crate::principal::PrincipalId::generate(),
+        );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
                 subagent_executor_base
@@ -1406,13 +1476,6 @@ impl Agent {
             ),
             None => Arc::new(subagent_executor_base),
         };
-
-        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-            "agent:{}:cli:default",
-            config.name
-        )));
-
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         Ok(Self {
             config,
@@ -1427,6 +1490,7 @@ impl Agent {
             extension_core,
             inbox_registry: None,
             principal_workspace: None,
+            caller_principal_did: None,
         })
     }
 
@@ -1516,6 +1580,25 @@ impl Agent {
         agent_did: &str,
     ) -> Result<()> {
         if config.agent_did.as_deref() == Some(agent_did) {
+            return Ok(());
+        }
+
+        // Best-effort: if the on-disk config location doesn't exist yet
+        // (e.g. a Principal-only install where `~/.peko/agents/` was never
+        // created, or a freshly-spawned subagent whose parent hasn't written
+        // its config), there's nothing to backfill and the in-memory identity
+        // is already valid. Skip silently rather than spamming a warning
+        // every daemon tick.
+        let Some(parent) = config_path.parent() else {
+            return Ok(());
+        };
+        if !parent.exists() {
+            debug!(
+                "Skipping agent_did backfill for {:?}: parent dir {} does not exist \
+                 (Principal-only install or subagent without on-disk config)",
+                config_path,
+                parent.display()
+            );
             return Ok(());
         }
 
