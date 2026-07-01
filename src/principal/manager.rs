@@ -505,6 +505,58 @@ impl PrincipalManager {
             }
         }
     }
+
+    /// Streaming entry point: like [`receive`](Self::receive), but drives
+    /// the router's `route_streaming` so token deltas are delivered to
+    /// `on_event` as they are produced. Permission checks, session recall,
+    /// and the per-peer serial queue are identical to `receive` — both
+    /// funnel through [`build_router_context`](Self::build_router_context)
+    /// and acquire the same `inbox_registry` run permit, so the streaming
+    /// and one-shot paths can't drift.
+    ///
+    /// The returned [`PrincipalResponse`] carries the authoritative final
+    /// answer (the same value `receive` would return). Callers that
+    /// forwarded the streamed deltas can ignore the body; callers that
+    /// need a single final string — or that hit the queued path, which
+    /// emits no events — use it.
+    pub async fn receive_streaming(
+        &self,
+        principal_id: PrincipalId,
+        peer: Subject,
+        message: String,
+        channel: ChannelContext,
+        on_event: Box<dyn Fn(crate::engine::AgenticEvent) + Send + Sync>,
+    ) -> Result<PrincipalResponse, PrincipalManagerError> {
+        let principal = self
+            .get(principal_id)
+            .await
+            .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
+
+        let ctx = self
+            .build_router_context(&principal, peer, message, channel)
+            .await?;
+
+        // Same serial-queue discipline as `receive`: only one supervisor
+        // run may be active per peer/session. A message arriving while a
+        // run is active is queued as a steering message (no streaming
+        // events for the queued case).
+        let session_id = super::routers::supervisor::supervisor_session_id(&ctx.peer);
+        match self.inbox_registry.try_acquire_run(&session_id).await {
+            Some(_permit) => {
+                let decision = principal.router.route_streaming(ctx, on_event).await?;
+                match decision {
+                    RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
+                }
+            }
+            None => {
+                let inbox = self.inbox_registry.get_or_create(&session_id).await;
+                inbox.push(SteeringMessage::new(ctx.message.clone()));
+                Ok(PrincipalResponse::queued(format!(
+                    "Queued for supervisor session {session_id}."
+                )))
+            }
+        }
+    }
 }
 
 /// Response from a Principal.receive call.

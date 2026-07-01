@@ -445,12 +445,18 @@ where
         session_key_provider.set_session_key(sid);
     }
 
-    // Run the agentic loop.
+    // Run the agentic loop in LIVE streaming mode so the supervisor emits
+    // per-token `AssistantDelta` events (not a single buffered
+    // `AssistantText` at the end). `execute_with_session` would use
+    // `OrchestratorConfig::final_only()`, which defeats real end-to-end
+    // streaming — the caller would receive the whole answer as one chunk.
+    // `execute_streaming_with_session` uses `OrchestratorConfig::live()`.
     let result = agent
-        .execute_with_session(
+        .execute_streaming_with_session(
             &message,
             session,
             Some(history),
+            None, // caller_id: attribution is handled at the dispatcher boundary
             on_event,
         )
         .await

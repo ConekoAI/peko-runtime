@@ -4,12 +4,22 @@
 //! Handles chat execution, streaming responses, and instance lifecycle messages.
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 /// Namespace UUID for generating stable instance IDs from (runtime_did, agent_name).
 /// This is a fixed UUIDv4 that acts as the namespace for UUIDv5 generation.
 const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6");
+
+/// Maximum number of inbound tunnel messages dispatched concurrently.
+///
+/// Every inbound message is handed to a spawned dispatch task. Without a
+/// cap, a peer (or a misbehaving hub) that floods the tunnel could spawn
+/// unbounded tasks and exhaust memory/CPU. The dispatcher holds a shared
+/// [`Semaphore`] with this many permits; the tunnel read loop blocks on
+/// `acquire` once they are exhausted, applying backpressure instead of
+/// queueing work without bound.
+const MAX_CONCURRENT_DISPATCHES: usize = 64;
 
 use crate::auth::Subject;
 use crate::daemon::state::AppState;
@@ -195,6 +205,11 @@ pub struct TunnelDispatcher {
     /// having to be re-built on reconnect. `None` until the first
     /// inbound message lands.
     tunnel_handle_slot: Arc<tokio::sync::RwLock<Option<TunnelHandle>>>,
+    /// Bounds the number of concurrently-dispatched inbound messages.
+    /// Shared across clones (each inbound message clones the dispatcher
+    /// into its task) so the cap is global, not per-task. See
+    /// [`MAX_CONCURRENT_DISPATCHES`].
+    inbound_semaphore: Arc<Semaphore>,
 }
 
 impl TunnelDispatcher {
@@ -214,6 +229,7 @@ impl TunnelDispatcher {
             // getter on AppState (`tunnel_handle_slot`) returns the
             // exact `Arc`; cloning it here is a no-op refcount bump.
             tunnel_handle_slot,
+            inbound_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES)),
         }
     }
 
@@ -234,7 +250,23 @@ impl TunnelDispatcher {
             *slot = Some(handle.clone());
         }
         let dispatcher = self.clone();
+        // Acquire a dispatch permit before spawning. When all
+        // `MAX_CONCURRENT_DISPATCHES` permits are in use this `await`
+        // parks the tunnel read loop, backpressuring the hub instead of
+        // spawning unbounded tasks under a flood. The semaphore is never
+        // closed, so the only error is unreachable; degrade by dropping
+        // the message rather than panicking if it ever occurs.
+        let permit = match Arc::clone(&self.inbound_semaphore).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                error!("Tunnel dispatch semaphore closed; dropping inbound message");
+                return;
+            }
+        };
         tokio::spawn(async move {
+            // Hold the permit for the lifetime of the dispatch so the
+            // slot is released only when this message is fully handled.
+            let _permit = permit;
             if let Err(e) = dispatcher.dispatch(msg, handle).await {
                 error!("Tunnel dispatch error: {}", e);
             }
@@ -278,13 +310,20 @@ impl TunnelDispatcher {
 
     /// Compute the typed `allowedPrincipals` list for a Principal.
     ///
-    /// Filters for `Chat` permission grants where `subject` is a `User`
-    /// and normalises the `user:` prefix on the id (PekoHub post-#19
-    /// reads `allowedPrincipals: Vec<Subject>` and matches on
-    /// `{kind, id}` rather than on a bare user-id string).
+    /// Filters for `Chat` permission grants where the `subject` is a
+    /// *named* caller — a `User` or another `Principal` — and normalises
+    /// the wire id (PekoHub post-#19 reads `allowedPrincipals: Vec<Subject>`
+    /// and matches on `{kind, id}` rather than on a bare id string).
     ///
-    /// Non-User subjects (e.g. `Public`, `Team`) are dropped here — the
-    /// principal-tier allow list only authorises named callers.
+    /// Both `User` and `Principal` subjects are retained: dropping
+    /// `Principal` grants here would silently strip agent-to-agent (A2A,
+    /// issue #29) callers from the hub's allow list, so a Principal
+    /// granted `Chat` could never reach a `Private` instance. `User` ids
+    /// have the legacy `user:` prefix stripped; `Principal` ids are DIDs
+    /// and travel verbatim.
+    ///
+    /// `Public` is not a named caller and is dropped — the principal-tier
+    /// allow list only authorises identified subjects.
     ///
     /// Returns `Some(vec)` even when empty so re-announcing an
     /// instance clears PekoHub's allow list when the last grant is
@@ -292,13 +331,11 @@ impl TunnelDispatcher {
     fn compute_allowed_principals(
         config: &crate::principal::PrincipalConfig,
     ) -> Option<Vec<crate::auth::Subject>> {
-        use crate::auth::{Subject, SubjectKind};
+        use crate::auth::Subject;
         let principals: Vec<Subject> = config
             .permissions
             .iter()
-            .filter(|g| {
-                g.permission.covers(&Permission::Chat) && g.subject.kind() == SubjectKind::User
-            })
+            .filter(|g| g.permission.covers(&Permission::Chat))
             .filter_map(|g| match &g.subject {
                 Subject::User(id) => {
                     // Strip the `user:` prefix if present; the wire
@@ -309,7 +346,10 @@ impl TunnelDispatcher {
                         .unwrap_or_else(|| id.clone());
                     Some(Subject::User(bare))
                 }
-                _ => None,
+                // Named A2A caller — the id is a DID, used verbatim.
+                Subject::Principal(did) => Some(Subject::Principal(did.clone())),
+                // Unauthenticated; never a named allow-list entry.
+                Subject::Public => None,
             })
             .collect();
         Some(principals)
@@ -647,34 +687,89 @@ impl TunnelDispatcher {
             }
         };
 
+        // Real end-to-end streaming. We drive the principal through
+        // `receive_streaming`, which preserves the same permission
+        // checks, session recall, and per-peer serial queue as the
+        // one-shot `receive` path, but emits `AgenticEvent`s as token
+        // deltas are produced.
+        //
+        // The wire contract with PekoHub is intentionally simple: each
+        // `StreamChunk` payload is a **raw UTF-8 text fragment** of the
+        // assistant's answer (NOT JSON). The hub re-frames each fragment
+        // into its own SSE `data:` envelope. A terminating `StreamEnd`
+        // marks completion. This avoids the previous double-encoding bug
+        // where the runtime JSON-wrapped chunks that the hub then wrapped
+        // again.
         let channel = crate::principal::router::ChannelContext {
             kind: crate::principal::router::ChannelKind::Hub,
-            streaming: false,
+            streaming: true,
         };
 
-        match principal_manager
-            .receive(principal.id.clone(), caller_principal, message, channel)
-            .await
-        {
+        // Bounded channel: a slow tunnel back-pressures the supervisor
+        // (events drop on `try_send` failure rather than growing memory).
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(256);
+        let on_event: Box<dyn Fn(crate::engine::AgenticEvent) + Send + Sync> =
+            Box::new(move |event| {
+                let _ = event_tx.try_send(event);
+            });
+
+        // Run the principal in a background task. When it finishes, the
+        // `event_tx` clone it holds is dropped, closing the channel and
+        // signalling the drain loop below to stop.
+        let pm = principal_manager.clone();
+        let principal_id = principal.id.clone();
+        let recv_handle = tokio::spawn(async move {
+            pm.receive_streaming(principal_id, caller_principal, message, channel, on_event)
+                .await
+        });
+
+        // Forward each token delta as a raw-text `StreamChunk`.
+        let mut seq: u32 = 0;
+        let mut streamed_any = false;
+        while let Some(event) = event_rx.recv().await {
+            let delta = match event {
+                crate::engine::AgenticEvent::AssistantDelta { text, .. } => text,
+                crate::engine::AgenticEvent::AssistantText { text, .. } => text,
+                _ => continue,
+            };
+            if delta.is_empty() {
+                continue;
+            }
+            if let Err(e) = handle.send_stream_chunk(request_id.clone(), seq, delta.into_bytes()) {
+                warn!("Failed to send stream chunk; aborting stream: {}", e);
+                recv_handle.abort();
+                let _ = handle.send_stream_end(request_id);
+                return Ok(());
+            }
+            seq += 1;
+            streamed_any = true;
+        }
+
+        // Channel closed → the principal task finished. Recover the
+        // authoritative final answer.
+        let result = match recv_handle.await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Principal streaming task panicked for {}: {}", agent_name, e);
+                return self
+                    .send_error_response(&handle, &request_id, "Execution failed")
+                    .await;
+            }
+        };
+
+        match result {
             Ok(response) => {
-                let chunk = serde_json::json!({
-                    "chunk": response.content,
-                    "done": false,
-                });
-                if let Err(e) = handle.send_stream_chunk(
-                    request_id.clone(),
-                    0,
-                    chunk.to_string().into_bytes(),
-                ) {
-                    warn!("Failed to send response chunk: {}", e);
-                }
-                let done = serde_json::json!({ "done": true });
-                if let Err(e) = handle.send_stream_chunk(
-                    request_id.clone(),
-                    1,
-                    done.to_string().into_bytes(),
-                ) {
-                    warn!("Failed to send response done chunk: {}", e);
+                // If no deltas were streamed (e.g. the queued path, or a
+                // router that produced no incremental events), fall back
+                // to sending the authoritative content as a single chunk
+                // so the caller still receives the full answer.
+                if !streamed_any && !response.content.is_empty() {
+                    if let Err(e) =
+                        handle.send_stream_chunk(request_id.clone(), seq, response.content.into_bytes())
+                    {
+                        warn!("Failed to send fallback chunk: {}", e);
+                    }
                 }
                 if let Err(e) = handle.send_stream_end(request_id) {
                     warn!("Failed to send stream end: {}", e);
@@ -691,18 +786,21 @@ impl TunnelDispatcher {
         Ok(())
     }
 
-    /// Send an error response back through the tunnel
+    /// Send an error response back through the tunnel.
+    ///
+    /// Errors are sent as a single raw-text `StreamChunk` followed by a
+    /// `StreamEnd`, matching the raw-text streaming contract used by the
+    /// happy path. The hub surfaces the text to the SSE consumer.
     async fn send_error_response(
         &self,
         handle: &TunnelHandle,
         request_id: &str,
         message: &str,
     ) -> anyhow::Result<()> {
-        let error_json = serde_json::json!({ "error": message });
         if let Err(e) = handle.send_stream_chunk(
             request_id.to_string(),
             0,
-            error_json.to_string().into_bytes(),
+            message.as_bytes().to_vec(),
         ) {
             warn!("Failed to send error response chunk: {}", e);
         }
@@ -1325,6 +1423,64 @@ mod tests {
     fn mock_tunnel_handle() -> (TunnelHandle, mpsc::Receiver<TunnelMessage>) {
         let (tx, rx) = mpsc::channel(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
         (TunnelHandle::new(tx), rx)
+    }
+
+    fn chat_grant(subject: Subject) -> PermissionGrant {
+        PermissionGrant {
+            subject,
+            permission: Permission::Chat,
+            granted_at: "2026-06-30T00:00:00Z".to_string(),
+            granted_by: Subject::User("user:owner".to_string()),
+        }
+    }
+
+    /// `compute_allowed_principals` keeps both `User` and `Principal`
+    /// Chat grants (A2A callers must survive), strips the legacy `user:`
+    /// prefix from user ids, drops `Public`, and drops non-`Chat` grants.
+    #[test]
+    fn compute_allowed_principals_keeps_users_and_principals() {
+        let config = test_principal_config(
+            "p",
+            Subject::User("user:owner".to_string()),
+            vec![
+                chat_grant(Subject::User("user:alice".to_string())),
+                chat_grant(Subject::Principal("did:peko:agent:bob".to_string().into())),
+                chat_grant(Subject::Public),
+                // Non-Chat grant must be ignored entirely.
+                PermissionGrant {
+                    subject: Subject::User("user:carol".to_string()),
+                    permission: Permission::ViewSettings,
+                    granted_at: "2026-06-30T00:00:00Z".to_string(),
+                    granted_by: Subject::User("user:owner".to_string()),
+                },
+            ],
+            InstanceExposure::Private,
+        );
+
+        let allowed = TunnelDispatcher::compute_allowed_principals(&config)
+            .expect("always Some");
+
+        // Alice survives with the `user:` prefix stripped.
+        assert!(
+            allowed.contains(&Subject::User("alice".to_string())),
+            "user grant must survive prefix-stripped; got {allowed:?}"
+        );
+        // Bob (A2A principal) must survive verbatim — this is the #1 fix.
+        assert!(
+            allowed.contains(&Subject::Principal("did:peko:agent:bob".to_string().into())),
+            "principal grant must survive; got {allowed:?}"
+        );
+        // Public is never a named allow-list entry.
+        assert!(
+            !allowed.iter().any(|s| matches!(s, Subject::Public)),
+            "public must be dropped; got {allowed:?}"
+        );
+        // Carol's ViewSettings grant must not leak in.
+        assert!(
+            !allowed.iter().any(|s| s.subject_id() == "carol"),
+            "non-Chat grant must be dropped; got {allowed:?}"
+        );
+        assert_eq!(allowed.len(), 2, "exactly alice + bob; got {allowed:?}");
     }
 
     /// Build a minimal `PrincipalConfig` for dispatcher tests.
