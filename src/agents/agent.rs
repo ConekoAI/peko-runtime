@@ -455,6 +455,7 @@ impl Agent {
             Arc::clone(&session_manager),
             config.name.clone(),
             5, // max_concurrent
+            Arc::clone(&extension_core),
         );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
@@ -533,6 +534,7 @@ impl Agent {
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<crate::providers::Provider>>,
+        extension_core: Arc<ExtensionCore>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
 
@@ -578,7 +580,11 @@ impl Agent {
             config.name
         )));
 
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+        // The caller supplies the `ExtensionCore` directly — typically the
+        // principal's per-principal core, so subagents share infrastructure
+        // with the principal's root agent instead of falling through to the
+        // daemon-global core. Phase 2 fix; before this, every subagent
+        // silently bypassed the principal's tool bag.
 
         let agent = Self {
             config,
@@ -1396,8 +1402,19 @@ impl Agent {
 
         let provider = Self::init_provider(&config, None).await?;
 
-        let subagent_executor_base =
-            SubagentExecutor::new(Arc::clone(&session_manager), config.name.clone(), 5);
+        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
+            "agent:{}:cli:default",
+            config.name
+        )));
+
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+
+        let subagent_executor_base = SubagentExecutor::new(
+            Arc::clone(&session_manager),
+            config.name.clone(),
+            5,
+            Arc::clone(&extension_core),
+        );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
                 subagent_executor_base
@@ -1406,13 +1423,6 @@ impl Agent {
             ),
             None => Arc::new(subagent_executor_base),
         };
-
-        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
-            "agent:{}:cli:default",
-            config.name
-        )));
-
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         Ok(Self {
             config,

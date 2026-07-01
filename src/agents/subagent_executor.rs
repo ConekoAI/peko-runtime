@@ -100,6 +100,17 @@ pub struct SubagentExecutor {
     /// `<workspace>/agents/<name>/AGENT.md`. Propagated down the spawn tree so
     /// delegation works at every depth, not just the first level.
     principal_workspace: Option<std::path::PathBuf>,
+    /// `ExtensionCore` shared with the spawning agent — typically the
+    /// principal's per-principal core. Phase-2 fix: previously every
+    /// subagent silently bypassed the principal's tool bag by pulling
+    /// `crate::extensions::framework::core::global_core()` instead,
+    /// which left subagents running on a daemon-wide singleton core
+    /// that had no principal-scoped tools (`principal_sessions`,
+    /// `principal_memory`, `agent_catalog`). Per-subagent visibility
+    /// is still enforced by each subagent's own capability whitelist;
+    /// this just makes the *core* (and the tool bag attached to it)
+    /// shared, not per-agent-isolated.
+    extension_core: Arc<crate::extensions::framework::ExtensionCore>,
 }
 
 impl SubagentExecutor {
@@ -112,6 +123,7 @@ impl SubagentExecutor {
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
+        extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
         let agent_name = agent_name.into();
         let async_registry = get_or_create_registry_for_agent(&agent_name);
@@ -127,6 +139,7 @@ impl SubagentExecutor {
             agent_config: None,
             session_manager,
             principal_workspace: None,
+            extension_core,
         }
     }
 
@@ -137,6 +150,7 @@ impl SubagentExecutor {
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
+        extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
         let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
@@ -150,6 +164,7 @@ impl SubagentExecutor {
             agent_config: None,
             session_manager,
             principal_workspace: None,
+            extension_core,
         }
     }
 
@@ -161,6 +176,7 @@ impl SubagentExecutor {
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
+        extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
         let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
@@ -173,6 +189,7 @@ impl SubagentExecutor {
             agent_config: None,
             session_manager,
             principal_workspace: None,
+            extension_core,
         }
     }
 
@@ -316,7 +333,7 @@ impl SubagentExecutor {
         let principal_workspace_clone = self.principal_workspace.clone();
         let session_manager_clone = self.session_manager.clone();
         let session_manager_for_cleanup = self.session_manager.clone();
-        let extension_core_clone = crate::extensions::framework::core::global_core();
+        let extension_core_clone = Arc::clone(&self.extension_core);
         let cleanup_policy_clone = config.cleanup;
 
         self.unified_executor
@@ -361,7 +378,7 @@ impl SubagentExecutor {
                         agent_config_clone,
                         session_manager_clone,
                         registry_for_task,
-                        extension_core_clone,
+                        Some(extension_core_clone),
                         principal_workspace_clone,
                     );
                     let result = if timeout > 0 {
@@ -779,13 +796,17 @@ async fn execute_subagent_task(
 
     // Create a shared executor with the parent's registry so nested spawn depth
     // is tracked correctly across the whole tree. Propagate the principal
-    // workspace so grandchildren (and deeper) resolve their subagents from the
-    // same workspace.
+    // workspace and core so grandchildren (and deeper) resolve their
+    // subagents from the same workspace and share the principal's tool bag.
+    let parent_core = extension_core
+        .or_else(crate::extensions::framework::core::global_core)
+        .expect("subagent executor: no ExtensionCore available (caller must supply one)");
     let mut shared_executor_builder = SubagentExecutor::with_registry(
         async_registry,
         Arc::clone(&session_manager),
         agent_name,
         5,
+        Arc::clone(&parent_core),
     )
     .with_provider(provider.clone())
     .with_agent_config(config.clone());
@@ -799,11 +820,16 @@ async fn execute_subagent_task(
     // `new_with_shared_executor` no longer re-resolves a provider (the v1
     // `[provider]` fallback was removed in PR #44) and would otherwise fail
     // `execute_with_session` with "No provider configured".
+    //
+    // The parent's core is threaded through so the subagent shares the
+    // principal's tool bag rather than silently falling through to the
+    // daemon-global core. Phase-2 fix.
     let mut subagent = crate::agents::Agent::new_with_shared_executor(
         config,
         session_manager,
         shared_executor,
         Some(provider.clone()),
+        Arc::clone(&parent_core),
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
@@ -813,11 +839,6 @@ async fn execute_subagent_task(
     if let Some(ws) = principal_workspace {
         subagent = subagent.with_principal_workspace(ws);
     }
-
-    // If we have an extension core, ensure the subagent uses it.
-    // (new_with_shared_executor already pulls from global_core(), so this
-    // should be the same one the parent uses.)
-    let _extension_core = extension_core;
 
     // Update the subagent's session key provider so nested spawns know their parent
     subagent.session_key_provider().set_session_key(session_key);
@@ -935,7 +956,8 @@ mod tests {
     #[tokio::test]
     async fn test_executor_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let executor = SubagentExecutor::new(manager, "test_agent", 5);
+        let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
+        let executor = SubagentExecutor::new(manager, "test_agent", 5, core);
 
         assert_eq!(executor.agent_name, "test_agent");
     }
@@ -953,7 +975,8 @@ mod tests {
     #[tokio::test]
     async fn test_registry_operations() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let executor = SubagentExecutor::new(manager, "test_agent", 5);
+        let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
+        let executor = SubagentExecutor::new(manager, "test_agent", 5, core);
 
         // Initially empty
         assert_eq!(executor.count_active_runs().await, 0);

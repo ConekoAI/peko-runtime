@@ -261,10 +261,12 @@ mod tests {
     #[tokio::test]
     async fn test_announcement_service_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
+        let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
         let executor = Arc::new(crate::agents::subagent_executor::SubagentExecutor::new(
             manager.clone(),
             "test",
             5,
+            core,
         ));
 
         let service = AnnouncementService::new(executor, manager, 5);

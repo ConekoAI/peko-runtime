@@ -305,6 +305,7 @@ where
             Arc::clone(&session_manager),
             &prompt.name,
             5,
+            Arc::clone(&core),
         )
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see

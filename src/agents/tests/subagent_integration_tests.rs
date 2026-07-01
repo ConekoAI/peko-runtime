@@ -131,6 +131,7 @@ async fn test_e2e_spawn_and_complete() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     // Spawn a subagent
@@ -191,6 +192,7 @@ async fn test_spawn_depth_limit() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     // Create a config with max_depth = 1
@@ -306,6 +308,7 @@ async fn test_isolated_vs_shared_session() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let config = ExecutionConfig {
@@ -398,6 +401,7 @@ async fn test_result_format_in_registry() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let run_id = executor
@@ -450,6 +454,7 @@ async fn test_list_runs_functionality() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let config = ExecutionConfig {
@@ -537,6 +542,7 @@ async fn test_cleanup_policy_tracking() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let config = ExecutionConfig {
@@ -616,6 +622,7 @@ async fn test_parent_child_relationship() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let run_id = executor
@@ -665,6 +672,7 @@ async fn test_runs_by_parent_filtering() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let config = ExecutionConfig {
@@ -747,6 +755,7 @@ async fn test_concurrent_runs_counting() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let config = ExecutionConfig {
@@ -822,6 +831,7 @@ async fn test_executor_get_status() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let run_id = executor
@@ -876,6 +886,7 @@ async fn test_executor_get_run() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     let run_id = executor
@@ -904,6 +915,7 @@ async fn test_executor_cancel() {
         session_manager.clone(),
         agent_name.clone(),
         5,
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     // Cancel is racing the spawned task's completion. Without a provider,
@@ -983,6 +995,7 @@ async fn test_max_concurrent_limit() {
         session_manager.clone(),
         agent_name.clone(),
         1, // Only 1 concurrent
+        Arc::new(crate::extensions::framework::ExtensionCore::new()),
     ));
 
     // First spawn should succeed
