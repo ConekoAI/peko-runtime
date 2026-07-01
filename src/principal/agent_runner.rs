@@ -63,7 +63,19 @@ pub fn build_agent_config(
         prompt: Some(PromptConfig {
             system: Some(SystemFileConfig {
                 max_chars_per_file: 200_000,
-                files: Some(vec![prompt.path.to_string_lossy().to_string()]),
+                // Built-in prompts (e.g. the supervisor at `builtin:supervisor`)
+                // have their body loaded via `include_str!` already — passing
+                // the synthetic path through as a bootstrap file makes the
+                // loader try to read `workspace_dir/builtin:supervisor` from
+                // disk and emit a spurious "Bootstrap file not found" warning
+                // every daemon tick. Only wire real on-disk paths here.
+                files: if prompt.path.components().count() == 1
+                    && prompt.path.to_string_lossy().starts_with("builtin:")
+                {
+                    None
+                } else {
+                    Some(vec![prompt.path.to_string_lossy().to_string()])
+                },
             }),
         }),
         extensions: Some(extensions),

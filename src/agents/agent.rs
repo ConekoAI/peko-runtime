@@ -1519,6 +1519,25 @@ impl Agent {
             return Ok(());
         }
 
+        // Best-effort: if the on-disk config location doesn't exist yet
+        // (e.g. a Principal-only install where `~/.peko/agents/` was never
+        // created, or a freshly-spawned subagent whose parent hasn't written
+        // its config), there's nothing to backfill and the in-memory identity
+        // is already valid. Skip silently rather than spamming a warning
+        // every daemon tick.
+        let Some(parent) = config_path.parent() else {
+            return Ok(());
+        };
+        if !parent.exists() {
+            debug!(
+                "Skipping agent_did backfill for {:?}: parent dir {} does not exist \
+                 (Principal-only install or subagent without on-disk config)",
+                config_path,
+                parent.display()
+            );
+            return Ok(());
+        }
+
         // Read the existing TOML so we preserve any fields we don't know
         // about (forward-compat) and the existing key ordering / comments
         // that the `toml` crate keeps when round-tripping a `Value`.
