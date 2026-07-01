@@ -16,6 +16,7 @@ pub mod did_key;
 pub mod dispatcher;
 pub mod hub_directory;
 pub mod known_runtimes;
+pub mod principal_send_tool;
 pub mod protocol;
 
 pub use a2a_pending::{A2aResponsePayload, A2aWaitError, PendingA2aResponses};

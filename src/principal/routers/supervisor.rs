@@ -11,7 +11,7 @@
 //! answer.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 
@@ -53,6 +53,16 @@ pub struct SupervisorRouter {
     /// catalog default wins.
     principal_provider_id: Option<String>,
     principal_model_id: Option<String>,
+    /// Caller principal DID for outbound `principal_send` envelopes.
+    /// Resolved at factory creation time from
+    /// `PrincipalConfig::did` / `Principal::did().await`; copied into
+    /// every `PrincipalContext` produced by `build_context`.
+    principal_caller_did: Option<String>,
+    /// Local runtime id (`did:key` form) for outbound
+    /// `principal_send` envelopes. Set by the daemon-state bootstrap
+    /// post-`start_tunnel` via [`Self::set_caller_runtime_id`].
+    /// When `None`, `principal_send` is not registered.
+    caller_runtime_id: StdRwLock<Option<String>>,
 }
 
 impl SupervisorRouter {
@@ -61,6 +71,12 @@ impl SupervisorRouter {
     /// `principal_provider_id` / `principal_model_id` are the values from
     /// `PrincipalConfig::preferred_provider_id` / `preferred_model_id`.
     /// Pass `None, None` to inherit the global catalog default.
+    ///
+    /// `principal_caller_did` is the principal's stable DID used as
+    /// `caller_principal_did` on the wire for `principal_send`.
+    /// `caller_runtime_id` is set later via
+    /// [`Self::set_caller_runtime_id`] (the bootstrap can't supply it
+    /// until `start_tunnel` runs).
     #[must_use]
     pub fn new(
         memory: Arc<dyn PrincipalMemory>,
@@ -69,6 +85,7 @@ impl SupervisorRouter {
         workspace_path: PathBuf,
         principal_provider_id: Option<String>,
         principal_model_id: Option<String>,
+        principal_caller_did: Option<String>,
     ) -> Self {
         Self {
             memory,
@@ -77,7 +94,39 @@ impl SupervisorRouter {
             workspace_path,
             principal_provider_id,
             principal_model_id,
+            principal_caller_did,
+            caller_runtime_id: StdRwLock::new(None),
         }
+    }
+
+    /// Bind the local runtime's `runtime_id` so `principal_send` can
+    /// be registered on this Principal's agents. Called by the
+    /// daemon-state bootstrap after `start_tunnel` succeeds; takes
+    /// effect on the next `PrincipalContext` produced by
+    /// `build_context` (existing contexts in flight won't see it
+    /// until they re-build — same lazy semantics as
+    /// `set_caller_principal_did`).
+    /// Bind the local runtime's `runtime_id` so `principal_send` can
+    /// be registered on this Principal's agents. Called by the
+    /// daemon-state bootstrap after `start_tunnel` succeeds; takes
+    /// effect on the next `PrincipalContext` produced by
+    /// `build_context`. (Existing contexts in flight won't see it
+    /// until they re-build — same lazy semantics as
+    /// `set_caller_principal_did`.)
+    pub fn set_caller_runtime_id(&self, runtime_id: String) {
+        if let Ok(mut guard) = self.caller_runtime_id.write() {
+            *guard = Some(runtime_id);
+        }
+    }
+
+    /// Read the local runtime id (if bound). Returns a clone so
+    /// callers can use it outside the lock.
+    #[must_use]
+    pub fn caller_runtime_id(&self) -> Option<String> {
+        self.caller_runtime_id
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// Build a `PrincipalContext` from the router's already-resolved
@@ -102,12 +151,30 @@ impl SupervisorRouter {
             ctx.principal_id.clone(),
         );
         principal_ctx.set_root_prompt(self.supervisor_prompt.clone());
+        // Phase 4b: bind caller identity so `principal_send` is
+        // registered on the principal's agents. The DID is the
+        // principal's stable identifier (set in the factory from
+        // `Principal::did()` / `config.did`); the runtime_id may be
+        // set later by the daemon-state bootstrap post-`start_tunnel`.
+        if let Some(ref did) = self.principal_caller_did {
+            if let Err(e) = principal_ctx.set_caller_principal_did(did.clone()) {
+                tracing::debug!("SupervisorRouter::build_context: {e}");
+            }
+        }
+        if let Some(ref runtime_id) = self.caller_runtime_id.read().ok().and_then(|g| g.clone()) {
+            if let Err(e) = principal_ctx.set_caller_runtime_id((*runtime_id).clone()) {
+                tracing::debug!("SupervisorRouter::build_context: {e}");
+            }
+        }
         principal_ctx
     }
 }
 
 #[async_trait]
 impl PrincipalRouter for SupervisorRouter {
+    fn set_caller_runtime_id(&self, runtime_id: String) {
+        SupervisorRouter::set_caller_runtime_id(self, runtime_id);
+    }
     async fn route(&self, ctx: RouterContext) -> Result<RouteDecision, RouterError> {
         let peer = ctx.peer.clone();
         let session_id = supervisor_session_id(&peer);

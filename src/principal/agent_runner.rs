@@ -293,7 +293,11 @@ where
     // clobbers the principal-scoped one registered below — making every
     // `subagent_type` resolve against the global `<home>/agents/...` path and
     // fail with "Subagent type '<name>' not found".
-    .with_principal_workspace(ctx.workspace_path.clone());
+    .with_principal_workspace(ctx.workspace_path.clone())
+    // Phase 4b: bind caller DID so `principal_send` is registered.
+    // `None` ⇒ tool is intentionally omitted (no local-only fallback
+    // for `principal_send`; it is exclusively cross-runtime).
+    .with_caller_principal_did(ctx.caller_principal_did().cloned());
 
     // Register the principal-scoped `Agent` tool after `Agent::new*` but
     // before execution so it is available on the principal's shared

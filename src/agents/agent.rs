@@ -58,6 +58,12 @@ pub struct Agent {
     /// `init_builtins_async` (run lazily at execution time) would clobber any
     /// principal-scoped `Agent` tool registered on the core beforehand.
     principal_workspace: Option<std::path::PathBuf>,
+    /// Caller principal's stable DID. Bound at construction by
+    /// `with_caller_principal_did` so `principal_send` can attribute
+    /// the outbound request under
+    /// `Subject::Principal(caller_principal_did)` on the wire.
+    /// `None` means the tool is not registered.
+    caller_principal_did: Option<String>,
 }
 
 impl Clone for Agent {
@@ -79,6 +85,7 @@ impl Clone for Agent {
             extension_core: Arc::clone(&self.extension_core),
             inbox_registry: self.inbox_registry.clone(),
             principal_workspace: self.principal_workspace.clone(),
+            caller_principal_did: self.caller_principal_did.clone(),
         }
     }
 }
@@ -172,41 +179,45 @@ impl Agent {
         // to the agent's own `AsyncExecutor` registry so each agent only sees its
         // own async tasks (session isolation).
 
-        // Add a2a_send tool for agent-to-agent messaging (ADR-023)
-        if let Some(agent_service) = self.extension_core.services().agent_service() {
-            // Issue #28: prefer `agent_did` for the wire-side
-            // `Subject::Principal`; fall back to the name for legacy agents
-            // that predate the per-agent persistent keypair.
-            //
-            // Issue #29 (Slice B+C): also pull the cross-runtime a2a
-            // ctx from the extension services (set by the daemon-state
-            // after `start_tunnel`). If the runtime hasn't initialized
-            // cross-runtime dispatch yet (offline runtime, no PekoHub
-            // credential, or this PR's bootstrap hasn't shipped), the
-            // ctx is `None` and the tool falls back to the local-only
-            // path — same behavior as pre-#29.
-            //
-            // Cycle 5 (refactor/clippy-cleanup-rust196): coerce the
-            // concrete service arc into the `AgentMessageService`
-            // trait object so the tool is constructed through the
-            // `build_tool` factory rather than directly binding to the
-            // concrete `StatelessAgentService` type.
-            let dyn_service: Arc<dyn crate::common::types::a2a::AgentMessageService> =
-                agent_service;
+        // Add principal_send tool for principal-to-principal cross-runtime
+        // messaging. Replaces the legacy `a2a_send` tool (ADR-023 +
+        // root-agent unification): the target is now a Principal DID
+        // (not an agent name on a target runtime), and dispatch flows
+        // through the tunnel even when caller and target share a daemon.
+        //
+        // Both the caller's principal DID and the cross-runtime ctx
+        // must be present; otherwise the tool is intentionally not
+        // registered (no fall-back local-only path — `principal_send`
+        // is exclusively cross-runtime).
+        //
+        // The ctx is pulled from extension services (set by the
+        // daemon-state after `start_tunnel`). For pre-#29 runtimes /
+        // test harnesses without cross-runtime dispatch, the ctx is
+        // `None` and the tool is omitted — same gating as before.
+        if let Some(caller_did) = self.caller_principal_did.as_ref() {
             let cross_ctx = self
                 .extension_core
                 .services()
                 .cross_runtime_a2a_ctx()
                 .and_then(|ctx| Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok());
-            let tool = crate::tunnel::a2a_send_tool::build_tool(
-                dyn_service,
-                Some(&self.config.name),
-                self.config.agent_did.as_deref(),
-                cross_ctx,
-            );
-            tools.push(tool);
+            if let Some(ctx) = cross_ctx {
+                tools.push(crate::tunnel::principal_send_tool::build_tool(
+                    caller_did.clone(),
+                    ctx,
+                ));
+            } else {
+                tracing::debug!(
+                    "CrossRuntimeA2aCtx not available on ExtensionCore — \
+                     principal_send tool will not be registered for agent {}",
+                    self.config.name
+                );
+            }
         } else {
-            tracing::warn!("StatelessAgentService not available on ExtensionCore — a2a_send tool will not be registered");
+            tracing::debug!(
+                "Caller identity not bound on agent {} — \
+                 principal_send tool will not be registered",
+                self.config.name
+            );
         }
 
         // Filter based on agent config extension whitelist
@@ -502,6 +513,7 @@ impl Agent {
             extension_core,
             inbox_registry,
             principal_workspace: None,
+            caller_principal_did: None,
         };
 
         info!(
@@ -530,6 +542,20 @@ impl Agent {
             .with_principal_workspace(workspace.clone());
         self.subagent_executor = Arc::new(executor);
         self.principal_workspace = Some(workspace);
+        self
+    }
+
+    /// Bind the caller's principal identity for `principal_send`.
+    ///
+    /// `principal_did` is the Principal's stable DID (used as
+    /// `caller_principal_did` on the wire). When `None`, the
+    /// `principal_send` tool is not registered (the agent lacks the
+    /// identity needed to attribute cross-principal calls). The local
+    /// runtime id is taken from `CrossRuntimeA2aCtx::caller_runtime_id`
+    /// at registration time, so this builder does not need it.
+    #[must_use]
+    pub fn with_caller_principal_did(mut self, principal_did: Option<String>) -> Self {
+        self.caller_principal_did = principal_did;
         self
     }
 
@@ -625,6 +651,7 @@ impl Agent {
             extension_core,
             inbox_registry: None,
             principal_workspace: None,
+            caller_principal_did: None,
         };
 
         info!(
@@ -1463,6 +1490,7 @@ impl Agent {
             extension_core,
             inbox_registry: None,
             principal_workspace: None,
+            caller_principal_did: None,
         })
     }
 

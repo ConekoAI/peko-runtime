@@ -582,7 +582,7 @@ pub mod builtin_tools {
     /// Tools registered per-agent in `Agent::init_builtins_async()`.
     pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &[
         "Agent",
-        "a2a_send",
+        "principal_send",
         "AsyncSpawn",
         "AsyncOutput",
         "TaskCreate",
@@ -628,7 +628,7 @@ pub mod builtin_tools {
             assert!(is_builtin_tool("Bash"));
             assert!(is_builtin_tool("BASH"));
             assert!(is_builtin_tool("Agent"));
-            assert!(is_builtin_tool("A2A_SEND"));
+            assert!(is_builtin_tool("PRINCIPAL_SEND"));
             assert!(!is_builtin_tool("unknown_tool"));
         }
 

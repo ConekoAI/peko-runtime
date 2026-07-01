@@ -104,6 +104,12 @@ pub trait PrincipalRouter: Send + Sync {
     ) -> Result<RouteDecision, RouterError> {
         self.route(ctx).await
     }
+
+    /// Phase 4b: bind the local runtime's `runtime_id` (used by
+    /// `principal_send` envelopes). Default implementation is a no-op
+    /// (the canonical `SupervisorRouter` overrides). Routers that don't
+    /// need a runtime id ignore the call.
+    fn set_caller_runtime_id(&self, _runtime_id: String) {}
 }
 
 #[derive(Debug, thiserror::Error)]

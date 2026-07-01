@@ -77,6 +77,15 @@ pub struct PrincipalContext {
     /// lifetime; carried through agent + subagent construction so
     /// descendant spawns inherit the same principal scope.
     principal_id: PrincipalId,
+    /// Caller identity for outbound `principal_send` envelopes. Both
+    /// fields are `None` until set via [`Self::set_caller_identity`]
+    /// (usually at `SupervisorRouter::build_context` time). When
+    /// either is `None`, `Agent::init_builtins_async` skips
+    /// registering `principal_send` — the tool needs a stable caller
+    /// identity to attribute outbound requests under
+    /// `Subject::Principal(caller_principal_did)`.
+    caller_principal_did: OnceLock<String>,
+    caller_runtime_id: OnceLock<String>,
 }
 
 impl PrincipalContext {
@@ -104,6 +113,8 @@ impl PrincipalContext {
             provider_hint,
             root_prompt: OnceLock::new(),
             principal_id,
+            caller_principal_did: OnceLock::new(),
+            caller_runtime_id: OnceLock::new(),
         }
     }
 
@@ -114,6 +125,40 @@ impl PrincipalContext {
     #[must_use]
     pub fn principal_id(&self) -> &PrincipalId {
         &self.principal_id
+    }
+
+    /// Bind the caller's principal DID for outbound `principal_send`
+    /// envelopes. Set once at `SupervisorRouter::build_context` from
+    /// `Principal::did()` (Phase 4b). Idempotent: subsequent calls
+    /// return the existing value rather than overwriting.
+    pub fn set_caller_principal_did(&self, did: String) -> Result<(), String> {
+        self.caller_principal_did
+            .set(did)
+            .map_err(|existing| format!("caller_principal_did already set to {existing:?}"))
+    }
+
+    /// Bind the caller's runtime id for outbound `principal_send`
+    /// envelopes. Set once (post-`start_tunnel`) from
+    /// `CrossRuntimeA2aCtx::caller_runtime_id`. Idempotent.
+    pub fn set_caller_runtime_id(&self, runtime_id: String) -> Result<(), String> {
+        self.caller_runtime_id
+            .set(runtime_id)
+            .map_err(|existing| format!("caller_runtime_id already set to {existing:?}"))
+    }
+
+    /// Caller principal DID (if bound). Used to attribute
+    /// `principal_send` outbound requests.
+    #[must_use]
+    pub fn caller_principal_did(&self) -> Option<&String> {
+        self.caller_principal_did.get()
+    }
+
+    /// Caller runtime id (if bound). Echoed into the
+    /// `caller_runtime_id` field of outbound `principal_send`
+    /// envelopes for signature verification.
+    #[must_use]
+    pub fn caller_runtime_id(&self) -> Option<&String> {
+        self.caller_runtime_id.get()
     }
 
     /// Get the daemon-global `ExtensionCore` and ensure the

@@ -1217,6 +1217,15 @@ impl AppState {
             .services()
             .set_cross_runtime_a2a_ctx(ctx);
 
+        // Phase 4b: propagate the runtime id into every Principal's
+        // router so `principal_send` is registered on their agents.
+        // Routers that don't need a runtime id (the default for
+        // anything other than `SupervisorRouter`) ignore the call.
+        let runtime_id = cred.runtime_id.clone();
+        for principal in self.principal_manager().list_all().await {
+            Arc::clone(&principal.router).set_caller_runtime_id(runtime_id.clone());
+        }
+
         Ok(())
     }
 

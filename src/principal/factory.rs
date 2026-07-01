@@ -68,6 +68,12 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         resolver: Option<Arc<LlmResolver>>,
     ) -> Arc<dyn super::router::PrincipalRouter> {
         let prompt = Self::resolve_root_agent_prompt(config, workspace_path);
+        // Phase 4b: copy the principal's stable DID into the router
+        // so `principal_send` is registered on this Principal's
+        // agents. The runtime_id is left as `None`; the daemon-state
+        // bootstrap sets it once `start_tunnel` finishes and the
+        // `CrossRuntimeA2aCtx` is installed.
+        let principal_caller_did = config.did.clone().map(|d| d.0);
         Arc::new(super::routers::SupervisorRouter::new(
             memory,
             resolver,
@@ -75,6 +81,7 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
             workspace_path.to_path_buf(),
             config.preferred_provider_id.clone(),
             config.preferred_model_id.clone(),
+            principal_caller_did,
         ))
     }
 }
