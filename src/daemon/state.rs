@@ -178,7 +178,7 @@ pub struct AppState {
     tunnel_attempts: Arc<RwLock<u32>>,
 
     /// Cross-runtime a2a response correlation registry. Issue #29.
-    /// Shared between the outbound `A2aSendTool` path (which
+    /// Shared between the outbound `PrincipalSendTool` path (which
     /// registers a oneshot under `request_id`) and the inbound
     /// tunnel dispatcher arm (which completes the oneshot when the
     /// matching `AgentToAgentResponse` arrives). Initialized lazily
@@ -1002,7 +1002,7 @@ impl AppState {
         // agent directory API) + the runtime's signing key + the
         // pending registry + the tunnel handle slot into a single
         // `Arc<CrossRuntimeA2aCtx>` and registers it on the
-        // `ExtensionServices` so every per-agent `A2aSendTool`
+        // `ExtensionServices` so every per-agent `PrincipalSendTool`
         // gets the ctx injected (via `agent.rs`).
         //
         // If the directory client or signing-key build fails, log
@@ -1122,7 +1122,7 @@ impl AppState {
     }
 
     /// Cross-runtime a2a response correlation registry (issue #29).
-    /// Shared with the `CrossRuntimeA2aCtx` on every `A2aSendTool`
+    /// Shared with the `CrossRuntimeA2aCtx` on every `PrincipalSendTool`
     /// and the inbound `AgentToAgentResponse` arm of the
     /// `TunnelDispatcher`. Returns a clone of the inner `Arc`, so
     /// call sites hold a cheap reference.
@@ -1140,7 +1140,7 @@ impl AppState {
     }
 
     /// Install the cross-runtime a2a dispatch context on the
-    /// `ExtensionServices` so every per-agent `A2aSendTool` is
+    /// `ExtensionServices` so every per-agent `PrincipalSendTool` is
     /// built with the ctx (issue #29, Slice B + Slice C
     /// bootstrap). Called by `start_tunnel` after the dispatcher
     /// is built but before the tunnel client starts.
@@ -1202,7 +1202,7 @@ impl AppState {
         let ctx: Arc<dyn std::any::Any + Send + Sync + 'static> = ctx;
 
         // 4. Register on the `ExtensionServices`. The per-agent
-        //    `A2aSendTool` constructor in `agent.rs` consults
+        //    `PrincipalSendTool` constructor in `agent.rs` consults
         //    `services().cross_runtime_a2a_ctx()` and calls
         //    `with_cross_runtime(ctx)` if present.
         //

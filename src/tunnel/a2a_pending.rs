@@ -8,11 +8,11 @@
 //! unblocks.
 //!
 //! Why a free-standing registry and not, say, an inline `Arc<Mutex<HashMap>>`
-//! inside `A2aSendTool`:
+//! inside `PrincipalSendTool`:
 //!
 //!  1. The tunnel dispatcher (lives in `tunnel/dispatcher.rs`) needs to
 //!     consult the registry on inbound `AgentToAgentResponse`. The
-//!     dispatcher and the `A2aSendTool` are constructed independently
+//!     dispatcher and the `PrincipalSendTool` are constructed independently
 //!     by the daemon-state bootstrap; sharing the registry through a
 //!     well-typed `Arc<PendingA2aResponses>` is cleaner than digging
 //!     through the agent's tool list to find the right map.
@@ -41,7 +41,7 @@ pub type A2aResponsePayload = Vec<u8>;
 
 /// In-flight a2a request registry. Maps `request_id` →
 /// `oneshot::Sender<A2aResponsePayload>`. Shared between the outbound
-/// `A2aSendTool` path (which registers) and the tunnel dispatcher
+/// `PrincipalSendTool` path (which registers) and the tunnel dispatcher
 /// (which completes via [`PendingA2aResponses::complete`]).
 ///
 /// Clone-friendly: holds an `Arc<Mutex<HashMap>>` internally so a
@@ -112,7 +112,7 @@ impl PendingA2aResponses {
     }
 
     /// Convenience: register + wait for the response with a timeout.
-    /// This is what the outbound `A2aSendTool::execute_remote` path
+    /// This is what the outbound `PrincipalSendTool::execute_remote` path
     /// calls, factored out so unit tests can drive the same code path
     /// the production code does.
     ///

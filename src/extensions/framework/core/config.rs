@@ -102,7 +102,7 @@ impl ExtensionServices {
             // Issue #29: cross-runtime a2a ctx starts as None and
             // is filled in by the daemon-state after the tunnel
             // client is wired. Until then, every per-agent
-            // A2aSendTool is built without a ctx and falls back to
+            // PrincipalSendTool is built without a ctx and falls back to
             // the local-only path (the same behavior as pre-#29).
             cross_runtime_a2a_ctx: std::sync::RwLock::new(None),
         }
@@ -155,7 +155,7 @@ impl ExtensionServices {
     /// daemon-state calls this after the tunnel client is built and
     /// the `HubAgentDirectoryClient` is wired; the per-agent tool
     /// constructor in `agent.rs` reads via `cross_runtime_a2a_ctx`
-    /// and injects the ctx into each `A2aSendTool` it builds.
+    /// and injects the ctx into each `PrincipalSendTool` it builds.
     pub fn set_cross_runtime_a2a_ctx(&self, ctx: Arc<dyn std::any::Any + Send + Sync + 'static>) {
         if let Ok(mut guard) = self.cross_runtime_a2a_ctx.write() {
             *guard = Some(ctx);
