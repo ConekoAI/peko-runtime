@@ -209,60 +209,30 @@ where
     let provider_hint = resolve_provider_hint(ctx).await;
     let mut config = build_agent_config(prompt, &ctx.capabilities, provider_hint);
 
-    // Phase 2: tool enablement comes purely from the principal's
-    // capabilities. The legacy hardcoded supervisor whitelist (Cron*,
-    // Task*, Read, glob, grep, session) is gone — agents of the
-    // principal get exactly what `capabilities.tools` says they get,
-    // and the per-subagent whitelist (enforced by `Agent::init_builtins_async`)
-    // is the only thing that further filters a subagent's view.
+    // Build the principal's shared core first so we can ask the core
+    // to resolve bare capability names into canonical `extension_id`
+    // form. Phase 4a: there is no privileged whitelist anymore — the
+    // principal's `capabilities` are the *only* source of truth for
+    // which tools the root agent (and every subagent that inherits
+    // from it) can see. Each subagent's own `AgentConfig.extensions`
+    // may further filter that set on a per-agent basis.
+    let core = ctx.core().await;
+
     let mut enabled: Vec<String> = Vec::with_capacity(
         ctx.capabilities.tools.len()
             + ctx.capabilities.skills.len()
             + ctx.capabilities.mcps.len()
             + ctx.capabilities.agents.len(),
     );
-    enabled.extend(ctx.capabilities.tools.iter().cloned());
-    enabled.extend(ctx.capabilities.skills.iter().cloned());
-    enabled.extend(ctx.capabilities.mcps.iter().cloned());
-    enabled.extend(ctx.capabilities.agents.iter().cloned());
-
-    // Canonical extension IDs the runtime core checks for permission.
-    // Phase 4 will move this to a single source of truth; for now we
-    // keep the bare-name + canonical-id pair the core expects.
-    let canonical: &[&str] = &[
-        "builtin:tool:Read",
-        "builtin:tool:glob",
-        "builtin:tool:grep",
-        "builtin:tool:session",
-        "builtin:tool:Agent",
-        "builtin:tool:AsyncSpawn",
-        "builtin:tool:AsyncOutput",
-        "builtin:tool:AsyncStatus",
-        "builtin:tool:AsyncList",
-        "builtin:tool:AsyncStop",
-        "builtin:tool:CronCreate",
-        "builtin:tool:CronDelete",
-        "builtin:tool:CronList",
-        "builtin:tool:TaskCreate",
-        "builtin:tool:TaskGet",
-        "builtin:tool:TaskList",
-        "builtin:tool:TaskUpdate",
-        "builtin:tool:principal_sessions",
-        "builtin:tool:principal_memory",
-        "builtin:tool:agent_catalog",
-    ];
-    enabled.extend(canonical.iter().map(|s| s.to_string()));
+    enabled.extend(core.resolve_canonical_ids(&ctx.capabilities.tools).await);
+    enabled.extend(core.resolve_canonical_ids(&ctx.capabilities.skills).await);
+    enabled.extend(core.resolve_canonical_ids(&ctx.capabilities.mcps).await);
+    enabled.extend(core.resolve_canonical_ids(&ctx.capabilities.agents).await);
 
     config.extensions = Some(ExtensionConfig {
         enabled,
         ..config.extensions.unwrap_or_default()
     });
-
-    // The principal's shared core. The principal-scoped tools
-    // (sessions, memory) and the principal's discovered agents are
-    // already on it; the agent-catalog tool is the only per-call
-    // piece, installed below.
-    let core = ctx.core().await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's
