@@ -419,6 +419,10 @@ Send a message to another Principal's root agent and receive its response. This 
 mod tests {
     use super::*;
     use crate::tunnel::a2a_pending::PendingA2aResponses;
+    use crate::tunnel::a2a_signature::{verify_request, SignedFields};
+    use crate::tunnel::client::TunnelHandle;
+    use crate::tunnel::did_key::did_key_to_verifying_key;
+    use crate::tunnel::hub_directory::FakeAgentDirectory;
     use ed25519_dalek::SigningKey;
     use std::time::Duration;
     use tokio::sync::RwLock;
@@ -532,5 +536,406 @@ mod tests {
             .unwrap();
         let r: PrincipalSendResult = serde_json::from_value(v).unwrap();
         assert!(!r.success);
+    }
+
+    // ── e2e round-trip tests (issue: plan listed 4; this commit
+    //    lands the 3 that don't depend on a real `StatelessAgentService`).
+    //    The 4th ("remote round-trip via pekohub#17 forwarding") is
+    //    covered by the existing `tunnel::dispatcher` tests which
+    //    exercise `handle_inbound_agent_to_agent_request` end-to-end. ──
+
+    /// Build a `CrossRuntimeA2aCtx` for the round-trip tests: real
+    /// `KeyPair` (so the caller's `runtime_id` is a valid `did:key`),
+    /// caller-supplied `FakeAgentDirectory`, real `PendingA2aResponses`,
+    /// and a live `TunnelHandle` plugged into the slot.
+    fn make_round_trip_ctx(
+        directory: Arc<FakeAgentDirectory>,
+        pending: Arc<PendingA2aResponses>,
+        signing_key: Arc<SigningKey>,
+        caller_runtime_id: String,
+        outbound_tx: tokio::sync::mpsc::Sender<TunnelMessage>,
+    ) -> Arc<CrossRuntimeA2aCtx> {
+        let tunnel_handle = TunnelHandle::new(outbound_tx);
+        Arc::new(CrossRuntimeA2aCtx {
+            directory: directory as Arc<dyn crate::tunnel::hub_directory::AgentDirectory>,
+            pending,
+            signing_key,
+            caller_runtime_id,
+            tunnel: Arc::new(RwLock::new(Some(tunnel_handle))),
+            response_timeout: Duration::from_secs(5),
+        })
+    }
+
+    /// In-memory hub forwarder. Reads from the caller's outbound
+    /// `mpsc`, synthesizes the target's response, and feeds it into
+    /// the caller's pending registry. Returns when the caller's
+    /// outbound is closed (test cleanup). The synthesized response
+    /// runs `verify_request` against the canonical pre-image from
+    /// the envelope — same call the production
+    /// `handle_inbound_agent_to_agent_request` makes.
+    async fn run_principal_send_hub(
+        mut caller_outbound: tokio::sync::mpsc::Receiver<TunnelMessage>,
+        caller_pending: Arc<PendingA2aResponses>,
+        expected_target_principal_did: &'static str,
+        target_response_text: &'static str,
+    ) {
+        while let Some(msg) = caller_outbound.recv().await {
+            let TunnelMessage::AgentToAgentRequest {
+                request_id,
+                caller_runtime_id,
+                caller_principal_did,
+                target_principal_did,
+                session_id: _,
+                message,
+                signature,
+            } = msg
+            else {
+                continue;
+            };
+
+            let payload = if target_principal_did != expected_target_principal_did {
+                // Synthesize a structured `target_not_found` error.
+                let err = HubErrorResponse {
+                    kind: "error".to_string(),
+                    code: "target_not_found".to_string(),
+                    message: format!(
+                        "no local principal has did={target_principal_did} (request_id={request_id})"
+                    ),
+                };
+                serde_json::to_vec(&err).expect("serialize hub error")
+            } else {
+                // Verify the signature — same check the production
+                // dispatcher runs. If this fails, the test must fail
+                // (the caller produced an unsigned envelope, which
+                // would be silently dropped in production).
+                let caller_vk = match did_key_to_verifying_key(&caller_runtime_id) {
+                    Ok(vk) => vk,
+                    Err(e) => {
+                        eprintln!("hub: caller_runtime_id invalid: {e}");
+                        continue;
+                    }
+                };
+                let signed = SignedFields {
+                    request_id: &request_id,
+                    caller_runtime_id: &caller_runtime_id,
+                    caller_principal_did: &caller_principal_did,
+                    target_principal_did: &target_principal_did,
+                    message: &message,
+                    session_id: None,
+                };
+                if let Err(e) = verify_request(&caller_vk, signed, &signature) {
+                    eprintln!("hub: signature did not verify: {e}");
+                    continue;
+                }
+
+                let result = PrincipalSendResult {
+                    success: true,
+                    response: format!(
+                        "echo from {expected_target_principal_did}: {target_response_text}"
+                    ),
+                    session_id: format!("principal:target:session:e2e-{request_id}"),
+                    iterations: Some(1),
+                    tool_calls: None,
+                    duration_ms: Some(10),
+                    error: None,
+                };
+                serde_json::to_vec(&result).expect("serialize result")
+            };
+
+            let _ = caller_pending.complete(&request_id, payload);
+        }
+    }
+
+    /// Build the "caller runtime" with a real `PrincipalSendTool`
+    /// wired to a real `CrossRuntimeA2aCtx`, a populated
+    /// `FakeAgentDirectory`, and a `TunnelHandle` whose outbound
+    /// sinks into the test hub.
+    async fn build_caller_with_signed_runtime(
+        directory: Arc<FakeAgentDirectory>,
+        pending: Arc<PendingA2aResponses>,
+        outbound_tx: tokio::sync::mpsc::Sender<TunnelMessage>,
+        caller_principal_did: String,
+    ) -> (
+        PrincipalSendTool,
+        Arc<SigningKey>, // for the hub to derive the caller's verifying key
+    ) {
+        // Use a real KeyPair so the caller's `runtime_id` is a valid
+        // `did:key` (the hub's `verify_request` derives the verifying
+        // key from this).
+        let kp = crate::identity::keys::KeyPair::generate();
+        let signing_key = Arc::new(kp.signing_key);
+        let caller_vk = signing_key.verifying_key();
+        let caller_runtime_id =
+            crate::tunnel::verifying_key_to_did_key(&caller_vk);
+
+        let ctx = make_round_trip_ctx(
+            directory,
+            pending,
+            signing_key.clone(),
+            caller_runtime_id,
+            outbound_tx,
+        );
+        let tool = PrincipalSendTool::new(caller_principal_did, ctx);
+        (tool, signing_key)
+    }
+
+    /// The full round-trip: caller's `principal_send` reaches the
+    /// in-memory hub, the hub verifies the signature, synthesizes a
+    /// response, and the caller's `execute` decodes the response
+    /// into a `PrincipalSendResult`. Mirrors the `a2a_send`
+    /// round-trip test the prior plan listed for `principal_send`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_principal_send_full_round_trip() {
+        use crate::auth::Subject;
+        use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+
+        // ── shared state ────────────────────────────────────────
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let caller_pending = Arc::new(PendingA2aResponses::new());
+
+        // Register the target principal in the directory. The
+        // by-did lookup is what the caller's `resolve_by_did` hits,
+        // so without this the call would short-circuit with
+        // `target_not_found`.
+        directory.register_did(
+            "did:peko:principal:target-keyhash",
+            AgentResolution {
+                runtime_id: "did:key:zTargetRuntime".to_string(),
+                instance_id: "inst-target-e2e".to_string(),
+                agent_did: "did:peko:principal:target-keyhash".to_string(),
+                owner_principal: Subject::Public,
+                exposure: ResolvedExposure::Public,
+            },
+        );
+
+        // ── caller's outbound sink + hub forwarder ──────────────
+        let (caller_outbound_tx, caller_outbound_rx) = tokio::sync::mpsc::channel::<TunnelMessage>(
+            crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE,
+        );
+
+        let hub_pending = caller_pending.clone();
+        let hub_task = tokio::spawn(async move {
+            run_principal_send_hub(
+                caller_outbound_rx,
+                hub_pending,
+                "did:peko:principal:target-keyhash",
+                "looks good",
+            )
+            .await;
+        });
+
+        // ── build the caller ────────────────────────────────────
+        let (tool, _kp) = build_caller_with_signed_runtime(
+            directory.clone(),
+            caller_pending.clone(),
+            caller_outbound_tx,
+            "did:peko:principal:caller-keyhash".to_string(),
+        )
+        .await;
+
+        // ── run principal_send ─────────────────────────────────
+        let args = PrincipalSendArgs {
+            target_principal: "did:peko:principal:target-keyhash".to_string(),
+            message: "review this PR".to_string(),
+            session_id: None,
+        };
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .expect("execute must not panic; the hub returns a synthesized response");
+        let result: PrincipalSendResult =
+            serde_json::from_value(value).expect("PrincipalSendResult");
+
+        // ── assertions ──────────────────────────────────────────
+        assert!(
+            result.success,
+            "expected success; got error: {:?}",
+            result.error
+        );
+        assert!(
+            result
+                .response
+                .contains("echo from did:peko:principal:target-keyhash"),
+            "response must contain the hub-synthesized echo; got: {}",
+            result.response
+        );
+        assert!(result.response.contains("looks good"));
+        assert!(result
+            .session_id
+            .starts_with("principal:target:session:e2e-"));
+        assert_eq!(result.iterations, Some(1));
+
+        // Hub must have completed the caller's oneshot; the
+        // pending registry should be empty.
+        assert_eq!(caller_pending.pending_count(), 0);
+
+        // Cleanup: drop the caller (closes its outbound sink via
+        // the TunnelHandle's clone), which makes the hub's
+        // recv() return None and the hub task exit.
+        drop(tool);
+        let _ = hub_task.await;
+    }
+
+    /// Edge case: the hub returns a `HubErrorResponse` (target not
+    /// found). The caller's `execute` decodes it as a structured
+    /// error rather than a generic decode failure. Mirrors the
+    /// `a2a_send::test_cross_runtime_a2a_hub_synthesized_error_response`
+    /// test the prior plan listed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_principal_send_hub_synthesized_error_response() {
+        use crate::auth::Subject;
+        use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let caller_pending = Arc::new(PendingA2aResponses::new());
+
+        // Register the DID so the caller's `resolve_by_did`
+        // succeeds. The hub's `expected_target_principal_did`
+        // deliberately mismatches it, so the hub synthesizes a
+        // `target_not_found` even though the caller's directory
+        // resolved the DID.
+        directory.register_did(
+            "did:peko:principal:registered-but-hub-rejects",
+            AgentResolution {
+                runtime_id: "did:key:zTargetRuntime".to_string(),
+                instance_id: "inst-target-e2e".to_string(),
+                agent_did: "did:peko:principal:registered-but-hub-rejects".to_string(),
+                owner_principal: Subject::Public,
+                exposure: ResolvedExposure::Public,
+            },
+        );
+
+        let (caller_outbound_tx, caller_outbound_rx) = tokio::sync::mpsc::channel::<TunnelMessage>(
+            crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE,
+        );
+        let hub_pending = caller_pending.clone();
+        let hub_task = tokio::spawn(async move {
+            // Hub expects a DIFFERENT DID than what the caller's
+            // directory will resolve — so the hub's target check
+            // fails and a `target_not_found` is synthesized.
+            run_principal_send_hub(
+                caller_outbound_rx,
+                hub_pending,
+                "did:peko:principal:NONEXISTENT", // mismatch
+                "never reached",
+            )
+            .await;
+        });
+
+        let (tool, _kp) = build_caller_with_signed_runtime(
+            directory.clone(),
+            caller_pending,
+            caller_outbound_tx,
+            "did:peko:principal:caller-keyhash".to_string(),
+        )
+        .await;
+
+        let args = PrincipalSendArgs {
+            target_principal: "did:peko:principal:registered-but-hub-rejects".to_string(),
+            message: "hi".to_string(),
+            session_id: None,
+        };
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .expect("execute must not panic; the hub returns an error envelope");
+        let result: PrincipalSendResult =
+            serde_json::from_value(value).expect("PrincipalSendResult");
+        assert!(!result.success);
+        let err = result.error.expect("error must be set");
+        assert!(
+            err.contains("rejected by hub"),
+            "error must name the hub rejection; got: {err}"
+        );
+        assert!(
+            err.contains("target_not_found"),
+            "error must include the hub's structured code; got: {err}"
+        );
+
+        drop(tool);
+        let _ = hub_task.await;
+    }
+
+    /// Wire-level signature verification: drive `principal_send`
+    /// end-to-end, intercept the envelope on the hub side, and
+    /// assert that the signature verifies against the canonical
+    /// pre-image from `tunnel::a2a_signature`. Mirrors the
+    /// `a2a_send::test_cross_runtime_a2a_signature_verification`
+    /// test the prior plan listed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_principal_send_signature_verification() {
+        use crate::auth::Subject;
+        use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let caller_pending = Arc::new(PendingA2aResponses::new());
+
+        directory.register_did(
+            "did:peko:principal:target-keyhash",
+            AgentResolution {
+                runtime_id: "did:key:zTargetRuntime".to_string(),
+                instance_id: "inst-target-e2e".to_string(),
+                agent_did: "did:peko:principal:target-keyhash".to_string(),
+                owner_principal: Subject::Public,
+                exposure: ResolvedExposure::Public,
+            },
+        );
+
+        // Capture the envelope so we can verify the signature
+        // AFTER the call completes (the hub task consumes it,
+        // but we assert against the canonical pre-image the
+        // hub's `verify_request` already ran).
+        let (caller_outbound_tx, caller_outbound_rx) = tokio::sync::mpsc::channel::<TunnelMessage>(
+            crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE,
+        );
+
+        let hub_pending = caller_pending.clone();
+        let hub_task = tokio::spawn(async move {
+            run_principal_send_hub(
+                caller_outbound_rx,
+                hub_pending,
+                "did:peko:principal:target-keyhash",
+                "ok",
+            )
+            .await;
+        });
+
+        let (tool, kp) = build_caller_with_signed_runtime(
+            directory.clone(),
+            caller_pending.clone(),
+            caller_outbound_tx,
+            "did:peko:principal:caller-keyhash".to_string(),
+        )
+        .await;
+
+        // Drive the call.
+        let args = PrincipalSendArgs {
+            target_principal: "did:peko:principal:target-keyhash".to_string(),
+            message: "verify me".to_string(),
+            session_id: None,
+        };
+        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
+        assert!(
+            result.success,
+            "round-trip must succeed (the hub's verify_request is the production check); got: {:?}",
+            result.error
+        );
+
+        // Independently re-derive the caller's runtime_id DID from
+        // the signing key and verify it round-trips — pins that
+        // the outbound envelope's `caller_runtime_id` field is
+        // consistent with the signing key (the production
+        // dispatcher's `verify_request` does the same derivation).
+        let caller_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key());
+        let caller_vk = did_key_to_verifying_key(&caller_runtime_id).unwrap();
+        // The signing key + verifying key are a matched pair by
+        // construction (we generated them together), so this
+        // pin is tautological but documents the derivation
+        // contract for future readers.
+        assert_eq!(caller_vk.to_bytes(), kp.verifying_key().to_bytes());
+
+        drop(tool);
+        let _ = hub_task.await;
     }
 }
