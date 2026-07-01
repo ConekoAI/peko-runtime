@@ -170,16 +170,53 @@ impl AnthropicAdapter {
         (system_prompt, anthropic_messages)
     }
 
-    /// Convert tool definitions to Anthropic format
+    /// Convert tool definitions to Anthropic format.
+    ///
+    /// Strips JSON-Schema combinators (`anyOf`, `oneOf`, `allOf`) from
+    /// `input_schema` before sending. The upstream Anthropic API accepts
+    /// these keywords, but several Anthropic-compatible providers don't:
+    /// Kimi's `https://api.minimaxi.com/anthropic` shim returns 429
+    /// "engine overloaded" (instead of a proper 400) when a tool's
+    /// `input_schema` contains `anyOf`. The combinators are a
+    /// documentation nicety for our tools (`CronDelete` and `TaskUpdate`
+    /// use them to say "either id or label"), not a functional
+    /// requirement — the validation lives on the server side anyway
+    /// because our tool executor rejects missing required fields with a
+    /// clear message. See tests/cli_providers.rs (the kimi smoke test
+    /// failed for ~60s straight before this strip) and the reproduce
+    /// script in `scripts/bisect_kimi_anyof.py` for the original
+    /// diagnostic.
     fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
         tools
             .iter()
             .map(|t| AnthropicTool {
                 name: t.name.clone(),
                 description: t.description.clone(),
-                input_schema: t.parameters.clone(),
+                input_schema: strip_schema_combinators(&t.parameters),
             })
             .collect()
+    }
+}
+
+/// Remove JSON-Schema combinators (`anyOf`, `oneOf`, `allOf`) from a
+/// value, recursively. Only strips at the same level it sees them;
+/// nested object schemas are walked. Returns the same JSON value
+/// shape, just without the combinator keys.
+fn strip_schema_combinators(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                if matches!(k.as_str(), "anyOf" | "oneOf" | "allOf") {
+                    continue;
+                }
+                out.insert(k.clone(), strip_schema_combinators(v));
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(strip_schema_combinators).collect()),
+        other => other.clone(),
     }
 }
 

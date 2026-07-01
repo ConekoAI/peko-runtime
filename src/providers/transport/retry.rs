@@ -69,6 +69,15 @@ pub trait RetryableError {
     fn is_retryable(&self) -> bool;
     /// Extract HTTP status code if available
     fn http_status(&self) -> Option<u16>;
+    /// Server-suggested retry delay from the `Retry-After` header
+    /// (RFC 7231 §7.1.3). When `Some`, [`RetryExecutor`] prefers this
+    /// over computed exponential backoff — capped at the policy's
+    /// `max_delay` so a hostile or stale header can't pin us forever.
+    /// Defaults to `None`; implementers that produce raw upstream
+    /// errors only need to override this when they can carry the hint.
+    fn retry_after(&self) -> Option<Duration> {
+        None
+    }
 }
 
 impl RetryableError for anyhow::Error {
@@ -113,6 +122,26 @@ impl RetryableError for anyhow::Error {
         }
 
         None
+    }
+
+    fn retry_after(&self) -> Option<Duration> {
+        // `HttpClient` embeds the upstream `Retry-After` header into the
+        // error message as `(retry_after=Ns)` when it's a positive
+        // integer; see `classify_http_error` in client.rs. We pull it
+        // back out here so the executor can wait the server-suggested
+        // interval instead of guessing. A malformed or absent hint
+        // yields `None` and the executor falls back to its computed
+        // exponential backoff — no behavioral regression for providers
+        // that don't send the header.
+        let msg = self.to_string();
+        let start = msg.find("(retry_after=")?;
+        let after = &msg[start + "(retry_after=".len()..];
+        let end = after.find("s)")?;
+        let secs: u64 = after[..end].parse().ok()?;
+        if secs == 0 {
+            return None;
+        }
+        Some(Duration::from_secs(secs))
     }
 }
 
@@ -159,7 +188,18 @@ impl RetryExecutor {
                         return Err(e);
                     }
 
-                    let delay = policy.delay_for_attempt(attempt);
+                    // Prefer the server's `Retry-After` hint when the
+                    // upstream sent one (RFC 7231 §7.1.3). It is almost
+                    // always a more accurate throttle window than our
+                    // computed exponential backoff, and respecting it is
+                    // what makes the difference between "engine overloaded"
+                    // windows (Kimi, Anthropic) and the test succeeding.
+                    // Cap at `max_delay` (default 30s) so a stale or
+                    // hostile header can't pin us indefinitely.
+                    let delay = e
+                        .retry_after()
+                        .map(|d| d.min(policy.max_delay))
+                        .unwrap_or_else(|| policy.delay_for_attempt(attempt));
                     let status_info = e
                         .http_status()
                         .map(|s| format!(" (HTTP {s})"))
@@ -190,5 +230,174 @@ impl RetryExecutor {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    /// `RetryableError::retry_after` on `anyhow::Error` parses the
+    /// `(retry_after=Ns)` token that `HttpClient::classify_http_error`
+    /// embeds in the message. Round-trip tests cover each shape we
+    /// emit or accept.
+    #[test]
+    fn anyhow_retry_after_parses_embedded_value() {
+        let e = anyhow::anyhow!("HTTP error 429 (retry_after=7s): engine overloaded");
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn anyhow_retry_after_zero_is_treated_as_absent() {
+        // Zero seconds is meaningless as a hint and would cause an
+        // infinite-tight retry loop. The parser must drop it so the
+        // executor falls back to its computed backoff.
+        let e = anyhow::anyhow!("HTTP error 503 (retry_after=0s): try later");
+        assert_eq!(e.retry_after(), None);
+    }
+
+    #[test]
+    fn anyhow_retry_after_absent_returns_none() {
+        // The pre-fix message format (no retry_after token) must still
+        // parse cleanly — this is the no-regression test for providers
+        // that don't emit the header.
+        let e = anyhow::anyhow!("HTTP error 429: engine overloaded");
+        assert_eq!(e.retry_after(), None);
+    }
+
+    #[test]
+    fn anyhow_retry_after_garbage_value_returns_none() {
+        // A malformed `(retry_after=abc)` token should NOT panic and
+        // should fall back to the computed backoff.
+        let e = anyhow::anyhow!("HTTP error 500 (retry_after=abc): oops");
+        assert_eq!(e.retry_after(), None);
+    }
+
+    /// Wall-clock proof that the executor honors server-suggested delay.
+    /// We use a hint longer than the computed backoff (5s hint vs the
+    /// default 1s base), so the only way the test can complete in
+    /// ~5s is if `retry_after()` is taking precedence. A short ceiling
+    /// on the assertion catches regressions where the executor falls
+    /// back to the wrong branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn executor_uses_retry_after_when_present() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_inner = calls.clone();
+        let policy = RetryPolicy {
+            max_retries: 1,
+            base_delay: Duration::from_millis(50),
+            ..RetryPolicy::default()
+        };
+        let start = std::time::Instant::now();
+        let result: anyhow::Result<()> = RetryExecutor::execute(&policy, "test", || {
+            let calls = calls_inner.clone();
+            async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Err(anyhow::anyhow!(
+                        "HTTP error 429 (retry_after=2s): engine overloaded"
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+        let elapsed = start.elapsed();
+        assert!(result.is_ok(), "executor should have retried and succeeded");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        // 2s server-suggested delay must dominate; allow generous slack
+        // for scheduler jitter but fail loudly if computed backoff (50ms)
+        // snuck in.
+        assert!(
+            elapsed >= Duration::from_millis(1900),
+            "executor returned in {elapsed:?} — looks like computed backoff (50ms) \
+             won over the server's 2s Retry-After hint"
+        );
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "executor took {elapsed:?} — far longer than the 2s Retry-After hint"
+        );
+    }
+
+    /// Wall-clock proof that the executor caps a huge server hint at
+    /// `max_delay`. We configure max_delay=200ms and emit a Retry-After
+    /// of 5s — the call must complete well under 5s.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn executor_caps_retry_after_at_max_delay() {
+        let policy = RetryPolicy {
+            max_retries: 1,
+            base_delay: Duration::from_secs(5),
+            max_delay: Duration::from_millis(200),
+            ..RetryPolicy::default()
+        };
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_inner = calls.clone();
+        let start = std::time::Instant::now();
+        let result: anyhow::Result<()> = RetryExecutor::execute(&policy, "test", || {
+            let calls = calls_inner.clone();
+            async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // Hint of 5s would normally dominate; the cap at
+                    // 200ms must shrink it.
+                    Err(anyhow::anyhow!(
+                        "HTTP error 429 (retry_after=5s): engine overloaded"
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+        let elapsed = start.elapsed();
+        assert!(result.is_ok(), "executor should have retried and succeeded");
+        // The cap means we waited ~200ms, NOT 5s. If this assertion
+        // fails, the cap is being bypassed — that lets a hostile or
+        // stale header pin us for arbitrary durations.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "executor took {elapsed:?} — the max_delay cap is not being applied to Retry-After"
+        );
+    }
+
+    /// Without a server hint, the executor must fall back to its
+    /// computed exponential backoff. This is the no-regression path
+    /// for providers that don't send `Retry-After`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn executor_falls_back_to_computed_backoff_when_no_hint() {
+        let policy = RetryPolicy {
+            max_retries: 1,
+            base_delay: Duration::from_millis(100),
+            ..RetryPolicy::default()
+        };
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_inner = calls.clone();
+        let start = std::time::Instant::now();
+        let result: anyhow::Result<()> = RetryExecutor::execute(&policy, "test", || {
+            let calls = calls_inner.clone();
+            async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Err(anyhow::anyhow!("HTTP error 429: engine overloaded"))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+        let elapsed = start.elapsed();
+        assert!(result.is_ok());
+        // ~100ms computed backoff (no server hint to override it).
+        assert!(
+            elapsed >= Duration::from_millis(90),
+            "computed backoff should have waited ~100ms, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "executor took {elapsed:?}, suspiciously long for a 100ms backoff"
+        );
     }
 }
