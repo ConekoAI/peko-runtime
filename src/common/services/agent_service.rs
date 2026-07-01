@@ -5,7 +5,7 @@
 //!
 //! Agents are stored in the new layout at `agents/{agent}/config.toml`.
 
-use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
+use crate::agents::agent_config::{AgentConfig, PromptConfig};
 use crate::commands::agent_bootstrap::AgentBootstrap;
 use crate::common::identifiers::{
     parse_agent_name, validate_agent_name, ValidationError,
@@ -41,12 +41,9 @@ fn build_default_agent_config(name: &str, provider: &str, model: Option<String>)
         description: Some(format!("peko agent: {name}")),
         preferred_provider_id: Some(provider.to_string()),
         preferred_model_id,
-        prompt: Some(PromptConfig {
-            system: Some(SystemFileConfig {
-                max_chars_per_file: 20_000,
-                files: Some(vec!["SYSTEM.md".to_string()]),
-            }),
-        }),
+        // No authored body — `SystemPromptBuilder` falls back to
+        // "You are <name>." for empty bodies.
+        prompt: Some(PromptConfig { body: String::new() }),
         ..Default::default()
     }
 }
@@ -143,18 +140,10 @@ impl AgentService {
 
         let memberships = Vec::new();
 
-        // Resolve the first configured system prompt file, if any.
-        let system_prompt = config
-            .prompt
-            .as_ref()
-            .and_then(|p| p.system.as_ref())
-            .and_then(|s| s.files.as_ref())
-            .and_then(|files| files.first())
-            .and_then(|file| {
-                let workspace_dir = self.resolver.agent_workspace(agent_name);
-                let path = workspace_dir.join(file);
-                std::fs::read_to_string(&path).ok()
-            });
+        // The agent's system prompt body is now stored inline in
+        // `PromptConfig.body` (no more SYSTEM.md indirection at read
+        // time). Return it directly so callers see the current prompt.
+        let system_prompt = config.prompt.as_ref().map(|p| p.body.clone());
 
         Ok(Some(AgentInfo {
             name: agent_name.to_string(),
@@ -219,10 +208,7 @@ impl AgentService {
             name: prompt.name,
             description: prompt.frontmatter.description,
             prompt: Some(crate::agents::agent_config::PromptConfig {
-                system: Some(crate::agents::agent_config::SystemFileConfig {
-                    max_chars_per_file: 200_000,
-                    files: Some(vec![agent_md.to_string_lossy().to_string()]),
-                }),
+                body: prompt.body,
             }),
             extensions: Some(extensions),
             ..AgentConfig::default()
@@ -458,17 +444,16 @@ impl AgentService {
 
         if let Some(system_prompt) = update.system_prompt {
             if !system_prompt.is_empty() {
-                config.prompt = Some(PromptConfig {
-                    system: Some(SystemFileConfig {
-                        files: Some(vec!["SYSTEM.md".to_string()]),
-                        ..Default::default()
-                    }),
-                });
-                // Write the system prompt to a SYSTEM.md file in the agent workspace
+                // Persist the prompt body inline (no more SYSTEM.md file
+                // indirection). The file under the agent workspace is
+                // still written so on-disk inspection tools see the
+                // current prompt, but the runtime reads from
+                // `PromptConfig.body`.
                 let workspace_dir = self.resolver.agent_workspace(agent_name);
                 tokio::fs::create_dir_all(&workspace_dir).await.ok();
                 let system_md_path = workspace_dir.join("SYSTEM.md");
                 tokio::fs::write(&system_md_path, &system_prompt).await?;
+                config.prompt = Some(PromptConfig { body: system_prompt });
             } else {
                 config.prompt = None;
             }
@@ -962,14 +947,10 @@ mod tests {
             info.system_prompt.as_deref(),
             Some("You are a test assistant.")
         );
-        assert!(info
-            .config
-            .prompt
-            .as_ref()
-            .and_then(|p| p.system.as_ref())
-            .and_then(|s| s.files.as_ref())
-            .unwrap()
-            .contains(&"SYSTEM.md".to_string()));
+        assert_eq!(
+            info.config.prompt.as_ref().map(|p| p.body.as_str()),
+            Some("You are a test assistant.")
+        );
     }
 
     #[tokio::test]

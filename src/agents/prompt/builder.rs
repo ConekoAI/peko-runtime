@@ -1,10 +1,10 @@
 //! System prompt builder with multi-section support
 //!
-//! Matches `OpenClaw`'s section-based prompt assembly
+//! The agent's system prompt is a single Markdown body (see
+//! [`PromptConfig::body`]). Placeholders (`{{tools}}`, `{{skills}}`,
+//! `{{agents}}`, `{{runtime}}`, etc.) are replaced at build time with
+//! rendered sections. An empty body falls back to a one-line identity.
 
-use crate::agents::prompt::bootstrap::{
-    default_workspace_dir, inject_bootstrap_files, BootstrapConfig,
-};
 use crate::agents::prompt::placeholder::{replace_placeholders, Placeholder};
 use crate::providers::ToolDefinition;
 use crate::tools::Tool;
@@ -28,7 +28,7 @@ pub enum PromptMode {
 /// System prompt builder
 pub struct SystemPromptBuilder {
     mode: PromptMode,
-    bootstrap_config: BootstrapConfig,
+    body: String,
     tools: Vec<Arc<dyn Tool>>,
     /// Tool definitions from unified registry (ADR-019 Phase 3)
     tool_definitions: Vec<ToolDefinition>,
@@ -48,11 +48,11 @@ impl SystemPromptBuilder {
     pub fn new(agent_name: &str) -> Self {
         Self {
             mode: PromptMode::Full,
-            bootstrap_config: BootstrapConfig::default(),
+            body: String::new(),
             tools: vec![],
             tool_definitions: vec![],
             agent_name: agent_name.to_string(),
-            workspace: default_workspace_dir(),
+            workspace: PathBuf::from("."),
             model: "default".to_string(),
             thinking_level: "medium".to_string(),
             has_gateway: true,
@@ -81,20 +81,16 @@ impl SystemPromptBuilder {
 
     pub fn with_workspace(mut self, workspace: impl AsRef<std::path::Path>) -> Self {
         self.workspace = workspace.as_ref().to_path_buf();
-        self.bootstrap_config.workspace_dir = self.workspace.clone();
         self
     }
 
-    /// Set custom system files to inject (all treated as optional)
-    ///
-    /// If `files` is None, no files will be loaded (empty system prompt).
-    /// Use `BootstrapConfig::with_default_files()` explicitly if you want defaults.
-    pub fn with_system_files(mut self, files: Option<Vec<String>>) -> Self {
-        self.bootstrap_config = BootstrapConfig::with_files(files, self.workspace.clone());
+    /// Set the agent's prompt body (Markdown with `{{placeholder}}` syntax).
+    pub fn with_body(mut self, body: impl Into<String>) -> Self {
+        self.body = body.into();
         self
     }
 
-    /// Build the complete system prompt from templates with placeholder replacement
+    /// Build the complete system prompt from the body + section renderings
     pub fn build(self) -> String {
         if self.mode == PromptMode::None {
             return format!("You are {}.", self.agent_name);
@@ -102,28 +98,15 @@ impl SystemPromptBuilder {
 
         let is_minimal = self.mode == PromptMode::Minimal;
 
-        // 1. Load all bootstrap files (templates)
-        let injected = inject_bootstrap_files(&self.bootstrap_config);
-
-        // 2. Concatenate all template content (skip missing file placeholders)
-        let mut template = String::new();
-        for section in &injected.sections {
-            // Skip "file not found" placeholder comments
-            if section.content.starts_with("<!--") && section.content.contains("file not found") {
-                continue;
-            }
-            if !template.is_empty() {
-                template.push_str("\n\n");
-            }
-            template.push_str(&section.content);
-        }
-
-        // If no templates loaded, fall back to minimal default
-        if template.trim().is_empty() {
+        // 1. Resolve the template body. Empty body → minimal identity fallback.
+        if self.body.trim().is_empty() {
             return format!("You are {}.", self.agent_name);
         }
+        // Clone the body out of `self` so subsequent `&self` section
+        // builder calls don't trip a partial-move error.
+        let template = self.body.clone();
 
-        // 3. Build placeholder values
+        // 2. Build placeholder values
         let mut values = HashMap::new();
 
         // Simple inline placeholders
@@ -151,7 +134,7 @@ impl SystemPromptBuilder {
             self.build_self_update_section(is_minimal),
         );
 
-        // 4. Replace placeholders in template
+        // 3. Replace placeholders in template
         replace_placeholders(&template, &values, true)
     }
 
@@ -421,8 +404,6 @@ mod tests {
 
     #[test]
     fn test_builder_with_template() {
-        let tmp = TempDir::new().unwrap();
-
         // Create a template with placeholders
         let template = r"## Your Role
 You are {{agent_name}}.
@@ -433,10 +414,9 @@ You are {{agent_name}}.
 Be safe.
 
 {{runtime}}";
-        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("test-agent")
-            .with_workspace(tmp.path())
+            .with_body(template)
             .with_mode(PromptMode::Full);
 
         let prompt = builder.build();
@@ -454,12 +434,11 @@ Be safe.
 
     #[test]
     fn test_builder_no_template_fallback() {
-        // When no templates exist, should fallback to minimal
+        // Empty body → fallback to minimal identity.
         let builder = SystemPromptBuilder::new("test-agent").with_mode(PromptMode::Full);
 
         let prompt = builder.build();
 
-        // Fallback to minimal when no templates
         assert_eq!(prompt, "You are test-agent.");
     }
 
@@ -474,7 +453,6 @@ Be safe.
 
         let tmp = TempDir::new().unwrap();
         let template = "{{skills}}";
-        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         // Create ExtensionCore and register skills
         let core = crate::extensions::framework::ExtensionCore::new();
@@ -503,6 +481,7 @@ Be safe.
         let builder = SystemPromptBuilder::new("test-agent")
             .with_workspace(tmp.path())
             .with_mode(PromptMode::Full)
+            .with_body(template)
             .with_extension_core(Arc::new(core));
 
         // Build needs to run in a tokio context because build_skills_section uses block_on
@@ -525,11 +504,11 @@ Be safe.
 Workspace: {{workspace}}
 Channel: {{channel}}
 Level: {{thinking_level}}";
-        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("my-agent")
             .with_workspace(tmp.path())
-            .with_mode(PromptMode::Full);
+            .with_mode(PromptMode::Full)
+            .with_body(template);
 
         let prompt = builder.build();
 
@@ -550,11 +529,11 @@ You are {{agent_name}}.
 {{tools}}
 
 {{runtime}}";
-        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("test-agent")
             .with_workspace(tmp.path())
-            .with_mode(PromptMode::Minimal);
+            .with_mode(PromptMode::Minimal)
+            .with_body(template);
 
         let prompt = builder.build();
 

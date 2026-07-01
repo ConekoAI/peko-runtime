@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::sync::RwLock;
 
-use crate::agents::agent_config::{AgentConfig, PromptConfig, SystemFileConfig};
+use crate::agents::agent_config::{AgentConfig, PromptConfig};
 use crate::agents::Agent;
 use crate::auth::Subject;
 use crate::common::paths::PathResolver;
@@ -60,23 +60,14 @@ pub fn build_agent_config(
     AgentConfig {
         name: prompt.name.clone(),
         description: prompt.frontmatter.description.clone(),
+        // The agent's system prompt is the body of its resolved
+        // `AgentPrompt`. For built-in agents this came from `include_str!`;
+        // for user-authored agents it came from a Markdown file under
+        // `<workspace>/agents/`. Either way it now reaches the LLM
+        // through `SystemPromptService::build` reading
+        // `PromptConfig.body` directly — no more bootstrap-file plumbing.
         prompt: Some(PromptConfig {
-            system: Some(SystemFileConfig {
-                max_chars_per_file: 200_000,
-                // Built-in prompts (e.g. the supervisor at `builtin:supervisor`)
-                // have their body loaded via `include_str!` already — passing
-                // the synthetic path through as a bootstrap file makes the
-                // loader try to read `workspace_dir/builtin:supervisor` from
-                // disk and emit a spurious "Bootstrap file not found" warning
-                // every daemon tick. Only wire real on-disk paths here.
-                files: if prompt.path.components().count() == 1
-                    && prompt.path.to_string_lossy().starts_with("builtin:")
-                {
-                    None
-                } else {
-                    Some(vec![prompt.path.to_string_lossy().to_string()])
-                },
-            }),
+            body: prompt.body.clone(),
         }),
         extensions: Some(extensions),
         preferred_provider_id,
