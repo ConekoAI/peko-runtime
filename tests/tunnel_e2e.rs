@@ -277,7 +277,13 @@ fn seed_minimax_catalog_entry(
 // E2E Test
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+// Production daemon runs on a multi-threaded Tokio runtime; the
+// `SystemPromptBuilder` uses `tokio::task::block_in_place` to drive
+// ExtensionCore hooks synchronously, which requires a multi-threaded
+// runtime. `#[tokio::test]` defaults to `current_thread`, which panics
+// with "can call blocking only when running on the multi-threaded
+// runtime" — pin this test to the production flavor.
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires PekoHub backend and LLM (MINIMAX_API_KEY or MOCK_LLM_URL)"]
 async fn test_e2e_tunnel_chat_with_llm() {
     // v3 headless bootstrap: this test builds an in-process AppState that
