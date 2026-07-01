@@ -231,6 +231,19 @@ impl Provider {
         tokio::spawn(async move {
             let mut sse_stream = crate::providers::transport::sse::SseParser::parse_stream(stream);
             while let Some(result) = sse_stream.next().await {
+                // The `[DONE]` sentinel marks the logical end of an
+                // OpenAI-style SSE stream. Some providers hold the HTTP
+                // connection open (keep-alive) after emitting it instead of
+                // closing the byte stream, so relying on `sse_stream.next()`
+                // returning `None` to terminate can block forever — which
+                // stalls the agentic loop and, in turn, hangs `peko send`
+                // after the final token. Detect the sentinel and stop once
+                // its `Done` event has been forwarded. Usage chunks arrive
+                // *before* `[DONE]`, so they are still delivered. Providers
+                // that don't emit the sentinel are unaffected and still
+                // terminate on connection close.
+                let is_done = matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
+
                 let output = match result {
                     Ok(event) => match adapter.parse_sse_event(&model_id_owned, &event.data) {
                         Ok(Some(stream_event)) => Some(Ok(stream_event)),
@@ -244,6 +257,10 @@ impl Provider {
                     if tx.send(event).await.is_err() {
                         break;
                     }
+                }
+
+                if is_done {
+                    break;
                 }
             }
             // tx dropped here, closing the channel

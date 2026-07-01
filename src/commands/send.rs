@@ -46,8 +46,15 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
     info!("Sending message to principal '{}'", args.principal);
 
     let client = DaemonClient::connect().await?;
+    // Always use the streaming request. It emits `PrincipalSentChunk`
+    // deltas as the supervisor produces text, which (a) lets us print
+    // incrementally and (b) keeps the per-packet idle timeout
+    // (`CLI_TIMEOUT_SECS`) from firing on long responses — the one-shot
+    // `PrincipalSend` path emits nothing until completion, so any answer
+    // taking longer than the idle window dies with "Stream closed
+    // unexpectedly". `--no-stream` still buffers before printing.
     let stream = client
-        .principal_send(&args.principal, message, _paths.user())
+        .principal_send_stream(&args.principal, message, _paths.user())
         .await?;
 
     process_response_stream(stream, &args, _json).await
@@ -63,6 +70,14 @@ async fn process_response_stream(
         let mut final_text = String::new();
         while let Some(packet) = stream.next().await {
             match packet {
+                ResponsePacket::PrincipalSentChunk { delta, .. } => {
+                    final_text.push_str(&delta);
+                }
+                // Authoritative full answer — prefer it over the
+                // accumulated deltas in case the orchestrator buffered.
+                ResponsePacket::PrincipalSentDone { content, .. } => {
+                    final_text = content;
+                }
                 ResponsePacket::PrincipalSent { content, .. }
                 | ResponsePacket::Text { chunk: content, .. } => {
                     final_text.push_str(&content);
@@ -95,7 +110,8 @@ async fn process_response_stream(
     let mut has_started_line = false;
     while let Some(packet) = stream.next().await {
         match packet {
-            ResponsePacket::PrincipalSent { content, .. }
+            ResponsePacket::PrincipalSentChunk { delta: content, .. }
+            | ResponsePacket::PrincipalSent { content, .. }
             | ResponsePacket::Text { chunk: content, .. } => {
                 if !has_started_line {
                     print!("\n{}: ", args.principal);
@@ -104,6 +120,16 @@ async fn process_response_stream(
                 }
                 print!("{}", content);
                 std::io::stdout().flush()?;
+            }
+            // Final full answer. Chunks were already printed
+            // incrementally; only fall back to printing it here if the
+            // stream produced no deltas (e.g. a buffered orchestrator).
+            ResponsePacket::PrincipalSentDone { content, .. } => {
+                if !has_started_line && !content.is_empty() {
+                    print!("\n{}: {}", args.principal, content);
+                    std::io::stdout().flush()?;
+                    has_started_line = true;
+                }
             }
             ResponsePacket::Done { success, error, .. } => {
                 if has_started_line {
