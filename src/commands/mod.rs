@@ -27,6 +27,7 @@ pub mod send;
 pub mod session;
 pub mod system;
 pub mod tunnel;
+pub mod vault;
 
 pub mod update;
 
@@ -111,6 +112,10 @@ pub enum Commands {
     /// Provider API key management (OS keychain backed)
     #[command(subcommand)]
     Credential(credential::CredentialCommands),
+
+    /// Vault management (switch unlock mode, etc.)
+    #[command(subcommand)]
+    Vault(vault::VaultCommands),
 
     /// Extension management commands (skills, MCP, tools, channels, hooks)
     #[command(subcommand)]
