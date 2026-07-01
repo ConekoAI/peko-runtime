@@ -5,7 +5,7 @@
 //!
 //! This module provides:
 //! - Single agent runtime (`Agent` struct) — the core execution engine
-//!   used by Principal supervisors and the `Agent` subagent tool
+//!   used by Principal root agents and the `Agent` subagent tool
 //!
 //! Note: after the principal-as-single-actor migration, agent
 //! management surface (CRUD, .agent packaging) is gone. The only

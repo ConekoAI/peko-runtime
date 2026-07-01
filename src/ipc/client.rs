@@ -78,7 +78,7 @@ impl DaemonClient {
     ///
     /// The legacy `Execute` path went through `StatelessAgentService`
     /// directly, bypassing `PrincipalManager` permission checks,
-    /// session creation, and supervisor routing. All chat traffic is
+    /// session creation, and root-agent routing. All chat traffic is
     /// Spawn an async background task
     ///
     /// # Errors

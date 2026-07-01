@@ -107,7 +107,7 @@ async fn delete_cmd(vault: &Vault, provider: &str) -> Result<()> {
 }
 
 /// Tell the running daemon to re-read the vault so the in-flight
-/// supervisor sees the key just stored/deleted. Silent on connection
+/// root agent sees the key just stored/deleted. Silent on connection
 /// failure (daemon may not be running; the next `peko daemon start`
 /// will pick up the new state from disk).
 async fn notify_daemon_reload() {

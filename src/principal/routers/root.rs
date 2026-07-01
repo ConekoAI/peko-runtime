@@ -1,7 +1,7 @@
-//! Root-agent-based Principal router (formerly the "supervisor" router).
+//! Root-agent-based Principal router.
 //!
-//! The `SupervisorRouter` runs a normal agent prompt (the built-in root
-//! agent, or a user-supplied override) in a peer-scoped session.  The
+//! The `RootRouter` runs a normal agent prompt (the built-in root
+//! agent, or a user-supplied override) in a peer-scoped session. The
 //! root agent does the actual orchestration: it inspects principal
 //! memory/sessions, chooses specialist agents from the catalog, and
 //! delegates via the existing `Agent` tool and async task tools.
@@ -17,7 +17,7 @@ use async_trait::async_trait;
 
 use crate::engine::AgenticEvent;
 use crate::principal::agent_prompt::{parse_agent_prompt, AgentPrompt};
-use crate::principal::agent_runner::{run_supervisor_prompt, run_supervisor_prompt_streaming};
+use crate::principal::agent_runner::{run_root_agent_prompt, run_root_agent_prompt_streaming};
 use crate::principal::context::PrincipalContext;
 use crate::principal::memory::{PrincipalMemory, SessionArtifact};
 use crate::principal::router::{
@@ -26,15 +26,15 @@ use crate::principal::router::{
 use crate::providers::LlmResolver;
 
 /// Load the compiled-in root agent prompt.
-pub fn default_supervisor_prompt() -> AgentPrompt {
-    let content = include_str!("../../resources/agents/supervisor/AGENT.md");
-    parse_agent_prompt("supervisor", PathBuf::from("builtin:supervisor"), content)
+pub fn default_root_prompt() -> AgentPrompt {
+    let content = include_str!("../../resources/agents/root/AGENT.md");
+    parse_agent_prompt("root", PathBuf::from("builtin:root"), content)
 }
 
 /// Stable root-agent session id for a peer.
 #[must_use]
-pub fn supervisor_session_id(peer: &crate::auth::Subject) -> String {
-    format!("supervisor:{peer}")
+pub fn root_session_id(peer: &crate::auth::Subject) -> String {
+    format!("root:{peer}")
 }
 
 /// A Principal router powered by a root-agent agentic loop.
@@ -42,10 +42,10 @@ pub fn supervisor_session_id(peer: &crate::auth::Subject) -> String {
 /// Holds a cached `PrincipalContext` for the principal's lifetime; the
 /// shared per-principal `ExtensionCore` lives on the context and is
 /// reused across messages.
-pub struct SupervisorRouter {
+pub struct RootRouter {
     memory: Arc<dyn PrincipalMemory>,
     resolver: Option<Arc<LlmResolver>>,
-    supervisor_prompt: AgentPrompt,
+    root_prompt: AgentPrompt,
     workspace_path: PathBuf,
     /// Per-Principal provider preference from `principal.toml`. When
     /// `Some`, it overrides the global catalog default for any LLM call
@@ -65,8 +65,8 @@ pub struct SupervisorRouter {
     caller_runtime_id: StdRwLock<Option<String>>,
 }
 
-impl SupervisorRouter {
-    /// Create a new supervisor router for the given Principal workspace.
+impl RootRouter {
+    /// Create a new root router for the given Principal workspace.
     ///
     /// `principal_provider_id` / `principal_model_id` are the values from
     /// `PrincipalConfig::preferred_provider_id` / `preferred_model_id`.
@@ -81,7 +81,7 @@ impl SupervisorRouter {
     pub fn new(
         memory: Arc<dyn PrincipalMemory>,
         resolver: Option<Arc<LlmResolver>>,
-        supervisor_prompt: AgentPrompt,
+        root_prompt: AgentPrompt,
         workspace_path: PathBuf,
         principal_provider_id: Option<String>,
         principal_model_id: Option<String>,
@@ -90,7 +90,7 @@ impl SupervisorRouter {
         Self {
             memory,
             resolver,
-            supervisor_prompt,
+            root_prompt,
             workspace_path,
             principal_provider_id,
             principal_model_id,
@@ -99,13 +99,6 @@ impl SupervisorRouter {
         }
     }
 
-    /// Bind the local runtime's `runtime_id` so `principal_send` can
-    /// be registered on this Principal's agents. Called by the
-    /// daemon-state bootstrap after `start_tunnel` succeeds; takes
-    /// effect on the next `PrincipalContext` produced by
-    /// `build_context` (existing contexts in flight won't see it
-    /// until they re-build — same lazy semantics as
-    /// `set_caller_principal_did`).
     /// Bind the local runtime's `runtime_id` so `principal_send` can
     /// be registered on this Principal's agents. Called by the
     /// daemon-state bootstrap after `start_tunnel` succeeds; takes
@@ -150,7 +143,7 @@ impl SupervisorRouter {
             ),
             ctx.principal_id.clone(),
         );
-        principal_ctx.set_root_prompt(self.supervisor_prompt.clone());
+        principal_ctx.set_root_prompt(self.root_prompt.clone());
         // Phase 4b: bind caller identity so `principal_send` is
         // registered on the principal's agents. The DID is the
         // principal's stable identifier (set in the factory from
@@ -158,12 +151,12 @@ impl SupervisorRouter {
         // set later by the daemon-state bootstrap post-`start_tunnel`.
         if let Some(ref did) = self.principal_caller_did {
             if let Err(e) = principal_ctx.set_caller_principal_did(did.clone()) {
-                tracing::debug!("SupervisorRouter::build_context: {e}");
+                tracing::debug!("RootRouter::build_context: {e}");
             }
         }
         if let Some(ref runtime_id) = self.caller_runtime_id.read().ok().and_then(|g| g.clone()) {
             if let Err(e) = principal_ctx.set_caller_runtime_id((*runtime_id).clone()) {
-                tracing::debug!("SupervisorRouter::build_context: {e}");
+                tracing::debug!("RootRouter::build_context: {e}");
             }
         }
         principal_ctx
@@ -171,19 +164,19 @@ impl SupervisorRouter {
 }
 
 #[async_trait]
-impl PrincipalRouter for SupervisorRouter {
+impl PrincipalRouter for RootRouter {
     fn set_caller_runtime_id(&self, runtime_id: String) {
-        SupervisorRouter::set_caller_runtime_id(self, runtime_id);
+        RootRouter::set_caller_runtime_id(self, runtime_id);
     }
     async fn route(&self, ctx: RouterContext) -> Result<RouteDecision, RouterError> {
         let peer = ctx.peer.clone();
-        let session_id = supervisor_session_id(&peer);
+        let session_id = root_session_id(&peer);
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
-        let message = build_supervisor_message(&ctx);
+        let message = build_root_message(&ctx);
         let principal_ctx = self.build_context(&ctx);
 
-        let response = run_supervisor_prompt(
-            &self.supervisor_prompt,
+        let response = run_root_agent_prompt(
+            &self.root_prompt,
             peer.clone(),
             message,
             session_id.clone(),
@@ -198,7 +191,7 @@ impl PrincipalRouter for SupervisorRouter {
         let artifact = SessionArtifact {
             session_id,
             peer,
-            title: Some("supervisor".to_string()),
+            title: Some("root".to_string()),
             updated_at: chrono::Utc::now(),
             summary: Some(response.clone()),
         };
@@ -215,13 +208,13 @@ impl PrincipalRouter for SupervisorRouter {
         on_event: Box<dyn Fn(AgenticEvent) + Send + Sync>,
     ) -> Result<RouteDecision, RouterError> {
         let peer = ctx.peer.clone();
-        let session_id = supervisor_session_id(&peer);
+        let session_id = root_session_id(&peer);
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
-        let message = build_supervisor_message(&ctx);
+        let message = build_root_message(&ctx);
         let principal_ctx = self.build_context(&ctx);
 
-        let response = run_supervisor_prompt_streaming(
-            &self.supervisor_prompt,
+        let response = run_root_agent_prompt_streaming(
+            &self.root_prompt,
             peer.clone(),
             message,
             session_id.clone(),
@@ -237,7 +230,7 @@ impl PrincipalRouter for SupervisorRouter {
         let artifact = SessionArtifact {
             session_id,
             peer,
-            title: Some("supervisor".to_string()),
+            title: Some("root".to_string()),
             updated_at: chrono::Utc::now(),
             summary: Some(response.clone()),
         };
@@ -249,7 +242,7 @@ impl PrincipalRouter for SupervisorRouter {
     }
 }
 
-fn build_supervisor_message(ctx: &RouterContext) -> String {
+fn build_root_message(ctx: &RouterContext) -> String {
     let mut parts = Vec::new();
 
     if !ctx.recalled_context.is_empty() {
@@ -281,9 +274,9 @@ mod tests {
     use crate::session::InboxRegistry;
 
     #[test]
-    fn test_default_supervisor_prompt_loads() {
-        let prompt = default_supervisor_prompt();
-        assert_eq!(prompt.name, "supervisor");
+    fn test_default_root_prompt_loads() {
+        let prompt = default_root_prompt();
+        assert_eq!(prompt.name, "root");
         assert!(
             prompt.body.contains("agent_catalog"),
             "root agent prompt should mention agent_catalog"
@@ -291,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_supervisor_message_includes_context() {
+    fn test_build_root_message_includes_context() {
         let ctx = RouterContext {
             principal_id: crate::principal::PrincipalId::generate(),
             principal_name: "test".to_string(),
@@ -319,7 +312,7 @@ mod tests {
             session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
-        let message = build_supervisor_message(&ctx);
+        let message = build_root_message(&ctx);
         assert!(message.contains("User (user:alice) says:"));
         assert!(message.contains("previous summary"));
     }

@@ -1,6 +1,6 @@
 //! Agent catalog tool
 //!
-//! Provides `agent_catalog` so the supervisor agent can discover the specialist
+//! Provides `agent_catalog` so the root agent agent can discover the specialist
 //! agents available inside the current Principal.
 
 use async_trait::async_trait;

@@ -53,7 +53,7 @@ pub struct PrincipalConfig {
 
     /// Optional provider id pinned to this Principal. Overrides the
     /// global catalog default (`peko provider set-default`) for any
-    /// LLM call routed through this Principal's supervisor. Most
+    /// LLM call routed through this Principal's root agent. Most
     /// Principals should leave this `None` and inherit the default;
     /// set it when a specific Principal needs a different model —
     /// e.g. an "offline" Principal pinned to a local Ollama while
@@ -200,10 +200,10 @@ pub enum ArtifactKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalRoutingConfig {
-    /// Optional path to a custom supervisor agent prompt Markdown file.
-    /// If omitted, the runtime uses the built-in supervisor prompt.
+    /// Optional path to a custom root agent prompt Markdown file.
+    /// If omitted, the runtime uses the built-in root prompt.
     #[serde(default)]
-    pub supervisor_prompt: Option<PathBuf>,
+    pub root_prompt: Option<PathBuf>,
 
     #[serde(default = "default_context_window_messages")]
     pub context_window_messages: usize,
@@ -218,7 +218,7 @@ pub struct PrincipalRoutingConfig {
 impl Default for PrincipalRoutingConfig {
     fn default() -> Self {
         Self {
-            supervisor_prompt: None,
+            root_prompt: None,
             context_window_messages: default_context_window_messages(),
             recall_top_k: default_recall_top_k(),
             max_router_iterations: default_max_router_iterations(),

@@ -47,7 +47,7 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
 
     let client = DaemonClient::connect().await?;
     // Always use the streaming request. It emits `PrincipalSentChunk`
-    // deltas as the supervisor produces text, which (a) lets us print
+    // deltas as the root agent produces text, which (a) lets us print
     // incrementally and (b) keeps the per-packet idle timeout
     // (`CLI_TIMEOUT_SECS`) from firing on long responses — the one-shot
     // `PrincipalSend` path emits nothing until completion, so any answer

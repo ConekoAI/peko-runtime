@@ -137,7 +137,7 @@ pub async fn execute(cmd: ProviderCommands, paths: &GlobalPaths) -> Result<()> {
 }
 
 /// Tell the running daemon to re-read `providers.toml` from disk so
-/// the in-flight supervisor sees the mutation just persisted by the
+/// the in-flight root agent sees the mutation just persisted by the
 /// caller. Silent on connection failure — the daemon may not be
 /// running (cold start, dev workflow), in which case the next
 /// `peko daemon start` will pick up the new state from disk anyway.

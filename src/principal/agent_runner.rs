@@ -23,11 +23,11 @@ use super::{agent_prompt::AgentPrompt, config::PrincipalCapabilities};
 /// `provider_hint` is the resolved `(preferred_provider_id, preferred_model_id)`
 /// pair. The caller passes the explicit principal-config values when set, or
 /// falls back to the catalog's `default_provider_id` / `default_model_id` when
-/// the principal doesn't declare one (see [`run_supervisor_prompt`]). Without
-/// a non-`None` provider hint the supervisor's `SubagentExecutor` raises the
+/// the principal doesn't declare one (see [`run_root_agent_prompt`]). Without
+/// a non-`None` provider hint the root agent's `SubagentExecutor` raises the
 /// actionable "no LLM provider is configured for principal '{name}'" error
 /// pointing the user at the principal + global config paths — there is no
-/// other code path that can recover a provider for the supervisor at run
+/// other code path that can recover a provider for the root agent at run
 /// time.
 pub fn build_agent_config(
     prompt: &AgentPrompt,
@@ -86,7 +86,7 @@ fn merge_provider_hint(
 /// If the principal pins a `preferred_provider_id` that doesn't exist
 /// in the catalog — typical after `peko provider remove` or a
 /// hand-edit typo — drop the principal's hint entirely so the catalog
-/// default applies. A stale pin should never break the supervisor;
+/// default applies. A stale pin should never break the root agent;
 /// the operator will see the warning and either re-add the provider
 /// or fix the principal config.
 ///
@@ -132,7 +132,7 @@ pub(crate) async fn resolve_provider_hint(
     merge_provider_hint(validated_principal_hint, catalog_default)
 }
 
-/// Run the root (formerly "supervisor") agent prompt in a peer-scoped
+/// Run the root agent prompt in a peer-scoped
 /// session using the principal's shared `ExtensionCore`.
 ///
 /// The root agent is just another agent of the principal — the same
@@ -140,7 +140,7 @@ pub(crate) async fn resolve_provider_hint(
 /// spawns. What the root agent can see is governed by the principal's
 /// `capabilities`; what any subagent can see is governed by that
 /// subagent's own capability whitelist.
-pub async fn run_supervisor_prompt(
+pub async fn run_root_agent_prompt(
     prompt: &AgentPrompt,
     peer: Subject,
     message: String,
@@ -148,7 +148,7 @@ pub async fn run_supervisor_prompt(
     available_agents: Vec<AgentPromptSummary>,
     ctx: &PrincipalContext,
 ) -> anyhow::Result<String> {
-    run_supervisor_prompt_with_callback(
+    run_root_agent_prompt_with_callback(
         prompt,
         peer,
         message,
@@ -162,7 +162,7 @@ pub async fn run_supervisor_prompt(
     .await
 }
 
-/// Streaming variant of [`run_supervisor_prompt`]. The callback is invoked
+/// Streaming variant of [`run_root_agent_prompt`]. The callback is invoked
 /// for every [`AgenticEvent`] emitted by the root agent's loop
 /// (e.g. `AssistantDelta` for token deltas, `ToolStart`/`ToolEnd` for tool
 /// invocations). The callback must be cheap and non-blocking; the runtime
@@ -170,7 +170,7 @@ pub async fn run_supervisor_prompt(
 /// without back-pressure on the agentic loop.
 ///
 /// Returns the same `final_answer` string as the non-streaming variant.
-pub async fn run_supervisor_prompt_streaming<F>(
+pub async fn run_root_agent_prompt_streaming<F>(
     prompt: &AgentPrompt,
     peer: Subject,
     message: String,
@@ -182,7 +182,7 @@ pub async fn run_supervisor_prompt_streaming<F>(
 where
     F: Fn(AgenticEvent) + Send + Sync + 'static,
 {
-    run_supervisor_prompt_with_callback(
+    run_root_agent_prompt_with_callback(
         prompt,
         peer,
         message,
@@ -194,7 +194,7 @@ where
     .await
 }
 
-async fn run_supervisor_prompt_with_callback<F>(
+async fn run_root_agent_prompt_with_callback<F>(
     prompt: &AgentPrompt,
     peer: Subject,
     message: String,
@@ -248,7 +248,7 @@ where
         .with_user(&peer.to_string());
     let session_manager = Arc::new(RwLock::new(session_manager));
 
-    // Open or create the supervisor session.  Hold the per-principal
+    // Open or create the root agent session.  Hold the per-principal
     // session-creation lock while touching the shared session index so
     // concurrent peers don't corrupt it.
     let session = {
@@ -265,7 +265,7 @@ where
             let handle = mgr
                 .create_session(&prompt.name, &peer, options)
                 .await
-                .context("failed to create supervisor session")?;
+                .context("failed to create root agent session")?;
             handle.base().clone()
         }
     };
@@ -492,7 +492,7 @@ mod tests {
 
     /// Principal pins a provider that's been deleted from the catalog
     /// (or was a typo) → drop the principal hint so the catalog
-    /// default flows through, and the supervisor keeps working.
+    /// default flows through, and the root agent keeps working.
     #[tokio::test]
     async fn validate_principal_hint_drops_unknown_provider() {
         let resolver =
@@ -506,11 +506,11 @@ mod tests {
 
     /// No resolver context → we can't validate, so the principal hint
     /// passes through unchanged. This matches the legacy behaviour and
-    /// keeps the test-friendly `run_supervisor_prompt` callers honest.
+    /// keeps the test-friendly `run_root_agent_prompt` callers honest.
     #[test]
     fn validate_principal_hint_is_noop_when_no_hint() {
         // A pure-function spot-check: with no principal hint set, the
-        // supervisor never invokes `validate_principal_hint` with a
+        // root agent never invokes `validate_principal_hint` with a
         // Some(pid), but we still guarantee the helper is a no-op for
         // the (None, _) case via the call-site guard.
         assert_eq!(

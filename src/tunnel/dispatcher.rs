@@ -705,7 +705,7 @@ impl TunnelDispatcher {
             streaming: true,
         };
 
-        // Bounded channel: a slow tunnel back-pressures the supervisor
+        // Bounded channel: a slow tunnel back-pressures the root agent
         // (events drop on `try_send` failure rather than growing memory).
         let (event_tx, mut event_rx) =
             tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(256);

@@ -1083,7 +1083,7 @@ impl SessionManager {
         // distinct peers would interleave and the trailing
         // `save_index` could overwrite a concurrent peer's index update
         // with a stale view, surfacing as a transient
-        // `RouterError(AgentFailed("failed to create supervisor session"))`
+        // `RouterError(AgentFailed("failed to create root agent session"))`
         // and forcing the test to retry. Holding the lock for the full
         // metadata+index sequence eliminates the race at its source
         // (audit M7).

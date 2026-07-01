@@ -38,7 +38,7 @@ use super::config::PrincipalCapabilities;
 /// subagents.
 ///
 /// Constructed once per principal at startup, cached on the
-/// `SupervisorRouter`, and passed by reference into the principal's
+/// `RootRouter`, and passed by reference into the principal's
 /// root-agent runner. Subagents don't need a fresh context — they read
 /// the principal's tools off this struct's core, and their own
 /// capability whitelist filters what's actually visible to them.
@@ -79,7 +79,7 @@ pub struct PrincipalContext {
     principal_id: PrincipalId,
     /// Caller identity for outbound `principal_send` envelopes. Both
     /// fields are `None` until set via [`Self::set_caller_identity`]
-    /// (usually at `SupervisorRouter::build_context` time). When
+    /// (usually at `RootRouter::build_context` time). When
     /// either is `None`, `Agent::init_builtins_async` skips
     /// registering `principal_send` — the tool needs a stable caller
     /// identity to attribute outbound requests under
@@ -128,7 +128,7 @@ impl PrincipalContext {
     }
 
     /// Bind the caller's principal DID for outbound `principal_send`
-    /// envelopes. Set once at `SupervisorRouter::build_context` from
+    /// envelopes. Set once at `RootRouter::build_context` from
     /// `Principal::did()` (Phase 4b). Idempotent: subsequent calls
     /// return the existing value rather than overwriting.
     pub fn set_caller_principal_did(&self, did: String) -> Result<(), String> {
@@ -206,7 +206,7 @@ impl PrincipalContext {
     }
 
     /// Install the resolved root agent prompt. Called by
-    /// `SupervisorRouter` once at construction; the prompt is reused
+    /// `RootRouter` once at construction; the prompt is reused
     /// for the principal's lifetime.
     pub fn set_root_prompt(
         &self,
@@ -354,8 +354,8 @@ mod tests {
         // with a minimal body is enough for the idempotency check.
         use crate::principal::agent_prompt::AgentPrompt;
         let prompt = AgentPrompt {
-            name: "supervisor".to_string(),
-            path: PathBuf::from("builtin:supervisor"),
+            name: "root".to_string(),
+            path: PathBuf::from("builtin:root"),
             body: "test body".to_string(),
             frontmatter: Default::default(),
         };

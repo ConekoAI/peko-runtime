@@ -16,7 +16,7 @@
 //! - `identity/did.json` - DID document
 //! - `identity/keys.enc` - Encrypted private keys (AES-256-GCM)
 //! - `config/principal.toml` - Principal configuration (owner,
-//!   permissions, exposure, capabilities, supervisor prompt)
+//!   permissions, exposure, capabilities, root prompt)
 //! - `workspace/agents/` - The Principal's agent prompts (`AGENT.md`)
 //! - `workspace/memory/` - Memory index and session JSONL (optional)
 //! - `extensions/` - Embedded extension packages (optional, air-gapped bundles)

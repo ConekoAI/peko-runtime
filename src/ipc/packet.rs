@@ -73,7 +73,7 @@ pub enum RequestPacket {
     /// the principal-as-single-actor migration (audit C4). The legacy
     /// Execute path went through `StatelessAgentService` directly,
     /// bypassing `PrincipalManager` permission checks, session
-    /// creation, and supervisor routing. All chat traffic is now
+    /// creation, and root-agent routing. All chat traffic is now
     /// routed through `PrincipalSend` (one-shot) or
     /// `PrincipalSendStream` (streaming) — both go through
     /// `PrincipalManager::receive` and produce principal-scoped
@@ -390,7 +390,7 @@ pub enum RequestPacket {
     // were dropped in issue #30.
     // ── Principal operations ─────────────────────────────────────────
     /// Non-streaming principal send. Returns a single `PrincipalSent`
-    /// response with the supervisor's final answer.
+    /// response with the root agent's final answer.
     #[serde(rename = "principal_send")]
     PrincipalSend {
         request_id: u64,
@@ -400,12 +400,12 @@ pub enum RequestPacket {
     },
 
     /// Streaming principal send. The daemon emits a sequence of
-    /// `PrincipalSentChunk` deltas as the supervisor agent's response
+    /// `PrincipalSentChunk` deltas as the root agent agent's response
     /// unfolds, followed by exactly one `PrincipalSentDone` carrying
     /// the full final answer (identical content to what
     /// `PrincipalSend` would have returned). Wire-compatible with the
     /// `principal_send` request shape so the desktop Chat can opt in
-    /// to streaming without changing the supervisor's behavior.
+    /// to streaming without changing the root agent's behavior.
     #[serde(rename = "principal_send_stream")]
     PrincipalSendStream {
         request_id: u64,
@@ -993,7 +993,7 @@ pub enum ResponsePacket {
 
     // ── Principal operations ─────────────────────────────────────────
     /// Non-streaming result of `PrincipalSend`. Single packet with the
-    /// supervisor's final answer.
+    /// root agent's final answer.
     #[serde(rename = "principal_sent")]
     PrincipalSent {
         request_id: u64,
@@ -1001,7 +1001,7 @@ pub enum ResponsePacket {
     },
 
     /// Streaming chunk of a `PrincipalSendStream` response. The daemon
-    /// emits zero or more of these as the supervisor agent produces
+    /// emits zero or more of these as the root agent agent produces
     /// assistant text. The frontend appends each `delta` to the
     /// in-flight assistant message.
     #[serde(rename = "principal_sent_chunk")]

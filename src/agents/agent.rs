@@ -53,7 +53,7 @@ pub struct Agent {
     inbox_registry: Option<Arc<InboxRegistry>>,
     /// Optional principal workspace. When set, `init_builtins_async` builds the
     /// `Agent` tool's `AgentService` with `for_principal(workspace)` so the
-    /// supervisor resolves subagents from `<workspace>/agents/<name>/AGENT.md`
+    /// root agent resolves subagents from `<workspace>/agents/<name>/AGENT.md`
     /// instead of the global `<home>/agents/<name>/config.toml`. Without this,
     /// `init_builtins_async` (run lazily at execution time) would clobber any
     /// principal-scoped `Agent` tool registered on the core beforehand.
@@ -129,7 +129,7 @@ impl Agent {
         tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
         // Add Agent tool with executor and session provider. When this agent
-        // runs as a Principal supervisor, build the service scoped to the
+        // runs as a Principal root agent, build the service scoped to the
         // principal workspace so subagents resolve from
         // `<workspace>/agents/<name>/AGENT.md`. Otherwise fall back to the
         // global agent registry.
@@ -431,7 +431,7 @@ impl Agent {
     /// principal scope. When `inbox_registry` is supplied, the agentic
     /// loop drains that registry's session inbox, allowing the
     /// Principal boundary to queue steering messages into a running
-    /// supervisor.
+    /// root agent.
     pub async fn new_with_session_manager_resolver(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
@@ -527,7 +527,7 @@ impl Agent {
     /// Scope this agent's `Agent` tool to a Principal workspace.
     ///
     /// When set, `init_builtins_async` builds the `Agent` tool's `AgentService`
-    /// with `for_principal(workspace)`, so the supervisor resolves subagents
+    /// with `for_principal(workspace)`, so the root agent resolves subagents
     /// from `<workspace>/agents/<name>/AGENT.md`. This must be set before the
     /// agent executes: `init_builtins_async` runs lazily inside
     /// `prepare_execution`, so a principal-scoped `Agent` tool registered on the

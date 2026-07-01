@@ -53,7 +53,7 @@ pub struct PrincipalManager {
     memory_factory: Arc<dyn PrincipalMemoryFactory>,
     router_factory: Arc<dyn PrincipalRouterFactory>,
     resolver: Option<Arc<LlmResolver>>,
-    /// Shared inbox registry used by supervisor agents and the Principal
+    /// Shared inbox registry used by root agents and the Principal
     /// boundary to queue steering messages for sessions that already have
     /// a run in flight.
     inbox_registry: Arc<InboxRegistry>,
@@ -365,7 +365,7 @@ impl PrincipalManager {
 
     /// Borrow the shared `inbox_registry` and per-principal
     /// `session_creation_lock` for callers (e.g. the streaming IPC
-    /// handler) that need to invoke the supervisor router without
+    /// handler) that need to invoke the root router without
     /// going through `receive()`. Identical semantics to the values
     /// `receive()` uses internally, so the streaming and
     /// non-streaming paths share back-pressure.
@@ -481,12 +481,12 @@ impl PrincipalManager {
             .build_router_context(&principal, peer, message, channel)
             .await?;
 
-        // Serial queue per peer: only one supervisor run may be active for a
+        // Serial queue per peer: only one root-agent run may be active for a
         // given peer/session at a time.  If a message arrives while the
-        // supervisor is already running, queue it as a steering message in the
+        // root agent is already running, queue it as a steering message in the
         // same session inbox; the active run will drain it on its next
         // iteration.
-        let session_id = super::routers::supervisor::supervisor_session_id(&ctx.peer);
+        let session_id = super::routers::root::root_session_id(&ctx.peer);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await?;
@@ -500,7 +500,7 @@ impl PrincipalManager {
                 let inbox = self.inbox_registry.get_or_create(&session_id).await;
                 inbox.push(SteeringMessage::new(ctx.message.clone()));
                 Ok(PrincipalResponse::queued(format!(
-                    "Queued for supervisor session {session_id}."
+                    "Queued for root agent session {session_id}."
                 )))
             }
         }
@@ -536,11 +536,11 @@ impl PrincipalManager {
             .build_router_context(&principal, peer, message, channel)
             .await?;
 
-        // Same serial-queue discipline as `receive`: only one supervisor
+        // Same serial-queue discipline as `receive`: only one root-agent
         // run may be active per peer/session. A message arriving while a
         // run is active is queued as a steering message (no streaming
         // events for the queued case).
-        let session_id = super::routers::supervisor::supervisor_session_id(&ctx.peer);
+        let session_id = super::routers::root::root_session_id(&ctx.peer);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
                 let decision = principal.router.route_streaming(ctx, on_event).await?;
@@ -552,7 +552,7 @@ impl PrincipalManager {
                 let inbox = self.inbox_registry.get_or_create(&session_id).await;
                 inbox.push(SteeringMessage::new(ctx.message.clone()));
                 Ok(PrincipalResponse::queued(format!(
-                    "Queued for supervisor session {session_id}."
+                    "Queued for root agent session {session_id}."
                 )))
             }
         }
@@ -781,7 +781,7 @@ mod tests {
                 // create-metadata + create-for-peer + save-index sequence,
                 // so two peers can no longer interleave their index
                 // updates. The previous test had a retry loop on the
-                // transient `AgentFailed("failed to create supervisor
+                // transient `AgentFailed("failed to create root agent
                 // session")` race; with the lock held end-to-end the
                 // race can't happen, and this receive is a one-shot.
                 manager
@@ -858,16 +858,16 @@ mod tests {
 
         let answered = responses
             .iter()
-            .filter(|r| !r.content.starts_with("Queued for supervisor session"))
+            .filter(|r| !r.content.starts_with("Queued for root agent session"))
             .count();
         assert_eq!(
             answered, 1,
-            "only one supervisor run should be active for the same peer at a time"
+            "only one root-agent run should be active for the same peer at a time"
         );
 
         let queued = responses
             .iter()
-            .filter(|r| r.content.starts_with("Queued for supervisor session"))
+            .filter(|r| r.content.starts_with("Queued for root agent session"))
             .count();
         assert_eq!(
             queued,
@@ -880,7 +880,7 @@ mod tests {
         assert_eq!(
             sessions.len(),
             1,
-            "all messages for the same peer share one supervisor session"
+            "all messages for the same peer share one root-agent session"
         );
     }
 

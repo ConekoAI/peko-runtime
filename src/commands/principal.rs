@@ -405,7 +405,7 @@ async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
     println!("  DID:     {}", did_str);
     println!("  Workspace: {}", principal.workspace_path.display());
 
-    // Show where the supervisor will route its LLM calls. Surface the
+    // Show where the root agent will route its LLM calls. Surface the
     // resolved (principal-or-default) choice so users can confirm their
     // override took effect without trawling two config files.
     let provider_line = match (preferred_provider_id, preferred_model_id) {

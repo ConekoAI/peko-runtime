@@ -47,15 +47,11 @@ impl PrincipalMemoryFactory for DefaultPrincipalMemoryFactory {
 /// Default router factory: creates the root-agent router for every
 /// Principal. Resolution order for the root agent's prompt body:
 ///
-///   1. `config.routing.supervisor_prompt` — explicit absolute path to
-///      a Markdown file (legacy knob, retained for now).
+///   1. `config.routing.root_prompt` — explicit absolute path to a
+///      Markdown file (legacy knob, retained for now).
 ///   2. `<workspace>/agents/<name>.md` — workspace-relative Markdown
 ///      file matching the principal's configured root agent name.
-///   3. Compiled-in default (`builtin:agent:supervisor`).
-///
-/// Phase 5 will rename "supervisor" → "root" across this surface and
-/// promote step 2's `<name>.md` resolution into the canonical
-/// extension lookup keyed by `config.agent.root`.
+///   3. Compiled-in default (`builtin:agent:root`).
 pub struct DefaultPrincipalRouterFactory;
 
 #[async_trait]
@@ -74,7 +70,7 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
         // bootstrap sets it once `start_tunnel` finishes and the
         // `CrossRuntimeA2aCtx` is installed.
         let principal_caller_did = config.did.clone().map(|d| d.0);
-        Arc::new(super::routers::SupervisorRouter::new(
+        Arc::new(super::routers::RootRouter::new(
             memory,
             resolver,
             prompt,
@@ -95,22 +91,22 @@ impl DefaultPrincipalRouterFactory {
         workspace_path: &std::path::Path,
     ) -> super::agent_prompt::AgentPrompt {
         // 1. Explicit override from principal.toml.
-        if let Some(ref path) = config.routing.supervisor_prompt {
+        if let Some(ref path) = config.routing.root_prompt {
             match super::agent_prompt::load_agent_prompt(path) {
                 Ok(prompt) => return prompt,
                 Err(e) => tracing::warn!(
-                    "Failed to load supervisor prompt from {}: {e}. Falling back to defaults.",
+                    "Failed to load root prompt from {}: {e}. Falling back to defaults.",
                     path.display()
                 ),
             }
         }
 
         // 2. Workspace-relative Markdown. Check both layouts so users
-        //    can put the file at either `agents/supervisor/AGENT.md`
-        //    or flat `agents/supervisor.md`.
+        //    can put the file at either `agents/root/AGENT.md` or flat
+        //    `agents/root.md`.
         let workspace_candidates = [
-            workspace_path.join("agents").join("supervisor").join("AGENT.md"),
-            workspace_path.join("agents").join("supervisor.md"),
+            workspace_path.join("agents").join("root").join("AGENT.md"),
+            workspace_path.join("agents").join("root.md"),
         ];
         for candidate in &workspace_candidates {
             if candidate.exists() {
@@ -126,7 +122,7 @@ impl DefaultPrincipalRouterFactory {
         }
 
         // 3. Compiled-in default.
-        super::routers::default_supervisor_prompt()
+        super::routers::default_root_prompt()
     }
 }
 
