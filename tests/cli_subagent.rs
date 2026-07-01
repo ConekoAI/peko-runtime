@@ -13,20 +13,21 @@
 //! | `subagent_status_list.ps1` | (deferred — same reason: `task` tool reads from in-process registry)                                      |
 //!
 //! **Principal model.** After the "Principal as the single actor" migration,
-//! `peko send <name>` targets a *Principal*, whose supervisor agent
-//! (`principals/<name>/agents/primary.md`) is the parent that calls the
-//! `Agent` tool. The `Agent` tool's `subagent_type` resolves to a sibling
-//! subagent prompt at `principals/<name>/agents/<type>/AGENT.md` (see
+//! `peko send <name>` targets a *Principal*, whose root agent
+//! (`principals/<name>/agents/root/AGENT.md` or `principals/<name>/agents/root.md`)
+//! is the parent that calls the `Agent` tool. The `Agent` tool's `subagent_type`
+//! resolves to a sibling subagent prompt at
+//! `principals/<name>/agents/<type>/AGENT.md` (see
 //! `AgentService::resolve_principal_agent`). These tests therefore:
 //!   * create the Principal via [`create_mock_principal_with_tools`], granting
 //!     the capability tools (`Agent`, `Write`, `Read`, `Bash`) that the
-//!     dispatcher's owner check requires for both the supervisor and any
+//!     dispatcher's owner check requires for both the root agent and any
 //!     subagent it spawns (subagents share the Principal's permission
 //!     boundary); and
 //!   * write a `worker` subagent prompt at
 //!     `principals/<name>/agents/worker/AGENT.md` (the resolver requires the
-//!     directory form `agents/<type>/AGENT.md` — the default `primary.md` is
-//!     a *file* and only serves as the supervisor prompt).
+//!     directory form `agents/<type>/AGENT.md` — the default `root.md` is
+//!     a *file* and only serves as the root agent prompt).
 //!     A spawned subagent's tool whitelist comes from `ExtensionConfig::default()`
 //!     (which includes `Agent`, `Write`, `Read`, `Bash`, …), so the `worker`
 //!     prompt needs no tool frontmatter — `AGENT.md` has no `tools` field anyway.
@@ -136,8 +137,8 @@ fn workspace_dir(cli: &PekoCli) -> PathBuf {
 /// Write a `worker` subagent prompt for the given Principal.
 ///
 /// `AgentService::resolve_principal_agent` resolves a `subagent_type` to
-/// `<workspace>/agents/<type>/AGENT.md` (the directory form). The supervisor
-/// prompt `agents/primary.md` created by `peko principal create` is a *file*
+/// `<workspace>/agents/<type>/AGENT.md` (the directory form). The root
+/// prompt `agents/root.md` created by `peko principal create` is a *file*
 /// and is NOT a valid `subagent_type`, so each test creates an explicit
 /// `worker` subagent directory here. The subagent's tool whitelist comes from
 /// `ExtensionConfig::default()` (Agent/Write/Read/Bash/…), so the prompt body
@@ -165,7 +166,7 @@ fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
 ///
 /// Grants the capability tools (`Agent`, `Write`, `Read`, `Bash`) the
 /// dispatcher's owner check requires. Subagents share the Principal's
-/// permission boundary, so these grants cover both the supervisor's own
+/// permission boundary, so these grants cover both the root agent's own
 /// tool calls and any tool calls a spawned `worker` makes. Must be called
 /// BEFORE `DaemonGuard::spawn` (it only writes files).
 fn setup_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {

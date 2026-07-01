@@ -38,8 +38,8 @@
 //!   is gone — there is no `--target` Principal equivalent, because
 //!   capability grants on a Principal are persisted to
 //!   `<peko_dir>/principals/<name>/principal.toml [capabilities]` and
-//!   take effect automatically when the supervisor builds its whitelist
-//!   in `run_supervisor_prompt` (see
+//!   take effect automatically when the root agent builds its whitelist
+//!   in `run_root_agent_prompt` (see
 //!   `src/principal/agent_runner.rs:99-102`). The CLI does not expose a
 //!   live capability-grant command; tests must patch the config.
 //! - The chat surface is `peko send <principal>` (`PrincipalSend` →
@@ -281,9 +281,9 @@ fn ext_install_and_info_round_trip() {
 /// extension id into the agent's `config.toml [extensions] enabled`
 /// list. In the Principal model, the equivalent surface is the
 /// Principal's `principal.toml [capabilities] tools`, which
-/// `run_supervisor_prompt` extends with `capabilities.tools` /
+/// `run_root_agent_prompt` extends with `capabilities.tools` /
 /// `capabilities.skills` / `capabilities.mcps` / `capabilities.agents`
-/// when building the supervisor's whitelist. The CLI does not expose a
+/// when building the root agent's whitelist. The CLI does not expose a
 /// live grant command for capabilities, so we patch `principal.toml`
 /// directly (mirrors the pattern in
 /// `tests/common/agent.rs::create_mock_principal_with_tools`).
@@ -396,7 +396,7 @@ fn principal_capability_revoke_round_trip() {
 /// Flow 1b: chat with the Principal. The mock LLM recognises
 /// `Respond with: <KEYWORD>` and echoes the keyword back. This proves
 /// the daemon end-to-end (CLI → daemon → `PrincipalSend` →
-/// `PrincipalManager::receive` → supervisor → mock LLM → response)
+/// `PrincipalManager::receive` → root agent → mock LLM → response)
 /// is wired correctly. The keyword-echo behaviour is documented at
 /// `docs/integration/TESTING.md` §3.
 #[test]
