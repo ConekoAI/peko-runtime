@@ -82,8 +82,8 @@ impl SupervisorRouter {
 
     /// Build a `PrincipalContext` from the router's already-resolved
     /// state plus the per-call `RouterContext` (which carries the
-    /// per-message pieces: inbox registry, session-creation lock, and
-    /// the current capabilities snapshot).
+    /// per-message pieces: inbox registry, session-creation lock, the
+    /// current capabilities snapshot, and the principal's runtime id).
     fn build_context(
         &self,
         ctx: &RouterContext,
@@ -99,6 +99,7 @@ impl SupervisorRouter {
                 self.principal_provider_id.clone(),
                 self.principal_model_id.clone(),
             ),
+            ctx.principal_id.clone(),
         );
         principal_ctx.set_root_prompt(self.supervisor_prompt.clone());
         principal_ctx

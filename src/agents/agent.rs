@@ -387,35 +387,45 @@ impl Agent {
 
     /// Like `new_with_session_manager`, but also accepts an optional
     /// `LlmResolver` (v3+).
+    ///
+    /// Used for one-off CLI invocations that don't share a principal
+    /// scope: the agent constructs a synthetic `PrincipalId` so its
+    /// `SubagentExecutor` carries a stable identity even though no real
+    /// principal owns the call.
     pub async fn new_with_session_manager_and_resolver(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
     ) -> Result<Self> {
-        let extension_core = global_core().expect("Global ExtensionCore not initialized");
-        Self::new_with_session_manager_resolver_and_core(
+        Self::new_with_session_manager_resolver(
             config,
             session_manager,
             llm_resolver,
-            extension_core,
+            crate::principal::PrincipalId::generate(),
             None,
         )
         .await
     }
 
-    /// Create a new agent with an existing session manager, optional resolver,
-    /// a custom `ExtensionCore`, and an optional external `InboxRegistry`.
+    /// Create a new agent with an existing session manager, optional
+    /// `LlmResolver`, the spawning principal's id, and an optional
+    /// external `InboxRegistry`.
     ///
-    /// This is the internal constructor used by the supervisor agent so its
-    /// principal-scoped tools and adapted `Agent` tool live on a dedicated
-    /// core rather than the global one. When `inbox_registry` is supplied,
-    /// the agentic loop drains that registry's session inbox, allowing the
-    /// Principal boundary to queue steering messages into a running supervisor.
-    pub async fn new_with_session_manager_resolver_and_core(
+    /// There is no per-agent `ExtensionCore` — the global
+    /// [`crate::extensions::framework::core::global_core`] is used for
+    /// every agent of the principal. Per-agent visibility is enforced
+    /// by each agent's own capability whitelist. `principal_id` is the
+    /// spawning principal's runtime id, carried so the agent's
+    /// `SubagentExecutor` and any descendant spawns inherit the same
+    /// principal scope. When `inbox_registry` is supplied, the agentic
+    /// loop drains that registry's session inbox, allowing the
+    /// Principal boundary to queue steering messages into a running
+    /// supervisor.
+    pub async fn new_with_session_manager_resolver(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
-        extension_core: Arc<ExtensionCore>,
+        principal_id: crate::principal::PrincipalId,
         inbox_registry: Option<Arc<InboxRegistry>>,
     ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
@@ -450,12 +460,19 @@ impl Agent {
         // Initialize provider if configured
         let provider = Self::init_provider(&config, llm_resolver.as_ref()).await?;
 
+        // Single global ExtensionCore — every agent of the principal
+        // shares it. `principal_id` is the spawning principal's
+        // runtime id; descendant subagents inherit it via the
+        // shared `SubagentExecutor`.
+        let extension_core =
+            global_core().expect("Global ExtensionCore not initialized");
+
         // Initialize subagent executor
         let subagent_executor_base = SubagentExecutor::new(
             Arc::clone(&session_manager),
             config.name.clone(),
             5, // max_concurrent
-            Arc::clone(&extension_core),
+            principal_id,
         );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
@@ -529,14 +546,23 @@ impl Agent {
     /// before the child could call any tool. Passing the parent's already-
     /// resolved provider lets the child run its own LLM calls against the
     /// same provider/catalog entry.
+    ///
+    /// Tools resolve from the daemon-global
+    /// [`crate::extensions::framework::core::global_core`] — there is no
+    /// per-agent core. The shared executor carries the spawning
+    /// principal's DID so descendant spawns inherit the same principal
+    /// scope; the agent's own `extension_core` field is initialised to
+    /// the global core for backward-compatible access by `extension_core()`
+    /// callers.
     pub async fn new_with_shared_executor(
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         subagent_executor: Arc<SubagentExecutor>,
         inherited_provider: Option<Arc<crate::providers::Provider>>,
-        extension_core: Arc<ExtensionCore>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
+        let extension_core =
+            global_core().expect("Global ExtensionCore not initialized");
 
         let identity = Self::load_or_create_identity(&config).await?;
 
@@ -1413,7 +1439,7 @@ impl Agent {
             Arc::clone(&session_manager),
             config.name.clone(),
             5,
-            Arc::clone(&extension_core),
+            crate::principal::PrincipalId::generate(),
         );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(

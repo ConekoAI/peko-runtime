@@ -24,9 +24,10 @@ use std::sync::{Arc, OnceLock};
 
 use crate::extensions::agent::{register_agents_with_core, AgentAdapter};
 use crate::extensions::builtin::BuiltinToolAdapter;
-use crate::extensions::framework::core::ExtensionCore;
+use crate::extensions::framework::core::{global_core, ExtensionCore};
 use crate::principal::memory::PrincipalMemory;
 use crate::principal::router::AgentPromptSummary;
+use crate::principal::PrincipalId;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::tools::builtin::{AgentCatalogTool, PrincipalMemoryTool, PrincipalSessionsTool};
@@ -72,20 +73,15 @@ pub struct PrincipalContext {
     /// config every message.
     root_prompt: OnceLock<Arc<crate::principal::agent_prompt::AgentPrompt>>,
 
-    /// Per-principal `ExtensionCore` shared by every agent of this
-    /// principal. Built lazily on first [`Self::core`] call and reused
-    /// for the lifetime of the principal.
-    ///
-    /// `tokio::sync::OnceCell` (not `std::sync::OnceLock`) so the build
-    /// can `await` the tool-registration futures without the
-    /// `block_in_place`-on-current-thread-runtime trap that broke
-    /// single-threaded `#[tokio::test]` callers.
-    core: tokio::sync::OnceCell<Arc<ExtensionCore>>,
+    /// The principal's runtime id. Stable across the principal's
+    /// lifetime; carried through agent + subagent construction so
+    /// descendant spawns inherit the same principal scope.
+    principal_id: PrincipalId,
 }
 
 impl PrincipalContext {
     /// Build a `PrincipalContext` from already-resolved principal
-    /// state. The core is *not* built until [`Self::core`] is called.
+    /// state.
     pub fn new(
         workspace_path: PathBuf,
         memory: Arc<dyn PrincipalMemory>,
@@ -94,6 +90,7 @@ impl PrincipalContext {
         capabilities: Arc<PrincipalCapabilities>,
         resolver: Option<Arc<LlmResolver>>,
         provider_hint: (Option<String>, Option<String>),
+        principal_id: PrincipalId,
     ) -> Self {
         let sessions_dir = memory.sessions_dir().to_path_buf();
         Self {
@@ -106,46 +103,56 @@ impl PrincipalContext {
             resolver,
             provider_hint,
             root_prompt: OnceLock::new(),
-            core: tokio::sync::OnceCell::new(),
+            principal_id,
         }
     }
 
-    /// Get the principal's `ExtensionCore`, building it on first call.
+    /// Get the principal's runtime id. Stable for the principal's
+    /// lifetime; used to thread `principal_id` through the agent +
+    /// subagent constructors so descendant spawns inherit the same
+    /// principal scope.
+    #[must_use]
+    pub fn principal_id(&self) -> &PrincipalId {
+        &self.principal_id
+    }
+
+    /// Get the daemon-global `ExtensionCore` and ensure the
+    /// principal's tool bag is wired onto it.
     ///
-    /// The core is shared by every agent of the principal. It carries:
-    ///   - the built-in tools registered by `ToolRuntime::register_builtins`
-    ///   - the principal's discovered `<workspace>/agents/` as `{{agents}}` hooks
-    ///   - the principal-scoped `principal_sessions` and `principal_memory` tools
+    /// There is one daemon-wide [`ExtensionCore`]. The principal's
+    /// tools (`principal_sessions`, `principal_memory`,
+    /// `<workspace>/agents/*`) are installed on that core on first
+    /// call via [`install_principal_tool_bag`]; subsequent callers
+    /// observe the same global core and the same tool bag.
     ///
     /// Visibility to any single agent is still governed by the agent's
-    /// own capability whitelist; this method does not assume privilege.
-    ///
-    /// Concurrent first-callers race to build the core; `OnceCell`
-    /// serialises them so exactly one build happens and the rest
-    /// observe the result. If the build fails (e.g. tool registration
-    /// errors), the error is logged and a bare core is returned so the
-    /// principal can still run with the built-in tool set.
+    /// own capability whitelist; this method does not assume
+    /// privilege.
     pub async fn core(&self) -> Arc<ExtensionCore> {
-        let core = self
-            .core
-            .get_or_init(|| async {
-                let core = Arc::new(ExtensionCore::new());
-                if let Err(e) = build_principal_core(
-                    Arc::clone(&core),
-                    &self.workspace_path,
-                    Arc::clone(&self.memory),
-                )
-                .await
-                {
-                    tracing::warn!(
-                        "failed to install principal-scoped tools on the core: {e}. \
-                         Falling back to built-in tools only."
-                    );
-                }
-                core
-            })
-            .await;
-        Arc::clone(core)
+        let core = global_core().unwrap_or_else(|| {
+            // Fall back to a freshly-allocated core if the daemon
+            // hasn't initialised the global core yet. The
+            // `Agent::new_*` callers depend on `global_core()` being
+            // populated by `init_global_core` at app startup; this
+            // branch is mostly a safety net for unit tests that
+            // construct an `Agent` directly.
+            Arc::new(ExtensionCore::new())
+        });
+        if !core.universal_extensions_loaded() {
+            if let Err(e) = install_principal_tool_bag(
+                Arc::clone(&core),
+                &self.workspace_path,
+                Arc::clone(&self.memory),
+            )
+            .await
+            {
+                tracing::warn!(
+                    "failed to install principal-scoped tools on the global core: {e}. \
+                     Falling back to built-in tools only."
+                );
+            }
+        }
+        Arc::clone(&core)
     }
 
     /// Get the principal's resolved root agent prompt.
@@ -169,14 +176,14 @@ impl PrincipalContext {
     }
 }
 
-/// Wire the principal's tool bag onto a freshly-allocated core.
+/// Wire the principal's tool bag onto the daemon-global `ExtensionCore`.
 ///
 /// Built-ins (Read, Bash, glob, grep, Cron*, Task*, Async*, …) and
 /// the principal's discovered `<workspace>/agents/` entries are
 /// registered. The `agent_catalog` tool is *not* installed here — it
 /// is the only per-call tool and the runner installs it via
 /// [`install_agent_catalog`] on each message.
-async fn build_principal_core(
+async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     workspace_path: &Path,
     memory: Arc<dyn PrincipalMemory>,
@@ -214,6 +221,11 @@ async fn build_principal_core(
     )
     .await?;
 
+    // Mark the core as having run the universal-extension pass so
+    // the lazy guard in `PrincipalContext::core` does not re-install
+    // on every call.
+    core.mark_universal_extensions_loaded();
+
     Ok(())
 }
 
@@ -239,18 +251,23 @@ mod tests {
     use super::*;
     use crate::principal::config::PrincipalCapabilities;
     use crate::principal::memory::DefaultPrincipalMemory;
+    use crate::principal::PrincipalId;
     use std::sync::Arc;
 
-    /// `core()` returns the same `Arc` on every call: the
-    /// per-principal `ExtensionCore` is built once and reused for
-    /// the principal's lifetime. This is the Phase-3 perf contract —
-    /// no per-message `ExtensionCore::new()` churn.
+    /// `core()` returns the daemon-global `ExtensionCore`. After the
+    /// Phase-2 redo there is no per-principal core; the global core
+    /// is shared across principals and the principal's tool bag is
+    /// installed on first call via `install_principal_tool_bag`.
     #[tokio::test]
-    async fn core_is_cached_across_calls() {
+    async fn core_returns_global_singleton() {
         let dir = tempfile::tempdir().unwrap();
         let memory: Arc<dyn PrincipalMemory> = Arc::new(DefaultPrincipalMemory::new(
             dir.path().to_path_buf(),
         ));
+
+        // Initialise the global core for this test.
+        let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
+        crate::extensions::framework::core::init_global_core(Arc::clone(&core));
 
         let ctx = PrincipalContext::new(
             dir.path().to_path_buf(),
@@ -260,11 +277,11 @@ mod tests {
             Arc::new(PrincipalCapabilities::default()),
             None,
             (None, None),
+            PrincipalId::generate(),
         );
 
         let a = ctx.core().await;
-        let b = ctx.core().await;
-        assert!(Arc::ptr_eq(&a, &b), "core() must return the same Arc on every call");
+        assert!(Arc::ptr_eq(&a, &core));
     }
 
     /// `set_root_prompt` is idempotent — once a principal's root
@@ -285,6 +302,7 @@ mod tests {
             Arc::new(PrincipalCapabilities::default()),
             None,
             (None, None),
+            PrincipalId::generate(),
         );
 
         // `set_root_prompt` requires an `AgentPrompt`; constructing one
@@ -299,5 +317,28 @@ mod tests {
         let first = ctx.set_root_prompt(prompt.clone());
         let second = ctx.set_root_prompt(prompt);
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    /// `principal_id()` returns the value passed at construction
+    /// unchanged.
+    #[test]
+    fn principal_id_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory: Arc<dyn PrincipalMemory> = Arc::new(DefaultPrincipalMemory::new(
+            dir.path().to_path_buf(),
+        ));
+
+        let id = PrincipalId::generate();
+        let ctx = PrincipalContext::new(
+            dir.path().to_path_buf(),
+            memory,
+            Arc::new(InboxRegistry::new()),
+            Arc::new(tokio::sync::Mutex::new(())),
+            Arc::new(PrincipalCapabilities::default()),
+            None,
+            (None, None),
+            id.clone(),
+        );
+        assert_eq!(ctx.principal_id(), &id);
     }
 }

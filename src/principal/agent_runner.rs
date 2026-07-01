@@ -272,14 +272,17 @@ where
 
     let history: Vec<LlmMessage> = session.read().await.load_history().await?;
 
-    // Cold-start the root agent on the principal's shared core, wiring it
-    // to the same inbox registry the Principal boundary uses for steering
-    // messages.
-    let agent = Agent::new_with_session_manager_resolver_and_core(
+    // Cold-start the root agent. After the Phase-2 redo there is one
+    // daemon-global `ExtensionCore`; the agent picks it up internally.
+    // `principal_id` is threaded through so the agent's
+    // `SubagentExecutor` (and every descendant spawn) inherits the
+    // principal scope. Wiring it to the same inbox registry the
+    // Principal boundary uses for steering messages.
+    let agent = Agent::new_with_session_manager_resolver(
         config,
         Arc::clone(&session_manager),
         ctx.resolver.clone(),
-        Arc::clone(&core),
+        ctx.principal_id().clone(),
         Some(Arc::clone(&ctx.inbox_registry)),
     )
     .await?
@@ -305,7 +308,7 @@ where
             Arc::clone(&session_manager),
             &prompt.name,
             5,
-            Arc::clone(&core),
+            ctx.principal_id().clone(),
         )
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
