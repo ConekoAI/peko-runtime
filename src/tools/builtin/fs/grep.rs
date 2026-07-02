@@ -150,6 +150,14 @@ impl GrepTool {
                 "Invalid output_mode '{output_mode}': expected 'content', 'files_with_matches', or 'count'"
             ));
         }
+
+        // The combined `context` parameter (Claude Code's `-C N`) wins
+        // when set; otherwise honor the separate `context_before` /
+        // `context_after` overrides.
+        let (effective_before, effective_after) = match context {
+            Some(n) => (n, n),
+            None => (context_before, context_after),
+        };
         // Compile regex
         let regex = if case_insensitive {
             Regex::new(&format!("(?i){pattern}"))
@@ -182,8 +190,8 @@ impl GrepTool {
                     &regex,
                     limit,
                     include_content,
-                    context_before,
-                    context_after,
+                    effective_before,
+                    effective_after,
                 )
                 .await?;
             if !file_matches.is_empty() {
@@ -198,8 +206,8 @@ impl GrepTool {
                 include,
                 limit,
                 include_content,
-                context_before,
-                context_after,
+                effective_before,
+                effective_after,
                 include_hidden,
                 &mut matches,
                 &mut files_searched,
@@ -476,6 +484,11 @@ Number of context lines before each match. Default: 0.
 ### context_after (optional)
 Number of context lines after each match. Default: 0.
 
+### context (optional)
+Number of context lines to show before AND after each match. When
+set, takes precedence over `context_before` / `context_after`. Useful
+for `context: 3` style "show me the surrounding code" requests.
+
 ### case_insensitive (optional)
 Case-insensitive search. Default: false.
 
@@ -550,6 +563,12 @@ Find where a function is called:
                     "type": "integer",
                     "description": "Number of context lines after each match",
                     "default": 0,
+                    "minimum": 0,
+                    "maximum": 10
+                },
+                "context": {
+                    "type": "integer",
+                    "description": "Number of context lines to show before AND after each match (shortcut for context_before + context_after). When set, takes precedence over the separate context_before/context_after parameters. Mirrors Claude Code's -C N.",
                     "minimum": 0,
                     "maximum": 10
                 },
@@ -777,6 +796,68 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid regex"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_context_param_sets_both_sides() {
+        // The combined `context` parameter mirrors Claude Code's `-C N`:
+        // it sets both before and after to the same value. When
+        // `context` is set, it takes precedence over the separate
+        // `context_before` / `context_after` fields.
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+
+        fs::write(
+            temp_dir.path().join("test.txt"),
+            "line1\nline2\nTARGET\nline4\nline5",
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .execute(json!({
+                "pattern": "TARGET",
+                "path": "test.txt",
+                "context": 1
+            }))
+            .await
+            .unwrap();
+
+        let matches = result["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        let m = &matches[0];
+        assert_eq!(m["context_before"], json!(["line2"]));
+        assert_eq!(m["context_after"], json!(["line4"]));
+    }
+
+    #[tokio::test]
+    async fn test_grep_context_param_overrides_separate() {
+        // When `context` is set, the separate `context_before` /
+        // `context_after` values must be ignored.
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+
+        fs::write(
+            temp_dir.path().join("test.txt"),
+            "a\nb\nTARGET\nd\ne",
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .execute(json!({
+                "pattern": "TARGET",
+                "path": "test.txt",
+                "context": 1,
+                "context_before": 5,
+                "context_after": 5,
+            }))
+            .await
+            .unwrap();
+
+        let matches = result["matches"].as_array().unwrap();
+        assert_eq!(matches[0]["context_before"], json!(["b"]));
+        assert_eq!(matches[0]["context_after"], json!(["d"]));
     }
 
     #[test]
