@@ -217,13 +217,32 @@ pub struct DiscoveredSkill {
 
 /// YAML frontmatter from SKILL.md
 #[derive(Debug, Deserialize)]
-struct SkillFrontmatter {
-    name: String,
-    description: String,
+pub struct SkillFrontmatter {
+    pub name: String,
+    pub description: String,
     #[serde(default)]
-    tags: Vec<String>,
+    pub tags: Vec<String>,
     #[serde(default)]
-    author: Option<String>,
+    pub author: Option<String>,
+    /// Positional argument names (e.g. `[issue, branch]` → `$issue`,
+    /// `$branch`). Order maps to the `args` array passed to the
+    /// `Skill` tool. Optional; missing `arguments:` means the skill
+    /// has no parameterization — any `$name` in the body is left
+    /// unsubstituted.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// Shell selector for injected `` !`cmd` `` / `` ```! `` blocks.
+    /// Today: `"bash"` (default) only. Powershell deferred — no
+    /// cross-platform shell runner exists in Peko today. Any other
+    /// value is fail-closed: the preprocessor refuses to run.
+    #[serde(default, rename = "shell")]
+    pub shell: Option<String>,
+    /// Glob allowlist for shell commands the preprocessor may run
+    /// from `!`cmd`` blocks. Empty list = all commands allowed.
+    /// Match is case-sensitive and anchored (must match the full
+    /// trimmed command).
+    #[serde(default, rename = "allowed-tools")]
+    pub allowed_tools: Vec<String>,
 }
 
 /// Factory for creating skill prompt handlers

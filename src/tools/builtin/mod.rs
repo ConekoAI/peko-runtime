@@ -28,6 +28,7 @@ pub mod fs;
 pub mod messaging;
 pub mod session;
 pub mod agent_catalog;
+pub mod skill;
 
 pub use agent_catalog::AgentCatalogTool;
 pub mod task_common;
@@ -51,6 +52,7 @@ pub use session::{
     SessionCache, SessionInfo, SessionIntrospector,
     SessionRegistry as SessionIntrospectionRegistry, SessionTool,
 };
+pub use skill::SkillTool;
 pub use task_create::TaskCreateTool;
 pub use task_get::TaskGetTool;
 pub use task_list::TaskListTool;

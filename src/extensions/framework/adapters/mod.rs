@@ -577,6 +577,7 @@ pub mod builtin_tools {
         "AsyncStatus",
         "AsyncList",
         "AsyncStop",
+        "Skill",
     ];
 
     /// Tools registered per-agent in `Agent::init_builtins_async()`.
