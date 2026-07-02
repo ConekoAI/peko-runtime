@@ -14,6 +14,15 @@
 //!
 //! Escape: `\$` is left literal (so `\$issue` in the body renders as
 //! `$issue` rather than substituting).
+//!
+//! Dynamic context: inline `` !`command` `` and fenced `` ```! `` blocks
+//! in the body are resolved by [`preprocess::preprocess_dynamic_context`]
+//! before argument substitution, so skills can author live-state-aware
+//! bodies (git status, env vars, process lists, …) without forcing the
+//! LLM to call `Bash` first. See `preprocess` for the shell runner,
+//! the glob allowlist, and the failure-handling rules.
+
+pub mod preprocess;
 
 use std::path::PathBuf;
 
@@ -64,17 +73,26 @@ pub struct SkillTool {
     /// Principal's enabled-skill allowlist (bare names from
     /// `PrincipalCapabilities.skills`). Case-insensitive match.
     enabled_skills: Vec<String>,
+    /// Principal's workspace root. Injected `` !`cmd` `` / `` ```! ``
+    /// blocks run in this directory (matches the cwd the `Bash` tool
+    /// defaults to via `BashTool::with_workspace`).
+    workspace_dir: PathBuf,
 }
 
 impl SkillTool {
     /// Build a new `SkillTool` rooted at `skills_dir` with the principal's
-    /// enabled-skill allowlist. Unknown / disabled skills are rejected
-    /// with `skill_not_enabled` before any disk access.
+    /// enabled-skill allowlist and workspace. Unknown / disabled skills
+    /// are rejected with `skill_not_enabled` before any disk access.
     #[must_use]
-    pub fn new(skills_dir: PathBuf, enabled_skills: Vec<String>) -> Self {
+    pub fn new(
+        skills_dir: PathBuf,
+        enabled_skills: Vec<String>,
+        workspace_dir: PathBuf,
+    ) -> Self {
         Self {
             skills_dir,
             enabled_skills,
+            workspace_dir,
         }
     }
 }
@@ -86,7 +104,7 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> String {
-        r"Invoke a SKILL.md body with argument substitution.
+        r#"Invoke a SKILL.md body with argument substitution.
 
 Parameters:
 - name: required — skill name (must match a discovered SKILL.md directory name AND be in the principal's enabled allowlist).
@@ -101,9 +119,18 @@ Escape: prefix with `\$` to keep a placeholder literal.
 
 If a `$name` placeholder's name is not declared in the frontmatter `arguments:` list, it is left unsubstituted in the rendered body.
 
+Dynamic context (Claude-style):
+- Inline: `!` + `command` + `` ` `` — runs `command` and inlines its stdout. Only recognized when `!` is at the start of a line or preceded by ASCII whitespace.
+- Fenced: ` ```! ` … ` ``` ` — same idea, multiline; the entire fence is replaced by the command output.
+- Single pass: substituted output is not re-scanned.
+- Failure mode: on non-zero exit, stdout is inlined verbatim and a `stderr: <stderr>` line is appended. On timeout, `stderr: command timed out after 5000 ms` is appended.
+- Frontmatter knobs:
+  - `shell: bash` (default; only supported value today)
+  - `allowed-tools: ["git *", "pwd", ...]` — glob allowlist. Empty list = all commands allowed. Glob is anchored to the full trimmed command.
+
 Returns:
-- { name, body } — the skill's body with arguments substituted.
-- { error, skill } — structured error: skill_not_enabled, skill_unreadable, or unknown_skill."
+- { name, body } — the skill's body with dynamic context resolved, then arguments substituted.
+- { error, skill } — structured error: skill_not_enabled, skill_unreadable, or unknown_skill."#
             .to_string()
     }
 
@@ -177,7 +204,16 @@ Returns:
         // matches what the SKILL.md author wrote.
         let body = body.strip_prefix('\n').unwrap_or(&body);
 
-        let rendered = substitute_args(body, &frontmatter.arguments, &args);
+        // Resolve inline `` !`cmd` `` and fenced `` ```! `` blocks against
+        // the principal's workspace before argument substitution runs.
+        let body = preprocess::preprocess_dynamic_context(
+            body,
+            &frontmatter,
+            &self.workspace_dir,
+        )
+        .await?;
+
+        let rendered = substitute_args(&body, &frontmatter.arguments, &args);
 
         Ok(json!({
             "name": frontmatter.name,
@@ -401,6 +437,20 @@ mod tests {
         std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
     }
 
+    fn write_skill_with_frontmatter(
+        dir: &std::path::Path,
+        name: &str,
+        frontmatter_extra: &str,
+        body: &str,
+    ) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let content = format!(
+            "---\nname: {name}\ndescription: A test skill\n{frontmatter_extra}---\n\n{body}\n"
+        );
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+    }
+
     #[tokio::test]
     async fn execute_returns_substituted_body() {
         let tmp = TempDir::new().unwrap();
@@ -413,6 +463,7 @@ mod tests {
         let tool = SkillTool::new(
             tmp.path().to_path_buf(),
             vec!["fix".into()],
+            tmp.path().to_path_buf(),
         );
         let result = tool
             .execute(json!({
@@ -436,6 +487,7 @@ mod tests {
         let tool = SkillTool::new(
             tmp.path().to_path_buf(),
             vec!["other".into()],
+            tmp.path().to_path_buf(),
         );
         let result = tool
             .execute(json!({ "name": "fix" }))
@@ -454,6 +506,7 @@ mod tests {
         let tool = SkillTool::new(
             tmp.path().to_path_buf(),
             vec![], // empty allowlist
+            tmp.path().to_path_buf(),
         );
         let result = tool
             .execute(json!({ "name": "docker" }))
@@ -466,7 +519,11 @@ mod tests {
     #[tokio::test]
     async fn execute_rejects_missing_name_param() {
         let tmp = TempDir::new().unwrap();
-        let tool = SkillTool::new(tmp.path().to_path_buf(), vec![]);
+        let tool = SkillTool::new(
+            tmp.path().to_path_buf(),
+            vec![],
+            tmp.path().to_path_buf(),
+        );
         let err = tool.execute(json!({})).await.unwrap_err();
         assert!(err.to_string().contains("missing required parameter 'name'"));
     }
@@ -476,7 +533,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // No `arguments:` frontmatter; body still uses $issue.
         write_skill(tmp.path(), "minimal", "Issue $issue", &[]);
-        let tool = SkillTool::new(tmp.path().to_path_buf(), vec!["minimal".into()]);
+        let tool = SkillTool::new(
+            tmp.path().to_path_buf(),
+            vec!["minimal".into()],
+            tmp.path().to_path_buf(),
+        );
         let result = tool
             .execute(json!({
                 "name": "minimal",
@@ -495,6 +556,7 @@ mod tests {
         let tool = SkillTool::new(
             tmp.path().to_path_buf(),
             vec!["docker".into()],
+            tmp.path().to_path_buf(),
         );
         let result = tool
             .execute(json!({ "name": "Docker" }))
@@ -502,5 +564,84 @@ mod tests {
             .unwrap();
         assert_eq!(result["name"], "Docker");
         assert_eq!(result["body"], "Docker body");
+    }
+
+    #[tokio::test]
+    async fn execute_runs_dynamic_context_inline_form() {
+        let tmp = TempDir::new().unwrap();
+        write_skill(tmp.path(), "live", "CWD: !`pwd`", &[]);
+        let tool = SkillTool::new(
+            tmp.path().to_path_buf(),
+            vec!["live".into()],
+            tmp.path().to_path_buf(),
+        );
+        let result = tool.execute(json!({ "name": "live" })).await.unwrap();
+        // `pwd` resolves to the workspace dir; the exact path varies by
+        // platform, but the body should no longer contain the
+        // `!`pwd`` placeholder.
+        let body = result["body"].as_str().unwrap();
+        assert!(!body.contains("!`pwd`"), "placeholder should be gone, got: {body}");
+        assert!(body.starts_with("CWD: "));
+        assert!(body.len() > "CWD: ".len());
+    }
+
+    #[tokio::test]
+    async fn execute_runs_dynamic_context_fenced_form() {
+        let tmp = TempDir::new().unwrap();
+        // Opener on its own line per the plan's exact-match rule.
+        let body_str = "Intro\n```!\necho alpha\n```\nOutro";
+        write_skill(tmp.path(), "fence", body_str, &[]);
+        let tool = SkillTool::new(
+            tmp.path().to_path_buf(),
+            vec!["fence".into()],
+            tmp.path().to_path_buf(),
+        );
+        let result = tool.execute(json!({ "name": "fence" })).await.unwrap();
+        let body = result["body"].as_str().unwrap();
+        assert!(
+            body.contains("alpha"),
+            "fenced output should contain echo'd text, got: {body}"
+        );
+        assert!(!body.contains("```"), "fence markers should be gone");
+    }
+
+    #[tokio::test]
+    async fn execute_blocks_command_not_in_allowed_tools() {
+        let tmp = TempDir::new().unwrap();
+        write_skill_with_frontmatter(
+            tmp.path(),
+            "guarded",
+            "allowed-tools:\n  - \"echo *\"\n",
+            "Got: !`ls /`",
+        );
+        let tool = SkillTool::new(
+            tmp.path().to_path_buf(),
+            vec!["guarded".into()],
+            tmp.path().to_path_buf(),
+        );
+        let result = tool.execute(json!({ "name": "guarded" })).await.unwrap();
+        let body = result["body"].as_str().unwrap();
+        // `ls /` is not in the allowlist → placeholder is left literal
+        // and the blocked marker is prepended.
+        assert!(body.contains("[shell blocked: command not in allowed-tools]"));
+        assert!(body.contains("!`ls /`"));
+    }
+
+    #[tokio::test]
+    async fn execute_allows_command_in_allowed_tools_glob() {
+        let tmp = TempDir::new().unwrap();
+        write_skill_with_frontmatter(
+            tmp.path(),
+            "guarded",
+            "allowed-tools:\n  - \"echo *\"\n",
+            "Got: !`echo hello`",
+        );
+        let tool = SkillTool::new(
+            tmp.path().to_path_buf(),
+            vec!["guarded".into()],
+            tmp.path().to_path_buf(),
+        );
+        let result = tool.execute(json!({ "name": "guarded" })).await.unwrap();
+        assert_eq!(result["body"], "Got: hello\n");
     }
 }

@@ -243,11 +243,14 @@ where
     // Skill tool is also per-call — its `enabled_skills` allowlist is
     // a snapshot of the principal's `capabilities.skills`, which can
     // change if the principal's TOML is edited between messages. Bodies
-    // are read on demand from the daemon-global `skills_dir()`.
+    // are read on demand from the daemon-global `skills_dir()`. The
+    // principal's workspace is the cwd for any `` !`cmd` `` / `` ```! ``
+    // blocks the body contains.
     let _ = install_skill_tool(
         &core,
         crate::common::paths::PathResolver::new().skills_dir(),
         ctx.capabilities.skills.clone(),
+        ctx.workspace_path.clone(),
     )
     .await;
 

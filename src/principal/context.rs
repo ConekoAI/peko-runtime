@@ -291,15 +291,17 @@ pub(crate) async fn install_agent_catalog(
 /// edited), so the tool is re-registered each message with the
 /// current list. The skill bodies themselves are loaded on demand
 /// from the daemon-global `skills_dir()` when the LLM invokes the
-/// tool.
+/// tool. `workspace_dir` is the principal's workspace root, used as
+/// the cwd for any `` !`cmd` `` / `` ```! `` blocks the body contains.
 pub(crate) async fn install_skill_tool(
     core: &ExtensionCore,
     skills_dir: PathBuf,
     enabled_skills: Vec<String>,
+    workspace_dir: PathBuf,
 ) -> anyhow::Result<()> {
     BuiltinToolAdapter::register_tool(
         core,
-        Arc::new(SkillTool::new(skills_dir, enabled_skills)),
+        Arc::new(SkillTool::new(skills_dir, enabled_skills, workspace_dir)),
     )
     .await
 }
