@@ -4,14 +4,13 @@
 //! It composes `HookRegistry` and `ToolRegistry` to provide a unified interface.
 
 use crate::extensions::framework::core::config::ExtensionServices;
-#[cfg(test)]
 use crate::extensions::framework::core::context::HookContext;
 use crate::extensions::framework::core::handler::HookHandler;
 use crate::extensions::framework::core::hook_points::HookPoint;
 use crate::extensions::framework::core::hook_registry::HookRegistry;
 use crate::extensions::framework::core::tool_registry::ToolRegistry;
 use crate::extensions::framework::types::{
-    ExtensionId, HookId, HookInput, HookResult, ToolMetadata,
+    ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata, ToolRuntimeContext,
 };
 use crate::tools::core::Tool;
 use anyhow::Result;
@@ -283,6 +282,47 @@ impl ExtensionCore {
     /// Invoke hooks and return text output (convenience for prompt hooks)
     pub async fn invoke_hook_text(&self, point: HookPoint, input: HookInput) -> Option<String> {
         self.hook_registry.invoke_hook_text(point, input).await
+    }
+
+    /// Invoke hooks and return text output, seeding `ctx.state` with the
+    /// caller's `principal_id` so handlers can resolve per-principal state.
+    ///
+    /// Used by the system-prompt builder for the `skills` section: each
+    /// `SkillPromptHandler` reads `principal_id` from the injected
+    /// `ToolRuntimeContext` and filters by the principal's enabled-skill
+    /// allowlist at handle time (P2 audit issue #1).
+    pub async fn invoke_hook_text_with_principal(
+        &self,
+        point: HookPoint,
+        input: HookInput,
+        principal_id: Option<&str>,
+    ) -> Option<String> {
+        let mut ctx = HookContext::new(point.clone(), input, self.services.clone());
+        let tool_ctx = ToolRuntimeContext::new().with_run_id("prompt_build");
+        let tool_ctx = if let Some(pid) = principal_id {
+            tool_ctx.with_principal_id(pid)
+        } else {
+            tool_ctx
+        };
+        ctx.set_state("tool_context", tool_ctx);
+
+        match self.hook_registry.invoke_hook_with_context(ctx).await {
+            HookResult::Continue(HookOutput::Text(text)) => Some(text),
+            HookResult::Replace(HookOutput::Text(text)) => Some(text),
+            HookResult::Continue(HookOutput::Vec(outputs)) => {
+                // Concatenate text outputs
+                let texts: Vec<String> = outputs
+                    .into_iter()
+                    .filter_map(|o| o.as_text().map(std::string::ToString::to_string))
+                    .collect();
+                if texts.is_empty() {
+                    None
+                } else {
+                    Some(texts.join("\n"))
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Invoke hooks and return JSON output (convenience for data hooks)
@@ -917,6 +957,7 @@ mod tests {
                     agent_id: None,
                     session_id: None,
                     caller_id: None,
+                    principal_id: None,
                 },
             )
             .await;
@@ -978,6 +1019,7 @@ mod tests {
                     agent_id: None,
                     session_id: None,
                     caller_id: None,
+                    principal_id: None,
                 },
             )
             .await;

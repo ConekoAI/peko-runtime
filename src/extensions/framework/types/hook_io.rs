@@ -178,6 +178,14 @@ pub enum HookInput {
         /// checks (issue #17) and audit logging can attribute the call
         /// to a real user. `None` for local CLI invocations.
         caller_id: Option<String>,
+        /// Principal identifier (post-PR-#94 root-agent unification).
+        /// `None` when the call originates from a context that has no
+        /// principal scope (legacy agent path, tests).
+        /// Threaded into `ToolRuntimeContext` and `ToolContext` so
+        /// capability-scoped tools (e.g. `Skill`) can resolve per-
+        /// principal state at handle time without per-call re-
+        /// registration on the shared global `ExtensionCore`.
+        principal_id: Option<String>,
     },
 
     /// Async task status check
@@ -334,7 +342,9 @@ mod tests {
     /// Issue #17: `HookInput::ToolCall::caller_id` must carry the
     /// resolved caller through to the hook layer so per-user permission
     /// checks (issue #17 follow-up) and audit logging can attribute the
-    /// call to a real user.
+    /// call to a real user. P2-audit: `principal_id` rides alongside
+    /// `caller_id` so capability-scoped tools (`Skill`, future
+    /// additions) can resolve per-principal state at handle time.
     #[test]
     fn test_hook_input_tool_call_carries_caller_id() {
         let input = HookInput::ToolCall {
@@ -344,6 +354,7 @@ mod tests {
             agent_id: Some("agent-a".to_string()),
             session_id: Some("sess-1".to_string()),
             caller_id: Some("user-42".to_string()),
+            principal_id: Some("principal-z".to_string()),
         };
         match input {
             HookInput::ToolCall {
@@ -351,12 +362,14 @@ mod tests {
                 ref agent_id,
                 ref session_id,
                 ref caller_id,
+                ref principal_id,
                 ..
             } => {
                 assert_eq!(tool_name, "shell");
                 assert_eq!(agent_id.as_deref(), Some("agent-a"));
                 assert_eq!(session_id.as_deref(), Some("sess-1"));
                 assert_eq!(caller_id.as_deref(), Some("user-42"));
+                assert_eq!(principal_id.as_deref(), Some("principal-z"));
             }
             _ => panic!("Expected ToolCall variant"),
         }

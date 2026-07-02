@@ -63,6 +63,11 @@ pub struct AgenticLoop {
     /// on every tool invocation so downstream permission checks and audit
     /// logging can attribute the call to a real user — see issue #17.
     caller_id: Option<String>,
+    /// Spawning principal's runtime id. Propagated to
+    /// `HookInput::ToolCall::principal_id` so capability-scoped tools
+    /// such as `Skill` can resolve per-principal state via the
+    /// `SkillStateRegistry` at handle time.
+    agent_principal_id: Option<String>,
     /// Per-session queue of completed async tasks, drained at the start
     /// of each `run_inner` iteration. Surfaced to the LLM as a
     /// synthetic user-role message containing all queued completions.
@@ -82,6 +87,7 @@ impl AgenticLoop {
         extension_core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
         let system_prompt = SystemPromptService::build(&agent, &extension_core).await;
+        let agent_principal_id = Some(agent.principal_id().to_string());
 
         Self {
             agent,
@@ -90,6 +96,7 @@ impl AgenticLoop {
             system_prompt,
             extension_core,
             caller_id: None,
+            agent_principal_id,
             async_completion_queue: None,
         }
     }
@@ -814,6 +821,7 @@ impl AgenticLoop {
                             &session,
                             &run_id,
                             self.caller_id.as_deref(),
+                            self.agent_principal_id.as_deref(),
                             &on_event,
                         )
                         .await?;

@@ -151,6 +151,12 @@ impl SubagentExecutor {
         }
     }
 
+    /// Get the spawning principal's runtime id.
+    #[must_use]
+    pub fn principal_id(&self) -> &PrincipalId {
+        &self.principal_id
+    }
+
     /// Create an executor with an explicit registry (for testing and nested spawns)
     #[must_use]
     pub fn with_registry(

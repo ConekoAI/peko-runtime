@@ -58,6 +58,7 @@ impl ToolExecutor {
         session: &Arc<RwLock<Session>>,
         run_id: &str,
         caller_id: Option<&str>,
+        principal_id: Option<&str>,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
     ) -> Result<ToolExecutionResult> {
         let (id, name, arguments) = match tool_call {
@@ -94,6 +95,7 @@ impl ToolExecutor {
                 Some(agent_id),
                 Some(session_id),
                 caller_id.map(str::to_string),
+                principal_id.map(str::to_string),
             )
             .await
             {

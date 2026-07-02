@@ -53,13 +53,14 @@ impl ReadTool {
         self
     }
 
-    /// Resolve a path - converts relative paths to absolute using workspace
+    /// Resolve a path - expands `~`, then converts relative paths to
+    /// absolute using workspace.
     fn resolve_path(&self, path: &str) -> PathBuf {
-        let path_buf = PathBuf::from(path);
+        let path_buf = crate::common::paths::expand_tilde(path);
         if path_buf.is_absolute() {
             path_buf
         } else if let Some(ref workspace) = self.workspace_dir {
-            workspace.join(path)
+            workspace.join(path_buf)
         } else {
             path_buf
         }

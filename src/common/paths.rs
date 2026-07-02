@@ -35,6 +35,28 @@ use std::path::{Path, PathBuf};
 
 use crate::session::safe_filename_component;
 
+/// Expand a leading `~` in a path string to the user's home directory.
+///
+/// - `"~/foo"` → `{home}/foo`
+/// - `"~"` → `{home}`
+/// - `"/abs/path"` and `"relative"` are returned unchanged
+///
+/// This is intentionally a string-in/string-out helper so it can be
+/// applied before validating whether the result is absolute.
+#[must_use]
+pub fn expand_tilde(path: impl AsRef<str>) -> PathBuf {
+    let path = path.as_ref();
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        let mut home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        home.push(rest);
+        return home;
+    }
+    PathBuf::from(path)
+}
+
 /// Environment variable override for Peko's home directory.
 const PEKO_HOME_ENV: &str = "PEKO_HOME";
 
@@ -477,6 +499,20 @@ impl PathResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_expand_tilde_home() {
+        let home = dirs::home_dir().expect("should have home dir");
+        assert_eq!(expand_tilde("~/foo"), home.join("foo"));
+        assert_eq!(expand_tilde("~"), home);
+    }
+
+    #[test]
+    fn test_expand_tilde_unchanged() {
+        assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
+        assert_eq!(expand_tilde("relative"), PathBuf::from("relative"));
+        assert_eq!(expand_tilde("./relative"), PathBuf::from("./relative"));
+    }
 
     #[test]
     fn test_path_resolver_default() {

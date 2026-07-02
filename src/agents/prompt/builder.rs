@@ -42,6 +42,8 @@ pub struct SystemPromptBuilder {
     channel: String,
     /// Optional extension core for hook integration (Phase 1: Extension Architecture)
     extension_core: Option<Arc<crate::extensions::framework::ExtensionCore>>,
+    /// Principal runtime id for capability-scoped prompt hooks (P2 audit).
+    principal_id: Option<String>,
 }
 
 impl SystemPromptBuilder {
@@ -60,6 +62,7 @@ impl SystemPromptBuilder {
             sandbox_enabled: false,
             channel: "discord".to_string(),
             extension_core: None,
+            principal_id: None,
         }
     }
 
@@ -71,6 +74,15 @@ impl SystemPromptBuilder {
         core: Arc<crate::extensions::framework::ExtensionCore>,
     ) -> Self {
         self.extension_core = Some(core);
+        self
+    }
+
+    /// Set the principal id for capability-scoped prompt hooks.
+    ///
+    /// The `skills` section uses this to filter by the principal's
+    /// enabled-skill allowlist at handle time.
+    pub fn with_principal_id(mut self, principal_id: impl Into<String>) -> Self {
+        self.principal_id = Some(principal_id.into());
         self
     }
 
@@ -266,9 +278,15 @@ impl SystemPromptBuilder {
                 };
                 let core = core.clone();
 
+                let principal_id = self.principal_id.clone();
                 let result = tokio::task::block_in_place(move || {
                     tokio::runtime::Handle::current().block_on(async move {
-                        core.invoke_hook_text(hook_point, HookInput::Unit).await
+                        core.invoke_hook_text_with_principal(
+                            hook_point,
+                            HookInput::Unit,
+                            principal_id.as_deref(),
+                        )
+                        .await
                     })
                 });
 
@@ -476,13 +494,25 @@ Be safe.
             register_skills_with_core(&core, vec![skill])
                 .await
                 .expect("Failed to register skills");
+
+            // Enable the skill for the principal used by the builder.
+            crate::principal::SkillStateRegistry::global()
+                .register(
+                    crate::principal::PrincipalId("test-builder".to_string()),
+                    crate::principal::SkillState::new(
+                        vec!["docker".to_string()],
+                        tmp.path().to_path_buf(),
+                    ),
+                )
+                .await;
         });
 
         let builder = SystemPromptBuilder::new("test-agent")
             .with_workspace(tmp.path())
             .with_mode(PromptMode::Full)
             .with_body(template)
-            .with_extension_core(Arc::new(core));
+            .with_extension_core(Arc::new(core))
+            .with_principal_id("test-builder");
 
         // Build needs to run in a tokio context because build_skills_section uses block_on
         let prompt = rt.block_on(async {
