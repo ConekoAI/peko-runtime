@@ -7,7 +7,9 @@
 //!
 //! Supports both blocking execution and `run_in_background` for parity with
 //! Claude Code's `Bash` tool. Background tasks are tracked by the async executor
-//! framework and can be queried with the async-task-control family.
+//! framework; poll them with the Async* family (AsyncOutput, AsyncStatus,
+//! AsyncStop, AsyncList) — there is no implicit auto-detach in this tool;
+//! blocking calls are bounded only by `timeout`.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -326,7 +328,27 @@ Environment variables:
 Background execution:
 ```json
 {{"command": "sleep 10 && echo done", "run_in_background": true}}
-```"#
+```
+
+## Background-task lifecycle
+
+When `run_in_background: true`, this tool returns a
+`{{task_id, status: "running", tool: "Bash"}}` receipt immediately.
+To monitor or cancel the backgrounded command, use the Async* family:
+
+- `AsyncStatus({{task_id}})` — one-shot status (pending / running /
+  completed / failed / cancelled / timed_out)
+- `AsyncOutput({{task_id, block?, timeout?, tail_lines?}})` — read
+  the result; with `block: true` the call waits until the task
+  reaches a terminal state
+- `AsyncStop({{task_id}})` — cancel a still-running task; returns
+  `success: true, already_terminal: true` if the task is already done
+- `AsyncList({{status_filter?, tool_filter?}})` — enumerate all
+  background tasks visible to the current agent
+
+The blocking form of this tool (default) is bounded only by the
+`timeout` parameter; there is no implicit auto-detach to background.
+"#
         )
     }
 
