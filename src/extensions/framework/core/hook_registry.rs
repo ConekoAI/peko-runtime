@@ -420,38 +420,76 @@ impl HookRegistry {
 
         trace!(handler_count = handlers.len(), "Invoking hooks");
 
+        // Create context and inject runtime context for tool calls.
+        let mut ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
+        if let HookInput::ToolCall {
+            ref agent_id,
+            ref session_id,
+            ref workspace,
+            ref principal_id,
+            ..
+        } = input
+        {
+            let tool_ctx = crate::extensions::framework::types::ToolRuntimeContext::new()
+                .with_run_id("hook_run")
+                .with_agent_id(agent_id.clone().unwrap_or_else(|| "unknown".to_string()))
+                .with_session_id(session_id.clone().unwrap_or_else(|| "unknown".to_string()));
+            let tool_ctx = if let Some(ref ws) = workspace {
+                tool_ctx.with_workspace(ws.clone())
+            } else {
+                tool_ctx
+            };
+            let tool_ctx = if let Some(ref pid) = principal_id {
+                tool_ctx.with_principal_id(pid.clone())
+            } else {
+                tool_ctx
+            };
+            ctx.set_state("tool_context", tool_ctx);
+        }
+
+        self.invoke_hook_with_context(ctx).await
+    }
+
+    /// Invoke a pre-built hook context against the handlers for its point.
+    ///
+    /// Used when the caller needs to seed `ctx.state` (e.g. the prompt
+    /// builder injecting `principal_id` for `SkillPromptHandler`). The
+    /// injected `tool_context` state is preserved across handlers; all
+    /// other state is reset for each handler to match the behaviour of
+    /// [`Self::invoke_hook`].
+    pub async fn invoke_hook_with_context(&self, ctx: HookContext) -> HookResult {
+        let point = ctx.point.clone();
+        let input = ctx.input.clone();
+        let tool_ctx = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .cloned();
+
+        let handlers = self.get_hooks_for_point(&point).await;
+
+        if handlers.is_empty() {
+            trace!("No handlers registered for hook point");
+            return HookResult::PassThrough;
+        }
+
+        trace!(handler_count = handlers.len(), "Invoking hooks with context");
+
         let mut outputs = Vec::new();
 
         for handler in handlers {
             let hook_id = handler.id;
             let start = std::time::Instant::now();
 
-            // Create context
-            let mut ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
-
-            // For tool calls, inject runtime context into state for reserved parameter resolution
-            if let HookInput::ToolCall {
-                ref agent_id,
-                ref session_id,
-                ref workspace,
-                ..
-            } = input
-            {
-                let tool_ctx = crate::extensions::framework::types::ToolRuntimeContext::new()
-                    .with_run_id("hook_run")
-                    .with_agent_id(agent_id.clone().unwrap_or_else(|| "unknown".to_string()))
-                    .with_session_id(session_id.clone().unwrap_or_else(|| "unknown".to_string()));
-                let tool_ctx = if let Some(ref ws) = workspace {
-                    tool_ctx.with_workspace(ws.clone())
-                } else {
-                    tool_ctx
-                };
-                ctx.set_state("tool_context", tool_ctx);
+            // Build a fresh context for this handler, re-injecting the
+            // caller-supplied `tool_context` state so every handler sees
+            // the same principal/session context.
+            let mut handler_ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
+            if let Some(ref tc) = tool_ctx {
+                handler_ctx.set_state("tool_context", tc.clone());
             }
 
             // Invoke handler
             trace!(handler_id = %hook_id, "Calling handler");
-            let result = handler.handler.handle(ctx).await;
+            let result = handler.handler.handle(handler_ctx).await;
 
             // Record telemetry
             let duration_ms = start.elapsed().as_millis() as u64;

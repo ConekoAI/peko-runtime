@@ -88,6 +88,7 @@ pub struct ToolRuntimeContext {
     pub peer_id: Option<String>,
     pub workspace: Option<String>,
     pub run_id: Option<String>,
+    pub principal_id: Option<String>,
 }
 
 impl ToolRuntimeContext {
@@ -122,6 +123,12 @@ impl ToolRuntimeContext {
     #[must_use]
     pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
         self.run_id = Some(run_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_principal_id(mut self, principal_id: impl Into<String>) -> Self {
+        self.principal_id = Some(principal_id.into());
         self
     }
 }

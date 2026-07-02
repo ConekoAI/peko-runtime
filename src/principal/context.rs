@@ -242,6 +242,14 @@ async fn install_principal_tool_bag(
         tracing::warn!("ToolRuntime::register_builtins failed during core build: {e}");
     }
 
+    // Register the singleton `Skill` tool once on the global core.
+    // Per-principal allowlist and workspace state are resolved at handle
+    // time via `SkillStateRegistry` using the `principal_id` carried in
+    // `ToolContext` (P2 audit issue #2).
+    if let Err(e) = BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new())).await {
+        tracing::warn!("SkillTool registration failed during core build: {e}");
+    }
+
     // Discover and register the principal's `<workspace>/agents/`.
     let agents_dir = workspace_path.join("agents");
     if agents_dir.exists() {
@@ -280,28 +288,6 @@ pub(crate) async fn install_agent_catalog(
     BuiltinToolAdapter::register_tool(
         core,
         Arc::new(AgentCatalogTool::new(available_agents)),
-    )
-    .await
-}
-
-/// Install the per-call `Skill` tool on the principal's core.
-///
-/// Mirrors [`install_agent_catalog`] — the principal's enabled-skill
-/// allowlist can change between messages (if `principal.toml` is
-/// edited), so the tool is re-registered each message with the
-/// current list. The skill bodies themselves are loaded on demand
-/// from the daemon-global `skills_dir()` when the LLM invokes the
-/// tool. `workspace_dir` is the principal's workspace root, used as
-/// the cwd for any `` !`cmd` `` / `` ```! `` blocks the body contains.
-pub(crate) async fn install_skill_tool(
-    core: &ExtensionCore,
-    skills_dir: PathBuf,
-    enabled_skills: Vec<String>,
-    workspace_dir: PathBuf,
-) -> anyhow::Result<()> {
-    BuiltinToolAdapter::register_tool(
-        core,
-        Arc::new(SkillTool::new(skills_dir, enabled_skills, workspace_dir)),
     )
     .await
 }

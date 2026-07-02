@@ -49,6 +49,7 @@ impl SystemPromptService {
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
             .with_extension_core(Arc::clone(extension_core))
+            .with_principal_id(agent.principal_id().to_string())
             .with_body(body)
             .build()
     }
@@ -64,6 +65,7 @@ impl SystemPromptService {
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
             .with_extension_core(Arc::clone(extension_core))
+            .with_principal_id(agent.principal_id().to_string())
             .build()
     }
 

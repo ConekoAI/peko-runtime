@@ -174,6 +174,7 @@ impl ExtensionAsyncAdapter {
                     agent_id: None,
                     session_id: None,
                     caller_id: None,
+                    principal_id: None,
                 },
             )
             .await;
@@ -235,6 +236,7 @@ impl ExtensionAsyncAdapter {
                                 agent_id: None,
                                 session_id: None,
                                 caller_id: None,
+                                principal_id: None,
                             },
                         )
                         .await;

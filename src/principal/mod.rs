@@ -7,6 +7,7 @@ pub mod manager;
 pub mod memory;
 pub mod router;
 pub mod routers;
+pub mod skill_state;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
@@ -26,6 +27,7 @@ pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
 };
+pub use skill_state::{SkillState, SkillStateGuard, SkillStateRegistry};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,6 +42,12 @@ pub struct PrincipalId(pub String);
 impl PrincipalId {
     pub fn generate() -> Self {
         Self(format!("prin_{}", uuid::Uuid::new_v4().simple()))
+    }
+}
+
+impl std::fmt::Display for PrincipalId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

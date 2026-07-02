@@ -277,10 +277,25 @@ struct SkillPromptHandler {
 
 #[async_trait]
 impl HookHandler for SkillPromptHandler {
-    async fn handle(&self, _ctx: HookContext) -> HookResult {
-        // Format the skill entry for the prompt
-        // Use full path (not compacted with ~) so the agent can read the file
-        let path_display = self.file_path.to_string_lossy();
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Filter at handle-time using the principal's enabled-skill allowlist
+        // from `SkillStateRegistry`. The prompt builder injects `principal_id`
+        // via `ctx.state["tool_context"]`.
+        let principal_id = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .and_then(|tc| tc.principal_id.as_ref())
+            .map(|pid| crate::principal::PrincipalId(pid.clone()));
+
+        let enabled = crate::principal::SkillStateRegistry::global()
+            .is_skill_enabled(principal_id.as_ref(), &self.skill_name)
+            .await;
+
+        if !enabled {
+            return HookResult::PassThrough;
+        }
+
+        // Compact the path to avoid leaking the absolute home directory layout.
+        let path_display = compact_skill_path(&self.file_path);
         let text = format!(
             "- {}: {} (location: {})",
             self.skill_name, self.description, path_display
@@ -308,7 +323,6 @@ impl HookHandler for SkillPromptHandler {
 // parse_frontmatter now uses parsing::parse_yaml_frontmatter from shared utilities
 
 /// Replace home directory with ~ to save tokens
-#[cfg(test)]
 fn compact_skill_path(path: &Path) -> String {
     let path_str = path.to_string_lossy();
     if let Some(home) = dirs::home_dir() {
@@ -575,6 +589,103 @@ This is the body content.
             file_path: skill_path,
         };
 
+        let mut ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "skills".to_string(),
+                priority: 100,
+            },
+            crate::extensions::framework::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+
+        let principal_id = crate::principal::PrincipalId("test-handler".to_string());
+        crate::principal::SkillStateRegistry::global()
+            .register(
+                principal_id.clone(),
+                crate::principal::SkillState::new(vec!["docker".to_string()], home.clone()),
+            )
+            .await;
+        ctx.set_state(
+            "tool_context",
+            crate::extensions::framework::types::ToolRuntimeContext::new()
+                .with_principal_id(principal_id.0.clone()),
+        );
+
+        let result = handler.handle(ctx).await;
+
+        crate::principal::SkillStateRegistry::global()
+            .unregister(&principal_id)
+            .await;
+
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(text.contains("docker: Docker operations"));
+                // Path should be compacted to use ~ for home directory
+                assert!(
+                    text.contains("location: ~/.peko"),
+                    "Expected compacted path, got: {text}"
+                );
+            }
+            _ => panic!("Expected Continue with Text, got {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_skill_handler_filters_disabled_skills() {
+        let home = dirs::home_dir().expect("Should have home dir");
+        let skill_path = home.join(".peko/skills/docker/SKILL.md");
+
+        let handler = SkillPromptHandler {
+            skill_name: "docker".to_string(),
+            description: "Docker operations".to_string(),
+            file_path: skill_path,
+        };
+
+        let mut ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "skills".to_string(),
+                priority: 100,
+            },
+            crate::extensions::framework::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+
+        let principal_id = crate::principal::PrincipalId("test-filter".to_string());
+        crate::principal::SkillStateRegistry::global()
+            .register(
+                principal_id.clone(),
+                crate::principal::SkillState::new(vec!["other".to_string()], home.clone()),
+            )
+            .await;
+        ctx.set_state(
+            "tool_context",
+            crate::extensions::framework::types::ToolRuntimeContext::new()
+                .with_principal_id(principal_id.0.clone()),
+        );
+
+        let result = handler.handle(ctx).await;
+
+        crate::principal::SkillStateRegistry::global()
+            .unregister(&principal_id)
+            .await;
+
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "Expected disabled skill to emit nothing, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_skill_handler_fail_closed_without_principal_id() {
+        let home = dirs::home_dir().expect("Should have home dir");
+        let skill_path = home.join(".peko/skills/docker/SKILL.md");
+
+        let handler = SkillPromptHandler {
+            skill_name: "docker".to_string(),
+            description: "Docker operations".to_string(),
+            file_path: skill_path,
+        };
+
         let ctx = HookContext::new(
             HookPoint::PromptSystemSection {
                 section: "skills".to_string(),
@@ -586,17 +697,10 @@ This is the body content.
 
         let result = handler.handle(ctx).await;
 
-        match result {
-            HookResult::Continue(HookOutput::Text(text)) => {
-                assert!(text.contains("docker: Docker operations"));
-                // Path should be compacted to use ~ for home directory
-                assert!(
-                    text.contains('~') || text.contains(".peko"),
-                    "Expected compacted path, got: {text}"
-                );
-            }
-            _ => panic!("Expected Continue with Text, got {result:?}"),
-        }
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "Expected no principal_id to fail closed, got {result:?}"
+        );
     }
 
     #[tokio::test]

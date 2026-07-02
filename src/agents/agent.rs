@@ -64,6 +64,12 @@ pub struct Agent {
     /// `Subject::Principal(caller_principal_did)` on the wire.
     /// `None` means the tool is not registered.
     caller_principal_did: Option<String>,
+    /// Spawning principal's runtime id. Inherited by subagent spawns
+    /// via `SubagentExecutor`. Threaded into `ToolContext` so tools
+    /// such as `Skill` can resolve per-principal state at handle time
+    /// without re-registering themselves on the shared `ExtensionCore`
+    /// per principal.
+    principal_id: crate::principal::PrincipalId,
 }
 
 impl Clone for Agent {
@@ -86,6 +92,7 @@ impl Clone for Agent {
             inbox_registry: self.inbox_registry.clone(),
             principal_workspace: self.principal_workspace.clone(),
             caller_principal_did: self.caller_principal_did.clone(),
+            principal_id: self.principal_id.clone(),
         }
     }
 }
@@ -483,7 +490,7 @@ impl Agent {
             Arc::clone(&session_manager),
             config.name.clone(),
             5, // max_concurrent
-            principal_id,
+            principal_id.clone(),
         );
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
@@ -514,6 +521,7 @@ impl Agent {
             inbox_registry,
             principal_workspace: None,
             caller_principal_did: None,
+            principal_id,
         };
 
         info!(
@@ -638,6 +646,7 @@ impl Agent {
         // daemon-global core. Phase 2 fix; before this, every subagent
         // silently bypassed the principal's tool bag.
 
+        let principal_id = subagent_executor.principal_id().clone();
         let agent = Self {
             config,
             state: Arc::new(RwLock::new(AgentState::Idle)),
@@ -652,6 +661,7 @@ impl Agent {
             inbox_registry: None,
             principal_workspace: None,
             caller_principal_did: None,
+            principal_id,
         };
 
         info!(
@@ -1183,6 +1193,15 @@ impl Agent {
         &self.config.name
     }
 
+    /// Get the spawning principal's runtime id.
+    ///
+    /// Threaded through tool execution so capability-scoped tools can
+    /// resolve per-principal state at handle time.
+    #[must_use]
+    pub fn principal_id(&self) -> &crate::principal::PrincipalId {
+        &self.principal_id
+    }
+
     // Session overlay methods
 
     /// Get the session manager
@@ -1491,6 +1510,7 @@ impl Agent {
             inbox_registry: None,
             principal_workspace: None,
             caller_principal_did: None,
+            principal_id: crate::principal::PrincipalId::generate(),
         })
     }
 

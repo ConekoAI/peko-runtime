@@ -338,6 +338,7 @@ mod tests {
                 agent_id: None,
                 session_id: None,
                 caller_id: None,
+                principal_id: None,
             },
             Arc::new(ExtensionServices::new()),
         );

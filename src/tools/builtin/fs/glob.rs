@@ -58,10 +58,11 @@ impl GlobTool {
         self
     }
 
-    /// Resolve the search directory
+    /// Resolve the search directory - expands `~`, then converts relative
+    /// paths to absolute using workspace.
     fn resolve_directory(&self, path: Option<&str>) -> PathBuf {
         if let Some(dir) = path {
-            let path = PathBuf::from(dir);
+            let path = crate::common::paths::expand_tilde(dir);
             if path.is_absolute() {
                 path
             } else if let Some(ref workspace) = self.workspace_dir {

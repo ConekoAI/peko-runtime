@@ -106,6 +106,9 @@ pub struct ToolContext {
     pub peer_id: Option<String>,
     /// Workspace path
     pub workspace: Option<String>,
+    /// Spawning principal runtime id (post-PR-#94). Capability-scoped
+    /// tools use this to resolve per-principal state at handle time.
+    pub principal_id: Option<String>,
 }
 
 impl ToolContext {
@@ -129,6 +132,7 @@ impl ToolContext {
             session_id: None,
             peer_id: None,
             workspace: None,
+            principal_id: None,
         }
     }
 
@@ -151,6 +155,7 @@ impl ToolContext {
             session_id: None,
             peer_id: None,
             workspace: None,
+            principal_id: None,
         }
     }
 
@@ -177,6 +182,7 @@ impl ToolContext {
             session_id: None,
             peer_id: None,
             workspace: None,
+            principal_id: None,
         }
     }
 
@@ -201,6 +207,7 @@ impl ToolContext {
             session_id: None,
             peer_id: None,
             workspace: None,
+            principal_id: None,
         }
     }
 
@@ -257,6 +264,13 @@ impl ToolContext {
         self.agent_id = Some(agent_id.into());
         self.session_id = Some(session_id.into());
         self.workspace = Some(workspace.into());
+        self
+    }
+
+    /// Set principal id for capability-scoped tool state resolution
+    #[must_use]
+    pub fn with_principal_id(mut self, principal_id: impl Into<String>) -> Self {
+        self.principal_id = Some(principal_id.into());
         self
     }
 
