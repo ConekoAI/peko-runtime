@@ -210,7 +210,7 @@ impl ExtensionManager {
 
     /// Detect extension type using the two-tier hierarchy (ADR-024).
     ///
-    /// Tier 1: Ecosystem standards (SKILL.md, server.json)
+    /// Tier 1: Ecosystem standards (SKILL.md, AGENT.md, server.json)
     /// Tier 2: Unified manifest (manifest.yaml with `extension_type`)
     fn detect_extension_type_string(&self, path: &Path) -> Option<String> {
         use crate::extensions::framework::adapters::extract_extension_type_from_yaml;
@@ -221,6 +221,12 @@ impl ExtensionManager {
         if path.join("SKILL.md").exists() {
             tracing::debug!("Detected Tier 1 ecosystem standard: SKILL.md -> skill");
             return Some("skill".to_string());
+        }
+
+        // AGENT.md → agent adapter
+        if path.join("AGENT.md").exists() {
+            tracing::debug!("Detected Tier 1 ecosystem standard: AGENT.md -> agent");
+            return Some("agent".to_string());
         }
 
         // server.json → mcp adapter (bare MCP Registry standard)
@@ -345,11 +351,14 @@ impl ExtensionManager {
         let mut report = LoadReport::default();
         let mut scanned_paths = std::collections::HashSet::new();
 
-        // Collect all paths to scan (discovery paths + storage)
+        // Collect all paths to scan (discovery paths + storage + legacy skill/agent dirs)
         let mut all_paths = discovery_paths::all();
         if let Some(storage_dir) = self.storage.dir() {
             all_paths.push(storage_dir.to_path_buf());
         }
+        let path_resolver = crate::common::paths::PathResolver::new();
+        all_paths.push(path_resolver.skills_dir());
+        all_paths.push(path_resolver.agents_dir());
 
         for base_path in all_paths {
             if !base_path.exists() {
@@ -994,6 +1003,20 @@ mod tests {
         assert_eq!(
             manager.detect_extension_type_string(&ext_dir),
             Some("skill".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier1_agent_md() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("my-agent");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("AGENT.md"), "---\nname: My Agent\n---\n").unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("agent".to_string())
         );
     }
 
