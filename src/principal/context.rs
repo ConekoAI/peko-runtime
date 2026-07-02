@@ -30,7 +30,7 @@ use crate::principal::router::AgentPromptSummary;
 use crate::principal::PrincipalId;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
-use crate::tools::builtin::{AgentCatalogTool, PrincipalMemoryTool, PrincipalSessionsTool};
+use crate::tools::builtin::{AgentCatalogTool, PrincipalMemoryTool};
 
 use super::config::PrincipalCapabilities;
 
@@ -165,10 +165,10 @@ impl PrincipalContext {
     /// principal's tool bag is wired onto it.
     ///
     /// There is one daemon-wide [`ExtensionCore`]. The principal's
-    /// tools (`principal_sessions`, `principal_memory`,
-    /// `<workspace>/agents/*`) are installed on that core on first
-    /// call via [`install_principal_tool_bag`]; subsequent callers
-    /// observe the same global core and the same tool bag.
+    /// tools (`principal_memory`, `<workspace>/agents/*`) are installed
+    /// on that core on first call via [`install_principal_tool_bag`];
+    /// subsequent callers observe the same global core and the same
+    /// tool bag.
     ///
     /// Visibility to any single agent is still governed by the agent's
     /// own capability whitelist; this method does not assume
@@ -254,12 +254,9 @@ async fn install_principal_tool_bag(
         }
     }
 
-    // Principal-scoped tools: sessions and memory.
-    BuiltinToolAdapter::register_tool(
-        &core,
-        Arc::new(PrincipalSessionsTool::new(Arc::clone(&memory))),
-    )
-    .await?;
+    // Principal-scoped memory tool. Cross-peer session introspection
+    // is handled by the per-agent `session` tool, which now accepts
+    // `peer` and `agent_id` filters (see `SessionRegistry::list_sessions`).
     BuiltinToolAdapter::register_tool(
         &core,
         Arc::new(PrincipalMemoryTool::new(Arc::clone(&memory))),

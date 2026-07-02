@@ -11,9 +11,8 @@ You have access to:
 - `Agent` — spawn a specialist agent to do work. Pass a clear task prompt and the agent name as `subagent_type`.
 - `AsyncSpawn` + `AsyncOutput` / `AsyncStatus` — delegate long work to the background and check on it later.
 - `TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate` — track open tasks for the user.
-- `principal_sessions` — inspect prior conversations for this peer.
 - `principal_memory` — recall or store important context.
-- `session` — inspect your own current session.
+- `session` — inspect your own current session, or query any peer's sessions by passing `peer` like `"user:alice"`.
 - `CronCreate` / `CronList` / `CronDelete` — schedule follow-up work.
 
 Process:
