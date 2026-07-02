@@ -51,6 +51,12 @@ impl Tool for CronDeleteTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // `oneOf` is the right combinator here: callers must supply
+        // exactly one of `id` or `label` (and supplying both is a usage
+        // error, not a coercion case). `anyOf` would silently accept both,
+        // which we want to surface. The previous schema used `anyOf` +
+        // nested `required` — that's not a valid JSON Schema combination
+        // and several validators reject it.
         json!({
             "type": "object",
             "properties": {
@@ -63,7 +69,7 @@ impl Tool for CronDeleteTool {
                     "description": "Label of the scheduled job to cancel (peko extension)"
                 }
             },
-            "anyOf": [
+            "oneOf": [
                 { "required": ["id"] },
                 { "required": ["label"] }
             ]
@@ -138,6 +144,12 @@ mod tests {
         let tool = CronDeleteTool::new();
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
-        assert!(params.get("anyOf").is_some());
+        // The schema uses `oneOf` so that callers who supply both `id`
+        // and `label` get a validation error instead of silent acceptance.
+        let branches = params
+            .get("oneOf")
+            .expect("CronDelete schema must use oneOf for id-or-label");
+        assert!(branches.is_array());
+        assert_eq!(branches.as_array().unwrap().len(), 2);
     }
 }
