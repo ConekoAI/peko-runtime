@@ -32,7 +32,12 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub routing: PrincipalRoutingConfig,
 
-    #[serde(default)]
+    /// Allowed extensions (tools, skills, MCPs, agents) for this Principal.
+    ///
+    /// On disk this is written as `[allowed_extensions]`. The legacy key
+    /// `[capabilities]` is still accepted when reading older `principal.toml`
+    /// files.
+    #[serde(default, rename = "allowed_extensions", alias = "capabilities")]
     pub capabilities: PrincipalCapabilities,
 
     /// Network exposure level for this Principal.
@@ -292,9 +297,9 @@ mod tests {
         assert_eq!(back.preferred_model_id.as_deref(), Some("llama3.1"));
     }
 
-    /// Serializing a config with no provider hint must NOT emit the
-    /// fields — `skip_serializing_if = "Option::is_none"` keeps the
-    /// on-disk form clean for the common case.
+    /// Serializing a config with no provider hint must NOT emit the keys —
+    /// `skip_serializing_if = "Option::is_none"` keeps the on-disk form clean
+    /// for the common case.
     #[test]
     fn principal_config_without_hints_does_not_emit_keys() {
         let cfg = PrincipalConfig {
@@ -322,5 +327,70 @@ mod tests {
             !serialized.contains("preferred_model_id"),
             "absent hint leaked into TOML: {serialized}"
         );
+    }
+
+    /// New `principal.toml` files use `[allowed_extensions]`.
+    #[test]
+    fn principal_config_serializes_allowed_extensions_table() {
+        let cfg = PrincipalConfig {
+            name: "alice".into(),
+            did: None,
+            owner: Default::default(),
+            identity: Default::default(),
+            intent: Default::default(),
+            governance: Default::default(),
+            memory: Default::default(),
+            routing: Default::default(),
+            capabilities: PrincipalCapabilities {
+                tools: vec!["Bash".into()],
+                ..Default::default()
+            },
+            exposure: Default::default(),
+            status: None,
+            permissions: Vec::new(),
+            preferred_provider_id: None,
+            preferred_model_id: None,
+        };
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            serialized.contains("[allowed_extensions]"),
+            "expected [allowed_extensions] table, got: {serialized}"
+        );
+        assert!(
+            !serialized.contains("[capabilities]"),
+            "legacy table name leaked into TOML: {serialized}"
+        );
+    }
+
+    /// Legacy `principal.toml` files with `[capabilities]` still parse.
+    #[test]
+    fn principal_config_accepts_legacy_capabilities_alias() {
+        let toml = r#"
+            name = "legacy"
+            exposure = "private"
+
+            [capabilities]
+            tools = ["Bash", "Read"]
+            skills = ["docker"]
+        "#;
+        let cfg: PrincipalConfig = toml::from_str(toml).expect("legacy TOML must parse");
+        assert_eq!(cfg.capabilities.tools, vec!["Bash", "Read"]);
+        assert_eq!(cfg.capabilities.skills, vec!["docker"]);
+    }
+
+    /// The new `[allowed_extensions]` table parses into the same struct.
+    #[test]
+    fn principal_config_accepts_allowed_extensions_alias() {
+        let toml = r#"
+            name = "modern"
+            exposure = "private"
+
+            [allowed_extensions]
+            tools = ["Bash"]
+            agents = ["researcher"]
+        "#;
+        let cfg: PrincipalConfig = toml::from_str(toml).expect("modern TOML must parse");
+        assert_eq!(cfg.capabilities.tools, vec!["Bash"]);
+        assert_eq!(cfg.capabilities.agents, vec!["researcher"]);
     }
 }

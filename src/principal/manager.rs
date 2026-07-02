@@ -164,8 +164,25 @@ impl PrincipalManager {
         let config_str = tokio::fs::read_to_string(config_path)
             .await
             .map_err(PrincipalManagerError::Io)?;
-        let config: PrincipalConfig = toml::from_str(&config_str)
+
+        // Detect the legacy `[capabilities]` table name so we can warn users
+        // to migrate to `[allowed_extensions]`. Both keys still parse because
+        // of the serde alias, but new files are written with the new name.
+        let raw_config: toml::Value = toml::from_str(&config_str)
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
+        let uses_legacy_capabilities = raw_config.get("capabilities").is_some();
+
+        let config: PrincipalConfig = raw_config
+            .try_into()
+            .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
+
+        if uses_legacy_capabilities {
+            tracing::warn!(
+                principal = %config.name,
+                config_path = %config_path.display(),
+                "principal.toml uses legacy [capabilities] table; consider renaming it to [allowed_extensions]"
+            );
+        }
 
         let name = config.name.clone();
         {
