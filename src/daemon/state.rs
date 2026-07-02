@@ -1484,12 +1484,12 @@ mod tests {
             "Write tool not registered"
         );
         assert!(
-            tool_runtime.has_tool("glob").await,
-            "glob tool not registered"
+            tool_runtime.has_tool("Glob").await,
+            "Glob tool not registered"
         );
         assert!(
-            tool_runtime.has_tool("grep").await,
-            "grep tool not registered"
+            tool_runtime.has_tool("Grep").await,
+            "Grep tool not registered"
         );
         assert!(
             tool_runtime.has_tool("Edit").await,
@@ -1507,7 +1507,7 @@ mod tests {
 
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
         assert!(tool_names.contains(&"Bash".to_string()));
-        assert!(tool_names.contains(&"grep".to_string()));
+        assert!(tool_names.contains(&"Grep".to_string()));
 
         // Tool definitions should be available for LLM API
         let defs = core.list_tool_definitions().await;
@@ -1550,8 +1550,8 @@ mod tests {
             "Bash missing after agent init"
         );
         assert!(
-            tool_names.contains(&"grep".to_string()),
-            "grep missing after agent init"
+            tool_names.contains(&"Grep".to_string()),
+            "Grep missing after agent init"
         );
 
         // Prompt section should return tool descriptions
@@ -1568,7 +1568,7 @@ mod tests {
         let prompt_text = prompt.unwrap();
         assert!(!prompt_text.is_empty(), "Prompt section is empty");
         assert!(prompt_text.contains("Bash"), "Prompt doesn't mention Bash");
-        assert!(prompt_text.contains("grep"), "Prompt doesn't mention grep");
+        assert!(prompt_text.contains("Grep"), "Prompt doesn't mention Grep");
     }
 
     // ── Issue #8: tunnel health surface tests ─────────────────────

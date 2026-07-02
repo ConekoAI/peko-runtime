@@ -30,7 +30,7 @@ use std::sync::Arc;
 pub struct BuiltinToolRegistrarConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
-    /// Enable granular filesystem tools (`Read`, `Write`, glob, grep, `Edit`)
+    /// Enable granular filesystem tools (`Read`, `Write`, `Glob`, `Grep`, `Edit`)
     pub enable_granular_fs: bool,
     /// Enable write tools (`Write`, `Edit`)
     pub enable_granular_write: bool,
@@ -372,7 +372,7 @@ impl HookHandler for BuiltinExecuteHandler {
                             // Inject agent workspace into tool parameters for filesystem tools.
                             if let Some(ws) = workspace {
                                 match tool_name_for_preproc.as_str() {
-                                    "glob" => {
+                                    "Glob" => {
                                         if !obj.contains_key("directory") {
                                             obj.insert(
                                                 "directory".to_string(),
@@ -380,7 +380,7 @@ impl HookHandler for BuiltinExecuteHandler {
                                             );
                                         }
                                     }
-                                    "grep" => {
+                                    "Grep" => {
                                         if !obj.contains_key("path") {
                                             obj.insert(
                                                 "path".to_string(),

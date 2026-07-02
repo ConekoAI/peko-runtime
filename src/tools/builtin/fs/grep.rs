@@ -363,7 +363,7 @@ impl Default for GrepTool {
 #[async_trait]
 impl Tool for GrepTool {
     fn name(&self) -> &'static str {
-        "grep"
+        "Grep"
     }
 
     fn description(&self) -> String {
