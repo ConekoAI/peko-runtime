@@ -1,6 +1,14 @@
 //! Grep tool - Search file contents using regex
 //!
 //! Content-based file discovery and search for agents.
+//!
+//! Output is shaped by `output_mode`:
+//! - `"content"` (default) — per-match records with `path`, `line`,
+//!   optional `content` and context lines (matches Claude Code's
+//!   `content` mode for Grep)
+//! - `"files_with_matches"` — unique file paths that contain at least
+//!   one match, no line-level detail
+//! - `"count"` — per-file match counts as `{path: count}`
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -26,13 +34,17 @@ pub struct GrepArgs {
     /// Maximum number of matches to return (default: 100)
     #[serde(default = "default_limit")]
     pub limit: usize,
-    /// Include line content in results (default: true)
+    /// Include line content in results (default: true). Only consulted
+    /// when `output_mode == "content"`; ignored for `files_with_matches`
+    /// and `count` modes.
     #[serde(default = "default_true")]
     pub include_content: bool,
-    /// Number of context lines before each match (default: 0)
+    /// Number of context lines before each match (default: 0). Only
+    /// consulted when `output_mode == "content"`.
     #[serde(default)]
     pub context_before: usize,
-    /// Number of context lines after each match (default: 0)
+    /// Number of context lines after each match (default: 0). Only
+    /// consulted when `output_mode == "content"`.
     #[serde(default)]
     pub context_after: usize,
     /// Case insensitive search (default: false)
@@ -41,6 +53,17 @@ pub struct GrepArgs {
     /// Include hidden files (default: false)
     #[serde(default)]
     pub include_hidden: bool,
+    /// Output shape: `"content"` (default) returns per-match records
+    /// with line numbers and (optionally) the matching line + context;
+    /// `"files_with_matches"` returns just the unique file paths that
+    /// contain at least one match; `"count"` returns a `{path: count}`
+    /// map of match counts per file.
+    #[serde(default = "default_output_mode")]
+    pub output_mode: String,
+}
+
+fn default_output_mode() -> String {
+    "content".to_string()
 }
 
 fn default_limit() -> usize {
@@ -110,7 +133,13 @@ impl GrepTool {
         context_after: usize,
         case_insensitive: bool,
         include_hidden: bool,
+        output_mode: &str,
     ) -> Result<serde_json::Value> {
+        if !matches!(output_mode, "content" | "files_with_matches" | "count") {
+            return Err(anyhow::anyhow!(
+                "Invalid output_mode '{output_mode}': expected 'content', 'files_with_matches', or 'count'"
+            ));
+        }
         // Compile regex
         let regex = if case_insensitive {
             Regex::new(&format!("(?i){pattern}"))
@@ -190,15 +219,51 @@ impl GrepTool {
 
         let truncated = matches.len() >= limit;
 
-        Ok(serde_json::json!({
+        let mut response = serde_json::json!({
             "pattern": pattern,
             "path": search_path.display().to_string(),
-            "matches": matches,
-            "total_matches": matches.len(),
             "files_searched": files_searched,
             "files_with_matches": files_with_matches,
             "truncated": truncated,
-        }))
+            "output_mode": output_mode,
+        });
+
+        let obj = response.as_object_mut().unwrap();
+        match output_mode {
+            "content" => {
+                obj.insert("matches".to_string(), matches.into());
+                obj.insert(
+                    "total_matches".to_string(),
+                    serde_json::Value::from(obj["matches"].as_array().map(|a| a.len()).unwrap_or(0)),
+                );
+            }
+            "files_with_matches" => {
+                // matches was filled even though we don't need line-level
+                // detail; collapse it to a unique, sorted list of paths.
+                let mut files: Vec<String> = matches
+                    .into_iter()
+                    .filter_map(|m| m.get("path").and_then(|p| p.as_str()).map(String::from))
+                    .collect();
+                files.sort();
+                files.dedup();
+                obj.insert("files".to_string(), files.into());
+            }
+            "count" => {
+                // Tally matches per file, sorted by descending count then
+                // path for stable output.
+                let mut counts: std::collections::BTreeMap<String, usize> =
+                    std::collections::BTreeMap::new();
+                for m in matches {
+                    if let Some(p) = m.get("path").and_then(|p| p.as_str()) {
+                        *counts.entry(p.to_string()).or_insert(0) += 1;
+                    }
+                }
+                obj.insert("counts".to_string(), serde_json::json!(counts));
+            }
+            _ => unreachable!("validated above"),
+        }
+
+        Ok(response)
     }
 
     /// Search a single file
@@ -406,6 +471,16 @@ Case-insensitive search. Default: false.
 ### include_hidden (optional)
 Search hidden files. Default: false.
 
+### output_mode (optional)
+Shape of the response:
+- `"content"` (default) — per-match records with `path`, `line`,
+  optional `content`, and context lines. Other options like
+  `include_content` and `context_before` / `context_after` only apply
+  in this mode.
+- `"files_with_matches"` — unique list of file paths that contain at
+  least one match. Cheap when you only need to know *which* files.
+- `"count"` — `{path: match_count}` map per file.
+
 ## Examples
 
 Find function definitions:
@@ -476,6 +551,12 @@ Find where a function is called:
                     "type": "boolean",
                     "description": "Search hidden files",
                     "default": false
+                },
+                "output_mode": {
+                    "type": "string",
+                    "description": "Output shape: 'content' (default, per-match records with line numbers), 'files_with_matches' (unique file paths only), or 'count' (per-file match counts).",
+                    "enum": ["content", "files_with_matches", "count"],
+                    "default": "content"
                 }
             },
             "required": ["pattern"]
@@ -496,6 +577,7 @@ Find where a function is called:
             args.context_after,
             args.case_insensitive,
             args.include_hidden,
+            &args.output_mode,
         )
         .await
     }
@@ -694,5 +776,87 @@ mod tests {
         assert!(GrepTool::simple_glob_match("file1.txt", "file?.txt"));
         assert!(!GrepTool::simple_glob_match("file10.txt", "file?.txt"));
         assert!(GrepTool::simple_glob_match("test.rs", "**/*.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_output_mode_files_with_matches() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+
+        fs::write(temp_dir.path().join("a.rs"), "fn alpha() {}\nfn beta() {}")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("b.rs"), "fn gamma() {}")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("c.txt"), "no match here")
+            .await
+            .unwrap();
+
+        let result = tool
+            .execute(json!({
+                "pattern": "fn ",
+                "glob": "*.rs",
+                "output_mode": "files_with_matches"
+            }))
+            .await
+            .unwrap();
+
+        let files = result["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(result["files_with_matches"], 2);
+        // No line-level fields when in files_with_matches mode.
+        assert!(result.get("matches").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_grep_output_mode_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+
+        fs::write(temp_dir.path().join("a.rs"), "fn a() {}\nfn b() {}\nfn c() {}")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("b.rs"), "fn d() {}")
+            .await
+            .unwrap();
+
+        let result = tool
+            .execute(json!({
+                "pattern": "fn ",
+                "glob": "*.rs",
+                "output_mode": "count"
+            }))
+            .await
+            .unwrap();
+
+        let counts = result["counts"].as_object().unwrap();
+        assert_eq!(counts.len(), 2);
+        let a_count = counts
+            .iter()
+            .find(|(k, _)| k.ends_with("a.rs"))
+            .unwrap()
+            .1
+            .as_u64()
+            .unwrap();
+        let b_count = counts
+            .iter()
+            .find(|(k, _)| k.ends_with("b.rs"))
+            .unwrap()
+            .1
+            .as_u64()
+            .unwrap();
+        assert_eq!(a_count, 3);
+        assert_eq!(b_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_grep_output_mode_invalid() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+        let result = tool
+            .execute(json!({"pattern": "x", "output_mode": "bogus"}))
+            .await;
+        assert!(result.is_err());
     }
 }
