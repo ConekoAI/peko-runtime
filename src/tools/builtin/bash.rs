@@ -585,9 +585,12 @@ mod tests {
     async fn test_bash_max_output_bytes_truncates_and_flags() {
         let tool = BashTool::new();
 
-        // Produce ~200 bytes of stdout with a small per-call cap.
+        // Produce 200 bytes of stdout with a small per-call cap.
+        // Use POSIX-portable utilities so this works under dash
+        // (Ubuntu's /bin/sh), not just bash — brace expansion like
+        // `{1..200}` is bash-only and silently produces 1 byte on dash.
         let params = json!({
-            "command": "printf 'x%.0s' {1..200}",
+            "command": "head -c 200 < /dev/zero | tr '\\0' x",
             "max_output_bytes": 32,
         });
 
