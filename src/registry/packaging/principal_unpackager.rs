@@ -5,11 +5,15 @@
 
 use crate::auth::Subject;
 use crate::common::paths::PathResolver;
+use crate::extensions::framework::manager::packaging::ExtensionUnpackager;
+use crate::extensions::framework::manager::ExtensionManager;
+use crate::extensions::framework::types::ExtensionId;
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::principal::config::{PrincipalConfig, PrincipalDID};
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::trust_store::{TrustPolicy, TrustStatus, TrustStore};
 use crate::registry::packaging::validation::ValidationResult;
+use anyhow::Context;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -62,6 +66,8 @@ pub struct PrincipalImportResult {
     pub keys_rotated: bool,
     /// Validation result
     pub validation: ValidationResult,
+    /// IDs of embedded extensions that were installed during import.
+    pub installed_extensions: Vec<String>,
 }
 
 /// Unpackager for importing `.principal` packages.
@@ -82,8 +88,7 @@ impl PrincipalUnpackager {
     }
 
     /// Inspect a package without importing.
-    pub async fn inspect(&self,
-    ) -> anyhow::Result<(PrincipalManifest, ValidationResult)> {
+    pub async fn inspect(&self) -> anyhow::Result<(PrincipalManifest, ValidationResult)> {
         let files = self.extract_package().await?;
         let manifest = self.parse_manifest(&files)?;
         let validation = validate_package_for_principal(&manifest, &files);
@@ -127,7 +132,9 @@ impl PrincipalUnpackager {
                 );
                 (SignatureStatus::Verified, pk)
             }
-            Ok((SignatureStatus::AllowedUnsigned, _)) => (SignatureStatus::AllowedUnsigned, String::new()),
+            Ok((SignatureStatus::AllowedUnsigned, _)) => {
+                (SignatureStatus::AllowedUnsigned, String::new())
+            }
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "[signature_verification_failed] Manifest signature check failed: {e}"
@@ -170,7 +177,9 @@ impl PrincipalUnpackager {
             .clone()
             .unwrap_or_else(|| manifest.principal.name.clone());
 
-        let identity = self.import_identity(&files, &manifest, &options, &name).await?;
+        let identity = self
+            .import_identity(&files, &manifest, &options, &name)
+            .await?;
         let mut config = self.import_config(&files, &name, &identity)?;
 
         // Update DID in config to match the imported/rotated identity
@@ -197,11 +206,11 @@ impl PrincipalUnpackager {
             config_path,
             keys_rotated: options.rotate_keys,
             validation,
+            installed_extensions: Vec::new(),
         })
     }
 
-    async fn extract_package(&self,
-    ) -> anyhow::Result<HashMap<String, Vec<u8>>> {
+    async fn extract_package(&self) -> anyhow::Result<HashMap<String, Vec<u8>>> {
         let file = std::fs::File::open(&self.package_path)?;
         let decoder = flate2::read::GzDecoder::new(file);
         let mut archive = tar::Archive::new(decoder);
@@ -248,9 +257,11 @@ impl PrincipalUnpackager {
             .join("identity");
 
         if options.rotate_keys {
-            let new_identity =
-                Identity::new(&manifest.principal.name, crate::identity::did::DIDScope::Local)
-                    .await?;
+            let new_identity = Identity::new(
+                &manifest.principal.name,
+                crate::identity::did::DIDScope::Local,
+            )
+            .await?;
             let key_storage = KeyStorage::with_path(identity_dir)?;
             key_storage.store_identity(&new_identity).await?;
             return Ok(new_identity);
@@ -372,11 +383,74 @@ impl PrincipalUnpackager {
         Ok(())
     }
 
-    async fn save_config(
+    /// Extract the embedded `extensions/` layer and install each `.ext` package
+    /// through `manager`. Returns the IDs of installed extensions.
+    pub async fn import_extensions(
         &self,
-        config: &PrincipalConfig,
-        name: &str,
-    ) -> anyhow::Result<PathBuf> {
+        manifest: &PrincipalManifest,
+        manager: &mut ExtensionManager,
+    ) -> anyhow::Result<Vec<ExtensionId>> {
+        let files = self.extract_package().await?;
+        let mut installed = Vec::new();
+
+        // Build a unique temp directory manually (tempfile is a dev-dependency).
+        let temp_dir = std::env::temp_dir().join(format!(
+            "peko-import-ext-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        std::fs::create_dir_all(&temp_dir)?;
+
+        for ext_ref in &manifest.extensions {
+            let archive_path = format!("extensions/{}.ext", ext_ref.id);
+            let bytes = match files.get(&archive_path) {
+                Some(b) => b,
+                None => {
+                    tracing::warn!(
+                        "Principal package declares extension '{}' but has no embedded {}",
+                        ext_ref.id,
+                        archive_path
+                    );
+                    continue;
+                }
+            };
+
+            let temp_ext = temp_dir.join(format!("{}.ext", ext_ref.id));
+            std::fs::write(&temp_ext, bytes)
+                .with_context(|| format!("Failed to write temp .ext for {}", ext_ref.id))?;
+
+            let extract_dir = temp_dir.join(format!("extract-{}", ext_ref.id));
+            let installed_path = ExtensionUnpackager::install(&temp_ext, &extract_dir)
+                .with_context(|| format!("Failed to install extension {}", ext_ref.id))?;
+
+            // Preserve the registry source reference for future exports.
+            std::fs::write(installed_path.join(".source"), &ext_ref.registry_ref)
+                .with_context(|| format!("Failed to write .source for {}", ext_ref.id))?;
+
+            let id = manager.install(&installed_path).await.with_context(|| {
+                format!("Failed to load extension {} after extract", ext_ref.id)
+            })?;
+            installed.push(id.clone());
+
+            // Also persist via the storage backend when configured.
+            if manager.storage().dir().is_some() {
+                manager
+                    .storage()
+                    .write_source(&id, &ext_ref.registry_ref)
+                    .with_context(|| format!("Failed to persist .source for {}", ext_ref.id))?;
+            }
+        }
+
+        // Best-effort cleanup.
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        Ok(installed)
+    }
+
+    async fn save_config(&self, config: &PrincipalConfig, name: &str) -> anyhow::Result<PathBuf> {
         let principal_dir = self.config_dir.join("principals").join(name);
         tokio::fs::create_dir_all(&principal_dir).await?;
         let config_path = principal_dir.join("principal.toml");
@@ -442,7 +516,10 @@ pub(crate) fn verify_principal_signature(
         .decode(signature_b64.as_bytes())
         .map_err(|e| anyhow::anyhow!("signature is not valid base64url: {e}"))?;
     if signature_vec.len() != 64 {
-        anyhow::bail!("signature has wrong length: expected 64, got {}", signature_vec.len());
+        anyhow::bail!(
+            "signature has wrong length: expected 64, got {}",
+            signature_vec.len()
+        );
     }
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&signature_vec);
@@ -461,7 +538,10 @@ pub(crate) fn verify_principal_signature(
         .into_vec()
         .map_err(|e| anyhow::anyhow!("public key is not multibase z-base58: {e}"))?;
     if public_key.len() != 32 {
-        anyhow::bail!("public key has wrong length: expected 32, got {}", public_key.len());
+        anyhow::bail!(
+            "public key has wrong length: expected 32, got {}",
+            public_key.len()
+        );
     }
     let mut public_key_arr = [0u8; 32];
     public_key_arr.copy_from_slice(&public_key);
@@ -511,7 +591,11 @@ async fn enforce_trust_pinning(
     let mut store = store.write().await;
     match store.is_trusted(name, did) {
         TrustStatus::Unknown => {
-            store.pin(name.to_string(), did.to_string(), Some(public_key_multibase.to_string()));
+            store.pin(
+                name.to_string(),
+                did.to_string(),
+                Some(public_key_multibase.to_string()),
+            );
             store.save(resolver)?;
             tracing::info!("Pinned principal '{}' to DID {} on first import", name, did);
         }
@@ -520,7 +604,11 @@ async fn enforce_trust_pinning(
         }
         TrustStatus::Mismatch { expected, actual } => {
             if trust_policy == TrustPolicy::AllowUntrusted {
-                store.pin(name.to_string(), actual.clone(), Some(public_key_multibase.to_string()));
+                store.pin(
+                    name.to_string(),
+                    actual.clone(),
+                    Some(public_key_multibase.to_string()),
+                );
                 store.save(resolver)?;
                 tracing::warn!(
                     "Overriding trust pin for principal '{}' from {} to {}",
@@ -549,7 +637,11 @@ fn validate_package_for_principal(
     let mut result = ValidationResult::success();
 
     // Required files for a `.principal` package.
-    let required_files = ["manifest.toml", "identity/did.json", "config/principal.toml"];
+    let required_files = [
+        "manifest.toml",
+        "identity/did.json",
+        "config/principal.toml",
+    ];
     for file in required_files {
         match files.get(file) {
             None => result.add_error(ValidationError::MissingFile(file.to_string())),
@@ -653,8 +745,7 @@ mod tests {
         // Import into fresh config/data dirs.
         let config_dir = tmp.path().join("cfg");
         let data_dir = tmp.path().join("data");
-        let unpackager =
-            PrincipalUnpackager::new(&out, config_dir.clone(), data_dir.clone());
+        let unpackager = PrincipalUnpackager::new(&out, config_dir.clone(), data_dir.clone());
         let result = unpackager
             .import(PrincipalImportOptions::default())
             .await

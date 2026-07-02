@@ -50,6 +50,9 @@
 //!     `peko principal import` restores into the principal's
 //!     workspace.
 
+use anyhow::Context;
+use peko::extensions::framework::manager::ExtensionManager;
+use peko::extensions::skill::SkillAdapter;
 use peko::identity::{did::DIDScope, Identity};
 use peko::principal::config::PrincipalConfig;
 use peko::registry::packaging::{
@@ -58,7 +61,7 @@ use peko::registry::packaging::{
 };
 use peko::registry::{AgentRegistry, RegistryClient, RegistryConfig, RegistrySource};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 mod common;
@@ -179,6 +182,92 @@ fn test_registry_config(url: &str) -> RegistryConfig {
         token: None,
     });
     config
+}
+
+/// Create a SKILL.md skill fixture in `<base>/<name>/SKILL.md`.
+async fn create_skill_fixture(base: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    let ext_dir = base.join(name);
+    tokio::fs::create_dir_all(&ext_dir).await?;
+
+    let skill_md = format!(
+        "---\n\
+         name: {name}\n\
+         description: Integration test skill\n\
+         tags: [test]\n\
+         ---\n\n\
+         # Integration Skill\n\n\
+         This skill is embedded in the principal package.\n"
+    );
+    tokio::fs::write(ext_dir.join("SKILL.md"), skill_md).await?;
+
+    Ok(ext_dir)
+}
+
+/// Load a skill from `extensions_dir` into an `ExtensionManager` with a
+/// registered `SkillAdapter`, and set its registry source reference.
+async fn create_manager_with_skill(
+    extensions_dir: &Path,
+    storage_dir: &Path,
+    source_ref: &str,
+) -> anyhow::Result<(ExtensionManager, String)> {
+    let mut manager = ExtensionManager::new().with_storage_dir(storage_dir.to_path_buf());
+    manager.register_adapter(Box::new(SkillAdapter::new()));
+
+    let loaded = manager.load_from_directory(extensions_dir).await?;
+    let id = loaded
+        .into_iter()
+        .next()
+        .context("expected one skill to load")?;
+
+    // Make the registry ref available to the principal packager.
+    manager
+        .get_extension_mut(&id)
+        .context("loaded skill disappeared")?
+        .manifest
+        .source = Some(source_ref.to_string());
+
+    Ok((manager, id.0))
+}
+
+/// Create a minimal principal directory whose `[capabilities] skills`
+/// references `skill_name`.
+async fn create_test_principal_dir_with_skill(base: &Path, skill_name: &str) -> anyhow::Result<()> {
+    create_test_principal_dir(base).await?;
+
+    let principal_toml = format!(
+        r#"
+name = "integration-principal"
+description = "A test principal for full integration"
+display_name = "Integration Test Principal"
+
+[capabilities]
+tools = []
+skills = ["{skill_name}"]
+mcps = []
+agents = []
+"#
+    );
+    tokio::fs::write(base.join("config").join("principal.toml"), principal_toml).await?;
+
+    Ok(())
+}
+
+/// Read a single entry from a `.principal` (tar.gz) archive.
+fn read_archive_entry(archive_path: &Path, entry_path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    let file = std::fs::File::open(archive_path)?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.path()?.to_string_lossy() == entry_path {
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            return Ok(Some(bytes));
+        }
+    }
+
+    Ok(None)
 }
 
 // ── The full integration test ────────────────────────────────────────
@@ -364,6 +453,208 @@ async fn test_full_packaging_pipeline() -> anyhow::Result<()> {
         imported_config.name, "imported-principal",
         "imported principal.toml should carry the renamed principal name"
     );
+
+    Ok(())
+}
+
+// ── Extension round-trip integration test ────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+#[serial]
+async fn test_full_packaging_pipeline_with_extensions() -> anyhow::Result<()> {
+    let backend = PekohubBackend::start().await;
+    reset_pekohub(&backend.url).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+
+    let (_id, _ns) = create_test_user(&client, &backend.url, "ns").await;
+
+    let registry_ref_str = format!("{}/ns/integration-principal:v1.0", backend.url);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_dir = temp_dir.path();
+
+    let skill_name = "integration-skill";
+    let ext_source_ref = "pekohub.io/ns/integration-skill:v1.0";
+
+    // ═════════════════════════════════════════════════════════════════
+    // 1. Create a skill extension and load it into an ExtensionManager
+    // ═════════════════════════════════════════════════════════════════
+    let extensions_dir = base_dir.join("extensions");
+    create_skill_fixture(&extensions_dir, skill_name).await?;
+
+    let skill_storage = base_dir.join("skill_storage");
+    let (manager, skill_id) =
+        create_manager_with_skill(&extensions_dir, &skill_storage, ext_source_ref).await?;
+
+    // ═════════════════════════════════════════════════════════════════
+    // 2. Build a .principal package that embeds the skill
+    // ═════════════════════════════════════════════════════════════════
+    let principal_dir = base_dir.join("integration-principal");
+    create_test_principal_dir_with_skill(&principal_dir, skill_name).await?;
+
+    let package_path = base_dir.join("integration-principal.principal");
+
+    let config_path = principal_dir.join("config").join("principal.toml");
+    let config_toml = tokio::fs::read_to_string(&config_path).await?;
+    let config: PrincipalConfig = toml::from_str(&config_toml)?;
+
+    let identity_dir = principal_dir.join("identity");
+    let did_json = tokio::fs::read_to_string(identity_dir.join("did.json")).await?;
+    let did_doc: peko::identity::DIDDocument = serde_json::from_str(&did_json)?;
+    let keys_enc = tokio::fs::read(identity_dir.join("keys.enc")).await?;
+    let key_export: peko::identity::KeyPairExport = serde_json::from_slice(&keys_enc)?;
+    let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
+
+    let agents_dir = principal_dir.join("agents");
+    let packager = PrincipalPackager::new(config.clone(), identity)
+        .with_agents_dir(&agents_dir)
+        .with_extensions_from_manager(&manager, &config)?;
+
+    let export_opts = PrincipalExportOptions {
+        output_path: Some(package_path.to_string_lossy().to_string()),
+        with_extensions: true,
+        ..Default::default()
+    };
+
+    let descriptor = packager.export_for_registry(export_opts).await?;
+
+    let manifest = PrincipalManifest::from_toml(std::str::from_utf8(&descriptor.manifest_toml)?)?;
+    assert!(
+        manifest
+            .layers
+            .as_ref()
+            .and_then(|l| l.extensions.as_ref())
+            .is_some(),
+        "manifest should declare an extensions layer"
+    );
+    assert_eq!(manifest.extensions.len(), 1);
+    assert_eq!(manifest.extensions[0].id, skill_id);
+    assert_eq!(manifest.extensions[0].registry_ref, ext_source_ref);
+
+    let original_ext_bytes =
+        read_archive_entry(&package_path, &format!("extensions/{}.ext", skill_id))?
+            .context("local .principal package missing embedded extension")?;
+
+    // ═════════════════════════════════════════════════════════════════
+    // 3. PUSH to registry
+    // ═════════════════════════════════════════════════════════════════
+    let build_registry_dir = base_dir.join("build_registry");
+    let build_registry = AgentRegistry::new(&build_registry_dir);
+    build_registry.init().await?;
+
+    let push_config = test_registry_config(&backend.url);
+    let push_client = RegistryClient::new(push_config, build_registry.clone());
+
+    let mut push_events = Vec::new();
+    let push_result = push_client
+        .push_principal(
+            &descriptor,
+            "integration-principal",
+            "1.0.0",
+            &registry_ref_str,
+            |event| push_events.push(event),
+        )
+        .await;
+    assert!(push_result.is_ok(), "Push failed: {:?}", push_result.err());
+    assert!(
+        push_events
+            .iter()
+            .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. })),
+        "Push should complete with Done event"
+    );
+
+    // ═════════════════════════════════════════════════════════════════
+    // 4. PULL into a fresh local registry
+    // ═════════════════════════════════════════════════════════════════
+    let pull_registry_dir = base_dir.join("pull_registry");
+    let pull_registry = AgentRegistry::new(&pull_registry_dir);
+    pull_registry.init().await?;
+
+    let pull_config = test_registry_config(&backend.url);
+    let pull_client = RegistryClient::new(pull_config, pull_registry.clone());
+
+    let pull_output = base_dir.join("pulled.principal");
+    let mut pull_events = Vec::new();
+    let pull_result = pull_client
+        .pull_principal(&registry_ref_str, &pull_output, |event| {
+            pull_events.push(event)
+        })
+        .await;
+    assert!(pull_result.is_ok(), "Pull failed: {:?}", pull_result.err());
+    assert!(
+        pull_events
+            .iter()
+            .any(|e| matches!(e, peko::registry::ProgressEvent::Done { .. })),
+        "Pull should complete with Done event"
+    );
+
+    let pulled_ext_bytes =
+        read_archive_entry(&pull_output, &format!("extensions/{}.ext", skill_id))?
+            .context("pulled .principal package missing embedded extension")?;
+    assert_eq!(
+        pulled_ext_bytes, original_ext_bytes,
+        "pulled extension bytes should be byte-identical to original"
+    );
+
+    // ═════════════════════════════════════════════════════════════════
+    // 5. IMPORT .principal package
+    // ═════════════════════════════════════════════════════════════════
+    let import_config_dir = base_dir.join("imported_principals_config");
+    let import_data_dir = base_dir.join("imported_principals_data");
+    tokio::fs::create_dir_all(&import_config_dir).await?;
+    tokio::fs::create_dir_all(&import_data_dir).await?;
+
+    let unpackager = PrincipalUnpackager::new(
+        &pull_output,
+        import_config_dir.clone(),
+        import_data_dir.clone(),
+    );
+
+    let import_options = PrincipalImportOptions {
+        new_name: Some("imported-principal".to_string()),
+        rotate_keys: false,
+        import_sessions: false,
+        allow_unsigned: false,
+        force: false,
+        ..Default::default()
+    };
+
+    let import_result = unpackager.import(import_options).await?;
+    assert_eq!(import_result.name, "imported-principal");
+    assert!(import_result.config_path.exists());
+
+    // ═════════════════════════════════════════════════════════════════
+    // 6. Install embedded extensions into a fresh target manager
+    // ═════════════════════════════════════════════════════════════════
+    let (manifest, _validation) = unpackager.inspect().await?;
+
+    let target_storage = base_dir.join("target_ext_storage");
+    let mut target_manager = ExtensionManager::new().with_storage_dir(target_storage);
+    target_manager.register_adapter(Box::new(SkillAdapter::new()));
+
+    let installed = unpackager
+        .import_extensions(&manifest, &mut target_manager)
+        .await
+        .context("failed to install embedded extensions after import")?;
+    assert!(
+        installed.iter().any(|id| id.0 == skill_id),
+        "embedded skill should be installed in target manager"
+    );
+
+    // ═════════════════════════════════════════════════════════════════
+    // 7. Verify the skill resolves and its source ref round-tripped
+    // ═════════════════════════════════════════════════════════════════
+    let resolution = target_manager
+        .resolve_tool_name(skill_name)
+        .context("skill should resolve after import")?;
+    assert_eq!(resolution.id, skill_id);
+    assert_eq!(resolution.registry_ref, Some(ext_source_ref.to_string()));
 
     Ok(())
 }
