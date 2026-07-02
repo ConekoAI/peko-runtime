@@ -1,14 +1,13 @@
 //! Grep tool - Search file contents using regex
 //!
-//! Content-based file discovery and search for agents.
-//!
-//! Output is shaped by `output_mode`:
-//! - `"content"` (default) — per-match records with `path`, `line`,
-//!   optional `content` and context lines (matches Claude Code's
-//!   `content` mode for Grep)
-//! - `"files_with_matches"` — unique file paths that contain at least
-//!   one match, no line-level detail
-//! - `"count"` — per-file match counts as `{path: count}`
+//! Content-based file discovery and search for agents. The body of
+//! every response is a plain-text `output` string in ripgrep-style
+//! formatting, with shape driven by `output_mode`:
+//! - `"content"` (default) — `path:line:content\n` per match and per
+//!   context line, matching Claude Code's Grep
+//! - `"files_with_matches"` — one path per line for files that
+//!   contain at least one match
+//! - `"count"` — `path:count\n` per file
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -247,39 +246,42 @@ impl GrepTool {
         });
 
         let obj = response.as_object_mut().unwrap();
-        match output_mode {
-            "content" => {
-                obj.insert("matches".to_string(), matches.into());
-                obj.insert(
-                    "total_matches".to_string(),
-                    serde_json::Value::from(obj["matches"].as_array().map(|a| a.len()).unwrap_or(0)),
-                );
-            }
+
+        // The body of the response is a plain-text `output` string in
+        // ripgrep-style formatting — `path:line:content` for content
+        // mode, one path per line for files_with_matches, and
+        // `path:count` per line for count mode. The JSON envelope
+        // keeps the metadata (files_searched, files_with_matches,
+        // truncated, output_mode) so callers can drive downstream
+        // behavior without re-parsing the output.
+        let output = match output_mode {
+            "content" => format_content_output(&matches),
             "files_with_matches" => {
-                // matches was filled even though we don't need line-level
-                // detail; collapse it to a unique, sorted list of paths.
                 let mut files: Vec<String> = matches
-                    .into_iter()
+                    .iter()
                     .filter_map(|m| m.get("path").and_then(|p| p.as_str()).map(String::from))
                     .collect();
                 files.sort();
                 files.dedup();
-                obj.insert("files".to_string(), files.into());
+                files.join("\n") + if files.is_empty() { "" } else { "\n" }
             }
             "count" => {
-                // Tally matches per file, sorted by descending count then
-                // path for stable output.
                 let mut counts: std::collections::BTreeMap<String, usize> =
                     std::collections::BTreeMap::new();
-                for m in matches {
+                for m in &matches {
                     if let Some(p) = m.get("path").and_then(|p| p.as_str()) {
                         *counts.entry(p.to_string()).or_insert(0) += 1;
                     }
                 }
-                obj.insert("counts".to_string(), serde_json::json!(counts));
+                counts
+                    .iter()
+                    .map(|(p, c)| format!("{p}:{c}\n"))
+                    .collect()
             }
             _ => unreachable!("validated above"),
-        }
+        };
+
+        obj.insert("output".to_string(), output.into());
 
         Ok(response)
     }
@@ -437,6 +439,47 @@ impl GrepTool {
     }
 }
 
+/// Format the `content` mode output as a ripgrep-style plain-text
+/// string. Each match is emitted as `path:line:content`, with
+/// surrounding context lines (when `context_before` / `context_after`
+/// are set) interleaved in the right order and with the right line
+/// numbers (computed from the match line minus/plus the context
+/// position).
+fn format_content_output(matches: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for m in matches {
+        let path = match m.get("path").and_then(|p| p.as_str()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let line = m.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
+        if line == 0 {
+            continue;
+        }
+        if let Some(before) = m.get("context_before").and_then(|v| v.as_array()) {
+            let count = before.len() as u64;
+            for (i, content) in before.iter().enumerate() {
+                let ln = line.saturating_sub(count).saturating_add(i as u64);
+                let s = content.as_str().unwrap_or("");
+                out.push_str(&format!("{path}:{ln}:{s}\n"));
+            }
+        }
+        let content = m
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        out.push_str(&format!("{path}:{line}:{content}\n"));
+        if let Some(after) = m.get("context_after").and_then(|v| v.as_array()) {
+            for (i, content) in after.iter().enumerate() {
+                let ln = line.saturating_add(1).saturating_add(i as u64);
+                let s = content.as_str().unwrap_or("");
+                out.push_str(&format!("{path}:{ln}:{s}\n"));
+            }
+        }
+    }
+    out
+}
+
 impl Default for GrepTool {
     fn default() -> Self {
         Self::new()
@@ -496,14 +539,19 @@ Case-insensitive search. Default: false.
 Search hidden files. Default: false.
 
 ### output_mode (optional)
-Shape of the response:
-- `"content"` (default) — per-match records with `path`, `line`,
-  optional `content`, and context lines. Other options like
-  `include_content` and `context_before` / `context_after` only apply
-  in this mode.
-- `"files_with_matches"` — unique list of file paths that contain at
-  least one match. Cheap when you only need to know *which* files.
-- `"count"` — `{path: match_count}` map per file.
+Shape of the response. The body is always a single `output` field —
+a plain-text string in ripgrep-style formatting:
+- `"content"` (default) — one line per match and per context line,
+  formatted as `path:line:content\n`. With `context_before` /
+  `context_after` (or the combined `context`), surrounding lines are
+  interleaved in the right order and at the right line numbers.
+- `"files_with_matches"` — one path per line for files that contain
+  at least one match. Cheap when you only need to know *which* files.
+- `"count"` — one `path:count\n` line per file.
+
+JSON metadata (`files_searched`, `files_with_matches`, `truncated`,
+`output_mode`, `pattern`, `path`) is always returned alongside
+`output`.
 
 ## Examples
 
@@ -630,6 +678,24 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
+    /// Parse a ripgrep-style `output` string into `(path, line, content)`
+    /// tuples. Skips blank lines.
+    fn parse_ripgrep_output(s: &str) -> Vec<(String, u64, String)> {
+        s.lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                let mut parts = l.splitn(3, ':');
+                let path = parts.next().unwrap_or("").to_string();
+                let line: u64 = parts
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let content = parts.next().unwrap_or("").to_string();
+                (path, line, content)
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_grep_single_file() {
         let temp_dir = TempDir::new().unwrap();
@@ -649,11 +715,12 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0]["line"], 1);
-        assert_eq!(matches[0]["content"], "Hello, World!");
-        assert_eq!(matches[1]["line"], 2);
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].0.ends_with("test.txt"));
+        assert_eq!(entries[0].1, 1);
+        assert_eq!(entries[0].2, "Hello, World!");
+        assert_eq!(entries[1].1, 2);
     }
 
     #[tokio::test]
@@ -678,8 +745,8 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 2);
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 2);
         assert_eq!(result["files_searched"], 2);
         assert_eq!(result["files_with_matches"], 2);
     }
@@ -699,7 +766,10 @@ mod tests {
             "path": "test.txt"
         });
         let result = tool.execute(params).await.unwrap();
-        assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            parse_ripgrep_output(result["output"].as_str().unwrap()).len(),
+            1
+        );
 
         // Case insensitive
         let params = json!({
@@ -708,7 +778,10 @@ mod tests {
             "case_insensitive": true
         });
         let result = tool.execute(params).await.unwrap();
-        assert_eq!(result["matches"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            parse_ripgrep_output(result["output"].as_str().unwrap()).len(),
+            3
+        );
     }
 
     #[tokio::test]
@@ -731,10 +804,16 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0]["context_before"], json!(["line2"]));
-        assert_eq!(matches[0]["context_after"], json!(["line4"]));
+        // Output is 3 ripgrep lines: the context_before line, the
+        // match line, and the context_after line.
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].1, 2);
+        assert_eq!(entries[0].2, "line2");
+        assert_eq!(entries[1].1, 3);
+        assert_eq!(entries[1].2, "line3");
+        assert_eq!(entries[2].1, 4);
+        assert_eq!(entries[2].2, "line4");
     }
 
     #[tokio::test]
@@ -755,8 +834,8 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 2);
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 2);
     }
 
     #[tokio::test]
@@ -781,8 +860,8 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 10);
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 10);
         assert_eq!(result["truncated"], true);
     }
 
@@ -823,11 +902,16 @@ mod tests {
             .await
             .unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 1);
-        let m = &matches[0];
-        assert_eq!(m["context_before"], json!(["line2"]));
-        assert_eq!(m["context_after"], json!(["line4"]));
+        // Output should be 3 ripgrep lines: line2 (before), TARGET
+        // (match), line4 (after).
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].1, 2);
+        assert_eq!(entries[0].2, "line2");
+        assert_eq!(entries[1].1, 3);
+        assert_eq!(entries[1].2, "TARGET");
+        assert_eq!(entries[2].1, 4);
+        assert_eq!(entries[2].2, "line4");
     }
 
     #[tokio::test]
@@ -855,9 +939,11 @@ mod tests {
             .await
             .unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches[0]["context_before"], json!(["b"]));
-        assert_eq!(matches[0]["context_after"], json!(["d"]));
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 3);
+        // 'b' and 'd' — one line of context each side, not five.
+        assert_eq!(entries[0].2, "b");
+        assert_eq!(entries[2].2, "d");
     }
 
     #[test]
@@ -895,11 +981,13 @@ mod tests {
             .await
             .unwrap();
 
-        let files = result["files"].as_array().unwrap();
-        assert_eq!(files.len(), 2);
+        let out = result["output"].as_str().unwrap();
+        let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2);
         assert_eq!(result["files_with_matches"], 2);
         // No line-level fields when in files_with_matches mode.
         assert!(result.get("matches").is_none());
+        assert!(result.get("files").is_none());
     }
 
     #[tokio::test]
@@ -923,24 +1011,22 @@ mod tests {
             .await
             .unwrap();
 
-        let counts = result["counts"].as_object().unwrap();
-        assert_eq!(counts.len(), 2);
-        let a_count = counts
-            .iter()
-            .find(|(k, _)| k.ends_with("a.rs"))
-            .unwrap()
-            .1
-            .as_u64()
-            .unwrap();
-        let b_count = counts
-            .iter()
-            .find(|(k, _)| k.ends_with("b.rs"))
-            .unwrap()
-            .1
-            .as_u64()
-            .unwrap();
-        assert_eq!(a_count, 3);
-        assert_eq!(b_count, 1);
+        // Output is two lines, each `path:count\n`.
+        let out = result["output"].as_str().unwrap();
+        let entries: Vec<(String, u64)> = out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                let (p, c) = l.rsplit_once(':').unwrap();
+                (p.to_string(), c.parse().unwrap())
+            })
+            .collect();
+        assert_eq!(entries.len(), 2);
+        let a = entries.iter().find(|(p, _)| p.ends_with("a.rs")).unwrap();
+        let b = entries.iter().find(|(p, _)| p.ends_with("b.rs")).unwrap();
+        assert_eq!(a.1, 3);
+        assert_eq!(b.1, 1);
+        assert!(result.get("counts").is_none());
     }
 
     #[tokio::test]
