@@ -254,6 +254,16 @@ where
         .await;
     let _skill_state_guard = crate::principal::SkillStateGuard::new(ctx.principal_id().clone());
 
+    // Register the principal's per-message agent state. Agent prompt
+    // hooks resolve the allowlist from this registry at handle time using
+    // the `principal_id` injected by `build_agents_section` (legacy loader
+    // deletion follow-up).
+    let agent_state = crate::principal::AgentState::new(ctx.capabilities.agents.clone());
+    crate::principal::AgentStateRegistry::global()
+        .register(ctx.principal_id().clone(), agent_state)
+        .await;
+    let _agent_state_guard = crate::principal::AgentStateGuard::new(ctx.principal_id().clone());
+
     // Build a SessionManager scoped to the principal's sessions directory.
     let session_manager = SessionManager::new()
         .with_sessions_dir_internal(ctx.sessions_dir.clone())

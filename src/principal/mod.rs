@@ -1,5 +1,6 @@
 pub mod agent_prompt;
 pub mod agent_runner;
+pub mod agent_state;
 pub mod config;
 pub mod context;
 pub mod factory;
@@ -11,6 +12,7 @@ pub mod skill_state;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
+pub use agent_state::{AgentState, AgentStateGuard, AgentStateRegistry};
 pub use context::PrincipalContext;
 pub use config::{
     AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalCapabilities,

@@ -182,6 +182,13 @@ impl ExtensionTypeAdapter for SkillAdapter {
             parsing::parse_yaml_frontmatter_typed(content)
                 .with_context(|| format!("Failed to parse SKILL.md frontmatter in {path:?}"))?;
 
+        if skill_frontmatter.name.is_empty() {
+            anyhow::bail!("Skill name cannot be empty");
+        }
+        if skill_frontmatter.description.is_empty() {
+            anyhow::bail!("Skill description cannot be empty");
+        }
+
         // Convert to ExtensionManifest
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let mut manifest = ExtensionManifest::new(

@@ -328,9 +328,15 @@ Constraints: never read more than one skill up front; only read after selecting.
                 };
                 let core = core.clone();
 
+                let principal_id = self.principal_id.clone();
                 let result = tokio::task::block_in_place(move || {
                     tokio::runtime::Handle::current().block_on(async move {
-                        core.invoke_hook_text(hook_point, HookInput::Unit).await
+                        core.invoke_hook_text_with_principal(
+                            hook_point,
+                            HookInput::Unit,
+                            principal_id.as_deref(),
+                        )
+                        .await
                     })
                 });
 

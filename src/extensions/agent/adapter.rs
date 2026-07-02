@@ -173,6 +173,13 @@ impl ExtensionTypeAdapter for AgentAdapter {
         let (agent_frontmatter, _): (AgentFrontmatter, _) = parsing::parse_yaml_frontmatter_typed(content)
             .with_context(|| format!("Failed to parse AGENT.md frontmatter in {path:?}"))?;
 
+        if agent_frontmatter.name.is_empty() {
+            anyhow::bail!("Agent name cannot be empty");
+        }
+        if agent_frontmatter.description.is_empty() {
+            anyhow::bail!("Agent description cannot be empty");
+        }
+
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let mut manifest = ExtensionManifest::new(
             &agent_frontmatter.name,
@@ -244,7 +251,23 @@ struct AgentPromptHandler {
 
 #[async_trait]
 impl HookHandler for AgentPromptHandler {
-    async fn handle(&self, _ctx: HookContext) -> HookResult {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Filter at handle-time using the principal's enabled-agent allowlist
+        // from `AgentStateRegistry`. The prompt builder injects `principal_id`
+        // via `ctx.state["tool_context"]`.
+        let principal_id = ctx
+            .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
+            .and_then(|tc| tc.principal_id.as_ref())
+            .map(|pid| crate::principal::PrincipalId(pid.clone()));
+
+        let enabled = crate::principal::AgentStateRegistry::global()
+            .is_agent_enabled(principal_id.as_ref(), &self.agent_name)
+            .await;
+
+        if !enabled {
+            return HookResult::PassThrough;
+        }
+
         let path_display = self.file_path.to_string_lossy();
         let text = format!(
             "- {}: {} (location: {})",
@@ -318,6 +341,7 @@ pub async fn register_agents_with_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::framework::core::ExtensionServices;
     use tempfile::TempDir;
 
     fn create_test_agent(dir: &Path, name: &str, description: &str) -> PathBuf {
@@ -396,5 +420,125 @@ This is a test agent.
 
         assert_eq!(hook_ids.len(), 2);
         assert_eq!(core.hook_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_agent_handler_emits_when_enabled() {
+        let temp = TempDir::new().unwrap();
+        let agent_md = create_test_agent(temp.path(), "math", "Math operations");
+
+        let handler = AgentPromptHandler {
+            agent_name: "math".to_string(),
+            description: "Math operations".to_string(),
+            file_path: agent_md,
+        };
+
+        let mut ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "agents".to_string(),
+                priority: AGENT_HOOK_PRIORITY,
+            },
+            crate::extensions::framework::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+
+        let principal_id = crate::principal::PrincipalId("test-handler".to_string());
+        crate::principal::AgentStateRegistry::global()
+            .register(
+                principal_id.clone(),
+                crate::principal::AgentState::new(vec!["math".to_string()]),
+            )
+            .await;
+        ctx.set_state(
+            "tool_context",
+            crate::extensions::framework::types::ToolRuntimeContext::new()
+                .with_principal_id(principal_id.0.clone()),
+        );
+
+        let result = handler.handle(ctx).await;
+
+        crate::principal::AgentStateRegistry::global()
+            .unregister(&principal_id)
+            .await;
+
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(text.contains("math: Math operations"));
+            }
+            _ => panic!("Expected Continue with Text, got {result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_handler_filters_disabled_agents() {
+        let temp = TempDir::new().unwrap();
+        let agent_md = create_test_agent(temp.path(), "math", "Math operations");
+
+        let handler = AgentPromptHandler {
+            agent_name: "math".to_string(),
+            description: "Math operations".to_string(),
+            file_path: agent_md,
+        };
+
+        let mut ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "agents".to_string(),
+                priority: AGENT_HOOK_PRIORITY,
+            },
+            crate::extensions::framework::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+
+        let principal_id = crate::principal::PrincipalId("test-filter".to_string());
+        crate::principal::AgentStateRegistry::global()
+            .register(
+                principal_id.clone(),
+                crate::principal::AgentState::new(vec!["other".to_string()]),
+            )
+            .await;
+        ctx.set_state(
+            "tool_context",
+            crate::extensions::framework::types::ToolRuntimeContext::new()
+                .with_principal_id(principal_id.0.clone()),
+        );
+
+        let result = handler.handle(ctx).await;
+
+        crate::principal::AgentStateRegistry::global()
+            .unregister(&principal_id)
+            .await;
+
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "Expected disabled agent to emit nothing, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_agent_handler_fail_closed_without_principal_id() {
+        let temp = TempDir::new().unwrap();
+        let agent_md = create_test_agent(temp.path(), "math", "Math operations");
+
+        let handler = AgentPromptHandler {
+            agent_name: "math".to_string(),
+            description: "Math operations".to_string(),
+            file_path: agent_md,
+        };
+
+        let ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "agents".to_string(),
+                priority: AGENT_HOOK_PRIORITY,
+            },
+            crate::extensions::framework::HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+
+        let result = handler.handle(ctx).await;
+
+        assert!(
+            matches!(result, HookResult::PassThrough),
+            "Expected no principal_id to emit nothing, got {result:?}"
+        );
     }
 }
