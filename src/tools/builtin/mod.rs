@@ -28,10 +28,8 @@ pub mod fs;
 pub mod messaging;
 pub mod session;
 pub mod agent_catalog;
-pub mod principal_memory;
 
 pub use agent_catalog::AgentCatalogTool;
-pub use principal_memory::PrincipalMemoryTool;
 pub mod task_common;
 pub mod task_create;
 pub mod task_get;

@@ -21,10 +21,7 @@ pub use factory::{
     PrincipalMemoryFactory, PrincipalRouterFactory,
 };
 pub use manager::{parse_agent_role, PrincipalManager, PrincipalManagerError};
-pub use memory::{
-    Artifact, CompactSummary, FileArtifact, MemoryArtifact, MemoryError, PrincipalMemory,
-    SessionArtifact, TodoArtifact,
-};
+pub use memory::{MemoryError, PrincipalMemory, SessionArtifact};
 pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,

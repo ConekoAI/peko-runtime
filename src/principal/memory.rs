@@ -4,10 +4,16 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 
-/// Principal-owned memory abstraction.
+/// Principal-owned session memory abstraction.
 ///
-/// The Principal owns its memory namespace. Concrete implementations may
-/// store sessions as JSONL, memories in SQLite/vectors, files on disk, etc.
+/// The Principal owns a session memory namespace. Concrete
+/// implementations may back it with any store (filesystem JSONL today),
+/// but the surface is intentionally narrow: record, find, list, and
+/// resolve the directory. Persisted artifacts other than sessions
+/// (preferences, todos, files) live outside this trait — the LLM
+/// writes those to the workspace via `Write` and reads them via
+/// `Read`, while session continuity flows through `RootRouter` and
+/// `PrincipalManager`.
 #[async_trait]
 pub trait PrincipalMemory: Send + Sync {
     /// Record or update a session artifact in the principal's memory index.
@@ -24,28 +30,8 @@ pub trait PrincipalMemory: Send + Sync {
     /// List all sessions, most recent first.
     async fn list_sessions(&self) -> Result<Vec<SessionArtifact>, MemoryError>;
 
-    /// Store a generic artifact in the principal's memory.
-    async fn store(&self, artifact: Artifact) -> Result<(), MemoryError>;
-
-    /// Recall relevant artifacts.
-    async fn recall(&self, query: &str, k: usize) -> Result<Vec<Artifact>, MemoryError>;
-
-    /// Compact / consolidate memory.
-    async fn compact(&self) -> Result<CompactSummary, MemoryError>;
-
     /// Get the path to the principal's session directory.
     fn sessions_dir(&self) -> PathBuf;
-
-    /// Get the root agent's dedicated session path.
-    fn root_session_path(&self) -> PathBuf;
-}
-
-#[derive(Debug, Clone)]
-pub enum Artifact {
-    Session(SessionArtifact),
-    Memory(MemoryArtifact),
-    Todo(TodoArtifact),
-    File(FileArtifact),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,41 +51,12 @@ impl SessionArtifact {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MemoryArtifact {
-    pub id: String,
-    pub content: String,
-    pub kind: String,
-    pub source: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct TodoArtifact {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct FileArtifact {
-    pub path: PathBuf,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct CompactSummary {
-    pub sessions_compacted: usize,
-    pub memories_archived: usize,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]
     Serialization(String),
-    #[error("recall failed: {0}")]
-    RecallFailed(String),
 }
 
 /// Persistent memory index for a Principal.
@@ -231,26 +188,7 @@ impl PrincipalMemory for DefaultPrincipalMemory {
         Ok(index.sessions)
     }
 
-    async fn store(&self, _artifact: Artifact) -> Result<(), MemoryError> {
-        // TODO(ADR-041): persist non-session artifacts.
-        Ok(())
-    }
-
-    async fn recall(&self, _query: &str, _k: usize) -> Result<Vec<Artifact>, MemoryError> {
-        // TODO(ADR-041): implement vector/keyword recall.
-        Ok(Vec::new())
-    }
-
-    async fn compact(&self) -> Result<CompactSummary, MemoryError> {
-        // TODO(ADR-041): implement memory consolidation.
-        Ok(CompactSummary::default())
-    }
-
     fn sessions_dir(&self) -> PathBuf {
         self.memory_dir().join("sessions")
-    }
-
-    fn root_session_path(&self) -> PathBuf {
-        self.sessions_dir().join("root.jsonl")
     }
 }
