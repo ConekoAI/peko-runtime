@@ -10,6 +10,18 @@
 
 The Peko Extension System provides a unified architecture for adding capabilities to agents. All extensions—whether tools, skills, MCP servers, or gateways—use the same hook-based registration mechanism and lifecycle management.
 
+### Authorization vs. runtime enforcement
+
+Two separate layers decide which extensions an agent can actually use:
+
+1. **Principal policy (`[allowed_extensions]` in `principal.toml`)**  
+   The principal-level allowlist grouped by kind: `tools`, `skills`, `mcps`, and `agents`. It answers "what is this principal allowed to use?" The root agent and all of its subagents inherit this policy.
+
+2. **Runtime enforcement (`extensions.enabled` in the agent config)**  
+   The flat canonical-ID allowlist checked by `ToolRegistry::is_tool_enabled` at execution time. It answers "is this tool enabled for this agent right now?" For the root agent, the runner builds this list from the principal policy; for legacy direct agent execution it is set by `peko ext enable --target <agent>`.
+
+The legacy table name `[capabilities]` is still accepted when reading `principal.toml`, but new files should use `[allowed_extensions]`.
+
 ---
 
 ## Extension Types

@@ -118,18 +118,17 @@ preferred_model_id    = "claude-sonnet-4-5"  # Optional. Model id within that pr
 [base]
 image = "pekohub.com/agents/base-researcher:v2"  # Optional. Full image ref or digest
 
-# ── Capability dependencies ────────────────────────────────────────────────
+# ── Allowed extensions ─────────────────────────────────────────────────────
+# The principal-level allowlist: what tools, skills, MCPs, and agents the
+# root agent (and its subagents) may use. At runtime this is flattened into
+# the agent's `extensions.enabled` enforcement list. The legacy table name
+# `[capabilities]` is still accepted when reading older files.
 
-[capabilities]
-tools  = ["github", "browser"]           # Optional. Named tool capabilities
-skills = ["research"]                    # Optional. Named skill capabilities
-mcps   = ["vector-store-memory"]         # Optional. Named MCP capabilities
-
-[capabilities.session]
-plugin = "lossless-compression"          # Optional. Session plugin capability
-
-[capabilities.options]
-auto_install = true                      # Optional. Default: true in dev, false in prod
+[allowed_extensions]
+tools  = ["github", "browser"]           # Optional. Allowed tool IDs
+skills = ["research"]                    # Optional. Allowed skill IDs
+mcps   = ["vector-store-memory"]         # Optional. Allowed MCP IDs
+agents = ["planner", "executor"]         # Optional. Allowed agent IDs
 
 # ── Hooks ──────────────────────────────────────────────────────────────────
 

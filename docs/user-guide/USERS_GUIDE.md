@@ -263,12 +263,16 @@ peko ext list
 peko ext install <path-or-url>
 ```
 
-### Enable/Disable Capabilities
+### Enable/Disable Extensions
 
 ```bash
-peko ext enable <capability>
-peko ext disable <capability>
+peko ext enable <extension-id-or-built-in>
+peko ext disable <extension-id-or-built-in>
 ```
+
+Use `--target <agent>` to scope the enable/disable to a single legacy agent's
+`[extensions] enabled` whitelist. Principal-scoped authorization is configured
+in `principal.toml` under `[allowed_extensions]` (formerly `[capabilities]`).
 
 ### MCP Servers
 
