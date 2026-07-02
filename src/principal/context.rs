@@ -30,7 +30,7 @@ use crate::principal::router::AgentPromptSummary;
 use crate::principal::PrincipalId;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
-use crate::tools::builtin::AgentCatalogTool;
+use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 
 use super::config::PrincipalCapabilities;
 
@@ -280,6 +280,26 @@ pub(crate) async fn install_agent_catalog(
     BuiltinToolAdapter::register_tool(
         core,
         Arc::new(AgentCatalogTool::new(available_agents)),
+    )
+    .await
+}
+
+/// Install the per-call `Skill` tool on the principal's core.
+///
+/// Mirrors [`install_agent_catalog`] — the principal's enabled-skill
+/// allowlist can change between messages (if `principal.toml` is
+/// edited), so the tool is re-registered each message with the
+/// current list. The skill bodies themselves are loaded on demand
+/// from the daemon-global `skills_dir()` when the LLM invokes the
+/// tool.
+pub(crate) async fn install_skill_tool(
+    core: &ExtensionCore,
+    skills_dir: PathBuf,
+    enabled_skills: Vec<String>,
+) -> anyhow::Result<()> {
+    BuiltinToolAdapter::register_tool(
+        core,
+        Arc::new(SkillTool::new(skills_dir, enabled_skills)),
     )
     .await
 }

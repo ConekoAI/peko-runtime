@@ -10,7 +10,7 @@ use crate::common::services::AgentService;
 use crate::common::types::agent_legacy::ExtensionConfig;
 use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
-use crate::principal::context::{install_agent_catalog, PrincipalContext};
+use crate::principal::context::{install_agent_catalog, install_skill_tool, PrincipalContext};
 use crate::principal::router::AgentPromptSummary;
 use crate::session::manager::SessionManager;
 use crate::session::SessionCreateOptions;
@@ -239,6 +239,17 @@ where
     // `capabilities.agents` was edited. We re-register it on the
     // shared core, which is idempotent on tool name.
     install_agent_catalog(&core, available_agents).await?;
+
+    // Skill tool is also per-call — its `enabled_skills` allowlist is
+    // a snapshot of the principal's `capabilities.skills`, which can
+    // change if the principal's TOML is edited between messages. Bodies
+    // are read on demand from the daemon-global `skills_dir()`.
+    let _ = install_skill_tool(
+        &core,
+        crate::common::paths::PathResolver::new().skills_dir(),
+        ctx.capabilities.skills.clone(),
+    )
+    .await;
 
     // Build a SessionManager scoped to the principal's sessions directory.
     let session_manager = SessionManager::new()

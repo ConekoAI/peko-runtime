@@ -217,13 +217,20 @@ pub struct DiscoveredSkill {
 
 /// YAML frontmatter from SKILL.md
 #[derive(Debug, Deserialize)]
-struct SkillFrontmatter {
-    name: String,
-    description: String,
+pub struct SkillFrontmatter {
+    pub name: String,
+    pub description: String,
     #[serde(default)]
-    tags: Vec<String>,
+    pub tags: Vec<String>,
     #[serde(default)]
-    author: Option<String>,
+    pub author: Option<String>,
+    /// Positional argument names (e.g. `[issue, branch]` → `$issue`,
+    /// `$branch`). Order maps to the `args` array passed to the
+    /// `Skill` tool. Optional; missing `arguments:` means the skill
+    /// has no parameterization — any `$name` in the body is left
+    /// unsubstituted.
+    #[serde(default)]
+    pub arguments: Vec<String>,
 }
 
 /// Factory for creating skill prompt handlers
