@@ -49,6 +49,10 @@ const OS_DISPLAY: &str = if cfg!(windows) {
     "Unix/Linux/macOS"
 };
 
+/// Default cap for stdout/stderr returned in a single blocking call.
+/// Per-call override via `BashArgs::max_output_bytes`.
+const DEFAULT_MAX_OUTPUT_BYTES: usize = 100_000;
+
 /// `Bash` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BashArgs {
@@ -69,6 +73,15 @@ pub struct BashArgs {
     /// family to cancel or monitor background tasks).
     #[serde(default)]
     pub timeout: Option<u64>,
+    /// Optional cap (in bytes) for stdout and stderr returned to the
+    /// caller. Applies independently to each stream. When the limit is
+    /// hit, the truncated stream is suffixed with `...(truncated)` and
+    /// `stdout_truncated` / `stderr_truncated` are set to `true` in the
+    /// response. Defaults to [`DEFAULT_MAX_OUTPUT_BYTES`]. Ignored for
+    /// `run_in_background: true` (use `AsyncOutput` with `tail_lines`
+    /// to read slices of large outputs).
+    #[serde(default)]
+    pub max_output_bytes: Option<usize>,
 }
 
 /// `Bash` tool - Execute system shell commands
@@ -135,6 +148,7 @@ impl BashTool {
         command: &str,
         working_dir: Option<std::path::PathBuf>,
         timeout_ms: Option<u64>,
+        max_output_bytes: Option<usize>,
     ) -> Result<serde_json::Value> {
         let mut cmd = Command::new(SHELL);
         cmd.arg(SHELL_ARG).arg(command);
@@ -156,7 +170,7 @@ impl BashTool {
                 .context("Failed to execute Bash command")?,
         };
 
-        Self::format_output(&output)
+        Self::format_output(&output, max_output_bytes)
     }
 
     /// Run a command in the background via the async executor.
@@ -182,7 +196,9 @@ impl BashTool {
                 parent_session_key,
                 config,
                 move || async move {
-                    Self::execute_command_blocking(&command, working_dir, None).await
+                    // Background tasks stream their output through
+                    // AsyncOutput; the per-call cap is not applied here.
+                    Self::execute_command_blocking(&command, working_dir, None, None).await
                 },
             )
             .await?;
@@ -195,28 +211,25 @@ impl BashTool {
     }
 
     /// Format command output
-    fn format_output(output: &std::process::Output) -> Result<serde_json::Value> {
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    fn format_output(
+        output: &std::process::Output,
+        max_output_bytes: Option<usize>,
+    ) -> Result<serde_json::Value> {
+        let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
         let exit_code = output.status.code().unwrap_or(-1);
 
-        // Truncate output if too large (over 100KB)
-        let stdout = if stdout.len() > 100_000 {
-            format!("{}...(truncated)", &stdout[..100_000])
-        } else {
-            stdout
-        };
+        let limit = max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
 
-        let stderr = if stderr.len() > 100_000 {
-            format!("{}...(truncated)", &stderr[..100_000])
-        } else {
-            stderr
-        };
+        let (stdout, stdout_truncated) = truncate_with_marker(&stdout_raw, limit);
+        let (stderr, stderr_truncated) = truncate_with_marker(&stderr_raw, limit);
 
         Ok(json!({
             "exit_code": exit_code,
             "stdout": stdout,
             "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
             "success": output.status.success(),
         }))
     }
@@ -241,7 +254,13 @@ impl BashTool {
             )
             .await
         } else {
-            Self::execute_command_blocking(&args.command, cwd, args.timeout).await
+            Self::execute_command_blocking(
+                &args.command,
+                cwd,
+                args.timeout,
+                args.max_output_bytes,
+            )
+            .await
         }
     }
 }
@@ -250,6 +269,20 @@ impl Default for BashTool {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Truncate a stream at `limit` bytes and append a `...(truncated)` marker.
+/// Returns `(value, was_truncated)`. Walks back to a UTF-8 char boundary so
+/// the returned string is always valid UTF-8.
+fn truncate_with_marker(s: &str, limit: usize) -> (String, bool) {
+    if s.len() <= limit {
+        return (s.to_string(), false);
+    }
+    let mut cut = limit;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (format!("{}...(truncated)", &s[..cut]), true)
 }
 
 #[async_trait]
@@ -299,9 +332,18 @@ Disable this tool in agent config if you don't need shell access.
     "description": "what the command does",
     "cwd": "./subdir",
     "run_in_background": false,
-    "timeout": 60000
+    "timeout": 60000,
+    "max_output_bytes": 100000
 }}
 ```
+
+## Output truncation
+
+Stdout and stderr are each capped at `max_output_bytes` (default 100000).
+When a stream is truncated, it ends with `...(truncated)` and the response
+sets `stdout_truncated: true` and/or `stderr_truncated: true`. If you
+expect large output, prefer `run_in_background: true` and read it with
+`AsyncOutput` + `tail_lines` instead of raising the cap.
 
 ## Examples
 
@@ -376,6 +418,11 @@ The blocking form of this tool (default) is bounded only by the
                 "timeout": {
                     "type": "integer",
                     "description": "Optional timeout in milliseconds for blocking execution",
+                    "minimum": 1
+                },
+                "max_output_bytes": {
+                    "type": "integer",
+                    "description": "Optional cap (in bytes) for stdout and stderr returned in the response. Each stream is truncated independently and flagged via stdout_truncated / stderr_truncated. Defaults to 100000. Ignored when run_in_background is true.",
                     "minimum": 1
                 }
             },
@@ -531,5 +578,42 @@ mod tests {
         assert!(response["task_id"].as_str().unwrap().starts_with("Bash:"));
         assert_eq!(response["status"], "running");
         assert_eq!(response["tool"], "Bash");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_bash_max_output_bytes_truncates_and_flags() {
+        let tool = BashTool::new();
+
+        // Produce ~200 bytes of stdout with a small per-call cap.
+        let params = json!({
+            "command": "printf 'x%.0s' {1..200}",
+            "max_output_bytes": 32,
+        });
+
+        let result = tool.execute(params).await.unwrap();
+        let stdout = result["stdout"].as_str().unwrap();
+        assert!(stdout.ends_with("...(truncated)"), "stdout: {stdout}");
+        assert_eq!(result["stdout_truncated"], true);
+        assert_eq!(result["stderr_truncated"], false);
+    }
+
+    #[test]
+    fn truncate_with_marker_under_limit_is_unchanged() {
+        let (out, truncated) = truncate_with_marker("hi", 100);
+        assert_eq!(out, "hi");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_with_marker_respects_utf8_boundary() {
+        // "é" is 2 bytes in UTF-8 (0xC3 0xA9). A limit that lands in the
+        // middle of it should walk back to the char boundary.
+        let s = "éééé"; // 8 bytes
+        let (out, truncated) = truncate_with_marker(s, 3);
+        assert!(truncated);
+        // 3 lands inside the first 2-byte char; we should cut at 0 or 2.
+        assert!(out.starts_with("é") || out.starts_with(""));
+        assert!(out.ends_with("...(truncated)"));
     }
 }
