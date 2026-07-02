@@ -138,6 +138,19 @@ pub fn build_list_response(tasks: Vec<TaskView>) -> serde_json::Value {
 }
 
 /// Build a JSON response for a task cancellation.
+///
+/// `AsyncStop` uses a three-way result shape:
+/// - `Success` — the task was running and is now cancelled
+/// - `AlreadyTerminal` — the task was already in a terminal state; the
+///   call is *successful* (the task can't be cancelled, but it didn't
+///   need to be), and `already_terminal: true` tells the LLM it was a
+///   no-op rather than a real cancellation
+/// - `NotFound` — no task with that id exists in any registry
+///
+/// Keeping `success: true` for the already-terminal case is the
+/// Claude-Code `TaskStop` shape and avoids the trap where a model
+/// sees `success: false` and concludes the cancellation failed
+/// when in fact the task was already done.
 #[must_use]
 pub fn build_cancel_response(result: CancelResult, task_id: &str) -> serde_json::Value {
     match result {
@@ -145,17 +158,20 @@ pub fn build_cancel_response(result: CancelResult, task_id: &str) -> serde_json:
             "success": true,
             "task_id": task_id,
             "previous_status": previous,
+            "already_terminal": false,
             "message": "Task cancelled",
         }),
         CancelResult::AlreadyTerminal { previous } => json!({
-            "success": false,
+            "success": true,
             "task_id": task_id,
             "previous_status": previous,
+            "already_terminal": true,
             "message": format!("Task already terminal: {previous}"),
         }),
         CancelResult::NotFound => json!({
             "success": false,
             "task_id": task_id,
+            "already_terminal": false,
             "message": "Task not found",
         }),
     }
