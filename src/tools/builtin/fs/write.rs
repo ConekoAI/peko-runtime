@@ -18,7 +18,8 @@ pub struct WriteArgs {
     pub file_path: String,
     /// Content to write
     pub content: String,
-    /// Write mode: `create_new` (default; Claude parity), `overwrite`, or `append`
+    /// Write mode: `overwrite` (default; Claude Code parity), `create_new`
+    /// (refuse if the file already exists), or `append`
     #[serde(default = "default_mode")]
     pub mode: String,
     /// Content encoding: utf8 (default) or base64
@@ -27,10 +28,12 @@ pub struct WriteArgs {
 }
 
 fn default_mode() -> String {
-    // Default to `create_new` so callers trained on Claude Code's safety
-    // invariant (writing an existing file errors) do not silently clobber
-    // existing files. `overwrite` and `append` remain opt-in peko extensions.
-    "create_new".to_string()
+    // Default to `overwrite` so callers trained on Claude Code's Write
+    // tool (where Write always replaces the destination) behave as
+    // expected. Callers who want a safer "fail on existing" semantic
+    // can opt in via `mode: "create_new"`. `append` is the third mode
+    // for log-style writes.
+    "overwrite".to_string()
 }
 
 fn default_encoding() -> String {
@@ -183,8 +186,8 @@ Path to the file. Can be relative to workspace or absolute.
 Content to write to the file.
 
 ### mode (optional)
-- "create_new" (default): Fail if the file already exists (Claude parity safety invariant)
-- "overwrite": Replace existing file or create new
+- "overwrite" (default): Replace the file's contents, or create it if missing
+- "create_new": Fail if the file already exists (safe-create for new files)
 - "append": Append to existing file (create if not exists)
 
 ### encoding (optional)
@@ -224,9 +227,9 @@ Write binary data:
                 },
                 "mode": {
                     "type": "string",
-                    "description": "Write mode",
-                    "enum": ["overwrite", "append", "create_new"],
-                    "default": "create_new"
+                    "description": "Write mode (default: overwrite)",
+                    "enum": ["overwrite", "create_new", "append"],
+                    "default": "overwrite"
                 },
                 "encoding": {
                     "type": "string",
@@ -259,10 +262,10 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_write_file_default_create_new() {
-        // Default mode is `create_new` to match Claude Code's safety invariant:
-        // writing a brand-new file with no `mode` argument must succeed, and
-        // the reported mode is `create_new`.
+    async fn test_write_file_default_overwrite() {
+        // Default mode is `overwrite` for Claude Code parity — Write
+        // replaces the destination's contents by default. The reported
+        // mode in the result confirms what the tool actually did.
         let temp_dir = TempDir::new().unwrap();
         let tool = WriteTool::new().with_workspace(temp_dir.path());
 
@@ -273,12 +276,37 @@ mod tests {
 
         let result = tool.execute(params).await.unwrap();
         assert_eq!(result["bytes_written"], 13);
-        assert_eq!(result["mode"], "create_new");
+        assert_eq!(result["mode"], "overwrite");
 
         let content = fs::read_to_string(temp_dir.path().join("test.txt"))
             .await
             .unwrap();
         assert_eq!(content, "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn test_write_file_overwrite_replaces_existing() {
+        // The default `overwrite` mode replaces existing content — a
+        // safety-conscious caller who wants the old behavior should
+        // pass `mode: "create_new"` explicitly.
+        let temp_dir = TempDir::new().unwrap();
+        let tool = WriteTool::new().with_workspace(temp_dir.path());
+
+        fs::write(temp_dir.path().join("existing.txt"), "old")
+            .await
+            .unwrap();
+
+        let params = json!({
+            "file_path": "existing.txt",
+            "content": "new"
+        });
+        let result = tool.execute(params).await.unwrap();
+        assert_eq!(result["mode"], "overwrite");
+
+        let content = fs::read_to_string(temp_dir.path().join("existing.txt"))
+            .await
+            .unwrap();
+        assert_eq!(content, "new");
     }
 
     #[tokio::test]
