@@ -23,9 +23,6 @@ pub struct ReadArgs {
     /// Maximum number of lines to read
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
-    /// PDF page range, e.g. "1-5" (peko extension; PDF support pending)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pages: Option<String>,
     /// Use base64 encoding for binary files
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
@@ -71,7 +68,6 @@ impl ReadTool {
         file_path: &str,
         offset: Option<usize>,
         limit: Option<usize>,
-        pages: Option<&str>,
         encoding: Option<&str>,
     ) -> Result<serde_json::Value> {
         let resolved = self.resolve_path(file_path);
@@ -84,13 +80,6 @@ impl ReadTool {
         if !metadata.is_file() {
             return Err(anyhow::anyhow!(
                 "Path is not a file: {}",
-                resolved.display()
-            ));
-        }
-
-        if pages.is_some() {
-            return Err(anyhow::anyhow!(
-                "PDF page ranges are not yet supported: {}",
                 resolved.display()
             ));
         }
@@ -191,9 +180,6 @@ Starting line number (1-indexed). If omitted, starts from beginning.
 ### limit (optional)
 Maximum number of lines to read. If omitted, reads to end of file.
 
-### pages (optional)
-PDF page range, e.g. "1-5". (Peko extension; PDF support pending.)
-
 ### encoding (optional)
 - "utf8" (default): Read as text
 - "base64": Force base64 encoding for binary data
@@ -235,10 +221,6 @@ Read binary file:
                     "description": "Maximum number of lines to read",
                     "minimum": 1
                 },
-                "pages": {
-                    "type": "string",
-                    "description": "PDF page range, e.g. '1-5' (peko extension; PDF support pending)"
-                },
                 "encoding": {
                     "type": "string",
                     "description": "Encoding for the content",
@@ -257,7 +239,6 @@ Read binary file:
             &args.file_path,
             args.offset,
             args.limit,
-            args.pages.as_deref(),
             args.encoding.as_deref(),
         )
         .await
@@ -369,7 +350,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_file_pages_unsupported() {
+    async fn test_read_file_pages_field_dropped() {
+        // The `pages` parameter was removed (it was a dead surface area —
+        // declared in the schema but always errored at runtime). This test
+        // pins that an unknown `pages` field is ignored without error.
         let temp_dir = TempDir::new().unwrap();
         let tool = ReadTool::new().with_workspace(temp_dir.path());
 
@@ -378,9 +362,7 @@ mod tests {
             .unwrap();
 
         let params = json!({"file_path": "doc.txt", "pages": "1-2"});
-        let result = tool.execute(params).await;
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("PDF"));
+        let result = tool.execute(params).await.unwrap();
+        assert_eq!(result["content"], "text");
     }
 }
