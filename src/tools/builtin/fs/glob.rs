@@ -16,9 +16,11 @@ use crate::tools::core::Tool;
 pub struct GlobArgs {
     /// Pattern to match (glob syntax, e.g., "src/**/*.rs")
     pub pattern: String,
-    /// Working directory for relative patterns
+    /// Working directory for relative patterns. Named `path` to match
+    /// Claude Code's Glob; relative paths resolve against the agent's
+    /// workspace, absolute paths are used as-is.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub directory: Option<String>,
+    pub path: Option<String>,
     /// Include hidden files (starting with .)
     #[serde(default)]
     pub include_hidden: bool,
@@ -57,8 +59,8 @@ impl GlobTool {
     }
 
     /// Resolve the search directory
-    fn resolve_directory(&self, directory: Option<&str>) -> PathBuf {
-        if let Some(dir) = directory {
+    fn resolve_directory(&self, path: Option<&str>) -> PathBuf {
+        if let Some(dir) = path {
             let path = PathBuf::from(dir);
             if path.is_absolute() {
                 path
@@ -78,12 +80,12 @@ impl GlobTool {
     async fn glob(
         &self,
         pattern: &str,
-        directory: Option<&str>,
+        path: Option<&str>,
         include_hidden: bool,
         include_dirs: bool,
         limit: usize,
     ) -> Result<serde_json::Value> {
-        let base_dir = self.resolve_directory(directory);
+        let base_dir = self.resolve_directory(path);
 
         // Parse pattern - handle "**" specially
         let (search_root, glob_pattern) = if pattern.contains("**") {
@@ -163,7 +165,7 @@ impl GlobTool {
 
         Ok(serde_json::json!({
             "pattern": pattern,
-            "directory": search_root.display().to_string(),
+            "path": search_root.display().to_string(),
             "entries": entries,
             "total_matched": matched,
             "returned": entries.len(),
@@ -322,7 +324,7 @@ Glob pattern to match. Examples:
 - `*.toml` - All TOML files
 - `test_*.py` - Python test files
 
-### directory (optional)
+### path (optional)
 Working directory for relative patterns. Defaults to workspace root.
 
 ### include_hidden (optional)
@@ -361,9 +363,9 @@ Find test files:
                     "type": "string",
                     "description": "Glob pattern to match (e.g., 'src/**/*.rs')"
                 },
-                "directory": {
+                "path": {
                     "type": "string",
-                    "description": "Working directory for relative patterns"
+                    "description": "Working directory for relative patterns (default: workspace root)"
                 },
                 "include_hidden": {
                     "type": "boolean",
@@ -393,7 +395,7 @@ Find test files:
 
         self.glob(
             &args.pattern,
-            args.directory.as_deref(),
+            args.path.as_deref(),
             args.include_hidden,
             args.include_dirs,
             args.limit,
@@ -538,6 +540,33 @@ mod tests {
         let result = tool.execute(params).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_glob_path_param_replaces_directory() {
+        // The `path` parameter is the renamed `directory` field; it
+        // should accept the same value, drive the search, and the
+        // response should report a `path` field (not `directory`).
+        let temp_dir = TempDir::new().unwrap();
+        let sub = temp_dir.path().join("nested");
+        tokio::fs::create_dir_all(&sub).await.unwrap();
+        tokio::fs::write(sub.join("hit.txt"), "").await.unwrap();
+
+        let tool = GlobTool::new().with_workspace(temp_dir.path());
+        let result = tool
+            .execute(json!({"pattern": "*.txt", "path": "nested"}))
+            .await
+            .unwrap();
+        let path_str = result["path"].as_str().unwrap();
+        let sub_str = sub.display().to_string();
+        assert!(
+            path_str.starts_with(&sub_str),
+            "path '{path_str}' should be rooted at '{sub_str}'"
+        );
+        assert!(
+            result.get("directory").is_none(),
+            "old `directory` field should be gone"
+        );
     }
 
     #[test]
