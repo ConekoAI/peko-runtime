@@ -1,6 +1,6 @@
 //! Agent catalog tool
 //!
-//! Provides `agent_catalog` so the root agent agent can discover the specialist
+//! Provides `agent_catalog` so the root agent can discover the specialist
 //! agents available inside the current Principal.
 
 use async_trait::async_trait;
@@ -31,41 +31,25 @@ impl Tool for AgentCatalogTool {
     fn description(&self) -> String {
         r"List the specialist agents available in this Principal.
 
-Parameters:
-- role: Optional filter by agent role (e.g., 'specialist', 'router')
-
-Returns an array of agents with name, role, and description."
+Returns an array of agents with name and description."
             .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
-            "properties": {
-                "role": {
-                    "type": "string",
-                    "description": "Optional filter by agent role"
-                }
-            },
+            "properties": {},
             "required": []
         })
     }
 
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let role_filter = params.get("role").and_then(|v| v.as_str());
-
+    async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let agents: Vec<serde_json::Value> = self
             .agents
             .iter()
-            .filter(|a| {
-                role_filter.map_or(true, |r| {
-                    format!("{:?}", a.role).eq_ignore_ascii_case(r)
-                })
-            })
             .map(|a| {
                 json!({
                     "name": a.name,
-                    "role": format!("{:?}", a.role).to_lowercase(),
                     "description": a.description,
                 })
             })
@@ -78,44 +62,23 @@ Returns an array of agents with name, role, and description."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::config::AgentRole;
 
     #[tokio::test]
     async fn test_list_all() {
         let tool = AgentCatalogTool::new(vec![
             AgentPromptSummary {
                 name: "math".to_string(),
-                role: AgentRole::Specialist,
                 description: Some("Math specialist".to_string()),
             },
             AgentPromptSummary {
                 name: "primary".to_string(),
-                role: AgentRole::Default,
                 description: Some("Generalist".to_string()),
             },
         ]);
 
         let result = tool.execute(json!({})).await.unwrap();
         assert_eq!(result["total"], 2);
-    }
-
-    #[tokio::test]
-    async fn test_filter_by_role() {
-        let tool = AgentCatalogTool::new(vec![
-            AgentPromptSummary {
-                name: "math".to_string(),
-                role: AgentRole::Specialist,
-                description: Some("Math specialist".to_string()),
-            },
-            AgentPromptSummary {
-                name: "primary".to_string(),
-                role: AgentRole::Default,
-                description: Some("Generalist".to_string()),
-            },
-        ]);
-
-        let result = tool.execute(json!({"role": "specialist"})).await.unwrap();
-        assert_eq!(result["total"], 1);
         assert_eq!(result["agents"][0]["name"], "math");
+        assert_eq!(result["agents"][1]["name"], "primary");
     }
 }

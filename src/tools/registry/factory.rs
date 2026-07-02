@@ -329,11 +329,11 @@ impl ToolFactory {
             || Arc::new(WriteTool::new().with_workspace(config.workspace_dir.clone())),
         );
 
-        registry.register("glob", config.enable_granular_fs, || {
+        registry.register("Glob", config.enable_granular_fs, || {
             Arc::new(GlobTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
-        registry.register("grep", config.enable_granular_fs, || {
+        registry.register("Grep", config.enable_granular_fs, || {
             Arc::new(GrepTool::new().with_workspace(config.workspace_dir.clone()))
         });
 

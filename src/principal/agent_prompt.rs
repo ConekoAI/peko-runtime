@@ -14,7 +14,6 @@ pub struct AgentPrompt {
 pub struct AgentPromptFrontmatter {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub role: Option<String>,
     pub color: Option<String>,
 }
 

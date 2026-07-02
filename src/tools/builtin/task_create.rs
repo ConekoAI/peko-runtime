@@ -5,7 +5,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::session::todos::TodoStorage;
-use crate::tools::builtin::task_common::{param_error, require_session_id};
+use crate::tools::builtin::task_common::{missing_session_error, require_session_id};
 use crate::tools::core::{Tool, ToolContext};
 
 /// Create a planning todo in the current session.
@@ -62,9 +62,13 @@ Returns the created todo including its taskId."
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        Ok(param_error(
-            "TaskCreate requires a session context; use execute_with_context",
-        ))
+        // Production callers always go through `execute_with_context` via
+        // `ExtensionCore::invoke_hook`; this branch exists only to satisfy
+        // the `Tool` trait's default `execute` method. Returning a regular
+        // `anyhow::Error` (instead of a structured JSON blob) keeps the
+        // error path consistent with other tools and lets the harness
+        // surface it as a proper failure.
+        Err(missing_session_error())
     }
 
     async fn execute_with_context(

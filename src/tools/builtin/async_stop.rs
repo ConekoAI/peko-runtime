@@ -48,7 +48,12 @@ Works for ALL async tasks: Bash, Agent, Read, etc.
 Parameters:
 - task_id: string (required) — the task ID from the async receipt
 
-Returns: { success, task_id, previous_status?, message }"
+Returns: { success, task_id, previous_status?, already_terminal, message }
+
+If the task is already in a terminal state (completed / failed /
+cancelled / timed_out), the response has `success: true,
+already_terminal: true` so the model can treat it as a no-op rather
+than an error."
             .to_string()
     }
 
@@ -137,7 +142,11 @@ mod tests {
         let tool = AsyncStopTool::with_registry(registry);
         let result = tool.execute(json!({"task_id": "Bash:done"})).await.unwrap();
 
-        assert_eq!(result["success"], false);
+        // Already-terminal is a *successful* no-op, not an error —
+        // the task didn't need cancelling. Callers should branch on
+        // `already_terminal` rather than `success`.
+        assert_eq!(result["success"], true);
+        assert_eq!(result["already_terminal"], true);
         assert!(result["message"]
             .as_str()
             .unwrap()

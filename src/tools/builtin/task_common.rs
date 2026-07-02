@@ -2,7 +2,6 @@
 
 use crate::session::todos::TodoStatus;
 use crate::tools::core::ToolContext;
-use serde_json::json;
 
 /// Require a session id from the execution context.
 pub fn require_session_id(ctx: &ToolContext) -> anyhow::Result<String> {
@@ -19,7 +18,16 @@ pub fn parse_status_param(value: &serde_json::Value) -> anyhow::Result<TodoStatu
     s.parse()
 }
 
-/// Build a JSON error response for missing or invalid parameters.
-pub fn param_error(message: impl Into<String>) -> serde_json::Value {
-    json!({"error": message.into()})
+/// Error returned by the Task* tools when they're invoked without a
+/// session context (i.e. through the bare `execute` path rather than
+/// `execute_with_context`). Exposed as a single constructor so the
+/// message stays consistent across the family and so callers can
+/// pattern-match on it if they want to.
+pub fn missing_session_error() -> anyhow::Error {
+    anyhow::anyhow!(
+        "Task tools require a session context; route execution through \
+         execute_with_context (production callers go via ExtensionCore::invoke_hook, \
+         which always supplies a session_id)"
+    )
 }
+

@@ -30,7 +30,7 @@ use crate::principal::router::AgentPromptSummary;
 use crate::principal::PrincipalId;
 use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
-use crate::tools::builtin::{AgentCatalogTool, PrincipalMemoryTool, PrincipalSessionsTool};
+use crate::tools::builtin::AgentCatalogTool;
 
 use super::config::PrincipalCapabilities;
 
@@ -165,10 +165,10 @@ impl PrincipalContext {
     /// principal's tool bag is wired onto it.
     ///
     /// There is one daemon-wide [`ExtensionCore`]. The principal's
-    /// tools (`principal_sessions`, `principal_memory`,
-    /// `<workspace>/agents/*`) are installed on that core on first
-    /// call via [`install_principal_tool_bag`]; subsequent callers
-    /// observe the same global core and the same tool bag.
+    /// discovered `<workspace>/agents/*` entries are installed on that
+    /// core on first call via [`install_principal_tool_bag`];
+    /// subsequent callers observe the same global core and the same
+    /// tool bag.
     ///
     /// Visibility to any single agent is still governed by the agent's
     /// own capability whitelist; this method does not assume
@@ -187,7 +187,6 @@ impl PrincipalContext {
             if let Err(e) = install_principal_tool_bag(
                 Arc::clone(&core),
                 &self.workspace_path,
-                Arc::clone(&self.memory),
             )
             .await
             {
@@ -231,7 +230,6 @@ impl PrincipalContext {
 async fn install_principal_tool_bag(
     core: Arc<ExtensionCore>,
     workspace_path: &Path,
-    memory: Arc<dyn PrincipalMemory>,
 ) -> anyhow::Result<()> {
     // Built-in tools.
     let path_resolver = crate::common::paths::PathResolver::new();
@@ -254,17 +252,12 @@ async fn install_principal_tool_bag(
         }
     }
 
-    // Principal-scoped tools: sessions and memory.
-    BuiltinToolAdapter::register_tool(
-        &core,
-        Arc::new(PrincipalSessionsTool::new(Arc::clone(&memory))),
-    )
-    .await?;
-    BuiltinToolAdapter::register_tool(
-        &core,
-        Arc::new(PrincipalMemoryTool::new(Arc::clone(&memory))),
-    )
-    .await?;
+    // Cross-peer session introspection is handled by the per-agent `session`
+    // tool, which now accepts `peer` and `agent_id` filters (see
+    // `SessionRegistry::list_sessions`). Persistent principal memory is
+    // delegated to the filesystem — the LLM uses `Read` / `Write` for
+    // memory and the `RootRouter` / `PrincipalManager` paths persist
+    // session artifacts internally via `PrincipalMemory::record_session`.
 
     // Mark the core as having run the universal-extension pass so
     // the lazy guard in `PrincipalContext::core` does not re-install

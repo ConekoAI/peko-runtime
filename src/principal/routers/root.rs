@@ -267,7 +267,7 @@ mod tests {
     use super::*;
     use crate::auth::Subject;
     use crate::principal::config::{
-        AgentRole, PrincipalCapabilities, PrincipalGovernanceConfig, PrincipalIntentConfig,
+        PrincipalCapabilities, PrincipalGovernanceConfig, PrincipalIntentConfig,
         PrincipalRoutingConfig,
     };
     use crate::principal::router::{ChannelContext, ChannelKind, ContextInjectionKind};
@@ -302,7 +302,6 @@ mod tests {
             }],
             available_agents: vec![AgentPromptSummary {
                 name: "primary".to_string(),
-                role: AgentRole::Default,
                 description: Some("Generalist".to_string()),
             }],
             capabilities: PrincipalCapabilities::default(),

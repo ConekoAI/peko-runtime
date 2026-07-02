@@ -1,8 +1,11 @@
 //! `Read` tool - Read file contents with optional line ranges
 //!
 //! Granular read-only file access for agents. Matches Claude Code's `Read`
-//! tool surface; peko extensions are binary auto-detection and a `pages`
-//! parameter for PDFs (PDF support is pending).
+//! tool surface — output is in `cat -n` format (each line of `content` is
+//! prefixed with `<line_number>\t<text>`), so the model can read line numbers
+//! directly from the response without cross-referencing separate metadata
+//! fields. peko extensions over the Claude Code surface are binary
+//! auto-detection and an explicit `encoding: "base64"` request.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -23,9 +26,6 @@ pub struct ReadArgs {
     /// Maximum number of lines to read
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
-    /// PDF page range, e.g. "1-5" (peko extension; PDF support pending)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pages: Option<String>,
     /// Use base64 encoding for binary files
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
@@ -71,7 +71,6 @@ impl ReadTool {
         file_path: &str,
         offset: Option<usize>,
         limit: Option<usize>,
-        pages: Option<&str>,
         encoding: Option<&str>,
     ) -> Result<serde_json::Value> {
         let resolved = self.resolve_path(file_path);
@@ -84,13 +83,6 @@ impl ReadTool {
         if !metadata.is_file() {
             return Err(anyhow::anyhow!(
                 "Path is not a file: {}",
-                resolved.display()
-            ));
-        }
-
-        if pages.is_some() {
-            return Err(anyhow::anyhow!(
-                "PDF page ranges are not yet supported: {}",
                 resolved.display()
             ));
         }
@@ -115,7 +107,10 @@ impl ReadTool {
             }
         };
 
-        // Apply line range if specified and text content
+        // Apply line range if specified and text content. Text output is
+        // formatted in `cat -n` style: each line is prefixed with its
+        // 1-indexed line number and a tab, so the model can see line numbers
+        // inline with the content (matching Claude Code's Read behavior).
         let (final_content, total_lines, start_line, end_line) =
             if is_binary || encoding_used == "base64" {
                 // For binary, line range doesn't apply
@@ -129,8 +124,15 @@ impl ReadTool {
 
                 let selected: Vec<&str> = lines.get(start..end).unwrap_or(&[]).to_vec();
 
+                let numbered = selected
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| format!("{}\t{}", start + i + 1, line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
                 (
-                    selected.join("\n"),
+                    numbered,
                     Some(total),
                     Some(start + 1), // Convert back to 1-indexed
                     Some(end),
@@ -177,6 +179,9 @@ impl Tool for ReadTool {
         r#"## Purpose
 Read file contents with support for partial reading (line ranges) and binary files.
 
+Text output is in `cat -n` format: each line of `content` is prefixed with
+its 1-indexed line number and a tab, so line numbers are visible inline.
+
 Use when: Reading source code, configuration files, logs, or any text file.
 Don't use when: You need to write files (use Write) or search across files (use Grep).
 
@@ -191,11 +196,8 @@ Starting line number (1-indexed). If omitted, starts from beginning.
 ### limit (optional)
 Maximum number of lines to read. If omitted, reads to end of file.
 
-### pages (optional)
-PDF page range, e.g. "1-5". (Peko extension; PDF support pending.)
-
 ### encoding (optional)
-- "utf8" (default): Read as text
+- "utf8" (default): Read as text, content returned in `cat -n` format
 - "base64": Force base64 encoding for binary data
 
 ## Examples
@@ -235,10 +237,6 @@ Read binary file:
                     "description": "Maximum number of lines to read",
                     "minimum": 1
                 },
-                "pages": {
-                    "type": "string",
-                    "description": "PDF page range, e.g. '1-5' (peko extension; PDF support pending)"
-                },
                 "encoding": {
                     "type": "string",
                     "description": "Encoding for the content",
@@ -257,7 +255,6 @@ Read binary file:
             &args.file_path,
             args.offset,
             args.limit,
-            args.pages.as_deref(),
             args.encoding.as_deref(),
         )
         .await
@@ -287,7 +284,7 @@ mod tests {
         let params = json!({"file_path": "test.txt"});
         let result = tool.execute(params).await.unwrap();
 
-        assert_eq!(result["content"], "Hello, World!");
+        assert_eq!(result["content"], "1\tHello, World!");
         assert_eq!(result["encoding"], "utf8");
         assert_eq!(result["size_bytes"], 13);
     }
@@ -311,10 +308,31 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        assert_eq!(result["content"], "line2\nline3");
+        // Content is in `cat -n` format: each line prefixed with its
+        // 1-indexed line number and a tab.
+        assert_eq!(result["content"], "2\tline2\n3\tline3");
         assert_eq!(result["start_line"], 2);
         assert_eq!(result["end_line"], 3);
         assert_eq!(result["total_lines"], 5);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_full_cat_n() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+
+        let content = "alpha\nbeta\ngamma";
+        fs::write(temp_dir.path().join("abc.txt"), content)
+            .await
+            .unwrap();
+
+        let result = tool
+            .execute(json!({"file_path": "abc.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(result["content"], "1\talpha\n2\tbeta\n3\tgamma");
+        assert_eq!(result["start_line"], 1);
+        assert_eq!(result["end_line"], 3);
     }
 
     #[tokio::test]
@@ -369,7 +387,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_file_pages_unsupported() {
+    async fn test_read_file_pages_field_dropped() {
+        // The `pages` parameter was removed (it was a dead surface area —
+        // declared in the schema but always errored at runtime). This test
+        // pins that an unknown `pages` field is ignored without error.
         let temp_dir = TempDir::new().unwrap();
         let tool = ReadTool::new().with_workspace(temp_dir.path());
 
@@ -378,9 +399,7 @@ mod tests {
             .unwrap();
 
         let params = json!({"file_path": "doc.txt", "pages": "1-2"});
-        let result = tool.execute(params).await;
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("PDF"));
+        let result = tool.execute(params).await.unwrap();
+        assert_eq!(result["content"], "1\ttext");
     }
 }

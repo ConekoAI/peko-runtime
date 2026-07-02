@@ -10,7 +10,6 @@
 //! ---
 //! name: math
 //! description: Mathematics and calculations
-//! role: specialist
 //! color: "#ff0000"
 //! ---
 //!
@@ -129,7 +128,6 @@ impl AgentAdapter {
         );
 
         manifest.set("agent_file", path.to_string_lossy().to_string());
-        manifest.set("role", meta.role.unwrap_or_default());
         manifest.set("color", meta.color.unwrap_or_default());
 
         Ok(manifest)
@@ -186,9 +184,6 @@ impl ExtensionTypeAdapter for AgentAdapter {
         );
 
         manifest.set("agent_file", path.to_string_lossy().to_string());
-        if let Some(role) = agent_frontmatter.role {
-            manifest.set("role", role);
-        }
         if let Some(color) = agent_frontmatter.color {
             manifest.set("color", color);
         }
@@ -214,8 +209,6 @@ struct AgentFrontmatter {
     name: String,
     description: String,
     #[serde(default)]
-    role: Option<String>,
-    #[serde(default)]
     color: Option<String>,
 }
 
@@ -230,12 +223,6 @@ impl HookHandlerFactory for AgentPromptHandlerFactory {
         Box::new(AgentPromptHandler {
             agent_name: self.manifest.name.clone(),
             description: self.manifest.description.clone(),
-            role: self
-                .manifest
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
             file_path: PathBuf::from(
                 self.manifest
                     .get("agent_file")
@@ -252,7 +239,6 @@ impl HookHandlerFactory for AgentPromptHandlerFactory {
 struct AgentPromptHandler {
     agent_name: String,
     description: String,
-    role: String,
     file_path: PathBuf,
 }
 
@@ -260,14 +246,9 @@ struct AgentPromptHandler {
 impl HookHandler for AgentPromptHandler {
     async fn handle(&self, _ctx: HookContext) -> HookResult {
         let path_display = self.file_path.to_string_lossy();
-        let role_part = if self.role.is_empty() {
-            String::new()
-        } else {
-            format!(" (role: {})", self.role)
-        };
         let text = format!(
-            "- {}: {}{} (location: {})",
-            self.agent_name, self.description, role_part, path_display
+            "- {}: {} (location: {})",
+            self.agent_name, self.description, path_display
         );
 
         HookResult::Continue(HookOutput::Text(text))
@@ -309,7 +290,6 @@ pub async fn register_agents_with_core(
         let handler = Arc::new(AgentPromptHandler {
             agent_name: agent.manifest.name.clone(),
             description: agent.manifest.description.clone(),
-            role: agent.manifest.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             file_path: agent.file_path,
         });
 
@@ -348,7 +328,6 @@ mod tests {
             r"---
 name: {name}
 description: {description}
-role: specialist
 color: '#ff0000'
 ---
 
@@ -400,7 +379,6 @@ This is a test agent.
         assert_eq!(manifest.name, "math");
         assert_eq!(manifest.description, "Math operations");
         assert_eq!(manifest.extension_type, "agent");
-        assert_eq!(manifest.get("role").and_then(|v| v.as_str()), Some("specialist"));
     }
 
     #[tokio::test]

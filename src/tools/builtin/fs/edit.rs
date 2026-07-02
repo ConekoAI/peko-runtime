@@ -24,15 +24,14 @@ pub struct EditArgs {
     pub replace_all: bool,
 }
 
-/// Result of a single replacement
+/// Per-call edit summary returned to the caller. Intentionally
+/// minimal: the model already knows `old_string` / `new_string`, so
+/// echoing them back would just inflate the context window. The
+/// useful new information is `occurrences` (how many matches the
+/// `old_string` resolved to and were replaced).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplacementResult {
-    pub old: String,
-    pub new: String,
     pub occurrences: usize,
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 /// `Edit` tool - Targeted string replacement
@@ -127,13 +126,7 @@ impl EditTool {
 
         Ok(serde_json::json!({
             "path": resolved.display().to_string(),
-            "replacements": [ReplacementResult {
-                old: old_string.to_string(),
-                new: new_string.to_string(),
-                occurrences,
-                success: true,
-                error: None,
-            }],
+            "replacements": [ReplacementResult { occurrences }],
             "total_replacements": occurrences,
             "success": true,
         }))
@@ -287,6 +280,14 @@ mod tests {
         assert_eq!(result["total_replacements"], 1);
         assert_eq!(result["success"], true);
         assert_eq!(result["replacements"][0]["occurrences"], 1);
+
+        // Pin the slim shape: the model already knows old_string /
+        // new_string, so the response must NOT echo them back.
+        let entry = &result["replacements"][0];
+        assert!(entry.get("old").is_none(), "old echo should be removed");
+        assert!(entry.get("new").is_none(), "new echo should be removed");
+        assert!(entry.get("success").is_none(), "success field is unused");
+        assert!(entry.get("error").is_none(), "error field is unused");
 
         let content = fs::read_to_string(temp_dir.path().join("test.txt"))
             .await

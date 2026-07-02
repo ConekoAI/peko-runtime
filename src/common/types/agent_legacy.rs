@@ -136,8 +136,8 @@ impl ExtensionConfig {
         match bare {
             "Read" => self.read_file.as_ref(),
             "Write" => self.write_file.as_ref(),
-            "glob" => self.glob.as_ref(),
-            "grep" => self.grep.as_ref(),
+            "Glob" => self.glob.as_ref(),
+            "Grep" => self.grep.as_ref(),
             "Edit" => self.edit_tool.as_ref(),
             _ => None,
         }

@@ -151,7 +151,7 @@ fn write_builtin_agent(cli: &PekoCli, name: &str, mock_llm_url: &str) {
         cli,
         name,
         mock_llm_url,
-        &["Bash", "Read", "Write", "glob", "grep", "Edit"],
+        &["Bash", "Read", "Write", "Glob", "Grep", "Edit"],
     );
 }
 
@@ -185,7 +185,7 @@ async fn built_in_glob_finds_files() {
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "glob", "arguments":
+            { "tool_call": { "name": "Glob", "arguments":
                 serde_json::json!({ "pattern": "**/*.rs" }).to_string()
             } },
             "GLOB_DONE",
@@ -211,7 +211,7 @@ async fn built_in_glob_finds_files() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your glob tool with pattern '**/*.rs' to list Rust files in your \
+        "Use your Glob tool with pattern '**/*.rs' to list Rust files in your \
          workspace. When you've seen the result, respond GLOB_DONE. Use the \
          needle '{needle}' in your response."
     );
@@ -249,7 +249,7 @@ async fn built_in_grep_searches_content() {
 
     let script = serde_json::json!({
         needle: [
-            { "tool_call": { "name": "grep", "arguments":
+            { "tool_call": { "name": "Grep", "arguments":
                 serde_json::json!({
                     "pattern": "TODO|FIXME",
                     "case_insensitive": true,
@@ -276,7 +276,7 @@ async fn built_in_grep_searches_content() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
-        "Use your grep tool with pattern 'TODO|FIXME' and case_insensitive=true \
+        "Use your Grep tool with pattern 'TODO|FIXME' and case_insensitive=true \
          to search your workspace. When you've seen the result, respond \
          GREP_DONE. Use the needle '{needle}' in your response."
     );

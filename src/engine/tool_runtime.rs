@@ -315,8 +315,8 @@ mod tests {
         assert!(runtime.has_tool("Bash").await);
         assert!(runtime.has_tool("Read").await);
         assert!(runtime.has_tool("Write").await);
-        assert!(runtime.has_tool("glob").await);
-        assert!(runtime.has_tool("grep").await);
+        assert!(runtime.has_tool("Glob").await);
+        assert!(runtime.has_tool("Grep").await);
         assert!(runtime.has_tool("Edit").await);
         assert!(runtime.has_tool("CronCreate").await);
         assert!(runtime.has_tool("CronDelete").await);

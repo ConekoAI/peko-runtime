@@ -1,6 +1,13 @@
 //! Grep tool - Search file contents using regex
 //!
-//! Content-based file discovery and search for agents.
+//! Content-based file discovery and search for agents. The body of
+//! every response is a plain-text `output` string in ripgrep-style
+//! formatting, with shape driven by `output_mode`:
+//! - `"content"` (default) — `path:line:content\n` per match and per
+//!   context line, matching Claude Code's Grep
+//! - `"files_with_matches"` — one path per line for files that
+//!   contain at least one match
+//! - `"count"` — `path:count\n` per file
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -20,27 +27,51 @@ pub struct GrepArgs {
     /// Path to search (file or directory, default: workspace)
     #[serde(default)]
     pub path: Option<String>,
-    /// Glob pattern to filter files (e.g., "*.rs")
+    /// Glob pattern to filter files (e.g., "*.rs"). Named `include`
+    /// to match Claude Code's Grep; same semantics — files whose
+    /// basename does not match are skipped.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub glob: Option<String>,
+    pub include: Option<String>,
     /// Maximum number of matches to return (default: 100)
     #[serde(default = "default_limit")]
     pub limit: usize,
-    /// Include line content in results (default: true)
+    /// Include line content in results (default: true). Only consulted
+    /// when `output_mode == "content"`; ignored for `files_with_matches`
+    /// and `count` modes.
     #[serde(default = "default_true")]
     pub include_content: bool,
-    /// Number of context lines before each match (default: 0)
+    /// Number of context lines before each match (default: 0). Only
+    /// consulted when `output_mode == "content"`.
     #[serde(default)]
     pub context_before: usize,
-    /// Number of context lines after each match (default: 0)
+    /// Number of context lines after each match (default: 0). Only
+    /// consulted when `output_mode == "content"`.
     #[serde(default)]
     pub context_after: usize,
+    /// Number of context lines to show before AND after each match
+    /// (shortcut for `context_before` + `context_after` to the same
+    /// value). When set, takes precedence over the separate
+    /// `context_before` / `context_after` parameters. Only consulted
+    /// when `output_mode == "content"`. Mirrors Claude Code's `-C N`.
+    #[serde(default)]
+    pub context: Option<usize>,
     /// Case insensitive search (default: false)
     #[serde(default)]
     pub case_insensitive: bool,
     /// Include hidden files (default: false)
     #[serde(default)]
     pub include_hidden: bool,
+    /// Output shape: `"content"` (default) returns per-match records
+    /// with line numbers and (optionally) the matching line + context;
+    /// `"files_with_matches"` returns just the unique file paths that
+    /// contain at least one match; `"count"` returns a `{path: count}`
+    /// map of match counts per file.
+    #[serde(default = "default_output_mode")]
+    pub output_mode: String,
+}
+
+fn default_output_mode() -> String {
+    "content".to_string()
 }
 
 fn default_limit() -> usize {
@@ -103,14 +134,29 @@ impl GrepTool {
         &self,
         pattern: &str,
         path: Option<&str>,
-        glob: Option<&str>,
+        include: Option<&str>,
         limit: usize,
         include_content: bool,
         context_before: usize,
         context_after: usize,
+        context: Option<usize>,
         case_insensitive: bool,
         include_hidden: bool,
+        output_mode: &str,
     ) -> Result<serde_json::Value> {
+        if !matches!(output_mode, "content" | "files_with_matches" | "count") {
+            return Err(anyhow::anyhow!(
+                "Invalid output_mode '{output_mode}': expected 'content', 'files_with_matches', or 'count'"
+            ));
+        }
+
+        // The combined `context` parameter (Claude Code's `-C N`) wins
+        // when set; otherwise honor the separate `context_before` /
+        // `context_after` overrides.
+        let (effective_before, effective_after) = match context {
+            Some(n) => (n, n),
+            None => (context_before, context_after),
+        };
         // Compile regex
         let regex = if case_insensitive {
             Regex::new(&format!("(?i){pattern}"))
@@ -143,8 +189,8 @@ impl GrepTool {
                     &regex,
                     limit,
                     include_content,
-                    context_before,
-                    context_after,
+                    effective_before,
+                    effective_after,
                 )
                 .await?;
             if !file_matches.is_empty() {
@@ -156,11 +202,11 @@ impl GrepTool {
             self.search_directory(
                 &search_path,
                 &regex,
-                glob,
+                include,
                 limit,
                 include_content,
-                context_before,
-                context_after,
+                effective_before,
+                effective_after,
                 include_hidden,
                 &mut matches,
                 &mut files_searched,
@@ -190,15 +236,54 @@ impl GrepTool {
 
         let truncated = matches.len() >= limit;
 
-        Ok(serde_json::json!({
+        let mut response = serde_json::json!({
             "pattern": pattern,
             "path": search_path.display().to_string(),
-            "matches": matches,
-            "total_matches": matches.len(),
             "files_searched": files_searched,
             "files_with_matches": files_with_matches,
             "truncated": truncated,
-        }))
+            "output_mode": output_mode,
+        });
+
+        let obj = response.as_object_mut().unwrap();
+
+        // The body of the response is a plain-text `output` string in
+        // ripgrep-style formatting — `path:line:content` for content
+        // mode, one path per line for files_with_matches, and
+        // `path:count` per line for count mode. The JSON envelope
+        // keeps the metadata (files_searched, files_with_matches,
+        // truncated, output_mode) so callers can drive downstream
+        // behavior without re-parsing the output.
+        let output = match output_mode {
+            "content" => format_content_output(&matches),
+            "files_with_matches" => {
+                let mut files: Vec<String> = matches
+                    .iter()
+                    .filter_map(|m| m.get("path").and_then(|p| p.as_str()).map(String::from))
+                    .collect();
+                files.sort();
+                files.dedup();
+                files.join("\n") + if files.is_empty() { "" } else { "\n" }
+            }
+            "count" => {
+                let mut counts: std::collections::BTreeMap<String, usize> =
+                    std::collections::BTreeMap::new();
+                for m in &matches {
+                    if let Some(p) = m.get("path").and_then(|p| p.as_str()) {
+                        *counts.entry(p.to_string()).or_insert(0) += 1;
+                    }
+                }
+                counts
+                    .iter()
+                    .map(|(p, c)| format!("{p}:{c}\n"))
+                    .collect()
+            }
+            _ => unreachable!("validated above"),
+        };
+
+        obj.insert("output".to_string(), output.into());
+
+        Ok(response)
     }
 
     /// Search a single file
@@ -271,7 +356,7 @@ impl GrepTool {
         &self,
         dir: &PathBuf,
         regex: &Regex,
-        glob: Option<&str>,
+        include: Option<&str>,
         limit: usize,
         include_content: bool,
         context_before: usize,
@@ -307,7 +392,7 @@ impl GrepTool {
                 Box::pin(self.search_directory(
                     &path,
                     regex,
-                    glob,
+                    include,
                     limit,
                     include_content,
                     context_before,
@@ -319,8 +404,8 @@ impl GrepTool {
                 ))
                 .await?;
             } else if metadata.is_file() {
-                // Check glob filter if provided
-                if let Some(pattern) = glob {
+                // Check include filter if provided
+                if let Some(pattern) = include {
                     if !Self::simple_glob_match(&name_str, pattern) {
                         continue;
                     }
@@ -354,6 +439,47 @@ impl GrepTool {
     }
 }
 
+/// Format the `content` mode output as a ripgrep-style plain-text
+/// string. Each match is emitted as `path:line:content`, with
+/// surrounding context lines (when `context_before` / `context_after`
+/// are set) interleaved in the right order and with the right line
+/// numbers (computed from the match line minus/plus the context
+/// position).
+fn format_content_output(matches: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for m in matches {
+        let path = match m.get("path").and_then(|p| p.as_str()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let line = m.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
+        if line == 0 {
+            continue;
+        }
+        if let Some(before) = m.get("context_before").and_then(|v| v.as_array()) {
+            let count = before.len() as u64;
+            for (i, content) in before.iter().enumerate() {
+                let ln = line.saturating_sub(count).saturating_add(i as u64);
+                let s = content.as_str().unwrap_or("");
+                out.push_str(&format!("{path}:{ln}:{s}\n"));
+            }
+        }
+        let content = m
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        out.push_str(&format!("{path}:{line}:{content}\n"));
+        if let Some(after) = m.get("context_after").and_then(|v| v.as_array()) {
+            for (i, content) in after.iter().enumerate() {
+                let ln = line.saturating_add(1).saturating_add(i as u64);
+                let s = content.as_str().unwrap_or("");
+                out.push_str(&format!("{path}:{ln}:{s}\n"));
+            }
+        }
+    }
+    out
+}
+
 impl Default for GrepTool {
     fn default() -> Self {
         Self::new()
@@ -363,7 +489,7 @@ impl Default for GrepTool {
 #[async_trait]
 impl Tool for GrepTool {
     fn name(&self) -> &'static str {
-        "grep"
+        "Grep"
     }
 
     fn description(&self) -> String {
@@ -385,8 +511,9 @@ Regex pattern to search for. Examples:
 ### path (optional)
 File or directory to search. Defaults to workspace root.
 
-### glob (optional)
-Filter files by glob pattern (e.g., "*.rs" to search only Rust files).
+### include (optional)
+Glob pattern to filter files (e.g., "*.rs"). Named `include` to match
+Claude Code's Grep; same semantics.
 
 ### limit (optional)
 Maximum number of matches. Default: 100.
@@ -400,17 +527,37 @@ Number of context lines before each match. Default: 0.
 ### context_after (optional)
 Number of context lines after each match. Default: 0.
 
+### context (optional)
+Number of context lines to show before AND after each match. When
+set, takes precedence over `context_before` / `context_after`. Useful
+for `context: 3` style "show me the surrounding code" requests.
+
 ### case_insensitive (optional)
 Case-insensitive search. Default: false.
 
 ### include_hidden (optional)
 Search hidden files. Default: false.
 
+### output_mode (optional)
+Shape of the response. The body is always a single `output` field —
+a plain-text string in ripgrep-style formatting:
+- `"content"` (default) — one line per match and per context line,
+  formatted as `path:line:content\n`. With `context_before` /
+  `context_after` (or the combined `context`), surrounding lines are
+  interleaved in the right order and at the right line numbers.
+- `"files_with_matches"` — one path per line for files that contain
+  at least one match. Cheap when you only need to know *which* files.
+- `"count"` — one `path:count\n` line per file.
+
+JSON metadata (`files_searched`, `files_with_matches`, `truncated`,
+`output_mode`, `pattern`, `path`) is always returned alongside
+`output`.
+
 ## Examples
 
 Find function definitions:
 ```json
-{"pattern": "^pub fn ", "glob": "*.rs"}
+{"pattern": "^pub fn ", "include": "*.rs"}
 ```
 
 Search for TODO comments:
@@ -437,9 +584,9 @@ Find where a function is called:
                     "type": "string",
                     "description": "File or directory to search (default: workspace root)"
                 },
-                "glob": {
+                "include": {
                     "type": "string",
-                    "description": "Filter files by glob pattern (e.g., '*.rs')"
+                    "description": "Glob pattern to filter files (e.g., '*.rs')"
                 },
                 "limit": {
                     "type": "integer",
@@ -467,6 +614,12 @@ Find where a function is called:
                     "minimum": 0,
                     "maximum": 10
                 },
+                "context": {
+                    "type": "integer",
+                    "description": "Number of context lines to show before AND after each match (shortcut for context_before + context_after). When set, takes precedence over the separate context_before/context_after parameters. Mirrors Claude Code's -C N.",
+                    "minimum": 0,
+                    "maximum": 10
+                },
                 "case_insensitive": {
                     "type": "boolean",
                     "description": "Case-insensitive search",
@@ -476,6 +629,12 @@ Find where a function is called:
                     "type": "boolean",
                     "description": "Search hidden files",
                     "default": false
+                },
+                "output_mode": {
+                    "type": "string",
+                    "description": "Output shape: 'content' (default, per-match records with line numbers), 'files_with_matches' (unique file paths only), or 'count' (per-file match counts).",
+                    "enum": ["content", "files_with_matches", "count"],
+                    "default": "content"
                 }
             },
             "required": ["pattern"]
@@ -489,13 +648,15 @@ Find where a function is called:
         self.grep(
             &args.pattern,
             args.path.as_deref(),
-            args.glob.as_deref(),
+            args.include.as_deref(),
             args.limit,
             args.include_content,
             args.context_before,
             args.context_after,
+            args.context,
             args.case_insensitive,
             args.include_hidden,
+            &args.output_mode,
         )
         .await
     }
@@ -517,6 +678,24 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
+    /// Parse a ripgrep-style `output` string into `(path, line, content)`
+    /// tuples. Skips blank lines.
+    fn parse_ripgrep_output(s: &str) -> Vec<(String, u64, String)> {
+        s.lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                let mut parts = l.splitn(3, ':');
+                let path = parts.next().unwrap_or("").to_string();
+                let line: u64 = parts
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let content = parts.next().unwrap_or("").to_string();
+                (path, line, content)
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_grep_single_file() {
         let temp_dir = TempDir::new().unwrap();
@@ -536,11 +715,12 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0]["line"], 1);
-        assert_eq!(matches[0]["content"], "Hello, World!");
-        assert_eq!(matches[1]["line"], 2);
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].0.ends_with("test.txt"));
+        assert_eq!(entries[0].1, 1);
+        assert_eq!(entries[0].2, "Hello, World!");
+        assert_eq!(entries[1].1, 2);
     }
 
     #[tokio::test]
@@ -561,12 +741,12 @@ mod tests {
 
         let params = json!({
             "pattern": "fn ",
-            "glob": "*.rs"
+            "include": "*.rs"
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 2);
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 2);
         assert_eq!(result["files_searched"], 2);
         assert_eq!(result["files_with_matches"], 2);
     }
@@ -586,7 +766,10 @@ mod tests {
             "path": "test.txt"
         });
         let result = tool.execute(params).await.unwrap();
-        assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            parse_ripgrep_output(result["output"].as_str().unwrap()).len(),
+            1
+        );
 
         // Case insensitive
         let params = json!({
@@ -595,7 +778,10 @@ mod tests {
             "case_insensitive": true
         });
         let result = tool.execute(params).await.unwrap();
-        assert_eq!(result["matches"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            parse_ripgrep_output(result["output"].as_str().unwrap()).len(),
+            3
+        );
     }
 
     #[tokio::test]
@@ -618,10 +804,16 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0]["context_before"], json!(["line2"]));
-        assert_eq!(matches[0]["context_after"], json!(["line4"]));
+        // Output is 3 ripgrep lines: the context_before line, the
+        // match line, and the context_after line.
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].1, 2);
+        assert_eq!(entries[0].2, "line2");
+        assert_eq!(entries[1].1, 3);
+        assert_eq!(entries[1].2, "line3");
+        assert_eq!(entries[2].1, 4);
+        assert_eq!(entries[2].2, "line4");
     }
 
     #[tokio::test]
@@ -642,8 +834,8 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 2);
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 2);
     }
 
     #[tokio::test]
@@ -668,8 +860,8 @@ mod tests {
         });
         let result = tool.execute(params).await.unwrap();
 
-        let matches = result["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 10);
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 10);
         assert_eq!(result["truncated"], true);
     }
 
@@ -685,6 +877,75 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("Invalid regex"));
     }
 
+    #[tokio::test]
+    async fn test_grep_context_param_sets_both_sides() {
+        // The combined `context` parameter mirrors Claude Code's `-C N`:
+        // it sets both before and after to the same value. When
+        // `context` is set, it takes precedence over the separate
+        // `context_before` / `context_after` fields.
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+
+        fs::write(
+            temp_dir.path().join("test.txt"),
+            "line1\nline2\nTARGET\nline4\nline5",
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .execute(json!({
+                "pattern": "TARGET",
+                "path": "test.txt",
+                "context": 1
+            }))
+            .await
+            .unwrap();
+
+        // Output should be 3 ripgrep lines: line2 (before), TARGET
+        // (match), line4 (after).
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].1, 2);
+        assert_eq!(entries[0].2, "line2");
+        assert_eq!(entries[1].1, 3);
+        assert_eq!(entries[1].2, "TARGET");
+        assert_eq!(entries[2].1, 4);
+        assert_eq!(entries[2].2, "line4");
+    }
+
+    #[tokio::test]
+    async fn test_grep_context_param_overrides_separate() {
+        // When `context` is set, the separate `context_before` /
+        // `context_after` values must be ignored.
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+
+        fs::write(
+            temp_dir.path().join("test.txt"),
+            "a\nb\nTARGET\nd\ne",
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .execute(json!({
+                "pattern": "TARGET",
+                "path": "test.txt",
+                "context": 1,
+                "context_before": 5,
+                "context_after": 5,
+            }))
+            .await
+            .unwrap();
+
+        let entries = parse_ripgrep_output(result["output"].as_str().unwrap());
+        assert_eq!(entries.len(), 3);
+        // 'b' and 'd' — one line of context each side, not five.
+        assert_eq!(entries[0].2, "b");
+        assert_eq!(entries[2].2, "d");
+    }
+
     #[test]
     fn test_simple_glob_match() {
         assert!(GrepTool::simple_glob_match("test.rs", "*.rs"));
@@ -694,5 +955,87 @@ mod tests {
         assert!(GrepTool::simple_glob_match("file1.txt", "file?.txt"));
         assert!(!GrepTool::simple_glob_match("file10.txt", "file?.txt"));
         assert!(GrepTool::simple_glob_match("test.rs", "**/*.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_output_mode_files_with_matches() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+
+        fs::write(temp_dir.path().join("a.rs"), "fn alpha() {}\nfn beta() {}")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("b.rs"), "fn gamma() {}")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("c.txt"), "no match here")
+            .await
+            .unwrap();
+
+        let result = tool
+            .execute(json!({
+                "pattern": "fn ",
+                "include": "*.rs",
+                "output_mode": "files_with_matches"
+            }))
+            .await
+            .unwrap();
+
+        let out = result["output"].as_str().unwrap();
+        let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(result["files_with_matches"], 2);
+        // No line-level fields when in files_with_matches mode.
+        assert!(result.get("matches").is_none());
+        assert!(result.get("files").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_grep_output_mode_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+
+        fs::write(temp_dir.path().join("a.rs"), "fn a() {}\nfn b() {}\nfn c() {}")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("b.rs"), "fn d() {}")
+            .await
+            .unwrap();
+
+        let result = tool
+            .execute(json!({
+                "pattern": "fn ",
+                "include": "*.rs",
+                "output_mode": "count"
+            }))
+            .await
+            .unwrap();
+
+        // Output is two lines, each `path:count\n`.
+        let out = result["output"].as_str().unwrap();
+        let entries: Vec<(String, u64)> = out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                let (p, c) = l.rsplit_once(':').unwrap();
+                (p.to_string(), c.parse().unwrap())
+            })
+            .collect();
+        assert_eq!(entries.len(), 2);
+        let a = entries.iter().find(|(p, _)| p.ends_with("a.rs")).unwrap();
+        let b = entries.iter().find(|(p, _)| p.ends_with("b.rs")).unwrap();
+        assert_eq!(a.1, 3);
+        assert_eq!(b.1, 1);
+        assert!(result.get("counts").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_grep_output_mode_invalid() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+        let result = tool
+            .execute(json!({"pattern": "x", "output_mode": "bogus"}))
+            .await;
+        assert!(result.is_err());
     }
 }

@@ -41,6 +41,15 @@ pub struct SessionInfo {
     pub last_activity: String,
     pub message_count: usize,
     pub is_active: bool,
+    /// Subject type ("user", "principal", or "public") — present when
+    /// the underlying `SessionMetadata` was written with peer info.
+    /// Branched sessions may have `None` here (see `branch_session_by_id`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_type: Option<String>,
+    /// Subject ID (e.g. `"alice"` for `user:alice`). `None` when no
+    /// peer is recorded for the session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
 }
 
 /// Message in session history
@@ -112,10 +121,19 @@ pub struct SessionStatusResult {
 /// Registry for accessing session data
 #[async_trait]
 pub trait SessionRegistry: Send + Sync {
-    /// List available sessions
+    /// List available sessions, optionally filtered.
+    ///
+    /// - `kinds`: filter by `SessionMetadata::trigger` (e.g. `["main", "branch"]`).
+    /// - `peer`: filter to a single peer (`user:alice`, `principal:<did>`, or `public`).
+    ///   When `None`, results span all peers (the cross-peer view).
+    /// - `agent_id`: filter to a single agent name.
+    /// - `limit`: cap on results returned.
+    /// - `active_minutes`: only sessions updated within the last N minutes.
     async fn list_sessions(
         &self,
         kinds: Option<&[String]>,
+        peer: Option<&crate::subject::Subject>,
+        agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>>;
@@ -177,11 +195,13 @@ impl SessionTool {
     async fn list_sessions(
         &self,
         kinds: Option<&[String]>,
+        peer: Option<&crate::subject::Subject>,
+        agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
         self.registry
-            .list_sessions(kinds, limit, active_minutes)
+            .list_sessions(kinds, peer, agent_id, limit, active_minutes)
             .await
     }
 
@@ -236,6 +256,8 @@ Parameters:
 - action: 'status', 'list', or 'history' (required)
 - session_key: Required for 'history'. Optional for 'status' (defaults to current session)
 - kinds: Optional for 'list' — filter by session kinds (e.g., ['main', 'spawned'])
+- peer: Optional for 'list' — filter to a single peer (e.g., 'user:alice', 'principal:<did>', or 'public'). Without it, results span all peers on this principal.
+- agent_id: Optional for 'list' — filter to a single agent name
 - limit: Optional — max results (default: 50 for list, 100 for history)
 - active_minutes: Optional for 'list' — only sessions active in last N minutes
 - include_tools: Optional for 'history' — include tool calls/results (default: true)
@@ -262,6 +284,14 @@ Returns structured data appropriate to the action."
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Optional filter for 'list': e.g., ['main', 'spawned', 'cron']"
+                },
+                "peer": {
+                    "type": "string",
+                    "description": "Optional filter for 'list': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Optional filter for 'list': single agent name"
                 },
                 "limit": {
                     "type": "integer",
@@ -353,11 +383,22 @@ Returns structured data appropriate to the action."
                 let kinds: Option<Vec<String>> = params
                     .get("kinds")
                     .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let peer_str = params.get("peer").and_then(|v| v.as_str());
+                let peer = match peer_str {
+                    Some(s) => Some(
+                        s.parse::<crate::subject::Subject>()
+                            .map_err(|e| anyhow::anyhow!("Invalid peer '{s}': {e}"))?,
+                    ),
+                    None => None,
+                };
+                let agent_id = params.get("agent_id").and_then(|v| v.as_str());
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 let active_minutes = params.get("active_minutes").and_then(|v| v.as_i64());
 
                 let kinds_ref = kinds.as_deref();
-                let sessions = self.list_sessions(kinds_ref, limit, active_minutes).await?;
+                let sessions = self
+                    .list_sessions(kinds_ref, peer.as_ref(), agent_id, limit, active_minutes)
+                    .await?;
                 Ok(Self::build_list_response(sessions))
             }
             SessionAction::History => {
@@ -410,6 +451,8 @@ impl SessionRegistry for SessionIntrospector {
     async fn list_sessions(
         &self,
         kinds: Option<&[String]>,
+        peer: Option<&crate::subject::Subject>,
+        agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
@@ -419,12 +462,30 @@ impl SessionRegistry for SessionIntrospector {
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let cutoff_ms = active_minutes.map(|m| now.saturating_sub(m as u64 * 60 * 1000));
 
+        // Build the peer filter's expected (kind, id) pair so we can
+        // match against the persisted `peer_type`/`peer_id` strings on
+        // `SessionMetadata`. We accept sessions whose metadata peer info
+        // is missing — `branch_session_by_id` does not currently copy
+        // peer fields onto the new branch — by treating a `None`
+        // metadata peer as wildcard.
+        let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
+
         let sessions: Vec<SessionInfo> = metadatas
             .into_iter()
             .filter(|m| {
                 let kind_match = kinds.map_or(true, |k| k.contains(&m.trigger));
+                let agent_match = agent_id.map_or(true, |a| m.agent_name == a);
                 let active_match = cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
-                kind_match && active_match
+                let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
+                    // No peer recorded on the metadata — skip when the
+                    // caller asked for a specific peer.
+                    let (have_kind, have_id) = match (m.peer_type.as_deref(), m.peer_id.as_deref()) {
+                        (Some(k), Some(i)) => (k, i),
+                        _ => return false,
+                    };
+                    have_kind == want_kind.as_str() && have_id == want_id.as_str()
+                });
+                kind_match && peer_match && agent_match && active_match
             })
             .take(limit)
             .map(|m| SessionInfo {
@@ -441,6 +502,8 @@ impl SessionRegistry for SessionIntrospector {
                     .unwrap_or_default(),
                 message_count: m.message_count,
                 is_active: true,
+                peer_type: m.peer_type,
+                peer_id: m.peer_id,
             })
             .collect();
 
@@ -566,11 +629,40 @@ impl SessionCache {
 impl SessionRegistry for SessionCache {
     async fn list_sessions(
         &self,
-        _kinds: Option<&[String]>,
-        _limit: usize,
-        _active_minutes: Option<i64>,
+        kinds: Option<&[String]>,
+        peer: Option<&crate::subject::Subject>,
+        agent_id: Option<&str>,
+        limit: usize,
+        active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
-        Ok(self.sessions.values().cloned().collect())
+        let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let cutoff_ms = active_minutes.map(|m| now.saturating_sub(m as u64 * 60 * 1000));
+
+        let filtered: Vec<SessionInfo> = self
+            .sessions
+            .values()
+            .filter(|s| {
+                let kind_match = kinds.map_or(true, |k| k.contains(&s.kind));
+                let agent_match = agent_id.map_or(true, |a| s.agent_id.as_deref() == Some(a));
+                let active_match = cutoff_ms.map_or(true, |_| {
+                    chrono::DateTime::parse_from_rfc3339(&s.last_activity)
+                        .map(|dt| dt.timestamp_millis() as u64 >= cutoff_ms.unwrap_or(0))
+                        .unwrap_or(true)
+                });
+                let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
+                    let (have_kind, have_id) = match (s.peer_type.as_deref(), s.peer_id.as_deref()) {
+                        (Some(k), Some(i)) => (k, i),
+                        _ => return false,
+                    };
+                    have_kind == want_kind.as_str() && have_id == want_id.as_str()
+                });
+                kind_match && peer_match && agent_match && active_match
+            })
+            .take(limit)
+            .cloned()
+            .collect();
+        Ok(filtered)
     }
 
     async fn get_history(
@@ -711,6 +803,8 @@ mod tests {
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 10,
             is_active: true,
+            peer_type: Some("user".to_string()),
+            peer_id: Some("alice".to_string()),
         };
 
         let history = vec![
@@ -831,6 +925,8 @@ mod tests {
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             message_count: 5,
             is_active: true,
+            peer_type: None,
+            peer_id: None,
         };
 
         registry.add_session("current-session".to_string(), session, vec![], status);
@@ -877,5 +973,176 @@ mod tests {
 
         assert_eq!(result["session_id"], "missing");
         assert_eq!(result["agent_name"], "unknown");
+    }
+
+    /// Helper: build a registry pre-loaded with three sessions spanning
+    /// two peers (`user:alice`, `user:bob`) and two agents
+    /// (`test-agent`, `other-agent`).
+    fn cross_peer_registry() -> SessionCache {
+        let mut registry = SessionCache::new("main");
+
+        let alice_main = SessionInfo {
+            session_key: "alice-1".to_string(),
+            session_id: "alice-1".to_string(),
+            kind: "main".to_string(),
+            agent_id: Some("test-agent".to_string()),
+            label: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_activity: "2024-01-01T01:00:00Z".to_string(),
+            message_count: 5,
+            is_active: true,
+            peer_type: Some("user".to_string()),
+            peer_id: Some("alice".to_string()),
+        };
+        let alice_other = SessionInfo {
+            session_key: "alice-2".to_string(),
+            session_id: "alice-2".to_string(),
+            kind: "spawned".to_string(),
+            agent_id: Some("other-agent".to_string()),
+            label: None,
+            created_at: "2024-01-02T00:00:00Z".to_string(),
+            last_activity: "2024-01-02T01:00:00Z".to_string(),
+            message_count: 3,
+            is_active: true,
+            peer_type: Some("user".to_string()),
+            peer_id: Some("alice".to_string()),
+        };
+        let bob_main = SessionInfo {
+            session_key: "bob-1".to_string(),
+            session_id: "bob-1".to_string(),
+            kind: "main".to_string(),
+            agent_id: Some("test-agent".to_string()),
+            label: None,
+            created_at: "2024-01-03T00:00:00Z".to_string(),
+            last_activity: "2024-01-03T01:00:00Z".to_string(),
+            message_count: 7,
+            is_active: true,
+            peer_type: Some("user".to_string()),
+            peer_id: Some("bob".to_string()),
+        };
+
+        registry.add_session("alice-1".to_string(), alice_main, vec![], dummy_status("alice-1"));
+        registry.add_session("alice-2".to_string(), alice_other, vec![], dummy_status("alice-2"));
+        registry.add_session("bob-1".to_string(), bob_main, vec![], dummy_status("bob-1"));
+        registry
+    }
+
+    fn dummy_status(session_id: &str) -> SessionStatusResult {
+        SessionStatusResult {
+            session_id: session_id.to_string(),
+            agent_name: "any".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_activity: "2024-01-01T01:00:00Z".to_string(),
+            timestamp_utc: String::new(),
+            timestamp: String::new(),
+            message_count: 0,
+            usage: UsageStats {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                context_window: 0,
+            },
+            peer_type: None,
+            peer_id: None,
+            label: None,
+            parent_session: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_list_peer_filter_returns_only_that_peer() {
+        let tool = SessionTool::new(Box::new(cross_peer_registry()));
+        let result = tool
+            .execute(json!({"action": "list", "peer": "user:alice"}))
+            .await
+            .unwrap();
+
+        let ids: Vec<&str> = result["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["session_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(result["total"], 2);
+        assert!(ids.contains(&"alice-1"));
+        assert!(ids.contains(&"alice-2"));
+        assert!(!ids.contains(&"bob-1"));
+    }
+
+    #[tokio::test]
+    async fn test_session_list_peer_unknown_returns_empty() {
+        let tool = SessionTool::new(Box::new(cross_peer_registry()));
+        let result = tool
+            .execute(json!({"action": "list", "peer": "user:nobody"}))
+            .await
+            .unwrap();
+
+        assert_eq!(result["total"], 0);
+        assert!(result["sessions"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_list_agent_id_filter() {
+        let tool = SessionTool::new(Box::new(cross_peer_registry()));
+        let result = tool
+            .execute(json!({"action": "list", "agent_id": "test-agent"}))
+            .await
+            .unwrap();
+
+        let ids: Vec<&str> = result["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["session_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(result["total"], 2);
+        assert!(ids.contains(&"alice-1"));
+        assert!(ids.contains(&"bob-1"));
+        assert!(!ids.contains(&"alice-2"));
+    }
+
+    #[tokio::test]
+    async fn test_session_list_peer_and_kinds_combined() {
+        let tool = SessionTool::new(Box::new(cross_peer_registry()));
+        let result = tool
+            .execute(json!({
+                "action": "list",
+                "peer": "user:alice",
+                "kinds": ["spawned"],
+            }))
+            .await
+            .unwrap();
+
+        let ids: Vec<&str> = result["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["session_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(result["total"], 1);
+        assert_eq!(ids, vec!["alice-2"]);
+    }
+
+    #[tokio::test]
+    async fn test_session_list_invalid_peer_returns_structured_error() {
+        let tool = SessionTool::new(Box::new(cross_peer_registry()));
+        let err = tool
+            .execute(json!({"action": "list", "peer": "not-a-valid-peer"}))
+            .await
+            .expect_err("invalid peer must surface an error");
+        assert!(err.to_string().contains("Invalid peer"));
+    }
+
+    #[tokio::test]
+    async fn test_session_info_surfaces_peer_fields() {
+        let tool = SessionTool::new(Box::new(cross_peer_registry()));
+        let result = tool
+            .execute(json!({"action": "list", "peer": "user:alice"}))
+            .await
+            .unwrap();
+
+        for s in result["sessions"].as_array().unwrap() {
+            assert_eq!(s["peer_type"], "user");
+            assert_eq!(s["peer_id"], "alice");
+        }
     }
 }
