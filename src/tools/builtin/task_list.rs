@@ -5,7 +5,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::session::todos::TodoStorage;
-use crate::tools::builtin::task_common::{param_error, require_session_id};
+use crate::tools::builtin::task_common::{missing_session_error, require_session_id};
 use crate::tools::core::{Tool, ToolContext};
 
 /// List planning todos for the current session.
@@ -53,9 +53,7 @@ Returns an array of todo objects."
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        Ok(param_error(
-            "TaskList requires a session context; use execute_with_context",
-        ))
+        Err(missing_session_error())
     }
 
     async fn execute_with_context(
