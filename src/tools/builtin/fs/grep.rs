@@ -28,9 +28,11 @@ pub struct GrepArgs {
     /// Path to search (file or directory, default: workspace)
     #[serde(default)]
     pub path: Option<String>,
-    /// Glob pattern to filter files (e.g., "*.rs")
+    /// Glob pattern to filter files (e.g., "*.rs"). Named `include`
+    /// to match Claude Code's Grep; same semantics — files whose
+    /// basename does not match are skipped.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub glob: Option<String>,
+    pub include: Option<String>,
     /// Maximum number of matches to return (default: 100)
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -47,6 +49,13 @@ pub struct GrepArgs {
     /// consulted when `output_mode == "content"`.
     #[serde(default)]
     pub context_after: usize,
+    /// Number of context lines to show before AND after each match
+    /// (shortcut for `context_before` + `context_after` to the same
+    /// value). When set, takes precedence over the separate
+    /// `context_before` / `context_after` parameters. Only consulted
+    /// when `output_mode == "content"`. Mirrors Claude Code's `-C N`.
+    #[serde(default)]
+    pub context: Option<usize>,
     /// Case insensitive search (default: false)
     #[serde(default)]
     pub case_insensitive: bool,
@@ -126,11 +135,12 @@ impl GrepTool {
         &self,
         pattern: &str,
         path: Option<&str>,
-        glob: Option<&str>,
+        include: Option<&str>,
         limit: usize,
         include_content: bool,
         context_before: usize,
         context_after: usize,
+        context: Option<usize>,
         case_insensitive: bool,
         include_hidden: bool,
         output_mode: &str,
@@ -185,7 +195,7 @@ impl GrepTool {
             self.search_directory(
                 &search_path,
                 &regex,
-                glob,
+                include,
                 limit,
                 include_content,
                 context_before,
@@ -336,7 +346,7 @@ impl GrepTool {
         &self,
         dir: &PathBuf,
         regex: &Regex,
-        glob: Option<&str>,
+        include: Option<&str>,
         limit: usize,
         include_content: bool,
         context_before: usize,
@@ -372,7 +382,7 @@ impl GrepTool {
                 Box::pin(self.search_directory(
                     &path,
                     regex,
-                    glob,
+                    include,
                     limit,
                     include_content,
                     context_before,
@@ -384,8 +394,8 @@ impl GrepTool {
                 ))
                 .await?;
             } else if metadata.is_file() {
-                // Check glob filter if provided
-                if let Some(pattern) = glob {
+                // Check include filter if provided
+                if let Some(pattern) = include {
                     if !Self::simple_glob_match(&name_str, pattern) {
                         continue;
                     }
@@ -450,8 +460,9 @@ Regex pattern to search for. Examples:
 ### path (optional)
 File or directory to search. Defaults to workspace root.
 
-### glob (optional)
-Filter files by glob pattern (e.g., "*.rs" to search only Rust files).
+### include (optional)
+Glob pattern to filter files (e.g., "*.rs"). Named `include` to match
+Claude Code's Grep; same semantics.
 
 ### limit (optional)
 Maximum number of matches. Default: 100.
@@ -485,7 +496,7 @@ Shape of the response:
 
 Find function definitions:
 ```json
-{"pattern": "^pub fn ", "glob": "*.rs"}
+{"pattern": "^pub fn ", "include": "*.rs"}
 ```
 
 Search for TODO comments:
@@ -512,9 +523,9 @@ Find where a function is called:
                     "type": "string",
                     "description": "File or directory to search (default: workspace root)"
                 },
-                "glob": {
+                "include": {
                     "type": "string",
-                    "description": "Filter files by glob pattern (e.g., '*.rs')"
+                    "description": "Glob pattern to filter files (e.g., '*.rs')"
                 },
                 "limit": {
                     "type": "integer",
@@ -570,11 +581,12 @@ Find where a function is called:
         self.grep(
             &args.pattern,
             args.path.as_deref(),
-            args.glob.as_deref(),
+            args.include.as_deref(),
             args.limit,
             args.include_content,
             args.context_before,
             args.context_after,
+            args.context,
             args.case_insensitive,
             args.include_hidden,
             &args.output_mode,
@@ -643,7 +655,7 @@ mod tests {
 
         let params = json!({
             "pattern": "fn ",
-            "glob": "*.rs"
+            "include": "*.rs"
         });
         let result = tool.execute(params).await.unwrap();
 
@@ -796,7 +808,7 @@ mod tests {
         let result = tool
             .execute(json!({
                 "pattern": "fn ",
-                "glob": "*.rs",
+                "include": "*.rs",
                 "output_mode": "files_with_matches"
             }))
             .await
@@ -824,7 +836,7 @@ mod tests {
         let result = tool
             .execute(json!({
                 "pattern": "fn ",
-                "glob": "*.rs",
+                "include": "*.rs",
                 "output_mode": "count"
             }))
             .await
