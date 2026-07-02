@@ -55,7 +55,6 @@ pub struct RouterContext {
 #[derive(Debug, Clone)]
 pub struct AgentPromptSummary {
     pub name: String,
-    pub role: super::AgentRole,
     pub description: Option<String>,
 }
 

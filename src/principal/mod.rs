@@ -12,7 +12,7 @@ pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use context::PrincipalContext;
 pub use config::{
-    AgentRole, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalCapabilities,
+    AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalCapabilities,
     PrincipalConfig, PrincipalDID, PrincipalGovernanceConfig, PrincipalIdentityConfig,
     PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
@@ -20,7 +20,7 @@ pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     PrincipalMemoryFactory, PrincipalRouterFactory,
 };
-pub use manager::{parse_agent_role, PrincipalManager, PrincipalManagerError};
+pub use manager::{PrincipalManager, PrincipalManagerError};
 pub use memory::{MemoryError, PrincipalMemory, SessionArtifact};
 pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,

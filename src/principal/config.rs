@@ -238,16 +238,6 @@ fn default_max_router_iterations() -> usize {
     5
 }
 
-/// Role of an agent prompt within a Principal.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentRole {
-    #[default]
-    Default,
-    Specialist,
-    Supervisor,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

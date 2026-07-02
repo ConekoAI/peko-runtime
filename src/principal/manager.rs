@@ -433,7 +433,6 @@ impl PrincipalManager {
                 .values()
                 .map(|p| super::router::AgentPromptSummary {
                     name: p.name.clone(),
-                    role: parse_agent_role(p.frontmatter.role.as_deref()),
                     description: p.frontmatter.description.clone(),
                 })
                 .collect();
@@ -593,14 +592,6 @@ async fn discover_agent_prompts(
     }
 
     Ok(prompts)
-}
-
-pub fn parse_agent_role(role: Option<&str>) -> super::config::AgentRole {
-    match role.unwrap_or("default").to_lowercase().as_str() {
-        "supervisor" => super::config::AgentRole::Supervisor,
-        "specialist" => super::config::AgentRole::Specialist,
-        _ => super::config::AgentRole::Default,
-    }
 }
 
 #[cfg(test)]
