@@ -274,10 +274,7 @@ impl GrepTool {
                         *counts.entry(p.to_string()).or_insert(0) += 1;
                     }
                 }
-                counts
-                    .iter()
-                    .map(|(p, c)| format!("{p}:{c}\n"))
-                    .collect()
+                counts.iter().map(|(p, c)| format!("{p}:{c}\n")).collect()
             }
             _ => unreachable!("validated above"),
         };
@@ -446,6 +443,9 @@ impl GrepTool {
 /// are set) interleaved in the right order and with the right line
 /// numbers (computed from the match line minus/plus the context
 /// position).
+///
+/// Paths are emitted with `/` separators regardless of platform so the
+/// output is stable and easy for callers (and LLMs) to parse.
 fn format_content_output(matches: &[serde_json::Value]) -> String {
     let mut out = String::new();
     for m in matches {
@@ -453,6 +453,7 @@ fn format_content_output(matches: &[serde_json::Value]) -> String {
             Some(p) => p,
             None => continue,
         };
+        let path = path.replace('\\', "/");
         let line = m.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
         if line == 0 {
             continue;
@@ -465,10 +466,7 @@ fn format_content_output(matches: &[serde_json::Value]) -> String {
                 out.push_str(&format!("{path}:{ln}:{s}\n"));
             }
         }
-        let content = m
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("");
+        let content = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
         out.push_str(&format!("{path}:{line}:{content}\n"));
         if let Some(after) = m.get("context_after").and_then(|v| v.as_array()) {
             for (i, content) in after.iter().enumerate() {
@@ -681,19 +679,36 @@ mod tests {
 
     /// Parse a ripgrep-style `output` string into `(path, line, content)`
     /// tuples. Skips blank lines.
+    ///
+    /// Handles Windows absolute paths (`C:/...` or `C:\...`) so the
+    /// drive-letter colon is not mistaken for the field separator.
     fn parse_ripgrep_output(s: &str) -> Vec<(String, u64, String)> {
+        fn split_one_line(l: &str) -> (String, u64, String) {
+            // Strip a leading Windows drive letter (e.g. `C:`) before
+            // looking for the path/line separator, then put it back.
+            let (prefix, rest) =
+                if l.len() >= 2 && l.as_bytes()[1] == b':' && l.as_bytes()[0].is_ascii_alphabetic()
+                {
+                    (&l[..2], if l.len() == 2 { "" } else { &l[2..] })
+                } else {
+                    ("", l)
+                };
+
+            if let Some(sep) = rest.find(':') {
+                let path = format!("{}{}", prefix, &rest[..sep]);
+                let rest = &rest[sep + 1..];
+                if let Some(sep2) = rest.find(':') {
+                    let line = rest[..sep2].parse().unwrap_or(0);
+                    let content = rest[sep2 + 1..].to_string();
+                    return (path, line, content);
+                }
+            }
+            (l.to_string(), 0, String::new())
+        }
+
         s.lines()
             .filter(|l| !l.is_empty())
-            .map(|l| {
-                let mut parts = l.splitn(3, ':');
-                let path = parts.next().unwrap_or("").to_string();
-                let line: u64 = parts
-                    .next()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                let content = parts.next().unwrap_or("").to_string();
-                (path, line, content)
-            })
+            .map(split_one_line)
             .collect()
     }
 
@@ -922,12 +937,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
-        fs::write(
-            temp_dir.path().join("test.txt"),
-            "a\nb\nTARGET\nd\ne",
-        )
-        .await
-        .unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "a\nb\nTARGET\nd\ne")
+            .await
+            .unwrap();
 
         let result = tool
             .execute(json!({
@@ -996,9 +1008,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
-        fs::write(temp_dir.path().join("a.rs"), "fn a() {}\nfn b() {}\nfn c() {}")
-            .await
-            .unwrap();
+        fs::write(
+            temp_dir.path().join("a.rs"),
+            "fn a() {}\nfn b() {}\nfn c() {}",
+        )
+        .await
+        .unwrap();
         fs::write(temp_dir.path().join("b.rs"), "fn d() {}")
             .await
             .unwrap();

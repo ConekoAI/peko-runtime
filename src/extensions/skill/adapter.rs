@@ -329,16 +329,24 @@ impl HookHandler for SkillPromptHandler {
 
 // parse_frontmatter now uses parsing::parse_yaml_frontmatter from shared utilities
 
-/// Replace home directory with ~ to save tokens
+/// Replace home directory with ~ to save tokens.
+///
+/// Always uses `/` as the path separator so the compacted path is
+/// consistent across platforms (especially Windows, where `Path::display`
+/// emits backslashes).
 fn compact_skill_path(path: &Path) -> String {
     let path_str = path.to_string_lossy();
-    if let Some(home) = dirs::home_dir() {
+    let compacted = if let Some(home) = dirs::home_dir() {
         let home_str = home.to_string_lossy();
         if path_str.starts_with(home_str.as_ref()) {
-            return path_str.replacen(home_str.as_ref(), "~", 1);
+            path_str.replacen(home_str.as_ref(), "~", 1)
+        } else {
+            path_str.to_string()
         }
-    }
-    path_str.to_string()
+    } else {
+        path_str.to_string()
+    };
+    compacted.replace('\\', "/")
 }
 
 /// Read the full content of a skill file
