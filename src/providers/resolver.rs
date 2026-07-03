@@ -105,7 +105,7 @@ pub struct LlmResolver {
     bootstrap_env_keys: bool,
     /// Test-only: a mock adapter to return instead of building a real
     /// provider from the catalog. Used by `LlmResolver::mock`.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     mock_adapter: Option<crate::providers::MockAdapter>,
 }
 
@@ -117,7 +117,7 @@ impl LlmResolver {
             catalog,
             secrets,
             bootstrap_env_keys: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-utils"))]
             mock_adapter: None,
         }
     }
@@ -139,7 +139,7 @@ impl LlmResolver {
     ///
     /// `catalog_path` should point to a `providers.toml` file; the parent
     /// directory is assumed to exist for the lifetime of the test.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub async fn mock(
         adapter: crate::providers::MockAdapter,
         catalog_path: impl AsRef<std::path::Path>,
@@ -278,7 +278,7 @@ impl LlmResolver {
         entry: &ProviderCatalogEntry,
         model: &ModelInfo,
     ) -> Result<Arc<Provider>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         if entry.id == "mock" {
             if let Some(ref adapter) = self.mock_adapter {
                 return Self::build_mock_provider(adapter.clone(), model);
@@ -292,7 +292,7 @@ impl LlmResolver {
     }
 
     /// Test-only helper: build a `Provider` backed by the shared mock adapter.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     fn build_mock_provider(
         adapter: crate::providers::MockAdapter,
         model: &ModelInfo,

@@ -22,6 +22,7 @@ use rand::RngCore;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+use peko::tunnel::known_runtimes::TransportPreference;
 use peko::tunnel::protocol::{
     InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload, InstanceStatus,
     InstanceType, TunnelMessage,
@@ -545,4 +546,72 @@ async fn test_tunnel_streaming_chunks_survive() {
         TunnelMessage::HeartbeatAck { seq } => assert_eq!(seq, 42),
         other => panic!("Expected HeartbeatAck, got: {:?}", other),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
+async fn test_instance_announce_publishes_transport_fields() {
+    let backend = PekohubBackend::start().await;
+    let (did, signing_key) = generate_runtime_identity();
+    seed_runtime_for_test(&backend.url, &did).await;
+
+    let (mut write, read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
+    let _read = read; // keep the tunnel alive
+
+    let principal_did = "did:peko:principal:tunnel-transport-001";
+    let instance_id = uuid::Uuid::new_v5(
+        &uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6"),
+        format!("{did}:transport-agent").as_bytes(),
+    )
+    .to_string();
+
+    let announce = TunnelMessage::InstanceAnnounce {
+        payload: InstanceAnnouncePayload {
+            id: instance_id,
+            instance_type: InstanceType::Principal,
+            name: "transport-agent".to_string(),
+            agent_did: None,
+            bundle_ref: None,
+            principal_did: Some(principal_did.to_string()),
+            runtime_display_name: Some("Transport Test Runtime".to_string()),
+            status: InstanceStatus::Online,
+            exposure: InstanceExposure::Public,
+            allowed_principals: None,
+            capabilities: Some(vec!["chat".to_string()]),
+            metadata: None,
+            transport_preference: Some(TransportPreference::Direct),
+            runtime_direct_endpoint: Some("wss://example.com:11436".to_string()),
+        },
+    };
+    write
+        .send(Message::Binary(announce.to_bytes().unwrap()))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .unwrap();
+
+    let dir_resp = client
+        .get(format!(
+            "{}/v1/principals/by-did/{}",
+            backend.url,
+            urlencoding::encode(principal_did)
+        ))
+        .send()
+        .await
+        .expect("directory request failed");
+
+    assert_eq!(
+        dir_resp.status(),
+        200,
+        "public principal directory lookup should succeed"
+    );
+    let body: serde_json::Value = dir_resp.json().await.unwrap();
+    assert_eq!(body["transportPreference"], "direct");
+    assert_eq!(body["directEndpoint"], "wss://example.com:11436");
 }

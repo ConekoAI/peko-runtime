@@ -61,11 +61,13 @@ pub struct AgentResolution {
     /// column (pre-#34 runtime); the by-did path never returns empty
     /// because the lookup key is the DID. Callers MUST treat
     /// empty-string as "no DID known".
+    #[serde(rename = "agentDid", alias = "principalDid")]
     pub agent_did: String,
     /// Resolved owner principal (`User` / `Principal` / `Public`). The
     /// outbound path doesn't currently consume this, but it's part of
     /// the response contract (the hub mirrors it for client-side
     /// trust display) and audit code wants it.
+    #[serde(rename = "ownerPrincipal", alias = "ownerSubject")]
     pub owner_principal: Subject,
     /// Visibility of the target instance. Drives the local-side check
     /// before issuing the outbound a2a (an unexposed agent shouldn't

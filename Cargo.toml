@@ -169,6 +169,14 @@ path = "tests/tunnel_security.rs"
 name = "direct_connection"
 path = "tests/direct_connection.rs"
 
+[[test]]
+name = "direct_transport_policy"
+path = "tests/direct_transport_policy.rs"
+
+[[test]]
+name = "principal_send_offline"
+path = "tests/principal_send_offline.rs"
+
 # Core tool parity harness for the Claude Code built-in tool surface.
 [[test]]
 name = "core_tools"
