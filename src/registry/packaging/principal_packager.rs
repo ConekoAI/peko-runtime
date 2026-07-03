@@ -2,12 +2,15 @@
 //!
 //! Exports Principals to `.principal` files (tar.gz archives with manifest).
 
+use crate::extensions::framework::manager::packaging::ExtensionPackager;
+use crate::extensions::framework::manager::ExtensionManager;
+use crate::extensions::framework::types::ExtensionId;
 use crate::identity::Identity;
 use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::principal_manifest::{PrincipalLayers, PrincipalManifest};
 use crate::registry::packaging::types::{compute_digest, ExtensionRef, Layer, LayerType};
 use anyhow::Context;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Export options for a Principal package.
@@ -105,10 +108,86 @@ impl PrincipalPackager {
         self
     }
 
+    /// Resolve all extensions referenced by `config.capabilities` through the
+    /// loaded `ExtensionManager`, export each installed extension to a `.ext`
+    /// package, and attach the resulting `ExtensionRef`s and embedded bytes.
+    ///
+    /// Names that cannot be resolved to an installed extension are skipped with
+    /// a warning; this avoids failing a push because a capability name points
+    /// to a not-yet-installed extension.
+    pub fn with_extensions_from_manager(
+        mut self,
+        manager: &ExtensionManager,
+        config: &PrincipalConfig,
+    ) -> anyhow::Result<Self> {
+        let mut refs = Vec::new();
+        let mut embedded = HashMap::new();
+        let mut seen = HashSet::new();
+
+        let names: Vec<&String> = config
+            .capabilities
+            .tools
+            .iter()
+            .chain(&config.capabilities.skills)
+            .chain(&config.capabilities.mcps)
+            .chain(&config.capabilities.agents)
+            .collect();
+
+        if names.is_empty() {
+            return Ok(self);
+        }
+
+        // tempfile is a dev-dependency only, so build a unique temp directory
+        // manually for production code.
+        let temp_dir = std::env::temp_dir().join(format!(
+            "peko-principal-ext-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        std::fs::create_dir_all(&temp_dir)?;
+
+        for name in names {
+            let Some(resolution) = manager.resolve_tool_name(name) else {
+                tracing::warn!(
+                    "Principal capability '{}' does not resolve to an installed extension; skipping embed",
+                    name
+                );
+                continue;
+            };
+            if !seen.insert(resolution.id.clone()) {
+                continue;
+            }
+
+            let ext_id = ExtensionId::new(&resolution.id);
+            let temp_path = temp_dir.join(format!("{}.ext", resolution.id));
+            ExtensionPackager::export(manager, &ext_id, &temp_path)
+                .with_context(|| format!("Failed to export extension {}", resolution.id))?;
+            let bytes = std::fs::read(&temp_path)
+                .with_context(|| format!("Failed to read exported extension {}", resolution.id))?;
+
+            let registry_ref = resolution
+                .registry_ref
+                .unwrap_or_else(|| resolution.id.clone());
+            refs.push(ExtensionRef {
+                id: resolution.id.clone(),
+                registry_ref,
+            });
+            embedded.insert(format!("extensions/{}.ext", resolution.id), bytes);
+        }
+
+        // Best-effort cleanup of the temp directory.
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        self.extension_refs = refs;
+        self.embedded_extensions = embedded;
+        Ok(self)
+    }
+
     /// Export the Principal to a `.principal` package.
-    pub async fn export(&self,
-        options: PrincipalExportOptions,
-    ) -> anyhow::Result<PathBuf> {
+    pub async fn export(&self, options: PrincipalExportOptions) -> anyhow::Result<PathBuf> {
         let (files, _manifest) = self.collect_files(options.clone()).await?;
         self.create_archive(&files, &options).await
     }
@@ -175,10 +254,7 @@ impl PrincipalPackager {
             .map(|d| d.0.clone())
             .unwrap_or_else(|| self.identity.did.clone());
 
-        let mut manifest = PrincipalManifest::new(&self.config.name,
-            "1.0.0",
-            &did,
-        );
+        let mut manifest = PrincipalManifest::new(&self.config.name, "1.0.0", &did);
 
         if let Some(ref desc) = options.description {
             manifest.principal.description = Some(desc.clone());
@@ -320,7 +396,10 @@ impl PrincipalPackager {
         manifest: &mut PrincipalManifest,
     ) -> anyhow::Result<()> {
         let config_toml = toml::to_string_pretty(&self.config)?;
-        files.insert("config/principal.toml".to_string(), config_toml.into_bytes());
+        files.insert(
+            "config/principal.toml".to_string(),
+            config_toml.into_bytes(),
+        );
         manifest.add_file("config/principal.toml", &files["config/principal.toml"]);
         Ok(())
     }
@@ -332,7 +411,8 @@ impl PrincipalPackager {
     ) -> anyhow::Result<()> {
         if let Some(dir) = &self.agents_dir {
             if dir.exists() {
-                self.export_dir_recursive(dir, "agents", files, manifest).await?;
+                self.export_dir_recursive(dir, "agents", files, manifest)
+                    .await?;
             }
         }
         Ok(())
@@ -362,7 +442,8 @@ impl PrincipalPackager {
     ) -> anyhow::Result<()> {
         if let Some(dir) = &self.sessions_dir {
             if dir.exists() {
-                self.export_dir_recursive(dir, "sessions", files, manifest).await?;
+                self.export_dir_recursive(dir, "sessions", files, manifest)
+                    .await?;
             }
         }
         Ok(())
@@ -398,12 +479,8 @@ impl PrincipalPackager {
             let package_path = format!("{package_prefix}/{file_name}");
 
             if src_path.is_dir() {
-                Box::pin(self.export_dir_recursive(&src_path,
-                    &package_path,
-                    files,
-                    manifest,
-                ))
-                .await?;
+                Box::pin(self.export_dir_recursive(&src_path, &package_path, files, manifest))
+                    .await?;
             } else {
                 let content = tokio::fs::read(&src_path).await?;
                 files.insert(package_path.clone(), content);
@@ -414,9 +491,7 @@ impl PrincipalPackager {
         Ok(())
     }
 
-    fn sign_manifest(&self,
-        manifest: &mut PrincipalManifest,
-    ) -> anyhow::Result<()> {
+    fn sign_manifest(&self, manifest: &mut PrincipalManifest) -> anyhow::Result<()> {
         let manifest_for_signing = PrincipalManifest {
             signatures: crate::registry::packaging::manifest::Signatures {
                 manifest: String::new(),
@@ -531,7 +606,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let agents_dir = tmp.path().join("agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("researcher.md"), b"# Researcher\nPrompt body").unwrap();
+        std::fs::write(
+            agents_dir.join("researcher.md"),
+            b"# Researcher\nPrompt body",
+        )
+        .unwrap();
 
         let out = tmp.path().join("roundtrip.principal");
         let packager = PrincipalPackager::new(config, identity).with_agents_dir(&agents_dir);
@@ -598,7 +677,10 @@ mod tests {
                 "missing bytes for layer {}",
                 layer.digest
             );
-            assert_eq!(layer.size_bytes, descriptor.layer_data[&layer.digest].len() as u64);
+            assert_eq!(
+                layer.size_bytes,
+                descriptor.layer_data[&layer.digest].len() as u64
+            );
         }
     }
 }

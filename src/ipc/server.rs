@@ -23,6 +23,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
@@ -39,7 +40,10 @@ use crate::auth::caller::CallerContext;
 use crate::auth::config::enforce_auth_for_public_bind;
 use crate::auth::permissions::AuthError;
 use crate::daemon::state::AppState;
-use crate::principal::{Principal, RouteDecision, RouterError, router::{ChannelContext, ChannelKind}};
+use crate::principal::{
+    router::{ChannelContext, ChannelKind},
+    Principal, RouteDecision, RouterError,
+};
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
 #[derive(Clone)]
@@ -754,7 +758,6 @@ impl IpcServer {
             // and `PrincipalSendStream` (streaming) below — both go
             // through `PrincipalManager::receive` and produce
             // principal-scoped sessions and audit trails.
-
             RequestPacket::AsyncSpawn {
                 request_id,
                 tool_name,
@@ -1015,15 +1018,11 @@ impl IpcServer {
             }
 
             // ─── Session CRUD ───────────────────────────────────────────────
-            RequestPacket::SessionList {
-                request_id,
-                agent,
-            } => {
+            RequestPacket::SessionList { request_id, agent } => {
                 let service = state.session_service();
                 match agent {
                     Some(agent_name) => {
-                        let session_peer =
-                            crate::auth::Subject::User("default".to_string());
+                        let session_peer = crate::auth::Subject::User("default".to_string());
                         match service
                             .list_sessions_with_active(&agent_name, &session_peer)
                             .await
@@ -1062,10 +1061,7 @@ impl IpcServer {
                 force: _,
             } => {
                 let service = state.session_service();
-                match service
-                    .delete_session(&agent, &session_id)
-                    .await
-                {
+                match service.delete_session(&agent, &session_id).await {
                     Ok(deleted) => {
                         let response = ResponsePacket::SessionRemoved {
                             request_id,
@@ -1115,25 +1111,23 @@ impl IpcServer {
                 Self::send_sink(sink, response).await?;
             }
 
-            RequestPacket::ProviderReload { request_id } => {
-                match state.reload_providers().await {
-                    Ok((providers_count, keys_count)) => {
-                        let response = ResponsePacket::ProviderReloaded {
-                            request_id,
-                            providers_count,
-                            keys_count,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("provider reload failed: {e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
+            RequestPacket::ProviderReload { request_id } => match state.reload_providers().await {
+                Ok((providers_count, keys_count)) => {
+                    let response = ResponsePacket::ProviderReloaded {
+                        request_id,
+                        providers_count,
+                        keys_count,
+                    };
+                    Self::send_sink(sink, response).await?;
                 }
-            }
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("provider reload failed: {e}"),
+                    };
+                    Self::send_sink(sink, response).await?;
+                }
+            },
 
             RequestPacket::SystemStatus { request_id } => {
                 let response = ResponsePacket::SystemStatus {
@@ -1521,10 +1515,7 @@ impl IpcServer {
                 label,
             } => {
                 let service = state.session_service();
-                match service
-                    .branch_session(&agent, &session_id, label)
-                    .await
-                {
+                match service.branch_session(&agent, &session_id, label).await {
                     Ok(result) => {
                         let response = ResponsePacket::SessionBranched {
                             request_id,
@@ -1570,10 +1561,7 @@ impl IpcServer {
                     Self::send_sink(sink, response).await?;
                     return Ok(());
                 }
-                let mut session = match service
-                    .open_session(&agent, &session_id, "default")
-                    .await
-                {
+                let mut session = match service.open_session(&agent, &session_id, "default").await {
                     Ok(s) => s,
                     Err(e) => {
                         let response = ResponsePacket::Error {
@@ -2331,7 +2319,10 @@ impl IpcServer {
                     streaming: false,
                 };
 
-                match manager.receive(principal.id.clone(), peer, message, channel).await {
+                match manager
+                    .receive(principal.id.clone(), peer, message, channel)
+                    .await
+                {
                     Ok(response) => {
                         let sent = ResponsePacket::PrincipalSent {
                             request_id,
@@ -2462,14 +2453,9 @@ impl IpcServer {
                         crate::engine::AgenticEvent::AssistantText { text, .. } => text,
                         _ => continue,
                     };
-                    let packet = ResponsePacket::PrincipalSentChunk {
-                        request_id,
-                        delta,
-                    };
+                    let packet = ResponsePacket::PrincipalSentChunk { request_id, delta };
                     if let Err(e) = Self::send_sink(sink, packet).await {
-                        tracing::warn!(
-                            "failed to send PrincipalSentChunk: {e}; aborting stream"
-                        );
+                        tracing::warn!("failed to send PrincipalSentChunk: {e}; aborting stream");
                         // Drop the root agent task — it will be
                         // cancelled when the handler returns.
                         root_agent_handle.abort();
@@ -2606,13 +2592,8 @@ impl IpcServer {
                 registry_host,
                 registry_token,
             } => {
-                match Self::push_principal_package(
-                    &state,
-                    &name,
-                    registry_host,
-                    registry_token,
-                )
-                .await
+                match Self::push_principal_package(&state, &name, registry_host, registry_token)
+                    .await
                 {
                     Ok(digest) => {
                         let response = ResponsePacket::PrincipalPushed {
@@ -2675,16 +2656,13 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match take_resolved_subject(
-                    pre_resolved_subject.as_ref(),
-                    request_id,
-                    sink,
-                )
-                .await
-                {
-                    Ok(s) => s,
-                    Err(()) => return Ok(()),
-                };
+                let subject =
+                    match take_resolved_subject(pre_resolved_subject.as_ref(), request_id, sink)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(()) => return Ok(()),
+                    };
 
                 let principal = match Self::load_principal(&state, &name).await {
                     Some(p) => p,
@@ -2730,7 +2708,9 @@ impl IpcServer {
                 {
                     Ok(_) => {
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                            if let Err(e) = dispatcher.refresh_instance_allowed_principals(&name).await {
+                            if let Err(e) =
+                                dispatcher.refresh_instance_allowed_principals(&name).await
+                            {
                                 warn!(
                                     principal = %name,
                                     "Failed to refresh allowed_users after principal grant: {e}"
@@ -2761,16 +2741,13 @@ impl IpcServer {
                 permission,
                 ..
             } => {
-                let subject = match take_resolved_subject(
-                    pre_resolved_subject.as_ref(),
-                    request_id,
-                    sink,
-                )
-                .await
-                {
-                    Ok(s) => s,
-                    Err(()) => return Ok(()),
-                };
+                let subject =
+                    match take_resolved_subject(pre_resolved_subject.as_ref(), request_id, sink)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(()) => return Ok(()),
+                    };
 
                 let principal = match Self::load_principal(&state, &name).await {
                     Some(p) => p,
@@ -2813,7 +2790,9 @@ impl IpcServer {
                 {
                     Ok(_) => {
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                            if let Err(e) = dispatcher.refresh_instance_allowed_principals(&name).await {
+                            if let Err(e) =
+                                dispatcher.refresh_instance_allowed_principals(&name).await
+                            {
                                 warn!(
                                     principal = %name,
                                     "Failed to refresh allowed_users after principal revoke: {e}"
@@ -2911,8 +2890,7 @@ impl IpcServer {
                 {
                     Ok(_) => {
                         if let Some(dispatcher) = state.tunnel_dispatcher().await {
-                            if let Err(e) =
-                                dispatcher.set_instance_status(&name, status_enum).await
+                            if let Err(e) = dispatcher.set_instance_status(&name, status_enum).await
                             {
                                 warn!(
                                     principal = %name,
@@ -2992,12 +2970,10 @@ impl IpcServer {
                         Self::send_sink(sink, response).await?;
                     }
                 }
-            }
-
-            // ── Ownership and Permission (ADR-033) ──
-            // NOTE: Team transfer/grant/revoke packets were removed along with
-            // the team management concept. Only principal-scoped permission ops
-            // remain here.
+            } // ── Ownership and Permission (ADR-033) ──
+              // NOTE: Team transfer/grant/revoke packets were removed along with
+              // the team management concept. Only principal-scoped permission ops
+              // remain here.
         }
 
         Ok(())
@@ -3492,14 +3468,13 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Export a Principal to a `.principal` package on disk.
-    async fn export_principal_package(
+    /// Build a PrincipalPackager for export/push, optionally resolving and
+    /// embedding the extensions referenced by the principal's capabilities.
+    async fn build_principal_packager(
         state: &AppState,
         name: &str,
-        output: Option<String>,
-        include_sessions: bool,
         with_extensions: bool,
-    ) -> anyhow::Result<std::path::PathBuf> {
+    ) -> anyhow::Result<crate::registry::packaging::PrincipalPackager> {
         let principal = Self::load_principal(state, name)
             .await
             .ok_or_else(|| anyhow::anyhow!("Principal '{}' not found", name))?;
@@ -3517,10 +3492,29 @@ impl IpcServer {
         );
         let identity = Self::load_principal_identity(&resolver, name, &did).await?;
 
-        let packager = crate::registry::packaging::PrincipalPackager::new(config, identity)
+        let packager = crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
             .with_agents_dir(resolver.principal_agents_dir(name))
             .with_memory_dir(resolver.principal_memory_dir(name))
             .with_sessions_dir(resolver.principal_sessions_dir(name));
+
+        if with_extensions {
+            let manager = state.extension_manager().read().await;
+            let packager = packager.with_extensions_from_manager(&manager, &config)?;
+            Ok(packager)
+        } else {
+            Ok(packager)
+        }
+    }
+
+    /// Export a Principal to a `.principal` package on disk.
+    async fn export_principal_package(
+        state: &AppState,
+        name: &str,
+        output: Option<String>,
+        include_sessions: bool,
+        with_extensions: bool,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        let packager = Self::build_principal_packager(state, name, with_extensions).await?;
 
         let opts = crate::registry::packaging::PrincipalExportOptions {
             output_path: output,
@@ -3552,7 +3546,18 @@ impl IpcServer {
             trust_policy,
             ..Default::default()
         };
-        let result = unpackager.import(opts).await?;
+        let mut result = unpackager.import(opts).await?;
+
+        // Install any embedded extension packages.
+        let (manifest, _validation) = unpackager.inspect().await?;
+        if !manifest.extensions.is_empty() {
+            let mut manager = state.extension_manager().write().await;
+            let installed = unpackager
+                .import_extensions(&manifest, &mut manager)
+                .await
+                .with_context(|| "Failed to install embedded extensions")?;
+            result.installed_extensions = installed.into_iter().map(|id| id.0).collect();
+        }
 
         // Load the freshly imported principal into the in-memory manager.
         let resolver = crate::common::paths::PathResolver::with_dirs(
@@ -3578,31 +3583,14 @@ impl IpcServer {
         registry_host: Option<String>,
         registry_token: Option<String>,
     ) -> anyhow::Result<String> {
-        let principal = Self::load_principal(state, name)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Principal '{}' not found", name))?;
-        let config = principal.config.read().await.clone();
+        let packager = Self::build_principal_packager(state, name, true).await?;
         let version = "1.0.0".to_string();
-        let did = config
-            .did
-            .as_ref()
-            .map(|d| d.0.clone())
-            .ok_or_else(|| anyhow::anyhow!("Principal '{}' has no identity DID", name))?;
-
-        let resolver = crate::common::paths::PathResolver::with_dirs(
-            state.config_dir.clone(),
-            state.data_dir.clone(),
-            state.cache_dir.clone(),
-        );
-        let identity = Self::load_principal_identity(&resolver, name, &did).await?;
-
-        let packager = crate::registry::packaging::PrincipalPackager::new(config, identity)
-            .with_agents_dir(resolver.principal_agents_dir(name))
-            .with_memory_dir(resolver.principal_memory_dir(name))
-            .with_sessions_dir(resolver.principal_sessions_dir(name));
 
         let descriptor = packager
-            .export_for_registry(crate::registry::packaging::PrincipalExportOptions::default())
+            .export_for_registry(crate::registry::packaging::PrincipalExportOptions {
+                with_extensions: true,
+                ..Default::default()
+            })
             .await?;
 
         let host = registry_host.unwrap_or_else(|| "pekohub.org".to_string());
@@ -3620,8 +3608,7 @@ impl IpcServer {
             crate::registry::AgentRegistry::new(crate::registry::AgentRegistry::default_path());
         agent_registry.init().await?;
 
-        let client =
-            crate::registry::client::RegistryClient::new(reg_config, agent_registry);
+        let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
         let remote_ref = format!("{host}/peko/principals/{name}:{version}");
         let manifest = client
             .push_principal(&descriptor, name, &version, &remote_ref, |_| {})
@@ -3666,8 +3653,7 @@ impl IpcServer {
             crate::registry::AgentRegistry::new(crate::registry::AgentRegistry::default_path());
         agent_registry.init().await?;
 
-        let client =
-            crate::registry::client::RegistryClient::new(reg_config, agent_registry);
+        let client = crate::registry::client::RegistryClient::new(reg_config, agent_registry);
 
         let temp_path = state.cache_dir.join(format!(
             "peko-pull-principal-{}.principal",
@@ -3703,7 +3689,11 @@ impl IpcServer {
             }
         };
 
-        Ok((result.name, manifest.version.clone(), manifest.digest.clone()))
+        Ok((
+            result.name,
+            manifest.version.clone(),
+            manifest.digest.clone(),
+        ))
     }
 
     /// Load a Principal's `Identity` (with keypair) from its identity store.
@@ -3737,14 +3727,18 @@ impl IpcServer {
         let config_path = resolver.principal_config(name);
         if config_path.exists() {
             if let Err(e) = manager.load(&config_path).await {
-                warn!("Failed to load principal '{}' from {}: {}", name, config_path.display(), e);
+                warn!(
+                    "Failed to load principal '{}' from {}: {}",
+                    name,
+                    config_path.display(),
+                    e
+                );
                 return None;
             }
         }
 
         manager.get_by_name(name).await
     }
-
 
     /// Send a response packet back to the client via the per-request sink.
     ///

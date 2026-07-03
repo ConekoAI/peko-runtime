@@ -347,6 +347,20 @@ impl ExtensionManager {
             .with_context(|| format!("Failed to parse manifest at {path:?}"))
     }
 
+    /// Populate `manifest.source` from the persisted `.source` file when it
+    /// is not already set. This mirrors the behavior in `try_load_extension`
+    /// and is reused after `install` so freshly-installed extensions expose
+    /// their registry reference for principal packaging.
+    fn populate_source_from_storage(&mut self, id: &ExtensionId) {
+        if let Some(loaded) = self.extensions.get_mut(id) {
+            if loaded.manifest.source.is_none() {
+                if let Some(source) = self.storage.read_source(id) {
+                    loaded.manifest.source = Some(source);
+                }
+            }
+        }
+    }
+
     pub async fn load_all(&mut self) -> Result<LoadReport> {
         let mut report = LoadReport::default();
         let mut scanned_paths = std::collections::HashSet::new();
@@ -434,13 +448,7 @@ impl ExtensionManager {
         self.extensions.insert(extension_id.clone(), loaded_ext);
 
         // Try to populate source from .source file if not already set
-        if let Some(loaded) = self.extensions.get_mut(&extension_id) {
-            if loaded.manifest.source.is_none() {
-                if let Some(source) = self.storage.read_source(&extension_id) {
-                    loaded.manifest.source = Some(source);
-                }
-            }
-        }
+        self.populate_source_from_storage(&extension_id);
 
         Ok(extension_id)
     }
@@ -517,6 +525,9 @@ impl ExtensionManager {
         };
 
         self.extensions.insert(extension_id.clone(), loaded_ext);
+
+        // Expose the persisted registry reference for packaging.
+        self.populate_source_from_storage(&extension_id);
 
         info!("Installed extension '{}' ({})", extension_id, ext_type_name);
 
