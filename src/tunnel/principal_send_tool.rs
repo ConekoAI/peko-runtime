@@ -54,6 +54,7 @@ use crate::tools::core::Tool;
 use crate::tunnel::a2a_audit;
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
+use crate::tunnel::direct::routing::{select_transport, TransportChoice};
 use crate::tunnel::hub_directory::{DirectoryError, ResolvedExposure};
 use crate::tunnel::TunnelMessage;
 
@@ -296,6 +297,14 @@ Send a message to another Principal's root agent and receive its response. This 
         let ctx = &self.cross_runtime;
         let request_id = uuid::Uuid::new_v4().to_string();
 
+        // Choose transport based on local known-runtimes registry.
+        // The tunnel is the default; direct is used when the peer is
+        // explicitly authorized and a direct endpoint is configured.
+        let transport = {
+            let known = ctx.known_runtimes.read().await;
+            select_transport(&resolution.runtime_id, None, &*known)
+        };
+
         let signed = SignedFields {
             request_id: &request_id,
             caller_runtime_id: &ctx.caller_runtime_id,
@@ -326,26 +335,51 @@ Send a message to another Principal's root agent and receive its response. This 
             Err(err) => return Ok(self.error_value(&err.to_string())),
         };
 
-        // Send over the live tunnel handle. The handle slot is `None`
-        // when the tunnel isn't currently connected — same idiom as
-        // the legacy `a2a_send::execute_remote` path.
-        let tunnel_handle = {
-            let guard = ctx.tunnel.read().await;
-            match guard.clone() {
-                Some(h) => h,
-                None => {
-                    ctx.pending.discard(&request_id);
-                    return Ok(self.error_value(
-                        "tunnel is not currently connected; principal_send cannot dispatch \
-                         cross-runtime until the pekohub tunnel is up",
-                    ));
+        // Resolve a handle for the chosen transport.
+        let handle = match transport {
+            TransportChoice::Tunnel => {
+                let guard = ctx.tunnel.read().await;
+                match guard.clone() {
+                    Some(h) => h,
+                    None => {
+                        ctx.pending.discard(&request_id);
+                        return Ok(self.error_value(
+                            "tunnel is not currently connected; principal_send cannot dispatch \
+                             cross-runtime until the pekohub tunnel is up",
+                        ));
+                    }
                 }
             }
+            TransportChoice::Direct { endpoint } => {
+                let tls = {
+                    let known = ctx.known_runtimes.read().await;
+                    known
+                        .find(&resolution.runtime_id)
+                        .and_then(|p| p.direct_tls.clone())
+                };
+                match ctx
+                    .direct_manager
+                    .get_or_connect(&resolution.runtime_id, &endpoint, tls.as_ref())
+                    .await
+                {
+                    Ok(h) => h,
+                    Err(err) => {
+                        ctx.pending.discard(&request_id);
+                        return Ok(self.error_value(&format!(
+                            "direct connection failed for {endpoint}: {err}"
+                        )));
+                    }
+                }
+            }
+            TransportChoice::Unavailable { reason } => {
+                ctx.pending.discard(&request_id);
+                return Ok(self.error_value(&reason));
+            }
         };
-        if let Err(err) = tunnel_handle.send(envelope) {
+        if let Err(err) = handle.send(envelope) {
             ctx.pending.discard(&request_id);
             return Ok(self.error_value(&format!(
-                "tunnel send failed: {err} (tunnel may be disconnected)"
+                "cross-runtime send failed: {err} (transport may be disconnected)"
             )));
         }
 
@@ -431,13 +465,25 @@ mod tests {
     /// (but unfilled) tunnel slot. The fake directory resolves a
     /// single test DID to a known `runtime_id`.
     fn make_test_ctx() -> Arc<CrossRuntimeA2aCtx> {
+        use crate::tunnel::direct::DirectConnectionManager;
         use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use crate::tunnel::known_runtimes::KnownRuntimes;
+        let pending = Arc::new(PendingA2aResponses::new());
         Arc::new(CrossRuntimeA2aCtx {
             directory: Arc::new(FakeAgentDirectory::new()),
-            pending: Arc::new(PendingA2aResponses::new()),
-            signing_key: Arc::new(SigningKey::from_bytes(&[7u8; 32])),
+            pending: pending.clone(),
+            signing_key: Arc::new(SigningKey::from_bytes(&[7u8; 32]
+            )),
             caller_runtime_id: "did:key:test-runtime".to_string(),
             tunnel: Arc::new(RwLock::new(None)),
+            direct_manager: Arc::new(DirectConnectionManager::new(
+                Arc::new(SigningKey::from_bytes(&[7u8; 32]
+            )),
+                "did:key:test-runtime".to_string(),
+                true,
+                pending,
+            )),
+            known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
             response_timeout: Duration::from_millis(50),
         })
     }
@@ -555,13 +601,22 @@ mod tests {
         caller_runtime_id: String,
         outbound_tx: tokio::sync::mpsc::Sender<TunnelMessage>,
     ) -> Arc<CrossRuntimeA2aCtx> {
+        use crate::tunnel::direct::DirectConnectionManager;
+        use crate::tunnel::known_runtimes::KnownRuntimes;
         let tunnel_handle = TunnelHandle::new(outbound_tx);
         Arc::new(CrossRuntimeA2aCtx {
             directory: directory as Arc<dyn crate::tunnel::hub_directory::AgentDirectory>,
-            pending,
+            pending: pending.clone(),
             signing_key,
-            caller_runtime_id,
+            caller_runtime_id: caller_runtime_id.clone(),
             tunnel: Arc::new(RwLock::new(Some(tunnel_handle))),
+            direct_manager: Arc::new(DirectConnectionManager::new(
+                Arc::new(SigningKey::from_bytes(&[7u8; 32])),
+                caller_runtime_id,
+                true,
+                pending,
+            )),
+            known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
             response_timeout: Duration::from_secs(5),
         })
     }

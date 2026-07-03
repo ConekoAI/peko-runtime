@@ -81,6 +81,9 @@ pub struct NetworkConfig {
     pub request_timeout_seconds: u64,
     /// Maximum request body size (MB)
     pub max_body_size_mb: usize,
+    /// Direct cross-runtime connection configuration (advanced users)
+    #[serde(default)]
+    pub direct: DirectNetworkConfig,
 }
 
 impl Default for NetworkConfig {
@@ -94,8 +97,71 @@ impl Default for NetworkConfig {
             cors_origins: vec!["*".to_string()],
             request_timeout_seconds: 30,
             max_body_size_mb: 10,
+            direct: DirectNetworkConfig::default(),
         }
     }
+}
+
+/// Direct cross-runtime connection configuration.
+///
+/// Allows runtimes to accept inbound direct connections from other
+/// authorized runtimes without routing through the PekoHub tunnel.
+/// Disabled by default; intended for advanced users who control their
+/// own network topology.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectNetworkConfig {
+    /// Master enable for inbound direct connections.
+    #[serde(default = "default_direct_enabled")]
+    pub enabled: bool,
+    /// Address the inbound direct server binds to.
+    #[serde(default = "default_direct_bind_address")]
+    pub bind_address: String,
+    /// Port the inbound direct server listens on.
+    #[serde(default = "default_direct_port")]
+    pub port: u16,
+    /// Require TLS for inbound direct connections.
+    #[serde(default = "default_direct_tls_required")]
+    pub tls_required: bool,
+    /// Server certificate chain (PEM) for inbound TLS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cert_path: Option<PathBuf>,
+    /// Server private key (PEM) for inbound TLS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_key_path: Option<PathBuf>,
+    /// Optional CA to require for inbound mTLS client auth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_client_ca_path: Option<PathBuf>,
+}
+
+impl Default for DirectNetworkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_direct_enabled(),
+            bind_address: default_direct_bind_address(),
+            port: default_direct_port(),
+            tls_required: default_direct_tls_required(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            tls_client_ca_path: None,
+        }
+    }
+}
+
+fn default_direct_enabled() -> bool {
+    false
+}
+
+fn default_direct_bind_address() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_direct_port() -> u16 {
+    11436
+}
+
+fn default_direct_tls_required() -> bool {
+    true
 }
 
 /// Logging configuration
@@ -400,13 +466,66 @@ mod tests {
     }
 
     #[test]
-    fn test_config_roundtrip() {
-        let config = PekoConfig::default();
-        let toml = toml::to_string(&config).unwrap();
-        let parsed: PekoConfig = toml::from_str(&toml).unwrap();
+    fn test_direct_network_config_defaults() {
+        let direct = DirectNetworkConfig::default();
+        assert!(!direct.enabled);
+        assert_eq!(direct.bind_address, "0.0.0.0");
+        assert_eq!(direct.port, 11436);
+        assert!(direct.tls_required);
+        assert!(direct.tls_cert_path.is_none());
+        assert!(direct.tls_key_path.is_none());
+        assert!(direct.tls_client_ca_path.is_none());
+    }
 
-        assert_eq!(parsed.app_name, config.app_name);
-        assert_eq!(parsed.network.port, config.network.port);
+    #[test]
+    fn test_direct_network_config_toml_roundtrip() {
+        let direct = DirectNetworkConfig::default();
+        let toml = toml::to_string(&direct).unwrap();
+        let parsed: DirectNetworkConfig = toml::from_str(&toml).unwrap();
+        assert_eq!(parsed.enabled, direct.enabled);
+        assert_eq!(parsed.bind_address, direct.bind_address);
+        assert_eq!(parsed.port, direct.port);
+        assert_eq!(parsed.tls_required, direct.tls_required);
+    }
+
+    #[test]
+    fn test_network_config_direct_default() {
+        let config = NetworkConfig::default();
+        assert!(!config.direct.enabled);
+        assert_eq!(config.direct.port, 11436);
+    }
+
+    #[test]
+    fn test_network_config_direct_toml_parsing() {
+        let toml = r#"
+            bind_address = "127.0.0.1"
+            port = 8080
+            tls_enabled = false
+            cors_origins = ["*"]
+            request_timeout_seconds = 30
+            max_body_size_mb = 10
+
+            [direct]
+            enabled = true
+            bind_address = "192.168.1.5"
+            port = 11437
+            tls_required = true
+            tls_cert_path = "/etc/peko/direct.crt"
+            tls_key_path = "/etc/peko/direct.key"
+        "#;
+        let config: NetworkConfig = toml::from_str(toml).unwrap();
+        assert!(config.direct.enabled);
+        assert_eq!(config.direct.bind_address, "192.168.1.5");
+        assert_eq!(config.direct.port, 11437);
+        assert!(config.direct.tls_required);
+        assert_eq!(
+            config.direct.tls_cert_path,
+            Some(PathBuf::from("/etc/peko/direct.crt"))
+        );
+        assert_eq!(
+            config.direct.tls_key_path,
+            Some(PathBuf::from("/etc/peko/direct.key"))
+        );
     }
 
     #[test]

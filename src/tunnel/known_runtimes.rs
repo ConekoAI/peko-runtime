@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::PathBuf;
 use tracing::{info, warn};
 
 use crate::common::paths::PathResolver;
@@ -22,6 +23,48 @@ pub enum TrustLevel {
     Untrusted,
 }
 
+/// Transport preference for cross-runtime communication with a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportPreference {
+    /// Prefer direct if a direct endpoint is configured and trusted,
+    /// otherwise fall back to the PekoHub tunnel.
+    Auto,
+    /// Always use the PekoHub tunnel.
+    Tunnel,
+    /// Always use the direct endpoint; fail if one is not configured.
+    Direct,
+}
+
+impl Default for TransportPreference {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// Per-peer TLS configuration for direct connections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectTlsConfig {
+    /// Custom CA certificate path (PEM) for verifying the peer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_path: Option<PathBuf>,
+    /// Client certificate path (PEM) for mTLS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert_path: Option<PathBuf>,
+    /// Client private key path (PEM) for mTLS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_path: Option<PathBuf>,
+    /// Expected SHA-256 fingerprint (base64 or hex) of the peer's
+    /// end-entity certificate for pinning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_cert_sha256: Option<String>,
+    /// Allow plaintext connections for this peer. Only intended for
+    /// local testing; ignored when the global `tls_required` is true.
+    #[serde(default)]
+    pub allow_plaintext: bool,
+}
+
 /// A known peer runtime
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnownRuntime {
@@ -31,8 +74,17 @@ pub struct KnownRuntime {
     pub display_name: String,
     /// When this runtime was last seen
     pub last_seen: DateTime<Utc>,
-    /// Connection endpoint (if known)
+    /// Connection endpoint (if known) — typically the PekoHub tunnel endpoint.
     pub connection_endpoint: Option<String>,
+    /// Direct connection endpoint, e.g. `wss://192.168.1.10:11436`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_endpoint: Option<String>,
+    /// Preferred transport for this peer.
+    #[serde(default)]
+    pub transport_preference: TransportPreference,
+    /// TLS configuration for direct connections to this peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_tls: Option<DirectTlsConfig>,
     /// Trust level
     pub trust_level: TrustLevel,
 }
@@ -117,6 +169,28 @@ impl KnownRuntimes {
         connection_endpoint: Option<String>,
         trust_level: TrustLevel,
     ) {
+        self.register_with_direct(
+            runtime_id,
+            display_name,
+            connection_endpoint,
+            None,
+            TransportPreference::Auto,
+            None,
+            trust_level,
+        );
+    }
+
+    /// Register a new runtime (or update existing) with direct-mode fields.
+    pub fn register_with_direct(
+        &mut self,
+        runtime_id: impl Into<String>,
+        display_name: impl Into<String>,
+        connection_endpoint: Option<String>,
+        direct_endpoint: Option<String>,
+        transport_preference: TransportPreference,
+        direct_tls: Option<DirectTlsConfig>,
+        trust_level: TrustLevel,
+    ) {
         let runtime_id = runtime_id.into();
         let display_name = display_name.into();
 
@@ -128,6 +202,9 @@ impl KnownRuntimes {
             existing.display_name = display_name;
             existing.last_seen = Utc::now();
             existing.connection_endpoint = connection_endpoint;
+            existing.direct_endpoint = direct_endpoint;
+            existing.transport_preference = transport_preference;
+            existing.direct_tls = direct_tls;
             existing.trust_level = trust_level;
             info!("Updated known runtime: {}", runtime_id);
         } else {
@@ -136,6 +213,9 @@ impl KnownRuntimes {
                 display_name,
                 last_seen: Utc::now(),
                 connection_endpoint,
+                direct_endpoint,
+                transport_preference,
+                direct_tls,
                 trust_level,
             });
             info!("Registered new runtime: {}", runtime_id);
@@ -277,20 +357,88 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_roundtrip() {
+    fn test_register_with_direct() {
         let mut registry = KnownRuntimes::new();
-        registry.register(
+        registry.register_with_direct(
             "did:key:z6MkA",
             "Runtime A",
-            Some("tcp://host:8080".to_string()),
-            TrustLevel::SelfRuntime,
+            Some("wss://hub.peko/runtime-a".to_string()),
+            Some("tls://192.168.1.10:11436".to_string()),
+            TransportPreference::Direct,
+            Some(DirectTlsConfig {
+                ca_path: Some(PathBuf::from("/etc/peko/ca.crt")),
+                cert_path: Some(PathBuf::from("/etc/peko/client.crt")),
+                key_path: Some(PathBuf::from("/etc/peko/client.key")),
+                pinned_cert_sha256: Some("abc123".to_string()),
+                allow_plaintext: false,
+            }),
+            TrustLevel::Authorized,
+        );
+
+        let runtime = registry.find("did:key:z6MkA").unwrap();
+        assert_eq!(runtime.transport_preference, TransportPreference::Direct);
+        assert_eq!(
+            runtime.direct_endpoint,
+            Some("tls://192.168.1.10:11436".to_string())
+        );
+        assert!(runtime.direct_tls.is_some());
+        let tls = runtime.direct_tls.as_ref().unwrap();
+        assert_eq!(tls.pinned_cert_sha256.as_deref(), Some("abc123"));
+        assert!(!tls.allow_plaintext);
+    }
+
+    #[test]
+    fn test_serde_roundtrip_with_direct_fields() {
+        let mut registry = KnownRuntimes::new();
+        registry.register_with_direct(
+            "did:key:z6MkA",
+            "Runtime A",
+            None,
+            Some("wss://192.168.1.10:11436".to_string()),
+            TransportPreference::Auto,
+            Some(DirectTlsConfig {
+                ca_path: None,
+                cert_path: None,
+                key_path: None,
+                pinned_cert_sha256: Some("sha256-of-cert".to_string()),
+                allow_plaintext: true,
+            }),
+            TrustLevel::Authorized,
         );
 
         let toml_str = toml::to_string_pretty(&registry).unwrap();
         let parsed: KnownRuntimes = toml::from_str(&toml_str).unwrap();
 
         assert_eq!(parsed.runtimes.len(), 1);
-        assert_eq!(parsed.runtimes[0].runtime_id, "did:key:z6MkA");
-        assert_eq!(parsed.runtimes[0].trust_level, TrustLevel::SelfRuntime);
+        let runtime = &parsed.runtimes[0];
+        assert_eq!(runtime.runtime_id, "did:key:z6MkA");
+        assert_eq!(runtime.transport_preference, TransportPreference::Auto);
+        assert_eq!(
+            runtime.direct_endpoint,
+            Some("wss://192.168.1.10:11436".to_string())
+        );
+        let tls = runtime.direct_tls.as_ref().unwrap();
+        assert_eq!(
+            tls.pinned_cert_sha256.as_deref(),
+            Some("sha256-of-cert")
+        );
+        assert!(tls.allow_plaintext);
+    }
+
+    #[test]
+    fn test_serde_migrates_old_format() {
+        // Old known_runtimes.toml files do not contain direct-mode fields.
+        let old_toml = r#"
+[[runtimes]]
+runtime_id = "did:key:z6MkA"
+display_name = "Runtime A"
+last_seen = "2024-01-01T00:00:00Z"
+trust_level = "authorized"
+"#;
+        let parsed: KnownRuntimes = toml::from_str(old_toml).unwrap();
+        assert_eq!(parsed.runtimes.len(), 1);
+        assert_eq!(parsed.runtimes[0].transport_preference, TransportPreference::Auto);
+        assert!(parsed.runtimes[0].direct_endpoint.is_none());
+        assert!(parsed.runtimes[0].direct_tls.is_none());
     }
 }

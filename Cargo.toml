@@ -99,6 +99,7 @@ tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 rustls = "0.22"
 rustls-pemfile = "1"
+tokio-rustls = "0.25"
 webpki-roots = "0.26"
 
 # Windows system calls
@@ -163,6 +164,10 @@ path = "tests/scenarios/s6_principal_grant_revoke_roundtrip.rs"
 [[test]]
 name = "tunnel_security"
 path = "tests/tunnel_security.rs"
+
+[[test]]
+name = "direct_connection"
+path = "tests/direct_connection.rs"
 
 # Core tool parity harness for the Claude Code built-in tool surface.
 [[test]]

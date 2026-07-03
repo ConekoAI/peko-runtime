@@ -11,7 +11,6 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
 use futures::{SinkExt, StreamExt};
 use rand::RngCore;
-use sha2::Digest;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, timeout};
 use tokio_tungstenite::{
@@ -67,6 +66,12 @@ impl TunnelHandle {
         Self { tx }
     }
 
+    /// Create a new handle from a sender (internal use by transports).
+    #[must_use]
+    pub(crate) fn from_sender(tx: mpsc::Sender<TunnelMessage>) -> Self {
+        Self { tx }
+    }
+
     /// Send a message through the tunnel.
     ///
     /// Returns an error immediately if the outbound buffer is full or the
@@ -75,6 +80,12 @@ impl TunnelHandle {
         self.tx
             .try_send(msg)
             .map_err(|e| anyhow::anyhow!("Tunnel send failed: {e}"))
+    }
+
+    /// Returns true if the underlying channel has been closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.tx.is_closed()
     }
 
     /// Send a proxied response back to PekoHub
@@ -744,171 +755,15 @@ impl TunnelClient {
             return Ok(None);
         };
 
-        let mut roots = rustls::RootCertStore::empty();
+        let config = crate::tunnel::direct::tls::build_client_config(
+            tls.ca_path.as_deref(),
+            tls.cert_path.as_deref(),
+            tls.key_path.as_deref(),
+            tls.pinned_cert_sha256.as_deref(),
+        )
+        .map_err(|e| TunnelError::AuthFailed(e.to_string()))?;
 
-        // Load custom CA if provided, otherwise fall back to WebPKI roots.
-        if let Some(ca_path) = &tls.ca_path {
-            let ca_pem = std::fs::read(ca_path)
-                .map_err(|e| TunnelError::AuthFailed(format!("Failed to read CA file: {e}")))?;
-            let certs = rustls_pemfile::certs(&mut ca_pem.as_slice())
-                .map_err(|e| TunnelError::AuthFailed(format!("Failed to parse CA file: {e}")))?;
-            if certs.is_empty() {
-                return Err(TunnelError::AuthFailed(
-                    "CA file contains no valid certificates".to_string(),
-                ));
-            }
-            for cert in certs {
-                roots.add(cert.into()).map_err(|e| {
-                    TunnelError::AuthFailed(format!("Failed to add CA certificate: {e}"))
-                })?;
-            }
-        } else {
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        }
-
-        let roots = Arc::new(roots);
-
-        // Build the default WebPKI verifier up front; the pinning wrapper
-        // delegates chain validation to it.
-        let default_verifier = rustls::client::WebPkiServerVerifier::builder(roots.clone())
-            .build()
-            .map_err(|e| TunnelError::AuthFailed(format!("Failed to build TLS verifier: {e}")))?;
-
-        let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
-
-        // mTLS client certificate.
-        let mut config = if let (Some(cert_path), Some(key_path)) =
-            (&tls.cert_path, &tls.key_path)
-        {
-            let cert_chain = load_cert_chain(cert_path)?;
-            let key = load_private_key(key_path)?;
-            builder
-                .with_client_auth_cert(cert_chain, key)
-                .map_err(|e| TunnelError::AuthFailed(format!("Invalid client cert/key: {e}")))?
-        } else {
-            builder.with_no_client_auth()
-        };
-
-        // Certificate pinning wraps the default verifier.
-        if let Some(pinned_sha256) = &tls.pinned_cert_sha256 {
-            let expected = BASE64
-                .decode(pinned_sha256)
-                .map_err(|e| TunnelError::AuthFailed(format!("Invalid pinned_cert_sha256: {e}")))?;
-            config
-                .dangerous()
-                .set_certificate_verifier(Arc::new(PinningServerCertVerifier {
-                    inner: default_verifier,
-                    expected,
-                }));
-        }
-
-        Ok(Some(Connector::Rustls(Arc::new(config))))
-    }
-}
-
-/// Load a PEM-encoded certificate chain from disk.
-fn load_cert_chain(
-    path: &std::path::Path,
-) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, TunnelError> {
-    let pem = std::fs::read(path)
-        .map_err(|e| TunnelError::AuthFailed(format!("Failed to read client cert: {e}")))?;
-    let certs = rustls_pemfile::certs(&mut pem.as_slice())
-        .map_err(|e| TunnelError::AuthFailed(format!("Failed to parse client cert: {e}")))?;
-    if certs.is_empty() {
-        return Err(TunnelError::AuthFailed(
-            "Client cert file contains no valid certificates".to_string(),
-        ));
-    }
-    Ok(certs.into_iter().map(|c| c.into()).collect())
-}
-
-/// Load a PEM-encoded private key from disk.
-fn load_private_key(
-    path: &std::path::Path,
-) -> Result<rustls::pki_types::PrivateKeyDer<'static>, TunnelError> {
-    let pem = std::fs::read(path)
-        .map_err(|e| TunnelError::AuthFailed(format!("Failed to read private key: {e}")))?;
-
-    if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut pem.as_slice())
-        .map_err(|e| TunnelError::AuthFailed(format!("Failed to parse PKCS#8 key: {e}")))?
-        .into_iter()
-        .next()
-    {
-        return Ok(rustls::pki_types::PrivateKeyDer::try_from(key)
-            .map_err(|e| TunnelError::AuthFailed(format!("Invalid PKCS#8 key: {e}")))?);
-    }
-
-    if let Some(key) = rustls_pemfile::rsa_private_keys(&mut pem.as_slice())
-        .map_err(|e| TunnelError::AuthFailed(format!("Failed to parse RSA key: {e}")))?
-        .into_iter()
-        .next()
-    {
-        return Ok(rustls::pki_types::PrivateKeyDer::try_from(key)
-            .map_err(|e| TunnelError::AuthFailed(format!("Invalid RSA key: {e}")))?);
-    }
-
-    Err(TunnelError::AuthFailed(
-        "No supported private key found in key file".to_string(),
-    ))
-}
-
-/// Verifier that delegates to the default WebPKI verifier and then checks
-/// the end-entity certificate fingerprint against a configured pin.
-#[derive(Debug)]
-struct PinningServerCertVerifier {
-    inner: Arc<dyn rustls::client::danger::ServerCertVerifier>,
-    expected: Vec<u8>,
-}
-
-impl rustls::client::danger::ServerCertVerifier for PinningServerCertVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &rustls::pki_types::CertificateDer<'_>,
-        intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        server_name: &rustls::pki_types::ServerName<'_>,
-        ocsp_response: &[u8],
-        now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        self.inner.verify_server_cert(
-            end_entity,
-            intermediates,
-            server_name,
-            ocsp_response,
-            now,
-        )?;
-
-        let actual = sha2::Sha256::digest(end_entity.as_ref());
-        if actual.as_slice() != self.expected {
-            return Err(rustls::Error::General(
-                "server certificate does not match configured pin".to_string(),
-            ));
-        }
-
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.inner
-            .verify_tls12_signature(message, cert, dss)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.inner
-            .verify_tls13_signature(message, cert, dss)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.inner.supported_verify_schemes()
+        Ok(Some(Connector::Rustls(config)))
     }
 }
 
@@ -1147,7 +1002,7 @@ mod tests {
         };
         let result = TunnelClient::build_tls_connector(Some(&tls));
         match result {
-            Err(e) => assert!(e.to_string().contains("Failed to read CA file")),
+            Err(e) => assert!(e.to_string().contains("Failed to read TLS file")),
             Ok(_) => panic!("expected error for missing CA file"),
         }
     }
