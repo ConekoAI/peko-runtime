@@ -97,7 +97,10 @@ jobs:
               - '.github/workflows/integration.yml'
             windows_code:
               - 'src/common/process/**'
+              - 'src/extensions/skill/adapter.rs'
               - 'src/ipc/pipe_security.rs'
+              - 'src/tools/builtin/fs/grep.rs'
+              - 'src/tools/builtin/skill/preprocess.rs'
               - 'tests/common/cli.rs'
 
   # ── Tier 0b: Lint — Issue-015 boundary rules, every PR ───────────────
