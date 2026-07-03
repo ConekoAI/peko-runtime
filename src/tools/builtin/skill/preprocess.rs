@@ -866,6 +866,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn run_shell_blocking_runs_in_workspace() {
         let ws = tmp_workspace();
         // `pwd` should resolve to the workspace path.
@@ -875,6 +876,25 @@ mod tests {
         let pwd = out.stdout.trim();
         // Resolve symlinks / canonicalize to handle macOS /private/var
         // vs /var, /tmp vs /private/tmp.
+        let canonical_ws = ws
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| ws.path().to_path_buf());
+        let canonical_pwd = PathBuf::from(pwd)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(pwd));
+        assert_eq!(canonical_pwd, canonical_ws);
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn run_shell_blocking_runs_in_workspace() {
+        let ws = tmp_workspace();
+        // PowerShell's `pwd` formats as a table; use the raw path provider.
+        let out = run_shell_blocking("$PWD.Path", ws.path(), 5_000, 100)
+            .await
+            .unwrap();
+        let pwd = out.stdout.trim();
         let canonical_ws = ws
             .path()
             .canonicalize()
