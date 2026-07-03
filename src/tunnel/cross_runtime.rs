@@ -16,14 +16,18 @@ use tokio::sync::RwLock;
 
 use ed25519_dalek::SigningKey;
 
+use crate::principal::PrincipalManager;
+use crate::tunnel::direct::DirectConnectionManager;
 use crate::tunnel::hub_directory::AgentDirectory;
+use crate::tunnel::known_runtimes::KnownRuntimes;
 use crate::tunnel::{PendingA2aResponses, TunnelHandle};
 
 /// Cross-runtime a2a dispatch context. Holds the dependencies the
 /// outbound `principal_send` path needs: the directory client to resolve
 /// the target, the pending registry to correlate the response, the
 /// signing key for the envelope, the caller's runtime_id, the live
-/// tunnel handle slot, and the per-call response timeout.
+/// tunnel handle slot, the direct connection manager, the known-runtimes
+/// registry for transport selection, and the per-call response timeout.
 ///
 /// Built once at daemon-state startup (Slice B' / B+C) and held
 /// behind an `Arc` so every per-agent `PrincipalSendTool` instance shares
@@ -63,6 +67,18 @@ pub struct CrossRuntimeA2aCtx {
     /// the ctx.
     pub tunnel: Arc<RwLock<Option<TunnelHandle>>>,
 
+    /// Manager for direct connections to peer runtimes. Used when
+    /// transport selection chooses the direct path.
+    pub direct_manager: Arc<DirectConnectionManager>,
+
+    /// Local known-runtimes registry. Used to decide whether to use
+    /// the PekoHub tunnel or a direct connection for a given peer.
+    pub known_runtimes: Arc<RwLock<KnownRuntimes>>,
+
+    /// Principal manager for the caller's runtime. Enables the local
+    /// same-runtime shortcut in `principal_send`.
+    pub principal_manager: Arc<PrincipalManager>,
+
     /// How long to wait for the matching `AgentToAgentResponse`
     /// before surfacing a `Timeout` error to the calling agent.
     /// Production default is 60s (configurable via daemon config
@@ -78,6 +94,9 @@ impl std::fmt::Debug for CrossRuntimeA2aCtx {
             .field("signing_key", &"<redacted: ed25519 SigningKey>")
             .field("caller_runtime_id", &self.caller_runtime_id)
             .field("tunnel", &self.tunnel)
+            .field("direct_manager", &"<DirectConnectionManager>")
+            .field("known_runtimes", &"<KnownRuntimes>")
+            .field("principal_manager", &"<PrincipalManager>")
             .field("response_timeout", &self.response_timeout)
             .finish()
     }

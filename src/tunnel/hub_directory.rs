@@ -6,8 +6,8 @@
 //! over the tunnel. The hub-side surface is shipped via pekohub#14
 //! (merged Jun 19 2026, commit `2995164`):
 //!
-//!   * `GET /v1/agents/by-did/:did`
-//!   * `GET /v1/agents/by-handle/:owner/:agent_name`
+//!   * `GET /v1/principals/by-did/:did`
+//!   * `GET /v1/principals/by-handle/:owner/:agent_name`
 //!
 //! ## Authentication
 //!
@@ -40,12 +40,12 @@ use thiserror::Error;
 
 use crate::auth::Subject;
 
-/// Hit payload returned by the hub's `/v1/agents/by-did/:did` and
-/// `/v1/agents/by-handle/:owner/:agent_name` endpoints.
+/// Hit payload returned by the hub's `/v1/principals/by-did/:did` and
+/// `/v1/principals/by-handle/:owner/:agent_name` endpoints.
 ///
-/// Field names match pekohub's `AgentTargetResolution` (camelCase on the
-/// wire); see `pekohub/backend/src/services/instances.ts:679-690` for
-/// the source of truth. The pekohub merge commit is `2995164`.
+/// Field names match pekohub's `PrincipalTargetResolution` (camelCase on the
+/// wire); see `pekohub/backend/src/services/instances.ts` for the source of
+/// truth.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentResolution {
@@ -61,16 +61,27 @@ pub struct AgentResolution {
     /// column (pre-#34 runtime); the by-did path never returns empty
     /// because the lookup key is the DID. Callers MUST treat
     /// empty-string as "no DID known".
+    #[serde(rename = "agentDid", alias = "principalDid")]
     pub agent_did: String,
     /// Resolved owner principal (`User` / `Principal` / `Public`). The
     /// outbound path doesn't currently consume this, but it's part of
     /// the response contract (the hub mirrors it for client-side
     /// trust display) and audit code wants it.
+    #[serde(rename = "ownerPrincipal", alias = "ownerSubject")]
     pub owner_principal: Subject,
     /// Visibility of the target instance. Drives the local-side check
     /// before issuing the outbound a2a (an unexposed agent shouldn't
     /// be addressable even if the directory leaks it).
     pub exposure: ResolvedExposure,
+    /// Callee transport preference for cross-runtime `principal_send`.
+    /// The principal owns the connection-method preference; the caller
+    /// learns it from the directory and respects it.
+    pub transport_preference: crate::tunnel::known_runtimes::TransportPreference,
+    /// Runtime-level advertised direct endpoint for inbound direct
+    /// cross-runtime connections. Present only when the hosting runtime
+    /// has configured and advertised one.
+    #[serde(default)]
+    pub direct_endpoint: Option<String>,
 }
 
 /// Mirror of pekohub's `instance.exposure` enum.
@@ -147,7 +158,7 @@ impl HubAgentDirectoryClient {
     ///
     /// `base_url` should be the HTTPS base, e.g. `https://pekohub.org`,
     /// not the WebSocket URL. The two endpoints are appended as
-    /// `/v1/agents/by-did/...` / `/v1/agents/by-handle/...`.
+    /// `/v1/principals/by-did/...` / `/v1/principals/by-handle/...`.
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
@@ -228,7 +239,7 @@ impl AgentDirectory for HubAgentDirectoryClient {
         // bad shapes round-trip to 400. We do NOT pre-validate here:
         // surfacing the hub's 400 unmodified gives the calling agent
         // a single source of truth for "what's a valid DID".
-        let url = format!("{base}/v1/agents/by-did/{did}", base = self.base_url);
+        let url = format!("{base}/v1/principals/by-did/{did}", base = self.base_url);
         let resp = self
             .http
             .get(&url)
@@ -247,7 +258,7 @@ impl AgentDirectory for HubAgentDirectoryClient {
         // segments and round-trips bad shapes as 400. Keeping the
         // client thin means the test surface is the contract.
         let url = format!(
-            "{base}/v1/agents/by-handle/{owner}/{agent_name}",
+            "{base}/v1/principals/by-handle/{owner}/{agent_name}",
             base = self.base_url
         );
         let resp = self
@@ -399,6 +410,8 @@ mod tests {
             agent_did: "did:peko:agent:target-keyhash".to_string(),
             owner_principal: Subject::User("alice".to_string()),
             exposure: ResolvedExposure::Public,
+            transport_preference: crate::tunnel::known_runtimes::TransportPreference::Auto,
+            direct_endpoint: Some("wss://203.0.113.4:11436".to_string()),
         }
     }
 
@@ -415,10 +428,32 @@ mod tests {
             "instanceId": "inst-abc-123",
             "agentDid": "did:peko:agent:target-keyhash",
             "ownerPrincipal": { "kind": "user", "id": "alice" },
-            "exposure": "public"
+            "exposure": "public",
+            "transportPreference": "auto",
+            "directEndpoint": "wss://203.0.113.4:11436"
         }"#;
         let decoded: AgentResolution = serde_json::from_str(body).unwrap();
         assert_eq!(decoded, sample_resolution());
+    }
+
+    /// `directEndpoint` is optional on the wire; older hub responses
+    /// that omit it decode to `None`.
+    #[test]
+    fn test_agent_resolution_default_direct_endpoint() {
+        let body = r#"{
+            "runtimeId": "did:key:zRuntime",
+            "instanceId": "inst-x",
+            "agentDid": "did:peko:agent:x",
+            "ownerPrincipal": { "kind": "public" },
+            "exposure": "public",
+            "transportPreference": "tunnel"
+        }"#;
+        let decoded: AgentResolution = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            decoded.transport_preference,
+            crate::tunnel::known_runtimes::TransportPreference::Tunnel
+        );
+        assert_eq!(decoded.direct_endpoint, None);
     }
 
     /// `Subject::Principal` and `Subject::Public` also decode — the
@@ -443,7 +478,8 @@ mod tests {
                     "instanceId": "i",
                     "agentDid": "did:peko:agent:x",
                     "ownerPrincipal": {kind_json},
-                    "exposure": "private"
+                    "exposure": "private",
+                    "transportPreference": "auto"
                 }}"#
             );
             let decoded: AgentResolution =

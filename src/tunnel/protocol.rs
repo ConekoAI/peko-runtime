@@ -74,6 +74,18 @@ pub struct InstanceAnnouncePayload {
     pub capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Callee transport preference for cross-runtime `principal_send`.
+    /// Set by the runtime on `instance_announce` so the hub can return
+    /// it from directory resolution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_preference: Option<crate::tunnel::known_runtimes::TransportPreference>,
+    /// Runtime-level advertised direct endpoint for inbound direct
+    /// cross-runtime connections (e.g. `wss://203.0.113.4:11436`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "runtimeDirectEndpoint"
+    )]
+    pub runtime_direct_endpoint: Option<String>,
 }
 
 /// Payload for `instance_heartbeat` messages.
@@ -462,6 +474,10 @@ mod tests {
                 allowed_principals: Some(vec![crate::auth::Subject::User("u1".to_string())]),
                 capabilities: Some(vec!["c1".to_string()]),
                 metadata: Some(metadata),
+                transport_preference: Some(
+                    crate::tunnel::known_runtimes::TransportPreference::Direct,
+                ),
+                runtime_direct_endpoint: Some("wss://203.0.113.4:11436".to_string()),
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -481,12 +497,30 @@ mod tests {
             "Expected camelCase, got: {}",
             json
         );
+        assert!(
+            json.contains("\"transportPreference\":\"direct\""),
+            "Expected transportPreference in wire form, got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"runtimeDirectEndpoint\":\"wss://203.0.113.4:11436\""),
+            "Expected runtimeDirectEndpoint in wire form, got: {}",
+            json
+        );
 
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
             TunnelMessage::InstanceAnnounce { payload } => {
                 assert_eq!(payload.id, "inst-1");
                 assert_eq!(payload.runtime_display_name, Some("Test".to_string()));
+                assert_eq!(
+                    payload.transport_preference,
+                    Some(crate::tunnel::known_runtimes::TransportPreference::Direct)
+                );
+                assert_eq!(
+                    payload.runtime_direct_endpoint,
+                    Some("wss://203.0.113.4:11436".to_string())
+                );
             }
             _ => panic!("Expected InstanceAnnounce"),
         }
@@ -508,15 +542,27 @@ mod tests {
                 allowed_principals: None,
                 capabilities: None,
                 metadata: None,
+                transport_preference: None,
+                runtime_direct_endpoint: None,
             },
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
         assert!(!json.contains("bundleRef"), "None fields should be skipped");
+        assert!(
+            !json.contains("transportPreference"),
+            "None transport_preference should be skipped"
+        );
+        assert!(
+            !json.contains("runtimeDirectEndpoint"),
+            "None runtime_direct_endpoint should be skipped"
+        );
         let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
         match decoded {
             TunnelMessage::InstanceAnnounce { payload } => {
                 assert_eq!(payload.bundle_ref, None);
+                assert_eq!(payload.transport_preference, None);
+                assert_eq!(payload.runtime_direct_endpoint, None);
             }
             _ => panic!("Expected InstanceAnnounce"),
         }
@@ -542,6 +588,8 @@ mod tests {
                 allowed_principals: None,
                 capabilities: None,
                 metadata: None,
+                transport_preference: None,
+                runtime_direct_endpoint: None,
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -582,6 +630,8 @@ mod tests {
                 allowed_principals: None,
                 capabilities: None,
                 metadata: None,
+                transport_preference: None,
+                runtime_direct_endpoint: None,
             },
         };
         let bytes = msg.to_bytes().unwrap();

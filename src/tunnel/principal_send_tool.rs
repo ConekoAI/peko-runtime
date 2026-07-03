@@ -28,15 +28,15 @@
 //!
 //! ## Design notes
 //!
-//! - **No local shortcut.** Even if the target principal lives on the
-//!   same daemon, the call flows through the tunnel. PekoHub is the
-//!   canonical router and the receiver's `principal_manager.find_by_did`
-//!   handles local dispatch on its end. This keeps the call-site
-//!   invariant "everything goes through the tunnel" and avoids a
-//!   daemon-internal cycle between tools and the principal manager.
-//! - **No `TargetSpec` / no directory hint.** The hub routes by DID
-//!   alone (pekohub#14, `resolve_by_did`). The caller's only required
-//!   input is the target principal's DID.
+//! - **Same-runtime shortcut.** If the target principal is hosted by the
+//!   caller's own runtime, the call is dispatched locally through
+//!   `PrincipalManager::receive` without touching the tunnel. This keeps
+//!   `principal_send` working when PekoHub is offline. Remote targets still
+//!   flow through the tunnel or a direct connection as selected below.
+//! - **Callee preference.** The hub directory returns the target principal's
+//!   `transport_preference` and advertised `direct_endpoint`. The caller
+//!   respects the callee's preference; if direct is requested but unavailable
+//!   the call errors rather than silently falling back to the tunnel.
 //! - **Tool name**: `"principal_send"` (drops the agent-level naming
 //!   the prior `a2a_send` carried).
 //!
@@ -50,10 +50,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+use crate::auth::Subject;
+use crate::principal::{ChannelContext, ChannelKind};
 use crate::tools::core::Tool;
 use crate::tunnel::a2a_audit;
 use crate::tunnel::a2a_signature::{sign_request, SignedFields};
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
+use crate::tunnel::direct::routing::{select_transport, TransportChoice};
 use crate::tunnel::hub_directory::{DirectoryError, ResolvedExposure};
 use crate::tunnel::TunnelMessage;
 
@@ -149,6 +152,43 @@ impl PrincipalSendTool {
         };
         serde_json::to_value(result).expect("PrincipalSendResult must serialize to JSON")
     }
+
+    /// Dispatch `principal_send` to a target principal on the same runtime.
+    async fn execute_local(
+        &self,
+        target_did: &str,
+        message: &str,
+        session_id: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let ctx = &self.cross_runtime;
+        let Some(principal) = ctx.principal_manager.find_by_did(target_did).await else {
+            return Ok(self.error_value("target principal is not loaded on this runtime"));
+        };
+        let caller = Subject::Principal(self.caller_principal_did.clone().into());
+        let channel = ChannelContext {
+            kind: ChannelKind::A2a,
+            streaming: false,
+        };
+        match ctx
+            .principal_manager
+            .receive(principal.id.clone(), caller, message.to_string(), channel)
+            .await
+        {
+            Ok(response) => {
+                let result = PrincipalSendResult {
+                    success: true,
+                    response: response.content,
+                    session_id: session_id.unwrap_or_default(),
+                    iterations: None,
+                    tool_calls: None,
+                    duration_ms: None,
+                    error: None,
+                };
+                Ok(serde_json::to_value(result)?)
+            }
+            Err(err) => Ok(self.error_value(&format!("local principal_send failed: {err}"))),
+        }
+    }
 }
 
 /// Build an `Arc<dyn Tool>` for the `principal_send` capability.
@@ -224,8 +264,8 @@ Send a message to another Principal's root agent and receive its response. This 
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
-        let args: PrincipalSendArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow!("Invalid arguments: {e}"))?;
+        let args: PrincipalSendArgs =
+            serde_json::from_value(params).map_err(|e| anyhow!("Invalid arguments: {e}"))?;
 
         // Empty-string guard for the target. The DID is what the wire
         // carries; an empty string would dispatch to a non-existent
@@ -294,7 +334,29 @@ Send a message to another Principal's root agent and receive its response. This 
         }
 
         let ctx = &self.cross_runtime;
+
+        // Same-runtime shortcut: if the directory resolves to the caller's
+        // own runtime, dispatch locally without the tunnel.
+        if resolution.runtime_id == ctx.caller_runtime_id {
+            return self
+                .execute_local(target_principal_did, &args.message, args.session_id)
+                .await;
+        }
+
         let request_id = uuid::Uuid::new_v4().to_string();
+
+        // Choose transport from the callee's preference and advertised
+        // endpoint. The local known-runtimes registry contributes trust
+        // status and operator endpoint/TLS overrides only.
+        let transport = {
+            let known = ctx.known_runtimes.read().await;
+            select_transport(
+                &resolution.runtime_id,
+                resolution.direct_endpoint.as_deref(),
+                resolution.transport_preference,
+                &*known,
+            )
+        };
 
         let signed = SignedFields {
             request_id: &request_id,
@@ -326,26 +388,51 @@ Send a message to another Principal's root agent and receive its response. This 
             Err(err) => return Ok(self.error_value(&err.to_string())),
         };
 
-        // Send over the live tunnel handle. The handle slot is `None`
-        // when the tunnel isn't currently connected — same idiom as
-        // the legacy `a2a_send::execute_remote` path.
-        let tunnel_handle = {
-            let guard = ctx.tunnel.read().await;
-            match guard.clone() {
-                Some(h) => h,
-                None => {
-                    ctx.pending.discard(&request_id);
-                    return Ok(self.error_value(
-                        "tunnel is not currently connected; principal_send cannot dispatch \
-                         cross-runtime until the pekohub tunnel is up",
-                    ));
+        // Resolve a handle for the chosen transport.
+        let handle = match transport {
+            TransportChoice::Tunnel => {
+                let guard = ctx.tunnel.read().await;
+                match guard.clone() {
+                    Some(h) => h,
+                    None => {
+                        ctx.pending.discard(&request_id);
+                        return Ok(self.error_value(
+                            "tunnel is not currently connected; principal_send cannot dispatch \
+                             cross-runtime until the pekohub tunnel is up",
+                        ));
+                    }
                 }
             }
+            TransportChoice::Direct { endpoint } => {
+                let tls = {
+                    let known = ctx.known_runtimes.read().await;
+                    known
+                        .find(&resolution.runtime_id)
+                        .and_then(|p| p.direct_tls.clone())
+                };
+                match ctx
+                    .direct_manager
+                    .get_or_connect(&resolution.runtime_id, &endpoint, tls.as_ref())
+                    .await
+                {
+                    Ok(h) => h,
+                    Err(err) => {
+                        ctx.pending.discard(&request_id);
+                        return Ok(self.error_value(&format!(
+                            "direct connection failed for {endpoint}: {err}"
+                        )));
+                    }
+                }
+            }
+            TransportChoice::Unavailable { reason } => {
+                ctx.pending.discard(&request_id);
+                return Ok(self.error_value(&reason));
+            }
         };
-        if let Err(err) = tunnel_handle.send(envelope) {
+        if let Err(err) = handle.send(envelope) {
             ctx.pending.discard(&request_id);
             return Ok(self.error_value(&format!(
-                "tunnel send failed: {err} (tunnel may be disconnected)"
+                "cross-runtime send failed: {err} (transport may be disconnected)"
             )));
         }
 
@@ -431,13 +518,32 @@ mod tests {
     /// (but unfilled) tunnel slot. The fake directory resolves a
     /// single test DID to a known `runtime_id`.
     fn make_test_ctx() -> Arc<CrossRuntimeA2aCtx> {
+        use crate::principal::{
+            DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalManager,
+        };
+        use crate::tunnel::direct::DirectConnectionManager;
         use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use crate::tunnel::known_runtimes::KnownRuntimes;
+        let pending = Arc::new(PendingA2aResponses::new());
+        let principal_manager = Arc::new(PrincipalManager::new(
+            std::env::temp_dir().join(format!("peko-principal-send-test-{}", uuid::Uuid::new_v4())),
+            Arc::new(DefaultPrincipalMemoryFactory),
+            Arc::new(DefaultPrincipalRouterFactory),
+        ));
         Arc::new(CrossRuntimeA2aCtx {
             directory: Arc::new(FakeAgentDirectory::new()),
-            pending: Arc::new(PendingA2aResponses::new()),
+            pending: pending.clone(),
             signing_key: Arc::new(SigningKey::from_bytes(&[7u8; 32])),
             caller_runtime_id: "did:key:test-runtime".to_string(),
             tunnel: Arc::new(RwLock::new(None)),
+            direct_manager: Arc::new(DirectConnectionManager::new(
+                Arc::new(SigningKey::from_bytes(&[7u8; 32])),
+                "did:key:test-runtime".to_string(),
+                true,
+                pending,
+            )),
+            known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
+            principal_manager,
             response_timeout: Duration::from_millis(50),
         })
     }
@@ -555,13 +661,34 @@ mod tests {
         caller_runtime_id: String,
         outbound_tx: tokio::sync::mpsc::Sender<TunnelMessage>,
     ) -> Arc<CrossRuntimeA2aCtx> {
+        use crate::principal::{
+            DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalManager,
+        };
+        use crate::tunnel::direct::DirectConnectionManager;
+        use crate::tunnel::known_runtimes::KnownRuntimes;
         let tunnel_handle = TunnelHandle::new(outbound_tx);
+        let principal_manager = Arc::new(PrincipalManager::new(
+            std::env::temp_dir().join(format!(
+                "peko-principal-send-roundtrip-{}",
+                uuid::Uuid::new_v4()
+            )),
+            Arc::new(DefaultPrincipalMemoryFactory),
+            Arc::new(DefaultPrincipalRouterFactory),
+        ));
         Arc::new(CrossRuntimeA2aCtx {
             directory: directory as Arc<dyn crate::tunnel::hub_directory::AgentDirectory>,
-            pending,
+            pending: pending.clone(),
             signing_key,
-            caller_runtime_id,
+            caller_runtime_id: caller_runtime_id.clone(),
             tunnel: Arc::new(RwLock::new(Some(tunnel_handle))),
+            direct_manager: Arc::new(DirectConnectionManager::new(
+                Arc::new(SigningKey::from_bytes(&[7u8; 32])),
+                caller_runtime_id,
+                true,
+                pending,
+            )),
+            known_runtimes: Arc::new(RwLock::new(KnownRuntimes::new())),
+            principal_manager,
             response_timeout: Duration::from_secs(5),
         })
     }
@@ -665,8 +792,7 @@ mod tests {
         let kp = crate::identity::keys::KeyPair::generate();
         let signing_key = Arc::new(kp.signing_key);
         let caller_vk = signing_key.verifying_key();
-        let caller_runtime_id =
-            crate::tunnel::verifying_key_to_did_key(&caller_vk);
+        let caller_runtime_id = crate::tunnel::verifying_key_to_did_key(&caller_vk);
 
         let ctx = make_round_trip_ctx(
             directory,
@@ -705,6 +831,8 @@ mod tests {
                 agent_did: "did:peko:principal:target-keyhash".to_string(),
                 owner_principal: Subject::Public,
                 exposure: ResolvedExposure::Public,
+                transport_preference: crate::tunnel::known_runtimes::TransportPreference::Auto,
+                direct_endpoint: None,
             },
         );
 
@@ -802,6 +930,8 @@ mod tests {
                 agent_did: "did:peko:principal:registered-but-hub-rejects".to_string(),
                 owner_principal: Subject::Public,
                 exposure: ResolvedExposure::Public,
+                transport_preference: crate::tunnel::known_runtimes::TransportPreference::Auto,
+                direct_endpoint: None,
             },
         );
 
@@ -878,6 +1008,8 @@ mod tests {
                 agent_did: "did:peko:principal:target-keyhash".to_string(),
                 owner_principal: Subject::Public,
                 exposure: ResolvedExposure::Public,
+                transport_preference: crate::tunnel::known_runtimes::TransportPreference::Auto,
+                direct_endpoint: None,
             },
         );
 
@@ -914,7 +1046,10 @@ mod tests {
             message: "verify me".to_string(),
             session_id: None,
         };
-        let value = tool.execute(serde_json::to_value(args).unwrap()).await.unwrap();
+        let value = tool
+            .execute(serde_json::to_value(args).unwrap())
+            .await
+            .unwrap();
         let result: PrincipalSendResult = serde_json::from_value(value).unwrap();
         assert!(
             result.success,

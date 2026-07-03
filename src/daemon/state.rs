@@ -11,9 +11,8 @@ use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
 use crate::agents::lifecycle::LifecycleManager;
 use crate::agents::stateless_service::StatelessAgentService;
-use crate::common::services::{
-    AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService,
-};
+use crate::common::services::{AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService};
+use crate::common::types::config::PekoConfig;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
@@ -137,6 +136,25 @@ pub struct AppState {
     /// Runtime identity (ADR-032)
     pub runtime_identity: crate::identity::runtime::RuntimeIdentity,
 
+    /// Runtime signing key derived from the vault. Shared by the tunnel
+    /// client, direct connection manager, and direct server.
+    pub runtime_signing_key: Arc<ed25519_dalek::SigningKey>,
+
+    /// Loaded peko configuration (network.direct used by direct transport).
+    pub peko_config: PekoConfig,
+
+    /// Direct connection manager for outbound direct transport.
+    pub direct_manager: Arc<crate::tunnel::direct::DirectConnectionManager>,
+
+    /// Direct server bound address, if started.
+    pub direct_bound_addr: Arc<RwLock<Option<std::net::SocketAddr>>>,
+
+    /// Direct server cancellation token.
+    pub direct_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
+
+    /// Last direct server error, if any.
+    pub direct_last_error: Arc<RwLock<Option<String>>>,
+
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: crate::identity::runtime_metadata::RuntimeMetadata,
 
@@ -145,8 +163,7 @@ pub struct AppState {
         std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>>,
 
     /// Trust store for principal package publisher pinning (issue #91).
-    pub trust_store:
-        std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
+    pub trust_store: std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
 
     /// Auth configuration (ADR-034)
     auth_config: crate::auth::config::AuthConfig,
@@ -399,6 +416,19 @@ impl AppState {
             crate::tunnel::known_runtimes::TrustLevel::SelfRuntime,
         );
         let known_runtimes = std::sync::Arc::new(tokio::sync::RwLock::new(known_runtimes));
+
+        // Load the runtime's private signing key from the vault and the
+        // on-disk `peko.toml` configuration. These are needed by the
+        // tunnel client, direct connection manager, and direct server.
+        let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
+        let peko_config = load_peko_config(&config_dir);
+        let pending_a2a_responses = Arc::new(crate::tunnel::PendingA2aResponses::new());
+        let direct_manager = Arc::new(crate::tunnel::direct::DirectConnectionManager::new(
+            runtime_signing_key.clone(),
+            runtime_identity.runtime_did.clone(),
+            peko_config.network.direct.tls_required,
+            pending_a2a_responses.clone(),
+        ));
 
         let trust_store = crate::registry::packaging::TrustStore::load_or_create(&path_resolver)?;
         let trust_store = std::sync::Arc::new(tokio::sync::RwLock::new(trust_store));
@@ -674,6 +704,12 @@ impl AppState {
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
             runtime_identity,
+            runtime_signing_key,
+            peko_config,
+            direct_manager,
+            direct_bound_addr: Arc::new(RwLock::new(None)),
+            direct_cancel: Arc::new(RwLock::new(None)),
+            direct_last_error: Arc::new(RwLock::new(None)),
             runtime_metadata,
             known_runtimes,
             trust_store,
@@ -693,7 +729,7 @@ impl AppState {
             // eagerly so the registry exists before the tunnel
             // connects; the slot starts as `None` and is filled by
             // the dispatcher's handle-publisher on every reconnect.
-            pending_a2a_responses: Arc::new(crate::tunnel::PendingA2aResponses::new()),
+            pending_a2a_responses,
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
         })
     }
@@ -768,9 +804,7 @@ impl AppState {
             .vault
             .reload()
             .map_err(|e| anyhow::anyhow!("vault reload failed: {e}"))?;
-        tracing::info!(
-            "Provider reload: {providers_count} providers, {keys_count} vault entries"
-        );
+        tracing::info!("Provider reload: {providers_count} providers, {keys_count} vault entries");
         Ok((providers_count, keys_count))
     }
 
@@ -996,6 +1030,55 @@ impl AppState {
 
         let dispatcher = TunnelDispatcher::new(self.clone());
 
+        // If direct cross-runtime connections are enabled, start the
+        // inbound direct server now. It shares the same dispatcher
+        // callback as the tunnel so inbound A2A traffic is handled
+        // identically regardless of transport.
+        if self.peko_config.network.direct.enabled {
+            let direct_cancel = tokio_util::sync::CancellationToken::new();
+            {
+                let mut dc = self.direct_cancel.write().await;
+                *dc = Some(direct_cancel.clone());
+            }
+            let direct_config = self.peko_config.network.direct.clone();
+            let direct_runtime_id = self.runtime_identity.runtime_did.clone();
+            let direct_signing_key = self.runtime_signing_key.clone();
+            let direct_known_runtimes = self.known_runtimes.clone();
+            let direct_dispatcher = dispatcher.clone();
+            let direct_handler: crate::tunnel::direct::DirectMessageHandler = Arc::new(
+                move |msg: crate::tunnel::TunnelMessage, handle: crate::tunnel::TunnelHandle| {
+                    let d = direct_dispatcher.clone();
+                    Box::pin(async move { d.handle_message(msg, handle).await })
+                        as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                },
+            );
+            let direct_server = crate::tunnel::direct::DirectServer::new(
+                direct_config,
+                direct_signing_key,
+                direct_runtime_id,
+                direct_known_runtimes,
+                direct_handler,
+            );
+            let direct_bound_addr = self.direct_bound_addr.clone();
+            let direct_last_error = self.direct_last_error.clone();
+            tokio::spawn(async move {
+                match direct_server.start(direct_cancel).await {
+                    Ok(addr) => {
+                        tracing::info!("Direct server bound to {addr}");
+                        if let Ok(mut g) = direct_bound_addr.try_write() {
+                            *g = Some(addr);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Direct server failed to start: {e}");
+                        if let Ok(mut g) = direct_last_error.try_write() {
+                            *g = Some(e.to_string());
+                        }
+                    }
+                }
+            });
+        }
+
         // Issue #29: build the cross-runtime a2a dispatch ctx
         // (Slice B + Slice C bootstrap). Wires the
         // `HubAgentDirectoryClient` (HTTP client to the hub's
@@ -1163,11 +1246,17 @@ impl AppState {
 
         // 1. Build the directory HTTP client from the credential
         //    URL. `from_credential` flips wss:// → https:// and
-        //    strips the /v1/tunnel path. This is the only place
-        //    the runtime talks to pekohub's HTTP surface.
-        let directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
+        //    strips the /v1/tunnel path. Wrap it with the local-first
+        //    directory so same-runtime principals resolve without the
+        //    hub.
+        let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
             .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?;
-        let directory: Arc<dyn crate::tunnel::AgentDirectory> = Arc::new(directory);
+        let directory: Arc<dyn crate::tunnel::AgentDirectory> =
+            Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
+                cred.runtime_id.clone(),
+                self.principal_manager().clone(),
+                Arc::new(hub_directory),
+            ));
 
         // 2. Build the SigningKey from the credential's stored
         //    private key in the vault. `resolve_private_key` returns the
@@ -1188,13 +1277,18 @@ impl AppState {
 
         // 3. Build the ctx. The handle slot is shared with the
         //    `TunnelDispatcher` so the outbound path sees the
-        //    freshest handle on every reconnect.
+        //    freshest handle on every reconnect. The direct manager
+        //    and known-runtimes registry enable per-peer transport
+        //    selection.
         let ctx = Arc::new(CrossRuntimeA2aCtx {
             directory,
             pending: self.pending_a2a_responses(),
             signing_key,
             caller_runtime_id: cred.runtime_id.clone(),
             tunnel: self.tunnel_handle_slot(),
+            direct_manager: self.direct_manager.clone(),
+            known_runtimes: self.known_runtimes.clone(),
+            principal_manager: self.principal_manager().clone(),
             response_timeout: Duration::from_mins(1),
         });
         // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
@@ -1272,6 +1366,42 @@ impl AppState {
     /// Get the last tunnel error message, if any.
     pub async fn tunnel_last_error(&self) -> Option<String> {
         self.tunnel_last_error.read().await.clone()
+    }
+
+    /// Stop the inbound direct server, if it is running.
+    pub async fn stop_direct_server(&self) {
+        let mut dc = self.direct_cancel.write().await;
+        if let Some(ref cancel) = *dc {
+            cancel.cancel();
+        }
+        *dc = None;
+        let mut addr = self.direct_bound_addr.write().await;
+        *addr = None;
+        let mut err = self.direct_last_error.write().await;
+        *err = None;
+    }
+
+    /// Get the bound address of the direct server, if started.
+    pub async fn direct_bound_addr(&self) -> Option<std::net::SocketAddr> {
+        *self.direct_bound_addr.read().await
+    }
+
+    /// High-level direct server health snapshot.
+    pub async fn direct_health(&self) -> DirectHealth {
+        let enabled = self.peko_config.network.direct.enabled;
+        let bound = self.direct_bound_addr.read().await.clone();
+        let error = self.direct_last_error.read().await.clone();
+
+        if !enabled {
+            return DirectHealth::Disabled;
+        }
+        if let Some(err) = error {
+            return DirectHealth::Error(err);
+        }
+        match bound {
+            Some(addr) => DirectHealth::Listening(addr),
+            None => DirectHealth::Starting,
+        }
     }
 
     /// Compute a high-level `TunnelHealth` snapshot used by
@@ -1356,6 +1486,93 @@ impl TunnelHealth {
             Self::Degraded { last_error, .. } => Some(last_error.as_str()),
         }
     }
+}
+
+/// High-level snapshot of direct inbound server health.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectHealth {
+    /// Direct inbound connections are disabled in configuration.
+    Disabled,
+    /// Server is starting but has not bound a port yet.
+    Starting,
+    /// Server is listening on the given address.
+    Listening(std::net::SocketAddr),
+    /// Server failed to start or crashed.
+    Error(String),
+}
+
+impl DirectHealth {
+    /// String discriminator used in JSON output (`direct.state`).
+    #[must_use]
+    pub fn state_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Starting => "starting",
+            Self::Listening(_) => "listening",
+            Self::Error(_) => "error",
+        }
+    }
+
+    /// Bound socket address, if listening.
+    #[must_use]
+    pub fn bound_addr(&self) -> Option<std::net::SocketAddr> {
+        match self {
+            Self::Listening(addr) => Some(*addr),
+            _ => None,
+        }
+    }
+
+    /// Last error string, if any.
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Error(e) => Some(e.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Load the runtime's Ed25519 signing key from the encrypted vault.
+fn load_runtime_signing_key(
+    identity: &crate::identity::runtime::RuntimeIdentity,
+    vault: &crate::common::vault::Vault,
+) -> anyhow::Result<Arc<ed25519_dalek::SigningKey>> {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    use ed25519_dalek::SigningKey;
+
+    let privkey_b64 = identity
+        .load_private_key(vault)?
+        .ok_or_else(|| anyhow::anyhow!("runtime private key not found in vault"))?;
+    let privkey_bytes = BASE64
+        .decode(privkey_b64.trim())
+        .map_err(|e| anyhow::anyhow!("runtime private key is not valid base64: {e}"))?;
+    if privkey_bytes.len() != 32 {
+        anyhow::bail!(
+            "runtime private key is {} bytes; expected 32",
+            privkey_bytes.len()
+        );
+    }
+    let mut key_arr = [0u8; 32];
+    key_arr.copy_from_slice(&privkey_bytes);
+    Ok(Arc::new(SigningKey::from_bytes(&key_arr)))
+}
+
+/// Load `peko.toml` from the config directory, falling back to defaults
+/// if the file does not exist or cannot be parsed.
+fn load_peko_config(config_dir: &Path) -> PekoConfig {
+    let path = config_dir.join("peko.toml");
+    if path.exists() {
+        match PekoConfig::from_file(&path) {
+            Ok(cfg) => return cfg,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load {}: {e}; using default configuration",
+                    path.display()
+                );
+            }
+        }
+    }
+    PekoConfig::default()
 }
 
 /// Memory factory that places Principal memory under the data directory,
