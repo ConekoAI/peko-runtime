@@ -47,30 +47,27 @@ async fn run_shell_blocking(
     timeout_ms: u64,
     max_output_bytes: usize,
 ) -> Result<ShellOutput> {
-    let mut cmd = Command::new("/bin/sh");
-    cmd.arg("-c").arg(command);
+    let mut cmd = shell_command(command);
     cmd.current_dir(working_dir);
 
-    let output = match tokio::time::timeout(
-        tokio::time::Duration::from_millis(timeout_ms),
-        cmd.output(),
-    )
-    .await
-    {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Err(anyhow::anyhow!("failed to execute shell: {e}")),
-        Err(_) => {
-            return Ok(ShellOutput {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: -1,
-                timed_out: true,
-            });
-        }
-    };
+    let output =
+        match tokio::time::timeout(tokio::time::Duration::from_millis(timeout_ms), cmd.output())
+            .await
+        {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => return Err(anyhow::anyhow!("failed to execute shell: {e}")),
+            Err(_) => {
+                return Ok(ShellOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: -1,
+                    timed_out: true,
+                });
+            }
+        };
 
-    let stdout = truncate_bytes(&output.stdout, max_output_bytes);
-    let stderr = truncate_bytes(&output.stderr, max_output_bytes);
+    let stdout = normalize_crlf(&truncate_bytes(&output.stdout, max_output_bytes));
+    let stderr = normalize_crlf(&truncate_bytes(&output.stderr, max_output_bytes));
     let exit_code = output.status.code().unwrap_or(-1);
 
     Ok(ShellOutput {
@@ -79,6 +76,27 @@ async fn run_shell_blocking(
         exit_code,
         timed_out: false,
     })
+}
+
+/// Build a platform-appropriate shell invocation for `command`.
+#[cfg(unix)]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c").arg(command);
+    cmd
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("powershell");
+    cmd.arg("-Command").arg(command);
+    cmd
+}
+
+/// Normalize Windows CRLF line endings to LF so the preprocessor output
+/// is platform-agnostic text.
+fn normalize_crlf(s: &str) -> String {
+    s.replace("\r\n", "\n")
 }
 
 /// Truncate `bytes` to at most `max` bytes, then append `...(truncated)`.
@@ -132,9 +150,10 @@ fn is_command_allowed(frontmatter: &SkillFrontmatter, command: &str) -> bool {
         return true;
     }
     let trimmed = command.trim();
-    frontmatter.allowed_tools.iter().any(|pattern| {
-        GlobPattern::new(pattern).is_ok_and(|p| p.matches(trimmed))
-    })
+    frontmatter
+        .allowed_tools
+        .iter()
+        .any(|pattern| GlobPattern::new(pattern).is_ok_and(|p| p.matches(trimmed)))
 }
 
 /// Resolve inline `` !`cmd` `` and fenced `` ```! `` blocks in
@@ -250,9 +269,7 @@ async fn run_or_blocked_fenced(
 ) -> Result<String> {
     if let Some(shell) = frontmatter.shell.as_deref() {
         if shell != "bash" {
-            let marker = format!(
-                "[shell blocked: shell \"{shell}\" not supported, only \"bash\"]"
-            );
+            let marker = format!("[shell blocked: shell \"{shell}\" not supported, only \"bash\"]");
             let original = fence_buffer.join("\n") + "\n" + closer_line;
             return Ok(format!("{marker}{original}"));
         }
@@ -262,7 +279,8 @@ async fn run_or_blocked_fenced(
         let original = fence_buffer.join("\n") + "\n" + closer_line;
         return Ok(format!("{marker}{original}"));
     }
-    let out = run_shell_blocking(command, workspace_dir, SHELL_TIMEOUT_MS, MAX_OUTPUT_BYTES).await?;
+    let out =
+        run_shell_blocking(command, workspace_dir, SHELL_TIMEOUT_MS, MAX_OUTPUT_BYTES).await?;
     Ok(format_output(&out, SHELL_TIMEOUT_MS))
 }
 
@@ -282,8 +300,7 @@ async fn resolve_inline(
         let ch = body[i..].chars().next().unwrap();
         let ch_len = ch.len_utf8();
 
-        let anchor_ok = ch == '!'
-            && (i == 0 || bytes[i - 1].is_ascii_whitespace());
+        let anchor_ok = ch == '!' && (i == 0 || bytes[i - 1].is_ascii_whitespace());
 
         if anchor_ok {
             let after_bang = &body[i + ch_len..];
@@ -315,13 +332,9 @@ async fn resolve_inline(
                     continue;
                 }
 
-                let out_run = run_shell_blocking(
-                    &cmd,
-                    workspace_dir,
-                    SHELL_TIMEOUT_MS,
-                    MAX_OUTPUT_BYTES,
-                )
-                .await?;
+                let out_run =
+                    run_shell_blocking(&cmd, workspace_dir, SHELL_TIMEOUT_MS, MAX_OUTPUT_BYTES)
+                        .await?;
                 let formatted = format_output(&out_run, SHELL_TIMEOUT_MS);
                 out.push_str(&formatted);
                 i += placeholder_len;
@@ -479,7 +492,10 @@ mod tests {
             exit_code: -1,
             timed_out: true,
         };
-        assert_eq!(format_output(&out, 5000), "stderr: command timed out after 5000 ms");
+        assert_eq!(
+            format_output(&out, 5000),
+            "stderr: command timed out after 5000 ms"
+        );
     }
 
     // ---- is_command_allowed ----
@@ -554,8 +570,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "CWD: !`pwd`";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(!out.contains("!`pwd`"));
         assert!(out.starts_with("CWD: "));
     }
@@ -565,8 +582,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "before\n!`echo middle`\nafter";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert_eq!(out, "before\nmiddle\n\nafter");
     }
 
@@ -577,8 +595,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "KEY=!`echo hi`";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert_eq!(out, "KEY=!`echo hi`");
     }
 
@@ -587,8 +606,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "!`echo start` rest";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("start"), "got: {out}");
         assert!(!out.contains("!`"));
     }
@@ -598,8 +618,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "word !`echo afterspace` end";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("afterspace"), "got: {out}");
     }
 
@@ -608,8 +629,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "word\t!`echo aftertab` end";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("aftertab"), "got: {out}");
     }
 
@@ -620,20 +642,23 @@ mod tests {
         let ws = tmp_workspace();
         // Body has an opening backtick after `!` but no closing one.
         let body = "no close: !`echo hi";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         // The unclosed `!` is left as a literal; the rest of the body
         // is unchanged.
         assert!(out.contains("!`echo hi"), "got: {out}");
     }
 
     #[tokio::test]
+    #[cfg(unix)] // uses POSIX `sh -c` syntax
     async fn preprocess_inline_failure_appends_stderr() {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "result: !`sh -c 'echo out; echo bad 1>&2; exit 7'`";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         // stdout inlined verbatim, then stderr line.
         assert!(out.starts_with("result: out\nstderr: bad"), "got: {out}");
     }
@@ -644,8 +669,9 @@ mod tests {
         fm.allowed_tools = vec!["echo *".to_string()];
         let ws = tmp_workspace();
         let body = "Got: !`ls /`";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("[shell blocked: command not in allowed-tools]"));
         assert!(out.contains("!`ls /`"));
     }
@@ -656,8 +682,9 @@ mod tests {
         fm.allowed_tools = vec!["echo *".to_string()];
         let ws = tmp_workspace();
         let body = "Got: !`echo hello`";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert_eq!(out, "Got: hello\n");
     }
 
@@ -667,8 +694,9 @@ mod tests {
         fm.shell = Some("powershell".to_string());
         let ws = tmp_workspace();
         let body = "Got: !`echo hi`";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("[shell blocked: shell \"powershell\" not supported"));
         assert!(out.contains("!`echo hi`"));
     }
@@ -679,12 +707,14 @@ mod tests {
         fm.shell = Some("bash".to_string());
         let ws = tmp_workspace();
         let body = "Got: !`echo hi`";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("hi"), "got: {out}");
     }
 
     #[tokio::test]
+    #[cfg(unix)] // relies on bash single-quote/backslash semantics
     async fn preprocess_inline_single_pass_output_not_rescanned() {
         // A command whose stdout contains a `!`cmd`` placeholder —
         // that text must NOT be re-scanned. The shell receives
@@ -693,8 +723,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "!`echo '!\\`printf INNER\\`'`";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         // The inner placeholder syntax survives in the output —
         // proof the preprocessor did not re-scan. If it had, the
         // inner would have been replaced with the result of
@@ -713,19 +744,25 @@ mod tests {
         let ws = tmp_workspace();
         // The opener is on its own line per the plan's exact-match rule.
         let body = "Intro\n```!\necho alpha\n```\nOutro";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("alpha"), "got: {out}");
-        assert!(!out.contains("```"), "fence markers should be gone, got: {out}");
+        assert!(
+            !out.contains("```"),
+            "fence markers should be gone, got: {out}"
+        );
     }
 
     #[tokio::test]
+    #[cfg(unix)] // uses POSIX `printf`
     async fn preprocess_fenced_multiline_command() {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "```!\nprintf 'one\\ntwo'\n```";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("one"), "got: {out}");
         assert!(out.contains("two"), "got: {out}");
     }
@@ -735,8 +772,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "before\n```!\necho hi\nstill no closer";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         // Unclosed fence: opener and command lines are preserved
         // literally.
         assert!(out.contains("```!"));
@@ -749,8 +787,9 @@ mod tests {
         fm.allowed_tools = vec!["echo *".to_string()];
         let ws = tmp_workspace();
         let body = "Intro\n```!\nls /\n```\nOutro";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(
             out.contains("[shell blocked: command not in allowed-tools]"),
             "got: {out}"
@@ -763,12 +802,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)] // uses POSIX `sh -c` syntax
     async fn preprocess_fenced_failure_appends_stderr() {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "```!\nsh -c 'echo out; echo bad 1>&2; exit 3'\n```";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("out"));
         assert!(out.contains("stderr: bad"), "got: {out}");
     }
@@ -780,8 +821,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "Intro\n```bash\necho should-not-run\n```\nOutro";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.contains("echo should-not-run"));
         assert!(out.contains("```bash"));
         assert!(out.contains("```"));
@@ -792,8 +834,9 @@ mod tests {
         let fm = empty_frontmatter();
         let ws = tmp_workspace();
         let body = "Header\n\n!`echo middle`\n\nFooter";
-        let out =
-            preprocess_dynamic_context(body, &fm, ws.path()).await.unwrap();
+        let out = preprocess_dynamic_context(body, &fm, ws.path())
+            .await
+            .unwrap();
         assert!(out.starts_with("Header\n\nmiddle"), "got: {out}");
         assert!(out.ends_with("Footer"), "got: {out}");
     }
@@ -803,13 +846,16 @@ mod tests {
     #[tokio::test]
     async fn run_shell_blocking_echo() {
         let ws = tmp_workspace();
-        let out = run_shell_blocking("echo hi", ws.path(), 5_000, 100).await.unwrap();
+        let out = run_shell_blocking("echo hi", ws.path(), 5_000, 100)
+            .await
+            .unwrap();
         assert_eq!(out.stdout, "hi\n");
         assert_eq!(out.exit_code, 0);
         assert!(!out.timed_out);
     }
 
     #[tokio::test]
+    #[cfg(unix)] // uses POSIX `sh -c` syntax
     async fn run_shell_blocking_nonzero_captures_stderr() {
         let ws = tmp_workspace();
         let out = run_shell_blocking("sh -c 'echo err 1>&2; exit 9'", ws.path(), 5_000, 100)
@@ -820,15 +866,42 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn run_shell_blocking_runs_in_workspace() {
         let ws = tmp_workspace();
         // `pwd` should resolve to the workspace path.
-        let out = run_shell_blocking("pwd", ws.path(), 5_000, 100).await.unwrap();
+        let out = run_shell_blocking("pwd", ws.path(), 5_000, 100)
+            .await
+            .unwrap();
         let pwd = out.stdout.trim();
         // Resolve symlinks / canonicalize to handle macOS /private/var
         // vs /var, /tmp vs /private/tmp.
-        let canonical_ws = ws.path().canonicalize().unwrap_or_else(|_| ws.path().to_path_buf());
-        let canonical_pwd = PathBuf::from(pwd).canonicalize().unwrap_or_else(|_| PathBuf::from(pwd));
+        let canonical_ws = ws
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| ws.path().to_path_buf());
+        let canonical_pwd = PathBuf::from(pwd)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(pwd));
+        assert_eq!(canonical_pwd, canonical_ws);
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn run_shell_blocking_runs_in_workspace() {
+        let ws = tmp_workspace();
+        // PowerShell's `pwd` formats as a table; use the raw path provider.
+        let out = run_shell_blocking("$PWD.Path", ws.path(), 5_000, 100)
+            .await
+            .unwrap();
+        let pwd = out.stdout.trim();
+        let canonical_ws = ws
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| ws.path().to_path_buf());
+        let canonical_pwd = PathBuf::from(pwd)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(pwd));
         assert_eq!(canonical_pwd, canonical_ws);
     }
 }

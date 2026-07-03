@@ -81,12 +81,10 @@ pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
 /// Like [`create_mock_principal`], but additionally grants the Principal a set
 /// of capability tools.
 ///
-/// The root agent's tool whitelist is the union of a fixed base set
-/// (`Read`, `glob`, `grep`, `session`, `Cron*`, `Task*` — see
-/// `src/principal/agent_runner.rs::run_root_agent_prompt`) and the Principal's
-/// `[capabilities] tools`. Tests that drive the root agent into calling tools
-/// outside the base set (e.g. `Write`, `Bash`, `Agent`) must grant them here,
-/// or the runtime's tool dispatcher rejects the tool_call.
+/// Newly-created Principals have an empty `[capabilities] tools` list by
+/// default. Tests that drive the root agent into calling tools (e.g.
+/// `Write`, `Bash`, `Agent`) must grant them here, or the runtime's tool
+/// dispatcher rejects the tool_call.
 ///
 /// `tools` are bare tool names (e.g. `"Write"`, `"Bash"`, `"Agent"`); this
 /// helper writes them into `principals/<name>/principal.toml` under
@@ -124,9 +122,7 @@ pub fn create_mock_principal_with_tools(
     // per-agent `init_builtins_async` registers the tool) and the canonical
     // `builtin:tool:<name>` extension ID (so the dispatcher's
     // `is_tool_enabled` owner check passes at execution time). Granting only
-    // one form yields a silently-disabled tool. (The root agent's fixed base
-    // whitelist already carries both forms for Read/glob/grep/session/Cron*/
-    // Task*; capability tools must supply both themselves.)
+    // one form yields a silently-disabled tool.
     let path = cli
         .peko_dir()
         .join("principals")

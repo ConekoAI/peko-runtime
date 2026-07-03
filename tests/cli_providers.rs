@@ -101,9 +101,10 @@ fn minimax_api_key() -> Option<String> {
 /// (minimax/kimi) as the sole catalog entry first, so the root agent's
 /// provider resolution falls through to it.
 ///
-/// The root agent's base tool whitelist already carries `Read`
-/// (`src/principal/agent_runner.rs::run_root_agent_prompt`), so the
-/// native-tool-call test needs no extra capability grant.
+/// New Principals are created with an empty `[allowed_extensions]` tool
+/// list by default. Tests that need the root agent to call tools (e.g.
+/// the native-tool-call test below) must grant them separately with
+/// [`grant_tools_to_principal`].
 ///
 /// Must be called BEFORE `DaemonGuard::spawn`: `peko principal create`
 /// writes files directly and needs no daemon.
@@ -119,6 +120,37 @@ fn create_provider_principal(cli: &PekoCli, name: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+/// Grant additional tools to a Principal created by
+/// [`create_provider_principal`].
+///
+/// Tools are written into `principals/<name>/principal.toml` under
+/// `[allowed_extensions] tools` in both bare-name and canonical
+/// `builtin:tool:<name>` forms, matching the pattern used by
+/// `tests/common/agent.rs::create_mock_principal_with_tools`.
+fn grant_tools_to_principal(cli: &PekoCli, name: &str, tools: &[&str]) {
+    let path = cli
+        .peko_dir()
+        .join("principals")
+        .join(name)
+        .join("principal.toml");
+    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
+    let mut cfg: peko::principal::config::PrincipalConfig =
+        toml::from_str(&raw).expect("parse principal.toml");
+
+    for tool in tools {
+        cfg.capabilities.tools.push((*tool).to_string());
+        cfg.capabilities.tools.push(format!("builtin:tool:{tool}"));
+    }
+    cfg.capabilities.tools.sort();
+    cfg.capabilities.tools.dedup();
+
+    std::fs::write(
+        &path,
+        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
+    )
+    .expect("write principal.toml");
 }
 
 /// Run a `peko …` command and return (stdout, stderr, status).
@@ -234,8 +266,8 @@ async fn cli_providers_kimi_smoke() {
 /// emits a native Anthropic-format `tool_use`/`tool_result` exchange,
 /// executing `Read` and surfacing the file content in its final answer.
 ///
-/// `Read` is in the root agent's base tool whitelist, so no extra
-/// capability grant is needed.
+/// `Read` is granted to the Principal explicitly because newly-created
+/// Principals have no tools by default.
 ///
 /// Skips when `MINIMAX_API_KEY` is unset.
 #[tokio::test]
@@ -250,6 +282,7 @@ async fn cli_providers_minimax_anthropic_native_tool_call() {
     let principal = "providers_minimax_anthropic_tool_call";
     common::agent::seed_minimax_provider_in_catalog(cli.home());
     create_provider_principal(&cli, principal);
+    grant_tools_to_principal(&cli, principal, &["Read"]);
 
     // The daemon's `Read` resolves relative paths against the shared
     // workspaces root, so place the sentinel file there.
