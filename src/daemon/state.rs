@@ -11,9 +11,7 @@ use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
 use crate::agents::lifecycle::LifecycleManager;
 use crate::agents::stateless_service::StatelessAgentService;
-use crate::common::services::{
-    AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService,
-};
+use crate::common::services::{AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
@@ -165,8 +163,7 @@ pub struct AppState {
         std::sync::Arc<tokio::sync::RwLock<crate::tunnel::known_runtimes::KnownRuntimes>>,
 
     /// Trust store for principal package publisher pinning (issue #91).
-    pub trust_store:
-        std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
+    pub trust_store: std::sync::Arc<tokio::sync::RwLock<crate::registry::packaging::TrustStore>>,
 
     /// Auth configuration (ADR-034)
     auth_config: crate::auth::config::AuthConfig,
@@ -807,9 +804,7 @@ impl AppState {
             .vault
             .reload()
             .map_err(|e| anyhow::anyhow!("vault reload failed: {e}"))?;
-        tracing::info!(
-            "Provider reload: {providers_count} providers, {keys_count} vault entries"
-        );
+        tracing::info!("Provider reload: {providers_count} providers, {keys_count} vault entries");
         Ok((providers_count, keys_count))
     }
 
@@ -1051,8 +1046,7 @@ impl AppState {
             let direct_known_runtimes = self.known_runtimes.clone();
             let direct_dispatcher = dispatcher.clone();
             let direct_handler: crate::tunnel::direct::DirectMessageHandler = Arc::new(
-                move |msg: crate::tunnel::TunnelMessage,
-                      handle: crate::tunnel::TunnelHandle| {
+                move |msg: crate::tunnel::TunnelMessage, handle: crate::tunnel::TunnelHandle| {
                     let d = direct_dispatcher.clone();
                     Box::pin(async move { d.handle_message(msg, handle).await })
                         as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
@@ -1252,11 +1246,17 @@ impl AppState {
 
         // 1. Build the directory HTTP client from the credential
         //    URL. `from_credential` flips wss:// → https:// and
-        //    strips the /v1/tunnel path. This is the only place
-        //    the runtime talks to pekohub's HTTP surface.
-        let directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
+        //    strips the /v1/tunnel path. Wrap it with the local-first
+        //    directory so same-runtime principals resolve without the
+        //    hub.
+        let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
             .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?;
-        let directory: Arc<dyn crate::tunnel::AgentDirectory> = Arc::new(directory);
+        let directory: Arc<dyn crate::tunnel::AgentDirectory> =
+            Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
+                cred.runtime_id.clone(),
+                self.principal_manager().clone(),
+                Arc::new(hub_directory),
+            ));
 
         // 2. Build the SigningKey from the credential's stored
         //    private key in the vault. `resolve_private_key` returns the
@@ -1288,6 +1288,7 @@ impl AppState {
             tunnel: self.tunnel_handle_slot(),
             direct_manager: self.direct_manager.clone(),
             known_runtimes: self.known_runtimes.clone(),
+            principal_manager: self.principal_manager().clone(),
             response_timeout: Duration::from_mins(1),
         });
         // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
@@ -1542,9 +1543,9 @@ fn load_runtime_signing_key(
     let privkey_b64 = identity
         .load_private_key(vault)?
         .ok_or_else(|| anyhow::anyhow!("runtime private key not found in vault"))?;
-    let privkey_bytes = BASE64.decode(privkey_b64.trim()).map_err(|e| {
-        anyhow::anyhow!("runtime private key is not valid base64: {e}")
-    })?;
+    let privkey_bytes = BASE64
+        .decode(privkey_b64.trim())
+        .map_err(|e| anyhow::anyhow!("runtime private key is not valid base64: {e}"))?;
     if privkey_bytes.len() != 32 {
         anyhow::bail!(
             "runtime private key is {} bytes; expected 32",

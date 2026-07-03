@@ -10,15 +10,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
-use crate::auth::{Subject, subject_from_string_with_default_user};
+use crate::auth::{subject_from_string_with_default_user, Subject};
 use crate::commands::GlobalPaths;
 use crate::common::paths::PathResolver;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::principal::{
     config::{
-        PrincipalCapabilities, PrincipalConfig, PrincipalGovernanceConfig,
-        PrincipalIdentityConfig, PrincipalIntentConfig, PrincipalMemoryConfig,
-        PrincipalRoutingConfig,
+        PrincipalCapabilities, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+        PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
     },
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
     memory::{DefaultPrincipalMemory, PrincipalMemory},
@@ -222,7 +221,9 @@ pub async fn handle_principal(
         PrincipalCommands::Create { name } => create_principal(&name, paths).await,
         PrincipalCommands::List => list_principals(paths).await,
         PrincipalCommands::Show { name } => show_principal(&name, paths).await,
-        PrincipalCommands::Send { name, message } => send_to_principal(&name, &message, paths).await,
+        PrincipalCommands::Send { name, message } => {
+            send_to_principal(&name, &message, paths).await
+        }
         PrincipalCommands::Export {
             name,
             output,
@@ -246,13 +247,7 @@ pub async fn handle_principal(
             force,
             registry_host,
             registry_token,
-        } => pull_principal(&registry_ref,
-            name,
-            force,
-            registry_host,
-            registry_token,
-        )
-        .await,
+        } => pull_principal(&registry_ref, name, force, registry_host, registry_token).await,
         PrincipalCommands::Permit {
             name,
             subject,
@@ -393,7 +388,11 @@ async fn show_principal(name: &str, paths: &GlobalPaths) -> Result<()> {
     let (display_name, did, preferred_provider_id, preferred_model_id) = {
         let config = principal.config.read().await;
         (
-            config.identity.display_name.clone().unwrap_or_else(|| config.name.clone()),
+            config
+                .identity
+                .display_name
+                .clone()
+                .unwrap_or_else(|| config.name.clone()),
             config.did.clone(),
             config.preferred_provider_id.clone(),
             config.preferred_model_id.clone(),
@@ -476,9 +475,7 @@ async fn export_principal(
 
     match response {
         ResponsePacket::PrincipalExported {
-            name,
-            output_path,
-            ..
+            name, output_path, ..
         } => {
             println!("Exported principal '{name}' to {output_path}");
             Ok(())
@@ -504,7 +501,9 @@ async fn import_principal(
         .await?;
 
     match response {
-        ResponsePacket::PrincipalImported { name, config_path, .. } => {
+        ResponsePacket::PrincipalImported {
+            name, config_path, ..
+        } => {
             println!("Imported principal '{name}' at {config_path}");
             Ok(())
         }
@@ -593,11 +592,7 @@ fn parse_permission(value: &str) -> Result<crate::auth::Permission> {
     }
 }
 
-async fn grant_permission(
-    name: &str,
-    subject_str: &str,
-    permission_str: &str,
-) -> Result<()> {
+async fn grant_permission(name: &str, subject_str: &str, permission_str: &str) -> Result<()> {
     let subject = subject_from_string_with_default_user(subject_str);
     let permission = parse_permission(permission_str)?;
 
@@ -613,12 +608,7 @@ async fn grant_permission(
             permission,
             ..
         } => {
-            println!(
-                "Granted {:?} on '{}' to {}",
-                permission,
-                name,
-                subject
-            );
+            println!("Granted {:?} on '{}' to {}", permission, name, subject);
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
@@ -630,11 +620,7 @@ async fn grant_permission(
     }
 }
 
-async fn revoke_permission(
-    name: &str,
-    subject_str: &str,
-    permission_str: &str,
-) -> Result<()> {
+async fn revoke_permission(name: &str, subject_str: &str, permission_str: &str) -> Result<()> {
     let subject = subject_from_string_with_default_user(subject_str);
     let permission = parse_permission(permission_str)?;
 
@@ -650,12 +636,7 @@ async fn revoke_permission(
             permission,
             ..
         } => {
-            println!(
-                "Revoked {:?} on '{}' from {}",
-                permission,
-                name,
-                subject
-            );
+            println!("Revoked {:?} on '{}' from {}", permission, name, subject);
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
@@ -718,9 +699,7 @@ async fn set_principal_exposure(name: &str, exposure: &str) -> Result<()> {
     let response = client.principal_set_exposure(name, exposure).await?;
 
     match response {
-        ResponsePacket::PrincipalExposureUpdated {
-            name, exposure, ..
-        } => {
+        ResponsePacket::PrincipalExposureUpdated { name, exposure, .. } => {
             println!("✅ Principal '{name}' exposure set to '{exposure}'");
             Ok(())
         }
@@ -757,11 +736,7 @@ async fn list_principal_agents(name: &str, paths: &GlobalPaths) -> Result<()> {
     Ok(())
 }
 
-async fn show_principal_agent(
-    name: &str,
-    agent: &str,
-    paths: &GlobalPaths,
-) -> Result<()> {
+async fn show_principal_agent(name: &str, agent: &str, paths: &GlobalPaths) -> Result<()> {
     let agents_dir = paths.principal_agents_dir(name);
     let mut candidates = vec![agents_dir.join(format!("{agent}.md"))];
     if !agent.ends_with(".md") {
@@ -812,7 +787,10 @@ async fn load_principal(
         anyhow::bail!("principal '{name}' not found");
     }
 
-    manager.load(&config_path).await.context("failed to load principal")
+    manager
+        .load(&config_path)
+        .await
+        .context("failed to load principal")
 }
 
 fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
@@ -858,6 +836,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         // will populate these.
         preferred_provider_id: None,
         preferred_model_id: None,
+        transport_preference: Default::default(),
     }
 }
 
@@ -1052,6 +1031,9 @@ mod tests {
             "warning should not mention the global config: {msg}"
         );
         // Names the principal so the user knows which one is affected.
-        assert!(msg.contains("alice"), "warning should name the principal: {msg}");
+        assert!(
+            msg.contains("alice"),
+            "warning should name the principal: {msg}"
+        );
     }
 }

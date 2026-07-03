@@ -350,6 +350,8 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             allowed_principals: None,
             capabilities: Some(vec!["chat".to_string()]),
             metadata: None,
+            transport_preference: None,
+            runtime_direct_endpoint: None,
         },
     };
     write

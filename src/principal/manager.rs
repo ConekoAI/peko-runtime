@@ -129,7 +129,12 @@ impl PrincipalManager {
         let memory = self.memory_factory.create(&id, &workspace_path).await;
         let router = self
             .router_factory
-            .create(&config, memory.clone(), &workspace_path, self.resolver.clone())
+            .create(
+                &config,
+                memory.clone(),
+                &workspace_path,
+                self.resolver.clone(),
+            )
             .await;
 
         let agent_prompts = discover_agent_prompts(&workspace_path).await?;
@@ -157,10 +162,7 @@ impl PrincipalManager {
     /// The parent directory of `config_path` becomes the Principal's
     /// workspace. The caller is responsible for ensuring the directory
     /// and agent prompt files exist.
-    pub async fn load(
-        &self,
-        config_path: &Path,
-    ) -> Result<Arc<Principal>, PrincipalManagerError> {
+    pub async fn load(&self, config_path: &Path) -> Result<Arc<Principal>, PrincipalManagerError> {
         let config_str = tokio::fs::read_to_string(config_path)
             .await
             .map_err(PrincipalManagerError::Io)?;
@@ -204,7 +206,12 @@ impl PrincipalManager {
         let memory = self.memory_factory.create(&id, &workspace_path).await;
         let router = self
             .router_factory
-            .create(&config, memory.clone(), &workspace_path, self.resolver.clone())
+            .create(
+                &config,
+                memory.clone(),
+                &workspace_path,
+                self.resolver.clone(),
+            )
             .await;
         let agent_prompts = discover_agent_prompts(&workspace_path).await?;
 
@@ -226,17 +233,11 @@ impl PrincipalManager {
         Ok(principal)
     }
 
-    pub async fn get(
-        &self,
-        id: PrincipalId,
-    ) -> Option<Arc<Principal>> {
+    pub async fn get(&self, id: PrincipalId) -> Option<Arc<Principal>> {
         self.principals.read().await.get(&id).cloned()
     }
 
-    pub async fn get_by_name(
-        &self,
-        name: &str,
-    ) -> Option<Arc<Principal>> {
+    pub async fn get_by_name(&self, name: &str) -> Option<Arc<Principal>> {
         let id = self.principals_by_name.read().await.get(name).cloned()?;
         self.get(id).await
     }
@@ -326,7 +327,8 @@ impl PrincipalManager {
             update(&mut config);
             config.clone()
         };
-        self.persist_config(&principal.workspace_path, &snapshot).await?;
+        self.persist_config(&principal.workspace_path, &snapshot)
+            .await?;
 
         Ok(principal)
     }
@@ -336,8 +338,8 @@ impl PrincipalManager {
         workspace_path: &Path,
         config: &PrincipalConfig,
     ) -> Result<(), PrincipalManagerError> {
-        let toml = toml::to_string(config)
-            .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
+        let toml =
+            toml::to_string(config).map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
         tokio::fs::write(workspace_path.join("principal.toml"), toml)
             .await
             .map_err(PrincipalManagerError::Io)
@@ -432,7 +434,9 @@ impl PrincipalManager {
             .memory
             .find_latest_session_for_peer(&peer)
             .await
-            .map_err(|e| PrincipalManagerError::RouterError(RouterError::AgentFailed(e.to_string())))?;
+            .map_err(|e| {
+                PrincipalManagerError::RouterError(RouterError::AgentFailed(e.to_string()))
+            })?;
 
         let mut recalled_context = Vec::new();
         if let Some(artifact) = latest_session {
@@ -507,9 +511,7 @@ impl PrincipalManager {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await?;
                 match decision {
-                    RouteDecision::Respond { response } => {
-                        Ok(PrincipalResponse::text(response))
-                    }
+                    RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
                 }
             }
             None => {
@@ -704,6 +706,7 @@ mod tests {
             }],
             preferred_provider_id: None,
             preferred_model_id: None,
+            transport_preference: Default::default(),
         }
     }
 
@@ -726,7 +729,12 @@ mod tests {
         let peer = Subject::User("alice".to_string());
         for i in 0..turns {
             let response = manager
-                .receive(id.clone(), peer.clone(), format!("message {i}"), cli_channel())
+                .receive(
+                    id.clone(),
+                    peer.clone(),
+                    format!("message {i}"),
+                    cli_channel(),
+                )
                 .await
                 .expect("receive should succeed");
             assert!(
@@ -737,8 +745,16 @@ mod tests {
         }
 
         let principal = manager.get(id).await.expect("principal should exist");
-        let sessions = principal.memory.list_sessions().await.expect("list sessions");
-        assert_eq!(sessions.len(), 1, "repeated messages from one peer must reuse one session");
+        let sessions = principal
+            .memory
+            .list_sessions()
+            .await
+            .expect("list sessions");
+        assert_eq!(
+            sessions.len(),
+            1,
+            "repeated messages from one peer must reuse one session"
+        );
         assert_eq!(sessions[0].peer, peer);
     }
 
@@ -761,7 +777,11 @@ mod tests {
         }
 
         let principal = manager.get(id).await.expect("principal should exist");
-        let sessions = principal.memory.list_sessions().await.expect("list sessions");
+        let sessions = principal
+            .memory
+            .list_sessions()
+            .await
+            .expect("list sessions");
         assert_eq!(
             sessions.len(),
             peers as usize,
@@ -793,7 +813,12 @@ mod tests {
                 // session")` race; with the lock held end-to-end the
                 // race can't happen, and this receive is a one-shot.
                 manager
-                    .receive(id.clone(), peer.clone(), format!("hello {i}"), cli_channel())
+                    .receive(
+                        id.clone(),
+                        peer.clone(),
+                        format!("hello {i}"),
+                        cli_channel(),
+                    )
                     .await
                     .map_err(|e| -> PrincipalManagerError { e })
             });
@@ -802,17 +827,20 @@ mod tests {
 
         let results = futures::future::join_all(handles).await;
         let ok_count = results.iter().filter(|r| r.is_ok()).count();
-        assert_eq!(ok_count, peers as usize, "all concurrent receives should complete");
+        assert_eq!(
+            ok_count, peers as usize,
+            "all concurrent receives should complete"
+        );
 
         let mut actual_texts: Vec<String> = Vec::with_capacity(peers as usize);
         for result in results {
-            let response = result.expect("task should not panic").expect("receive should succeed");
+            let response = result
+                .expect("task should not panic")
+                .expect("receive should succeed");
             actual_texts.push(response.content);
         }
 
-        let expected_texts: Vec<String> = (0..peers)
-            .map(|i| format!("concurrent {i}"))
-            .collect();
+        let expected_texts: Vec<String> = (0..peers).map(|i| format!("concurrent {i}")).collect();
         for expected in &expected_texts {
             assert!(
                 actual_texts.iter().any(|t| t.contains(expected)),
@@ -821,7 +849,11 @@ mod tests {
         }
 
         let principal = manager.get(id).await.expect("principal should exist");
-        let sessions = principal.memory.list_sessions().await.expect("list sessions");
+        let sessions = principal
+            .memory
+            .list_sessions()
+            .await
+            .expect("list sessions");
         assert_eq!(
             sessions.len(),
             peers as usize,
@@ -861,7 +893,10 @@ mod tests {
 
         let responses: Vec<PrincipalResponse> = results
             .into_iter()
-            .map(|r| r.expect("task should not panic").expect("receive should succeed"))
+            .map(|r| {
+                r.expect("task should not panic")
+                    .expect("receive should succeed")
+            })
             .collect();
 
         let answered = responses
@@ -884,7 +919,11 @@ mod tests {
         );
 
         let principal = manager.get(id).await.expect("principal should exist");
-        let sessions = principal.memory.list_sessions().await.expect("list sessions");
+        let sessions = principal
+            .memory
+            .list_sessions()
+            .await
+            .expect("list sessions");
         assert_eq!(
             sessions.len(),
             1,
@@ -904,9 +943,7 @@ mod tests {
             did.0
         );
 
-        let identity_dir = manager
-            .path_resolver
-            .principal_identity_dir("stressy");
+        let identity_dir = manager.path_resolver.principal_identity_dir("stressy");
         assert!(identity_dir.exists(), "identity directory should exist");
     }
 
@@ -917,8 +954,7 @@ mod tests {
         create_test_principal(&manager, "beta").await;
 
         let all = manager.list_all().await;
-        let names: Vec<String> =
-            futures::future::join_all(all.iter().map(|p| p.name())).await;
+        let names: Vec<String> = futures::future::join_all(all.iter().map(|p| p.name())).await;
         assert!(names.contains(&"stressy".to_string()));
         assert!(names.contains(&"beta".to_string()));
     }
@@ -934,7 +970,10 @@ mod tests {
             .workspace_path
             .clone();
 
-        manager.remove("stressy").await.expect("remove should succeed");
+        manager
+            .remove("stressy")
+            .await
+            .expect("remove should succeed");
         assert!(manager.get_by_name("stressy").await.is_none());
         assert!(!workspace_path.exists(), "workspace should be deleted");
     }
@@ -959,7 +998,10 @@ mod tests {
         let toml = tokio::fs::read_to_string(principal.workspace_path.join("principal.toml"))
             .await
             .unwrap();
-        assert!(toml.contains("public"), "updated exposure should be persisted");
+        assert!(
+            toml.contains("public"),
+            "updated exposure should be persisted"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

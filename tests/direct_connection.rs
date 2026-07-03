@@ -40,6 +40,7 @@ fn plaintext_direct_config() -> peko::common::types::config::DirectNetworkConfig
         tls_cert_path: None,
         tls_key_path: None,
         tls_client_ca_path: None,
+        advertise_endpoint: None,
     }
 }
 
@@ -93,8 +94,7 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
                         session_id,
                     );
                 }
-            })
-                as Pin<Box<dyn Future<Output = ()> + Send>>
+            }) as Pin<Box<dyn Future<Output = ()> + Send>>
         },
     );
 
@@ -124,11 +124,7 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
     let rx = pending.register(&request_id).expect("register");
 
     let handle = manager
-        .get_or_connect(
-            &server_runtime_id,
-            &endpoint,
-            None::<&DirectTlsConfig>,
-        )
+        .get_or_connect(&server_runtime_id, &endpoint, None::<&DirectTlsConfig>)
         .await
         .expect("client connects");
 
@@ -180,18 +176,14 @@ async fn direct_server_rejects_unauthorized_peer() {
     let bound_addr = server.start(cancel.clone()).await.expect("server starts");
 
     let pending = Arc::new(PendingA2aResponses::new());
-    let result = DirectConnectionManager::new(
-        Arc::new(client_key),
-        client_runtime_id,
-        false,
-        pending,
-    )
-    .get_or_connect(
-        &server_runtime_id,
-        &format!("ws://{bound_addr}"),
-        None::<&DirectTlsConfig>,
-    )
-    .await;
+    let result =
+        DirectConnectionManager::new(Arc::new(client_key), client_runtime_id, false, pending)
+            .get_or_connect(
+                &server_runtime_id,
+                &format!("ws://{bound_addr}"),
+                None::<&DirectTlsConfig>,
+            )
+            .await;
 
     assert!(
         result.is_err(),

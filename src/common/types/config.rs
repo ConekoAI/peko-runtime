@@ -132,6 +132,11 @@ pub struct DirectNetworkConfig {
     /// Optional CA to require for inbound mTLS client auth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_client_ca_path: Option<PathBuf>,
+    /// Explicit URL this runtime advertises to peers for inbound direct
+    /// connections (e.g. `wss://203.0.113.4:11436`). When absent, the
+    /// runtime does not publish a direct endpoint to the hub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advertise_endpoint: Option<String>,
 }
 
 impl Default for DirectNetworkConfig {
@@ -144,6 +149,7 @@ impl Default for DirectNetworkConfig {
             tls_cert_path: None,
             tls_key_path: None,
             tls_client_ca_path: None,
+            advertise_endpoint: None,
         }
     }
 }
@@ -475,6 +481,7 @@ mod tests {
         assert!(direct.tls_cert_path.is_none());
         assert!(direct.tls_key_path.is_none());
         assert!(direct.tls_client_ca_path.is_none());
+        assert!(direct.advertise_endpoint.is_none());
     }
 
     #[test]
@@ -486,6 +493,7 @@ mod tests {
         assert_eq!(parsed.bind_address, direct.bind_address);
         assert_eq!(parsed.port, direct.port);
         assert_eq!(parsed.tls_required, direct.tls_required);
+        assert!(parsed.advertise_endpoint.is_none());
     }
 
     #[test]
@@ -512,6 +520,7 @@ mod tests {
             tls_required = true
             tls_cert_path = "/etc/peko/direct.crt"
             tls_key_path = "/etc/peko/direct.key"
+            advertise_endpoint = "wss://203.0.113.4:11436"
         "#;
         let config: NetworkConfig = toml::from_str(toml).unwrap();
         assert!(config.direct.enabled);
@@ -525,6 +534,10 @@ mod tests {
         assert_eq!(
             config.direct.tls_key_path,
             Some(PathBuf::from("/etc/peko/direct.key"))
+        );
+        assert_eq!(
+            config.direct.advertise_endpoint,
+            Some("wss://203.0.113.4:11436".to_string())
         );
     }
 

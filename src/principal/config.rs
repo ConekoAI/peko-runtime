@@ -70,6 +70,12 @@ pub struct PrincipalConfig {
     /// Falls back to the provider's `default_model_id` when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_model_id: Option<String>,
+
+    /// Transport preference for cross-runtime principal_send.
+    /// The principal owns the connection method; callers learn it from
+    /// the directory and respect it.
+    #[serde(default)]
+    pub transport_preference: crate::tunnel::known_runtimes::TransportPreference,
 }
 
 /// Thin wrapper around a DID string.
@@ -260,6 +266,42 @@ mod tests {
         assert_eq!(cfg.name, "legacy");
         assert_eq!(cfg.preferred_provider_id, None);
         assert_eq!(cfg.preferred_model_id, None);
+        assert_eq!(
+            cfg.transport_preference,
+            crate::tunnel::known_runtimes::TransportPreference::Auto
+        );
+    }
+
+    #[test]
+    fn principal_config_transport_preference_roundtrip() {
+        let cfg = PrincipalConfig {
+            name: "alice".into(),
+            did: None,
+            owner: Default::default(),
+            identity: Default::default(),
+            intent: Default::default(),
+            governance: Default::default(),
+            memory: Default::default(),
+            routing: Default::default(),
+            capabilities: Default::default(),
+            exposure: Default::default(),
+            status: None,
+            permissions: Vec::new(),
+            preferred_provider_id: None,
+            preferred_model_id: None,
+            transport_preference: crate::tunnel::known_runtimes::TransportPreference::Tunnel,
+        };
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            serialized.contains("transport_preference = \"tunnel\""),
+            "got: {serialized}"
+        );
+
+        let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(
+            back.transport_preference,
+            crate::tunnel::known_runtimes::TransportPreference::Tunnel
+        );
     }
 
     /// The new fields must round-trip losslessly through serde so the
@@ -281,6 +323,7 @@ mod tests {
             permissions: Vec::new(),
             preferred_provider_id: Some("ollama".into()),
             preferred_model_id: Some("llama3.1".into()),
+            transport_preference: crate::tunnel::known_runtimes::TransportPreference::Direct,
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -291,10 +334,18 @@ mod tests {
             serialized.contains("preferred_model_id = \"llama3.1\""),
             "got: {serialized}"
         );
+        assert!(
+            serialized.contains("transport_preference = \"direct\""),
+            "got: {serialized}"
+        );
 
         let back: PrincipalConfig = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(back.preferred_provider_id.as_deref(), Some("ollama"));
         assert_eq!(back.preferred_model_id.as_deref(), Some("llama3.1"));
+        assert_eq!(
+            back.transport_preference,
+            crate::tunnel::known_runtimes::TransportPreference::Direct
+        );
     }
 
     /// Serializing a config with no provider hint must NOT emit the keys —
@@ -317,6 +368,7 @@ mod tests {
             permissions: Vec::new(),
             preferred_provider_id: None,
             preferred_model_id: None,
+            transport_preference: Default::default(),
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -350,6 +402,7 @@ mod tests {
             permissions: Vec::new(),
             preferred_provider_id: None,
             preferred_model_id: None,
+            transport_preference: Default::default(),
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(

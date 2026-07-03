@@ -364,9 +364,12 @@ impl TunnelDispatcher {
             let name = principal.name().await;
             let did = principal.did().await;
             let exposure = principal.exposure().await;
-            let allowed_principals = {
+            let (allowed_principals, transport_preference) = {
                 let config = principal.config.read().await;
-                Self::compute_allowed_principals(&config)
+                (
+                    Self::compute_allowed_principals(&config),
+                    config.transport_preference,
+                )
             };
             let instance_id = self.instance_id(&name);
             let payload = InstanceAnnouncePayload {
@@ -382,6 +385,14 @@ impl TunnelDispatcher {
                 allowed_principals: allowed_principals.clone(),
                 capabilities: None,
                 metadata: None,
+                transport_preference: Some(transport_preference),
+                runtime_direct_endpoint: self
+                    .app_state
+                    .peko_config
+                    .network
+                    .direct
+                    .advertise_endpoint
+                    .clone(),
             };
 
             // Seed local instance state cache with default Online status and the
@@ -410,10 +421,7 @@ impl TunnelDispatcher {
     /// Announce a single Principal instance through the tunnel.
     ///
     /// Used when a new Principal is created after the tunnel is already connected.
-    pub async fn announce_single_instance(
-        &self,
-        principal_name: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn announce_single_instance(&self, principal_name: &str) -> anyhow::Result<()> {
         let handle = {
             let state = self.state.read().await;
             match state.tunnel_handle.clone() {
@@ -432,7 +440,10 @@ impl TunnelDispatcher {
         let principal = match principal_manager.get_by_name(principal_name).await {
             Some(p) => p,
             None => {
-                warn!("Principal {} not found; cannot announce instance", principal_name);
+                warn!(
+                    "Principal {} not found; cannot announce instance",
+                    principal_name
+                );
                 return Ok(());
             }
         };
@@ -440,9 +451,12 @@ impl TunnelDispatcher {
         let name = principal.name().await;
         let did = principal.did().await;
         let exposure = principal.exposure().await;
-        let allowed_principals = {
+        let (allowed_principals, transport_preference) = {
             let config = principal.config.read().await;
-            Self::compute_allowed_principals(&config)
+            (
+                Self::compute_allowed_principals(&config),
+                config.transport_preference,
+            )
         };
         let instance_id = self.instance_id(&name);
         let payload = InstanceAnnouncePayload {
@@ -458,6 +472,14 @@ impl TunnelDispatcher {
             allowed_principals: allowed_principals.clone(),
             capabilities: None,
             metadata: None,
+            transport_preference: Some(transport_preference),
+            runtime_direct_endpoint: self
+                .app_state
+                .peko_config
+                .network
+                .direct
+                .advertise_endpoint
+                .clone(),
         };
 
         // Seed local instance state cache
@@ -646,20 +668,18 @@ impl TunnelDispatcher {
         }
 
         // Resolve the calling user from the PekoHub-proxied headers/JWT.
-        let caller_user = match resolve_bridge_caller(
-            &bridge_payload,
-            self.app_state.jwt_validator().as_ref(),
-        )
-        .await
-        {
-            Ok(caller) => caller,
-            Err(e) => {
-                warn!("Tunnel caller resolution failed for {}: {}", agent_name, e);
-                return self
-                    .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
-                    .await;
-            }
-        };
+        let caller_user =
+            match resolve_bridge_caller(&bridge_payload, self.app_state.jwt_validator().as_ref())
+                .await
+            {
+                Ok(caller) => caller,
+                Err(e) => {
+                    warn!("Tunnel caller resolution failed for {}: {}", agent_name, e);
+                    return self
+                        .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
+                        .await;
+                }
+            };
         let caller_principal = Subject::from_bridge_user(&caller_user);
 
         self.app_state
@@ -751,7 +771,10 @@ impl TunnelDispatcher {
         let result = match recv_handle.await {
             Ok(r) => r,
             Err(e) => {
-                warn!("Principal streaming task panicked for {}: {}", agent_name, e);
+                warn!(
+                    "Principal streaming task panicked for {}: {}",
+                    agent_name, e
+                );
                 return self
                     .send_error_response(&handle, &request_id, "Execution failed")
                     .await;
@@ -765,9 +788,11 @@ impl TunnelDispatcher {
                 // to sending the authoritative content as a single chunk
                 // so the caller still receives the full answer.
                 if !streamed_any && !response.content.is_empty() {
-                    if let Err(e) =
-                        handle.send_stream_chunk(request_id.clone(), seq, response.content.into_bytes())
-                    {
+                    if let Err(e) = handle.send_stream_chunk(
+                        request_id.clone(),
+                        seq,
+                        response.content.into_bytes(),
+                    ) {
                         warn!("Failed to send fallback chunk: {}", e);
                     }
                 }
@@ -797,11 +822,9 @@ impl TunnelDispatcher {
         request_id: &str,
         message: &str,
     ) -> anyhow::Result<()> {
-        if let Err(e) = handle.send_stream_chunk(
-            request_id.to_string(),
-            0,
-            message.as_bytes().to_vec(),
-        ) {
+        if let Err(e) =
+            handle.send_stream_chunk(request_id.to_string(), 0, message.as_bytes().to_vec())
+        {
             warn!("Failed to send error response chunk: {}", e);
         }
         if let Err(e) = handle.send_stream_end(request_id.to_string()) {
@@ -960,7 +983,10 @@ impl TunnelDispatcher {
                     Self::compute_allowed_principals(&config)
                 }
                 None => {
-                    warn!("Principal {} not found; cannot compute allowed principals", principal_name);
+                    warn!(
+                        "Principal {} not found; cannot compute allowed principals",
+                        principal_name
+                    );
                     None
                 }
             }
@@ -980,10 +1006,16 @@ impl TunnelDispatcher {
                 allowed_principals: allowed_principals.clone(),
             };
             if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
-                warn!("Failed to send exposure update for {}: {}", principal_name, e);
+                warn!(
+                    "Failed to send exposure update for {}: {}",
+                    principal_name, e
+                );
                 return Err(e.into());
             }
-            debug!("Sent exposure update for {}: {:?}", principal_name, exposure);
+            debug!(
+                "Sent exposure update for {}: {:?}",
+                principal_name, exposure
+            );
         } else {
             debug!(
                 "No tunnel handle, exposure update for {} is dropped (will be re-announced on next TunnelReady)",
@@ -1034,6 +1066,7 @@ impl TunnelDispatcher {
                 if instance_id == payload.instance_id {
                     let did = principal.did().await;
                     let status = self.get_instance_status(&name).await;
+                    let transport_preference = principal.config.read().await.transport_preference;
                     let announce_payload = InstanceAnnouncePayload {
                         id: instance_id,
                         instance_type: InstanceType::Principal,
@@ -1047,6 +1080,14 @@ impl TunnelDispatcher {
                         allowed_principals: payload.allowed_principals.clone(),
                         capabilities: None,
                         metadata: None,
+                        transport_preference: Some(transport_preference),
+                        runtime_direct_endpoint: self
+                            .app_state
+                            .peko_config
+                            .network
+                            .direct
+                            .advertise_endpoint
+                            .clone(),
                     };
                     if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce {
                         payload: announce_payload,
@@ -1056,7 +1097,10 @@ impl TunnelDispatcher {
                             name, e
                         );
                     } else {
-                        debug!("Re-announced principal instance {} after exposure update", name);
+                        debug!(
+                            "Re-announced principal instance {} after exposure update",
+                            name
+                        );
                     }
                     break;
                 }
@@ -1457,8 +1501,7 @@ mod tests {
             InstanceExposure::Private,
         );
 
-        let allowed = TunnelDispatcher::compute_allowed_principals(&config)
-            .expect("always Some");
+        let allowed = TunnelDispatcher::compute_allowed_principals(&config).expect("always Some");
 
         // Alice survives with the `user:` prefix stripped.
         assert!(
@@ -1509,6 +1552,7 @@ mod tests {
             permissions,
             preferred_provider_id: None,
             preferred_model_id: None,
+            transport_preference: Default::default(),
         }
     }
 
@@ -1672,7 +1716,9 @@ mod tests {
             },
         });
         assert_eq!(
-            resolve_bridge_caller(&payload, Some(&validator)).await.unwrap(),
+            resolve_bridge_caller(&payload, Some(&validator))
+                .await
+                .unwrap(),
             "user-jwt"
         );
     }
@@ -1729,7 +1775,9 @@ mod tests {
             "headers": {"x-pekohub-user-id": "user-hub"},
         });
         assert_eq!(
-            resolve_bridge_caller(&payload, Some(&validator)).await.unwrap(),
+            resolve_bridge_caller(&payload, Some(&validator))
+                .await
+                .unwrap(),
             "user-hub"
         );
     }
@@ -1758,7 +1806,9 @@ mod tests {
             },
         });
         assert_eq!(
-            resolve_bridge_caller(&payload, Some(&validator)).await.unwrap(),
+            resolve_bridge_caller(&payload, Some(&validator))
+                .await
+                .unwrap(),
             "user-jwt"
         );
     }
@@ -2170,8 +2220,7 @@ mod tests {
             panic!("expected AgentToAgentResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-bad-sig");
-        let err: HubErrorResponse =
-            serde_json::from_slice(&payload).expect("payload must decode");
+        let err: HubErrorResponse = serde_json::from_slice(&payload).expect("payload must decode");
         assert_eq!(err.code, "forbidden");
         assert!(
             err.message.contains("signature did not verify"),
@@ -2283,7 +2332,10 @@ mod tests {
 
         let instance_id = dispatcher.instance_id("announce-me");
         let state = dispatcher.state.read().await;
-        let cached = state.instance_state.get(&instance_id).expect("state seeded");
+        let cached = state
+            .instance_state
+            .get(&instance_id)
+            .expect("state seeded");
         assert_eq!(cached.exposure, InstanceExposure::Public);
     }
 
@@ -2333,7 +2385,10 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(got_chunk, "proxied request must produce at least one stream chunk");
+        assert!(
+            got_chunk,
+            "proxied request must produce at least one stream chunk"
+        );
     }
 
     /// An inbound `AgentToAgentRequest` addressed to a Principal's stable DID
@@ -2388,11 +2443,16 @@ mod tests {
             .expect("handler must not panic");
 
         let response = rx.recv().await.expect("response must be sent");
-        let TunnelMessage::AgentToAgentResponse { request_id, payload } = response else {
+        let TunnelMessage::AgentToAgentResponse {
+            request_id,
+            payload,
+        } = response
+        else {
             panic!("expected AgentToAgentResponse, got: {response:?}");
         };
         assert_eq!(request_id, "req-a2a");
-        let result: PrincipalSendResult = serde_json::from_slice(&payload).expect("payload must decode");
+        let result: PrincipalSendResult =
+            serde_json::from_slice(&payload).expect("payload must decode");
         assert!(
             result.error.is_some() || !result.response.is_empty() || result.success,
             "A2A result should reflect that the Principal was reached; got: {result:?}"
