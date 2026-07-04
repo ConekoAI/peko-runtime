@@ -59,16 +59,41 @@ impl ToolRegistry {
     /// canonical ID is present in the whitelist.  This makes the check
     /// independent of any tool-name naming convention.
     pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        let config = self.tool_config.read().await;
+        self.is_tool_enabled_with_whitelist(tool_name, None).await
+    }
+
+    /// Check if a tool is enabled, using a per-call allowlist when provided.
+    ///
+    /// When `allowed_extensions` is `Some`, the tool's owning canonical
+    /// extension ID must be present in that list.  This avoids the race
+    /// condition caused by mutating the shared global `tool_config`.
+    ///
+    /// When `allowed_extensions` is `None`, the legacy global `tool_config`
+    /// is used as a fallback.
+    pub async fn is_tool_enabled_with_whitelist(
+        &self,
+        tool_name: &str,
+        allowed_extensions: Option<&[String]>,
+    ) -> bool {
         let owners = self.tool_owners.read().await;
 
-        // Primary: check by owning extension_id (clean, future-proof)
+        if let Some(list) = allowed_extensions {
+            let whitelist = crate::common::types::agent_legacy::ExtensionConfig {
+                enabled: list.to_vec(),
+                ..Default::default()
+            };
+            if let Some(ext_id) = owners.get(tool_name) {
+                return whitelist.is_extension_enabled(&ext_id.0);
+            }
+            // No recorded owner: allow only if the bare name is explicitly
+            // listed.  Do not fall back to the mutable global config.
+            return whitelist.is_extension_enabled(tool_name);
+        }
+
+        let config = self.tool_config.read().await;
         if let Some(ext_id) = owners.get(tool_name) {
             return config.is_extension_enabled(&ext_id.0);
         }
-
-        // Fallback for tools registered before this change or direct
-        // tool-name whitelisting (should not happen in normal flow).
         config.is_extension_enabled(tool_name)
     }
 
@@ -162,5 +187,52 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_per_call_allowlist_ignores_global_config() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_tool("Read", HookId::new(), ExtensionId::new("builtin:tool:Read"))
+            .await
+            .unwrap();
+
+        // Set a global config that *disables* Read.
+        let global = crate::common::types::agent_legacy::ExtensionConfig {
+            enabled: vec!["other".to_string()],
+            ..Default::default()
+        };
+        registry.set_tool_config(global).await;
+
+        // A per-call allowlist that *enables* Read should still permit it.
+        assert!(
+            registry
+                .is_tool_enabled_with_whitelist("Read", Some(&["builtin:tool:Read".to_string()]))
+                .await
+        );
+
+        // A per-call allowlist without Read should deny it, even though the
+        // global config is unrelated.
+        assert!(
+            !registry
+                .is_tool_enabled_with_whitelist("Read", Some(&["other".to_string()]))
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unknown_tool_with_per_call_allowlist_uses_bare_name() {
+        let registry = ToolRegistry::new();
+        // No registration, so no owner is recorded.
+        assert!(
+            registry
+                .is_tool_enabled_with_whitelist("custom_skill", Some(&["custom_skill".to_string()]))
+                .await
+        );
     }
 }

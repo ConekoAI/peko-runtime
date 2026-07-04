@@ -812,6 +812,7 @@ impl AgenticLoop {
 
                 // Execute tools
                 for tool_call in &tool_calls {
+                    let allowed_extensions = Some(self.agent.config.extension_whitelist());
                     let result = tool_executor
                         .execute(
                             tool_call,
@@ -822,6 +823,7 @@ impl AgenticLoop {
                             &run_id,
                             self.caller_id.as_deref(),
                             self.agent_principal_id.as_deref(),
+                            allowed_extensions,
                             &on_event,
                         )
                         .await?;
@@ -874,9 +876,15 @@ impl AgenticLoop {
     /// Build tool definitions dynamically from `ExtensionCore` (ADR-019 Phase 2)
     ///
     /// This queries the unified tool registry for currently enabled tools,
-    /// allowing tool changes to take effect without session restart.
+    /// allowing tool changes to take effect without session restart. The
+    /// list is filtered by the agent's extension whitelist so the LLM only
+    /// sees tools the agent is actually allowed to invoke.
     async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let defs = self.extension_core.list_tool_definitions().await;
+        let allowed = self.agent.config.extension_whitelist();
+        let defs = self
+            .extension_core
+            .list_tool_definitions_with_allowlist(&allowed)
+            .await;
 
         info!(
             "Dynamically built {} tool definitions from ExtensionCore: {:?}",

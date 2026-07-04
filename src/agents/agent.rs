@@ -258,11 +258,11 @@ impl Agent {
             tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
         }
 
-        // ADR-020: Set tool config on ExtensionCore before registering tools
-        // so that permission checks pass during registration.
-        let mut ext_config = self.config.extensions.clone().unwrap_or_default();
-        ext_config.enabled = self.config.extension_whitelist();
-        self.extension_core.set_tool_config(ext_config).await;
+        // ADR-020: Per-agent tool configuration is now carried on each
+        // `HookInput::ToolCall` via `allowed_extensions` instead of being
+        // written to the shared global `tool_config`. This eliminates a
+        // race where concurrent agents overwrite each other's whitelist
+        // on the daemon-global `ExtensionCore`.
 
         // Load Universal Tools from extensions directory (where `peko ext install` puts them).
         //
@@ -839,11 +839,6 @@ impl Agent {
 
         self.set_state(AgentState::Busy);
 
-        // Initialize tool config on ExtensionCore
-        let mut ext_config = self.config.extensions.clone().unwrap_or_default();
-        ext_config.enabled = self.config.extension_whitelist();
-        self.extension_core.set_tool_config(ext_config).await;
-
         if let Err(e) = self.prepare_execution().await {
             self.set_state(AgentState::Idle);
             return Err(e);
@@ -915,11 +910,6 @@ impl Agent {
 
         self.set_state(AgentState::Busy);
 
-        // Initialize tool config on ExtensionCore
-        let mut ext_config = self.config.extensions.clone().unwrap_or_default();
-        ext_config.enabled = self.config.extension_whitelist();
-        self.extension_core.set_tool_config(ext_config).await;
-
         // Capture current session ID so session tool can look it up
         {
             let session_id = session.read().await.id.clone();
@@ -984,10 +974,6 @@ impl Agent {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
-
-        let mut ext_config = self.config.extensions.clone().unwrap_or_default();
-        ext_config.enabled = self.config.extension_whitelist();
-        self.extension_core.set_tool_config(ext_config).await;
 
         {
             let session_id = session.read().await.id.clone();

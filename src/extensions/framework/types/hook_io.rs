@@ -186,6 +186,11 @@ pub enum HookInput {
         /// principal state at handle time without per-call re-
         /// registration on the shared global `ExtensionCore`.
         principal_id: Option<String>,
+        /// Allowed extension IDs for this tool call. When present, the
+        /// execution gate checks this list instead of the mutable global
+        /// `tool_config`, eliminating a TOCTOU race where concurrent
+        /// agents overwrite each other's whitelist on the shared core.
+        allowed_extensions: Option<Vec<String>>,
     },
 
     /// Async task status check
@@ -355,6 +360,7 @@ mod tests {
             session_id: Some("sess-1".to_string()),
             caller_id: Some("user-42".to_string()),
             principal_id: Some("principal-z".to_string()),
+            allowed_extensions: None,
         };
         match input {
             HookInput::ToolCall {

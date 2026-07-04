@@ -45,6 +45,9 @@ impl ToolExecutor {
     ///   or `None` for local CLI invocations) — propagated to the tool via
     ///   `HookInput::ToolCall::caller_id` for per-user permission checks and
     ///   audit logging (issue #17).
+    /// * `principal_id` - Principal scope for extension-scoped tool state.
+    /// * `allowed_extensions` - Per-call allowlist used by the execution gate
+    ///   instead of the mutable global `tool_config`.
     /// * `on_event` - Event callback
     ///
     /// Returns the tool result message and success flag.
@@ -59,6 +62,7 @@ impl ToolExecutor {
         run_id: &str,
         caller_id: Option<&str>,
         principal_id: Option<&str>,
+        allowed_extensions: Option<Vec<String>>,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
     ) -> Result<ToolExecutionResult> {
         let (id, name, arguments) = match tool_call {
@@ -96,6 +100,7 @@ impl ToolExecutor {
                 Some(session_id),
                 caller_id.map(str::to_string),
                 principal_id.map(str::to_string),
+                allowed_extensions,
             )
             .await
             {

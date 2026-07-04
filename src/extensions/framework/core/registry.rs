@@ -267,7 +267,17 @@ impl ExtensionCore {
         // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
         // This ensures ALL tools (built-in, MCP, Universal) are checked consistently
         if let HookPoint::ToolExecute { ref tool_name } = point {
-            if !self.tool_registry.is_tool_enabled(tool_name).await {
+            let allowed_extensions = match &input {
+                HookInput::ToolCall {
+                    allowed_extensions, ..
+                } => allowed_extensions.as_deref(),
+                _ => None,
+            };
+            if !self
+                .tool_registry
+                .is_tool_enabled_with_whitelist(tool_name, allowed_extensions)
+                .await
+            {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
                 return HookResult::Error(anyhow::anyhow!(
                     "Tool '{tool_name}' is currently disabled. Enable it in agent config to use it."
@@ -538,6 +548,30 @@ impl ExtensionCore {
             .into_iter()
             .map(|metadata| metadata.to_tool_definition())
             .collect()
+    }
+
+    /// List registered tools as `ToolDefinitions`, filtered by a caller
+    /// allowlist.
+    ///
+    /// This closes leak B: without filtering, the LLM sees every tool
+    /// registered on the shared `ExtensionCore` even when the agent/principal
+    /// is only allowed to use a subset.
+    pub async fn list_tool_definitions_with_allowlist(
+        &self,
+        allowed_extensions: &[String],
+    ) -> Vec<crate::providers::ToolDefinition> {
+        let all = self.list_tools().await;
+        let mut filtered = Vec::new();
+        for metadata in all {
+            if self
+                .tool_registry
+                .is_tool_enabled_with_whitelist(&metadata.name, Some(allowed_extensions))
+                .await
+            {
+                filtered.push(metadata.to_tool_definition());
+            }
+        }
+        filtered
     }
 
     /// Unregister a tool by name.
@@ -958,6 +992,7 @@ mod tests {
                     session_id: None,
                     caller_id: None,
                     principal_id: None,
+                    allowed_extensions: None,
                 },
             )
             .await;
@@ -1020,6 +1055,7 @@ mod tests {
                     session_id: None,
                     caller_id: None,
                     principal_id: None,
+                    allowed_extensions: None,
                 },
             )
             .await;
