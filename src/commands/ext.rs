@@ -7,6 +7,7 @@
 //! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
 use crate::commands::GlobalPaths;
+use crate::commands::mcp;
 use crate::extensions::framework::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
 use crate::extensions::framework::services::{ConfigScope, ExtensionConfigService};
 use crate::ipc::client_service::DaemonClientService;
@@ -138,6 +139,10 @@ pub enum ExtCommands {
 
     /// Show background runtime status for an extension
     Status { id: String },
+
+    /// MCP server management commands
+    #[command(subcommand)]
+    Mcp(mcp::McpCommands),
 
     /// Push an installed extension to a registry
     Push {
@@ -328,6 +333,8 @@ pub async fn handle_ext_command(
             }
             Ok(())
         }
+
+        ExtCommands::Mcp(cmd) => mcp::execute(cmd, paths).await,
 
         // --- IPC commands ---
         ExtCommands::Validate {

@@ -132,7 +132,7 @@ pub async fn discover_servers() -> anyhow::Result<Vec<DiscoveredServer>> {
             tools_count: 0, // Would need to connect to get actual count
             error: if status == McpServerStatus::NotInstalled {
                 Some(format!(
-                    "Server '{name}' not found. Install with: peko mcp install {name}"
+                    "Server '{name}' not found. Add with: peko ext mcp add {name}"
                 ))
             } else {
                 None

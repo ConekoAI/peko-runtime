@@ -815,7 +815,7 @@ impl AppState {
 
     /// Re-read the MCP server configuration from `mcp.toml` and the
     /// credential vault from disk. Called by the IPC `McpReload` handler
-    /// so CLI mutations (`peko mcp {add,auth,remove}`) are visible to the
+    /// so CLI mutations (`peko ext mcp {add,auth,remove}`) are visible to the
     /// long-running daemon without a restart.
     pub async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
         let keys_count = self
