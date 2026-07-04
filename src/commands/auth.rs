@@ -9,29 +9,12 @@ use clap::Subcommand;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AuthCommands {
-    /// Log in to the PekoHub registry
-    Login {
-        /// Registry host (default: pekohub.ai)
-        #[arg(long, default_value = "pekohub.ai")]
-        registry: String,
-        /// Log in with an API key instead of OAuth
-        #[arg(long)]
-        api_key: Option<String>,
-    },
-
-    /// Log out from the PekoHub registry
-    Logout {
-        /// Registry host to log out from
-        #[arg(long, default_value = "pekohub.ai")]
-        registry: String,
-    },
-
     /// Show authentication status
     Status,
 
     // ── ADR-034: Runtime auth management ──
-    /// Manage runtime API keys
-    #[command(subcommand)]
+    /// Manage runtime API keys (advanced / hidden)
+    #[command(subcommand, hide = true)]
     ApiKey(ApiKeyCommands),
 }
 
@@ -69,10 +52,6 @@ fn mask_key(key: &str) -> String {
 /// Handle auth commands
 pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
     match cmd {
-        AuthCommands::Login { registry, api_key } => handle_login(paths, &registry, api_key),
-
-        AuthCommands::Logout { registry } => handle_logout(paths, &registry),
-
         AuthCommands::Status => {
             let service = CredentialsService::new(paths.clone())?;
             print_registry_status(&service, false)?;

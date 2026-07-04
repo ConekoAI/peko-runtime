@@ -112,16 +112,16 @@ pub enum Commands {
     #[command(subcommand)]
     Credential(credential::CredentialCommands),
 
-    /// Vault management (switch unlock mode, etc.)
-    #[command(subcommand)]
+    /// Vault management (advanced / hidden)
+    #[command(subcommand, hide = true)]
     Vault(vault::VaultCommands),
 
     /// Extension management commands (skills, MCP, tools, channels, hooks)
     #[command(subcommand)]
     Ext(ext::ExtCommands),
 
-    /// Configuration management
-    #[command(subcommand)]
+    /// Configuration management (advanced / hidden)
+    #[command(subcommand, hide = true)]
     Config(config::ConfigCommands),
 
     /// System diagnostics and maintenance
@@ -132,12 +132,12 @@ pub enum Commands {
     #[command(subcommand)]
     Daemon(daemon::DaemonCommands),
 
-    /// Cron job management
-    #[command(subcommand)]
+    /// Cron job management (advanced / hidden)
+    #[command(subcommand, hide = true)]
     Cron(cron::CronCommands),
 
-    /// Orchestration layer management (event routing, webhooks, file watching)
-    #[command(subcommand)]
+    /// Orchestration layer management (legacy / hidden)
+    #[command(subcommand, hide = true)]
     Orchestration(orchestration::OrchestrationCommands),
 
     /// LLM Provider management
@@ -148,16 +148,16 @@ pub enum Commands {
     #[command(subcommand)]
     Search(search::SearchCommands),
 
-    /// Registry management (set-default, get-default, list)
-    #[command(subcommand)]
+    /// Registry management (advanced / hidden)
+    #[command(subcommand, hide = true)]
     Registry(registry::RegistryCommands),
 
-    /// Runtime identity and registry management (ADR-032)
-    #[command(subcommand)]
+    /// Runtime identity and registry management (advanced / hidden)
+    #[command(subcommand, hide = true)]
     Runtime(runtime::RuntimeCommands),
 
-    /// PekoHub tunnel management (ADR-035)
-    #[command(subcommand)]
+    /// PekoHub tunnel management (advanced / hidden)
+    #[command(subcommand, hide = true)]
     Tunnel(tunnel::TunnelCommands),
 
     /// Log in to the PekoHub registry

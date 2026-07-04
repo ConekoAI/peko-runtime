@@ -23,7 +23,6 @@ Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to
 - Connect Principals to LLM providers (OpenAI, Anthropic, Kimi, Ollama, etc.)
 - Manage persistent conversation memory automatically
 - Orchestrate tools, skills, MCP servers, and gateways through a unified extension system
-- Schedule tasks with cron jobs
 
 ### Key Features
 
@@ -35,7 +34,7 @@ Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to
 | **Persistent Memory** | JSONL-based session storage managed automatically per Principal |
 | **DID Identity** | ed25519-based decentralized identifiers |
 | **Extensions** | Unified Extension Architecture for skills, MCP, tools, channels, hooks |
-| **Cron Scheduling** | Schedule recurring and one-time tasks |
+| **Cron Scheduling** | Schedule recurring and one-time tasks (operator/advanced) |
 
 ---
 
@@ -101,9 +100,8 @@ Format: `did:peko:{scope}:{tenant}:{identifier}`
 ### Session
 
 Sessions store conversation history as JSONL files. They are created, resumed,
-branched, and compacted automatically by the Principal — there is no dedicated
-`peko session` command. Advanced inspection is available through
-`peko principal memory session <principal>`.
+and compacted automatically by the Principal — there is no dedicated
+`peko session` command.
 
 ---
 
@@ -249,8 +247,8 @@ peko ext enable <mcp-extension>
 **Problem:** Conversation history appears missing or corrupted.
 
 **Solution:**
-- List sessions for the Principal: `peko principal memory session my-principal`
 - Memory compaction is automatic; send another message to resume the current session
+- Inspect the Principal workspace with `peko principal show my-principal`
 
 ### Getting Help
 

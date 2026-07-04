@@ -49,11 +49,12 @@ export KIMI_API_KEY="your-kimi-key"
 ### 3. Add a Provider
 
 ```bash
-./target/release/peko provider add openai --template openai --default
+./target/release/peko provider add --template anthropic \
+    --key "$ANTHROPIC_API_KEY" --default
 ```
 
-This stores the provider wiring in the runtime catalog. The API key itself is
-saved in your OS keychain via `peko credential set openai`.
+This stores the provider wiring in the runtime catalog and the API key in the
+encrypted vault.
 
 ### 4. Create Your First Principal
 
@@ -127,9 +128,6 @@ peko principal export my-principal  # Export to .principal package
 # Send messages
 peko send my-principal "Hello!"  # Send a message
 peko send my-principal --file prompt.txt  # Read from file
-
-# Session inspection (advanced)
-peko principal memory session my-principal  # List sessions
 
 # Daemon management
 peko daemon start --foreground   # Start daemon

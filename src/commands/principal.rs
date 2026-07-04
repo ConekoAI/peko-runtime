@@ -155,31 +155,9 @@ pub enum PrincipalCommands {
         name: String,
     },
 
-    /// Set the tunnel status of a Principal's instance
-    SetStatus {
-        /// Principal name
-        name: String,
-
-        /// One of: online, offline, busy, error
-        status: String,
-    },
-
-    /// Set the tunnel exposure of a Principal's instance
-    SetExposure {
-        /// Principal name
-        name: String,
-
-        /// One of: unexposed, private, public
-        exposure: String,
-    },
-
     /// Manage agents (prompts) inside a Principal
     #[command(subcommand)]
     Agent(PrincipalAgentCommands),
-
-    /// Inspect Principal memory
-    #[command(subcommand)]
-    Memory(PrincipalMemoryCommands),
 }
 
 /// Subcommands for `peko principal agent`.
@@ -198,16 +176,6 @@ pub enum PrincipalAgentCommands {
 
         /// Agent prompt name
         agent: String,
-    },
-}
-
-/// Subcommands for `peko principal memory`.
-#[derive(Subcommand)]
-pub enum PrincipalMemoryCommands {
-    /// List sessions
-    Session {
-        /// Principal name
-        name: String,
     },
 }
 
@@ -259,18 +227,11 @@ pub async fn handle_principal(
             permission,
         } => revoke_permission(&name, &subject, &permission).await,
         PrincipalCommands::Permissions { name } => list_permissions(&name).await,
-        PrincipalCommands::SetStatus { name, status } => set_principal_status(&name, &status).await,
-        PrincipalCommands::SetExposure { name, exposure } => {
-            set_principal_exposure(&name, &exposure).await
-        }
         PrincipalCommands::Agent(PrincipalAgentCommands::List { name }) => {
             list_principal_agents(&name, paths).await
         }
         PrincipalCommands::Agent(PrincipalAgentCommands::Show { name, agent }) => {
             show_principal_agent(&name, &agent, paths).await
-        }
-        PrincipalCommands::Memory(PrincipalMemoryCommands::Session { name }) => {
-            list_principal_sessions(&name, paths).await
         }
     }
 }
@@ -676,42 +637,6 @@ async fn list_permissions(name: &str) -> Result<()> {
     }
 }
 
-async fn set_principal_status(name: &str, status: &str) -> Result<()> {
-    let client = DaemonClient::connect().await?;
-    let response = client.principal_set_status(name, status).await?;
-
-    match response {
-        ResponsePacket::PrincipalStatusUpdated { name, status, .. } => {
-            println!("✅ Principal '{name}' status set to '{status}'");
-            Ok(())
-        }
-        ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to set principal status: {message}");
-        }
-        other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
-        }
-    }
-}
-
-async fn set_principal_exposure(name: &str, exposure: &str) -> Result<()> {
-    let client = DaemonClient::connect().await?;
-    let response = client.principal_set_exposure(name, exposure).await?;
-
-    match response {
-        ResponsePacket::PrincipalExposureUpdated { name, exposure, .. } => {
-            println!("✅ Principal '{name}' exposure set to '{exposure}'");
-            Ok(())
-        }
-        ResponsePacket::Error { message, .. } => {
-            anyhow::bail!("Failed to set principal exposure: {message}");
-        }
-        other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
-        }
-    }
-}
-
 async fn list_principal_agents(name: &str, paths: &GlobalPaths) -> Result<()> {
     let agents_dir = paths.principal_agents_dir(name);
     if !agents_dir.exists() {
@@ -753,23 +678,6 @@ async fn show_principal_agent(name: &str, agent: &str, paths: &GlobalPaths) -> R
 
     let content = tokio::fs::read_to_string(&path).await?;
     println!("{}", content);
-    Ok(())
-}
-
-async fn list_principal_sessions(name: &str, paths: &GlobalPaths) -> Result<()> {
-    let manager = build_manager(paths);
-    let principal = load_principal(name, &manager, paths).await?;
-
-    let sessions = principal.memory.list_sessions().await?;
-    if sessions.is_empty() {
-        println!("No sessions found for principal '{name}'.");
-        return Ok(());
-    }
-
-    for s in sessions {
-        let title = s.title.as_deref().unwrap_or("untitled");
-        println!("{} [{}] {}", s.session_id, s.peer, title);
-    }
     Ok(())
 }
 

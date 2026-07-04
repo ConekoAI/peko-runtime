@@ -179,12 +179,10 @@ async fn same_runtime_principal_send_short_circuits_offline() {
     adapter.queue_text("mock offline response");
 
     let result = tool
-        .execute(
-            serde_json::json!({
-                "target_principal": target_did,
-                "message": "ping"
-            }),
-        )
+        .execute(serde_json::json!({
+            "target_principal": target_did,
+            "message": "ping"
+        }))
         .await
         .expect("execute should not throw");
 

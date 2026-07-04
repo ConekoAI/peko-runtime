@@ -8,8 +8,8 @@ In this tutorial, you'll build your first Peko Principal using the CLI. By the e
 2. [Step 1: Create a New Principal](#step-1-create-a-new-principal)
 3. [Step 2: Customize Your Principal](#step-2-customize-your-principal)
 4. [Step 3: Send Your First Message](#step-3-send-your-first-message)
-5. [Step 4: Manage Memory](#step-4-manage-memory)
-6. [Step 5: Schedule Tasks with Cron](#step-5-schedule-tasks-with-cron)
+5. [Step 4: Run the Daemon](#step-4-run-the-daemon)
+6. [Step 5: Explore Extensions](#step-5-explore-extensions)
 7. [What's Next?](#whats-next)
 
 ---
@@ -32,8 +32,10 @@ The easiest way to create a Principal is with the `principal create` command:
 # Set your API key
 export OPENAI_API_KEY="sk-..."
 
-# Add a provider entry to the runtime catalog
-peko provider add openai --template openai --default
+# Add a provider entry to the runtime catalog and store the key in one command
+peko provider add --template openai \
+    --key "$OPENAI_API_KEY" \
+    --default
 
 # Create a Principal
 peko principal create my-first-principal
@@ -116,78 +118,50 @@ peko send my-first-principal "Write a long essay" --no-stream
 
 ---
 
-## Step 4: Manage Memory
+## Step 4: Run the Daemon
 
-Sessions store your conversation history and are managed automatically by the Principal. Advanced inspection is available through the Principal memory commands:
-
-```bash
-# List sessions for a Principal
-peko principal memory session my-first-principal
-```
-
-Memory compaction is also automatic, so the Principal stays within the LLM context window without manual intervention.
-
----
-
-## Step 5: Schedule Tasks with Cron
-
-You can schedule recurring tasks for your Principal.
-
-### Start the Daemon
-
-The daemon is required for automatic cron execution:
+Most interactive `peko send` calls work without the daemon, but background
+execution, extensions, and scheduled tasks require it. Start it in the
+foreground in a second terminal:
 
 ```bash
 peko daemon start --foreground
 ```
 
-### Add a Cron Job
+Check that it is healthy:
 
 ```bash
-# Daily summary at 9 AM
-peko cron add \
-  --name "daily-summary" \
-  --schedule "0 9 * * *" \
-  --agent my-first-principal \
-  --message "Summarize yesterday's progress"
+peko daemon status
 ```
 
-### Add an Interval Job
+Stop it with `Ctrl+C` in the daemon terminal, or run:
 
 ```bash
-# Every 5 minutes
-peko cron every \
-  --name "heartbeat" \
-  --interval-ms 300000 \
-  --agent my-first-principal \
-  --message "Check system status"
+peko daemon stop
 ```
 
-### Add a One-Shot Job
+---
+
+## Step 5: Explore Extensions
+
+Extensions add tools and skills to your Principal. Try the built-in tools
+first:
 
 ```bash
-# Run once at a specific time
-peko cron at \
-  --name "reminder" \
-  --at "2026-03-01T09:00:00Z" \
-  --agent my-first-principal \
-  --message "Meeting in 1 hour"
+# List installed extensions
+peko ext list
+
+# Enable a built-in tool
+peko ext enable Bash
+
+# Disable a tool you don't need
+peko ext disable Bash
 ```
 
-### List and Manage Jobs
+You can also install custom extensions:
 
 ```bash
-# List all jobs
-peko cron list
-
-# Run a job immediately
-peko cron run --id <job-id>
-
-# View job history
-peko cron history --id <job-id>
-
-# Remove a job
-peko cron remove --id <job-id>
+peko ext install <path-or-url>
 ```
 
 ---
@@ -213,14 +187,14 @@ peko ext enable <tool>
 
 ### 2. Configure Authentication
 
-Manage provider API keys centrally. As of v3, keys live in the OS keychain and the runtime owns a `~/.peko/providers.toml` catalog:
+Manage provider API keys centrally. As of v3, the runtime owns a
+`~/.peko/providers.toml` catalog and keys live in the encrypted vault:
 
 ```bash
-# Add a provider entry to the runtime catalog
-peko provider add openai --template openai
-
-# Store the API key in the OS keychain (prompts for the value)
-peko credential set openai
+# Add a provider entry, store the key, and set it as default in one command
+peko provider add --template openai \
+    --key "$OPENAI_API_KEY" \
+    --default
 
 # List which providers have a stored key
 peko credential list
