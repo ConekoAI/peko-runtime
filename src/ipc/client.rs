@@ -180,6 +180,15 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// Ask the daemon to re-read `mcp.toml` and `vault.enc` from disk.
+    /// Used by `peko mcp {add,auth,remove}` after on-disk writes succeed,
+    /// so the long-running daemon observes CLI mutations without a restart.
+    pub async fn mcp_reload(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::McpReload { request_id };
+        self.request_response(packet).await
+    }
+
     // ------------------------------------------------------------------
     // Cron management
     // ------------------------------------------------------------------

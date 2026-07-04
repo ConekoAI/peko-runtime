@@ -208,6 +208,12 @@ pub enum RequestPacket {
     #[serde(rename = "provider_reload")]
     ProviderReload { request_id: u64 },
 
+    /// Re-read the MCP server configuration from `mcp.toml` and the
+    /// credential vault from disk. Sent by `peko mcp {add,auth,remove}`
+    /// so the long-running daemon observes CLI mutations without a restart.
+    #[serde(rename = "mcp_reload")]
+    McpReload { request_id: u64 },
+
     // ─── Extension CRUD (ADR-030 Tier 1) ────────────────────────────
     #[serde(rename = "extension_list")]
     ExtensionList {
@@ -523,6 +529,7 @@ impl RequestPacket {
             | Self::SessionRemove { request_id, .. }
             | Self::ProviderList { request_id }
             | Self::ProviderReload { request_id }
+            | Self::McpReload { request_id }
             | Self::SystemStatus { request_id }
             | Self::SystemDoctor { request_id }
             | Self::ExtensionList { request_id, .. }
@@ -804,6 +811,14 @@ pub enum ResponsePacket {
         request_id: u64,
         providers_count: usize,
         keys_count: usize,
+    },
+
+    /// MCP configuration reload response. Reports the post-reload server
+    /// count so the CLI can confirm the daemon picked up the change.
+    #[serde(rename = "mcp_reloaded")]
+    McpReloaded {
+        request_id: u64,
+        servers_count: usize,
     },
 
     /// Extension list response
@@ -1280,6 +1295,7 @@ impl ResponsePacket {
             | Self::SystemDoctor { request_id, .. }
             | Self::ProviderList { request_id, .. }
             | Self::ProviderReloaded { request_id, .. }
+            | Self::McpReloaded { request_id, .. }
             | Self::ExtensionList { request_id, .. }
             | Self::ExtensionEnabled { request_id, .. }
             | Self::ExtensionDisabled { request_id, .. }
@@ -1349,6 +1365,7 @@ impl ResponsePacket {
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ProviderList { .. } => "ProviderList",
             Self::ProviderReloaded { .. } => "ProviderReloaded",
+            Self::McpReloaded { .. } => "McpReloaded",
             Self::ExtensionList { .. } => "ExtensionList",
             Self::ExtensionEnabled { .. } => "ExtensionEnabled",
             Self::ExtensionDisabled { .. } => "ExtensionDisabled",

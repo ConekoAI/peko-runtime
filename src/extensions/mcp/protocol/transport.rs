@@ -4,7 +4,11 @@
 //! - `StdioTransport`: Local subprocess communication
 //! - `SseTransport`: HTTP+SSE remote communication (Phase 2)
 
-use crate::extensions::mcp::protocol::types::JsonRpcMessage;
+use crate::common::vault::Vault;
+use crate::extensions::mcp::protocol::{
+    config::McpAuthConfig,
+    types::JsonRpcMessage,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -505,6 +509,12 @@ pub struct SseTransport {
     healthy: Arc<std::sync::atomic::AtomicBool>,
     /// SSE stream task handle
     receive_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Optional authentication configuration.
+    auth: Option<McpAuthConfig>,
+    /// Optional vault for reading/writing OAuth tokens.
+    vault: Option<Arc<Vault>>,
+    /// Server name used as the vault key for OAuth tokens.
+    server_name: Option<String>,
 }
 
 impl SseTransport {
@@ -532,6 +542,9 @@ impl SseTransport {
             sender: Arc::new(Mutex::new(tx.clone())),
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             receive_task: Mutex::new(None),
+            auth: None,
+            vault: None,
+            server_name: None,
         };
 
         // Start SSE receive loop
@@ -540,11 +553,68 @@ impl SseTransport {
             endpoint,
             tx,
             transport.healthy.clone(),
+            transport.auth_headers()?,
         ));
 
         *transport.receive_task.lock().await = Some(task);
 
         debug!("SSE transport connected to {}", transport.endpoint);
+        Ok(transport)
+    }
+
+    /// Create a new SSE transport with authentication configuration.
+    ///
+    /// # Arguments
+    /// * `endpoint` - The MCP server endpoint URL
+    /// * `auth` - Authentication configuration
+    /// * `vault` - Optional encrypted vault for OAuth token storage/refresh
+    /// * `server_name` - Server identifier used as the OAuth vault key
+    ///
+    /// # Returns
+    /// A new `SseTransport` connected to the server
+    pub async fn connect_with_auth(
+        endpoint: impl AsRef<str>,
+        auth: McpAuthConfig,
+        vault: Option<Arc<Vault>>,
+        server_name: impl Into<String>,
+    ) -> Result<Self> {
+        let endpoint = Url::parse(endpoint.as_ref())?;
+        debug!("Connecting to authenticated MCP server at: {}", endpoint);
+
+        let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+
+        // Create channel for receiving messages from SSE stream
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+        let auth = if auth.is_empty() { None } else { Some(auth) };
+        let server_name = server_name.into();
+        let transport = Self {
+            client: client.clone(),
+            endpoint: endpoint.clone(),
+            session_id: Mutex::new(None),
+            receiver: Arc::new(Mutex::new(rx)),
+            sender: Arc::new(Mutex::new(tx.clone())),
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            receive_task: Mutex::new(None),
+            auth: auth.clone(),
+            vault: vault.clone(),
+            server_name: Some(server_name.clone()),
+        };
+
+        let task = tokio::spawn(Self::sse_receive_loop(
+            client,
+            endpoint,
+            tx,
+            transport.healthy.clone(),
+            transport.auth_headers()?,
+        ));
+
+        *transport.receive_task.lock().await = Some(task);
+
+        debug!(
+            "Authenticated SSE transport connected to {}",
+            transport.endpoint
+        );
         Ok(transport)
     }
 
@@ -569,6 +639,9 @@ impl SseTransport {
             sender: Arc::new(Mutex::new(tx.clone())),
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             receive_task: Mutex::new(None),
+            auth: None,
+            vault: None,
+            server_name: None,
         };
 
         let task = tokio::spawn(Self::sse_receive_loop(
@@ -576,6 +649,7 @@ impl SseTransport {
             endpoint,
             tx,
             transport.healthy.clone(),
+            transport.auth_headers()?,
         ));
 
         *transport.receive_task.lock().await = Some(task);
@@ -589,12 +663,13 @@ impl SseTransport {
         endpoint: Url,
         sender: tokio::sync::mpsc::Sender<JsonRpcMessage>,
         healthy: Arc<std::sync::atomic::AtomicBool>,
+        auth_headers: HeaderMap,
     ) {
         let mut backoff = Duration::from_secs(1);
         const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
         while healthy.load(std::sync::atomic::Ordering::SeqCst) {
-            match Self::connect_sse(&client, &endpoint, &sender).await {
+            match Self::connect_sse(&client, &endpoint, &sender, &auth_headers).await {
                 Ok(()) => {
                     // Connection closed normally
                     debug!("SSE connection closed");
@@ -616,8 +691,9 @@ impl SseTransport {
         client: &Client,
         endpoint: &Url,
         sender: &tokio::sync::mpsc::Sender<JsonRpcMessage>,
+        auth_headers: &HeaderMap,
     ) -> Result<()> {
-        let mut headers = HeaderMap::new();
+        let mut headers = auth_headers.clone();
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
 
         let response = client
@@ -686,6 +762,105 @@ impl SseTransport {
         }
     }
 
+    /// Build the authentication headers for this transport.
+    fn auth_headers(&self,
+    ) -> Result<HeaderMap> {
+        let mut headers = HeaderMap::new();
+
+        if let Some(ref auth) = self.auth {
+            // Static bearer token takes precedence when no vault token is present.
+            let bearer = self
+                .vault_token()
+                .or_else(|| auth.bearer_token.clone())
+                .filter(|t| !t.is_empty());
+            if let Some(token) = bearer {
+                headers.insert(
+                    reqwest::header::AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}"))
+                        .map_err(|e| TransportError::Sse(format!("Invalid bearer token: {e}")))?,
+                );
+            }
+
+            for (name, value) in &auth.headers {
+                let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|e| TransportError::Sse(format!("Invalid header name '{name}': {e}")))?;
+                headers.insert(
+                    header_name,
+                    HeaderValue::from_str(value)
+                        .map_err(|e| TransportError::Sse(format!("Invalid header value: {e}")))?,
+                );
+            }
+        }
+
+        Ok(headers)
+    }
+
+    /// Read the current OAuth access token from the vault, if any.
+    fn vault_token(&self,
+    ) -> Option<String> {
+        let vault = self.vault.as_ref()?;
+        let server_name = self.server_name.as_ref()?;
+        vault.get_oauth_token(server_name).map(|entry| entry.access_token)
+    }
+
+    /// Try to refresh the OAuth token using the stored refresh token.
+    /// Returns true if a new access token was written to the vault.
+    async fn try_refresh_token(&self,
+    ) -> bool {
+        let (vault, server_name, auth) = match (&self.vault, &self.server_name, &self.auth) {
+            (Some(vault), Some(server_name), Some(auth)) => (vault, server_name, auth),
+            _ => return false,
+        };
+
+        let refresh_token = match vault.get_oauth_token(server_name) {
+            Some(entry) => match entry.refresh_token {
+                Some(t) => t,
+                None => return false,
+            },
+            None => return false,
+        };
+
+        match crate::extensions::mcp::protocol::oauth::OAuthFlow::refresh_token(auth, &refresh_token)
+            .await
+        {
+            Ok(entry) => {
+                let _ = vault.set_oauth_token(server_name, &entry);
+                true
+            }
+            Err(e) => {
+                warn!("OAuth token refresh failed for '{}': {}", server_name, e);
+                false
+            }
+        }
+    }
+
+    /// Send the JSON-RPC body with the provided headers.
+    async fn send_with_headers(
+        &self,
+        json: &str,
+        mut headers: HeaderMap,
+    ) -> Result<reqwest::Response> {
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+
+        // Add session ID if available
+        if let Some(session_id) = self.session_id().await {
+            headers.insert(
+                "Mcp-Session-Id",
+                HeaderValue::from_str(&session_id)
+                    .map_err(|e| TransportError::Sse(format!("Invalid session ID: {e}")))?,
+            );
+        }
+
+        self.client
+            .post(self.endpoint.as_str())
+            .headers(headers)
+            .body(json.to_string())
+            .send()
+            .await
+            .map_err(TransportError::Http)
+    }
+
     /// Get the session ID
     pub async fn session_id(&self) -> Option<String> {
         self.session_id.lock().await.clone()
@@ -713,29 +888,19 @@ impl McpTransport for SseTransport {
         let json = serde_json::to_string(&message)?;
         trace!("SSE sending: {}", json);
 
-        // Build headers
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        // Build request headers (auth + content type + accept + session id).
+        let response = self.send_with_headers(&json, self.auth_headers()?).await?;
 
-        // Add session ID if available
-        if let Some(session_id) = self.session_id().await {
-            headers.insert(
-                "Mcp-Session-Id",
-                HeaderValue::from_str(&session_id)
-                    .map_err(|e| TransportError::Sse(format!("Invalid session ID: {e}")))?,
-            );
+        // On 401, attempt a single OAuth token refresh and retry.
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.try_refresh_token().await {
+            let response = self.send_with_headers(&json, self.auth_headers()?).await?;
+            if response.status().is_success() {
+                return Ok(());
+            }
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(TransportError::Sse(format!("HTTP {status}: {body}")));
         }
-
-        // Send HTTP POST
-        let response = self
-            .client
-            .post(self.endpoint.as_str())
-            .headers(headers)
-            .body(json)
-            .send()
-            .await
-            .map_err(TransportError::Http)?;
 
         if !response.status().is_success() {
             let status = response.status();

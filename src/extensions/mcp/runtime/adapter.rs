@@ -7,13 +7,14 @@
 //! - Performs JSON-RPC initialization and tool discovery
 //! - Stores the client in a shared registry for later use by `McpManager`
 
+use crate::common::vault::Vault;
 use crate::daemon::background_runtime::adapter::{BackgroundRuntimeAdapter, CrashAction};
 use crate::daemon::background_runtime::supervisor::ManagedRuntime;
 use crate::extensions::mcp::protocol::{
-    client::{ClientError, McpClient},
+    client::{ClientError, McpClient, ServerRequestHandler},
     config::McpServerConfig,
-    transport::{SseTransport, StdioTransport, TransportError},
-    types::Tool,
+    transport::{McpTransport, SseTransport, StdioTransport, TransportError},
+    types::{Prompt, Resource, Tool},
 };
 use anyhow::Context;
 use async_trait::async_trait;
@@ -55,6 +56,10 @@ pub struct McpServerInfo {
     pub client: Arc<RwLock<McpClient>>,
     /// Discovered tools (cached after initialization)
     pub tools: Vec<Tool>,
+    /// Discovered resources (cached after initialization)
+    pub resources: Vec<Resource>,
+    /// Discovered prompts (cached after initialization)
+    pub prompts: Vec<Prompt>,
     /// Server info string (name + version)
     pub server_info: Option<String>,
     /// Optional instructions from the server's initialize response
@@ -127,6 +132,30 @@ impl McpClientRegistry {
         }
         all_tools
     }
+
+    /// Get all resources from all registered servers
+    pub async fn list_all_resources(&self) -> Vec<(String, Resource)> {
+        let servers = self.servers.read().await;
+        let mut all_resources = Vec::new();
+        for (runtime_id, info) in servers.iter() {
+            for resource in &info.resources {
+                all_resources.push((runtime_id.clone(), resource.clone()));
+            }
+        }
+        all_resources
+    }
+
+    /// Get all prompts from all registered servers
+    pub async fn list_all_prompts(&self) -> Vec<(String, Prompt)> {
+        let servers = self.servers.read().await;
+        let mut all_prompts = Vec::new();
+        for (runtime_id, info) in servers.iter() {
+            for prompt in &info.prompts {
+                all_prompts.push((runtime_id.clone(), prompt.clone()));
+            }
+        }
+        all_prompts
+    }
 }
 
 impl Default for McpClientRegistry {
@@ -135,57 +164,76 @@ impl Default for McpClientRegistry {
     }
 }
 
-/// On-disk cache for MCP tool metadata so agents can see tool definitions
-/// even when a server is offline at agent-init time.
+/// On-disk cache for MCP capability metadata so agents can see tool, resource,
+/// and prompt definitions even when a server is offline at agent-init time.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct McpToolCache {
+pub struct McpCapabilityCache {
     /// Server info string cached at initialization
     pub server_info: Option<String>,
     /// Optional instructions from the server's initialize response
     pub instructions: Option<String>,
     /// Cached tool definitions
     pub tools: Vec<Tool>,
+    /// Cached resource definitions
+    pub resources: Vec<Resource>,
+    /// Cached prompt definitions
+    pub prompts: Vec<Prompt>,
 }
 
-impl McpToolCache {
+impl McpCapabilityCache {
     /// Path to the per-server cache file inside an extension/server directory.
     pub fn cache_path(cwd: &Path, server_name: &str) -> std::path::PathBuf {
         cwd.join(format!(".peko-tools.{server_name}.json"))
     }
 
-    /// Write tool metadata to the on-disk cache.
+    /// Write capability metadata to the on-disk cache.
     pub async fn write(
         cwd: &Path,
         server_name: &str,
         server_info: Option<String>,
         instructions: Option<String>,
         tools: &[Tool],
+        resources: &[Resource],
+        prompts: &[Prompt],
     ) -> anyhow::Result<()> {
-        let cache = McpToolCache {
+        let cache = McpCapabilityCache {
             server_info,
             instructions,
             tools: tools.to_vec(),
+            resources: resources.to_vec(),
+            prompts: prompts.to_vec(),
         };
         let path = Self::cache_path(cwd, server_name);
         let content = serde_json::to_string_pretty(&cache)?;
         tokio::fs::write(&path, content)
             .await
-            .with_context(|| format!("Failed to write MCP tool cache to {path:?}"))?;
+            .with_context(|| format!("Failed to write MCP capability cache to {path:?}"))?;
         Ok(())
     }
 
-    /// Read tool metadata from the on-disk cache, if it exists.
-    pub async fn read(cwd: &Path, server_name: &str) -> anyhow::Result<Option<McpToolCache>> {
+    /// Read capability metadata from the on-disk cache, if it exists.
+    pub async fn read(cwd: &Path, server_name: &str) -> anyhow::Result<Option<McpCapabilityCache>> {
         let path = Self::cache_path(cwd, server_name);
         if !path.exists() {
             return Ok(None);
         }
         let content = tokio::fs::read_to_string(&path)
             .await
-            .with_context(|| format!("Failed to read MCP tool cache from {path:?}"))?;
-        let cache: McpToolCache = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse MCP tool cache at {path:?}"))?;
+            .with_context(|| format!("Failed to read MCP capability cache from {path:?}"))?;
+        let cache: McpCapabilityCache = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse MCP capability cache at {path:?}"))?;
         Ok(Some(cache))
+    }
+}
+
+/// Build an `McpClient` from a transport, wiring in an optional server-request handler.
+fn build_client(
+    transport: impl McpTransport + 'static,
+    request_handler: Option<Arc<dyn ServerRequestHandler>>,
+) -> McpClient {
+    match request_handler {
+        Some(handler) => McpClient::with_handler(Box::new(transport), handler),
+        None => McpClient::new(Box::new(transport)),
     }
 }
 
@@ -197,12 +245,26 @@ impl McpToolCache {
 /// - Tool discovery
 /// - Periodic health checks via JSON-RPC ping
 /// - Graceful shutdown via JSON-RPC exit notification
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct McpRuntimeAdapter {
     /// Server configuration (timeouts, capabilities, etc.)
     server_config: McpServerConfig,
     /// Shared registry where the initialized client is stored
     client_registry: Arc<McpClientRegistry>,
+    /// Optional handler for server-to-client requests (e.g. sampling).
+    request_handler: Option<Arc<dyn ServerRequestHandler>>,
+    /// Optional encrypted vault for OAuth token storage/refresh.
+    vault: Option<Arc<Vault>>,
+}
+
+impl std::fmt::Debug for McpRuntimeAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpRuntimeAdapter")
+            .field("server_config", &self.server_config)
+            .field("has_request_handler", &self.request_handler.is_some())
+            .field("has_vault", &self.vault.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl McpRuntimeAdapter {
@@ -211,11 +273,21 @@ impl McpRuntimeAdapter {
     /// # Arguments
     /// * `server_config` - Configuration for this MCP server
     /// * `client_registry` - Shared registry to store the client after initialization
+    /// * `request_handler` - Optional handler for server-initiated requests such as
+    ///   `sampling/createMessage`
+    /// * `vault` - Optional encrypted vault for OAuth token storage/refresh
     #[must_use]
-    pub fn new(server_config: McpServerConfig, client_registry: Arc<McpClientRegistry>) -> Self {
+    pub fn new(
+        server_config: McpServerConfig,
+        client_registry: Arc<McpClientRegistry>,
+        request_handler: Option<Arc<dyn ServerRequestHandler>>,
+        vault: Option<Arc<Vault>>,
+    ) -> Self {
         Self {
             server_config,
             client_registry,
+            request_handler,
+            vault,
         }
     }
 
@@ -267,18 +339,25 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
                 })?;
                 let pid = *pid;
                 let transport = StdioTransport::from_handles(stdin, stdout, pid);
-                McpClient::new(Box::new(transport))
+                build_client(transport, self.request_handler.clone())
             }
             crate::daemon::background_runtime::supervisor::RuntimeKind::External {
                 endpoint,
                 connected,
             } => {
                 let endpoint = endpoint.clone();
-                let transport = SseTransport::connect(&endpoint).await.map_err(|e| {
+                let transport = SseTransport::connect_with_auth(
+                    &endpoint,
+                    self.server_config.auth.clone(),
+                    self.vault.clone(),
+                    runtime.id.clone(),
+                )
+                .await
+                .map_err(|e| {
                     anyhow::anyhow!("SSE connection failed for '{}': {}", runtime.id, e)
                 })?;
                 *connected = true;
-                McpClient::new(Box::new(transport))
+                build_client(transport, self.request_handler.clone())
             }
             _ => {
                 anyhow::bail!(
@@ -338,25 +417,73 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
             Vec::new()
         };
 
-        // Store client and discovered tools in registry so McpManager can access them
+        // Discover resources if supported
+        let resources = if client.supports_capability("resources") {
+            match client.list_resources().await {
+                Ok(resources) => {
+                    debug!(
+                        "MCP server '{}' discovered {} resources",
+                        runtime.id,
+                        resources.len()
+                    );
+                    resources
+                }
+                Err(e) => {
+                    warn!(
+                        "MCP server '{}' resource discovery failed: {}",
+                        runtime.id, e
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Discover prompts if supported
+        let prompts = if client.supports_capability("prompts") {
+            match client.list_prompts().await {
+                Ok(prompts) => {
+                    debug!(
+                        "MCP server '{}' discovered {} prompts",
+                        runtime.id,
+                        prompts.len()
+                    );
+                    prompts
+                }
+                Err(e) => {
+                    warn!(
+                        "MCP server '{}' prompt discovery failed: {}",
+                        runtime.id, e
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Store client and discovered capabilities in registry so McpManager can access them
         let server_info_str = format!("{} v{}", server_name, server_version);
 
-        // Cache tool metadata so agents can see tool definitions even when the
+        // Cache capability metadata so agents can see definitions even when the
         // server is offline at agent-init time.
         if let Some(ref cwd) = self.server_config.cwd {
-            if let Err(e) = McpToolCache::write(
+            if let Err(e) = McpCapabilityCache::write(
                 cwd,
                 &runtime.id,
                 Some(server_info_str.clone()),
                 instructions.clone(),
                 &tools,
+                &resources,
+                &prompts,
             )
             .await
             {
                 warn!(
                     server_name = %runtime.id,
                     error = %e,
-                    "Failed to write MCP tool cache"
+                    "Failed to write MCP capability cache"
                 );
             }
         }
@@ -364,6 +491,8 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
         let info = McpServerInfo {
             client: Arc::new(RwLock::new(client)),
             tools,
+            resources,
+            prompts,
             server_info: Some(server_info_str),
             instructions,
         };
@@ -443,6 +572,8 @@ mod tests {
         let info = McpServerInfo {
             client: Arc::new(RwLock::new(client)),
             tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
             server_info: None,
             instructions: None,
         };
@@ -472,14 +603,14 @@ mod tests {
     fn test_adapter_new() {
         let registry = Arc::new(McpClientRegistry::new());
         let config = McpServerConfig::stdio("test", "echo", vec![]);
-        let adapter = McpRuntimeAdapter::new(config, registry);
+        let adapter = McpRuntimeAdapter::new(config, registry, None, None);
 
         assert_eq!(adapter.config().name, "test");
     }
 
     #[tokio::test]
-    async fn test_tool_cache_roundtrip() {
-        use crate::extensions::mcp::protocol::types::Tool;
+    async fn test_capability_cache_roundtrip() {
+        use crate::extensions::mcp::protocol::types::{Prompt, Resource, Tool};
         use serde_json::json;
         use tempfile::TempDir;
 
@@ -498,18 +629,31 @@ mod tests {
                 input_schema: json!({"type": "object"}),
             },
         ];
+        let resources = vec![Resource {
+            uri: "file:///tmp/test.txt".to_string(),
+            name: "test.txt".to_string(),
+            description: Some("A test file".to_string()),
+            mime_type: Some("text/plain".to_string()),
+        }];
+        let prompts = vec![Prompt {
+            name: "review".to_string(),
+            description: Some("Review code".to_string()),
+            arguments: None,
+        }];
 
-        McpToolCache::write(
+        McpCapabilityCache::write(
             cwd,
             "test-server",
             Some("test-server v1.0.0".to_string()),
             Some("Use these tools for web access.".to_string()),
             &tools,
+            &resources,
+            &prompts,
         )
         .await
         .unwrap();
 
-        let cache = McpToolCache::read(cwd, "test-server")
+        let cache = McpCapabilityCache::read(cwd, "test-server")
             .await
             .unwrap()
             .unwrap();
@@ -520,5 +664,7 @@ mod tests {
         );
         assert_eq!(cache.tools.len(), 2);
         assert!(cache.tools.iter().any(|t| t.name == "web_fetch"));
+        assert_eq!(cache.resources.len(), 1);
+        assert_eq!(cache.prompts.len(), 1);
     }
 }

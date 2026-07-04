@@ -17,6 +17,7 @@ pub mod credential;
 pub mod cron;
 pub mod daemon;
 pub mod ext;
+pub mod mcp;
 pub mod orchestration;
 pub mod principal;
 pub mod provider;
@@ -120,6 +121,10 @@ pub enum Commands {
     /// Extension management commands (skills, MCP, tools, channels, hooks)
     #[command(subcommand)]
     Ext(ext::ExtCommands),
+
+    /// MCP server management commands
+    #[command(subcommand)]
+    Mcp(mcp::McpCommands),
 
     /// Session management commands
     #[command(subcommand)]

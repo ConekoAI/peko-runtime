@@ -8,7 +8,7 @@ pub mod starter;
 pub mod tool_proxy;
 
 pub use adapter::{
-    McpClientRegistry, McpRuntimeAdapter, McpRuntimeAdapterError, McpServerInfo, McpToolCache,
+    McpCapabilityCache, McpClientRegistry, McpRuntimeAdapter, McpRuntimeAdapterError, McpServerInfo,
 };
 pub use injectable_proxy::InjectableMcpToolProxy;
 pub use starter::McpRuntimeStarter;

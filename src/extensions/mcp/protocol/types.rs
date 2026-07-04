@@ -178,6 +178,17 @@ pub struct ClientCapabilities {
     pub sampling: Option<Value>,
 }
 
+impl ClientCapabilities {
+    /// Capabilities advertised by Peko's MCP client.
+    #[must_use]
+    pub fn for_peko() -> Self {
+        Self {
+            experimental: None,
+            sampling: Some(serde_json::json!({})),
+        }
+    }
+}
+
 /// Server capabilities during initialization
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerCapabilities {
@@ -465,6 +476,83 @@ pub struct PromptMessage {
 pub struct GetPromptResult {
     pub description: String,
     pub messages: Vec<PromptMessage>,
+}
+
+// =============================================================================
+// Sampling (server-to-client completion requests)
+// =============================================================================
+
+/// Role of a message in a sampling request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SamplingRole {
+    User,
+    Assistant,
+}
+
+/// Content of a sampling message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SamplingContent {
+    Text { text: String },
+    Image { data: String, #[serde(rename = "mimeType")] mime_type: String },
+}
+
+/// A single message in a sampling/createMessage request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplingMessage {
+    pub role: SamplingRole,
+    pub content: SamplingContent,
+}
+
+/// Hint for model selection
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelHint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Model selection preferences
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPreferences {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hints: Option<Vec<ModelHint>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_priority: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_priority: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intelligence_priority: Option<f64>,
+}
+
+/// Parameters for a sampling/createMessage request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateMessageRequest {
+    pub messages: Vec<SamplingMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<ModelPreferences>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_context: Option<String>,
+}
+
+/// Result of a sampling/createMessage request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateMessageResult {
+    pub role: SamplingRole,
+    pub content: SamplingContent,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
 }
 
 // =============================================================================

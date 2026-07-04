@@ -562,6 +562,9 @@ impl AppState {
             .services()
             .set_agent_service(Arc::clone(&agent_service_dyn));
 
+        // Make the LLM resolver available to extension hooks (e.g. MCP sampling).
+        global_core.services().set_llm_resolver(Arc::clone(&resolver));
+
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.
         let tool_runtime = Arc::new(
@@ -597,6 +600,8 @@ impl AppState {
         crate::extensions::mcp::init_global_mcp_manager_with_shared_resources(
             Arc::clone(&background_runtime_manager),
             Arc::clone(&mcp_client_registry),
+            Some(Arc::clone(&resolver)),
+            Some(Arc::clone(&vault)),
         );
 
         // ADR-025/026: Extension runtime starter registry
@@ -808,6 +813,59 @@ impl AppState {
         Ok((providers_count, keys_count))
     }
 
+    /// Re-read the MCP server configuration from `mcp.toml` and the
+    /// credential vault from disk. Called by the IPC `McpReload` handler
+    /// so CLI mutations (`peko mcp {add,auth,remove}`) are visible to the
+    /// long-running daemon without a restart.
+    pub async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
+        let keys_count = self
+            .vault
+            .reload()
+            .map_err(|e| anyhow::anyhow!("vault reload failed: {e}"))?;
+        tracing::info!("MCP reload: {keys_count} vault entries reloaded");
+
+        let mcp_config_path = self.config_dir.join("mcp.toml");
+        let adapter = crate::extensions::mcp::McpAdapter::with_default_manager();
+        let manager = adapter.manager();
+        let servers_count = manager
+            .read()
+            .await
+            .reload_config(&mcp_config_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("mcp config reload failed: {e}"))?;
+        tracing::info!(
+            "MCP reload: {servers_count} servers from {}",
+            mcp_config_path.display()
+        );
+
+        // Auto-start any newly-added servers that request it.
+        let auto_start_names: Vec<String> = {
+            let mgr = manager.read().await;
+            let mut names = Vec::new();
+            for state in mgr.list_server_prompt_context().await {
+                if !state.running {
+                    if let Some(cfg) = mgr.get_server_config(&state.name).await {
+                        if cfg.auto_start {
+                            names.push(state.name);
+                        }
+                    }
+                }
+            }
+            names
+        };
+        for name in auto_start_names {
+            let m = manager.clone();
+            let name_owned = name.clone();
+            if let Err(e) = async move { m.read().await.start_server(&name_owned).await }.await {
+                tracing::warn!(server = %name, error = %e, "Failed to auto-start MCP server after reload");
+            } else {
+                tracing::info!(server = %name, "Auto-started MCP server after reload");
+            }
+        }
+
+        Ok(servers_count)
+    }
+
     /// Subscribe to shutdown signals
     pub fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
         self.shutdown_tx.subscribe()
@@ -953,6 +1011,8 @@ impl AppState {
             gateway_router: Arc::clone(&self.gateway_router),
             mcp_client_registry: Arc::clone(&self.mcp_client_registry),
             data_dir: self.data_dir.clone(),
+            vault: Some(Arc::clone(&self.vault)),
+            resolver: Some(Arc::clone(&self.resolver)),
         }
     }
 

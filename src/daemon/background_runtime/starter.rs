@@ -31,12 +31,18 @@ pub struct StarterContext {
     pub mcp_client_registry: Arc<McpClientRegistry>,
     /// Data directory where extensions are installed
     pub data_dir: PathBuf,
+    /// Optional encrypted vault for OAuth tokens and credentials.
+    pub vault: Option<Arc<crate::common::vault::Vault>>,
+    /// Optional LLM resolver for extension hooks such as MCP sampling.
+    pub resolver: Option<Arc<crate::providers::LlmResolver>>,
 }
 
 impl std::fmt::Debug for StarterContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StarterContext")
             .field("data_dir", &self.data_dir)
+            .field("has_vault", &self.vault.is_some())
+            .field("has_resolver", &self.resolver.is_some())
             .finish_non_exhaustive()
     }
 }

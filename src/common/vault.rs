@@ -216,8 +216,32 @@ pub enum VaultEntry {
     },
     /// PekoHub tunnel private key.
     TunnelPrivateKey { runtime_id: String, key: String },
+    /// OAuth token for an MCP (or other) remote server.
+    OAuthToken {
+        server: String,
+        access_token: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        refresh_token: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expires_at: Option<i64>,
+    },
     /// Generic fallback secret.
     Secret { value: String },
+}
+
+/// A stored OAuth token for a remote server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthTokenEntry {
+    /// Server identifier (matches the MCP server name).
+    pub server: String,
+    /// Current access token.
+    pub access_token: String,
+    /// Optional refresh token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Optional Unix timestamp when the access token expires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 /// How the vault DEK was obtained.
@@ -705,6 +729,73 @@ impl Vault {
                 .file
                 .entries
                 .remove(&Self::tunnel_key(runtime_id))
+                .is_some()
+        };
+        if removed {
+            self.save()?;
+        }
+        Ok(removed)
+    }
+
+    // ------------------------------------------------------------------
+    // OAuth tokens
+    // ------------------------------------------------------------------
+
+    fn oauth_token_key(server: &str) -> String {
+        format!("oauth:{server}")
+    }
+
+    /// Get an OAuth token entry for a remote server.
+    #[must_use]
+    pub fn get_oauth_token(&self, server: &str) -> Option<OAuthTokenEntry> {
+        let inner = self.inner.read().ok()?;
+        match inner.file.entries.get(&Self::oauth_token_key(server))? {
+            VaultEntry::OAuthToken {
+                server,
+                access_token,
+                refresh_token,
+                expires_at,
+            } => Some(OAuthTokenEntry {
+                server: server.clone(),
+                access_token: access_token.clone(),
+                refresh_token: refresh_token.clone(),
+                expires_at: *expires_at,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Store or overwrite an OAuth token entry for a remote server.
+    pub fn set_oauth_token(&self, server: &str, entry: &OAuthTokenEntry) -> Result<()> {
+        {
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            inner.file.entries.insert(
+                Self::oauth_token_key(server),
+                VaultEntry::OAuthToken {
+                    server: server.to_string(),
+                    access_token: entry.access_token.clone(),
+                    refresh_token: entry.refresh_token.clone(),
+                    expires_at: entry.expires_at,
+                },
+            );
+        }
+        self.save()
+    }
+
+    /// Remove an OAuth token entry for a remote server.
+    pub fn delete_oauth_token(&self, server: &str) -> Result<bool> {
+        let removed = {
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            inner
+                .file
+                .entries
+                .remove(&Self::oauth_token_key(server))
                 .is_some()
         };
         if removed {
@@ -1403,6 +1494,37 @@ mod tests {
 
         assert!(vault.clear_registry_token("pekohub.ai").unwrap());
         assert!(vault.get_registry_token().is_none());
+    }
+
+    #[test]
+    fn test_oauth_token_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::for_test(dir.path(), "test-passphrase");
+
+        let entry = OAuthTokenEntry {
+            server: "myremote".to_string(),
+            access_token: "access-123".to_string(),
+            refresh_token: Some("refresh-456".to_string()),
+            expires_at: Some(1_700_000_000),
+        };
+
+        vault.set_oauth_token("myremote", &entry).unwrap();
+        let stored = vault.get_oauth_token("myremote").unwrap();
+        assert_eq!(stored.server, "myremote");
+        assert_eq!(stored.access_token, "access-123");
+        assert_eq!(stored.refresh_token, Some("refresh-456".to_string()));
+        assert_eq!(stored.expires_at, Some(1_700_000_000));
+
+        // Reload from disk and confirm persistence.
+        let reloaded =
+            Vault::load_with_passphrase(vault.path(), &SecretString::new("test-passphrase".into()))
+                .unwrap();
+        let reloaded_token = reloaded.get_oauth_token("myremote").unwrap();
+        assert_eq!(reloaded_token.access_token, "access-123");
+
+        assert!(vault.delete_oauth_token("myremote").unwrap());
+        assert!(vault.get_oauth_token("myremote").is_none());
+        assert!(!vault.delete_oauth_token("myremote").unwrap());
     }
 
     #[test]

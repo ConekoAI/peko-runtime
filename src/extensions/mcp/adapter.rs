@@ -78,12 +78,16 @@ fn get_global_mcp_manager() -> Arc<RwLock<crate::extensions::mcp::protocol::mana
 pub fn init_global_mcp_manager_with_shared_resources(
     runtime_manager: Arc<crate::daemon::background_runtime::BackgroundRuntimeManager>,
     client_registry: Arc<crate::extensions::mcp::runtime::McpClientRegistry>,
+    llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+    vault: Option<Arc<crate::common::vault::Vault>>,
 ) {
     let config = crate::extensions::mcp::protocol::config::McpConfig::default();
     let manager = crate::extensions::mcp::protocol::manager::McpManager::with_shared_resources(
         config,
         runtime_manager,
         client_registry,
+        llm_resolver,
+        vault,
     );
     let _ = GLOBAL_MCP_MANAGER.set(Arc::new(RwLock::new(manager)));
 }
@@ -339,11 +343,13 @@ impl McpAdapter {
             .map(|(_, tool)| tool)
             .collect();
 
-        // Phase 2: if the server is offline, fall back to the on-disk tool cache
+        // Phase 2: if the server is offline, fall back to the on-disk capability cache
         // so the LLM still sees the tool definitions.
         if tools.is_empty() {
             if let Some(ref cwd) = cwd {
-                match crate::extensions::mcp::runtime::McpToolCache::read(cwd, server_name).await {
+                match crate::extensions::mcp::runtime::McpCapabilityCache::read(cwd, server_name)
+                    .await
+                {
                     Ok(Some(cache)) => {
                         info!(
                             server_name = %server_name,
@@ -357,7 +363,7 @@ impl McpAdapter {
                         warn!(
                             server_name = %server_name,
                             error = %e,
-                            "Failed to read MCP tool cache"
+                            "Failed to read MCP capability cache"
                         );
                     }
                 }
@@ -1136,6 +1142,34 @@ impl HookHandler for McpContextHandler {
             if !state.tools.is_empty() {
                 let tool_names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
                 lines.push(format!("  - Tools: {}", tool_names.join(", ")));
+            }
+
+            if !state.resources.is_empty() {
+                let resource_names: Vec<String> = state
+                    .resources
+                    .iter()
+                    .map(|r| format!("{} ({})", r.uri, r.name))
+                    .collect();
+                lines.push(format!("  - Resources: {}", resource_names.join(", ")));
+            }
+
+            if !state.prompts.is_empty() {
+                let prompt_names: Vec<String> = state
+                    .prompts
+                    .iter()
+                    .map(|p| {
+                        let args = p.arguments.as_ref().map_or(String::new(), |args| {
+                            let names: Vec<String> = args.iter().map(|a| a.name.clone()).collect();
+                            if names.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" ({})", names.join(", "))
+                            }
+                        });
+                        format!("{}{}", p.name, args)
+                    })
+                    .collect();
+                lines.push(format!("  - Prompts: {}", prompt_names.join(", ")));
             }
         }
 

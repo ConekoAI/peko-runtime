@@ -1,6 +1,10 @@
 use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
 use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
-use crate::extensions::mcp::protocol::config::{McpServerConfig, TransportType};
+use crate::extensions::mcp::protocol::{
+    client::ServerRequestHandler,
+    config::{McpServerConfig, TransportType},
+    sampling::SamplingRequestHandler,
+};
 use crate::extensions::mcp::runtime::adapter::McpRuntimeAdapter;
 use std::path::Path;
 use std::sync::Arc;
@@ -251,9 +255,19 @@ impl McpRuntimeStarter {
         ext_dir: &Path,
         ctx: &StarterContext,
     ) -> anyhow::Result<()> {
+        let request_handler: Option<Arc<dyn ServerRequestHandler>> = ctx
+            .resolver
+            .as_ref()
+            .map(|resolver| {
+                Arc::new(SamplingRequestHandler::new(Arc::clone(resolver)))
+                    as Arc<dyn ServerRequestHandler>
+            });
+
         let adapter = Arc::new(McpRuntimeAdapter::new(
             config.clone(),
             Arc::clone(&ctx.mcp_client_registry),
+            request_handler,
+            ctx.vault.clone(),
         ));
 
         let restart_policy = RestartPolicy {
