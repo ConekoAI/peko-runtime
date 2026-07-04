@@ -214,10 +214,6 @@ pub struct TlsConfig {
     pub key_path: String,
 }
 
-/// Tool configuration (deprecated — use `ExtensionConfig` instead)
-/// Kept for backward compatibility during deserialization of old configs.
-pub type ToolConfig = ExtensionConfig;
-
 #[cfg(test)]
 mod tests {
     use super::*;

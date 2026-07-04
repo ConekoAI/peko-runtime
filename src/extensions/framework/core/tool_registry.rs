@@ -27,7 +27,7 @@ pub struct ToolRegistry {
     tool_owners: RwLock<HashMap<String, ExtensionId>>,
 
     /// Tool configuration (whitelist, per-tool settings)
-    tool_config: RwLock<crate::common::types::agent_legacy::ToolConfig>,
+    tool_config: RwLock<crate::common::types::agent_legacy::ExtensionConfig>,
 }
 
 impl ToolRegistry {
@@ -69,7 +69,9 @@ impl ToolRegistry {
     /// condition caused by mutating the shared global `tool_config`.
     ///
     /// When `allowed_extensions` is `None`, the legacy global `tool_config`
-    /// is used as a fallback.
+    /// is consulted for tools with a recorded owner.  Tools with no recorded
+    /// owner are denied rather than falling back to a bare-name match against
+    /// the mutable global config (leak C cleanup).
     pub async fn is_tool_enabled_with_whitelist(
         &self,
         tool_name: &str,
@@ -94,7 +96,9 @@ impl ToolRegistry {
         if let Some(ext_id) = owners.get(tool_name) {
             return config.is_extension_enabled(&ext_id.0);
         }
-        config.is_extension_enabled(tool_name)
+        // No owner and no per-call allowlist: deny.  Bare-name fallback to
+        // the mutable global config has been removed as part of leak C.
+        false
     }
 
     /// Register a tool in the index
