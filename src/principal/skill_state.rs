@@ -8,8 +8,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
-use tokio::sync::RwLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::principal::PrincipalId;
 
@@ -46,7 +45,7 @@ impl SkillState {
 /// Process-wide registry mapping each principal to its skill state.
 #[derive(Debug, Default)]
 pub struct SkillStateRegistry {
-    states: RwLock<std::collections::HashMap<PrincipalId, Arc<SkillState>>>,
+    states: Mutex<std::collections::HashMap<PrincipalId, Arc<SkillState>>>,
 }
 
 impl SkillStateRegistry {
@@ -58,19 +57,34 @@ impl SkillStateRegistry {
 
     /// Register (or overwrite) a principal's skill state.
     pub async fn register(&self, principal_id: PrincipalId, state: SkillState) {
-        let mut states = self.states.write().await;
+        let mut states = self
+            .states
+            .lock()
+            .expect("SkillStateRegistry mutex poisoned");
         states.insert(principal_id, Arc::new(state));
     }
 
     /// Remove a principal's skill state. Idempotent.
     pub async fn unregister(&self, principal_id: &PrincipalId) {
-        let mut states = self.states.write().await;
+        self.unregister_sync(principal_id);
+    }
+
+    /// Synchronous removal used by the RAII guard so cleanup runs even
+    /// when `drop` is invoked without a current Tokio runtime.
+    fn unregister_sync(&self, principal_id: &PrincipalId) {
+        let mut states = self
+            .states
+            .lock()
+            .expect("SkillStateRegistry mutex poisoned");
         states.remove(principal_id);
     }
 
     /// Get a copy of the principal's skill state, if any.
     pub async fn get(&self, principal_id: &PrincipalId) -> Option<Arc<SkillState>> {
-        let states = self.states.read().await;
+        let states = self
+            .states
+            .lock()
+            .expect("SkillStateRegistry mutex poisoned");
         states.get(principal_id).cloned()
     }
 
@@ -95,7 +109,8 @@ impl SkillStateRegistry {
 /// RAII guard that unregisters a principal's skill state on drop.
 ///
 /// Used by the runner so a principal's `SkillState` is cleaned up even
-/// if the agentic loop panics or returns early.
+/// if the agentic loop panics or returns early. Cleanup is synchronous so
+/// it runs even when `drop` is invoked without a current Tokio runtime.
 pub struct SkillStateGuard {
     principal_id: PrincipalId,
 }
@@ -110,12 +125,7 @@ impl SkillStateGuard {
 
 impl Drop for SkillStateGuard {
     fn drop(&mut self) {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let principal_id = self.principal_id.clone();
-            handle.spawn(async move {
-                SkillStateRegistry::global().unregister(&principal_id).await;
-            });
-        }
+        SkillStateRegistry::global().unregister_sync(&self.principal_id);
     }
 }
 

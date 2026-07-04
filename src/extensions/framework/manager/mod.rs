@@ -571,8 +571,9 @@ impl ExtensionManager {
 
     /// Enable hooks for an extension at runtime.
     ///
-    /// Note: This only affects hook registration state, not tool access.
-    /// Tool access is controlled by AgentConfig.tools.enabled whitelist.
+    /// Note: This only affects hook dispatch state, not tool access.
+    /// Tool access is governed by the per-call `allowed_extensions`
+    /// allowlist carried in `HookInput::ToolCall`.
     pub async fn enable(&mut self, id: &ExtensionId) -> Result<()> {
         let loaded_ext = self
             .extensions
@@ -590,8 +591,9 @@ impl ExtensionManager {
 
     /// Disable hooks for an extension at runtime.
     ///
-    /// Note: This only affects hook registration state, not tool access.
-    /// Tool access is controlled by AgentConfig.tools.enabled whitelist.
+    /// Note: This only affects hook dispatch state, not tool access.
+    /// Tool access is governed by the per-call `allowed_extensions`
+    /// allowlist carried in `HookInput::ToolCall`.
     pub async fn disable(&mut self, id: &ExtensionId) -> Result<()> {
         let loaded_ext = self
             .extensions

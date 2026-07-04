@@ -45,7 +45,9 @@ pub struct Agent {
     session_key_provider: Arc<DynamicSessionKeyProvider>,
     /// Current session ID for `session` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
-    /// Extension core for skill loading and hook integration
+    /// Daemon-global extension core shared by every agent in the process.
+    /// Per-agent/per-principal visibility is enforced via the per-call
+    /// `allowed_extensions` allowlist, not by isolating cores.
     extension_core: Arc<ExtensionCore>,
     /// Optional external inbox registry. When set, the agentic loop drains
     /// this registry's session inbox instead of creating a per-call one,
@@ -634,11 +636,10 @@ impl Agent {
             config.name
         )));
 
-        // The caller supplies the `ExtensionCore` directly — typically the
-        // principal's per-principal core, so subagents share infrastructure
-        // with the principal's root agent instead of falling through to the
-        // daemon-global core. Phase 2 fix; before this, every subagent
-        // silently bypassed the principal's tool bag.
+        // Subagents share the daemon-global ExtensionCore with every other
+        // agent in the process. There is no per-principal core; per-principal
+        // tool visibility is enforced by the per-call `allowed_extensions`
+        // allowlist.
 
         let principal_id = subagent_executor.principal_id().clone();
         let agent = Self {
