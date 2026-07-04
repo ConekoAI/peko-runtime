@@ -127,6 +127,20 @@ impl PrincipalContext {
         &self.principal_id
     }
 
+    /// Get the principal's human-readable name.
+    ///
+    /// The name is derived from the final component of the principal's
+    /// workspace path (`{config_dir}/principals/{name}`). It matches the
+    /// name used by `PrincipalManager::get_by_name` and is the value cron
+    /// tools stamp on jobs.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.workspace_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+    }
+
     /// Bind the caller's principal DID for outbound `principal_send`
     /// envelopes. Set once at `RootRouter::build_context` from
     /// `Principal::did()` (Phase 4b). Idempotent: subsequent calls
