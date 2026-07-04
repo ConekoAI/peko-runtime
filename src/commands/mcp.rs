@@ -3,10 +3,10 @@
 //! Provides a Claude Code-style workflow for managing MCP servers, especially
 //! remote SSE servers that require OAuth authentication:
 //!
-//!   peko mcp add myremote --url http://localhost:.../sse --oauth-client-id ...
-//!   peko mcp auth myremote
-//!   peko mcp list
-//!   peko mcp remove myremote
+//!   peko ext mcp add myremote --url http://localhost:.../sse --oauth-client-id ...
+//!   peko ext mcp auth myremote
+//!   peko ext mcp list
+//!   peko ext mcp remove myremote
 
 use crate::commands::GlobalPaths;
 use crate::common::vault::Vault;

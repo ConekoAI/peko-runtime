@@ -209,7 +209,7 @@ pub enum RequestPacket {
     ProviderReload { request_id: u64 },
 
     /// Re-read the MCP server configuration from `mcp.toml` and the
-    /// credential vault from disk. Sent by `peko mcp {add,auth,remove}`
+    /// credential vault from disk. Sent by `peko ext mcp {add,auth,remove}`
     /// so the long-running daemon observes CLI mutations without a restart.
     #[serde(rename = "mcp_reload")]
     McpReload { request_id: u64 },

@@ -122,10 +122,6 @@ pub enum Commands {
     #[command(subcommand)]
     Ext(ext::ExtCommands),
 
-    /// MCP server management commands
-    #[command(subcommand)]
-    Mcp(mcp::McpCommands),
-
     /// Session management commands
     #[command(subcommand)]
     Session(session::SessionCommands),
