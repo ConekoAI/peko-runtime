@@ -441,7 +441,6 @@ operators and scripts, not day-to-day Principal use.
 | `peko auth apikey` | Runtime API key management |
 | `peko config` | Read/write global `config.toml` |
 | `peko cron` | Schedule jobs (currently agent-targeted; awaiting Principal migration) |
-| `peko orchestration` | Event routing / webhooks / file watches (legacy config surface) |
 | `peko registry` | Registry host configuration |
 | `peko runtime` | Runtime identity and known-runtimes trust |
 | `peko tunnel` | PekoHub tunnel setup and status |

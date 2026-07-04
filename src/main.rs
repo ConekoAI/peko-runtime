@@ -1,10 +1,9 @@
 use clap::Parser;
 use clap_complete::generate;
 use peko::commands::{
-    auth, config, credential, cron, daemon, ext, init_logging, orchestration, principal, provider,
-    registry, runtime, search, send, system, tunnel, update, vault, Cli, Commands, GlobalPaths,
+    auth, config, credential, cron, daemon, ext, init_logging, principal, provider, registry,
+    runtime, search, send, system, tunnel, update, vault, Cli, Commands, GlobalPaths,
 };
-use peko::common::types::config::PekoConfig;
 
 /// Peko - Lightweight Multi-Agent Runtime
 #[tokio::main]
@@ -104,16 +103,6 @@ async fn run_command(
         Commands::System(cmd) => system::handle_system(cmd, paths, json).await,
         Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, json).await,
         Commands::Cron(cmd) => cron::handle_cron(cmd, paths, json).await,
-        Commands::Orchestration(cmd) => {
-            // Load configuration for orchestration commands
-            let config_path = paths.config_dir.join("config.toml");
-            let config = if config_path.exists() {
-                PekoConfig::from_file(&config_path)?
-            } else {
-                PekoConfig::default()
-            };
-            orchestration::run(cmd, &config, &config_path).await
-        }
         Commands::Provider(cmd) => provider::execute(cmd, paths).await,
         Commands::Search(cmd) => search::handle_search(cmd, paths, json).await,
         Commands::Registry(cmd) => registry::handle_registry(cmd, paths, json),
