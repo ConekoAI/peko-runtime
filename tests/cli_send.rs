@@ -75,7 +75,7 @@ fn assert_send_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus
 // Note: session-routing tests (`--session`, `--new`, steering) were removed
 // with the "Principal as the single actor" migration — `peko send` no longer
 // exposes those flags (a Principal has a single per-peer session, resolved by
-// the daemon). Principal session listing is covered in `cli_session.rs`.
+// the daemon).
 
 // ---------------------------------------------------------------------------
 // Tests

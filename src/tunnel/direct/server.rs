@@ -59,7 +59,7 @@ pub enum DirectServerError {
 /// `AsyncWrite` to either a plaintext TCP stream or a TLS stream.
 enum ServerStream {
     Plain(TcpStream),
-    Tls(tokio_rustls::server::TlsStream<TcpStream>),
+    Tls(Box<tokio_rustls::server::TlsStream<TcpStream>>),
 }
 
 impl tokio::io::AsyncRead for ServerStream {
@@ -70,7 +70,7 @@ impl tokio::io::AsyncRead for ServerStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match &mut *self {
             Self::Plain(s) => Pin::new(s).poll_read(cx, buf),
-            Self::Tls(s) => Pin::new(s).poll_read(cx, buf),
+            Self::Tls(s) => Pin::new(&mut **s).poll_read(cx, buf),
         }
     }
 }
@@ -83,7 +83,7 @@ impl tokio::io::AsyncWrite for ServerStream {
     ) -> std::task::Poll<std::io::Result<usize>> {
         match &mut *self {
             Self::Plain(s) => Pin::new(s).poll_write(cx, buf),
-            Self::Tls(s) => Pin::new(s).poll_write(cx, buf),
+            Self::Tls(s) => Pin::new(&mut **s).poll_write(cx, buf),
         }
     }
 
@@ -93,7 +93,7 @@ impl tokio::io::AsyncWrite for ServerStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match &mut *self {
             Self::Plain(s) => Pin::new(s).poll_flush(cx),
-            Self::Tls(s) => Pin::new(s).poll_flush(cx),
+            Self::Tls(s) => Pin::new(&mut **s).poll_flush(cx),
         }
     }
 
@@ -103,7 +103,7 @@ impl tokio::io::AsyncWrite for ServerStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match &mut *self {
             Self::Plain(s) => Pin::new(s).poll_shutdown(cx),
-            Self::Tls(s) => Pin::new(s).poll_shutdown(cx),
+            Self::Tls(s) => Pin::new(&mut **s).poll_shutdown(cx),
         }
     }
 }
@@ -208,7 +208,7 @@ impl DirectServer {
                     .accept(stream)
                     .await
                     .map_err(|e| DirectServerError::Tls(format!("TLS accept failed: {e}")))?;
-                ServerStream::Tls(tls_stream)
+                ServerStream::Tls(Box::new(tls_stream))
             }
             None => ServerStream::Plain(stream),
         };

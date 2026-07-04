@@ -1,17 +1,16 @@
-# Tutorial: Building Your First Agent
+# Tutorial: Building Your First Principal
 
-In this tutorial, you'll build your first Peko agent using the CLI. By the end, you'll have a working agent that can process tasks and store conversations.
+In this tutorial, you'll build your first Peko Principal using the CLI. By the end, you'll have a working Principal that can process tasks and store conversations automatically.
 
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Step 1: Create a New Agent](#step-1-create-a-new-agent)
-3. [Step 2: Customize Your Agent](#step-2-customize-your-agent)
+2. [Step 1: Create a New Principal](#step-1-create-a-new-principal)
+3. [Step 2: Customize Your Principal](#step-2-customize-your-principal)
 4. [Step 3: Send Your First Message](#step-3-send-your-first-message)
-5. [Step 4: Manage Sessions](#step-4-manage-sessions)
-6. [Step 5: Work with Teams](#step-5-work-with-teams)
-7. [Step 6: Schedule Tasks with Cron](#step-6-schedule-tasks-with-cron)
-8. [What's Next?](#whats-next)
+5. [Step 4: Manage Memory](#step-4-manage-memory)
+6. [Step 5: Schedule Tasks with Cron](#step-5-schedule-tasks-with-cron)
+7. [What's Next?](#whats-next)
 
 ---
 
@@ -25,24 +24,28 @@ Before starting, ensure you have:
 
 ---
 
-## Step 1: Create a New Agent
+## Step 1: Create a New Principal
 
-The easiest way to create an agent is with the `agent create` command:
+The easiest way to create a Principal is with the `principal create` command:
 
 ```bash
 # Set your API key
 export OPENAI_API_KEY="sk-..."
 
-# Create an agent
-peko agent create my-first-agent --provider minimax
+# Add a provider entry to the runtime catalog
+peko provider add openai --template openai --default
+
+# Create a Principal
+peko principal create my-first-principal
 ```
 
-This creates an agent configuration in Peko's config directory with the following structure:
+This creates a Principal workspace in Peko's data directory with the following structure:
 
 ```
-my-first-agent/
-├── config.toml      # Agent configuration
-├── AGENT.md         # Agent description
+my-first-principal/
+├── principal.toml   # Principal configuration
+├── agents/
+│   └── primary.md   # Root agent prompt
 ├── .gitignore
 ├── tools/           # Custom tools
 └── workspace/       # Working files
@@ -50,12 +53,12 @@ my-first-agent/
 
 ---
 
-## Step 2: Customize Your Agent
+## Step 2: Customize Your Principal
 
-Edit `my-first-agent/AGENT.md` to give your agent a personality:
+Edit `my-first-principal/agents/primary.md` to give your Principal a personality:
 
 ```markdown
-# My First Agent
+# My First Principal
 
 You are a helpful coding assistant.
 
@@ -70,121 +73,65 @@ You are a helpful coding assistant.
 Friendly, concise, and encouraging.
 ```
 
-You can also customize the agent's configuration:
+You can also customize the Principal's configuration:
 
 ```bash
 # View current config
-peko agent show my-first-agent
+peko principal show my-first-principal
 
-# The configuration includes provider, model, temperature, etc.
+# The configuration includes allowed extensions, governance, provider hints, etc.
 ```
 
 ---
 
 ## Step 3: Send Your First Message
 
-Now let's interact with the agent:
+Now let's interact with the Principal:
 
 ```bash
 # Send a simple message
-peko send my-first-agent "Hello, what can you do?"
+peko send my-first-principal "Hello, what can you do?"
 ```
 
-You'll see the agent's response streamed to your terminal.
+You'll see the Principal's response streamed to your terminal.
 
 Try a more complex task:
 
 ```bash
-peko send my-first-agent "Write a Python function to calculate fibonacci numbers"
+peko send my-first-principal "Write a Python function to calculate fibonacci numbers"
 ```
 
 ### Message Options
 
 ```bash
-# Start a new session
-peko send my-first-agent "Let's start fresh" --new
-
 # Read message from a file
-peko send my-first-agent --file prompt.txt
+peko send my-first-principal --file prompt.txt
 
 # Pipe from stdin
-echo "Explain Rust ownership" | peko send my-first-agent --stdin
+echo "Explain Rust ownership" | peko send my-first-principal --stdin
 
 # Disable streaming (wait for full response)
-peko send my-first-agent "Write a long essay" --no-stream
+peko send my-first-principal "Write a long essay" --no-stream
 ```
 
 ---
 
-## Step 4: Manage Sessions
+## Step 4: Manage Memory
 
-Sessions store your conversation history.
-
-### List Sessions
+Sessions store your conversation history and are managed automatically by the Principal. Advanced inspection is available through the Principal memory commands:
 
 ```bash
-peko session list my-first-agent
+# List sessions for a Principal
+peko principal memory session my-first-principal
 ```
 
-### Show Session History
-
-```bash
-peko session show my-first-agent <session-id>
-```
-
-### Start a New Session
-
-```bash
-peko send my-first-agent "New topic" --new
-```
-
-### Compact a Session
-
-Compaction summarizes old messages to save context window space:
-
-```bash
-peko session compact my-first-agent --session-id <session-id>
-```
-
-### Branch a Session
-
-Create a copy of a session to explore different directions:
-
-```bash
-peko session branch my-first-agent --session-id <session-id>
-```
+Memory compaction is also automatic, so the Principal stays within the LLM context window without manual intervention.
 
 ---
 
-## Step 5: Work with Teams
+## Step 5: Schedule Tasks with Cron
 
-Teams help organize multiple agents.
-
-### Create a Team
-
-```bash
-peko team create my-team
-```
-
-### Create Agents in a Team
-
-```bash
-peko agent create my-team/coder --provider minimax
-peko agent create my-team/reviewer --provider minimax
-```
-
-### Send Messages to Team Agents
-
-```bash
-peko send my-team/coder "Write a sorting algorithm"
-peko send my-team/reviewer "Review this code for bugs"
-```
-
----
-
-## Step 6: Schedule Tasks with Cron
-
-You can schedule recurring tasks for your agent.
+You can schedule recurring tasks for your Principal.
 
 ### Start the Daemon
 
@@ -201,7 +148,7 @@ peko daemon start --foreground
 peko cron add \
   --name "daily-summary" \
   --schedule "0 9 * * *" \
-  --agent my-first-agent \
+  --agent my-first-principal \
   --message "Summarize yesterday's progress"
 ```
 
@@ -212,7 +159,7 @@ peko cron add \
 peko cron every \
   --name "heartbeat" \
   --interval-ms 300000 \
-  --agent my-first-agent \
+  --agent my-first-principal \
   --message "Check system status"
 ```
 
@@ -223,7 +170,7 @@ peko cron every \
 peko cron at \
   --name "reminder" \
   --at "2026-03-01T09:00:00Z" \
-  --agent my-first-agent \
+  --agent my-first-principal \
   --message "Meeting in 1 hour"
 ```
 
@@ -247,11 +194,11 @@ peko cron remove --id <job-id>
 
 ## What's Next?
 
-Congratulations! You've built your first Peko agent. Here are some things to try next:
+Congratulations! You've built your first Peko Principal. Here are some things to try next:
 
 ### 1. Explore Extensions
 
-Extensions add capabilities to your agents:
+Extensions add capabilities to your Principal:
 
 ```bash
 # List installed extensions
@@ -282,14 +229,14 @@ peko credential list
 peko credential test openai
 ```
 
-### 3. Export and Share Agents
+### 3. Export and Share Principals
 
 ```bash
-# Export an agent to a .agent package
-peko agent export --name my-first-agent
+# Export a Principal to a .principal package
+peko principal export my-first-principal
 
-# Import an agent
-peko agent import --file ./my-first-agent.agent
+# Import a Principal
+peko principal import ./my-first-principal.principal
 ```
 
 ### 4. Run System Diagnostics

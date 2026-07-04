@@ -244,12 +244,6 @@ pub fn discord_session_key(
     }
 }
 
-/// Build a CLI session key
-#[must_use]
-pub fn cli_session_key(agent: &str) -> String {
-    format!("agent:{agent}:cli:default")
-}
-
 /// Derive a base session key from agent and peer
 /// Format: agent:{agent}:peer:{type}:{id}
 ///

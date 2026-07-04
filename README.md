@@ -2,14 +2,14 @@
 
 **Lightweight Multi-Agent Runtime**
 
-Peko is a Rust-based multi-agent runtime that supports local multi-agent orchestration with DID identity, A2A protocol messaging, session overlays, and a unified extension architecture.
+Peko is a Rust-based multi-agent runtime that supports local AI Principals with DID identity, A2A protocol messaging, automatic session management, and a unified extension architecture.
 
 > **Version:** 0.1.0 | **License:** MIT
 
 ## Philosophy
 
 - **Lightweight** — Small binary, fast startup
-- **Multi-agent** — Orchestrate multiple agents with A2A protocol
+- **Principal-centric** — A Principal is the single top-level actor; agents are thin prompts inside it
 - **Secure** — ed25519 identity, DID-based addressing
 - **Extensible** — Unified hook-based extension system
 - **Daemon-first** — The CLI is a thin client; all execution happens in the daemon
@@ -18,24 +18,24 @@ Peko is a Rust-based multi-agent runtime that supports local multi-agent orchest
 
 ### Core Architecture
 - ✅ **DID Identity System** — ed25519-based decentralized identifiers
-- ✅ **A2A Protocol** — Agent-to-Agent messaging
-- ✅ **Multi-Agent Orchestration** — Local registry and message routing
-- ✅ **Session Overlays** — Fork, spawn, and merge sessions for complex workflows
+- ✅ **A2A Protocol** — Agent-to-Agent messaging between Principals
+- ✅ **Principal Orchestration** — Top-level AI actors that own memory, intent, and governance
+- ✅ **Automatic Session Management** — Sessions are created, resumed, and compacted by the Principal
 - ✅ **Event Router** — Central event routing and subscription system
 
 ### LLM & Providers
 - ✅ **15+ LLM Providers** — OpenAI, Anthropic, Kimi, OpenRouter, and more
 - ✅ **Streaming Output** — Real-time progressive output with tool visibility
 
-### Tools & Capabilities
+### Tools & Extensions
 - ✅ **MCP Support** — Model Context Protocol for external tool integration
-- ✅ **Skills System** — Documentation-driven agent capabilities (SKILL.md)
-- ✅ **Built-in Tools** — Filesystem, shell, cron, session, messaging, task management
+- ✅ **Skills System** — Documentation-driven capabilities (SKILL.md)
+- ✅ **Built-in Tools** — Filesystem, shell, cron, messaging, task management
 - ✅ **Unified Extension Architecture** — Hook-based extension points for maximum composability
 
 ### Memory & Persistence
 - ✅ **SQLite Memory** — Persistent memory with semantic search
-- ✅ **Session Storage** — JSONL-based session logs with overlays
+- ✅ **Session Storage** — JSONL-based session logs managed by the Principal
 
 ### Scheduling & Execution
 - ✅ **Cron/Daemon** — Scheduled task execution with daemon mode
@@ -43,7 +43,7 @@ Peko is a Rust-based multi-agent runtime that supports local multi-agent orchest
 
 ### Security & Portability
 - ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
-- ✅ **Portable Agents** — Export/import agents as `.agent` packages
+- ✅ **Portable Principals** — Export/import Principals as `.principal` packages
 
 ---
 
@@ -76,15 +76,18 @@ cargo build --release
 ### Basic Usage
 
 ```bash
-# Create an agent (default provider is minimax)
-./target/release/peko agent create myagent --provider kimi
+# Add a provider (only needed once)
+./target/release/peko provider add openai --template openai --default
 
-# Send a message to an agent (primary interaction method)
-./target/release/peko send myagent "Hello, what can you do?"
+# Create a Principal (default provider is the catalog default)
+./target/release/peko principal create myprincipal
+
+# Send a message to a Principal (primary interaction method)
+./target/release/peko send myprincipal "Hello, what can you do?"
 
 # Send from a file or stdin
-echo "Hello" | ./target/release/peko send myagent --stdin
-./target/release/peko send myagent --file prompt.txt
+echo "Hello" | ./target/release/peko send myprincipal --stdin
+./target/release/peko send myprincipal --file prompt.txt
 
 # Check version
 ./target/release/peko --version
@@ -111,38 +114,29 @@ Peko uses a hierarchical command structure (`peko <noun> <verb>`).
 
 ### Commands
 
-#### Agent Management
+#### Principal Management
 ```bash
-peko agent create <NAME> --provider <PROVIDER>   # Create an agent
-peko agent list [--long]                          # List all agents
-peko agent show <NAME>                            # Show agent details
-peko agent remove <NAME> [--force]                # Remove an agent
-peko agent move <NAME> --team <TEAM>              # Move agent to team
-peko agent export <NAME> [--output <PATH>]        # Export to .agent package
-peko agent import <FILE> [--name <NEW_NAME>]      # Import from .agent package
-peko agent inspect <FILE>                         # Inspect package without importing
-peko agent config <NAME>                          # Edit agent configuration
+peko principal create <NAME>                       # Create a Principal
+peko principal list [--long]                        # List all Principals
+peko principal show <NAME>                          # Show Principal details
+peko principal export <NAME> [--output <PATH>]      # Export to .principal package
+peko principal import <FILE> [--name <NEW_NAME>]    # Import from .principal package
+peko principal push <NAME>:<TAG>                    # Push to registry
+peko principal pull <REF>                           # Pull from registry
+peko principal permit <NAME> <SUBJECT> <PERMISSION> # Grant permission
+peko principal revoke <NAME> <SUBJECT> <PERMISSION> # Revoke permission
+peko principal agent list <NAME>                    # List agent prompts in a Principal
+peko principal memory session <NAME>                # List sessions for a Principal
 ```
 
-> **Note:** There is no `peko agent start` command. Use `peko send` to interact with agents.
-
-#### Team Management
-```bash
-peko team create <NAME>                           # Create a team
-peko team list                                    # List all teams
-peko team show <NAME>                             # Show team details
-peko team remove <NAME> [--force]                 # Remove a team
-peko team move <NAME> --to <TEAM>                 # Move team
-peko team export <NAME> [--output <PATH>]         # Export team
-peko team import <FILE> [--name <NEW_NAME>]       # Import team
-```
+> **Note:** There is no top-level `peko agent` or `peko team` command tree. Agents are thin Markdown prompts inside a Principal; teams were removed in favor of Principal-to-Principal interaction.
 
 #### Send Messages (Primary Interaction)
 ```bash
-peko send <AGENT> [MESSAGE]                       # Send message to agent
-peko send <AGENT> --file <PATH>                   # Send message from file
-peko send <AGENT> --stdin                         # Read message from stdin
-peko send <AGENT> "Hello" --session <ID>          # Send to specific session
+peko send <PRINCIPAL> [MESSAGE]                    # Send message to a Principal
+peko send <PRINCIPAL> --file <PATH>                # Send message from file
+peko send <PRINCIPAL> --stdin                      # Read message from stdin
+peko send <PRINCIPAL> "Hello" --no-stream          # Wait for full response
 ```
 
 #### Authentication (v3: catalog + keychain)
@@ -155,8 +149,8 @@ peko provider add my-local --api-format openai_completions --base-url http://loc
 peko credential set openai            # prompts for the key
 peko credential set my-local --key $MY_KEY
 
-# 3. Create an agent — the provider id references the catalog entry
-peko agent create alice --preferred-provider openai --preferred-model gpt-4o-mini
+# 3. Create a Principal — it inherits the catalog default provider
+peko principal create alice
 
 # Inspect / manage the catalog
 peko provider list
@@ -180,16 +174,6 @@ peko ext info <ID>                                # Show extension info
 peko ext bundle <PATH> [--output <PATH>]          # Bundle extension
 peko ext config <ID>                              # Configure extension
 peko ext validate <PATH>                          # Validate extension manifest
-```
-
-#### Session Management
-```bash
-peko session list <AGENT>                         # List sessions for agent
-peko session show <ID>                            # Show session details
-peko session branch <ID> --name <NAME>            # Branch a session
-peko session remove <ID> [--force]                # Remove a session
-peko session switch <AGENT> <ID>                  # Switch active session
-peko session compact <ID>                         # Compact session (remove old turns)
 ```
 
 #### Configuration
@@ -314,24 +298,21 @@ Learn more: [Extension System Documentation](docs/architecture/EXTENSION_SYSTEM.
 
 ---
 
-## Portable Agents
+## Portable Principals
 
-Export agents as `.agent` packages and import them on other machines:
+Export Principals as `.principal` packages and import them on other machines:
 
 ```bash
-# Export an agent to a .agent package
-peko agent export my-agent --output ./my-agent.agent
+# Export a Principal to a .principal package
+peko principal export my-principal --output ./my-principal.principal
 
-# Import an agent
-peko agent import ./my-agent.agent --name imported-agent
-
-# Inspect a package without importing
-peko agent inspect ./my-agent.agent
+# Import a Principal
+peko principal import ./my-principal.principal --name imported-principal
 ```
 
 **Package Contents:**
 - Identity (DID document + encrypted keys)
-- Configuration (system prompts, capabilities)
+- Configuration (allowed extensions, governance)
 - Memory (SQLite database)
 - Skills (bundled SKILL.md files)
 

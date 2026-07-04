@@ -25,110 +25,82 @@ peko [OPTIONS] <COMMAND>
 
 ## Commands
 
-### `agent` — Agent Management
+### `principal` — Principal Management
 
-Manage agent configurations.
+Manage Principals — the top-level AI actor that owns identity, memory,
+intent, governance, allowed extensions, and thin Markdown agent prompts.
 
 ```bash
-peko agent <COMMAND>
+peko principal <COMMAND>
 ```
 
 #### Subcommands
 
 | Subcommand | Description |
 |-----------|-------------|
-| `list` | List all configured agents |
-| `show <AGENT>` | Show detailed agent information |
-| `create <AGENT>` | Create a new agent |
-| `remove <AGENT>` | Remove an agent and its configuration |
-| `move <AGENT> <NEW_NAME>` | Move/rename an agent |
-| `export --name <AGENT>` | Export agent to .agent package |
-| `import --file <PATH>` | Import agent from .agent package |
-| `inspect <PATH>` | Inspect .agent package without importing |
-| `init <PATH>` | Initialize a new agent directory with minimal structure |
-| `config <AGENT>` | Manage agent configuration |
+| `create <NAME>` | Create a new Principal |
+| `list` | List all Principals |
+| `show <NAME>` | Show Principal configuration and agent prompts |
+| `send <NAME> <MESSAGE>` | Send a message to a Principal |
+| `export <NAME>` | Export a Principal to a `.principal` package |
+| `import <PATH>` | Import a Principal from a `.principal` package |
+| `push <NAME>` | Push a Principal package to a registry |
+| `pull <REF>` | Pull a Principal package from a registry |
+| `permit <NAME> <SUBJECT> <PERMISSION>` | Grant a permission on a Principal |
+| `revoke <NAME> <SUBJECT> <PERMISSION>` | Revoke a permission from a Principal |
+| `permissions <NAME>` | List permissions on a Principal |
+| `set-status <NAME> <STATUS>` | Set tunnel status (`online`/`offline`/`busy`/`error`) |
+| `set-exposure <NAME> <EXPOSURE>` | Set tunnel exposure (`unexposed`/`private`/`public`) |
+| `agent list <NAME>` | List agent prompts inside a Principal |
+| `agent show <NAME> <AGENT>` | Show an agent prompt inside a Principal |
+| `memory session <NAME>` | List sessions for a Principal |
 
 #### Examples
 
 ```bash
-# List all agents
-peko agent list
+# Create a Principal
+peko principal create my-principal
 
-# Create an agent in the default team
-peko agent create my-agent --provider minimax
+# List Principals
+peko principal list
 
-# Create an agent in a specific team
-peko agent create myteam/my-agent --provider kimi
+# Show a Principal
+peko principal show my-principal
 
-# Show agent details
-peko agent show my-agent
+# Send a message
+peko principal send my-principal "Hello!"
 
-# Export an agent
-peko agent export --name my-agent
+# Export with extensions embedded
+peko principal export my-principal --with-extensions
 
-# Remove an agent
-peko agent remove my-agent
+# Push to the default registry
+peko principal push my-principal:v1.0
+
+# List agent prompts in a Principal
+peko principal agent list my-principal
 ```
 
 ---
 
-### `team` — Team Management
+### `send` — Send Message to a Principal
 
-Manage teams of agents.
-
-```bash
-peko team <COMMAND>
-```
-
-#### Subcommands
-
-| Subcommand | Description |
-|-----------|-------------|
-| `create <TEAM>` | Create a new team |
-| `list` | List all teams |
-| `show <TEAM>` | Show team details |
-| `remove <TEAM>` | Remove a team and all its agents |
-| `move <TEAM> <NEW_NAME>` | Move/rename a team |
-| `export <TEAM>` | Export a team to a .team package |
-| `import <PATH>` | Import a team from a .team package |
-
-#### Examples
+Send a message to a Principal. This is the primary way to interact with Peko.
 
 ```bash
-# Create a team
-peko team create myteam
-
-# List teams
-peko team list
-
-# Show team details
-peko team show myteam
-```
-
----
-
-### `send` — Send Message to Agent
-
-Send a message to an agent. This is the primary way to interact with agents.
-
-```bash
-peko send <AGENT> [MESSAGE]
+peko send <PRINCIPAL> [MESSAGE]
 ```
 
 #### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `<AGENT>` | Agent name or team/agent format (e.g., "myagent" or "myteam/myagent") |
+| `<PRINCIPAL>` | Principal name |
 | `[MESSAGE]` | Message to send (optional if --file or --stdin is used) |
 
 #### Options
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `-t, --team <TEAM>` | - | Team to look in |
-| `-s, --session <SESSION>` | - | Specific session ID to use |
-| `-n, --new` | - | Start a new session |
 | `-f, --file <PATH>` | - | Read message from file |
 | `--stdin` | - | Read message from stdin |
 | `--no-stream` | - | Disable streaming, wait for full response |
@@ -137,22 +109,16 @@ peko send <AGENT> [MESSAGE]
 
 ```bash
 # Send a simple message
-peko send my-agent "Hello!"
-
-# Send to an agent in a team
-peko send myteam/my-agent "Hello!"
-
-# Start a new session
-peko send my-agent "Hello!" --new
+peko send my-principal "Hello!"
 
 # Read message from file
-peko send my-agent --file prompt.txt
+peko send my-principal --file prompt.txt
 
 # Pipe from stdin
-echo "Hello!" | peko send my-agent --stdin
+echo "Hello!" | peko send my-principal --stdin
 
 # Disable streaming
-peko send my-agent "Hello!" --no-stream
+peko send my-principal "Hello!" --no-stream
 ```
 
 ---
@@ -283,46 +249,6 @@ peko ext enable <tool>
 
 # Show extension info
 peko ext info <extension>
-```
-
----
-
-### `session` — Session Management
-
-Manage agent sessions (offline operations).
-
-```bash
-peko session <COMMAND>
-```
-
-#### Subcommands
-
-| Subcommand | Description |
-|-----------|-------------|
-| `list <AGENT>` | List sessions for an agent |
-| `show <AGENT>` | Show session details and history |
-| `branch <AGENT>` | Branch a session |
-| `remove <AGENT>` | Remove a session |
-| `switch <AGENT> <SESSION>` | Switch active session |
-| `compact <AGENT>` | Compact a session |
-
-#### Examples
-
-```bash
-# List sessions for an agent
-peko session list my-agent
-
-# Show session history (active session by default)
-peko session show my-agent --history
-
-# Show specific session
-peko session show my-agent --session-id sess_xxx --history
-
-# Compact a session (active session by default)
-peko session compact my-agent
-
-# Compact specific session
-peko session compact my-agent --session-id sess_xxx
 ```
 
 ---
@@ -504,22 +430,6 @@ peko orchestration <COMMAND>
 
 ---
 
-### `provider` — Provider Management
-
-List available LLM providers.
-
-```bash
-peko provider <COMMAND>
-```
-
-#### Subcommands
-
-| Subcommand | Description |
-|-----------|-------------|
-| `list` | List all available providers |
-
----
-
 ### `update` — Update Peko
 
 Update Peko to the latest version.
@@ -550,9 +460,9 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 
 | Variable | Used By | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | Agent | OpenAI API key for LLM provider |
-| `ANTHROPIC_API_KEY` | Agent | Anthropic API key |
-| `KIMI_API_KEY` | Agent | Kimi API key |
+| `OPENAI_API_KEY` | Provider runtime | OpenAI API key for LLM provider |
+| `ANTHROPIC_API_KEY` | Provider runtime | Anthropic API key |
+| `KIMI_API_KEY` | Provider runtime | Kimi API key |
 | `RUST_LOG` | All | Logging level (debug, info, warn, error) |
 | `PEKO_CONFIG_DIR` | All | Configuration directory override |
 | `PEKO_DATA_DIR` | All | Data directory override |
@@ -577,20 +487,15 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 ## Quick Reference Card
 
 ```bash
-# Agent management
-peko agent list
-peko agent create my-agent --provider minimax
-peko agent show my-agent
-peko agent remove my-agent
-
-# Team management
-peko team create myteam
-peko team list
+# Principal management
+peko principal create my-principal
+peko principal list
+peko principal show my-principal
+peko principal export my-principal
 
 # Send messages
-peko send my-agent "Hello!"
-peko send myteam/my-agent "Hello!" --new
-peko send my-agent --file prompt.txt
+peko send my-principal "Hello!"
+peko send my-principal --file prompt.txt
 
 # Authentication (v3: catalog + keychain)
 peko provider add openai --template openai
@@ -601,11 +506,6 @@ peko credential test openai
 # Extensions
 peko ext list
 peko ext install <path>
-
-# Sessions
-peko session list my-agent
-peko session show my-agent --history
-peko session compact my-agent
 
 # Daemon
 peko daemon start --foreground

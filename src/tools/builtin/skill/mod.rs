@@ -107,7 +107,7 @@ impl SkillTool {
         self.skills_dir.get_or_init(|| {
             crate::common::paths::PathResolver::new()
                 .skills_dir()
-                .to_path_buf()
+                .clone()
         })
     }
 }

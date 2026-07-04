@@ -347,7 +347,7 @@ async fn direct_preference_uses_directory_endpoint() {
             &resolution.runtime_id,
             resolution.direct_endpoint.as_deref(),
             resolution.transport_preference,
-            &*guard,
+            &guard,
         )
     };
     assert_eq!(

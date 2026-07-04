@@ -49,6 +49,8 @@ We will redesign session compaction around four pillars:
 3. **Single-File Session Storage with Optional Derived Cache** — One append-only JSONL file is the source of truth; an optional `.context.cache` file provides fast resume and is explicitly discardable.
 4. **Manual CLI Trigger** — Users can force compaction early via `peko session compact` with optional custom instructions.
 
+   > **Update (ADR-041):** The top-level `peko session compact` CLI command was removed. The compaction mechanism itself remains; it is triggered automatically by the Principal's session-router or through extensions/hooks that target it. This ADR's CLI examples are historical.
+
 ---
 
 ## 1. Extension-Hook Lifecycle

@@ -13,7 +13,7 @@
 //! 1. **Explicit caller override** — passed via IPC / CLI /
 //!    `peko send --provider X --model Y`. Wins unconditionally.
 //! 2. **Session-pinned choice** — set by a prior turn via
-//!    `peko session.set-model`. Carries between turns, not within.
+//!    an extension/hook or the session router. Carries between turns, not within.
 //! 3. **Agent preference** — `agent.toml` `preferred_provider_id` /
 //!    `preferred_model_id`. Soft hint only.
 //! 4. **Runtime default** — `peko provider set-default <id>`.

@@ -46,29 +46,39 @@ export KIMI_API_KEY="your-kimi-key"
 
 > 💡 **Tip:** Add this to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to persist across sessions.
 
-### 3. Create Your First Agent
+### 3. Add a Provider
 
 ```bash
-# Create a new agent
-./target/release/peko agent create my-agent --provider minimax
+./target/release/peko provider add openai --template openai --default
+```
+
+This stores the provider wiring in the runtime catalog. The API key itself is
+saved in your OS keychain via `peko credential set openai`.
+
+### 4. Create Your First Principal
+
+```bash
+# Create a new Principal
+./target/release/peko principal create my-principal
 ```
 
 This creates:
 ```
-my-agent/
-├── config.toml      # Agent configuration
-├── AGENT.md         # Agent description (edit this!)
+my-principal/
+├── principal.toml   # Principal configuration
+├── agents/
+│   └── primary.md   # Root agent prompt (edit this!)
 ├── .gitignore       # Excludes sessions/, workspace/
 ├── tools/           # Custom tools directory
 └── workspace/       # Working files
 ```
 
-### 4. Edit Your Agent (Optional)
+### 5. Edit Your Principal (Optional)
 
-Edit `my-agent/AGENT.md` to give your agent a personality:
+Edit `my-principal/agents/primary.md` to give your Principal a personality:
 
 ```markdown
-# My First Agent
+# My First Principal
 
 You are a helpful coding assistant.
 
@@ -83,21 +93,14 @@ You are a helpful coding assistant.
 Friendly, concise, and encouraging.
 ```
 
-### 5. Send a Message
+### 6. Send a Message
 
 ```bash
-# Send a message to your agent
-./target/release/peko send my-agent "Hello, what can you do?"
+# Send a message to your Principal
+./target/release/peko send my-principal "Hello, what can you do?"
 ```
 
-You'll see the agent's response streamed to your terminal.
-
-### 6. Start a New Session
-
-```bash
-# Start a fresh conversation
-./target/release/peko send my-agent "Let's start fresh" --new
-```
+You'll see the Principal's response streamed to your terminal.
 
 ---
 
@@ -108,27 +111,25 @@ You'll see the agent's response streamed to your terminal.
 | [Tutorial: Building Your First Agent](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive |
 | [CLI Reference](../user-guide/CLI_REFERENCE.md) | All commands explained |
 | [Extension System](../architecture/EXTENSION_SYSTEM.md) | Unified extension architecture |
-| [User's Guide](../user-guide/USERS_GUIDE.md) | Sessions, teams, extensions, troubleshooting |
+| [User's Guide](../user-guide/USERS_GUIDE.md) | Principals, extensions, troubleshooting |
 
 ---
 
 ## Common Commands
 
 ```bash
-# Agent lifecycle
-peko agent list                  # List all agents
-peko agent create my-agent --provider minimax  # Create a new agent
-peko agent show my-agent         # Show agent details
-peko agent remove my-agent       # Remove an agent
+# Principal lifecycle
+peko principal list              # List all Principals
+peko principal create my-principal  # Create a new Principal
+peko principal show my-principal # Show Principal details
+peko principal export my-principal  # Export to .principal package
 
 # Send messages
-peko send my-agent "Hello!"      # Send a message
-peko send my-agent "Hello!" --new # Start a new session
-peko send my-agent --file prompt.txt  # Read from file
+peko send my-principal "Hello!"  # Send a message
+peko send my-principal --file prompt.txt  # Read from file
 
-# Session management
-peko session list my-agent       # List sessions
-peko session show my-agent <id>  # View session history
+# Session inspection (advanced)
+peko principal memory session my-principal  # List sessions
 
 # Daemon management
 peko daemon start --foreground   # Start daemon
@@ -137,7 +138,7 @@ peko daemon stop                 # Stop daemon
 
 # Get help
 peko --help                      # Global help
-peko agent --help                # Agent commands
+peko principal --help            # Principal commands
 peko send --help                 # Send command help
 peko daemon --help               # Daemon commands
 ```
@@ -146,13 +147,13 @@ peko daemon --help               # Daemon commands
 
 ## Troubleshooting
 
-### "Agent not found"
+### "Principal not found"
 ```bash
-# Check that the agent exists
-peko agent list
+# Check that the Principal exists
+peko principal list
 
-# Create the agent if needed
-peko agent create my-agent --provider minimax
+# Create the Principal if needed
+peko principal create my-principal
 ```
 
 ### "API key not found"
@@ -175,9 +176,9 @@ sudo apt-get install libssl-dev pkg-config
 
 ## Requirements Checklist
 
-✅ **Time to first agent:** Under 5 minutes  
+✅ **Time to first Principal:** Under 5 minutes  
 ✅ **No configuration required:** Sensible defaults  
-✅ **Git-friendly:** `peko agent create` creates proper `.gitignore`  
+✅ **Git-friendly:** `peko principal create` creates proper `.gitignore`  
 ✅ **Actionable errors:** All errors include suggested fixes
 
 ---

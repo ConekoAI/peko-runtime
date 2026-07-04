@@ -947,7 +947,7 @@ Planning todos created via the `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` to
 
 ### 5.7 Compaction
 
-Compaction is the process of summarizing old conversation history to stay within the LLM's context window. It is triggered automatically when token usage crosses a configurable threshold, or manually via `peko session compact`.
+Compaction is the process of summarizing old conversation history to stay within the LLM's context window. It is triggered automatically when token usage crosses a configurable threshold. The `peko session compact` CLI command was removed in ADR-041; compaction is now initiated automatically by the Principal or through extensions/hooks that target the Principal's session-router.
 
 #### 5.6.1 Trigger Conditions
 

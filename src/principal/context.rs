@@ -101,7 +101,7 @@ impl PrincipalContext {
         provider_hint: (Option<String>, Option<String>),
         principal_id: PrincipalId,
     ) -> Self {
-        let sessions_dir = memory.sessions_dir().to_path_buf();
+        let sessions_dir = memory.sessions_dir().clone();
         Self {
             workspace_path,
             sessions_dir,
