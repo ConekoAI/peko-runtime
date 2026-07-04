@@ -34,7 +34,7 @@ use crate::extensions::framework::core::{
     ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
     ToolMetadata, ToolSource,
 };
-use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookResult};
+use crate::extensions::framework::types::{ExtensionId, ExtensionManifest, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -324,14 +324,45 @@ impl McpAdapter {
         core: &ExtensionCore,
         server_name: &str,
     ) -> Result<usize> {
-        let manager = self.manager.read().await;
+        let (all_tools, server_config) = {
+            let manager = self.manager.read().await;
+            let tools = manager.list_all_tools().await;
+            let config = manager.get_server_config(server_name).await;
+            (tools, config)
+        };
 
-        let all_tools = manager.list_all_tools().await;
-        let tools: Vec<_> = all_tools
+        let cwd = server_config.as_ref().and_then(|c| c.cwd.clone());
+
+        let mut tools: Vec<_> = all_tools
             .into_iter()
             .filter(|(srv, _)| srv == server_name)
             .map(|(_, tool)| tool)
             .collect();
+
+        // Phase 2: if the server is offline, fall back to the on-disk tool cache
+        // so the LLM still sees the tool definitions.
+        if tools.is_empty() {
+            if let Some(ref cwd) = cwd {
+                match crate::extensions::mcp::runtime::McpToolCache::read(cwd, server_name).await {
+                    Ok(Some(cache)) => {
+                        info!(
+                            server_name = %server_name,
+                            tool_count = cache.tools.len(),
+                            "Registered MCP tools from offline cache"
+                        );
+                        tools = cache.tools;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!(
+                            server_name = %server_name,
+                            error = %e,
+                            "Failed to read MCP tool cache"
+                        );
+                    }
+                }
+            }
+        }
 
         // Use the server_name as the canonical extension ID (same as manifest id)
         let ext_id = ExtensionId::new(server_name);
@@ -684,6 +715,15 @@ impl ExtensionTypeAdapter for McpAdapter {
                     server_name: manifest.name.clone(),
                 }),
             ),
+            HookBinding::new(
+                HookPoint::PromptSystemSection {
+                    section: "mcp_context".to_string(),
+                    priority: MCP_HOOK_PRIORITY,
+                },
+                Box::new(McpContextHandlerFactory {
+                    manager: self.manager.clone(),
+                }),
+            ),
         ]
     }
 
@@ -1011,6 +1051,114 @@ impl HookHandler for McpServerShutdownHandler {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Prompt context handler
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Factory for MCP context system-prompt handlers.
+#[derive(Clone)]
+struct McpContextHandlerFactory {
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
+}
+
+impl std::fmt::Debug for McpContextHandlerFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpContextHandlerFactory")
+            .field("manager", &"<McpManager>")
+            .finish()
+    }
+}
+
+impl HookHandlerFactory for McpContextHandlerFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        Box::new(McpContextHandler {
+            manager: self.manager.clone(),
+        })
+    }
+}
+
+/// Handler that renders MCP server metadata (name, version, instructions,
+/// capabilities) into the system prompt.
+#[derive(Clone)]
+struct McpContextHandler {
+    manager: Arc<RwLock<crate::extensions::mcp::protocol::manager::McpManager>>,
+}
+
+impl std::fmt::Debug for McpContextHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpContextHandler")
+            .field("manager", &"<McpManager>")
+            .finish()
+    }
+}
+
+#[async_trait]
+impl HookHandler for McpContextHandler {
+    async fn handle(&self, _ctx: HookContext) -> HookResult {
+        let manager = self.manager.read().await;
+        let server_states = manager.list_server_prompt_context().await;
+        drop(manager);
+
+        if server_states.is_empty() {
+            return HookResult::Continue(HookOutput::Text(String::new()));
+        }
+
+        let mut lines = vec![
+            "## MCP Servers".to_string(),
+            "The following Model Context Protocol (MCP) servers are configured. \
+             When a server is offline, its tools are still listed but will be \
+             started automatically if you invoke one."
+                .to_string(),
+            String::new(),
+        ];
+
+        for state in server_states {
+            let status_label = if state.running {
+                if state.healthy {
+                    "running"
+                } else {
+                    "running (unhealthy)"
+                }
+            } else {
+                "offline"
+            };
+
+            let info = state
+                .server_info
+                .as_ref()
+                .map(|s| format!(" — {s}"))
+                .unwrap_or_default();
+            lines.push(format!("- **{}** ({}){}", state.name, status_label, info));
+
+            if let Some(instructions) = state.instructions {
+                lines.push(format!("  - Instructions: {}", instructions));
+            }
+
+            if !state.tools.is_empty() {
+                let tool_names: Vec<String> = state.tools.iter().map(|t| t.name.clone()).collect();
+                lines.push(format!("  - Tools: {}", tool_names.join(", ")));
+            }
+        }
+
+        HookResult::Continue(HookOutput::Text(lines.join("\n")))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::PromptSystemSection {
+            section: "mcp_context".to_string(),
+            priority: MCP_HOOK_PRIORITY,
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        MCP_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        "McpContextHandler".to_string()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Tool execution handler (the only adapter-specific handler for tools)
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1090,6 +1238,35 @@ impl HookHandler for McpToolExecuteHandler {
                     let server = server_name.clone();
                     let tool = actual_tool.clone();
                     async move {
+                        // Phase 2: on-demand server start. If the MCP server is not
+                        // running when the tool is invoked, attempt to start it once.
+                        let needs_start = {
+                            let mgr = manager.read().await;
+                            match mgr.get_server_state(&server).await {
+                                Ok(state) => !state.running,
+                                Err(_) => true,
+                            }
+                        };
+
+                        if needs_start {
+                            info!(server_name = %server, "MCP server not running; starting on demand");
+                            let mgr = manager.write().await;
+                            match mgr.start_server(&server).await {
+                                Ok(()) => {
+                                    info!(server_name = %server, "MCP server started on demand");
+                                }
+                                Err(crate::extensions::mcp::protocol::manager::ManagerError::ServerAlreadyRunning(_)) => {
+                                    debug!(server_name = %server, "MCP server already running");
+                                }
+                                Err(e) => {
+                                    return Err(anyhow::anyhow!(
+                                        "MCP server '{}' could not be started for tool '{}': {}",
+                                        server, tool, e
+                                    ));
+                                }
+                            }
+                        }
+
                         let mgr = manager.read().await;
                         let mcp_result = mgr.call_tool(&server, &tool, p).await?;
                         let json_result = serde_json::json!({

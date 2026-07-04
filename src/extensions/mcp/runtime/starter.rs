@@ -1,16 +1,11 @@
-//! MCP Runtime Starter
-//!
-//! Implements `ExtensionRuntimeStarter` for MCP extensions.
-//!
-//! Reads MCP extension manifests (ADR-024 unified format with `mcp_servers` section),
-//! creates `McpRuntimeAdapter`s, and starts
 use crate::common::process::{ProcessSpawnConfig, RestartPolicy, RuntimeSpawnConfig};
-/// them via the shared `BackgroundRuntimeManager`.
 use crate::daemon::background_runtime::starter::{ExtensionRuntimeStarter, StarterContext};
 use crate::extensions::mcp::protocol::config::{McpServerConfig, TransportType};
 use crate::extensions::mcp::runtime::adapter::McpRuntimeAdapter;
+use std::path::Path;
 use std::sync::Arc;
-use tracing::{info, warn};
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
 /// Starter for MCP extensions.
 ///
@@ -178,11 +173,11 @@ impl McpRuntimeStarter {
             .and_then(|v| v.as_str())
             .unwrap_or("stdio");
 
-        if transport_type != "stdio" {
+        if transport_type != "stdio" && transport_type != "sse" {
             warn!(
                 server_name = %server_name,
                 transport_type = %transport_type,
-                "Non-stdio transport in server.json is not yet auto-started by BackgroundRuntimeManager"
+                "Non-stdio/sse transport in server.json is not yet auto-started by BackgroundRuntimeManager"
             );
             return None;
         }
@@ -200,6 +195,10 @@ impl McpRuntimeStarter {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let endpoint = transport
+            .get("endpoint")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let mut server_config = serde_json::Map::new();
         server_config.insert("name".to_string(), serde_json::json!(server_name));
@@ -209,6 +208,11 @@ impl McpRuntimeStarter {
         }
         if !args.is_empty() {
             server_config.insert("args".to_string(), serde_json::json!(args));
+        }
+        if transport_type == "sse" {
+            if let Some(ep) = endpoint {
+                server_config.insert("endpoint".to_string(), serde_json::json!(ep));
+            }
         }
         server_config.insert("auto_start".to_string(), serde_json::json!(true));
 
@@ -240,26 +244,13 @@ impl McpRuntimeStarter {
         Ok(cfg)
     }
 
-    /// Start a single stdio MCP server via BackgroundRuntimeManager.
-    async fn start_stdio_server(
+    /// Start a single MCP server (stdio or SSE) via BackgroundRuntimeManager.
+    async fn start_server_config(
         &self,
         config: &McpServerConfig,
-        ext_dir: &std::path::Path,
+        ext_dir: &Path,
         ctx: &StarterContext,
     ) -> anyhow::Result<()> {
-        let command = config
-            .command
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' missing command", config.name))?;
-
-        let cwd = config.cwd.clone().unwrap_or_else(|| ext_dir.to_path_buf());
-
-        let process_config = ProcessSpawnConfig::new(command)
-            .args(config.args.clone())
-            .cwd(cwd);
-
-        let spawn_config = RuntimeSpawnConfig::Process(process_config);
-
         let adapter = Arc::new(McpRuntimeAdapter::new(
             config.clone(),
             Arc::clone(&ctx.mcp_client_registry),
@@ -272,6 +263,32 @@ impl McpRuntimeStarter {
                 config.max_restarts
             },
             ..Default::default()
+        };
+
+        let spawn_config = match config.transport {
+            TransportType::Stdio => {
+                let command = config.command.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("MCP server '{}' missing command", config.name)
+                })?;
+
+                let cwd = config.cwd.clone().unwrap_or_else(|| ext_dir.to_path_buf());
+
+                let process_config = ProcessSpawnConfig::new(command)
+                    .args(config.args.clone())
+                    .cwd(cwd);
+
+                RuntimeSpawnConfig::Process(process_config)
+            }
+            TransportType::Sse => {
+                let endpoint = config.endpoint.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("MCP server '{}' missing endpoint", config.name)
+                })?;
+
+                RuntimeSpawnConfig::External {
+                    endpoint: endpoint.clone(),
+                    connect_timeout: Duration::from_secs(config.init_timeout_secs),
+                }
+            }
         };
 
         ctx.background_runtime_manager
@@ -311,22 +328,123 @@ impl ExtensionRuntimeStarter for McpRuntimeStarter {
         }
 
         for config in &configs {
-            match config.transport {
-                TransportType::Stdio => {
-                    self.start_stdio_server(config, &ext_dir, ctx).await?;
+            self.start_server_config(config, &ext_dir, ctx).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn auto_start(&self, ctx: &StarterContext) -> anyhow::Result<Vec<String>> {
+        let extensions_dir = ctx.data_dir.join("extensions");
+        let mut started = Vec::new();
+
+        if !extensions_dir.exists() {
+            return Ok(started);
+        }
+
+        let mut entries = tokio::fs::read_dir(&extensions_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let ext_dir = entry.path();
+            if !ext_dir.is_dir() {
+                continue;
+            }
+
+            let configs = match self.parse_server_configs(&ext_dir).await {
+                Ok(configs) => configs,
+                Err(e) => {
+                    debug!("Skipping auto-start for {}: {}", ext_dir.display(), e);
+                    continue;
                 }
-                TransportType::Sse => {
-                    // SSE transports are external connections, not supervised child processes.
-                    // They are handled by McpManager directly, not BackgroundRuntimeManager.
-                    warn!(
-                        "MCP server '{}' uses SSE transport — not started via BackgroundRuntimeManager. \
-                         Use McpManager::start_server() for SSE connections.",
-                        config.name
-                    );
+            };
+
+            for config in configs {
+                if !config.auto_start {
+                    continue;
+                }
+
+                match self.start_server_config(&config, &ext_dir, ctx).await {
+                    Ok(()) => {
+                        info!("Auto-started MCP server '{}'", config.name);
+                        started.push(config.name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to auto-start MCP server '{}': {}", config.name, e);
+                    }
                 }
             }
         }
 
-        Ok(())
+        Ok(started)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_parse_sse_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let ext_dir = tmp.path();
+
+        let manifest = serde_json::json!({
+            "mcp_servers": {
+                "web-server": {
+                    "transport": "sse",
+                    "endpoint": "http://localhost:8080/sse",
+                    "auto_start": true
+                }
+            }
+        });
+        tokio::fs::write(
+            ext_dir.join("manifest.yaml"),
+            serde_yaml::to_string(&manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let starter = McpRuntimeStarter::new();
+        let configs = starter.parse_server_configs(ext_dir).await.unwrap();
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "web-server");
+        assert_eq!(configs[0].transport, TransportType::Sse);
+        assert_eq!(
+            configs[0].endpoint,
+            Some("http://localhost:8080/sse".to_string())
+        );
+        assert!(configs[0].auto_start);
+    }
+
+    #[tokio::test]
+    async fn test_registry_manifest_preserves_sse_endpoint() {
+        let tmp = TempDir::new().unwrap();
+        let server_dir = tmp.path().join("web-server");
+        std::fs::create_dir_all(&server_dir).unwrap();
+
+        let server_json = serde_json::json!({
+            "name": "web-server",
+            "version": "1.0.0",
+            "transport": {
+                "type": "sse",
+                "endpoint": "http://localhost:8080/sse"
+            }
+        });
+        tokio::fs::write(server_dir.join("server.json"), server_json.to_string())
+            .await
+            .unwrap();
+
+        let registry_manifest = McpRuntimeStarter::registry_manifest_to_mcp_servers(
+            &server_json,
+            &server_dir.join("server.json"),
+        )
+        .unwrap();
+
+        let servers = registry_manifest.as_object().unwrap();
+        let config = servers.get("web-server").unwrap();
+        assert_eq!(config.get("transport").unwrap(), "sse");
+        assert_eq!(config.get("endpoint").unwrap(), "http://localhost:8080/sse");
+        assert_eq!(config.get("auto_start").unwrap(), true);
     }
 }

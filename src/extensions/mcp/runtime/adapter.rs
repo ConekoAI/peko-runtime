@@ -12,11 +12,13 @@ use crate::daemon::background_runtime::supervisor::ManagedRuntime;
 use crate::extensions::mcp::protocol::{
     client::{ClientError, McpClient},
     config::McpServerConfig,
-    transport::{StdioTransport, TransportError},
+    transport::{SseTransport, StdioTransport, TransportError},
     types::Tool,
 };
+use anyhow::Context;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -25,8 +27,10 @@ use tracing::{debug, info, warn};
 /// Errors that can occur in the MCP runtime adapter
 #[derive(Debug, thiserror::Error)]
 pub enum McpRuntimeAdapterError {
-    #[error("Runtime is not a process (expected RuntimeKind::Process)")]
-    NotAProcess,
+    #[error(
+        "Runtime kind is not supported by MCP adapter (expected process or external connection)"
+    )]
+    UnexpectedRuntimeKind,
 
     #[error("Transport error: {0}")]
     Transport(#[from] TransportError),
@@ -53,6 +57,8 @@ pub struct McpServerInfo {
     pub tools: Vec<Tool>,
     /// Server info string (name + version)
     pub server_info: Option<String>,
+    /// Optional instructions from the server's initialize response
+    pub instructions: Option<String>,
 }
 
 /// Shared registry that maps runtime IDs to `McpServerInfo`.
@@ -129,6 +135,60 @@ impl Default for McpClientRegistry {
     }
 }
 
+/// On-disk cache for MCP tool metadata so agents can see tool definitions
+/// even when a server is offline at agent-init time.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct McpToolCache {
+    /// Server info string cached at initialization
+    pub server_info: Option<String>,
+    /// Optional instructions from the server's initialize response
+    pub instructions: Option<String>,
+    /// Cached tool definitions
+    pub tools: Vec<Tool>,
+}
+
+impl McpToolCache {
+    /// Path to the per-server cache file inside an extension/server directory.
+    pub fn cache_path(cwd: &Path, server_name: &str) -> std::path::PathBuf {
+        cwd.join(format!(".peko-tools.{server_name}.json"))
+    }
+
+    /// Write tool metadata to the on-disk cache.
+    pub async fn write(
+        cwd: &Path,
+        server_name: &str,
+        server_info: Option<String>,
+        instructions: Option<String>,
+        tools: &[Tool],
+    ) -> anyhow::Result<()> {
+        let cache = McpToolCache {
+            server_info,
+            instructions,
+            tools: tools.to_vec(),
+        };
+        let path = Self::cache_path(cwd, server_name);
+        let content = serde_json::to_string_pretty(&cache)?;
+        tokio::fs::write(&path, content)
+            .await
+            .with_context(|| format!("Failed to write MCP tool cache to {path:?}"))?;
+        Ok(())
+    }
+
+    /// Read tool metadata from the on-disk cache, if it exists.
+    pub async fn read(cwd: &Path, server_name: &str) -> anyhow::Result<Option<McpToolCache>> {
+        let path = Self::cache_path(cwd, server_name);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read MCP tool cache from {path:?}"))?;
+        let cache: McpToolCache = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse MCP tool cache at {path:?}"))?;
+        Ok(Some(cache))
+    }
+}
+
 /// Adapter that implements `BackgroundRuntimeAdapter` for MCP servers.
 ///
 /// This adapter is given to `BackgroundRuntimeManager::start()` when
@@ -188,8 +248,8 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
     async fn initialize(&self, runtime: &mut ManagedRuntime) -> anyhow::Result<()> {
         info!("Initializing MCP runtime adapter for '{}'", runtime.id);
 
-        // Extract stdin/stdout from the process
-        let (stdin, stdout, pid) = match &mut runtime.kind {
+        // Create the MCP client from the runtime kind (stdio process or external SSE connection)
+        let mut client = match &mut runtime.kind {
             crate::daemon::background_runtime::supervisor::RuntimeKind::Process {
                 stdin,
                 stdout,
@@ -206,21 +266,27 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
                     anyhow::anyhow!("MCP runtime '{}': stdout already taken", runtime.id)
                 })?;
                 let pid = *pid;
-                (stdin, stdout, pid)
+                let transport = StdioTransport::from_handles(stdin, stdout, pid);
+                McpClient::new(Box::new(transport))
+            }
+            crate::daemon::background_runtime::supervisor::RuntimeKind::External {
+                endpoint,
+                connected,
+            } => {
+                let endpoint = endpoint.clone();
+                let transport = SseTransport::connect(&endpoint).await.map_err(|e| {
+                    anyhow::anyhow!("SSE connection failed for '{}': {}", runtime.id, e)
+                })?;
+                *connected = true;
+                McpClient::new(Box::new(transport))
             }
             _ => {
                 anyhow::bail!(
-                    "McpRuntimeAdapter only supports RuntimeKind::Process, got {:?}",
+                    "McpRuntimeAdapter only supports RuntimeKind::Process or RuntimeKind::External, got {:?}",
                     runtime.kind
                 );
             }
         };
-
-        // Create transport from the raw handles
-        let transport = StdioTransport::from_handles(stdin, stdout, pid);
-
-        // Create and initialize the MCP client
-        let mut client = McpClient::new(Box::new(transport));
 
         let init_timeout = Duration::from_secs(self.server_config.init_timeout_secs);
         match tokio::time::timeout(init_timeout, client.initialize()).await {
@@ -237,13 +303,14 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
             }
         };
 
-        // After initialize(), server_info is stored inside the client
-        let (server_name, server_version) = match client.server_info() {
+        let server_info = client.server_info().cloned();
+        let (server_name, server_version, instructions) = match &server_info {
             Some(info) => (
                 info.server_info.name.clone(),
                 info.server_info.version.clone(),
+                info.instructions.clone(),
             ),
-            None => ("unknown".to_string(), "unknown".to_string()),
+            None => ("unknown".to_string(), "unknown".to_string(), None),
         };
 
         info!(
@@ -273,10 +340,32 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
 
         // Store client and discovered tools in registry so McpManager can access them
         let server_info_str = format!("{} v{}", server_name, server_version);
+
+        // Cache tool metadata so agents can see tool definitions even when the
+        // server is offline at agent-init time.
+        if let Some(ref cwd) = self.server_config.cwd {
+            if let Err(e) = McpToolCache::write(
+                cwd,
+                &runtime.id,
+                Some(server_info_str.clone()),
+                instructions.clone(),
+                &tools,
+            )
+            .await
+            {
+                warn!(
+                    server_name = %runtime.id,
+                    error = %e,
+                    "Failed to write MCP tool cache"
+                );
+            }
+        }
+
         let info = McpServerInfo {
             client: Arc::new(RwLock::new(client)),
             tools,
             server_info: Some(server_info_str),
+            instructions,
         };
         self.client_registry.insert(runtime.id.clone(), info).await;
 
@@ -355,6 +444,7 @@ mod tests {
             client: Arc::new(RwLock::new(client)),
             tools: Vec::new(),
             server_info: None,
+            instructions: None,
         };
 
         // Insert
@@ -385,5 +475,50 @@ mod tests {
         let adapter = McpRuntimeAdapter::new(config, registry);
 
         assert_eq!(adapter.config().name, "test");
+    }
+
+    #[tokio::test]
+    async fn test_tool_cache_roundtrip() {
+        use crate::extensions::mcp::protocol::types::Tool;
+        use serde_json::json;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path();
+
+        let tools = vec![
+            Tool {
+                name: "web_fetch".to_string(),
+                description: "Fetch a URL".to_string(),
+                input_schema: json!({"type": "object"}),
+            },
+            Tool {
+                name: "web_search".to_string(),
+                description: "Search the web".to_string(),
+                input_schema: json!({"type": "object"}),
+            },
+        ];
+
+        McpToolCache::write(
+            cwd,
+            "test-server",
+            Some("test-server v1.0.0".to_string()),
+            Some("Use these tools for web access.".to_string()),
+            &tools,
+        )
+        .await
+        .unwrap();
+
+        let cache = McpToolCache::read(cwd, "test-server")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cache.server_info, Some("test-server v1.0.0".to_string()));
+        assert_eq!(
+            cache.instructions,
+            Some("Use these tools for web access.".to_string())
+        );
+        assert_eq!(cache.tools.len(), 2);
+        assert!(cache.tools.iter().any(|t| t.name == "web_fetch"));
     }
 }

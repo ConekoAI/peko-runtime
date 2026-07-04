@@ -5,7 +5,7 @@
 //! `{{agents}}`, `{{runtime}}`, etc.) are replaced at build time with
 //! rendered sections. An empty body falls back to a one-line identity.
 
-use crate::agents::prompt::placeholder::{replace_placeholders, Placeholder};
+use crate::agents::prompt::placeholder::{Placeholder, replace_placeholders};
 use crate::providers::ToolDefinition;
 use crate::tools::Tool;
 use chrono::Local;
@@ -145,9 +145,39 @@ impl SystemPromptBuilder {
             Placeholder::SelfUpdate,
             self.build_self_update_section(is_minimal),
         );
+        values.insert(Placeholder::McpContext, self.build_mcp_context_section());
 
         // 3. Replace placeholders in template
         replace_placeholders(&template, &values, true)
+    }
+
+    /// Build the MCP context section via Extension Core hooks
+    fn build_mcp_context_section(&self) -> String {
+        use crate::extensions::framework::{HookInput, HookPoint};
+
+        if let Some(ref core) = self.extension_core {
+            if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+                let hook_point = HookPoint::PromptSystemSection {
+                    section: "mcp_context".to_string(),
+                    priority: 100,
+                };
+                let core = core.clone();
+
+                let result = tokio::task::block_in_place(move || {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        core.invoke_hook_text(hook_point, HookInput::Unit).await
+                    })
+                });
+
+                if let Some(text) = result {
+                    if !text.is_empty() {
+                        return text;
+                    }
+                }
+            }
+        }
+
+        String::new()
     }
 
     /// Build the Available Tools section
@@ -469,7 +499,7 @@ Be safe.
     #[test]
     fn test_builder_with_skills_via_extension_core() {
         use crate::extensions::framework::ExtensionManifest;
-        use crate::extensions::skill::{register_skills_with_core, DiscoveredSkill};
+        use crate::extensions::skill::{DiscoveredSkill, register_skills_with_core};
         use std::path::PathBuf;
 
         // Create a tokio runtime for async operations
