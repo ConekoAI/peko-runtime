@@ -30,17 +30,22 @@ pub async fn execute_tool_via_core(
     params: serde_json::Value,
     workspace: Option<String>,
 ) -> Result<(String, serde_json::Value, bool)> {
-    execute_tool_via_core_with_context(core, tool_name, params, workspace, None, None, None, None)
-        .await
+    execute_tool_via_core_with_context(
+        core, tool_name, params, workspace, None, None, None, None, None,
+    )
+    .await
 }
 
-/// Execute a tool via ExtensionCore with agent, session, caller, and principal context.
+/// Execute a tool via ExtensionCore with agent, session, caller, principal,
+/// and per-call allowlist context.
 ///
 /// `agent_id` / `session_id` drive reserved parameter injection.
 /// `caller_id` drives per-user permission checks and audit logging (issue #17).
 /// `principal_id` (P2-audit) is threaded into `ToolContext` so
 /// extension-scoped tools (e.g. `Skill`) can resolve per-principal
 /// state via `SkillStateRegistry` at handle time.
+/// `allowed_extensions` is the principal/agent allowlist used by the
+/// execution gate instead of the mutable global `tool_config`.
 pub async fn execute_tool_via_core_with_context(
     core: &ExtensionCore,
     tool_name: &str,
@@ -50,6 +55,7 @@ pub async fn execute_tool_via_core_with_context(
     session_id: Option<String>,
     caller_id: Option<String>,
     principal_id: Option<String>,
+    allowed_extensions: Option<Vec<String>>,
 ) -> Result<(String, serde_json::Value, bool)> {
     let point = HookPoint::ToolExecute {
         tool_name: tool_name.to_string(),
@@ -62,6 +68,7 @@ pub async fn execute_tool_via_core_with_context(
         session_id,
         caller_id,
         principal_id,
+        allowed_extensions,
     };
 
     let result = core.invoke_hook(point, input).await;

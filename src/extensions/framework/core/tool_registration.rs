@@ -339,6 +339,7 @@ mod tests {
                 session_id: None,
                 caller_id: None,
                 principal_id: None,
+                allowed_extensions: None,
             },
             Arc::new(ExtensionServices::new()),
         );

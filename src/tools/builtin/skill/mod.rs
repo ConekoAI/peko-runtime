@@ -237,14 +237,12 @@ Returns:
             anyhow::anyhow!("skill_unreadable: failed to read SKILL.md for skill {name}: {e}")
         })?;
 
-        let (frontmatter, body): (SkillFrontmatter, String) = parse_yaml_frontmatter_typed(
-            &content,
-        )
-        .map_err(|e| {
-            anyhow::anyhow!(
+        let (frontmatter, body): (SkillFrontmatter, String) =
+            parse_yaml_frontmatter_typed(&content).map_err(|e| {
+                anyhow::anyhow!(
                 "skill_unreadable: failed to parse frontmatter in SKILL.md for skill {name}: {e}"
             )
-        })?;
+            })?;
 
         // `parse_yaml_frontmatter` includes the newline that follows the
         // closing `---` in the body. Trim it so the rendered output
