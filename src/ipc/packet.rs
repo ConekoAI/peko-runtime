@@ -1126,9 +1126,9 @@ pub enum ResponsePacket {
 }
 
 /// Wire-level summary of a queued steering message. Mirrors the
-/// fields a CLI needs to render the message list (`peko session
-/// pending`). Full content is intentionally omitted from the list
-/// payload to keep large inboxes cheap to enumerate.
+/// fields needed to render the message list. Full content is
+/// intentionally omitted from the list payload to keep large inboxes
+/// cheap to enumerate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteeringMessageSummary {
     pub message_id: uuid::Uuid,

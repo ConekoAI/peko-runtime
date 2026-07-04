@@ -183,8 +183,7 @@ async fn same_runtime_principal_send_short_circuits_offline() {
             serde_json::json!({
                 "target_principal": target_did,
                 "message": "ping"
-            })
-            .into(),
+            }),
         )
         .await
         .expect("execute should not throw");

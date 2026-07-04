@@ -30,7 +30,7 @@
 INTEGRATION_TESTS := pekohub_integration tunnel_integration tunnel_e2e \
                      packaging_integration registry_integration \
                      extension_packaging \
-                     cli_send cli_session cli_basics cli_cron cli_subagent \
+                     cli_send cli_basics cli_cron cli_subagent \
                      cli_tools cli_agent_signature \
                      cli_extensions cli_providers \
                      s1_local_agent_with_extensions \
@@ -164,10 +164,6 @@ test-registry: docker-up
 test-cli-send: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_send -- --ignored
-
-test-cli-session: docker-up
-	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test cli_session -- --ignored
 
 test-cli-basics: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \

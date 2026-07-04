@@ -5,7 +5,6 @@
 //!
 //! - `principal`: Principal (top-level AI actor) lifecycle management
 //! - `ext`: Extension management (tools, skills, MCP servers)
-//! - `session`: Session management and introspection
 //! - `config`: Configuration management
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Daemon mode for cron job execution
@@ -25,7 +24,6 @@ pub mod registry;
 pub mod runtime;
 pub mod search;
 pub mod send;
-pub mod session;
 pub mod system;
 pub mod tunnel;
 pub mod vault;
@@ -121,10 +119,6 @@ pub enum Commands {
     /// Extension management commands (skills, MCP, tools, channels, hooks)
     #[command(subcommand)]
     Ext(ext::ExtCommands),
-
-    /// Session management commands
-    #[command(subcommand)]
-    Session(session::SessionCommands),
 
     /// Configuration management
     #[command(subcommand)]

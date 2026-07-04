@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use glob::Pattern as GlobPattern;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -274,7 +275,10 @@ impl GrepTool {
                         *counts.entry(p.to_string()).or_insert(0) += 1;
                     }
                 }
-                counts.iter().map(|(p, c)| format!("{p}:{c}\n")).collect()
+                counts.iter().fold(String::new(), |mut acc, (p, c)| {
+                    let _ = writeln!(acc, "{p}:{c}");
+                    acc
+                })
             }
             _ => unreachable!("validated above"),
         };

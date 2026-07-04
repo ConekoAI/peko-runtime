@@ -143,8 +143,7 @@ src/
   retargeted for the principal-as-single-actor model in the parity
   branch):
   - `tests/cli_send.rs` — `peko send` (targets a Principal; mock LLM)
-  - `tests/cli_session.rs` — `peko session` over Principal sessions (mock LLM)
-  - `tests/cli_basics.rs` — Offline `peko principal`/`peko team`/`peko config`
+  - `tests/cli_basics.rs` — Offline `peko principal`/`peko config`
   - `tests/cli_extensions.rs`, `tests/cli_extensions_l3.rs` — Extension system
   - `tests/cli_cron.rs` — `peko cron` create/list/delete (mock LLM)
   - `tests/cli_subagent.rs` — `peko subagent` + `agent_spawn` (mock LLM)

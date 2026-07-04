@@ -526,8 +526,7 @@ impl SessionService {
                     Some(id) => Ok(id),
                     None => Err(anyhow::anyhow!(
                         "No active session for agent '{agent_name}'. \
-                         Run 'peko session list {agent_name}' to see available sessions, \
-                         or specify a session ID explicitly."
+                         Specify a session ID explicitly, or start a conversation with `peko send`."
                     )),
                 }
             }

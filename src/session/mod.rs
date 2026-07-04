@@ -37,7 +37,6 @@ pub mod message_conversion;
 pub mod metadata;
 pub mod metadata_controller;
 pub mod overlay;
-pub mod presentation;
 pub mod recovery;
 pub mod spawn;
 pub mod subagent_key;

@@ -116,7 +116,7 @@ pub async fn handle_daemon(
                 println!("   Data dir: {}", config.data_dir.display());
 
                 let daemon = Daemon::new(config)?;
-                if let Err(e) = daemon.run().await {
+                if let Err(e) = Box::pin(daemon.run()).await {
                     eprintln!("Daemon error: {}", e);
                 }
             } else {

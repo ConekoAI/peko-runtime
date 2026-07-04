@@ -17,7 +17,7 @@ This compromise was acceptable while Windows support was best-effort, but it has
 
 1. **No file-permission auth.** The Unix path relies on `daemon.sock` being created with mode 0600 — the kernel itself gates "who can talk to the daemon." UDP on Windows has no such boundary; the trust decision reduces to "is the source IP loopback," which any local process can satisfy. ADR-034's `enforce_auth_for_public_bind` only fires for *public* binds, so a Windows user who runs the daemon on `127.0.0.1` has no transport-layer trust at all.
 2. **UDP semantics are not a great fit.** UDP is connectionless, unreliable, and datagram-bounded. Loopback UDP rarely drops packets in practice, but the protocol layer still has to handle sequence gaps, heartbeats, and an explicit "trust the application layer" boundary that Unix-domain sockets don't require.
-3. **Test coverage fragmentation.** Four integration-test files (`cli_send.rs`, `cli_cron.rs`, `cli_basics.rs`, `cli_session.rs`) carry `#![cfg(unix)]` because the daemon's IPC server is Unix-only. The transport layer — the part most likely to differ between platforms — is the part that never gets tested on Windows in CI.
+3. **Test coverage fragmentation.** Three integration-test files (`cli_send.rs`, `cli_cron.rs`, `cli_basics.rs`) carry `#![cfg(unix)]` because the daemon's IPC server is Unix-only. The transport layer — the part most likely to differ between platforms — is the part that never gets tested on Windows in CI.
 
 This ADR replaces the Windows UDP fallback with **Windows named pipes**, the only Windows IPC primitive that gives kernel-enforced peer identity, message-mode framing, and a trust model analogous to Unix 0600. The change is contained to the IPC layer; the wire protocol, request/response types, and 12 internal callers of `DaemonClient` / `ConnectionManager` are unchanged.
 
@@ -58,7 +58,7 @@ The engineering reasons (mirroring ADR-021 lines 220-226 "Why Unix Domain Socket
 - **File-permission equivalent.** The pipe's DACL is the analog of Unix 0600 mode. The DACL is consulted by the kernel at `CreateFileW` time; the daemon's application code does not have to re-derive trust.
 - **No firewall surface.** Named pipes are local-only; Windows Defender Firewall does not prompt for them. The current UDP fallback has been observed to trigger firewall popups in some configurations; named pipes do not.
 - **Standard primitive.** `tokio::net::windows::named_pipe` is a stable, well-documented Tokio surface. The Win32 `CreateNamedPipeW` API has been stable since Windows NT 3.1. There is no third-party dependency to add beyond `windows-sys = "0.52"` (already a project dependency for Job Objects).
-- **Test coverage symmetry.** With the gate dropped, the four `#![cfg(unix)]` files (`cli_send.rs`, `cli_cron.rs`, `cli_basics.rs`, `cli_session.rs`) now run on both platforms. CI catches transport-layer regressions that today can only surface on a developer machine.
+- **Test coverage symmetry.** With the gate dropped, the three `#![cfg(unix)]` files (`cli_send.rs`, `cli_cron.rs`, `cli_basics.rs`) now run on both platforms. CI catches transport-layer regressions that today can only surface on a developer machine.
 
 ## Trust Boundary
 
@@ -91,7 +91,7 @@ The implementation is contained to the IPC layer (`src/ipc/`), the test harness 
 - `src/ipc/mod.rs` — `DAEMON_PIPE_ENV` constant, `default_pipe_name()` helper.
 - `tests/common/cli.rs` — `PekoCli::daemon_endpoint()` and per-test unique `PEKO_DAEMON_PIPE` on Windows.
 - `tests/common/daemon.rs` — panic message uses `daemon_endpoint()`.
-- `tests/cli_send.rs`, `tests/cli_cron.rs`, `tests/cli_basics.rs`, `tests/cli_session.rs` — `#![cfg(unix)]` gate removed.
+- `tests/cli_send.rs`, `tests/cli_cron.rs`, `tests/cli_basics.rs` — `#![cfg(unix)]` gate removed.
 
 **Dependencies (Cargo.toml):**
 
@@ -111,7 +111,7 @@ The implementation is contained to the IPC layer (`src/ipc/`), the test harness 
 ### Positive
 
 - **Symmetric trust story on Unix and Windows.** File mode 0600 on Unix ↔ named-pipe DACL on Windows. The kernel enforces peer identity on both platforms; the application layer can rely on `peer.is_local()` being meaningful.
-- **Test coverage parity.** The four `#![cfg(unix)]` files run on both platforms. Transport-layer regressions are caught in CI on both OSes.
+- **Test coverage parity.** The three `#![cfg(unix)]` files run on both platforms. Transport-layer regressions are caught in CI on both OSes.
 - **No firewall prompts.** Named pipes do not interact with Windows Firewall; the current UDP path has been observed to trigger Defender prompts in some configurations.
 - **No caller-code change.** The 12 internal consumers of `DaemonClient` / `ConnectionManager` continue to use the same surface.
 
