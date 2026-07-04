@@ -518,7 +518,9 @@ impl ExtensionCore {
     /// # Returns
     /// A list of tool metadata for all registered tools.
     /// Note: This returns ALL registered tools regardless of the agent's whitelist.
-    /// The whitelist is enforced at execution time via `invoke_hook`.
+    /// The whitelist is enforced at execution time via `invoke_hook`.  Callers
+    /// that need a caller-scoped view should use
+    /// [`Self::list_tool_definitions_with_allowlist`].
     pub async fn list_tools(&self) -> Vec<ToolMetadata> {
         // Collect hook IDs from tool index first
         let hook_ids: Vec<HookId> = self
@@ -972,7 +974,7 @@ mod tests {
         });
 
         // Register the tool with empty whitelist (all tools disabled)
-        let tool_config = crate::common::types::agent_legacy::ToolConfig {
+        let tool_config = crate::common::types::agent_legacy::ExtensionConfig {
             enabled: vec![], // Empty whitelist = all tools disabled
             ..Default::default()
         };
@@ -1034,12 +1036,10 @@ mod tests {
         .await
         .unwrap();
 
-        // Configure whitelist to enable the tool
-        let tool_config = crate::common::types::agent_legacy::ToolConfig {
-            enabled: vec!["enabled_tool".to_string()],
-            ..Default::default()
-        };
-        core.set_tool_config(tool_config).await;
+        // Enable the tool via the per-call allowlist. The tool was registered
+        // directly on the hook registry, so it has no recorded owner in the
+        // tool index; the allowlist therefore uses the bare tool name.
+        let allowed = vec!["enabled_tool".to_string()];
 
         // Execute the tool - should succeed
         let result = core
@@ -1055,7 +1055,7 @@ mod tests {
                     session_id: None,
                     caller_id: None,
                     principal_id: None,
-                    allowed_extensions: None,
+                    allowed_extensions: Some(allowed),
                 },
             )
             .await;
@@ -1084,7 +1084,7 @@ mod tests {
             .unwrap();
 
         // Set empty whitelist (would block tools, but shouldn't affect ToolRegister)
-        let tool_config = crate::common::types::agent_legacy::ToolConfig {
+        let tool_config = crate::common::types::agent_legacy::ExtensionConfig {
             enabled: vec![],
             ..Default::default()
         };
