@@ -106,6 +106,7 @@ pub enum RequestPacket {
     CronList {
         request_id: u64,
         include_disabled: bool,
+        principal: Option<String>,
     },
 
     /// Add a cron job
@@ -1510,6 +1511,7 @@ mod tests {
         let req = RequestPacket::CronList {
             request_id: 100,
             include_disabled: true,
+            principal: Some("my-principal".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -1517,9 +1519,11 @@ mod tests {
             RequestPacket::CronList {
                 request_id,
                 include_disabled,
+                principal,
             } => {
                 assert_eq!(request_id, 100);
                 assert!(include_disabled);
+                assert_eq!(principal.as_deref(), Some("my-principal"));
             }
             _ => panic!("Wrong variant"),
         }
@@ -1531,8 +1535,7 @@ mod tests {
             id: "job-1".to_string(),
             name: "Test Job".to_string(),
             schedule: crate::cron::ScheduleKind::Every { every_ms: 60000 },
-            target: crate::cron::ExecutionTarget::Main,
-            agent_id: None,
+            principal_name: "test-principal".to_string(),
             message: "Hello cron".to_string(),
             delivery: crate::cron::DeliveryMode::None,
             delete_after_run: false,
@@ -1622,8 +1625,7 @@ mod tests {
             id: "job-1".to_string(),
             name: "Test Job".to_string(),
             schedule: crate::cron::ScheduleKind::Every { every_ms: 60000 },
-            target: crate::cron::ExecutionTarget::Main,
-            agent_id: None,
+            principal_name: "test-principal".to_string(),
             message: "Hello cron".to_string(),
             delivery: crate::cron::DeliveryMode::None,
             delete_after_run: false,
@@ -1740,6 +1742,7 @@ mod tests {
         let req_list = RequestPacket::CronList {
             request_id: 1,
             include_disabled: false,
+            principal: None,
         };
         assert_eq!(req_list.request_id(), 1);
 
@@ -1749,8 +1752,7 @@ mod tests {
                 id: "j".to_string(),
                 name: "n".to_string(),
                 schedule: crate::cron::ScheduleKind::Every { every_ms: 1000 },
-                target: crate::cron::ExecutionTarget::Main,
-                agent_id: None,
+                principal_name: "test-principal".to_string(),
                 message: "m".to_string(),
                 delivery: crate::cron::DeliveryMode::None,
                 delete_after_run: false,

@@ -1,10 +1,12 @@
 //! `CronList` tool — list scheduled jobs
 //!
 //! Delegates to the daemon via IPC; the daemon is the source of truth for
-//! cron persistence and execution.
+//! cron persistence and execution. Results are filtered to the current
+//! Principal from the tool execution context.
 
 use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::tools::builtin::cron::render_job_list;
+use crate::tools::core::exec::ToolContext;
 use crate::tools::core::traits::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -66,7 +68,23 @@ impl Tool for CronListTool {
         })
     }
 
-    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+    async fn execute(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+        Err(anyhow::anyhow!(
+            "CronList requires a Principal context; use execute_with_context"
+        ))
+    }
+
+    async fn execute_with_context(
+        &self,
+        params: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<serde_json::Value> {
+        let principal_name = ctx
+            .principal_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CronList requires a Principal context"))?
+            .clone();
+
         let _args: CronListArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid CronList arguments: {e}"))?;
 
@@ -74,7 +92,7 @@ impl Tool for CronListTool {
             anyhow::anyhow!("Cannot reach daemon for cron operations. Is it running? ({e})")
         })?;
 
-        match client.cron_list(true).await? {
+        match client.cron_list(true, Some(principal_name)).await? {
             ResponsePacket::CronList { jobs, .. } => Ok(render_job_list(jobs)),
             ResponsePacket::Error { message, .. } => {
                 Err(anyhow::anyhow!("Failed to list jobs: {message}"))

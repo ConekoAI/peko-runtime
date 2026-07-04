@@ -34,7 +34,7 @@ Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to
 | **Persistent Memory** | JSONL-based session storage managed automatically per Principal |
 | **DID Identity** | ed25519-based decentralized identifiers |
 | **Extensions** | Unified Extension Architecture for skills, MCP, tools, channels, hooks |
-| **Cron Scheduling** | Schedule recurring and one-time tasks (operator/advanced) |
+| **Cron Scheduling** | Schedule recurring and one-time tasks, scoped to a Principal and run as its owner (operator/advanced) |
 
 ---
 
@@ -218,6 +218,39 @@ MCP (Model Context Protocol) servers are managed as extensions:
 peko ext install <mcp-extension>
 peko ext enable <mcp-extension>
 ```
+
+---
+
+## Cron Scheduling
+
+The daemon can run scheduled jobs on behalf of a Principal. Each job is
+scoped to exactly one Principal by name and executes as that Principal's
+owner, so it reuses the same `peko send` permission path and session memory.
+
+Supported schedules:
+
+- **Cron expression** — standard 6-field cron (`sec min hour dom mon dow`)
+- **One-time `at`** — RFC3339 timestamp
+- **Interval `every`** — fixed millisecond interval
+- **Idle** — fires after the Principal has had no user activity for N minutes
+- **Event** — fires when a matching system event is published
+
+### Example: daily Principal digest
+
+```bash
+# Requires the daemon to be running
+peko daemon start --foreground
+
+# Schedule a daily message to your Principal
+peko cron add --principal my-principal \
+  --name daily-digest \
+  --schedule "0 9 * * * *" \
+  --message "Summarize my open tasks and today's priorities."
+```
+
+Jobs are stored in the daemon's cron DB (`<data_dir>/cron.json`) and can be
+listed, inspected, and removed with `peko cron list` and `peko cron remove`.
+For the full option set, see the [CLI Reference](CLI_REFERENCE.md#cron--principal-cron-jobs).
 
 ---
 

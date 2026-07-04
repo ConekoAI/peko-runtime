@@ -4,7 +4,7 @@
 //! All operations (add, list, cancel) are sent to the daemon over IPC,
 //! and the daemon persists jobs to cron.json and executes them.
 
-use crate::cron::{CronJob, DeliveryMode, ExecutionTarget, ScheduleKind};
+use crate::cron::{CronJob, DeliveryMode, ScheduleKind};
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -25,15 +25,14 @@ pub fn build_job(
     task: String,
     schedule: ScheduleKind,
     delete_after_run: bool,
-    agent_id: Option<String>,
+    principal_name: String,
 ) -> anyhow::Result<CronJob> {
     let next_run = crate::cron::calculate_next_run(&schedule, Utc::now())?;
     Ok(CronJob {
         id: format!("cron_{}", Uuid::new_v4().simple()),
         name: label,
+        principal_name,
         schedule,
-        target: ExecutionTarget::Main,
-        agent_id,
         message: task,
         delivery: DeliveryMode::None,
         delete_after_run,
@@ -103,13 +102,8 @@ pub fn resolve_schedule_kind(params: &serde_json::Value) -> anyhow::Result<Sched
     // 'idle_ms'
     if let Some(idle_ms) = params.get("idle_ms").and_then(|v| v.as_u64()) {
         let minutes = idle_ms / 60000;
-        let agent_id = params
-            .get("agent_id")
-            .and_then(|v| v.as_str())
-            .map(String::from);
         return Ok(ScheduleKind::Idle {
             minutes: minutes.max(1),
-            agent_id,
         });
     }
 
@@ -181,6 +175,7 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
             json!({
                 "job_id": j.id,
                 "label": j.name,
+                "principal": j.principal_name,
                 "sub_command": sub_command,
                 "task": j.message,
                 "status": status,

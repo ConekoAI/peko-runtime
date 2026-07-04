@@ -4,13 +4,13 @@
 //! delivery, and audit logging. Keeps the daemon's main loop focused on
 //! lifecycle and shutdown.
 
-use crate::agents::stateless_service::StatelessAgentService;
 use crate::auth::caller::CallerContext;
 use crate::common::json_utils::json_subset;
-use crate::common::types::a2a::MessageRequest;
 use crate::cron::events::SystemEvent;
-use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
+use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, IdleDetector};
 use crate::observability::Observability;
+use crate::principal::manager::PrincipalManager;
+use crate::principal::router::{ChannelContext, ChannelKind};
 use anyhow::Result;
 use chrono::Utc;
 use std::sync::Arc;
@@ -31,8 +31,7 @@ pub struct CronEngine {
     scheduler: Arc<CronScheduler>,
     idle_detector: Arc<IdleDetector>,
     observability: Arc<Observability>,
-    agent_service: Option<Arc<StatelessAgentService>>,
-    enable_isolated_execution: bool,
+    principal_manager: Option<Arc<PrincipalManager>>,
     status: Arc<Mutex<CronStatus>>,
     data_dir: std::path::PathBuf,
 }
@@ -44,22 +43,21 @@ impl CronEngine {
         idle_detector: Arc<IdleDetector>,
         observability: Arc<Observability>,
         data_dir: std::path::PathBuf,
-        enable_isolated_execution: bool,
+        principal_manager: Option<Arc<PrincipalManager>>,
     ) -> Self {
         Self {
             scheduler,
             idle_detector,
             observability,
-            agent_service: None,
-            enable_isolated_execution,
+            principal_manager,
             status: Arc::new(Mutex::new(CronStatus::default())),
             data_dir,
         }
     }
 
-    /// Attach the agent service used to execute jobs.
-    pub fn set_agent_service(&mut self, service: Arc<StatelessAgentService>) {
-        self.agent_service = Some(service);
+    /// Attach the PrincipalManager used to execute jobs.
+    pub fn set_principal_manager(&mut self, pm: Arc<PrincipalManager>) {
+        self.principal_manager = Some(pm);
     }
 
     /// Snapshot of current cron status.
@@ -105,17 +103,15 @@ impl CronEngine {
         debug!("Checking {} idle-triggered jobs", idle_jobs.len());
 
         for job in idle_jobs {
-            if let ScheduleKind::Idle { minutes, agent_id } = &job.schedule {
-                let should_execute = if let Some(agent) = agent_id {
-                    self.idle_detector.is_idle(agent, *minutes).await
-                } else {
-                    self.idle_detector.is_global_idle(*minutes).await
-                };
-
-                if should_execute {
+            if let ScheduleKind::Idle { minutes } = &job.schedule {
+                if self
+                    .idle_detector
+                    .is_idle(&job.principal_name, *minutes)
+                    .await
+                {
                     info!(
-                        "⏸️  Agent idle for {} minutes, executing job '{}'",
-                        minutes, job.name
+                        "⏸️  Principal '{}' idle for {} minutes, executing job '{}'",
+                        job.principal_name, minutes, job.name
                     );
                     if let Err(e) = self.execute_job(job).await {
                         error!("Failed to execute idle job: {}", e);
@@ -187,12 +183,12 @@ impl CronEngine {
             .audit_with_caller(
                 Some(&CallerContext::local().subject()),
                 "cron.execute",
-                job.agent_id.as_deref(),
+                Some(&job.principal_name),
                 serde_json::json!({
                     "job_id": job.id,
                     "job_name": job.name,
                     "schedule": job.schedule.display(),
-                    "target": format!("{:?}", job.target),
+                    "principal": &job.principal_name,
                     "run_id": &run_id,
                 }),
             )
@@ -209,17 +205,7 @@ impl CronEngine {
         };
         self.scheduler.record_run(&run)?;
 
-        let result = match job.target {
-            ExecutionTarget::Main => self.execute_main_job(&job).await,
-            ExecutionTarget::Isolated => {
-                if self.enable_isolated_execution {
-                    self.execute_isolated_job(&job).await
-                } else {
-                    warn!("Isolated execution disabled, skipping job {}", job.id);
-                    Ok(("skipped".to_string(), None))
-                }
-            }
-        };
+        let result = self.run_job_with_principal_manager(&job).await;
 
         let (status, output, error) = match result {
             Ok((s, o)) => (s, o, None),
@@ -243,7 +229,7 @@ impl CronEngine {
             .audit_with_caller(
                 Some(&CallerContext::local().subject()),
                 "cron.result",
-                job.agent_id.as_deref(),
+                Some(&job.principal_name),
                 serde_json::json!({
                     "job_id": job.id,
                     "job_name": job.name,
@@ -283,59 +269,49 @@ impl CronEngine {
     }
 
     // ------------------------------------------------------------------
-    // Target dispatch
+    // Principal execution
     // ------------------------------------------------------------------
 
-    async fn execute_main_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
-        info!("📨 Main session job: '{}'", job.message);
-
-        if self.agent_service.is_some() {
-            return self.run_job_with_agent_service(job).await;
-        }
-
-        warn!("No agent service available for main job execution");
-
-        let output = format!(
-            "[cron:{}] System event created:\n{}\n\nEvent: cron_job from {} for agent {:?}",
-            job.name, job.message, job.id, job.agent_id
-        );
-        info!("   System event created for main session processing");
-        Ok(("success".to_string(), Some(output)))
-    }
-
-    async fn execute_isolated_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
-        info!("🔧 Isolated job: '{}'", job.message);
-
-        if self.agent_service.is_some() {
-            return self.run_job_with_agent_service(job).await;
-        }
-
-        self.execute_main_job(job).await
-    }
-
-    async fn run_job_with_agent_service(&self, job: &CronJob) -> Result<(String, Option<String>)> {
-        let message = &job.message;
-
-        if let Some(service) = &self.agent_service {
-            let agent_id = job
-                .agent_id
-                .clone()
-                .unwrap_or_else(|| "default".to_string());
-            let request = MessageRequest::new(&agent_id, message.clone()).with_timeout(300);
-
-            match service.execute_message(request).await {
-                Ok(result) => {
-                    self.idle_detector.record_activity(&agent_id).await;
-                    Ok(("success".to_string(), Some(result.content)))
-                }
-                Err(e) => Ok(("failed".to_string(), Some(format!("Execution error: {e}")))),
-            }
-        } else {
-            warn!("No agent service available for cron job execution");
-            Ok((
+    async fn run_job_with_principal_manager(
+        &self,
+        job: &CronJob,
+    ) -> Result<(String, Option<String>)> {
+        let Some(pm) = self.principal_manager.as_ref() else {
+            return Ok((
                 "failed".to_string(),
-                Some("Agent service not available".to_string()),
-            ))
+                Some("PrincipalManager not available".to_string()),
+            ));
+        };
+
+        let principal = pm
+            .get_by_name(&job.principal_name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Principal '{}' not loaded", job.principal_name))?;
+
+        let peer = {
+            let config = principal.config.read().await;
+            config.owner.clone()
+        };
+
+        let channel = ChannelContext {
+            kind: ChannelKind::Cron,
+            streaming: false,
+        };
+
+        match pm
+            .receive(principal.id.clone(), peer, job.message.clone(), channel)
+            .await
+        {
+            Ok(response) => {
+                self.idle_detector
+                    .record_activity(&job.principal_name)
+                    .await;
+                Ok(("success".to_string(), Some(response.content)))
+            }
+            Err(e) => Ok((
+                "failed".to_string(),
+                Some(format!("Principal execution error: {e}")),
+            )),
         }
     }
 
@@ -413,13 +389,103 @@ impl CronEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::{Permission, PermissionGrant};
+    use crate::common::paths::PathResolver;
+    use crate::engine::tool_runtime::ToolRuntime;
+    use crate::extensions::framework::core::init_global_core;
+    use crate::principal::{
+        AllowedExtensions, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
+        PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
+        PrincipalManager, PrincipalMemoryConfig, PrincipalRoutingConfig,
+    };
+    use crate::providers::mock::MockAdapter;
+    use crate::providers::resolver::LlmResolver;
+    use crate::subject::Subject;
+    use crate::tunnel::protocol::InstanceExposure;
+    use chrono::{Duration, Utc};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn engine_from_tmp(tmp: &TempDir) -> CronEngine {
         let scheduler = Arc::new(CronScheduler::new(tmp.path().join("cron.json")).unwrap());
         let idle = Arc::new(IdleDetector::new());
         let obs = Arc::new(Observability::new("daemon"));
-        CronEngine::new(scheduler, idle, obs, tmp.path().join("data"), false)
+        CronEngine::new(scheduler, idle, obs, tmp.path().join("data"), None)
+    }
+
+    async fn setup_principal_manager(tmp: &TempDir) -> Arc<PrincipalManager> {
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
+            .await
+            .expect("tool runtime should initialize");
+        init_global_core(tool_runtime.extension_core().clone());
+
+        let workspace = tmp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let catalog_path = tmp.path().join("providers.toml");
+        let (resolver, adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
+        adapter.queue_text("Hello from cron");
+        Arc::new(
+            PrincipalManager::with_path_resolver(
+                workspace,
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+            )
+            .with_resolver(resolver),
+        )
+    }
+
+    async fn create_test_principal(
+        manager: &PrincipalManager,
+        workspace: &std::path::Path,
+        name: &str,
+    ) -> Arc<crate::principal::Principal> {
+        let agents_dir = workspace.join(name).join("agents");
+        tokio::fs::create_dir_all(&agents_dir).await.unwrap();
+        let prompt_path = agents_dir.join("primary.md");
+        let prompt_body = format!(
+            "---\ndescription: \"Test assistant for {name}\"\n---\n\n\
+             You are {name}, a test assistant. Reply concisely.\n"
+        );
+        tokio::fs::write(&prompt_path, prompt_body).await.unwrap();
+
+        let config = test_config(name);
+        manager.create(config).await.unwrap()
+    }
+
+    fn test_config(name: &str) -> PrincipalConfig {
+        PrincipalConfig {
+            name: name.to_string(),
+            did: None,
+            owner: Subject::User("test-owner".to_string()),
+            identity: PrincipalIdentityConfig {
+                display_name: Some(name.to_string()),
+                description: Some(format!("The {name} Principal")),
+                avatar: None,
+            },
+            intent: PrincipalIntentConfig::default(),
+            governance: PrincipalGovernanceConfig::default(),
+            memory: PrincipalMemoryConfig::default(),
+            routing: PrincipalRoutingConfig::default(),
+            allowed_extensions: AllowedExtensions::default(),
+            exposure: InstanceExposure::Private,
+            status: None,
+            permissions: vec![PermissionGrant {
+                subject: Subject::Public,
+                permission: Permission::Chat,
+                granted_at: chrono::Utc::now().to_rfc3339(),
+                granted_by: Subject::User("test-owner".to_string()),
+            }],
+            preferred_provider_id: None,
+            preferred_model_id: None,
+            transport_preference: Default::default(),
+        }
     }
 
     #[tokio::test]
@@ -445,5 +511,59 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let engine = engine_from_tmp(&tmp);
         assert!(engine.check_idle().await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_check_and_run_executes_principal_job() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "crony").await;
+
+        let scheduler = Arc::new(CronScheduler::new(tmp.path().join("cron.json")).unwrap());
+        let idle = Arc::new(IdleDetector::new());
+        let obs = Arc::new(Observability::new("daemon"));
+        let engine = CronEngine::new(
+            scheduler.clone(),
+            idle,
+            obs,
+            tmp.path().join("data"),
+            Some(manager.clone()),
+        );
+
+        let job = CronJob {
+            id: "job-1".to_string(),
+            name: "test-job".to_string(),
+            principal_name: "crony".to_string(),
+            schedule: crate::cron::ScheduleKind::Every { every_ms: 60_000 },
+            message: "Hello from cron".to_string(),
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - Duration::minutes(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        engine.check_and_run().await.unwrap();
+
+        let status = engine.status().await;
+        assert_eq!(status.jobs_executed, 1);
+
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
+        let success = runs.iter().find(|r| r.status == "success");
+        assert!(
+            success.is_some(),
+            "expected a successful run in history, got: {runs:?}"
+        );
+
+        // Activity should have been recorded for the Principal.
+        assert!(!engine.idle_detector.is_idle("crony", 1).await);
+
+        // Avoid dropping the principal early; it is not needed after this.
+        drop(principal);
     }
 }

@@ -31,10 +31,17 @@
 
 mod common;
 use common::agent::seed_mock_provider_in_catalog;
-use common::{configure_mock, create_mock_principal_with_tools, run_with_timeout, PekoCli};
+use common::{
+    configure_mock, create_mock_principal, create_mock_principal_with_tools, run_with_timeout,
+    PekoCli,
+};
 use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;
+
+/// Principal used for cron CLI tests. Each test gets a fresh tempdir, so
+/// the name can be reused safely.
+const TEST_PRINCIPAL: &str = "e2e-cron-principal";
 
 // ---------------------------------------------------------------------------
 // Daemon with a 1s cron poll interval
@@ -257,7 +264,9 @@ fn cron_add_cron_expression_persists() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-cron-");
 
@@ -267,6 +276,8 @@ fn cron_add_cron_expression_persists() {
         &[
             "cron",
             "add",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--schedule",
@@ -299,6 +310,11 @@ fn cron_add_cron_expression_persists() {
             .starts_with("cron_"),
         "job id should start with cron_: {job:?}"
     );
+    assert_eq!(
+        job.get("principal").and_then(|p| p.as_str()),
+        Some(TEST_PRINCIPAL),
+        "job should target the test principal: {job:?}"
+    );
 }
 
 #[test]
@@ -307,7 +323,9 @@ fn cron_add_at_persists_with_delete_after_run() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-at-");
 
@@ -319,6 +337,8 @@ fn cron_add_at_persists_with_delete_after_run() {
         &[
             "cron",
             "at",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--at",
@@ -358,7 +378,9 @@ fn cron_add_every_persists() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-every-");
 
@@ -368,6 +390,8 @@ fn cron_add_every_persists() {
         &[
             "cron",
             "every",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--interval-ms",
@@ -397,7 +421,9 @@ fn cron_add_idle_persists() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-idle-");
 
@@ -407,6 +433,8 @@ fn cron_add_idle_persists() {
         &[
             "cron",
             "add-idle",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--minutes",
@@ -436,7 +464,9 @@ fn cron_add_event_persists() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-event-");
 
@@ -446,6 +476,8 @@ fn cron_add_event_persists() {
         &[
             "cron",
             "add-event",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--event-type",
@@ -476,7 +508,9 @@ fn cron_list_json_returns_added_count() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-count-");
 
@@ -485,6 +519,8 @@ fn cron_list_json_returns_added_count() {
     for kind_args in [
         vec![
             "add",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             "e2e-cron-count-a",
             "--schedule",
@@ -494,6 +530,8 @@ fn cron_list_json_returns_added_count() {
         ],
         vec![
             "at",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             "e2e-cron-count-b",
             "--at",
@@ -503,6 +541,8 @@ fn cron_list_json_returns_added_count() {
         ],
         vec![
             "every",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             "e2e-cron-count-c",
             "--interval-ms",
@@ -549,7 +589,9 @@ fn cron_remove_decrements_count() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-rm-");
 
@@ -560,6 +602,8 @@ fn cron_remove_decrements_count() {
         &[
             "cron",
             "add",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--schedule",
@@ -610,7 +654,9 @@ fn cron_history_empty_for_new_job() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-hist-");
 
@@ -620,6 +666,8 @@ fn cron_history_empty_for_new_job() {
         &[
             "cron",
             "add",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--schedule",
@@ -661,7 +709,9 @@ fn cron_add_invalid_cron_expr_rejects() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-bad-");
 
@@ -670,6 +720,8 @@ fn cron_add_invalid_cron_expr_rejects() {
         &[
             "cron",
             "add",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             "e2e-cron-bad-cron",
             "--schedule",
@@ -697,7 +749,9 @@ fn cron_add_at_invalid_timestamp_rejects() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
 
     let (out, err, status) = run(
@@ -705,6 +759,8 @@ fn cron_add_at_invalid_timestamp_rejects() {
         &[
             "cron",
             "at",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             "e2e-cron-bad-time",
             "--at",
@@ -734,7 +790,9 @@ fn cron_run_triggers_due_job() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-fire-");
 
@@ -747,6 +805,8 @@ fn cron_run_triggers_due_job() {
         &[
             "cron",
             "at",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--at",
@@ -795,7 +855,9 @@ fn cron_announce_writes_file_on_run() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-announce-");
 
@@ -818,6 +880,8 @@ fn cron_announce_writes_file_on_run() {
         &[
             "cron",
             "at",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             name,
             "--at",
@@ -856,7 +920,9 @@ fn cron_add_idle_does_not_panic() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-idle-");
 
@@ -867,6 +933,8 @@ fn cron_add_idle_does_not_panic() {
         &[
             "cron",
             "add-idle",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             "e2e-cron-idle-smoke",
             "--minutes",
@@ -895,7 +963,9 @@ fn cron_add_event_does_not_panic() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, "e2e-cron-evt-");
 
@@ -906,6 +976,8 @@ fn cron_add_event_does_not_panic() {
         &[
             "cron",
             "add-event",
+            "--principal",
+            TEST_PRINCIPAL,
             "--name",
             "e2e-cron-evt-smoke",
             "--event-type",
@@ -938,7 +1010,9 @@ fn cron_remove_idempotent_on_missing_job() {
     if skip_if_no_mock().is_none() {
         return;
     }
+    let mock_url = std::env::var("MOCK_LLM_URL").unwrap();
     let cli = PekoCli::new();
+    create_mock_principal(&cli, TEST_PRINCIPAL, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
 
     // Removing a job that doesn't exist must NOT silently succeed; the
@@ -966,20 +1040,20 @@ fn cron_remove_idempotent_on_missing_job() {
 // Mirrors e2e_tests/cron/cron_agent_tool.ps1 — the script that was deferred
 // from commit 3506ea5 because the mock could only emit tool calls with
 // empty args. The §3 *Sequence* feature in mock_llm_server.py unblocks this:
-// a test can now script `MOCK_LLM_SCRIPT = {"needle": [tool_call, ..., text]}`
+// a test can now script `MOCK_LLM_SCRIPT = {"needle": [tool_call, ..., text]}``
 // where the tool_call arguments carry the structured `cron` args the
 // runtime's CronTool dispatcher needs.
 //
 // Flow (per test):
 //   1. Spawn the cron daemon (CronDaemonGuard).
-//   2. Write a mock-LLM-pointed agent with the cron tool enabled
-//      (write_cron_agent). The default `write_v3_mock_agent` has
-//      `[extensions] enabled = []`, which the agent treats as an
+//   2. Write a mock-LLM-pointed Principal with the cron tool enabled
+//      (create_cron_principal). The default `create_mock_principal` has
+//      `[capabilities] tools = []`, which the agent treats as an
 //      EXCLUSIVE whitelist — the daemon's `register_builtins` enables
 //      cron by default, but the agent's empty whitelist overrides that
 //      and disables it. The agent-tool tests need the cron tool ON.
 //   3. Configure the mock to script the agent's tool-call dialog.
-//   4. `peko send <agent> "..." --no-stream` triggers the agent loop.
+//   4. `peko send <principal> "..." --no-stream` triggers the root agent loop.
 //      Each LLM call returns the next element of the sequence; the runtime
 //      dispatches each tool_call to the cron tool, which talks to the
 //      daemon via IPC. The agent loop finalizes when the LLM emits text.
@@ -1009,7 +1083,7 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     // the original PS so the assertion reads the same.
     let needle = "cron-tool-flow-sched-1";
     let job_label = "agent-scheduled-test";
-    let agent_name = "cron_tool_agent_sched";
+    let principal_name = "cron_tool_principal_sched";
 
     // Far-future time so the job never fires during the test; the
     // runtime's CronCreate only validates RFC3339, not the date itself.
@@ -1020,7 +1094,7 @@ async fn cron_agent_tool_schedules_and_lists_job() {
         needle: [
             { "tool_call": { "name": "CronCreate", "arguments":
                 format!(
-                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}","agent_id":"{agent_name}"}}"#
+                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}"}}"#
                 )
             } },
             { "tool_call": { "name": "CronList", "arguments":
@@ -1033,7 +1107,7 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    create_cron_principal(&cli, agent_name, &mock_url);
+    create_cron_principal(&cli, principal_name, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, job_label);
 
@@ -1043,13 +1117,13 @@ async fn cron_agent_tool_schedules_and_lists_job() {
     // doesn't change between tool-result turns).
     let prompt = format!(
         "You have access to CronCreate, CronList, and CronDelete. Schedule a one-time job \
-         using CronCreate with label \"{job_label}\", prompt \"{task}\", agent_id \"{agent_name}\", at \"{at_time}\". \
+         using CronCreate with label \"{job_label}\" and prompt \"{task}\" at \"{at_time}\". \
          Then call CronList to verify. Respond with TOOL_SUCCESS if you see the job, \
          else TOOL_FAILED. ({needle})"
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", principal_name, &prompt, "--no-stream"],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);
@@ -1092,7 +1166,7 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
 
     let needle = "cron-tool-flow-cancel-2";
     let job_label = "to-cancel-test";
-    let agent_name = "cron_tool_agent_cancel";
+    let principal_name = "cron_tool_principal_cancel";
     let at_time = "2099-01-01T00:00:00Z";
     let task = "echo hello";
 
@@ -1100,7 +1174,7 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
         needle: [
             { "tool_call": { "name": "CronCreate", "arguments":
                 format!(
-                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}","agent_id":"{agent_name}"}}"#
+                    r#"{{"at":"{at_time}","label":"{job_label}","prompt":"{task}"}}"#
                 )
             } },
             { "tool_call": { "name": "CronList", "arguments":
@@ -1116,19 +1190,19 @@ async fn cron_agent_tool_schedules_and_cancels_job() {
     configure_mock(&mock_url, &script).await;
 
     let cli = PekoCli::new();
-    create_cron_principal(&cli, agent_name, &mock_url);
+    create_cron_principal(&cli, principal_name, &mock_url);
     let _daemon = CronDaemonGuard::spawn(&cli);
     remove_jobs_with_prefix(&cli, job_label);
 
     let prompt = format!(
-        "Schedule a one-time cron job using CronCreate with label \"{job_label}\", prompt \"{task}\", \
-         agent_id \"{agent_name}\", at \"{at_time}\". Then call CronList, then CronDelete by label \
+        "Schedule a one-time cron job using CronCreate with label \"{job_label}\" and prompt \"{task}\" \
+         at \"{at_time}\". Then call CronList, then CronDelete by label \
          \"{job_label}\". Then list again to confirm it's gone. Respond CANCEL_SUCCESS if the \
          job was removed, CANCEL_FAILED otherwise. ({needle})"
     );
     let (out, err, status) = run(
         &cli,
-        &["send", agent_name, &prompt, "--no-stream"],
+        &["send", principal_name, &prompt, "--no-stream"],
         Duration::from_secs(30),
     );
     assert_ok(&out, &err, &status);

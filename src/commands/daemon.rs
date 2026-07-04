@@ -105,7 +105,6 @@ pub async fn handle_daemon(
                 poll_interval: std::time::Duration::from_secs(interval),
                 config_dir: paths.config_dir.clone(),
                 data_dir: paths.data_dir.clone(),
-                enable_isolated_execution: true,
                 maintenance_interval: std::time::Duration::from_hours(1),
                 max_reconnect_attempts,
             };
