@@ -195,7 +195,7 @@ peko daemon restart                               # Restart the daemon
 peko daemon check                                 # Trigger immediate check
 ```
 
-> **Note:** Advanced commands (`config`, `cron`, `orchestration`, `registry`, `runtime`, `tunnel`, `vault`, and `auth apikey`) are hidden from `--help` because they expose operational internals. They remain functional for operators and scripts.
+> **Note:** Advanced commands (`config`, `cron`, `registry`, `runtime`, `tunnel`, `vault`, and `auth apikey`) are hidden from `--help` because they expose operational internals. They remain functional for operators and scripts.
 
 #### Provider Management
 ```bash

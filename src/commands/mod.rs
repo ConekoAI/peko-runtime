@@ -17,7 +17,6 @@ pub mod cron;
 pub mod daemon;
 pub mod ext;
 pub mod mcp;
-pub mod orchestration;
 pub mod principal;
 pub mod provider;
 pub mod registry;
@@ -135,10 +134,6 @@ pub enum Commands {
     /// Cron job management (advanced / hidden)
     #[command(subcommand, hide = true)]
     Cron(cron::CronCommands),
-
-    /// Orchestration layer management (legacy / hidden)
-    #[command(subcommand, hide = true)]
-    Orchestration(orchestration::OrchestrationCommands),
 
     /// LLM Provider management
     #[command(subcommand)]
