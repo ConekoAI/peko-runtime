@@ -1129,6 +1129,23 @@ impl IpcServer {
                 }
             },
 
+            RequestPacket::McpReload { request_id } => match state.reload_mcp_config().await {
+                Ok(servers_count) => {
+                    let response = ResponsePacket::McpReloaded {
+                        request_id,
+                        servers_count,
+                    };
+                    Self::send_sink(sink, response).await?;
+                }
+                Err(e) => {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("mcp reload failed: {e}"),
+                    };
+                    Self::send_sink(sink, response).await?;
+                }
+            },
+
             RequestPacket::SystemStatus { request_id } => {
                 let response = ResponsePacket::SystemStatus {
                     request_id,

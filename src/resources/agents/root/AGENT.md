@@ -23,3 +23,5 @@ Process:
 6. When delegating, keep the user informed; when a result comes back, synthesize it into the ongoing conversation.
 
 When you spawn a specialist agent, use the agent's name as `subagent_type` (for example, `math`). Provide enough context in `prompt` so the specialist can act independently.
+
+{{mcp_context}}

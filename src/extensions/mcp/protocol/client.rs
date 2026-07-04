@@ -6,14 +6,18 @@
 use crate::extensions::mcp::protocol::transport::{McpTransport, TransportError};
 use crate::extensions::mcp::protocol::types::{
     CallToolRequest, CallToolResult, ClientCapabilities, GetPromptRequest, GetPromptResult,
-    Implementation, InitializeRequest, InitializeResult, JsonRpcMessage, JsonRpcNotification,
-    JsonRpcRequest, ListPromptsRequest, ListPromptsResult, ListResourcesRequest,
-    ListResourcesResult, ListToolsRequest, ListToolsResult, Prompt, ReadResourceRequest,
-    ReadResourceResult, RequestId, Resource, ResourceContents, ServerInfo, Tool,
-    MCP_PROTOCOL_VERSION,
+    Implementation, InitializeRequest, InitializeResult, JsonRpcError, JsonRpcErrorResponse,
+    JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, JsonRpcSuccess,
+    ListPromptsRequest, ListPromptsResult, ListResourcesRequest, ListResourcesResult,
+    ListToolsRequest, ListToolsResult, Prompt, ReadResourceRequest, ReadResourceResult, RequestId,
+    Resource, ResourceContents, ServerInfo, Tool, MCP_PROTOCOL_VERSION,
 };
+use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, trace, warn};
 
 /// Errors that can occur during MCP client operations
@@ -50,13 +54,28 @@ pub enum ClientError {
 /// Result type for client operations
 pub type Result<T> = std::result::Result<T, ClientError>;
 
+/// Handler for server-initiated JSON-RPC requests.
+///
+/// MCP servers can send requests to the client (e.g. `sampling/createMessage`).
+/// Implementations are registered on `McpClient` via `with_handler` and are
+/// invoked from the background receive loop.
+#[async_trait]
+pub trait ServerRequestHandler: Send + Sync {
+    /// Handle a server-initiated request.
+    async fn handle_request(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> std::result::Result<serde_json::Value, JsonRpcError>;
+}
+
 /// MCP client for communicating with MCP servers
 ///
 /// Manages the connection lifecycle and provides high-level methods
 /// for MCP protocol operations.
 pub struct McpClient {
-    /// The underlying transport
-    transport: Box<dyn McpTransport>,
+    /// The underlying transport (shared with the background receive loop)
+    transport: Arc<dyn McpTransport>,
     /// Server information after initialization
     server_info: Option<ServerInfo>,
     /// Request counter for generating unique IDs
@@ -65,12 +84,12 @@ pub struct McpClient {
     client_capabilities: ClientCapabilities,
     /// Client implementation info
     client_info: Implementation,
-    /// Receive task handle (used in Phase 2 for background message handling)
-    #[allow(dead_code)]
+    /// Pending requests waiting for a JSON-RPC response
+    pending: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
+    /// Receive task handle
     receive_task: Option<tokio::task::JoinHandle<()>>,
-    /// Shutdown signal (used in Phase 2)
-    #[allow(dead_code)]
-    shutdown_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    /// Shutdown signal for the receive loop
+    shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
 impl std::fmt::Debug for McpClient {
@@ -92,21 +111,38 @@ impl McpClient {
     /// * `transport` - The transport to use for communication
     ///
     /// # Returns
-    /// A new un-initialized MCP client
+    /// A new un-initialized MCP client with a background receive loop running.
     #[must_use]
     pub fn new(transport: Box<dyn McpTransport>) -> Self {
-        Self {
+        Self::with_handler_and_capabilities(
             transport,
-            server_info: None,
-            request_counter: AtomicU64::new(1),
-            client_capabilities: ClientCapabilities::default(),
-            client_info: Implementation {
+            None,
+            ClientCapabilities::for_peko(),
+            Implementation {
                 name: "peko".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            receive_task: None,
-            shutdown_tx: None,
-        }
+        )
+    }
+
+    /// Create a new MCP client with a handler for server-initiated requests.
+    ///
+    /// This is used when the host wants to support server-to-client methods such
+    /// as `sampling/createMessage`.
+    #[must_use]
+    pub fn with_handler(
+        transport: Box<dyn McpTransport>,
+        handler: Arc<dyn ServerRequestHandler>,
+    ) -> Self {
+        Self::with_handler_and_capabilities(
+            transport,
+            Some(handler),
+            ClientCapabilities::for_peko(),
+            Implementation {
+                name: "peko".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        )
     }
 
     /// Create a new MCP client with custom capabilities
@@ -121,14 +157,135 @@ impl McpClient {
         capabilities: ClientCapabilities,
         client_info: Implementation,
     ) -> Self {
+        Self::with_handler_and_capabilities(transport, None, capabilities, client_info)
+    }
+
+    /// Internal constructor that wires up the shared transport and background loop.
+    fn with_handler_and_capabilities(
+        transport: Box<dyn McpTransport>,
+        handler: Option<Arc<dyn ServerRequestHandler>>,
+        capabilities: ClientCapabilities,
+        client_info: Implementation,
+    ) -> Self {
+        let transport = Arc::from(transport);
+        let pending: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<JsonRpcResponse>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
+
+        let receive_task =
+            Self::spawn_receive_loop(Arc::clone(&transport), Arc::clone(&pending), handler, shutdown_rx);
+
         Self {
             transport,
             server_info: None,
             request_counter: AtomicU64::new(1),
             client_capabilities: capabilities,
             client_info,
-            receive_task: None,
-            shutdown_tx: None,
+            pending,
+            receive_task: Some(receive_task),
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+
+    /// Spawn the background receive/dispatch loop.
+    fn spawn_receive_loop(
+        transport: Arc<dyn McpTransport>,
+        pending: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
+        handler: Option<Arc<dyn ServerRequestHandler>>,
+        mut shutdown_rx: mpsc::Receiver<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let recv_timeout = Duration::from_millis(500);
+            loop {
+                let msg = tokio::select! {
+                    _ = shutdown_rx.recv() => {
+                        trace!("MCP receive loop shutting down");
+                        break;
+                    }
+                    msg = transport.recv(recv_timeout) => msg,
+                };
+
+                match msg {
+                    Ok(Some(JsonRpcMessage::Response(response))) => {
+                        let id = response.id().clone();
+                        let sender = pending.lock().await.remove(&id);
+                        if let Some(tx) = sender {
+                            trace!("Routing response for request {}", id);
+                            let _ = tx.send(response);
+                        } else {
+                            warn!("Received response for unknown request id: {}", id);
+                        }
+                    }
+                    Ok(Some(JsonRpcMessage::Request(request))) => {
+                        trace!(
+                            "Received server-initiated request {}: {}",
+                            request.id,
+                            request.method
+                        );
+                        if let Some(handler) = handler.clone() {
+                            let transport = Arc::clone(&transport);
+                            tokio::spawn(async move {
+                                let id = request.id.clone();
+                                let result = handler
+                                    .handle_request(&request.method, request.params.clone())
+                                    .await;
+                                let response = Self::build_response(id, result);
+                                if let Err(e) = transport.send(response).await {
+                                    warn!("Failed to send response to server request: {}", e);
+                                }
+                            });
+                        } else {
+                            let response = Self::build_response(
+                                request.id.clone(),
+                                Err(JsonRpcError {
+                                    code: JsonRpcError::METHOD_NOT_FOUND,
+                                    message: format!("Method '{}' not found", request.method),
+                                    data: None,
+                                }),
+                            );
+                            if let Err(e) = transport.send(response).await {
+                                warn!("Failed to send method-not-found response: {}", e);
+                            }
+                        }
+                    }
+                    Ok(Some(JsonRpcMessage::Notification(notification))) => {
+                        trace!("Received notification: {}", notification.method);
+                    }
+                    Ok(None) => {
+                        // Receive timeout — loop and check shutdown signal
+                    }
+                    Err(e) => {
+                        warn!("MCP transport receive error: {}", e);
+                        // If the transport has become permanently unhealthy, exit the loop
+                        // so we don't burn CPU waiting for a dead connection.
+                        if !transport.is_healthy() {
+                            warn!("MCP transport unhealthy; exiting receive loop");
+                            break;
+                        }
+                        // Otherwise continue; the transport may recover or the client
+                        // will be shut down explicitly via `shutdown_tx`.
+                    }
+                }
+            }
+        })
+    }
+
+    /// Build a JSON-RPC response message from a result.
+    fn build_response(
+        id: RequestId,
+        result: std::result::Result<serde_json::Value, JsonRpcError>,
+    ) -> JsonRpcMessage {
+        match result {
+            Ok(value) => JsonRpcMessage::Response(JsonRpcResponse::Success(JsonRpcSuccess {
+                jsonrpc: crate::extensions::mcp::protocol::types::JSONRPC_VERSION.to_string(),
+                id,
+                result: value,
+            })),
+            Err(error) => JsonRpcMessage::Response(JsonRpcResponse::Error(JsonRpcErrorResponse {
+                jsonrpc: crate::extensions::mcp::protocol::types::JSONRPC_VERSION.to_string(),
+                id,
+                error,
+            })),
         }
     }
 
@@ -390,58 +547,38 @@ impl McpClient {
         params: Option<serde_json::Value>,
     ) -> Result<T> {
         let id = self.next_request_id();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Register pending request before sending so the receive loop can route the response.
+        self.pending.lock().await.insert(id.clone(), tx);
+
         let request = JsonRpcMessage::Request(JsonRpcRequest::new(id.clone(), method, params));
-
-        // Send request
         trace!("Sending request {}: {}", id, method);
-        self.transport.send(request).await?;
 
-        // Wait for response with timeout
+        if let Err(e) = self.transport.send(request).await {
+            self.pending.lock().await.remove(&id);
+            return Err(ClientError::Transport(e));
+        }
+
         let timeout = Duration::from_secs(30);
-
-        loop {
-            match tokio::time::timeout(timeout, self.transport.recv(timeout)).await {
-                Ok(Ok(Some(JsonRpcMessage::Response(response)))) => {
-                    // Check if this is the response we're waiting for
-                    if response.id() == &id {
-                        trace!("Received response for request {}", id);
-                        return match response.into_result() {
-                            Ok(result) => serde_json::from_value(result).map_err(|e| {
-                                ClientError::InvalidResponse(format!(
-                                    "Failed to deserialize response for {method}: {e}"
-                                ))
-                            }),
-                            Err(error) => Err(ClientError::JsonRpc(error.code, error.message)),
-                        };
-                    }
-                    // Response for a different request (shouldn't happen in Phase 1)
-                    warn!(
-                        "Received response for unexpected request: {:?}",
-                        response.id()
-                    );
-                    continue;
-                }
-                Ok(Ok(Some(JsonRpcMessage::Notification(notification)))) => {
-                    // Handle server-initiated notifications (Phase 2)
-                    trace!("Received notification: {}", notification.method);
-                    continue;
-                }
-                Ok(Ok(Some(JsonRpcMessage::Request(request)))) => {
-                    // Server-initiated request (Phase 2)
-                    trace!("Received server request: {}", request.method);
-                    continue;
-                }
-                Ok(Ok(None)) => {
-                    // Timeout waiting for message
-                    return Err(ClientError::Timeout);
-                }
-                Ok(Err(e)) => {
-                    return Err(ClientError::Transport(e));
-                }
-                Err(_) => {
-                    // Overall timeout
-                    return Err(ClientError::Timeout);
-                }
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(response)) => match response.into_result() {
+                Ok(result) => serde_json::from_value(result).map_err(|e| {
+                    ClientError::InvalidResponse(format!(
+                        "Failed to deserialize response for {method}: {e}"
+                    ))
+                }),
+                Err(error) => Err(ClientError::JsonRpc(error.code, error.message)),
+            },
+            Ok(Err(_)) => {
+                self.pending.lock().await.remove(&id);
+                Err(ClientError::Cancelled(format!(
+                    "Response channel closed for request {id}"
+                )))
+            }
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                Err(ClientError::Timeout)
             }
         }
     }
@@ -475,11 +612,12 @@ impl McpClient {
         Ok(())
     }
 
-    /// Start the receive loop
+    /// Start the receive loop.
+    ///
+    /// The loop is now started automatically when the client is created, so this
+    /// method is kept for backwards compatibility and is a no-op.
     fn start_receive_loop(&mut self) {
-        // For Phase 1, we use synchronous receive in request() for simplicity
-        // Phase 2 will add a proper background receive loop for handling
-        // server-initiated messages (notifications, requests)
+        // Background receive loop is spawned in `with_handler_and_capabilities`.
     }
 
     /// Shutdown the client gracefully

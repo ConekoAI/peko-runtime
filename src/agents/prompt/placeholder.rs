@@ -31,6 +31,8 @@ pub enum Placeholder {
     Channel,
     /// Thinking level inline - {{`thinking_level`}}
     ThinkingLevel,
+    /// MCP server context section - {{mcp_context}}
+    McpContext,
 }
 
 impl Placeholder {
@@ -49,6 +51,7 @@ impl Placeholder {
             Self::Workspace => "{{workspace}}",
             Self::Channel => "{{channel}}",
             Self::ThinkingLevel => "{{thinking_level}}",
+            Self::McpContext => "{{mcp_context}}",
         }
     }
 }

@@ -16,12 +16,14 @@
 //! - **SSE transports** are still handled directly here because they are external
 //!   connections, not supervised child processes.
 
+use crate::common::vault::Vault;
 use crate::daemon::background_runtime::{BackgroundRuntimeManager, RuntimeState};
 use crate::extensions::mcp::protocol::{
-    client::{ClientError, McpClient},
+    client::{ClientError, McpClient, ServerRequestHandler},
     config::{McpConfig, McpServerConfig, TransportType},
+    sampling::SamplingRequestHandler,
     transport::SseTransport,
-    types::Tool,
+    types::{GetPromptResult, Prompt, Resource, ResourceContents, Tool},
 };
 use crate::extensions::mcp::runtime::adapter::{McpClientRegistry, McpRuntimeAdapter};
 use std::collections::HashMap;
@@ -81,8 +83,14 @@ pub struct ServerState {
     pub last_error: Option<String>,
     /// Server info from initialization
     pub server_info: Option<String>,
+    /// Optional instructions from the server's initialize response
+    pub instructions: Option<String>,
     /// Available tools
     pub tools: Vec<Tool>,
+    /// Available resources
+    pub resources: Vec<Resource>,
+    /// Available prompts
+    pub prompts: Vec<Prompt>,
 }
 
 /// Internal server handle
@@ -134,6 +142,10 @@ pub struct McpManager {
     shared_client_registry: Option<Arc<McpClientRegistry>>,
     /// Owned client registry for standalone mode.
     owned_client_registry: Arc<McpClientRegistry>,
+    /// Optional LLM resolver used to handle server-to-client sampling requests.
+    llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+    /// Optional encrypted vault used for OAuth token storage.
+    vault: Option<Arc<Vault>>,
 }
 
 impl McpManager {
@@ -151,6 +163,8 @@ impl McpManager {
             owned_runtime_manager: Arc::new(BackgroundRuntimeManager::new()),
             shared_client_registry: None,
             owned_client_registry: Arc::new(McpClientRegistry::new()),
+            llm_resolver: None,
+            vault: None,
         }
     }
 
@@ -164,6 +178,8 @@ impl McpManager {
             owned_runtime_manager: Arc::new(BackgroundRuntimeManager::new()),
             shared_client_registry: None,
             owned_client_registry: Arc::new(McpClientRegistry::new()),
+            llm_resolver: None,
+            vault: None,
         }
     }
 
@@ -177,11 +193,15 @@ impl McpManager {
     /// * `config` — Initial MCP server configurations
     /// * `runtime_manager` — Shared background runtime manager from `AppState`
     /// * `client_registry` — Shared client registry from `AppState`
+    /// * `llm_resolver` — Optional resolver for `sampling/createMessage` requests
+    /// * `vault` — Optional encrypted vault for OAuth token storage
     #[must_use]
     pub fn with_shared_resources(
         config: McpConfig,
         runtime_manager: Arc<BackgroundRuntimeManager>,
         client_registry: Arc<McpClientRegistry>,
+        llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+        vault: Option<Arc<Vault>>,
     ) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -191,6 +211,8 @@ impl McpManager {
             owned_runtime_manager: Arc::new(BackgroundRuntimeManager::new()),
             shared_client_registry: Some(client_registry),
             owned_client_registry: Arc::new(McpClientRegistry::new()),
+            llm_resolver,
+            vault,
         }
     }
 
@@ -210,6 +232,15 @@ impl McpManager {
         self.shared_client_registry
             .clone()
             .unwrap_or_else(|| self.owned_client_registry.clone())
+    }
+
+    /// Build a server-request handler for sampling when a resolver is configured.
+    fn sampling_handler(&self,
+    ) -> Option<Arc<dyn ServerRequestHandler>> {
+        self.llm_resolver.as_ref().map(|resolver| {
+            Arc::new(SamplingRequestHandler::new(Arc::clone(resolver)))
+                as Arc<dyn ServerRequestHandler>
+        })
     }
 
     /// Initialize the manager and start auto-start servers
@@ -233,9 +264,12 @@ impl McpManager {
                         restart_count: 0,
                         last_error: None,
                         server_info: None,
+                        instructions: None,
                         tools: Vec::new(),
+                        resources: Vec::new(),
+                        prompts: Vec::new(),
                     },
-                    managed: server_config.transport == TransportType::Stdio,
+                    managed: self.shared_runtime_manager.is_some(),
                 };
 
                 self.servers
@@ -347,43 +381,80 @@ impl McpManager {
                 }
             }
             TransportType::Sse => {
-                // SSE servers are still handled directly (external connection)
-                let mut client = self.start_sse_client(&handle.config).await?;
-
-                let init_timeout = Duration::from_secs(handle.config.init_timeout_secs);
-                let server_info =
-                    match tokio::time::timeout(init_timeout, client.initialize()).await {
-                        Ok(Ok(info)) => info,
-                        Ok(Err(e)) => return Err(ManagerError::Client(e)),
-                        Err(_) => return Err(ManagerError::InitTimeout),
-                    };
-
-                let server_info_str = format!(
-                    "{} v{}",
-                    server_info.server_info.name, server_info.server_info.version
-                );
-
-                let tools = if client.supports_capability("tools") {
-                    match client.list_tools().await {
-                        Ok(tools) => tools,
-                        Err(_e) => Vec::new(),
+                if is_managed {
+                    // SSE server is supervised by the shared BackgroundRuntimeManager
+                    let config = handle.config.clone();
+                    drop(servers); // release lock before async call
+                    self.start_managed_external_server(name, &config).await?;
+                    let mut servers = self.servers.write().await;
+                    if let Some(handle) = servers.get_mut(name) {
+                        handle.state.running = true;
+                        handle.state.healthy = true;
+                        handle.state.last_error = None;
+                        handle.managed = true;
                     }
                 } else {
-                    Vec::new()
-                };
+                    // Standalone mode: handle SSE connection directly
+                    let mut client = self.start_sse_client(&handle.config).await?;
 
-                let client_arc = Arc::new(RwLock::new(client));
-                handle.client = Some(client_arc.clone());
-                handle.state.running = true;
-                handle.state.healthy = true;
-                handle.state.server_info = Some(server_info_str);
-                handle.state.tools = tools;
-                handle.state.last_error = None;
-                handle.managed = false;
+                    let init_timeout = Duration::from_secs(handle.config.init_timeout_secs);
+                    let server_info =
+                        match tokio::time::timeout(init_timeout, client.initialize()).await {
+                            Ok(Ok(info)) => info,
+                            Ok(Err(e)) => return Err(ManagerError::Client(e)),
+                            Err(_) => return Err(ManagerError::InitTimeout),
+                        };
 
-                // Start health check task for SSE
-                let health_task = self.start_health_check(name, client_arc);
-                handle.health_task = Some(health_task);
+                    // Clone owned data from the initialize response before we move
+                    // `client` into the Arc/RwLock below.
+                    let server_name = server_info.server_info.name.clone();
+                    let server_version = server_info.server_info.version.clone();
+                    let instructions = server_info.instructions.clone();
+                    let server_info_str = format!("{} v{}", server_name, server_version);
+
+                    let tools = if client.supports_capability("tools") {
+                        match client.list_tools().await {
+                            Ok(tools) => tools,
+                            Err(_e) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    let resources = if client.supports_capability("resources") {
+                        match client.list_resources().await {
+                            Ok(resources) => resources,
+                            Err(_e) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    let prompts = if client.supports_capability("prompts") {
+                        match client.list_prompts().await {
+                            Ok(prompts) => prompts,
+                            Err(_e) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    let client_arc = Arc::new(RwLock::new(client));
+                    handle.client = Some(client_arc.clone());
+                    handle.state.running = true;
+                    handle.state.healthy = true;
+                    handle.state.server_info = Some(server_info_str);
+                    handle.state.instructions = instructions;
+                    handle.state.tools = tools;
+                    handle.state.resources = resources;
+                    handle.state.prompts = prompts;
+                    handle.state.last_error = None;
+                    handle.managed = false;
+
+                    // Start health check task for SSE
+                    let health_task = self.start_health_check(name, client_arc);
+                    handle.health_task = Some(health_task);
+                }
             }
         }
 
@@ -518,14 +589,59 @@ impl McpManager {
                 }
             }
 
-            // Sync tools and server_info from registry if not already populated
-            if handle.state.tools.is_empty() || handle.state.server_info.is_none() {
+            // Sync tools, server_info and instructions from registry if not already populated
+            if handle.state.tools.is_empty()
+                || handle.state.resources.is_empty()
+                || handle.state.prompts.is_empty()
+                || handle.state.server_info.is_none()
+                || handle.state.instructions.is_none()
+            {
                 if let Some(info) = self.client_registry().get(name).await {
                     if handle.state.tools.is_empty() {
                         handle.state.tools = info.tools;
                     }
+                    if handle.state.resources.is_empty() {
+                        handle.state.resources = info.resources;
+                    }
+                    if handle.state.prompts.is_empty() {
+                        handle.state.prompts = info.prompts;
+                    }
                     if handle.state.server_info.is_none() {
                         handle.state.server_info = info.server_info;
+                    }
+                    if handle.state.instructions.is_none() {
+                        handle.state.instructions = info.instructions;
+                    }
+                }
+            }
+        }
+
+        // Fallback to the on-disk capability cache if any metadata is still missing
+        // (e.g. the server is offline at agent-init time).
+        let needs_cache = handle.state.tools.is_empty()
+            || handle.state.resources.is_empty()
+            || handle.state.prompts.is_empty()
+            || handle.state.server_info.is_none()
+            || handle.state.instructions.is_none();
+        if needs_cache {
+            if let Some(ref cwd) = handle.config.cwd {
+                if let Ok(Some(cache)) =
+                    crate::extensions::mcp::runtime::McpCapabilityCache::read(cwd, name).await
+                {
+                    if handle.state.tools.is_empty() {
+                        handle.state.tools = cache.tools;
+                    }
+                    if handle.state.resources.is_empty() {
+                        handle.state.resources = cache.resources;
+                    }
+                    if handle.state.prompts.is_empty() {
+                        handle.state.prompts = cache.prompts;
+                    }
+                    if handle.state.server_info.is_none() {
+                        handle.state.server_info = cache.server_info;
+                    }
+                    if handle.state.instructions.is_none() {
+                        handle.state.instructions = cache.instructions;
                     }
                 }
             }
@@ -534,10 +650,22 @@ impl McpManager {
         Ok(handle.state.clone())
     }
 
-    /// List all servers and their states
-    pub async fn list_servers(&self) -> Vec<ServerState> {
-        let servers = self.servers.read().await;
-        servers.values().map(|h| h.state.clone()).collect()
+    /// List context information for all configured servers, suitable for
+    /// surfacing in the system prompt.  Includes running status, server info,
+    /// instructions, and discovered tool names.
+    pub async fn list_server_prompt_context(&self) -> Vec<ServerState> {
+        let names: Vec<String> = {
+            let servers = self.servers.read().await;
+            servers.keys().cloned().collect()
+        };
+
+        let mut contexts = Vec::new();
+        for name in names {
+            if let Ok(state) = self.get_server_state(&name).await {
+                contexts.push(state);
+            }
+        }
+        contexts
     }
 
     /// List all tools from all running servers
@@ -559,6 +687,79 @@ impl McpManager {
         }
 
         all_tools
+    }
+
+    /// List all resources from all running servers
+    pub async fn list_all_resources(&self) -> Vec<(String, Resource)> {
+        let mut all_resources = Vec::new();
+
+        // Resources from managed servers (via registry)
+        let managed_resources = self.client_registry().list_all_resources().await;
+        all_resources.extend(managed_resources);
+
+        // Resources from directly-managed servers (SSE)
+        let servers = self.servers.read().await;
+        for (name, handle) in servers.iter() {
+            if !handle.managed && handle.state.running && handle.state.healthy {
+                for resource in &handle.state.resources {
+                    all_resources.push((name.clone(), resource.clone()));
+                }
+            }
+        }
+
+        all_resources
+    }
+
+    /// List all prompts from all running servers
+    pub async fn list_all_prompts(&self) -> Vec<(String, Prompt)> {
+        let mut all_prompts = Vec::new();
+
+        // Prompts from managed servers (via registry)
+        let managed_prompts = self.client_registry().list_all_prompts().await;
+        all_prompts.extend(managed_prompts);
+
+        // Prompts from directly-managed servers (SSE)
+        let servers = self.servers.read().await;
+        for (name, handle) in servers.iter() {
+            if !handle.managed && handle.state.running && handle.state.healthy {
+                for prompt in &handle.state.prompts {
+                    all_prompts.push((name.clone(), prompt.clone()));
+                }
+            }
+        }
+
+        all_prompts
+    }
+
+    /// Read a specific resource from a server
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<Vec<ResourceContents>> {
+        let client = self.get_client(server_name).await?;
+        let client = client.read().await;
+
+        match client.read_resource(uri).await {
+            Ok(contents) => Ok(contents),
+            Err(e) => Err(ManagerError::Client(e)),
+        }
+    }
+
+    /// Get a specific prompt from a server
+    pub async fn get_prompt(
+        &self,
+        server_name: &str,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<GetPromptResult> {
+        let client = self.get_client(server_name).await?;
+        let client = client.read().await;
+
+        match client.get_prompt(name, arguments).await {
+            Ok(result) => Ok(result),
+            Err(e) => Err(ManagerError::Client(e)),
+        }
     }
 
     /// Get all tools as Peko Tool trait objects
@@ -687,6 +888,8 @@ impl McpManager {
         let adapter = Arc::new(McpRuntimeAdapter::new(
             config.clone(),
             self.client_registry(),
+            self.sampling_handler(),
+            self.vault.clone(),
         ));
 
         let restart_policy = RestartPolicy {
@@ -706,6 +909,48 @@ impl McpManager {
         Ok(())
     }
 
+    /// Start a managed SSE server via BackgroundRuntimeManager.
+    async fn start_managed_external_server(
+        &self,
+        name: &str,
+        config: &McpServerConfig,
+    ) -> Result<()> {
+        use crate::common::process::RestartPolicy;
+        use crate::common::process::RuntimeSpawnConfig;
+
+        let endpoint = config
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| ManagerError::Config("Missing endpoint".to_string()))?;
+
+        let spawn_config = RuntimeSpawnConfig::External {
+            endpoint: endpoint.clone(),
+            connect_timeout: Duration::from_secs(config.init_timeout_secs),
+        };
+
+        let adapter = Arc::new(McpRuntimeAdapter::new(
+            config.clone(),
+            self.client_registry(),
+            self.sampling_handler(),
+            self.vault.clone(),
+        ));
+
+        let restart_policy = RestartPolicy {
+            max_restarts: if config.max_restarts == 0 {
+                u32::MAX
+            } else {
+                config.max_restarts
+            },
+            ..Default::default()
+        };
+
+        self.runtime_manager()
+            .start(name.to_string(), spawn_config, adapter, restart_policy)
+            .await
+            .map_err(|e| ManagerError::RuntimeManager(e.to_string()))?;
+
+        Ok(())
+    }
     /// Start an SSE transport client
     async fn start_sse_client(&self, config: &McpServerConfig) -> Result<McpClient> {
         let endpoint = config
@@ -713,11 +958,19 @@ impl McpManager {
             .as_ref()
             .ok_or_else(|| ManagerError::Config("Missing endpoint".to_string()))?;
 
-        let transport = SseTransport::connect(endpoint)
-            .await
-            .map_err(|e| ManagerError::Transport(e.to_string()))?;
+        let transport = SseTransport::connect_with_auth(
+            endpoint,
+            config.auth.clone(),
+            self.vault.clone(),
+            config.name.clone(),
+        )
+        .await
+        .map_err(|e| ManagerError::Transport(e.to_string()))?;
 
-        Ok(McpClient::new(Box::new(transport)))
+        Ok(match self.sampling_handler() {
+            Some(handler) => McpClient::with_handler(Box::new(transport), handler),
+            None => McpClient::new(Box::new(transport)),
+        })
     }
 
     /// Get server configuration
@@ -748,14 +1001,133 @@ impl McpManager {
                 restart_count: 0,
                 last_error: None,
                 server_info: None,
+                instructions: None,
                 tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
             },
-            managed: config.transport == TransportType::Stdio,
+            managed: self.shared_runtime_manager.is_some(),
         };
 
         servers.insert(config.name.clone(), handle);
         info!(server_name = %config.name, "Added MCP server configuration");
         Ok(true)
+    }
+
+    /// Replace an existing server configuration, stopping it first if running.
+    pub async fn replace_server_config(&self, config: McpServerConfig) -> Result<bool> {
+        let existed = {
+            let servers = self.servers.read().await;
+            servers.contains_key(&config.name)
+        };
+
+        if existed {
+            let was_running = {
+                let servers = self.servers.read().await;
+                servers
+                    .get(&config.name)
+                    .map(|h| h.state.running)
+                    .unwrap_or(false)
+            };
+            if was_running {
+                self.stop_server(&config.name).await?;
+            }
+            let mut servers = self.servers.write().await;
+            servers.remove(&config.name);
+        }
+
+        let mut servers = self.servers.write().await;
+        let handle = ServerHandle {
+            config: config.clone(),
+            client: None,
+            health_task: None,
+            state: ServerState {
+                name: config.name.clone(),
+                running: false,
+                healthy: false,
+                restart_count: 0,
+                last_error: None,
+                server_info: None,
+                instructions: None,
+                tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            },
+            managed: self.shared_runtime_manager.is_some(),
+        };
+
+        servers.insert(config.name.clone(), handle);
+        info!(server_name = %config.name, replaced = existed, "Updated MCP server configuration");
+        Ok(existed)
+    }
+
+    /// Remove a server configuration, stopping it first if running.
+    pub async fn remove_server_config(&self, name: &str) -> Result<bool> {
+        let existed = {
+            let servers = self.servers.read().await;
+            servers.contains_key(name)
+        };
+
+        if existed {
+            let was_running = {
+                let servers = self.servers.read().await;
+                servers.get(name).map(|h| h.state.running).unwrap_or(false)
+            };
+            if was_running {
+                self.stop_server(name).await?;
+            }
+            let mut servers = self.servers.write().await;
+            servers.remove(name);
+        }
+
+        if existed {
+            info!(server_name = %name, "Removed MCP server configuration");
+        }
+        Ok(existed)
+    }
+
+    /// Reload MCP server configuration from a TOML file.
+    ///
+    /// Adds new servers, updates existing ones, and removes servers that are no
+    /// longer present in the file.
+    pub async fn reload_config(&self, path: &std::path::Path) -> Result<usize> {
+        let config = if path.exists() {
+            McpConfig::from_file(path)
+                .await
+                .map_err(|e| ManagerError::Config(format!("failed to read {path:?}: {e}")))?
+        } else {
+            McpConfig::default()
+        };
+
+        let new_names: std::collections::HashSet<String> =
+            config.servers.iter().map(|s| s.name.clone()).collect();
+
+        // Remove servers no longer in the file.
+        let old_names: Vec<String> = {
+            let servers = self.servers.read().await;
+            servers.keys().cloned().collect()
+        };
+        for name in old_names {
+            if !new_names.contains(&name) {
+                self.remove_server_config(&name).await?;
+            }
+        }
+
+        // Add or update servers from the file.
+        for server_config in config.servers {
+            let exists = {
+                let servers = self.servers.read().await;
+                servers.contains_key(&server_config.name)
+            };
+            if exists {
+                self.replace_server_config(server_config).await?;
+            } else {
+                self.add_server_config(server_config).await?;
+            }
+        }
+
+        let count = self.servers.read().await.len();
+        Ok(count)
     }
 
     /// Start health check task for a server (used for SSE/direct clients)
@@ -815,7 +1187,7 @@ mod tests {
         let config = McpConfig::default();
         let manager = McpManager::new(config);
 
-        let servers = manager.list_servers().await;
+        let servers = manager.list_server_prompt_context().await;
         assert!(servers.is_empty());
     }
 
@@ -842,5 +1214,20 @@ mod tests {
             manager.get_client("test").await.unwrap_err(),
             ManagerError::ServerNotRunning(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_list_server_prompt_context_includes_offline_server() {
+        let mut config = McpConfig::default();
+        config.add_server(McpServerConfig::stdio("offline-server", "echo", vec![]));
+
+        let manager = McpManager::new(config);
+        manager.init().await.unwrap();
+
+        let contexts = manager.list_server_prompt_context().await;
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].name, "offline-server");
+        assert!(!contexts[0].running);
+        assert!(contexts[0].instructions.is_none());
     }
 }

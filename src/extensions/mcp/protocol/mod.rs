@@ -7,11 +7,14 @@ pub mod client;
 pub mod config;
 pub mod discovery;
 pub mod manager;
+pub mod oauth;
+pub mod sampling;
 pub mod transport;
 pub mod types;
 
 // Re-export common types for convenience
 pub use client::{ClientError, McpClient};
+pub use sampling::SamplingRequestHandler;
 pub use config::{ConfigFormat, McpConfig, McpServerConfig, TransportType};
 pub use discovery::{
     discover_servers, ensure_default_config, is_server_installed, mcp_config_path, mcp_install_dir,

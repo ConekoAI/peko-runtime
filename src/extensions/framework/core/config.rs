@@ -44,6 +44,11 @@ pub struct ExtensionServices {
     /// Consumers downcast to the concrete type when building tools.
     cross_runtime_a2a_ctx:
         std::sync::RwLock<Option<Arc<dyn std::any::Any + Send + Sync + 'static>>>,
+
+    /// Runtime LLM resolver. Set by AppState once the resolver is built
+    /// so that extension code (e.g. MCP sampling) can request host-model
+    /// completions without holding provider-specific state.
+    llm_resolver: std::sync::RwLock<Option<Arc<crate::providers::LlmResolver>>>,
 }
 
 impl std::fmt::Debug for ExtensionServices {
@@ -63,6 +68,7 @@ impl std::fmt::Debug for ExtensionServices {
                 "cross_runtime_a2a_ctx",
                 &"<RwLock<Option<Arc<dyn Any + Send + Sync>>>>",
             )
+            .field("llm_resolver", &"<RwLock<Option<Arc<LlmResolver>>>>")
             .finish_non_exhaustive()
     }
 }
@@ -105,6 +111,7 @@ impl ExtensionServices {
             // PrincipalSendTool is built without a ctx and falls back to
             // the local-only path (the same behavior as pre-#29).
             cross_runtime_a2a_ctx: std::sync::RwLock::new(None),
+            llm_resolver: std::sync::RwLock::new(None),
         }
     }
 
@@ -173,6 +180,24 @@ impl ExtensionServices {
             .read()
             .ok()
             .and_then(|g| g.clone())
+    }
+
+    /// Set the runtime LLM resolver. Called by AppState once the resolver
+    /// has been constructed.
+    pub fn set_llm_resolver(
+        &self,
+        resolver: Arc<crate::providers::LlmResolver>,
+    ) {
+        if let Ok(mut guard) = self.llm_resolver.write() {
+            *guard = Some(resolver);
+        }
+    }
+
+    /// Get the runtime LLM resolver, if one has been set.
+    #[must_use]
+    pub fn llm_resolver(&self,
+    ) -> Option<Arc<crate::providers::LlmResolver>> {
+        self.llm_resolver.read().ok().and_then(|g| g.clone())
     }
 
     /// Record a hook invocation
