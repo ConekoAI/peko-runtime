@@ -81,8 +81,8 @@ impl TrustStore {
         if store_path.exists() {
             let content = fs::read_to_string(&store_path)
                 .with_context(|| format!("Failed to read trust store: {store_path:?}"))?;
-            let store: TrustStore =
-                toml::from_str(&content).with_context(|| "Failed to parse trusted_publishers.toml")?;
+            let store: TrustStore = toml::from_str(&content)
+                .with_context(|| "Failed to parse trusted_publishers.toml")?;
             info!("Loaded trust store from: {:?}", store_path);
             return Ok(store);
         }
@@ -94,8 +94,8 @@ impl TrustStore {
                 .with_context(|| format!("Failed to create data directory: {parent:?}"))?;
         }
 
-        let toml = toml::to_string_pretty(&store)
-            .with_context(|| "Failed to serialize trust store")?;
+        let toml =
+            toml::to_string_pretty(&store).with_context(|| "Failed to serialize trust store")?;
         fs::write(&store_path, toml)
             .with_context(|| format!("Failed to write trust store: {store_path:?}"))?;
 
@@ -183,9 +183,15 @@ mod tests {
     #[test]
     fn unknown_then_pin() {
         let mut store = TrustStore::new();
-        assert_eq!(store.is_trusted("foo", "did:peko:public:abc"), TrustStatus::Unknown);
+        assert_eq!(
+            store.is_trusted("foo", "did:peko:public:abc"),
+            TrustStatus::Unknown
+        );
         store.pin("foo", "did:peko:public:abc", Some("zabc".to_string()));
-        assert_eq!(store.is_trusted("foo", "did:peko:public:abc"), TrustStatus::Trusted);
+        assert_eq!(
+            store.is_trusted("foo", "did:peko:public:abc"),
+            TrustStatus::Trusted
+        );
         assert!(store.get("foo").unwrap().public_key.is_some());
     }
 
@@ -193,8 +199,14 @@ mod tests {
     fn trusted() {
         let mut store = TrustStore::new();
         store.pin("foo", "did:peko:public:abc", None);
-        assert_eq!(store.is_trusted("foo", "did:peko:public:abc"), TrustStatus::Trusted);
-        assert_eq!(store.is_trusted("bar", "did:peko:public:abc"), TrustStatus::Unknown);
+        assert_eq!(
+            store.is_trusted("foo", "did:peko:public:abc"),
+            TrustStatus::Trusted
+        );
+        assert_eq!(
+            store.is_trusted("bar", "did:peko:public:abc"),
+            TrustStatus::Unknown
+        );
     }
 
     #[test]
@@ -215,7 +227,10 @@ mod tests {
         let mut store = TrustStore::new();
         store.pin("foo", "did:peko:public:abc", None);
         store.pin("foo", "did:peko:public:def", Some("zdef".to_string()));
-        assert_eq!(store.is_trusted("foo", "did:peko:public:def"), TrustStatus::Trusted);
+        assert_eq!(
+            store.is_trusted("foo", "did:peko:public:def"),
+            TrustStatus::Trusted
+        );
         assert_eq!(
             store.is_trusted("foo", "did:peko:public:abc"),
             TrustStatus::Mismatch {
@@ -223,7 +238,10 @@ mod tests {
                 actual: "did:peko:public:abc".to_string(),
             }
         );
-        assert_eq!(store.get("foo").unwrap().public_key.as_deref(), Some("zdef"));
+        assert_eq!(
+            store.get("foo").unwrap().public_key.as_deref(),
+            Some("zdef")
+        );
     }
 
     #[test]
@@ -231,7 +249,10 @@ mod tests {
         let mut store = TrustStore::new();
         store.pin("foo", "did:peko:public:abc", None);
         store.unpin("foo").unwrap();
-        assert_eq!(store.is_trusted("foo", "did:peko:public:abc"), TrustStatus::Unknown);
+        assert_eq!(
+            store.is_trusted("foo", "did:peko:public:abc"),
+            TrustStatus::Unknown
+        );
     }
 
     #[test]
@@ -248,7 +269,13 @@ mod tests {
         let toml_str = toml::to_string_pretty(&store).unwrap();
         let parsed: TrustStore = toml::from_str(&toml_str).unwrap();
 
-        assert_eq!(parsed.is_trusted("foo", "did:peko:public:abc"), TrustStatus::Trusted);
-        assert_eq!(parsed.get("foo").unwrap().public_key.as_deref(), Some("zabc"));
+        assert_eq!(
+            parsed.is_trusted("foo", "did:peko:public:abc"),
+            TrustStatus::Trusted
+        );
+        assert_eq!(
+            parsed.get("foo").unwrap().public_key.as_deref(),
+            Some("zabc")
+        );
     }
 }

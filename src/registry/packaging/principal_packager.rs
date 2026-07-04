@@ -108,12 +108,12 @@ impl PrincipalPackager {
         self
     }
 
-    /// Resolve all extensions referenced by `config.capabilities` through the
+    /// Resolve all extensions referenced by `config.allowed_extensions` through the
     /// loaded `ExtensionManager`, export each installed extension to a `.ext`
     /// package, and attach the resulting `ExtensionRef`s and embedded bytes.
     ///
     /// Names that cannot be resolved to an installed extension are skipped with
-    /// a warning; this avoids failing a push because a capability name points
+    /// a warning; this avoids failing a push because an extension name points
     /// to a not-yet-installed extension.
     pub fn with_extensions_from_manager(
         mut self,
@@ -124,14 +124,7 @@ impl PrincipalPackager {
         let mut embedded = HashMap::new();
         let mut seen = HashSet::new();
 
-        let names: Vec<&String> = config
-            .capabilities
-            .tools
-            .iter()
-            .chain(&config.capabilities.skills)
-            .chain(&config.capabilities.mcps)
-            .chain(&config.capabilities.agents)
-            .collect();
+        let names: Vec<&String> = config.allowed_extensions.iter().collect();
 
         if names.is_empty() {
             return Ok(self);
@@ -152,7 +145,7 @@ impl PrincipalPackager {
         for name in names {
             let Some(resolution) = manager.resolve_tool_name(name) else {
                 tracing::warn!(
-                    "Principal capability '{}' does not resolve to an installed extension; skipping embed",
+                    "Principal extension '{}' does not resolve to an installed extension; skipping embed",
                     name
                 );
                 continue;
@@ -589,7 +582,7 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
+            allowed_extensions: Default::default(),
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),

@@ -17,9 +17,7 @@ use tokio::sync::Mutex;
 #[async_trait]
 pub trait PrincipalMemory: Send + Sync {
     /// Record or update a session artifact in the principal's memory index.
-    async fn record_session(&self,
-        artifact: SessionArtifact,
-    ) -> Result<(), MemoryError>;
+    async fn record_session(&self, artifact: SessionArtifact) -> Result<(), MemoryError>;
 
     /// Find the most recent session artifact for a peer.
     async fn find_latest_session_for_peer(
@@ -110,8 +108,7 @@ impl DefaultPrincipalMemory {
             return Ok(MemoryIndex::default());
         }
         let contents = tokio::fs::read_to_string(&path).await?;
-        serde_json::from_str(&contents)
-            .map_err(|e| MemoryError::Serialization(e.to_string()))
+        serde_json::from_str(&contents).map_err(|e| MemoryError::Serialization(e.to_string()))
     }
 
     async fn save_index(&self, index: &MemoryIndex) -> Result<(), MemoryError> {
@@ -144,10 +141,7 @@ impl DefaultPrincipalMemory {
 
 #[async_trait]
 impl PrincipalMemory for DefaultPrincipalMemory {
-    async fn record_session(
-        &self,
-        artifact: SessionArtifact,
-    ) -> Result<(), MemoryError> {
+    async fn record_session(&self, artifact: SessionArtifact) -> Result<(), MemoryError> {
         // Hold the index lock for the full read-modify-write so concurrent
         // recorders don't lose updates (see [[test-concurrent-receives-root-race]]
         // for the symptom this prevents: 9/10 sessions in the index when 10
@@ -155,7 +149,9 @@ impl PrincipalMemory for DefaultPrincipalMemory {
         let _guard = self.index_lock.lock().await;
         let mut index = self.load_index().await?;
         // Remove existing record for this session_id, then append updated one.
-        index.sessions.retain(|s| s.session_id != artifact.session_id);
+        index
+            .sessions
+            .retain(|s| s.session_id != artifact.session_id);
         index.sessions.push(artifact);
         // Keep most recent first.
         index

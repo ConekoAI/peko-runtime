@@ -34,8 +34,7 @@ pub fn parse_agent_name(input: &str) -> Result<&str, IdentifierError> {
         return Err(IdentifierError::Empty);
     }
 
-    validate_agent_name(input)
-        .map_err(|e| IdentifierError::InvalidAgentName(e.to_string()))?;
+    validate_agent_name(input).map_err(|e| IdentifierError::InvalidAgentName(e.to_string()))?;
 
     Ok(input)
 }
@@ -119,10 +118,7 @@ mod tests {
 
         #[test]
         fn test_whitespace_only() {
-            assert_eq!(
-                parse_agent_name("   ").unwrap_err(),
-                IdentifierError::Empty
-            );
+            assert_eq!(parse_agent_name("   ").unwrap_err(), IdentifierError::Empty);
         }
 
         #[test]

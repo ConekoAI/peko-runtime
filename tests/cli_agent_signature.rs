@@ -111,11 +111,7 @@ name = "sig-test"
 description = "Signature test principal"
 display_name = "Signature Test Principal"
 
-[capabilities]
-tools = []
-skills = []
-mcps = []
-agents = []
+allowed_extensions = []
 "#;
     let config_bytes = config_toml.as_bytes().to_vec();
 
@@ -442,12 +438,9 @@ async fn first_import_pins_did() {
     let files = build_files_map(&manifest_bytes, &did_json, &config_bytes, &keys_bytes);
 
     let store = empty_trust_store();
-    let _ = run_import(
-        &files,
-        import_options(false, false, Some(store.clone())),
-    )
-    .await
-    .expect("signed manifest should import and pin");
+    let _ = run_import(&files, import_options(false, false, Some(store.clone())))
+        .await
+        .expect("signed manifest should import and pin");
 
     let store = store.read().await;
     assert_eq!(
@@ -462,8 +455,7 @@ async fn same_name_with_different_did_fails() {
 
     // First import: DID A.
     let (signer_a, did_doc_a, did_a) = fresh_identity();
-    let (did_json_a, config_bytes_a, keys_bytes_a, _) =
-        build_file_contents(&signer_a, &did_doc_a);
+    let (did_json_a, config_bytes_a, keys_bytes_a, _) = build_file_contents(&signer_a, &did_doc_a);
     let manifest_bytes_a = build_signed_manifest(
         &signer_a,
         "sig-test",
@@ -478,17 +470,13 @@ async fn same_name_with_different_did_fails() {
         &config_bytes_a,
         &keys_bytes_a,
     );
-    run_import(
-        &files_a,
-        import_options(false, false, Some(store.clone())),
-    )
-    .await
-    .expect("first import should succeed");
+    run_import(&files_a, import_options(false, false, Some(store.clone())))
+        .await
+        .expect("first import should succeed");
 
     // Second import: same name, different DID B.
     let (signer_b, did_doc_b, did_b) = fresh_identity();
-    let (did_json_b, config_bytes_b, keys_bytes_b, _) =
-        build_file_contents(&signer_b, &did_doc_b);
+    let (did_json_b, config_bytes_b, keys_bytes_b, _) = build_file_contents(&signer_b, &did_doc_b);
     let manifest_bytes_b = build_signed_manifest(
         &signer_b,
         "sig-test",
@@ -503,12 +491,9 @@ async fn same_name_with_different_did_fails() {
         &config_bytes_b,
         &keys_bytes_b,
     );
-    let err = run_import(
-        &files_b,
-        import_options(false, false, Some(store.clone())),
-    )
-    .await
-    .expect_err("second import with a different DID should be rejected");
+    let err = run_import(&files_b, import_options(false, false, Some(store.clone())))
+        .await
+        .expect_err("second import with a different DID should be rejected");
     let msg = err.to_string();
     assert!(
         msg.contains("trust_pinning_failed"),
@@ -521,8 +506,7 @@ async fn force_allows_did_change() {
     let store = empty_trust_store();
 
     let (signer_a, did_doc_a, did_a) = fresh_identity();
-    let (did_json_a, config_bytes_a, keys_bytes_a, _) =
-        build_file_contents(&signer_a, &did_doc_a);
+    let (did_json_a, config_bytes_a, keys_bytes_a, _) = build_file_contents(&signer_a, &did_doc_a);
     let manifest_bytes_a = build_signed_manifest(
         &signer_a,
         "sig-test",
@@ -537,16 +521,12 @@ async fn force_allows_did_change() {
         &config_bytes_a,
         &keys_bytes_a,
     );
-    run_import(
-        &files_a,
-        import_options(false, false, Some(store.clone())),
-    )
-    .await
-    .unwrap();
+    run_import(&files_a, import_options(false, false, Some(store.clone())))
+        .await
+        .unwrap();
 
     let (signer_b, did_doc_b, did_b) = fresh_identity();
-    let (did_json_b, config_bytes_b, keys_bytes_b, _) =
-        build_file_contents(&signer_b, &did_doc_b);
+    let (did_json_b, config_bytes_b, keys_bytes_b, _) = build_file_contents(&signer_b, &did_doc_b);
     let manifest_bytes_b = build_signed_manifest(
         &signer_b,
         "sig-test",
@@ -561,12 +541,9 @@ async fn force_allows_did_change() {
         &config_bytes_b,
         &keys_bytes_b,
     );
-    let result = run_import(
-        &files_b,
-        import_options(false, true, Some(store.clone())),
-    )
-    .await
-    .expect("force should allow a DID change");
+    let result = run_import(&files_b, import_options(false, true, Some(store.clone())))
+        .await
+        .expect("force should allow a DID change");
     assert_eq!(result.name, "imported-sig-test");
 
     let store = store.read().await;

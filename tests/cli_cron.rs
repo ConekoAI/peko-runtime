@@ -31,9 +31,7 @@
 
 mod common;
 use common::agent::seed_mock_provider_in_catalog;
-use common::{
-    configure_mock, create_mock_principal_with_tools, run_with_timeout, PekoCli,
-};
+use common::{configure_mock, create_mock_principal_with_tools, run_with_timeout, PekoCli};
 use serial_test::serial;
 use std::process::Stdio;
 use std::time::Duration;

@@ -184,10 +184,7 @@ impl ExtensionServices {
 
     /// Set the runtime LLM resolver. Called by AppState once the resolver
     /// has been constructed.
-    pub fn set_llm_resolver(
-        &self,
-        resolver: Arc<crate::providers::LlmResolver>,
-    ) {
+    pub fn set_llm_resolver(&self, resolver: Arc<crate::providers::LlmResolver>) {
         if let Ok(mut guard) = self.llm_resolver.write() {
             *guard = Some(resolver);
         }
@@ -195,8 +192,7 @@ impl ExtensionServices {
 
     /// Get the runtime LLM resolver, if one has been set.
     #[must_use]
-    pub fn llm_resolver(&self,
-    ) -> Option<Arc<crate::providers::LlmResolver>> {
+    pub fn llm_resolver(&self) -> Option<Arc<crate::providers::LlmResolver>> {
         self.llm_resolver.read().ok().and_then(|g| g.clone())
     }
 

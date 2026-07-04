@@ -15,7 +15,10 @@ use sha2::Digest;
 #[derive(Debug, thiserror::Error)]
 pub enum TlsError {
     #[error("Failed to read TLS file {path}: {source}")]
-    Read { path: String, source: std::io::Error },
+    Read {
+        path: String,
+        source: std::io::Error,
+    },
     #[error("Failed to parse certificate chain: {0}")]
     CertParse(String),
     #[error("Certificate file contains no valid certificates: {0}")]
@@ -139,11 +142,9 @@ pub fn build_server_config(
                 .map_err(|e| TlsError::AddCa(e.to_string()))?;
         }
 
-        let verifier = rustls::server::WebPkiClientVerifier::builder(
-            Arc::new(client_roots),
-        )
-        .build()
-        .map_err(|e| TlsError::VerifierBuild(e.to_string()))?;
+        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(client_roots))
+            .build()
+            .map_err(|e| TlsError::VerifierBuild(e.to_string()))?;
 
         rustls::ServerConfig::builder()
             .with_client_cert_verifier(verifier)
@@ -180,7 +181,9 @@ pub fn load_cert_chain(
 /// Load a PEM-encoded private key from disk.
 ///
 /// Supports PKCS#8 and RSA private keys.
-pub fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>, TlsError> {
+pub fn load_private_key(
+    path: &Path,
+) -> Result<rustls::pki_types::PrivateKeyDer<'static>, TlsError> {
     let pem = std::fs::read(path).map_err(|e| TlsError::Read {
         path: path.display().to_string(),
         source: e,
@@ -191,10 +194,8 @@ pub fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<
         .into_iter()
         .next()
     {
-        return Ok(
-            rustls::pki_types::PrivateKeyDer::try_from(key)
-                .map_err(|e| TlsError::KeyParse(e.to_string()))?,
-        );
+        return Ok(rustls::pki_types::PrivateKeyDer::try_from(key)
+            .map_err(|e| TlsError::KeyParse(e.to_string()))?);
     }
 
     if let Some(key) = rustls_pemfile::rsa_private_keys(&mut pem.as_slice())
@@ -202,10 +203,8 @@ pub fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<
         .into_iter()
         .next()
     {
-        return Ok(
-            rustls::pki_types::PrivateKeyDer::try_from(key)
-                .map_err(|e| TlsError::KeyParse(e.to_string()))?,
-        );
+        return Ok(rustls::pki_types::PrivateKeyDer::try_from(key)
+            .map_err(|e| TlsError::KeyParse(e.to_string()))?);
     }
 
     Err(TlsError::NoKeyFound(path.display().to_string()))
@@ -266,8 +265,7 @@ impl rustls::client::danger::ServerCertVerifier for PinningServerCertVerifier {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.inner
-            .verify_tls12_signature(message, cert, dss)
+        self.inner.verify_tls12_signature(message, cert, dss)
     }
 
     fn verify_tls13_signature(
@@ -276,8 +274,7 @@ impl rustls::client::danger::ServerCertVerifier for PinningServerCertVerifier {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.inner
-            .verify_tls13_signature(message, cert, dss)
+        self.inner.verify_tls13_signature(message, cert, dss)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
@@ -340,12 +337,7 @@ mod tests {
 
     #[test]
     fn test_build_client_config_rejects_missing_ca() {
-        let result = build_client_config(
-            Some(Path::new("/nonexistent/ca.crt")),
-            None,
-            None,
-            None,
-        );
+        let result = build_client_config(Some(Path::new("/nonexistent/ca.crt")), None, None, None);
         assert!(matches!(result, Err(TlsError::Read { .. })));
     }
 

@@ -166,8 +166,7 @@ fn principal_session_list_empty_for_unused_principal() {
     create_mock_principal(&cli, "unused-princ", &mock_url);
     // No daemon / no send: listing a freshly created Principal is an offline
     // read and must report no sessions without error.
-    let (stdout, stderr, status) =
-        run(&cli, &["principal", "memory", "session", "unused-princ"]);
+    let (stdout, stderr, status) = run(&cli, &["principal", "memory", "session", "unused-princ"]);
     assert_ok(&stdout, &stderr, &status);
     assert!(
         stdout.to_lowercase().contains("no sessions"),

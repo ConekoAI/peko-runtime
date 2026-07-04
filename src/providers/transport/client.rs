@@ -25,7 +25,11 @@ use tracing::debug;
 /// `retry_after: Some(Duration::ZERO)` is treated as "no hint" so we
 /// don't pay the parse cost on every 4xx response — only well-formed
 /// positive-second hints are propagated.
-fn classify_http_error(status: u16, error_text: String, retry_after: Option<Duration>) -> anyhow::Error {
+fn classify_http_error(
+    status: u16,
+    error_text: String,
+    retry_after: Option<Duration>,
+) -> anyhow::Error {
     let retry_after = retry_after.filter(|d| !d.is_zero());
     let msg = match retry_after {
         Some(d) => format!(

@@ -348,7 +348,9 @@ impl TunnelClient {
             .into_client_request()
             .map_err(|e| TunnelError::AuthFailed(format!("Invalid hub URL: {e}")))?;
         let (ws_stream, response) = match connector {
-            Some(connector) => connect_async_tls_with_config(req, None, false, Some(connector)).await?,
+            Some(connector) => {
+                connect_async_tls_with_config(req, None, false, Some(connector)).await?
+            }
             None => connect_async(req).await?,
         };
         info!("WebSocket connected, status: {:?}", response.status());

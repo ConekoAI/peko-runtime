@@ -164,10 +164,7 @@ pub fn check_permission(
 
 /// Build a `Resource::Principal` from a `PrincipalConfig` and name.
 #[must_use]
-pub fn principal_resource(
-    name: &str,
-    config: &crate::principal::PrincipalConfig,
-) -> Resource {
+pub fn principal_resource(name: &str, config: &crate::principal::PrincipalConfig) -> Resource {
     Resource::Principal {
         name: name.to_string(),
         owner: config.owner.clone(),

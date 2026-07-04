@@ -183,10 +183,7 @@ impl SessionService {
     }
 
     /// List sessions for an agent
-    pub async fn list_sessions(
-        &self,
-        agent_name: &str,
-    ) -> Result<Vec<SessionInfo>> {
+    pub async fn list_sessions(&self, agent_name: &str) -> Result<Vec<SessionInfo>> {
         let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         if !sessions_dir.exists() {
@@ -359,11 +356,7 @@ impl SessionService {
     /// Delete a session
     ///
     /// Removes both the session JSONL file and its metadata from the index.
-    pub async fn delete_session(
-        &self,
-        agent_name: &str,
-        session_id: &str,
-    ) -> Result<bool> {
+    pub async fn delete_session(&self, agent_name: &str, session_id: &str) -> Result<bool> {
         let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         // Use SyncSessionStorage for deletion
@@ -444,11 +437,7 @@ impl SessionService {
     }
 
     /// Check if a session exists
-    pub async fn session_exists(
-        &self,
-        agent_name: &str,
-        session_id: &str,
-    ) -> Result<bool> {
+    pub async fn session_exists(&self, agent_name: &str, session_id: &str) -> Result<bool> {
         let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         if !sessions_dir.exists() {
@@ -506,9 +495,7 @@ impl SessionService {
             let mut guard = controller.write().await;
             match guard.get_metadata(session_id, false).await {
                 Ok(Some(m)) => {
-                    debug!(
-                        "get_session_metadata: found {session_id} under agent='{agent_name}'"
-                    );
+                    debug!("get_session_metadata: found {session_id} under agent='{agent_name}'");
                     return Ok(m);
                 }
                 Ok(None) => continue,
@@ -567,10 +554,7 @@ impl SessionService {
     }
 
     /// List sessions with metadata synced from JSONL (source of truth)
-    pub async fn list_sessions_synced(
-        &self,
-        agent_name: &str,
-    ) -> Result<Vec<SessionInfo>> {
+    pub async fn list_sessions_synced(&self, agent_name: &str) -> Result<Vec<SessionInfo>> {
         let sessions_dir = self.get_sessions_dir(agent_name).await?;
 
         if !sessions_dir.exists() {

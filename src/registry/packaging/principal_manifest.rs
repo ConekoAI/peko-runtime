@@ -119,7 +119,8 @@ impl PrincipalManifest {
 
     /// Deserialize from TOML string.
     pub fn from_toml(toml_str: &str) -> anyhow::Result<Self> {
-        toml::from_str(toml_str).map_err(|e| anyhow::anyhow!("Failed to parse principal manifest: {e}"))
+        toml::from_str(toml_str)
+            .map_err(|e| anyhow::anyhow!("Failed to parse principal manifest: {e}"))
     }
 
     /// Compute checksum for a file.

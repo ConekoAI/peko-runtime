@@ -1,4 +1,6 @@
+use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::PathBuf;
 
 use crate::auth::{Permission, PermissionGrant};
@@ -32,13 +34,14 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub routing: PrincipalRoutingConfig,
 
-    /// Allowed extensions (tools, skills, MCPs, agents) for this Principal.
+    /// Allowed extensions for this Principal.
     ///
-    /// On disk this is written as `[allowed_extensions]`. The legacy key
-    /// `[capabilities]` is still accepted when reading older `principal.toml`
-    /// files.
+    /// On disk this is written as a flat array under `[allowed_extensions]`.
+    /// The legacy key `[capabilities]` and the legacy categorized table form
+    /// `{ tools = [...], skills = [...], mcps = [...], agents = [...] }` are
+    /// still accepted when reading older `principal.toml` files.
     #[serde(default, rename = "allowed_extensions", alias = "capabilities")]
-    pub capabilities: PrincipalCapabilities,
+    pub allowed_extensions: AllowedExtensions,
 
     /// Network exposure level for this Principal.
     #[serde(default)]
@@ -108,16 +111,95 @@ impl std::fmt::Display for PrincipalDID {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PrincipalCapabilities {
-    #[serde(default)]
-    pub tools: Vec<String>,
-    #[serde(default)]
-    pub skills: Vec<String>,
-    #[serde(default)]
-    pub mcps: Vec<String>,
-    #[serde(default)]
-    pub agents: Vec<String>,
+/// Flat allow-list of extensions a Principal may use.
+///
+/// Internally this is just a list of extension IDs / bare names. The runtime
+/// resolves bare names to canonical extension IDs and distinguishes agent
+/// prompts from tools/skills/MCPs by consulting the registered extensions and
+/// the principal's agent prompt directory.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct AllowedExtensions(pub Vec<String>);
+
+impl AllowedExtensions {
+    /// Create an empty allow-list.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Add an extension to the allow-list.
+    pub fn push(&mut self, extension: impl Into<String>) {
+        self.0.push(extension.into());
+    }
+
+    /// Extend the allow-list with multiple extension names.
+    pub fn extend(&mut self, extensions: impl IntoIterator<Item = impl Into<String>>) {
+        self.0.extend(extensions.into_iter().map(Into::into));
+    }
+}
+
+impl std::ops::Deref for AllowedExtensions {
+    type Target = Vec<String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for AllowedExtensions {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for AllowedExtensions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct AllowedExtensionsVisitor;
+
+        impl<'de> Visitor<'de> for AllowedExtensionsVisitor {
+            type Value = AllowedExtensions;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a sequence of extension names or a legacy categorized table")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut extensions = Vec::new();
+                while let Some(name) = seq.next_element::<String>()? {
+                    extensions.push(name);
+                }
+                Ok(AllowedExtensions(extensions))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut extensions = Vec::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "tools" | "skills" | "mcps" | "agents" => {
+                            let items: Vec<String> = map.next_value()?;
+                            extensions.extend(items);
+                        }
+                        _ => {
+                            // Ignore unknown keys in legacy tables.
+                            let _ = map.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(AllowedExtensions(extensions))
+            }
+        }
+
+        deserializer.deserialize_any(AllowedExtensionsVisitor)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -283,7 +365,7 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
+            allowed_extensions: Default::default(),
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),
@@ -317,7 +399,7 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
+            allowed_extensions: Default::default(),
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),
@@ -362,7 +444,7 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: Default::default(),
+            allowed_extensions: Default::default(),
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),
@@ -381,9 +463,9 @@ mod tests {
         );
     }
 
-    /// New `principal.toml` files use `[allowed_extensions]`.
+    /// New `principal.toml` files use a flat `allowed_extensions` array.
     #[test]
-    fn principal_config_serializes_allowed_extensions_table() {
+    fn principal_config_serializes_allowed_extensions_array() {
         let cfg = PrincipalConfig {
             name: "alice".into(),
             did: None,
@@ -393,10 +475,7 @@ mod tests {
             governance: Default::default(),
             memory: Default::default(),
             routing: Default::default(),
-            capabilities: PrincipalCapabilities {
-                tools: vec!["Bash".into()],
-                ..Default::default()
-            },
+            allowed_extensions: AllowedExtensions(vec!["Bash".into()]),
             exposure: Default::default(),
             status: None,
             permissions: Vec::new(),
@@ -406,8 +485,8 @@ mod tests {
         };
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
-            serialized.contains("[allowed_extensions]"),
-            "expected [allowed_extensions] table, got: {serialized}"
+            serialized.contains("allowed_extensions = ["),
+            "expected flat allowed_extensions array, got: {serialized}"
         );
         assert!(
             !serialized.contains("[capabilities]"),
@@ -427,23 +506,21 @@ mod tests {
             skills = ["docker"]
         "#;
         let cfg: PrincipalConfig = toml::from_str(toml).expect("legacy TOML must parse");
-        assert_eq!(cfg.capabilities.tools, vec!["Bash", "Read"]);
-        assert_eq!(cfg.capabilities.skills, vec!["docker"]);
+        assert!(cfg.allowed_extensions.contains(&"Bash".to_string()));
+        assert!(cfg.allowed_extensions.contains(&"Read".to_string()));
+        assert!(cfg.allowed_extensions.contains(&"docker".to_string()));
     }
 
-    /// The new `[allowed_extensions]` table parses into the same struct.
+    /// The new flat `allowed_extensions` array parses into the same struct.
     #[test]
-    fn principal_config_accepts_allowed_extensions_alias() {
+    fn principal_config_accepts_allowed_extensions_array() {
         let toml = r#"
             name = "modern"
             exposure = "private"
-
-            [allowed_extensions]
-            tools = ["Bash"]
-            agents = ["researcher"]
+            allowed_extensions = ["Bash", "researcher"]
         "#;
         let cfg: PrincipalConfig = toml::from_str(toml).expect("modern TOML must parse");
-        assert_eq!(cfg.capabilities.tools, vec!["Bash"]);
-        assert_eq!(cfg.capabilities.agents, vec!["researcher"]);
+        assert!(cfg.allowed_extensions.contains(&"Bash".to_string()));
+        assert!(cfg.allowed_extensions.contains(&"researcher".to_string()));
     }
 }

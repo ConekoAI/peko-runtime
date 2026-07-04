@@ -13,6 +13,7 @@
 //! - `task_*`: Planning todo family (TaskCreate, TaskGet, TaskList, TaskUpdate)
 //! - `session`: Session introspection
 
+pub mod agent_catalog;
 pub mod async_common;
 pub mod async_list;
 pub mod async_output;
@@ -27,7 +28,6 @@ pub mod cron_list;
 pub mod fs;
 pub mod messaging;
 pub mod session;
-pub mod agent_catalog;
 pub mod skill;
 
 pub use agent_catalog::AgentCatalogTool;

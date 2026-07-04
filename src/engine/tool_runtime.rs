@@ -39,7 +39,7 @@ pub async fn execute_tool_via_core(
 /// `agent_id` / `session_id` drive reserved parameter injection.
 /// `caller_id` drives per-user permission checks and audit logging (issue #17).
 /// `principal_id` (P2-audit) is threaded into `ToolContext` so
-/// capability-scoped tools (e.g. `Skill`) can resolve per-principal
+/// extension-scoped tools (e.g. `Skill`) can resolve per-principal
 /// state via `SkillStateRegistry` at handle time.
 pub async fn execute_tool_via_core_with_context(
     core: &ExtensionCore,

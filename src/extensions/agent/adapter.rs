@@ -170,8 +170,9 @@ impl ExtensionTypeAdapter for AgentAdapter {
         path: &Path,
         content: &str,
     ) -> anyhow::Result<crate::extensions::framework::ExtensionManifest> {
-        let (agent_frontmatter, _): (AgentFrontmatter, _) = parsing::parse_yaml_frontmatter_typed(content)
-            .with_context(|| format!("Failed to parse AGENT.md frontmatter in {path:?}"))?;
+        let (agent_frontmatter, _): (AgentFrontmatter, _) =
+            parsing::parse_yaml_frontmatter_typed(content)
+                .with_context(|| format!("Failed to parse AGENT.md frontmatter in {path:?}"))?;
 
         if agent_frontmatter.name.is_empty() {
             anyhow::bail!("Agent name cannot be empty");
@@ -308,7 +309,8 @@ pub async fn register_agents_with_core(
     let mut hook_ids = Vec::new();
 
     for agent in agents {
-        let extension_id = ExtensionId::new(format!("{}:{}", AGENT_EXTENSION_TYPE, agent.manifest.id.0));
+        let extension_id =
+            ExtensionId::new(format!("{}:{}", AGENT_EXTENSION_TYPE, agent.manifest.id.0));
 
         let handler = Arc::new(AgentPromptHandler {
             agent_name: agent.manifest.name.clone(),

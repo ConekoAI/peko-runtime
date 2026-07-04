@@ -244,8 +244,7 @@ impl Provider {
                 // delivered. Providers that neither emit a Done event nor
                 // close the connection will still hang; the only safe
                 // mitigation there is the per-request HTTP timeout.
-                let is_openai_done =
-                    matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
+                let is_openai_done = matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
 
                 let output = match result {
                     Ok(event) => match adapter.parse_sse_event(&model_id_owned, &event.data) {

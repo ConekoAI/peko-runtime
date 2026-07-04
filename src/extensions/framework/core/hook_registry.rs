@@ -96,7 +96,7 @@ pub struct BuiltinExtensionInfo {
     /// Whether any hook for this extension is enabled
     pub enabled: bool,
     /// Which hook points are registered
-    pub capabilities: Vec<String>,
+    pub hook_points: Vec<String>,
 }
 
 /// Registry for hook handlers
@@ -304,16 +304,16 @@ impl HookRegistry {
                 let ext_type = parts[1].to_string();
                 let name = parts[2].to_string();
                 let enabled = hooks.iter().any(|h| h.enabled);
-                let mut capabilities: Vec<String> = hooks.iter().map(|h| h.point.name()).collect();
-                capabilities.sort_unstable();
-                capabilities.dedup();
+                let mut hook_points: Vec<String> = hooks.iter().map(|h| h.point.name()).collect();
+                hook_points.sort_unstable();
+                hook_points.dedup();
 
                 results.push(BuiltinExtensionInfo {
                     id: ext_id,
                     ext_type,
                     name,
                     enabled,
-                    capabilities,
+                    hook_points,
                 });
             }
         }
@@ -471,7 +471,10 @@ impl HookRegistry {
             return HookResult::PassThrough;
         }
 
-        trace!(handler_count = handlers.len(), "Invoking hooks with context");
+        trace!(
+            handler_count = handlers.len(),
+            "Invoking hooks with context"
+        );
 
         let mut outputs = Vec::new();
 
@@ -482,7 +485,8 @@ impl HookRegistry {
             // Build a fresh context for this handler, re-injecting the
             // caller-supplied `tool_context` state so every handler sees
             // the same principal/session context.
-            let mut handler_ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
+            let mut handler_ctx =
+                HookContext::new(point.clone(), input.clone(), self.services.clone());
             if let Some(ref tc) = tool_ctx {
                 handler_ctx.set_state("tool_context", tc.clone());
             }

@@ -182,7 +182,7 @@ pub enum HookInput {
         /// `None` when the call originates from a context that has no
         /// principal scope (legacy agent path, tests).
         /// Threaded into `ToolRuntimeContext` and `ToolContext` so
-        /// capability-scoped tools (e.g. `Skill`) can resolve per-
+        /// extension-scoped tools (e.g. `Skill`) can resolve per-
         /// principal state at handle time without per-call re-
         /// registration on the shared global `ExtensionCore`.
         principal_id: Option<String>,
@@ -343,7 +343,7 @@ mod tests {
     /// resolved caller through to the hook layer so per-user permission
     /// checks (issue #17 follow-up) and audit logging can attribute the
     /// call to a real user. P2-audit: `principal_id` rides alongside
-    /// `caller_id` so capability-scoped tools (`Skill`, future
+    /// `caller_id` so extension-scoped tools (`Skill`, future
     /// additions) can resolve per-principal state at handle time.
     #[test]
     fn test_hook_input_tool_call_carries_caller_id() {

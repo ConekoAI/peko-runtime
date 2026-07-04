@@ -13,12 +13,12 @@ pub mod skill_state;
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use agent_state::{AgentState, AgentStateGuard, AgentStateRegistry};
-pub use context::PrincipalContext;
 pub use config::{
-    AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier, PrincipalCapabilities,
+    AllowedExtensions, AuditLevel, ConsolidationConfig, DelegationGrant, MemoryTier,
     PrincipalConfig, PrincipalDID, PrincipalGovernanceConfig, PrincipalIdentityConfig,
     PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig, TtlPolicy,
 };
+pub use context::PrincipalContext;
 pub use factory::{
     DefaultPrincipalMemory, DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
     PrincipalMemoryFactory, PrincipalRouterFactory,
@@ -80,9 +80,9 @@ impl Principal {
         self.config.read().await.name.clone()
     }
 
-    /// The capabilities (tools, skills, MCPs) available to this Principal.
-    pub async fn capabilities(&self) -> PrincipalCapabilities {
-        self.config.read().await.capabilities.clone()
+    /// The extensions allowed for this Principal.
+    pub async fn allowed_extensions(&self) -> AllowedExtensions {
+        self.config.read().await.allowed_extensions.clone()
     }
 
     /// The exposure level for this Principal.
@@ -106,7 +106,7 @@ impl Principal {
             description: config.identity.description.clone(),
             exposure: config.exposure.clone(),
             status: config.status.clone(),
-            capabilities: config.capabilities.clone(),
+            allowed_extensions: config.allowed_extensions.clone(),
             agent_prompt_count: self.agent_prompts.len(),
             workspace_path: self.workspace_path.display().to_string(),
         }
@@ -128,7 +128,7 @@ pub struct PrincipalSummary {
     pub description: Option<String>,
     pub exposure: crate::tunnel::protocol::InstanceExposure,
     pub status: Option<crate::tunnel::protocol::InstanceStatus>,
-    pub capabilities: PrincipalCapabilities,
+    pub allowed_extensions: AllowedExtensions,
     pub agent_prompt_count: usize,
     pub workspace_path: String,
 }

@@ -1,7 +1,7 @@
 //! Caller context — resolved identity for every incoming request
 
-use super::Subject;
 use super::types::ApiKeyScope;
+use super::Subject;
 
 /// Resolved identity of the caller
 #[derive(Clone, Debug, PartialEq, Eq)]

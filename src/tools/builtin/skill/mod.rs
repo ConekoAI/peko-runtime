@@ -97,7 +97,9 @@ impl SkillTool {
     /// Panics if the skills directory has already been set.
     #[cfg(test)]
     fn with_skills_dir_for_test(self, dir: PathBuf) -> Self {
-        self.skills_dir.set(dir).expect("skills_dir not already set");
+        self.skills_dir
+            .set(dir)
+            .expect("skills_dir not already set");
         self
     }
 
@@ -202,7 +204,10 @@ Returns:
 
         // Resolve per-principal state from the global registry. Fail closed:
         // no registry entry means the skill is not enabled for this caller.
-        let principal_id = ctx.principal_id.as_ref().map(|pid| crate::principal::PrincipalId(pid.clone()));
+        let principal_id = ctx
+            .principal_id
+            .as_ref()
+            .map(|pid| crate::principal::PrincipalId(pid.clone()));
         let Some(pid) = principal_id else {
             return Ok(json!({
                 "error": "skill_not_enabled",
@@ -229,17 +234,17 @@ Returns:
 
         let skill_md = self.skills_dir().join(&name).join("SKILL.md");
         let content = std::fs::read_to_string(&skill_md).map_err(|e| {
-            anyhow::anyhow!(
-                "skill_unreadable: failed to read SKILL.md for skill {name}: {e}"
-            )
+            anyhow::anyhow!("skill_unreadable: failed to read SKILL.md for skill {name}: {e}")
         })?;
 
-        let (frontmatter, body): (SkillFrontmatter, String) =
-            parse_yaml_frontmatter_typed(&content).map_err(|e| {
-                anyhow::anyhow!(
-                    "skill_unreadable: failed to parse frontmatter in SKILL.md for skill {name}: {e}"
-                )
-            })?;
+        let (frontmatter, body): (SkillFrontmatter, String) = parse_yaml_frontmatter_typed(
+            &content,
+        )
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "skill_unreadable: failed to parse frontmatter in SKILL.md for skill {name}: {e}"
+            )
+        })?;
 
         // `parse_yaml_frontmatter` includes the newline that follows the
         // closing `---` in the body. Trim it so the rendered output
@@ -248,8 +253,8 @@ Returns:
 
         // Resolve inline `` !`cmd` `` and fenced `` ```! `` blocks against
         // the principal's workspace before argument substitution runs.
-        let body = preprocess::preprocess_dynamic_context(body, &frontmatter, &state.workspace)
-            .await?;
+        let body =
+            preprocess::preprocess_dynamic_context(body, &frontmatter, &state.workspace).await?;
 
         let rendered = substitute_args(&body, &frontmatter.arguments, &args);
 
@@ -339,10 +344,7 @@ mod tests {
 
     #[test]
     fn substitute_no_args_no_placeholders() {
-        assert_eq!(
-            substitute_args("hello world", &[], &[]),
-            "hello world"
-        );
+        assert_eq!(substitute_args("hello world", &[], &[]), "hello world");
     }
 
     #[test]
@@ -356,11 +358,7 @@ mod tests {
     #[test]
     fn substitute_positional() {
         assert_eq!(
-            substitute_args(
-                "Issue $0 on $1",
-                &[],
-                &["42".into(), "main".into()]
-            ),
+            substitute_args("Issue $0 on $1", &[], &["42".into(), "main".into()]),
             "Issue 42 on main"
         );
     }
@@ -396,11 +394,7 @@ mod tests {
         // The body has only $issue and $0; named=["issue"] but with one
         // arg passed, so $issue maps to args[0] = "42".
         let named = vec!["issue".to_string()];
-        let rendered = substitute_args(
-            "Issue $issue and again $issue",
-            &named,
-            &["42".into()],
-        );
+        let rendered = substitute_args("Issue $issue and again $issue", &named, &["42".into()]);
         assert_eq!(rendered, "Issue 42 and again 42");
     }
 
@@ -411,11 +405,7 @@ mod tests {
         // to args[1] which doesn't exist → left literal. `$issue`
         // (named[0]) maps to args[0] = "42".
         let named = vec!["issue".to_string(), "branch".to_string()];
-        let rendered = substitute_args(
-            "Open $issue on $branch.",
-            &named,
-            &["42".into()],
-        );
+        let rendered = substitute_args("Open $issue on $branch.", &named, &["42".into()]);
         assert_eq!(rendered, "Open 42 on $branch.");
     }
 
@@ -423,11 +413,7 @@ mod tests {
     fn substitute_escape_preserves_literal_dollar() {
         // `\$1` is the literal string "$1" — no substitution.
         // `$0` does substitute because args has length 1.
-        let rendered = substitute_args(
-            "Cost \\$1.00 or $0",
-            &[],
-            &["free".into()],
-        );
+        let rendered = substitute_args("Cost \\$1.00 or $0", &[], &["free".into()]);
         assert_eq!(rendered, "Cost $1.00 or free");
     }
 
@@ -448,11 +434,7 @@ mod tests {
         // ($branch, named[1]) has no args[1] to map to, so it is
         // left literal (Claude-compatible).
         let named = vec!["issue".to_string(), "branch".to_string()];
-        let rendered = substitute_args(
-            "Open $issue on $branch.",
-            &named,
-            &["42".into()],
-        );
+        let rendered = substitute_args("Open $issue on $branch.", &named, &["42".into()]);
         assert_eq!(rendered, "Open 42 on $branch.");
     }
 
@@ -473,20 +455,14 @@ mod tests {
     }
 
     fn test_ctx(pid: &PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("hook_run", "hook", "Skill")
-            .with_principal_id(pid.0.clone())
+        ToolContext::for_hook_run("hook_run", "hook", "Skill").with_principal_id(pid.0.clone())
     }
 
-    async fn register_test_state(
-        pid: &PrincipalId,
-        allowlist: Vec<&str>,
-        workspace: PathBuf,
-    ) {
-        let state = SkillState::new(
-            allowlist.into_iter().map(String::from).collect(),
-            workspace,
-        );
-        SkillStateRegistry::global().register(pid.clone(), state).await;
+    async fn register_test_state(pid: &PrincipalId, allowlist: Vec<&str>, workspace: PathBuf) {
+        let state = SkillState::new(allowlist.into_iter().map(String::from).collect(), workspace);
+        SkillStateRegistry::global()
+            .register(pid.clone(), state)
+            .await;
     }
 
     async fn cleanup_test_state(pid: &PrincipalId) {
@@ -502,9 +478,8 @@ mod tests {
             let quoted: Vec<String> = args.iter().map(|a| format!("\"{a}\"")).collect();
             format!("arguments: [{}]\n", quoted.join(", "))
         };
-        let content = format!(
-            "---\nname: {name}\ndescription: A test skill\n{args_yaml}---\n\n{body}\n"
-        );
+        let content =
+            format!("---\nname: {name}\ndescription: A test skill\n{args_yaml}---\n\n{body}\n");
         std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
     }
 
@@ -594,7 +569,9 @@ mod tests {
         register_test_state(&pid, vec![], tmp.path().to_path_buf()).await;
         let tool = SkillTool::new().with_skills_dir_for_test(tmp.path().to_path_buf());
         let err = tool.execute(json!({})).await.unwrap_err();
-        assert!(err.to_string().contains("missing required parameter 'name'"));
+        assert!(err
+            .to_string()
+            .contains("missing required parameter 'name'"));
         cleanup_test_state(&pid).await;
     }
 
@@ -652,7 +629,10 @@ mod tests {
         // platform, but the body should no longer contain the
         // `!`pwd`` placeholder.
         let body = result["body"].as_str().unwrap();
-        assert!(!body.contains("!`pwd`"), "placeholder should be gone, got: {body}");
+        assert!(
+            !body.contains("!`pwd`"),
+            "placeholder should be gone, got: {body}"
+        );
         assert!(body.starts_with("CWD: "));
         assert!(body.len() > "CWD: ".len());
         cleanup_test_state(&pid).await;

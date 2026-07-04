@@ -191,7 +191,7 @@ impl PrincipalSendTool {
     }
 }
 
-/// Build an `Arc<dyn Tool>` for the `principal_send` capability.
+/// Build an `Arc<dyn Tool>` for the `principal_send` extension.
 /// Replaces direct `PrincipalSendTool::new(...)` calls at the
 /// registration site so callers don't depend on the concrete type.
 #[must_use]

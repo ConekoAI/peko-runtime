@@ -563,7 +563,9 @@ impl AppState {
             .set_agent_service(Arc::clone(&agent_service_dyn));
 
         // Make the LLM resolver available to extension hooks (e.g. MCP sampling).
-        global_core.services().set_llm_resolver(Arc::clone(&resolver));
+        global_core
+            .services()
+            .set_llm_resolver(Arc::clone(&resolver));
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.

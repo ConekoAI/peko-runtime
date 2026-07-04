@@ -105,8 +105,10 @@ impl TodoStorage {
 
     /// Path to the sidecar file for a session.
     fn sidecar_path(&self, session_key: &str) -> PathBuf {
-        self.storage_dir
-            .join(format!("{}.todos.jsonl", safe_filename_component(session_key)))
+        self.storage_dir.join(format!(
+            "{}.todos.jsonl",
+            safe_filename_component(session_key)
+        ))
     }
 
     /// Load all todos for a session.

@@ -129,18 +129,18 @@ impl Services {
         self.async_router.clone()
     }
 
-    /// Enable built-in hooks for a capability in the injected ExtensionCore
+    /// Enable built-in hooks for a tool in the injected ExtensionCore
     ///
     /// # Panics
     /// Panics if no ExtensionCore was injected (use `with_core` constructor).
-    pub async fn enable_builtin_hooks(&self, capability: &str) {
+    pub async fn enable_builtin_hooks(&self, tool_name: &str) {
         let core = self
             .core
             .as_ref()
             .expect("ExtensionCore not injected — use Services::with_core()");
         let builtins = core.list_builtin_extensions().await;
         for b in &builtins {
-            if b.name.eq_ignore_ascii_case(capability) {
+            if b.name.eq_ignore_ascii_case(tool_name) {
                 let ext_id = crate::extensions::framework::types::ExtensionId::new(&b.id);
                 let hooks = core.get_hooks_for_extension(&ext_id).await;
                 for hook in hooks {
@@ -151,18 +151,18 @@ impl Services {
         }
     }
 
-    /// Disable built-in hooks for a capability in the injected ExtensionCore
+    /// Disable built-in hooks for a tool in the injected ExtensionCore
     ///
     /// # Panics
     /// Panics if no ExtensionCore was injected (use `with_core` constructor).
-    pub async fn disable_builtin_hooks(&self, capability: &str) {
+    pub async fn disable_builtin_hooks(&self, tool_name: &str) {
         let core = self
             .core
             .as_ref()
             .expect("ExtensionCore not injected — use Services::with_core()");
         let builtins = core.list_builtin_extensions().await;
         for b in &builtins {
-            if b.name.eq_ignore_ascii_case(capability) {
+            if b.name.eq_ignore_ascii_case(tool_name) {
                 let ext_id = crate::extensions::framework::types::ExtensionId::new(&b.id);
                 let hooks = core.get_hooks_for_extension(&ext_id).await;
                 for hook in hooks {

@@ -255,10 +255,8 @@ impl McpRuntimeStarter {
         ext_dir: &Path,
         ctx: &StarterContext,
     ) -> anyhow::Result<()> {
-        let request_handler: Option<Arc<dyn ServerRequestHandler>> = ctx
-            .resolver
-            .as_ref()
-            .map(|resolver| {
+        let request_handler: Option<Arc<dyn ServerRequestHandler>> =
+            ctx.resolver.as_ref().map(|resolver| {
                 Arc::new(SamplingRequestHandler::new(Arc::clone(resolver)))
                     as Arc<dyn ServerRequestHandler>
             });

@@ -260,8 +260,8 @@ peko ext list
 # Install a new extension
 peko ext install <path-or-url>
 
-# Enable a capability
-peko ext enable <capability>
+# Enable a built-in tool
+peko ext enable <tool>
 ```
 
 ### 2. Configure Authentication

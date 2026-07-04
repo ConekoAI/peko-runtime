@@ -152,9 +152,7 @@ async fn notify_daemon_reload() {
             ..
         }) => {
             if providers_count > 0 || keys_count > 0 {
-                println!(
-                    "Daemon reloaded: {providers_count} provider(s), {keys_count} key(s)."
-                );
+                println!("Daemon reloaded: {providers_count} provider(s), {keys_count} key(s).");
             }
         }
         Ok(crate::ipc::ResponsePacket::Error { message, .. }) => {
@@ -597,14 +595,14 @@ mod tests {
             default: true,
             default_model: Some("claude-3-5-haiku-latest".into()),
         };
-        add_cmd(args, &paths).await.expect("one-shot add should succeed");
+        add_cmd(args, &paths)
+            .await
+            .expect("one-shot add should succeed");
 
         // 1. Catalog entry exists.
-        let cat = ProviderCatalog::load_or_init(
-            &paths.config_dir.join(ProviderCatalog::FILENAME),
-        )
-        .await
-        .unwrap();
+        let cat = ProviderCatalog::load_or_init(&paths.config_dir.join(ProviderCatalog::FILENAME))
+            .await
+            .unwrap();
         let entry = cat.get("anthropic").await.expect("entry should exist");
         assert_eq!(entry.id, "anthropic");
         assert!(entry.requires_key);
@@ -614,8 +612,7 @@ mod tests {
         //    race that hits when other parallel tests mutate
         //    `PEKO_MASTER_PASSPHRASE` between our write and read.
         let passphrase = SecretString::new("test-provider-cmd".to_string().into());
-        let vault =
-            Vault::load_with_passphrase(paths.resolver().vault(), &passphrase).unwrap();
+        let vault = Vault::load_with_passphrase(paths.resolver().vault(), &passphrase).unwrap();
         let stored = vault
             .get_provider_key("anthropic")
             .expect("key should be stored");

@@ -73,7 +73,9 @@ impl ServerRequestHandler for SamplingRequestHandler {
         // Prepend an explicit system prompt if the server provided one.
         if let Some(system_prompt) = req.system_prompt {
             if !system_prompt.is_empty() {
-                messages.push(crate::common::types::message::LlmMessage::system(system_prompt));
+                messages.push(crate::common::types::message::LlmMessage::system(
+                    system_prompt,
+                ));
             }
         }
 
@@ -206,8 +208,7 @@ mod tests {
         adapter.queue_text("Hello from the host model");
         let tmp = tempfile::tempdir().unwrap();
         let catalog_path = tmp.path().join("providers.toml");
-        let (resolver, _adapter) =
-            LlmResolver::mock(adapter, &catalog_path).await;
+        let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog_path).await;
 
         let handler = SamplingRequestHandler::new(resolver);
         let req = CreateMessageRequest {

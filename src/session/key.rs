@@ -267,7 +267,11 @@ pub fn derive_base_session_key(agent: &str, peer: &crate::auth::Subject) -> Stri
             format!("agent:{}:peer:user:{}", agent, sanitize_key_component(id))
         }
         Subject::Principal(id) => {
-            format!("agent:{}:peer:agent:{}", agent, sanitize_key_component(id.as_str()))
+            format!(
+                "agent:{}:peer:agent:{}",
+                agent,
+                sanitize_key_component(id.as_str())
+            )
         }
         Subject::Public => {
             tracing::warn!(

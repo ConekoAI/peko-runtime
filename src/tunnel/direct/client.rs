@@ -95,7 +95,9 @@ impl DirectClient {
             .into_client_request()
             .map_err(|e| DirectConnectionError::InvalidEndpoint(e.to_string()))?;
         let (ws_stream, _response) = match connector {
-            Some(connector) => connect_async_tls_with_config(req, None, false, Some(connector)).await?,
+            Some(connector) => {
+                connect_async_tls_with_config(req, None, false, Some(connector)).await?
+            }
             None => tokio_tungstenite::connect_async(req).await?,
         };
 
@@ -124,8 +126,7 @@ impl DirectClient {
             .next()
             .await
             .ok_or(DirectConnectionError::Closed)??;
-        let challenge_nonce = verify_tunnel_challenge(&decode_message(challenge_msg)?,
-        )?;
+        let challenge_nonce = verify_tunnel_challenge(&decode_message(challenge_msg)?)?;
 
         // 3. Send TunnelChallengeAck
         let ack = build_tunnel_challenge_ack(&challenge_nonce, &signing_key);
@@ -216,16 +217,20 @@ fn decode_message(msg: Message) -> Result<TunnelMessage, DirectConnectionError> 
         Message::Binary(bytes) => bytes,
         Message::Text(text) => text.into_bytes(),
         Message::Close(frame) => {
-            return Err(DirectConnectionError::Handshake(HandshakeError::UnexpectedMessage {
-                expected: "handshake".to_string(),
-                actual: format!("close: {frame:?}"),
-            }))
+            return Err(DirectConnectionError::Handshake(
+                HandshakeError::UnexpectedMessage {
+                    expected: "handshake".to_string(),
+                    actual: format!("close: {frame:?}"),
+                },
+            ))
         }
         other => {
-            return Err(DirectConnectionError::Handshake(HandshakeError::UnexpectedMessage {
-                expected: "handshake".to_string(),
-                actual: format!("{other:?}"),
-            }))
+            return Err(DirectConnectionError::Handshake(
+                HandshakeError::UnexpectedMessage {
+                    expected: "handshake".to_string(),
+                    actual: format!("{other:?}"),
+                },
+            ))
         }
     };
     TunnelMessage::from_bytes(&bytes).map_err(|e| DirectConnectionError::Wire(e.to_string()))
@@ -283,7 +288,10 @@ async fn run_client_read_loop(
 
 fn handle_direct_message(bytes: &[u8], pending: &PendingA2aResponses) {
     match TunnelMessage::from_bytes(bytes) {
-        Ok(TunnelMessage::AgentToAgentResponse { request_id, payload }) => {
+        Ok(TunnelMessage::AgentToAgentResponse {
+            request_id,
+            payload,
+        }) => {
             let completed = pending.complete(&request_id, payload);
             tracing::debug!(
                 request_id = %request_id,

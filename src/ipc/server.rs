@@ -1321,15 +1321,13 @@ impl IpcServer {
                         let mut manager = state.extension_manager().write().await;
                         let ext_services = state.extension_services();
                         if is_builtin {
-                            let capability = if id.starts_with("builtin:") {
+                            let tool_name = if id.starts_with("builtin:") {
                                 id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
                             } else {
                                 id.clone()
                             };
-                            ext_services.enable_builtin_hooks(&capability).await;
-                            Ok(format!(
-                                "Built-in capability '{capability}' enabled globally"
-                            ))
+                            ext_services.enable_builtin_hooks(&tool_name).await;
+                            Ok(format!("Built-in tool '{tool_name}' enabled globally"))
                         } else {
                             let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                             match manager.enable(&ext_id).await {
@@ -1414,15 +1412,13 @@ impl IpcServer {
                         let mut manager = state.extension_manager().write().await;
                         let ext_services = state.extension_services();
                         if is_builtin {
-                            let capability = if id.starts_with("builtin:") {
+                            let tool_name = if id.starts_with("builtin:") {
                                 id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
                             } else {
                                 id.clone()
                             };
-                            ext_services.disable_builtin_hooks(&capability).await;
-                            Ok(format!(
-                                "Built-in capability '{capability}' disabled globally"
-                            ))
+                            ext_services.disable_builtin_hooks(&tool_name).await;
+                            Ok(format!("Built-in tool '{tool_name}' disabled globally"))
                         } else {
                             let ext_id = crate::extensions::framework::types::ExtensionId::new(&id);
                             match manager.disable(&ext_id).await {

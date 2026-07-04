@@ -80,8 +80,7 @@ fn test_registry_config_with_token(host: &str, token: &str) -> RegistryConfig {
 /// Create a minimal PrincipalManifest with layers for testing
 #[allow(dead_code)]
 fn create_test_manifest(name: &str) -> (PrincipalManifest, Vec<Layer>) {
-    let mut manifest =
-        PrincipalManifest::new(name, "1.0.0", "did:peko:principal:test");
+    let mut manifest = PrincipalManifest::new(name, "1.0.0", "did:peko:principal:test");
 
     let config_data = b"config layer content";
     let identity_data = b"identity layer content";
@@ -436,12 +435,9 @@ async fn test_registry_client_bare_ref_resolution() {
     assert_eq!(resolved.tag, "v1.0");
 
     // Test bare ref without tag defaults to "latest"
-    let resolved = RegistryRef::parse_with_default(
-        "my-agent",
-        Some(host),
-        Some(ResourceType::Principal),
-    )
-    .unwrap();
+    let resolved =
+        RegistryRef::parse_with_default("my-agent", Some(host), Some(ResourceType::Principal))
+            .unwrap();
     assert_eq!(resolved.tag, "latest");
 
     // ADR-041: the Team resource type is no longer a valid path

@@ -84,10 +84,7 @@ pub enum SessionCommands {
         force: bool,
     },
     /// Switch active session (offline - updates preference file)
-    Switch {
-        agent: String,
-        session_id: String,
-    },
+    Switch { agent: String, session_id: String },
     /// Compact a session (offline - summarizes old messages)
     Compact {
         agent: String,
@@ -134,11 +131,7 @@ pub async fn handle_session(
                             active_session_id.as_deref(),
                         )?;
                     } else {
-                        render_session_list(
-                            &sessions,
-                            &agent_name,
-                            active_session_id.as_deref(),
-                        );
+                        render_session_list(&sessions, &agent_name, active_session_id.as_deref());
                     }
                     Ok(())
                 }
@@ -366,19 +359,14 @@ async fn show_session(
     show_history: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let Some(entry) = service
-        .get_session_synced(agent, session_id)
-        .await?
-    else {
+    let Some(entry) = service.get_session_synced(agent, session_id).await? else {
         return Err(anyhow::anyhow!(
             "Session '{session_id}' not found for agent '{agent}'"
         ));
     };
 
     let history_events = if show_history {
-        load_session_history(service, agent, session_id)
-            .await
-            .ok()
+        load_session_history(service, agent, session_id).await.ok()
     } else {
         None
     };
@@ -427,8 +415,7 @@ async fn switch_session(
     let sessions_dir = paths.resolver().agent_sessions_dir(agent);
     tokio::fs::create_dir_all(&sessions_dir).await?;
 
-    let mut manager =
-        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, user);
+    let mut manager = crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, user);
 
     let _ = manager
         .get_session_metadata(session_id)
@@ -439,9 +426,7 @@ async fn switch_session(
     manager.switch_session(&peer, session_id).await?;
 
     if json {
-        println!(
-            "{{\"success\": true, \"session_id\": \"{session_id}\", \"agent\": \"{agent}\"}}"
-        );
+        println!("{{\"success\": true, \"session_id\": \"{session_id}\", \"agent\": \"{agent}\"}}");
     } else {
         render_switch_success(agent, session_id);
     }

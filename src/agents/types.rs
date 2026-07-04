@@ -84,7 +84,6 @@ impl AgentInfo {
         self.image_ref = Some(image_ref);
         self
     }
-
 }
 
 /// Identity information

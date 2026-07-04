@@ -479,7 +479,8 @@ impl SessionRegistry for SessionIntrospector {
                 let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
                     // No peer recorded on the metadata — skip when the
                     // caller asked for a specific peer.
-                    let (have_kind, have_id) = match (m.peer_type.as_deref(), m.peer_id.as_deref()) {
+                    let (have_kind, have_id) = match (m.peer_type.as_deref(), m.peer_id.as_deref())
+                    {
                         (Some(k), Some(i)) => (k, i),
                         _ => return false,
                     };
@@ -651,7 +652,8 @@ impl SessionRegistry for SessionCache {
                         .unwrap_or(true)
                 });
                 let peer_match = peer_filter.as_ref().map_or(true, |(want_kind, want_id)| {
-                    let (have_kind, have_id) = match (s.peer_type.as_deref(), s.peer_id.as_deref()) {
+                    let (have_kind, have_id) = match (s.peer_type.as_deref(), s.peer_id.as_deref())
+                    {
                         (Some(k), Some(i)) => (k, i),
                         _ => return false,
                     };
@@ -1021,8 +1023,18 @@ mod tests {
             peer_id: Some("bob".to_string()),
         };
 
-        registry.add_session("alice-1".to_string(), alice_main, vec![], dummy_status("alice-1"));
-        registry.add_session("alice-2".to_string(), alice_other, vec![], dummy_status("alice-2"));
+        registry.add_session(
+            "alice-1".to_string(),
+            alice_main,
+            vec![],
+            dummy_status("alice-1"),
+        );
+        registry.add_session(
+            "alice-2".to_string(),
+            alice_other,
+            vec![],
+            dummy_status("alice-2"),
+        );
         registry.add_session("bob-1".to_string(), bob_main, vec![], dummy_status("bob-1"));
         registry
     }

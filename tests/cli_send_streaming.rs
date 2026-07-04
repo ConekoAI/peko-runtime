@@ -105,7 +105,9 @@ async fn send_uses_streaming_request_and_renders_chunks() {
                     let _ = server.send_to(&pong, &peer_path).await;
                 }
                 RequestPacket::PrincipalSendStream {
-                    request_id, message, ..
+                    request_id,
+                    message,
+                    ..
                 } => {
                     reply_send(&server, &peer_path, request_id).await;
                     if let Some(tx) = send_tx.take() {
@@ -118,7 +120,9 @@ async fn send_uses_streaming_request_and_renders_chunks() {
                     }
                 }
                 RequestPacket::PrincipalSend {
-                    request_id, message, ..
+                    request_id,
+                    message,
+                    ..
                 } => {
                     reply_send(&server, &peer_path, request_id).await;
                     if let Some(tx) = send_tx.take() {

@@ -279,12 +279,7 @@ async fn post_chat(
 /// becomes `Subject::User("local")` after the prefix default), and
 /// `permission` via `parse_permission` (so `"chat"` becomes
 /// `Permission::Chat`). Both forms are accepted positionally.
-fn run_peko_principal_permit(
-    cli: &PekoCli,
-    principal: &str,
-    subject_id: &str,
-    verb: &str,
-) {
+fn run_peko_principal_permit(cli: &PekoCli, principal: &str, subject_id: &str, verb: &str) {
     assert!(
         matches!(verb, "permit" | "revoke"),
         "verb must be permit|revoke"

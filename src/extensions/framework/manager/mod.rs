@@ -866,7 +866,7 @@ impl ExtensionManager {
         Ok(discovered)
     }
 
-    /// Given a tool/capability name from an agent's extensions.enabled whitelist,
+    /// Given a tool/extension name from an agent's extensions.enabled whitelist,
     /// resolve it to an installed extension's ID and source registry ref (if available).
     /// Returns None for built-in tools or unknown names.
     pub fn resolve_tool_name(&self, name: &str) -> Option<ToolResolution> {

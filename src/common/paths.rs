@@ -264,7 +264,10 @@ impl PathResolver {
     /// Path: `{data_dir}/principals/{principal}/memory`
     #[must_use]
     pub fn principal_memory_dir(&self, principal: &str) -> PathBuf {
-        self.data_dir.join("principals").join(principal).join("memory")
+        self.data_dir
+            .join("principals")
+            .join(principal)
+            .join("memory")
     }
 
     /// Get a principal's sessions directory
@@ -280,7 +283,10 @@ impl PathResolver {
     /// Path: `{data_dir}/principals/{principal}/identity`
     #[must_use]
     pub fn principal_identity_dir(&self, principal: &str) -> PathBuf {
-        self.data_dir.join("principals").join(principal).join("identity")
+        self.data_dir
+            .join("principals")
+            .join(principal)
+            .join("identity")
     }
 
     /// Get the path to a principal's identity storage directory.

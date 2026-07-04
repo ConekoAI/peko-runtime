@@ -432,7 +432,6 @@ impl AgentRegistry {
 
         Ok(stats)
     }
-
 }
 
 /// Normalize a digest to its bare hex form, stripping a `sha256:` or
@@ -457,8 +456,7 @@ fn digest_key(digest: &str) -> String {
 pub(crate) fn encode_tag(tag: &str) -> String {
     let mut out = String::with_capacity(tag.len());
     for (i, &b) in tag.as_bytes().iter().enumerate() {
-        let unreserved =
-            matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.');
+        let unreserved = matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.');
         if unreserved && !(b == b'.' && i == 0) {
             out.push(b as char);
         } else {
@@ -605,8 +603,7 @@ mod tests {
     #[tokio::test]
     async fn test_store_layer_rejects_oversized_layer() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let registry = AgentRegistry::new(temp_dir.path())
-            .with_storage_limits(Some(8), None);
+        let registry = AgentRegistry::new(temp_dir.path()).with_storage_limits(Some(8), None);
 
         let small = registry.store_layer("sha256:aaa", b"1234").await;
         assert!(small.is_ok());
@@ -618,8 +615,7 @@ mod tests {
     #[tokio::test]
     async fn test_store_layer_enforces_store_quota() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let registry = AgentRegistry::new(temp_dir.path())
-            .with_storage_limits(None, Some(10));
+        let registry = AgentRegistry::new(temp_dir.path()).with_storage_limits(None, Some(10));
 
         registry.store_layer("sha256:aaa", b"12345").await.unwrap();
         registry.store_layer("sha256:bbb", b"12345").await.unwrap();

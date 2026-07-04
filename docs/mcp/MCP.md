@@ -55,11 +55,11 @@ peko ext install <path-or-url>
 peko ext list
 ```
 
-### Enable/Disable Capabilities
+### Enable/Disable Extensions
 
 ```bash
-peko ext enable <capability>
-peko ext disable <capability>
+peko ext enable <mcp-extension>
+peko ext disable <mcp-extension>
 ```
 
 ### Start/Stop MCP Runtimes
@@ -114,7 +114,7 @@ name = "coding-agent"
 Enable the MCP extension for the agent:
 
 ```bash
-peko ext enable <mcp-capability>
+peko ext enable <mcp-extension>
 ```
 
 ## Available MCP Servers

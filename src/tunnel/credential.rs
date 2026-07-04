@@ -216,9 +216,18 @@ mod tests {
         assert_eq!(loaded.url, cred.url);
         assert_eq!(loaded.runtime_id, cred.runtime_id);
         let tls = loaded.tls.expect("TLS config should be present");
-        assert_eq!(tls.ca_path, Some(std::path::PathBuf::from("/etc/peko/ca.pem")));
-        assert_eq!(tls.cert_path, Some(std::path::PathBuf::from("/etc/peko/client.crt")));
-        assert_eq!(tls.key_path, Some(std::path::PathBuf::from("/etc/peko/client.key")));
+        assert_eq!(
+            tls.ca_path,
+            Some(std::path::PathBuf::from("/etc/peko/ca.pem"))
+        );
+        assert_eq!(
+            tls.cert_path,
+            Some(std::path::PathBuf::from("/etc/peko/client.crt"))
+        );
+        assert_eq!(
+            tls.key_path,
+            Some(std::path::PathBuf::from("/etc/peko/client.key"))
+        );
         assert_eq!(tls.pinned_cert_sha256, Some("abc123".to_string()));
     }
 

@@ -401,7 +401,10 @@ impl MetadataController {
 
             let peer = match e.peer_type.as_deref() {
                 Some("user") => e.peer_id.as_ref().map(|id| Subject::User(id.clone())),
-                Some("agent") => e.peer_id.as_ref().map(|id| Subject::Principal(id.clone().into())),
+                Some("agent") => e
+                    .peer_id
+                    .as_ref()
+                    .map(|id| Subject::Principal(id.clone().into())),
                 _ => None,
             };
 

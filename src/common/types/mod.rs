@@ -15,6 +15,6 @@ pub mod provider;
 pub mod task;
 
 pub use agent::{
-    AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult,
-    AgentInfo, AgentRenameResult, AgentSummary, AgentUpdateRequest,
+    AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult, AgentInfo,
+    AgentRenameResult, AgentSummary, AgentUpdateRequest,
 };

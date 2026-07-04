@@ -235,8 +235,7 @@ impl McpManager {
     }
 
     /// Build a server-request handler for sampling when a resolver is configured.
-    fn sampling_handler(&self,
-    ) -> Option<Arc<dyn ServerRequestHandler>> {
+    fn sampling_handler(&self) -> Option<Arc<dyn ServerRequestHandler>> {
         self.llm_resolver.as_ref().map(|resolver| {
             Arc::new(SamplingRequestHandler::new(Arc::clone(resolver)))
                 as Arc<dyn ServerRequestHandler>
