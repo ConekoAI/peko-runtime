@@ -254,13 +254,8 @@ impl BashTool {
             )
             .await
         } else {
-            Self::execute_command_blocking(
-                &args.command,
-                cwd,
-                args.timeout,
-                args.max_output_bytes,
-            )
-            .await
+            Self::execute_command_blocking(&args.command, cwd, args.timeout, args.max_output_bytes)
+                .await
         }
     }
 }

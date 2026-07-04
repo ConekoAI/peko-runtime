@@ -126,4 +126,3 @@ pub struct AgentUpdateRequest {
     /// Merge arbitrary config values
     pub config: Option<serde_json::Value>,
 }
-

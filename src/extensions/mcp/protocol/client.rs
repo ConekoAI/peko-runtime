@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, trace, warn};
 
 /// Errors that can occur during MCP client operations
@@ -172,8 +172,12 @@ impl McpClient {
             Arc::new(Mutex::new(HashMap::new()));
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
-        let receive_task =
-            Self::spawn_receive_loop(Arc::clone(&transport), Arc::clone(&pending), handler, shutdown_rx);
+        let receive_task = Self::spawn_receive_loop(
+            Arc::clone(&transport),
+            Arc::clone(&pending),
+            handler,
+            shutdown_rx,
+        );
 
         Self {
             transport,

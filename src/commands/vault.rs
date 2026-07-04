@@ -87,11 +87,7 @@ pub async fn execute(cmd: VaultCommands, paths: &GlobalPaths) -> Result<()> {
     }
 }
 
-async fn migrate_cmd(
-    paths: &GlobalPaths,
-    target: UnlockMethod,
-    skip_confirm: bool,
-) -> Result<()> {
+async fn migrate_cmd(paths: &GlobalPaths, target: UnlockMethod, skip_confirm: bool) -> Result<()> {
     // Refuse to migrate while a daemon is running. The daemon holds a
     // long-lived `Arc<Vault>` whose `unlock_method` is set at
     // construction time and is not mutable via `reload()`; flipping
@@ -108,11 +104,8 @@ async fn migrate_cmd(
     // Load the vault without the env-var override interfering. The
     // migrate operation must observe the *current* on-disk state, not
     // what the user has asserted in `PEKO_UNLOCK_METHOD`.
-    let mut vault = Vault::load_with_override(
-        paths.resolver().vault(),
-        UnlockMethodOverride::Auto,
-    )
-    .with_context(|| "failed to load vault for migration")?;
+    let mut vault = Vault::load_with_override(paths.resolver().vault(), UnlockMethodOverride::Auto)
+        .with_context(|| "failed to load vault for migration")?;
 
     let current = vault.unlock_method();
     if current == target {

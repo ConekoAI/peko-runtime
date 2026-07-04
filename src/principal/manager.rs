@@ -168,8 +168,9 @@ impl PrincipalManager {
             .map_err(PrincipalManagerError::Io)?;
 
         // Detect the legacy `[capabilities]` table name so we can warn users
-        // to migrate to `[allowed_extensions]`. Both keys still parse because
-        // of the serde alias, but new files are written with the new name.
+        // to migrate to `allowed_extensions = [...]`. Both keys still parse
+        // because of the serde alias, but new files are written with the new
+        // flat-array form.
         let raw_config: toml::Value = toml::from_str(&config_str)
             .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
         let uses_legacy_capabilities = raw_config.get("capabilities").is_some();
@@ -182,7 +183,7 @@ impl PrincipalManager {
             tracing::warn!(
                 principal = %config.name,
                 config_path = %config_path.display(),
-                "principal.toml uses legacy [capabilities] table; consider renaming it to [allowed_extensions]"
+                "principal.toml uses legacy [capabilities] table; migrate to allowed_extensions = [...]"
             );
         }
 
@@ -447,7 +448,7 @@ impl PrincipalManager {
             });
         }
 
-        let (available_agents, routing, capabilities, intent, governance, principal_name) = {
+        let (available_agents, routing, allowed_extensions, intent, governance, principal_name) = {
             let config = principal.config.read().await;
             let available_agents: Vec<_> = principal
                 .agent_prompts
@@ -460,7 +461,7 @@ impl PrincipalManager {
             (
                 available_agents,
                 config.routing.clone(),
-                config.capabilities.clone(),
+                config.allowed_extensions.clone(),
                 config.intent.clone(),
                 config.governance.clone(),
                 config.name.clone(),
@@ -476,7 +477,7 @@ impl PrincipalManager {
             routing,
             recalled_context,
             available_agents,
-            capabilities,
+            allowed_extensions,
             intent,
             governance,
             inbox_registry: Arc::clone(&self.inbox_registry),
@@ -622,9 +623,8 @@ mod tests {
     use crate::extensions::framework::core::init_global_core;
     use crate::principal::{
         config::{
-            PrincipalCapabilities, PrincipalConfig, PrincipalGovernanceConfig,
-            PrincipalIdentityConfig, PrincipalIntentConfig, PrincipalMemoryConfig,
-            PrincipalRoutingConfig,
+            AllowedExtensions, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+            PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
         },
         router::{ChannelContext, ChannelKind},
         DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
@@ -695,7 +695,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: PrincipalCapabilities::default(),
+            allowed_extensions: AllowedExtensions::default(),
             exposure: crate::tunnel::protocol::InstanceExposure::Private,
             status: None,
             permissions: vec![PermissionGrant {

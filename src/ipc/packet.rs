@@ -499,10 +499,7 @@ pub enum RequestPacket {
     },
 
     #[serde(rename = "principal_permissions")]
-    PrincipalPermissions {
-        request_id: u64,
-        name: String,
-    },
+    PrincipalPermissions { request_id: u64, name: String },
 }
 
 impl RequestPacket {
@@ -1010,30 +1007,21 @@ pub enum ResponsePacket {
     /// Non-streaming result of `PrincipalSend`. Single packet with the
     /// root agent's final answer.
     #[serde(rename = "principal_sent")]
-    PrincipalSent {
-        request_id: u64,
-        content: String,
-    },
+    PrincipalSent { request_id: u64, content: String },
 
     /// Streaming chunk of a `PrincipalSendStream` response. The daemon
     /// emits zero or more of these as the root agent agent produces
     /// assistant text. The frontend appends each `delta` to the
     /// in-flight assistant message.
     #[serde(rename = "principal_sent_chunk")]
-    PrincipalSentChunk {
-        request_id: u64,
-        delta: String,
-    },
+    PrincipalSentChunk { request_id: u64, delta: String },
 
     /// Final packet of a `PrincipalSendStream` response. Carries the
     /// full final answer (same content the non-streaming `PrincipalSent`
     /// would have returned) so the frontend can confirm the response
     /// and persist it. Always followed by a `Done` packet.
     #[serde(rename = "principal_sent_done")]
-    PrincipalSentDone {
-        request_id: u64,
-        content: String,
-    },
+    PrincipalSentDone { request_id: u64, content: String },
 
     #[serde(rename = "principal_exported")]
     PrincipalExported {
@@ -1869,10 +1857,7 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::SessionList {
-                request_id,
-                agent,
-            } => {
+            RequestPacket::SessionList { request_id, agent } => {
                 assert_eq!(request_id, 500);
                 assert_eq!(agent, Some("test-agent".to_string()));
             }
@@ -1891,7 +1876,7 @@ mod tests {
                 description: Some("test principal".to_string()),
                 exposure: crate::tunnel::protocol::InstanceExposure::default(),
                 status: None,
-                capabilities: crate::principal::config::PrincipalCapabilities::default(),
+                allowed_extensions: crate::principal::config::AllowedExtensions::default(),
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             }],
@@ -1922,7 +1907,7 @@ mod tests {
                 description: None,
                 exposure: crate::tunnel::protocol::InstanceExposure::default(),
                 status: None,
-                capabilities: crate::principal::config::PrincipalCapabilities::default(),
+                allowed_extensions: crate::principal::config::AllowedExtensions::default(),
                 agent_prompt_count: 2,
                 workspace_path: "/tmp/helper".to_string(),
             }),
@@ -3188,10 +3173,7 @@ mod tests {
             subject: crate::auth::Subject::Public,
             permission: crate::auth::ownership::Permission::Chat,
         };
-        assert_eq!(
-            pkt.resolved_subject(),
-            crate::auth::Subject::Public
-        );
+        assert_eq!(pkt.resolved_subject(), crate::auth::Subject::Public);
     }
 
     #[test]
@@ -3517,7 +3499,10 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::PrincipalSent { request_id, content } => {
+            ResponsePacket::PrincipalSent {
+                request_id,
+                content,
+            } => {
                 assert_eq!(request_id, 6000);
                 assert_eq!(content, "hi there");
             }
@@ -3546,7 +3531,10 @@ mod tests {
             } => {
                 assert_eq!(request_id, 6001);
                 assert_eq!(permissions.len(), 1);
-                assert_eq!(permissions[0].subject, crate::auth::Subject::User("bob".to_string()));
+                assert_eq!(
+                    permissions[0].subject,
+                    crate::auth::Subject::User("bob".to_string())
+                );
             }
             _ => panic!("Wrong variant"),
         }

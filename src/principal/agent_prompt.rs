@@ -96,13 +96,16 @@ mod tests {
         let path = dir.path().join("reviewer.md");
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(
-            b"---\nname: reviewer\ndescription: Code reviewer\n---\nYou are a code reviewer."
+            b"---\nname: reviewer\ndescription: Code reviewer\n---\nYou are a code reviewer.",
         )
         .unwrap();
 
         let prompt = load_agent_prompt(&path).unwrap();
         assert_eq!(prompt.name, "reviewer");
-        assert_eq!(prompt.frontmatter.description.as_deref(), Some("Code reviewer"));
+        assert_eq!(
+            prompt.frontmatter.description.as_deref(),
+            Some("Code reviewer")
+        );
         assert_eq!(prompt.body, "You are a code reviewer.");
     }
 }

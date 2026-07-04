@@ -174,7 +174,7 @@ fn write_capability_principal(
         return;
     }
 
-    // Add the MCP capability grants on top of the universal tool grants.
+    // Add the MCP extension grants on top of the universal tool grants.
     let path = cli
         .peko_dir()
         .join("principals")
@@ -183,7 +183,8 @@ fn write_capability_principal(
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
-    cfg.capabilities.mcps = mcps.iter().map(|s| s.to_string()).collect();
+    cfg.allowed_extensions
+        .extend(mcps.iter().map(|s| s.to_string()));
     std::fs::write(
         &path,
         toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
@@ -196,7 +197,7 @@ fn write_capability_principal(
 // ---------------------------------------------------------------------------
 
 /// L3 MCP round-trip: install the Tier-1 `standard-echo` MCP server
-/// fixture, create a Principal whose `[capabilities] mcps` grants the
+/// fixture, create a Principal whose `allowed_extensions` grants the
 /// bare `standard-echo` server id, script a 2-turn
 /// `tool_call(echo, "peko-l3-mcp-…") → text("ECHO_DONE …")` dialog,
 /// run `peko send`, and assert the LLM's final text contains both the

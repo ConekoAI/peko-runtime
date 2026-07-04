@@ -30,4 +30,3 @@ pub fn missing_session_error() -> anyhow::Error {
          which always supplies a session_id)"
     )
 }
-

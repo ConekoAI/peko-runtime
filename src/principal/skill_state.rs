@@ -25,7 +25,7 @@ pub struct SkillState {
 }
 
 impl SkillState {
-    /// Build a `SkillState` from the raw capability list.
+    /// Build a `SkillState` from the raw allowed extension list.
     pub fn new(allowlist: Vec<String>, workspace: PathBuf) -> Self {
         let allowlist = allowlist
             .into_iter()
@@ -168,6 +168,10 @@ mod tests {
     #[tokio::test]
     async fn unknown_principal_is_fail_closed() {
         let registry = SkillStateRegistry::default();
-        assert!(!registry.is_skill_enabled(Some(&pid("unknown")), "docker").await);
+        assert!(
+            !registry
+                .is_skill_enabled(Some(&pid("unknown")), "docker")
+                .await
+        );
     }
 }

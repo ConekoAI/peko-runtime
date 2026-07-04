@@ -750,16 +750,16 @@ impl SessionIndex {
         let json = serde_json::to_string_pretty(value)?;
         let temp_path = path.with_extension(format!("{}.tmp", std::process::id()));
 
-        let mut file = fs::File::create(&temp_path)
-            .await
-            .with_context(|| format!("Failed to create temp index file: {}", temp_path.display()))?;
+        let mut file = fs::File::create(&temp_path).await.with_context(|| {
+            format!("Failed to create temp index file: {}", temp_path.display())
+        })?;
         file.write_all(json.as_bytes()).await?;
         file.sync_all().await?;
         drop(file);
 
-        fs::rename(&temp_path, path)
-            .await
-            .with_context(|| format!("Failed to rename index file into place: {}", path.display()))?;
+        fs::rename(&temp_path, path).await.with_context(|| {
+            format!("Failed to rename index file into place: {}", path.display())
+        })?;
         Ok(())
     }
 

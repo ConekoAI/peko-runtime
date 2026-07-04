@@ -32,8 +32,7 @@ impl OAuthFlow {
 
         let mut hasher = Sha256::new();
         hasher.update(verifier.as_bytes());
-        let challenge =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize());
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize());
 
         (verifier, challenge)
     }
@@ -130,7 +129,10 @@ impl OAuthFlow {
     }
 
     /// Refresh an access token using a refresh token.
-    pub async fn refresh_token(config: &McpAuthConfig, refresh_token: &str) -> Result<OAuthTokenEntry> {
+    pub async fn refresh_token(
+        config: &McpAuthConfig,
+        refresh_token: &str,
+    ) -> Result<OAuthTokenEntry> {
         let token_endpoint = config
             .token_endpoint
             .as_ref()
@@ -180,10 +182,7 @@ impl OAuthFlow {
         });
 
         Ok(OAuthTokenEntry {
-            server: config
-                .oauth_client_id
-                .clone()
-                .unwrap_or_default(),
+            server: config.oauth_client_id.clone().unwrap_or_default(),
             access_token: token.access_token,
             refresh_token: token.refresh_token,
             expires_at,
@@ -219,10 +218,7 @@ impl OAuthFlow {
             .split('&')
             .filter_map(|pair| {
                 let mut it = pair.splitn(2, '=');
-                Some((
-                    it.next()?.to_string(),
-                    it.next().unwrap_or("").to_string(),
-                ))
+                Some((it.next()?.to_string(), it.next().unwrap_or("").to_string()))
             })
             .collect();
 
@@ -285,8 +281,7 @@ mod tests {
         // Verify challenge is SHA-256 of verifier.
         let mut hasher = Sha256::new();
         hasher.update(verifier.as_bytes());
-        let expected =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize());
+        let expected = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize());
         assert_eq!(challenge, expected);
     }
 

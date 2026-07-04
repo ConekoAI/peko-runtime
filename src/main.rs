@@ -1,9 +1,9 @@
 use clap::Parser;
 use clap_complete::generate;
 use peko::commands::{
-    auth, config, credential, cron, daemon, ext, init_logging, orchestration, principal,
-    provider, registry, runtime, search, send, session, system, tunnel, update, vault, Cli,
-    Commands, GlobalPaths,
+    auth, config, credential, cron, daemon, ext, init_logging, orchestration, principal, provider,
+    registry, runtime, search, send, session, system, tunnel, update, vault, Cli, Commands,
+    GlobalPaths,
 };
 use peko::common::types::config::PekoConfig;
 

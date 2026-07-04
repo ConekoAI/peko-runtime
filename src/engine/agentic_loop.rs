@@ -64,7 +64,7 @@ pub struct AgenticLoop {
     /// logging can attribute the call to a real user — see issue #17.
     caller_id: Option<String>,
     /// Spawning principal's runtime id. Propagated to
-    /// `HookInput::ToolCall::principal_id` so capability-scoped tools
+    /// `HookInput::ToolCall::principal_id` so extension-scoped tools
     /// such as `Skill` can resolve per-principal state via the
     /// `SkillStateRegistry` at handle time.
     agent_principal_id: Option<String>,

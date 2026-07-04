@@ -452,10 +452,7 @@ impl BackgroundRuntimeAdapter for McpRuntimeAdapter {
                     prompts
                 }
                 Err(e) => {
-                    warn!(
-                        "MCP server '{}' prompt discovery failed: {}",
-                        runtime.id, e
-                    );
+                    warn!("MCP server '{}' prompt discovery failed: {}", runtime.id, e);
                     Vec::new()
                 }
             }

@@ -140,11 +140,7 @@ exposure = "private"
 [identity]
 display_name = "E2E Test Principal"
 
-[capabilities]
-tools = []
-skills = []
-mcps = []
-agents = []
+allowed_extensions = []
 
 # Grant the test user Chat permission so the runtime's private-
 # instance ACL (peko-runtime/src/tunnel/dispatcher.rs::
@@ -325,10 +321,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     //    Suffix with a process-unique nonce (random u64) — the DID itself
     //    isn't safe to use directly since it contains `:` which some
     //    PekoHub columns reject.
-    let run_tag = format!(
-        "{:016x}",
-        rand::random::<u64>()
-    );
+    let run_tag = format!("{:016x}", rand::random::<u64>());
     let user_resp = client
         .post(format!("{}/test/create-user", backend.url))
         .json(&serde_json::json!({
@@ -497,10 +490,12 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let mock_multi_word = "Peko tunnel works";
     if let Some(mock_url) = std::env::var_os("MOCK_LLM_URL") {
         let mock_url = mock_url.to_string_lossy().to_string();
-        let script =
-            serde_json::json!({ mock_multi_word: mock_multi_word }).to_string();
+        let script = serde_json::json!({ mock_multi_word: mock_multi_word }).to_string();
         let cfg = client
-            .post(format!("{}/_test/configure", mock_url.trim_end_matches('/')))
+            .post(format!(
+                "{}/_test/configure",
+                mock_url.trim_end_matches('/')
+            ))
             .json(&serde_json::json!({ "MOCK_LLM_SCRIPT": script }))
             .send()
             .await

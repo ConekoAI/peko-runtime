@@ -7,9 +7,7 @@
 
 use crate::agents::agent_config::{AgentConfig, PromptConfig};
 use crate::commands::agent_bootstrap::AgentBootstrap;
-use crate::common::identifiers::{
-    parse_agent_name, validate_agent_name, ValidationError,
-};
+use crate::common::identifiers::{parse_agent_name, validate_agent_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::types::agent::{
     AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult, AgentInfo,
@@ -43,7 +41,9 @@ fn build_default_agent_config(name: &str, provider: &str, model: Option<String>)
         preferred_model_id,
         // No authored body — `SystemPromptBuilder` falls back to
         // "You are <name>." for empty bodies.
-        prompt: Some(PromptConfig { body: String::new() }),
+        prompt: Some(PromptConfig {
+            body: String::new(),
+        }),
         ..Default::default()
     }
 }
@@ -188,11 +188,7 @@ impl AgentService {
     }
 
     /// Resolve a principal agent from its `AGENT.md` extension.
-    async fn resolve_principal_agent(
-        &self,
-        name: &str,
-        workspace: &Path,
-    ) -> Result<AgentConfig> {
+    async fn resolve_principal_agent(&self, name: &str, workspace: &Path) -> Result<AgentConfig> {
         let agent_md = workspace.join("agents").join(name).join("AGENT.md");
         if !agent_md.exists() {
             anyhow::bail!("No AGENT.md for principal agent '{name}' at {agent_md:?}");
@@ -207,9 +203,7 @@ impl AgentService {
             version: "3.0".to_string(),
             name: prompt.name,
             description: prompt.frontmatter.description,
-            prompt: Some(crate::agents::agent_config::PromptConfig {
-                body: prompt.body,
-            }),
+            prompt: Some(crate::agents::agent_config::PromptConfig { body: prompt.body }),
             extensions: Some(extensions),
             ..AgentConfig::default()
         })
@@ -453,7 +447,9 @@ impl AgentService {
                 tokio::fs::create_dir_all(&workspace_dir).await.ok();
                 let system_md_path = workspace_dir.join("SYSTEM.md");
                 tokio::fs::write(&system_md_path, &system_prompt).await?;
-                config.prompt = Some(PromptConfig { body: system_prompt });
+                config.prompt = Some(PromptConfig {
+                    body: system_prompt,
+                });
             } else {
                 config.prompt = None;
             }
@@ -622,7 +618,6 @@ cron.json
 
         Ok(())
     }
-
 }
 
 /// Map validation error to anyhow error with descriptive message

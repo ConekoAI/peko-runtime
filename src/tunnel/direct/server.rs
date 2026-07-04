@@ -20,8 +20,8 @@ use tokio_tungstenite::{
 
 use crate::common::types::config::DirectNetworkConfig;
 use crate::tunnel::direct::handshake::{
-    build_tunnel_challenge, build_tunnel_ready, verify_runtime_hello,
-    verify_tunnel_challenge_ack, HandshakeError,
+    build_tunnel_challenge, build_tunnel_ready, verify_runtime_hello, verify_tunnel_challenge_ack,
+    HandshakeError,
 };
 use crate::tunnel::direct::tls::build_server_config;
 use crate::tunnel::known_runtimes::{KnownRuntimes, TrustLevel};
@@ -30,9 +30,7 @@ use crate::tunnel::{TunnelHandle, TUNNEL_OUTBOUND_BUFFER_SIZE};
 
 /// Handler type for inbound direct messages.
 pub type DirectMessageHandler = Arc<
-    dyn Fn(TunnelMessage, TunnelHandle) -> Pin<Box<dyn Future<Output = ()> + Send>>
-        + Send
-        + Sync,
+    dyn Fn(TunnelMessage, TunnelHandle) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
 >;
 
 /// Errors that can occur in the direct server.
@@ -206,26 +204,23 @@ impl DirectServer {
     ) -> Result<(), DirectServerError> {
         let stream: ServerStream = match acceptor {
             Some(acceptor) => {
-                let tls_stream = acceptor.accept(stream).await.map_err(|e| {
-                    DirectServerError::Tls(format!("TLS accept failed: {e}"))
-                })?;
+                let tls_stream = acceptor
+                    .accept(stream)
+                    .await
+                    .map_err(|e| DirectServerError::Tls(format!("TLS accept failed: {e}")))?;
                 ServerStream::Tls(tls_stream)
             }
             None => ServerStream::Plain(stream),
         };
 
-        let mut ws_stream = accept_async_with_config(stream, Some(WebSocketConfig::default()))
-            .await?;
+        let mut ws_stream =
+            accept_async_with_config(stream, Some(WebSocketConfig::default())).await?;
 
         // 1. Receive RuntimeHello
-        let hello_msg = ws_stream
-            .next()
-            .await
-            .ok_or(DirectServerError::Handshake(HandshakeError::MissingField(
-                "runtime_hello".to_string(),
-            )))??;
-        let peer_runtime_id =
-            verify_runtime_hello(&decode_message(hello_msg)?)?;
+        let hello_msg = ws_stream.next().await.ok_or(DirectServerError::Handshake(
+            HandshakeError::MissingField("runtime_hello".to_string()),
+        ))??;
+        let peer_runtime_id = verify_runtime_hello(&decode_message(hello_msg)?)?;
 
         // 2. Authorize peer
         {
@@ -253,14 +248,14 @@ impl DirectServer {
             .await?;
 
         // 4. Receive TunnelChallengeAck
-        let ack_msg = ws_stream
-            .next()
-            .await
-            .ok_or(DirectServerError::Handshake(HandshakeError::MissingField(
-                "tunnel_challenge_ack".to_string(),
-            )))??;
+        let ack_msg = ws_stream.next().await.ok_or(DirectServerError::Handshake(
+            HandshakeError::MissingField("tunnel_challenge_ack".to_string()),
+        ))??;
         verify_tunnel_challenge_ack(
-            &decode_message(ack_msg)?, &peer_runtime_id, &challenge_nonce)?;
+            &decode_message(ack_msg)?,
+            &peer_runtime_id,
+            &challenge_nonce,
+        )?;
 
         // 5. Send TunnelReady
         let ready = build_tunnel_ready();
@@ -299,16 +294,20 @@ fn decode_message(msg: Message) -> Result<TunnelMessage, DirectServerError> {
         Message::Binary(bytes) => bytes,
         Message::Text(text) => text.into_bytes(),
         Message::Close(frame) => {
-            return Err(DirectServerError::Handshake(HandshakeError::UnexpectedMessage {
-                expected: "handshake".to_string(),
-                actual: format!("close: {frame:?}"),
-            }))
+            return Err(DirectServerError::Handshake(
+                HandshakeError::UnexpectedMessage {
+                    expected: "handshake".to_string(),
+                    actual: format!("close: {frame:?}"),
+                },
+            ))
         }
         other => {
-            return Err(DirectServerError::Handshake(HandshakeError::UnexpectedMessage {
-                expected: "handshake".to_string(),
-                actual: format!("{other:?}"),
-            }))
+            return Err(DirectServerError::Handshake(
+                HandshakeError::UnexpectedMessage {
+                    expected: "handshake".to_string(),
+                    actual: format!("{other:?}"),
+                },
+            ))
         }
     };
     TunnelMessage::from_bytes(&bytes).map_err(|e| DirectServerError::Wire(e.to_string()))

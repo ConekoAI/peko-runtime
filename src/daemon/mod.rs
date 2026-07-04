@@ -21,7 +21,7 @@ use chrono::Utc;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 

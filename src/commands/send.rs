@@ -191,13 +191,8 @@ mod tests {
 
     #[test]
     fn send_parses_principal_and_message() {
-        let cli = Cli::try_parse_from([
-            "peko",
-            "send",
-            "myprincipal",
-            "hello",
-        ])
-        .expect("should parse send command");
+        let cli = Cli::try_parse_from(["peko", "send", "myprincipal", "hello"])
+            .expect("should parse send command");
 
         match cli.command {
             Commands::Send(args) => {
@@ -211,14 +206,8 @@ mod tests {
 
     #[test]
     fn send_parses_file_flag() {
-        let cli = Cli::try_parse_from([
-            "peko",
-            "send",
-            "myprincipal",
-            "--file",
-            "prompt.txt",
-        ])
-        .expect("should parse send command with file");
+        let cli = Cli::try_parse_from(["peko", "send", "myprincipal", "--file", "prompt.txt"])
+            .expect("should parse send command with file");
 
         match cli.command {
             Commands::Send(args) => {

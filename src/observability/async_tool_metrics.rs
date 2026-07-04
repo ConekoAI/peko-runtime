@@ -5,7 +5,7 @@
 //! - Duration tracking
 //! - Success/failure rates
 //! - Cancellation counts
-//! - Tool capability detection
+//! - Tool async support detection
 
 use crate::extensions::framework::async_exec::executor::{AsyncTaskId, AsyncTaskStatus};
 use std::collections::HashMap;

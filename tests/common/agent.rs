@@ -113,7 +113,7 @@ pub fn create_mock_principal_with_tools(
         return;
     }
 
-    // Patch the Principal's capability tools so the root agent's whitelist
+    // Patch the Principal's allowed extensions so the root agent's whitelist
     // includes them. We rewrite `principal.toml` directly rather than going
     // through a CLI grant path so the helper stays a single, daemon-free
     // setup step (callable before `DaemonGuard::spawn`).
@@ -131,7 +131,7 @@ pub fn create_mock_principal_with_tools(
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
     let mut cfg: peko::principal::config::PrincipalConfig =
         toml::from_str(&raw).expect("parse principal.toml");
-    cfg.capabilities.tools = tools
+    cfg.allowed_extensions.0 = tools
         .iter()
         .flat_map(|t| [t.to_string(), format!("builtin:tool:{t}")])
         .collect();

@@ -1,7 +1,7 @@
 //! Principal management commands
 //!
 //! Principals are top-level AI actors that own identity, memory, intent,
-//! governance, capabilities, and thin Markdown agent prompts. This module
+//! governance, allowed extensions, and thin Markdown agent prompts. This module
 //! implements the `peko principal` CLI surface.
 
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use crate::common::paths::PathResolver;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use crate::principal::{
     config::{
-        PrincipalCapabilities, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+        AllowedExtensions, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
         PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
     },
     factory::{DefaultPrincipalRouterFactory, PrincipalMemoryFactory},
@@ -827,7 +827,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         governance: PrincipalGovernanceConfig::default(),
         memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
-        capabilities: PrincipalCapabilities::default(),
+        allowed_extensions: AllowedExtensions::default(),
         exposure: crate::tunnel::protocol::InstanceExposure::Private,
         status: None,
         permissions: Vec::new(),

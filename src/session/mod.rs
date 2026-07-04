@@ -158,10 +158,8 @@ mod safe_filename_tests {
             let out = safe_filename_component(input);
             for ch in out.chars() {
                 assert!(
-                    !matches!(
-                        ch,
-                        '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
-                    ) && (ch as u32) >= 0x20,
+                    !matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+                        && (ch as u32) >= 0x20,
                     "safe_filename_component({input:?}) produced unsafe char {ch:?}"
                 );
             }

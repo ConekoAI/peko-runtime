@@ -5,10 +5,7 @@
 //! - `SseTransport`: HTTP+SSE remote communication (Phase 2)
 
 use crate::common::vault::Vault;
-use crate::extensions::mcp::protocol::{
-    config::McpAuthConfig,
-    types::JsonRpcMessage,
-};
+use crate::extensions::mcp::protocol::{config::McpAuthConfig, types::JsonRpcMessage};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -763,8 +760,7 @@ impl SseTransport {
     }
 
     /// Build the authentication headers for this transport.
-    fn auth_headers(&self,
-    ) -> Result<HeaderMap> {
+    fn auth_headers(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
 
         if let Some(ref auth) = self.auth {
@@ -783,7 +779,9 @@ impl SseTransport {
 
             for (name, value) in &auth.headers {
                 let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                    .map_err(|e| TransportError::Sse(format!("Invalid header name '{name}': {e}")))?;
+                    .map_err(|e| {
+                        TransportError::Sse(format!("Invalid header name '{name}': {e}"))
+                    })?;
                 headers.insert(
                     header_name,
                     HeaderValue::from_str(value)
@@ -796,17 +794,17 @@ impl SseTransport {
     }
 
     /// Read the current OAuth access token from the vault, if any.
-    fn vault_token(&self,
-    ) -> Option<String> {
+    fn vault_token(&self) -> Option<String> {
         let vault = self.vault.as_ref()?;
         let server_name = self.server_name.as_ref()?;
-        vault.get_oauth_token(server_name).map(|entry| entry.access_token)
+        vault
+            .get_oauth_token(server_name)
+            .map(|entry| entry.access_token)
     }
 
     /// Try to refresh the OAuth token using the stored refresh token.
     /// Returns true if a new access token was written to the vault.
-    async fn try_refresh_token(&self,
-    ) -> bool {
+    async fn try_refresh_token(&self) -> bool {
         let (vault, server_name, auth) = match (&self.vault, &self.server_name, &self.auth) {
             (Some(vault), Some(server_name), Some(auth)) => (vault, server_name, auth),
             _ => return false,
@@ -820,8 +818,11 @@ impl SseTransport {
             None => return false,
         };
 
-        match crate::extensions::mcp::protocol::oauth::OAuthFlow::refresh_token(auth, &refresh_token)
-            .await
+        match crate::extensions::mcp::protocol::oauth::OAuthFlow::refresh_token(
+            auth,
+            &refresh_token,
+        )
+        .await
         {
             Ok(entry) => {
                 let _ = vault.set_oauth_token(server_name, &entry);
@@ -892,7 +893,8 @@ impl McpTransport for SseTransport {
         let response = self.send_with_headers(&json, self.auth_headers()?).await?;
 
         // On 401, attempt a single OAuth token refresh and retry.
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.try_refresh_token().await {
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.try_refresh_token().await
+        {
             let response = self.send_with_headers(&json, self.auth_headers()?).await?;
             if response.status().is_success() {
                 return Ok(());

@@ -418,10 +418,7 @@ mod tests {
             Some("wss://192.168.1.10:11436".to_string())
         );
         let tls = runtime.direct_tls.as_ref().unwrap();
-        assert_eq!(
-            tls.pinned_cert_sha256.as_deref(),
-            Some("sha256-of-cert")
-        );
+        assert_eq!(tls.pinned_cert_sha256.as_deref(), Some("sha256-of-cert"));
         assert!(tls.allow_plaintext);
     }
 
@@ -437,7 +434,10 @@ trust_level = "authorized"
 "#;
         let parsed: KnownRuntimes = toml::from_str(old_toml).unwrap();
         assert_eq!(parsed.runtimes.len(), 1);
-        assert_eq!(parsed.runtimes[0].transport_preference, TransportPreference::Auto);
+        assert_eq!(
+            parsed.runtimes[0].transport_preference,
+            TransportPreference::Auto
+        );
         assert!(parsed.runtimes[0].direct_endpoint.is_none());
         assert!(parsed.runtimes[0].direct_tls.is_none());
     }

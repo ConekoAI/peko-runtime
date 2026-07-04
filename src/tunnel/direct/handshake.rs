@@ -156,8 +156,8 @@ fn verify_signature(
     message: &[u8],
     signature_b64: &str,
 ) -> Result<(), HandshakeError> {
-    let verifying_key =
-        did_key_to_verifying_key(runtime_id).map_err(|e| HandshakeError::InvalidDid(e.to_string()))?;
+    let verifying_key = did_key_to_verifying_key(runtime_id)
+        .map_err(|e| HandshakeError::InvalidDid(e.to_string()))?;
 
     let signature_bytes = BASE64
         .decode(signature_b64)
@@ -217,16 +217,14 @@ mod tests {
         let nonce = verify_tunnel_challenge(&challenge).unwrap();
 
         let ack = build_tunnel_challenge_ack(&nonce, &signing_key);
-        assert!(verify_tunnel_challenge_ack(&ack, &runtime_id, &nonce)
-            .is_ok());
+        assert!(verify_tunnel_challenge_ack(&ack, &runtime_id, &nonce).is_ok());
     }
 
     #[test]
     fn test_challenge_ack_rejects_wrong_nonce() {
         let (signing_key, runtime_id) = make_test_keypair();
         let ack = build_tunnel_challenge_ack("expected-nonce", &signing_key);
-        assert!(verify_tunnel_challenge_ack(&ack, &runtime_id, "different-nonce")
-            .is_err());
+        assert!(verify_tunnel_challenge_ack(&ack, &runtime_id, "different-nonce").is_err());
     }
 
     #[test]

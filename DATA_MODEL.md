@@ -1622,68 +1622,17 @@ Skill content in Markdown...
         └── manifest.yaml
 ```
 
-Every installable capability (tool, skill, MCP, session plugin) includes a `capability.toml` that describes it.
-
-**Location:** `<capability-root>/capability.toml`
-
-### 11.1 Schema
-
-```toml
-[capability]
-type        = "tool"              # REQUIRED. "tool"|"skill"|"mcp"|"session"
-name        = "web-browser"       # REQUIRED. Lowercase alphanumeric + hyphens
-version     = "1.2.0"            # REQUIRED. Semver
-description = "Playwright-based browser for web interaction"
-author      = "peko-community"
-license     = "MIT"
-
-# For type = "tool"
-[tool]
-entrypoint  = "browser.py"        # Executable within the capability directory
-platforms   = ["linux", "darwin"] # Optional. Omit to indicate all platforms
-
-# For type = "mcp"
-[mcp]
-command     = ["npx", "-y", "@browserbasehq/mcp"]
-env_vars    = ["BROWSERBASE_API_KEY"]  # Required env vars; runtime warns if missing
-
-# For type = "skill"
-[skill]
-prompts     = ["skill.md"]        # Markdown prompt files included in the skill
-tools       = ["web_search"]      # Tool capabilities this skill depends on
-
-# For type = "session"
-[session]
-library     = "libsession_lossless.so"  # Shared library implementing SessionPlugin
-```
-
-### 11.2 Installed Capability Layout
+### 14.3 Extension Package Layout
 
 ```
-~/.peko/capabilities/
-├── tools/
-│   └── web-browser@1.2.0/
-│       ├── capability.toml
-│       └── browser.py
-├── skills/
-│   └── research@2.0.1/
-│       ├── capability.toml
-│       └── skill.md
-├── mcps/
-│   └── vector-store-memory@1.0.0/
-│       └── capability.toml
-└── session/
-    └── lossless-compression@1.0.0/
-        ├── capability.toml
-        └── libsession_lossless.so
-```
-
-Multiple versions of the same capability may be installed side by side. An agent's `config.toml` may pin to a version:
-
-```toml
-[capabilities]
-tools = ["browser@1.2.0"]         # Pinned
-skills = ["research"]             # Latest installed
+~/.peko/extensions/
+├── skill/
+│   └── docker-skill/
+│       ├── SKILL.md
+│       └── templates/
+└── mcp/
+    └── filesystem/
+        └── manifest.yaml
 ```
 
 ---
@@ -1708,7 +1657,7 @@ Quick-reference table of all primitive types used across formats.
 | `InstanceStatus` | Enum | `starting \| running \| stopping \| stopped \| error` |
 | `HookType` | Enum | `cron \| webhook \| event \| file_watch` |
 | `SessionTrigger` | Enum | `user \| cron \| webhook \| event \| file_watch \| branch \| spawn` |
-| `CapabilityType` | Enum | `tool \| skill \| mcp \| session` |
+| `ExtensionType` | Enum | `tool \| skill \| mcp \| session` |
 | `BusBackend` | Enum | `in-memory \| redis \| nats` |
 
 ---

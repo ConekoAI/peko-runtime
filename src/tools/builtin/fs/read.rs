@@ -327,10 +327,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = tool
-            .execute(json!({"file_path": "abc.txt"}))
-            .await
-            .unwrap();
+        let result = tool.execute(json!({"file_path": "abc.txt"})).await.unwrap();
         assert_eq!(result["content"], "1\talpha\n2\tbeta\n3\tgamma");
         assert_eq!(result["start_line"], 1);
         assert_eq!(result["end_line"], 3);

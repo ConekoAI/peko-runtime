@@ -583,11 +583,7 @@ impl SessionManager {
     /// );
     /// ```
     #[must_use]
-    pub fn for_cli(
-        path_resolver: PathResolver,
-        agent_name: &str,
-        user: &str,
-    ) -> Self {
+    pub fn for_cli(path_resolver: PathResolver, agent_name: &str, user: &str) -> Self {
         let sessions_dir = path_resolver.agent_sessions_dir(agent_name);
         Self::new()
             .with_sessions_dir_internal(sessions_dir)
@@ -2541,7 +2537,8 @@ mod tests {
     ///     → `SessionEntry.peer_type == Some("agent")`
     #[test]
     fn test_a2a_principal_produces_agent_session_entry_issue_24_review_1() {
-        let manager = SessionManager::new().with_peer_principal(Subject::Principal("helper".into()));
+        let manager =
+            SessionManager::new().with_peer_principal(Subject::Principal("helper".into()));
 
         // The session peer resolves to the agent principal.
         let peer = manager.peer();

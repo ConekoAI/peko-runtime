@@ -199,12 +199,8 @@ async fn announce_public_principal(
 ) {
     seed_runtime_for_test(&backend.url, target_runtime_did).await;
 
-    let (mut write, read) = authenticate_tunnel(
-        &backend.ws_url,
-        target_runtime_did,
-        target_signing_key,
-    )
-    .await;
+    let (mut write, read) =
+        authenticate_tunnel(&backend.ws_url, target_runtime_did, target_signing_key).await;
     let _read = read;
 
     let instance_id = uuid::Uuid::new_v5(
@@ -290,10 +286,7 @@ async fn start_echo_direct_server(
         handler,
     );
     let cancel = CancellationToken::new();
-    let bound_addr = server
-        .start(cancel.clone())
-        .await
-        .expect("server starts");
+    let bound_addr = server.start(cancel.clone()).await.expect("server starts");
     (bound_addr, cancel)
 }
 

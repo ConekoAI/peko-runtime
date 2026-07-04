@@ -26,8 +26,8 @@
 
 use futures::StreamExt;
 use peko::providers::{
-    AnyAdapter, AnthropicAdapter, ChatOptions, LlmMessage, OpenAiAdapter, Provider,
-    ProviderConfig, StreamEvent,
+    AnthropicAdapter, AnyAdapter, ChatOptions, LlmMessage, OpenAiAdapter, Provider, ProviderConfig,
+    StreamEvent,
 };
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -88,7 +88,9 @@ async fn stream_terminates_on_done_even_if_connection_stays_open() {
             r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
             "[DONE]",
         ] {
-            sock.write_all(&sse_chunk(event)).await.expect("write chunk");
+            sock.write_all(&sse_chunk(event))
+                .await
+                .expect("write chunk");
             sock.flush().await.expect("flush");
         }
 
@@ -99,8 +101,7 @@ async fn stream_terminates_on_done_even_if_connection_stays_open() {
         drop(sock);
     });
 
-    let adapter =
-        AnyAdapter::OpenAi(OpenAiAdapter::new().with_base_url(format!("http://{addr}")));
+    let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new().with_base_url(format!("http://{addr}")));
     let config = ProviderConfig::default();
     let provider = Provider::new(adapter, "test-key", config).expect("provider");
 

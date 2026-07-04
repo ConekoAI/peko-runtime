@@ -12,4 +12,4 @@ pub use adapter::{
 };
 pub use injectable_proxy::InjectableMcpToolProxy;
 pub use starter::McpRuntimeStarter;
-pub use tool_proxy::{McpToolProxy, create_tool_proxies, create_tool_proxy};
+pub use tool_proxy::{create_tool_proxies, create_tool_proxy, McpToolProxy};

@@ -5,7 +5,7 @@
 //! `{{agents}}`, `{{runtime}}`, etc.) are replaced at build time with
 //! rendered sections. An empty body falls back to a one-line identity.
 
-use crate::agents::prompt::placeholder::{Placeholder, replace_placeholders};
+use crate::agents::prompt::placeholder::{replace_placeholders, Placeholder};
 use crate::providers::ToolDefinition;
 use crate::tools::Tool;
 use chrono::Local;
@@ -42,7 +42,7 @@ pub struct SystemPromptBuilder {
     channel: String,
     /// Optional extension core for hook integration (Phase 1: Extension Architecture)
     extension_core: Option<Arc<crate::extensions::framework::ExtensionCore>>,
-    /// Principal runtime id for capability-scoped prompt hooks (P2 audit).
+    /// Principal runtime id for extension-scoped prompt hooks (P2 audit).
     principal_id: Option<String>,
 }
 
@@ -77,7 +77,7 @@ impl SystemPromptBuilder {
         self
     }
 
-    /// Set the principal id for capability-scoped prompt hooks.
+    /// Set the principal id for extension-scoped prompt hooks.
     ///
     /// The `skills` section uses this to filter by the principal's
     /// enabled-skill allowlist at handle time.
@@ -499,7 +499,7 @@ Be safe.
     #[test]
     fn test_builder_with_skills_via_extension_core() {
         use crate::extensions::framework::ExtensionManifest;
-        use crate::extensions::skill::{DiscoveredSkill, register_skills_with_core};
+        use crate::extensions::skill::{register_skills_with_core, DiscoveredSkill};
         use std::path::PathBuf;
 
         // Create a tokio runtime for async operations

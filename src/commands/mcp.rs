@@ -93,21 +93,23 @@ pub async fn execute(cmd: McpCommands, paths: &GlobalPaths) -> Result<()> {
             scope,
             header,
             auto_start,
-        } => add_cmd(
-            paths,
-            name,
-            url,
-            command,
-            args,
-            bearer_token,
-            oauth_client_id,
-            authorization_endpoint,
-            token_endpoint,
-            scope,
-            header,
-            auto_start,
-        )
-        .await,
+        } => {
+            add_cmd(
+                paths,
+                name,
+                url,
+                command,
+                args,
+                bearer_token,
+                oauth_client_id,
+                authorization_endpoint,
+                token_endpoint,
+                scope,
+                header,
+                auto_start,
+            )
+            .await
+        }
         McpCommands::Auth {
             name,
             code,
@@ -176,7 +178,11 @@ async fn add_cmd(
     config.add_server(server_config);
 
     save_mcp_config(paths.mcp_config(), &config).await?;
-    println!("Added MCP server '{}' to {}", name, paths.mcp_config().display());
+    println!(
+        "Added MCP server '{}' to {}",
+        name,
+        paths.mcp_config().display()
+    );
     notify_daemon_reload().await;
     Ok(())
 }
@@ -188,17 +194,20 @@ async fn auth_cmd(
     verifier: Option<String>,
 ) -> Result<()> {
     let config = load_mcp_config(paths.mcp_config()).await?;
-    let server_config = config
-        .get_server(&name)
-        .cloned()
-        .with_context(|| format!("MCP server '{}' not found in {}", name, paths.mcp_config().display()))?;
+    let server_config = config.get_server(&name).cloned().with_context(|| {
+        format!(
+            "MCP server '{}' not found in {}",
+            name,
+            paths.mcp_config().display()
+        )
+    })?;
 
     if server_config.transport != TransportType::Sse {
         anyhow::bail!("OAuth is only supported for SSE transport servers");
     }
 
-    let vault = Vault::load(paths.resolver().vault())
-        .with_context(|| "failed to load credential vault")?;
+    let vault =
+        Vault::load(paths.resolver().vault()).with_context(|| "failed to load credential vault")?;
 
     let token = match (code, verifier) {
         (Some(code), Some(verifier)) => {
@@ -228,7 +237,10 @@ async fn list_cmd(paths: &GlobalPaths) -> Result<()> {
     let config = load_mcp_config(paths.mcp_config()).await?;
 
     if config.servers.is_empty() {
-        println!("No MCP servers configured in {}", paths.mcp_config().display());
+        println!(
+            "No MCP servers configured in {}",
+            paths.mcp_config().display()
+        );
         return Ok(());
     }
 

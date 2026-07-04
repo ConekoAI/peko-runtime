@@ -21,7 +21,7 @@ pub trait Tool: Send + Sync {
     /// Convert to Any for downcasting
     ///
     /// This enables downcasting from `Arc<dyn Tool>` to concrete types
-    /// for capability detection and trait implementation checking.
+    /// for feature detection and trait implementation checking.
     fn as_any(&self) -> &dyn std::any::Any {
         // Default implementation panics - tools must override
         panic!("as_any not implemented for this tool")

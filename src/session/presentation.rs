@@ -134,22 +134,14 @@ pub fn format_history_event(index: usize, event: &HistoryDisplayEntry) -> String
 // ================================================================================
 
 /// Render session list output
-pub fn render_session_list(
-    sessions: &[SessionInfo],
-    agent: &str,
-    active_session_id: Option<&str>,
-) {
+pub fn render_session_list(sessions: &[SessionInfo], agent: &str, active_session_id: Option<&str>) {
     if sessions.is_empty() {
         println!("📭 No sessions found for '{agent}'.");
         println!("   Start chatting with the agent to create sessions.");
         return;
     }
 
-    println!(
-        "📋 Sessions for {} ({} found):",
-        agent,
-        sessions.len()
-    );
+    println!("📋 Sessions for {} ({} found):", agent, sessions.len());
     if let Some(active) = active_session_id {
         println!("   Active session: {active}");
     }

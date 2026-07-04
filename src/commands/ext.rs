@@ -6,8 +6,8 @@
 //! - `ipc::client_service::DaemonClientService` — daemon IPC
 //! - `common::services::ConfigAuthorityImpl` — agent whitelist management
 
-use crate::commands::GlobalPaths;
 use crate::commands::mcp;
+use crate::commands::GlobalPaths;
 use crate::extensions::framework::scaffold::{ScaffoldEngine, ScaffoldLang, ScaffoldOptions};
 use crate::extensions::framework::services::{ConfigScope, ExtensionConfigService};
 use crate::ipc::client_service::DaemonClientService;
@@ -47,20 +47,20 @@ pub enum ExtCommands {
         json: bool,
     },
 
-    /// Enable an extension or built-in capability
+    /// Enable an extension or built-in tool
     Enable {
-        /// Extension ID or built-in capability name (e.g., Bash, Read)
+        /// Extension ID or built-in tool name (e.g., Bash, Read)
         id: String,
-        /// Target team or team/agent for built-in capabilities
+        /// Target team or team/agent for built-in tools
         #[arg(short, long, value_name = "TARGET")]
         target: Option<String>,
     },
 
-    /// Disable an extension or built-in capability
+    /// Disable an extension or built-in tool
     Disable {
-        /// Extension ID or built-in capability name
+        /// Extension ID or built-in tool name
         id: String,
-        /// Target team or team/agent for built-in capabilities
+        /// Target team or team/agent for built-in tools
         #[arg(short, long, value_name = "TARGET")]
         target: Option<String>,
     },

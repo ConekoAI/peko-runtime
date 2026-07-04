@@ -141,9 +141,7 @@ impl Agent {
         // `<workspace>/agents/<name>/AGENT.md`. Otherwise fall back to the
         // global agent registry.
         let agent_service = match self.principal_workspace {
-            Some(ref workspace) => {
-                crate::common::services::AgentService::for_principal(workspace)
-            }
+            Some(ref workspace) => crate::common::services::AgentService::for_principal(workspace),
             None => crate::common::services::AgentService::new(PathResolver::new()),
         };
         tools.push(Arc::new(
@@ -252,9 +250,7 @@ impl Agent {
                     }
                     if pattern.ends_with('*') {
                         let prefix = &pattern[..pattern.len() - 1];
-                        return tool_name
-                            .to_lowercase()
-                            .starts_with(&prefix.to_lowercase());
+                        return tool_name.to_lowercase().starts_with(&prefix.to_lowercase());
                     }
                     false
                 })
@@ -432,7 +428,7 @@ impl Agent {
     /// There is no per-agent `ExtensionCore` — the global
     /// [`crate::extensions::framework::core::global_core`] is used for
     /// every agent of the principal. Per-agent visibility is enforced
-    /// by each agent's own capability whitelist. `principal_id` is the
+    /// by each agent's own extension whitelist. `principal_id` is the
     /// spawning principal's runtime id, carried so the agent's
     /// `SubagentExecutor` and any descendant spawns inherit the same
     /// principal scope. When `inbox_registry` is supplied, the agentic
@@ -482,8 +478,7 @@ impl Agent {
         // shares it. `principal_id` is the spawning principal's
         // runtime id; descendant subagents inherit it via the
         // shared `SubagentExecutor`.
-        let extension_core =
-            global_core().expect("Global ExtensionCore not initialized");
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         // Initialize subagent executor
         let subagent_executor_base = SubagentExecutor::new(
@@ -595,8 +590,7 @@ impl Agent {
         inherited_provider: Option<Arc<crate::providers::Provider>>,
     ) -> Result<Self> {
         info!("Creating agent with shared executor: {}", config.name);
-        let extension_core =
-            global_core().expect("Global ExtensionCore not initialized");
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         let identity = Self::load_or_create_identity(&config).await?;
 
@@ -1195,7 +1189,7 @@ impl Agent {
 
     /// Get the spawning principal's runtime id.
     ///
-    /// Threaded through tool execution so capability-scoped tools can
+    /// Threaded through tool execution so extension-scoped tools can
     /// resolve per-principal state at handle time.
     #[must_use]
     pub fn principal_id(&self) -> &crate::principal::PrincipalId {
@@ -1299,10 +1293,7 @@ impl Agent {
     }
 
     /// List all sessions for a peer (/sessions command)
-    pub async fn session_list(
-        &self,
-        peer: &Subject,
-    ) -> Result<Vec<crate::session::SessionEntry>> {
+    pub async fn session_list(&self, peer: &Subject) -> Result<Vec<crate::session::SessionEntry>> {
         let mut manager = self.session_manager.write().await;
         let sessions = manager.list_sessions_for_peer(peer).await?;
         Ok(sessions)

@@ -414,12 +414,11 @@ impl Vault {
         }
         let dek = match self.unlock_method {
             UnlockMethod::Passphrase => {
-                let passphrase = Self::passphrase_from_env_or_test_fallback()
-                    .ok_or(VaultError::NoPassphrase)?;
-                let salt = envelope
-                    .salt
-                    .as_deref()
-                    .ok_or_else(|| VaultError::Backend("passphrase-mode vault missing salt".into()))?;
+                let passphrase =
+                    Self::passphrase_from_env_or_test_fallback().ok_or(VaultError::NoPassphrase)?;
+                let salt = envelope.salt.as_deref().ok_or_else(|| {
+                    VaultError::Backend("passphrase-mode vault missing salt".into())
+                })?;
                 Self::derive_key_from_passphrase(passphrase.expose_secret(), salt)?
             }
             UnlockMethod::Keychain => Self::retrieve_dek_from_keychain()?,
@@ -429,9 +428,10 @@ impl Vault {
             serde_json::from_slice(&plaintext).with_context(|| "failed to parse vault contents")?;
 
         let count = file.entries.len();
-        let mut guard = self.inner.write().map_err(|e| {
-            anyhow::anyhow!("vault reload: failed to acquire write lock: {e}")
-        })?;
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|e| anyhow::anyhow!("vault reload: failed to acquire write lock: {e}"))?;
         guard.file = file;
         guard.dek = dek;
         Ok(count)
@@ -1022,7 +1022,10 @@ impl Vault {
     // Internal helpers
     // ------------------------------------------------------------------
 
-    fn load_existing_with_override(path: PathBuf, method_override: UnlockMethodOverride) -> Result<Self> {
+    fn load_existing_with_override(
+        path: PathBuf,
+        method_override: UnlockMethodOverride,
+    ) -> Result<Self> {
         let bytes = std::fs::read(&path)
             .with_context(|| format!("failed to read vault: {}", path.display()))?;
         let envelope: VaultEnvelope =
@@ -1079,7 +1082,10 @@ impl Vault {
         })
     }
 
-    fn create_new_with_override(path: PathBuf, method_override: UnlockMethodOverride) -> Result<Self> {
+    fn create_new_with_override(
+        path: PathBuf,
+        method_override: UnlockMethodOverride,
+    ) -> Result<Self> {
         // In test builds, never probe or use the OS keychain. Tests run in
         // parallel and may be executed headless, so always derive the DEK from
         // PEKO_MASTER_PASSPHRASE (if set) or the test fallback. This avoids
@@ -1706,7 +1712,9 @@ mod tests {
         std::env::set_var(UNLOCK_METHOD_ENV, "biometric-or-whatever");
         let loaded = Vault::load(&path).expect("invalid override should fall back to Auto");
         assert_eq!(loaded.unlock_method(), UnlockMethod::Passphrase);
-        let _ = loaded.get_provider_key("openai").expect("entry should be readable");
+        let _ = loaded
+            .get_provider_key("openai")
+            .expect("entry should be readable");
 
         std::env::remove_var(MASTER_PASSPHRASE_ENV);
         std::env::remove_var(UNLOCK_METHOD_ENV);
@@ -1734,7 +1742,9 @@ mod tests {
         let loaded = Vault::load_with_override(&path, UnlockMethodOverride::Auto)
             .expect("explicit Auto should bypass the env var");
         assert_eq!(loaded.unlock_method(), UnlockMethod::Passphrase);
-        let _ = loaded.get_provider_key("openai").expect("entry should be readable");
+        let _ = loaded
+            .get_provider_key("openai")
+            .expect("entry should be readable");
 
         std::env::remove_var(MASTER_PASSPHRASE_ENV);
         std::env::remove_var(UNLOCK_METHOD_ENV);

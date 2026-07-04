@@ -6,14 +6,14 @@
 //!
 //! - the principal's own memory, inbox, and session-creation lock
 //! - the principal's workspace path and provider resolver
-//! - the principal's capability set (tools/skills/mcps/agents enabled)
+//! - the principal's allowed extension list
 //! - the principal's resolved (provider, model) preference
 //!
 //! It also owns a lazily-built, **per-principal** [`ExtensionCore`]
 //! shared by every agent of that principal. The core is *not* privileged
 //! over subagent cores — the root agent and every subagent resolve the
 //! exact same core through this struct. Per-agent visibility is enforced
-//! by each agent's own capability whitelist; the core just hosts the
+//! by each agent's own extension whitelist; the core just hosts the
 //! tool *instances*.
 //!
 //! This is the post-Phase-1 realisation of the design rule "the root
@@ -32,7 +32,7 @@ use crate::providers::LlmResolver;
 use crate::session::InboxRegistry;
 use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 
-use super::config::PrincipalCapabilities;
+use super::config::AllowedExtensions;
 
 /// Per-principal runtime state shared by the root agent and its
 /// subagents.
@@ -41,7 +41,7 @@ use super::config::PrincipalCapabilities;
 /// `RootRouter`, and passed by reference into the principal's
 /// root-agent runner. Subagents don't need a fresh context — they read
 /// the principal's tools off this struct's core, and their own
-/// capability whitelist filters what's actually visible to them.
+/// extension whitelist filters what's actually visible to them.
 pub struct PrincipalContext {
     /// Principal's on-disk workspace root
     /// (`{config_dir}/principals/{name}`).
@@ -57,9 +57,9 @@ pub struct PrincipalContext {
     /// Held during root-agent session creation so concurrent peers
     /// don't race on shared session metadata.
     pub session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Principal's capability set — what tools/skills/mcps/agents are
+    /// Principal's allowed extensions — what tools/skills/mcps/agents are
     /// enabled for this principal.
-    pub capabilities: Arc<PrincipalCapabilities>,
+    pub allowed_extensions: Arc<AllowedExtensions>,
     /// LLM resolver used to validate provider hints and surface
     /// catalog defaults.
     pub resolver: Option<Arc<LlmResolver>>,
@@ -96,7 +96,7 @@ impl PrincipalContext {
         memory: Arc<dyn PrincipalMemory>,
         inbox_registry: Arc<InboxRegistry>,
         session_creation_lock: Arc<tokio::sync::Mutex<()>>,
-        capabilities: Arc<PrincipalCapabilities>,
+        allowed_extensions: Arc<AllowedExtensions>,
         resolver: Option<Arc<LlmResolver>>,
         provider_hint: (Option<String>, Option<String>),
         principal_id: PrincipalId,
@@ -108,7 +108,7 @@ impl PrincipalContext {
             memory,
             inbox_registry,
             session_creation_lock,
-            capabilities,
+            allowed_extensions,
             resolver,
             provider_hint,
             root_prompt: OnceLock::new(),
@@ -171,7 +171,7 @@ impl PrincipalContext {
     /// tool bag.
     ///
     /// Visibility to any single agent is still governed by the agent's
-    /// own capability whitelist; this method does not assume
+    /// own extension whitelist; this method does not assume
     /// privilege.
     pub async fn core(&self) -> Arc<ExtensionCore> {
         let core = global_core().unwrap_or_else(|| {
@@ -184,11 +184,8 @@ impl PrincipalContext {
             Arc::new(ExtensionCore::new())
         });
         if !core.universal_extensions_loaded() {
-            if let Err(e) = install_principal_tool_bag(
-                Arc::clone(&core),
-                &self.workspace_path,
-            )
-            .await
+            if let Err(e) =
+                install_principal_tool_bag(Arc::clone(&core), &self.workspace_path).await
             {
                 tracing::warn!(
                     "failed to install principal-scoped tools on the global core: {e}. \
@@ -233,11 +230,8 @@ async fn install_principal_tool_bag(
 ) -> anyhow::Result<()> {
     // Built-in tools.
     let path_resolver = crate::common::paths::PathResolver::new();
-    if let Err(e) = crate::engine::tool_runtime::ToolRuntime::register_builtins(
-        &core,
-        &path_resolver,
-    )
-    .await
+    if let Err(e) =
+        crate::engine::tool_runtime::ToolRuntime::register_builtins(&core, &path_resolver).await
     {
         tracing::warn!("ToolRuntime::register_builtins failed during core build: {e}");
     }
@@ -246,7 +240,9 @@ async fn install_principal_tool_bag(
     // Per-principal allowlist and workspace state are resolved at handle
     // time via `SkillStateRegistry` using the `principal_id` carried in
     // `ToolContext` (P2 audit issue #2).
-    if let Err(e) = BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new())).await {
+    if let Err(e) =
+        BuiltinToolAdapter::register_tool(core.as_ref(), Arc::new(SkillTool::new())).await
+    {
         tracing::warn!("SkillTool registration failed during core build: {e}");
     }
 
@@ -279,23 +275,19 @@ async fn install_principal_tool_bag(
 ///
 /// The catalog is the *only* per-call tool — its contents are the
 /// currently-available `AgentPromptSummary` list, which can change
-/// between messages if the principal's `capabilities.agents` was
+/// between messages if the principal's `allowed_extensions` was
 /// edited. Everything else on the core is stable.
 pub(crate) async fn install_agent_catalog(
     core: &ExtensionCore,
     available_agents: Vec<AgentPromptSummary>,
 ) -> anyhow::Result<()> {
-    BuiltinToolAdapter::register_tool(
-        core,
-        Arc::new(AgentCatalogTool::new(available_agents)),
-    )
-    .await
+    BuiltinToolAdapter::register_tool(core, Arc::new(AgentCatalogTool::new(available_agents))).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::principal::config::PrincipalCapabilities;
+    use crate::principal::config::AllowedExtensions;
     use crate::principal::memory::DefaultPrincipalMemory;
     use crate::principal::PrincipalId;
     use std::sync::Arc;
@@ -307,9 +299,8 @@ mod tests {
     #[tokio::test]
     async fn core_returns_global_singleton() {
         let dir = tempfile::tempdir().unwrap();
-        let memory: Arc<dyn PrincipalMemory> = Arc::new(DefaultPrincipalMemory::new(
-            dir.path().to_path_buf(),
-        ));
+        let memory: Arc<dyn PrincipalMemory> =
+            Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
 
         // Initialise the global core for this test.
         let core = Arc::new(crate::extensions::framework::ExtensionCore::new());
@@ -320,7 +311,7 @@ mod tests {
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(PrincipalCapabilities::default()),
+            Arc::new(AllowedExtensions::default()),
             None,
             (None, None),
             PrincipalId::generate(),
@@ -336,16 +327,15 @@ mod tests {
     #[test]
     fn root_prompt_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
-        let memory: Arc<dyn PrincipalMemory> = Arc::new(DefaultPrincipalMemory::new(
-            dir.path().to_path_buf(),
-        ));
+        let memory: Arc<dyn PrincipalMemory> =
+            Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
 
         let ctx = PrincipalContext::new(
             dir.path().to_path_buf(),
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(PrincipalCapabilities::default()),
+            Arc::new(AllowedExtensions::default()),
             None,
             (None, None),
             PrincipalId::generate(),
@@ -370,9 +360,8 @@ mod tests {
     #[test]
     fn principal_id_is_preserved() {
         let dir = tempfile::tempdir().unwrap();
-        let memory: Arc<dyn PrincipalMemory> = Arc::new(DefaultPrincipalMemory::new(
-            dir.path().to_path_buf(),
-        ));
+        let memory: Arc<dyn PrincipalMemory> =
+            Arc::new(DefaultPrincipalMemory::new(dir.path().to_path_buf()));
 
         let id = PrincipalId::generate();
         let ctx = PrincipalContext::new(
@@ -380,7 +369,7 @@ mod tests {
             memory,
             Arc::new(InboxRegistry::new()),
             Arc::new(tokio::sync::Mutex::new(())),
-            Arc::new(PrincipalCapabilities::default()),
+            Arc::new(AllowedExtensions::default()),
             None,
             (None, None),
             id.clone(),

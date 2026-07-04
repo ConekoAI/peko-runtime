@@ -14,8 +14,8 @@ use peko::auth::Subject;
 use peko::engine::tool_runtime::ToolRuntime;
 use peko::extensions::framework::core::init_global_core;
 use peko::principal::{
-    DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory,
-    PrincipalConfig, PrincipalDID, PrincipalManager,
+    DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalConfig, PrincipalDID,
+    PrincipalManager,
 };
 use peko::providers::LlmResolver;
 use peko::tools::Tool;
@@ -74,7 +74,7 @@ async fn create_test_principal(
         governance: Default::default(),
         memory: Default::default(),
         routing: Default::default(),
-        capabilities: Default::default(),
+        allowed_extensions: Default::default(),
         exposure: InstanceExposure::Public,
         status: None,
         permissions: Vec::new(),

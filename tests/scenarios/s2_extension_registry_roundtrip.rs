@@ -220,16 +220,15 @@ fn create_collaborator_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) 
     common::create_mock_principal_with_tools(cli, name, mock_llm_url, &["calculator-skill"]);
 
     // Add the canonical-form alias on top. The root agent's whitelist
-    // extension concatenates `capabilities.tools` into the per-execution
-    // `enabled` list, so the dual form is redundant in the root agent
-    // case (the base whitelist already enumerates built-in canonical
-    // ids), but keeping the dispatcher's `is_tool_enabled` happy is the
-    // load-bearing concern here.
+    // extension includes every entry in `allowed_extensions`, so the
+    // dual form is redundant in the root agent case (the base whitelist
+    // already enumerates built-in canonical ids), but keeping the
+    // dispatcher's `is_tool_enabled` happy is the load-bearing concern
+    // here.
     let path = principal_config_path(cli, name);
     let raw = std::fs::read_to_string(&path).expect("read principal.toml");
     let mut cfg: PrincipalConfig = toml::from_str(&raw).expect("parse principal.toml");
-    cfg.capabilities
-        .tools
+    cfg.allowed_extensions
         .push("builtin:tool:calculator-skill".to_string());
     std::fs::write(
         &path,

@@ -511,26 +511,32 @@ impl SessionStorage {
 
     /// Get session file path
     fn session_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir.join(format!("{}.jsonl", safe_filename_component(session_id)))
+        self.storage_dir
+            .join(format!("{}.jsonl", safe_filename_component(session_id)))
     }
 
     /// Get session tmp file path
     fn session_tmp_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir.join(format!("{}.tmp", safe_filename_component(session_id)))
+        self.storage_dir
+            .join(format!("{}.tmp", safe_filename_component(session_id)))
     }
 
     /// Get index file path for a session
     #[must_use]
     pub fn index_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir
-            .join(format!("{}.index.json", safe_filename_component(session_id)))
+        self.storage_dir.join(format!(
+            "{}.index.json",
+            safe_filename_component(session_id)
+        ))
     }
 
     /// Get context cache file path for a session (ADR-022)
     #[must_use]
     pub fn context_cache_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir
-            .join(format!("{}.context.cache", safe_filename_component(session_id)))
+        self.storage_dir.join(format!(
+            "{}.context.cache",
+            safe_filename_component(session_id)
+        ))
     }
 
     // ============================================================

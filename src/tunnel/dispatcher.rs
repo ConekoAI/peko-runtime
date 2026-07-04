@@ -1438,7 +1438,7 @@ mod tests {
     use crate::auth::{Permission, PermissionGrant, Subject};
     use crate::daemon::state::{AppState, DaemonConfigSnapshot};
     use crate::principal::config::{
-        PrincipalCapabilities, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+        AllowedExtensions, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
         PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
     use crate::tunnel::protocol::{InstanceExposure, InstanceType};
@@ -1546,7 +1546,7 @@ mod tests {
             governance: PrincipalGovernanceConfig::default(),
             memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
-            capabilities: PrincipalCapabilities::default(),
+            allowed_extensions: AllowedExtensions::default(),
             exposure,
             status: None,
             permissions,

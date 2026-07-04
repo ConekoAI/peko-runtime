@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -16,9 +17,10 @@ use crate::session::manager::SessionManager;
 use crate::session::SessionCreateOptions;
 use crate::tools::builtin::{AgentTool, DynamicSessionKeyProvider};
 
-use super::{agent_prompt::AgentPrompt, config::PrincipalCapabilities};
+use super::{agent_prompt::AgentPrompt, config::AllowedExtensions};
 
-/// Build an `AgentConfig` from a thin Markdown prompt + Principal capabilities.
+/// Build an `AgentConfig` from a thin Markdown prompt + the Principal's
+/// allowed extensions.
 ///
 /// `provider_hint` is the resolved `(preferred_provider_id, preferred_model_id)`
 /// pair. The caller passes the explicit principal-config values when set, or
@@ -31,14 +33,18 @@ use super::{agent_prompt::AgentPrompt, config::PrincipalCapabilities};
 /// time.
 pub fn build_agent_config(
     prompt: &AgentPrompt,
-    capabilities: &PrincipalCapabilities,
+    allowed_extensions: &AllowedExtensions,
+    available_agents: &[AgentPromptSummary],
     provider_hint: (Option<String>, Option<String>),
 ) -> AgentConfig {
-    let enabled_extensions: Vec<String> = capabilities
-        .tools
+    let agent_names: HashSet<String> = available_agents
         .iter()
-        .chain(capabilities.skills.iter())
-        .chain(capabilities.mcps.iter())
+        .map(|a| a.name.to_ascii_lowercase())
+        .collect();
+
+    let enabled_extensions: Vec<String> = allowed_extensions
+        .iter()
+        .filter(|name| !agent_names.contains(&name.to_ascii_lowercase()))
         .cloned()
         .collect();
 
@@ -138,8 +144,8 @@ pub(crate) async fn resolve_provider_hint(
 /// The root agent is just another agent of the principal — the same
 /// `PrincipalContext.core()` is used by every agent the principal
 /// spawns. What the root agent can see is governed by the principal's
-/// `capabilities`; what any subagent can see is governed by that
-/// subagent's own capability whitelist.
+/// `allowed_extensions`; what any subagent can see is governed by that
+/// subagent's own extension whitelist.
 pub async fn run_root_agent_prompt(
     prompt: &AgentPrompt,
     peer: Subject,
@@ -207,27 +213,35 @@ where
     F: Fn(AgenticEvent) + Send + Sync + 'static,
 {
     let provider_hint = resolve_provider_hint(ctx).await;
-    let mut config = build_agent_config(prompt, &ctx.capabilities, provider_hint);
+    let mut config = build_agent_config(
+        prompt,
+        &ctx.allowed_extensions,
+        &available_agents,
+        provider_hint,
+    );
 
     // Build the principal's shared core first so we can ask the core
-    // to resolve bare capability names into canonical `extension_id`
+    // to resolve bare extension names into canonical `extension_id`
     // form. Phase 4a: there is no privileged whitelist anymore — the
-    // principal's `capabilities` are the *only* source of truth for
+    // principal's `allowed_extensions` are the *only* source of truth for
     // which tools the root agent (and every subagent that inherits
     // from it) can see. Each subagent's own `AgentConfig.extensions`
     // may further filter that set on a per-agent basis.
     let core = ctx.core().await;
 
-    let mut enabled: Vec<String> = Vec::with_capacity(
-        ctx.capabilities.tools.len()
-            + ctx.capabilities.skills.len()
-            + ctx.capabilities.mcps.len()
-            + ctx.capabilities.agents.len(),
-    );
-    enabled.extend(core.resolve_canonical_ids(&ctx.capabilities.tools).await);
-    enabled.extend(core.resolve_canonical_ids(&ctx.capabilities.skills).await);
-    enabled.extend(core.resolve_canonical_ids(&ctx.capabilities.mcps).await);
-    enabled.extend(core.resolve_canonical_ids(&ctx.capabilities.agents).await);
+    let agent_names: HashSet<String> = available_agents
+        .iter()
+        .map(|a| a.name.to_ascii_lowercase())
+        .collect();
+
+    // Resolve everything the principal is allowed to use, then drop
+    // agent-prompt names (those are handled by the per-call agent catalog,
+    // not the extension whitelist).
+    let resolved: Vec<String> = core.resolve_canonical_ids(&ctx.allowed_extensions).await;
+    let enabled: Vec<String> = resolved
+        .into_iter()
+        .filter(|name| !agent_names.contains(&name.to_ascii_lowercase()))
+        .collect();
 
     config.extensions = Some(ExtensionConfig {
         enabled,
@@ -236,7 +250,7 @@ where
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's
-    // `capabilities.agents` was edited. We re-register it on the
+    // `allowed_extensions` was edited. We re-register it on the
     // shared core, which is idempotent on tool name.
     install_agent_catalog(&core, available_agents).await?;
 
@@ -246,7 +260,7 @@ where
     // issue #2). The guard unregisters on scope exit so concurrent
     // principals don't leak state.
     let skill_state = crate::principal::SkillState::new(
-        ctx.capabilities.skills.clone(),
+        ctx.allowed_extensions.to_vec(),
         ctx.workspace_path.clone(),
     );
     crate::principal::SkillStateRegistry::global()
@@ -258,7 +272,7 @@ where
     // hooks resolve the allowlist from this registry at handle time using
     // the `principal_id` injected by `build_agents_section` (legacy loader
     // deletion follow-up).
-    let agent_state = crate::principal::AgentState::new(ctx.capabilities.agents.clone());
+    let agent_state = crate::principal::AgentState::new(ctx.allowed_extensions.to_vec());
     crate::principal::AgentStateRegistry::global()
         .register(ctx.principal_id().clone(), agent_state)
         .await;
@@ -461,7 +475,10 @@ mod tests {
     /// error pointing at the config paths.
     #[test]
     fn no_hint_anywhere_yields_none() {
-        assert_eq!(merge_provider_hint((None, None), (None, None)), (None, None));
+        assert_eq!(
+            merge_provider_hint((None, None), (None, None)),
+            (None, None)
+        );
     }
 
     async fn seeded_resolver_with(
@@ -495,7 +512,9 @@ mod tests {
             cat.upsert(entry).await.unwrap();
         }
         if let Some((pid, mid)) = default {
-            cat.set_default(Some(pid.into()), Some(mid.into())).await.unwrap();
+            cat.set_default(Some(pid.into()), Some(mid.into()))
+                .await
+                .unwrap();
         }
         let secrets = Arc::new(InMemorySecretStore::new());
         Arc::new(LlmResolver::new(cat, secrets))
@@ -506,8 +525,11 @@ mod tests {
     #[tokio::test]
     async fn validate_principal_hint_passes_through_known_provider() {
         let resolver = seeded_resolver_with(&[("anthropic", "claude-sonnet-4-5")], None).await;
-        let validated =
-            validate_principal_hint(&resolver, (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))).await;
+        let validated = validate_principal_hint(
+            &resolver,
+            (Some("anthropic".into()), Some("claude-sonnet-4-5".into())),
+        )
+        .await;
         assert_eq!(
             validated,
             (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
@@ -519,10 +541,16 @@ mod tests {
     /// default flows through, and the root agent keeps working.
     #[tokio::test]
     async fn validate_principal_hint_drops_unknown_provider() {
-        let resolver =
-            seeded_resolver_with(&[("anthropic", "claude-sonnet-4-5")], Some(("anthropic", "claude-sonnet-4-5"))).await;
-        let validated =
-            validate_principal_hint(&resolver, (Some("ghost-provider".into()), Some("any-model".into()))).await;
+        let resolver = seeded_resolver_with(
+            &[("anthropic", "claude-sonnet-4-5")],
+            Some(("anthropic", "claude-sonnet-4-5")),
+        )
+        .await;
+        let validated = validate_principal_hint(
+            &resolver,
+            (Some("ghost-provider".into()), Some("any-model".into())),
+        )
+        .await;
         // Both axes dropped → `merge_provider_hint` then falls back to
         // the catalog default verbatim.
         assert_eq!(validated, (None, None));
@@ -538,7 +566,10 @@ mod tests {
         // Some(pid), but we still guarantee the helper is a no-op for
         // the (None, _) case via the call-site guard.
         assert_eq!(
-            merge_provider_hint((None, None), (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))),
+            merge_provider_hint(
+                (None, None),
+                (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
+            ),
             (Some("anthropic".into()), Some("claude-sonnet-4-5".into()))
         );
     }

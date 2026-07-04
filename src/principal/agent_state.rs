@@ -21,7 +21,7 @@ pub struct AgentState {
 }
 
 impl AgentState {
-    /// Build an `AgentState` from the raw capability list.
+    /// Build an `AgentState` from the raw allowed extension list.
     pub fn new(allowlist: Vec<String>) -> Self {
         let allowlist = allowlist
             .into_iter()
@@ -139,8 +139,16 @@ mod tests {
         let state = AgentState::new(vec!["Researcher".to_string()]);
         registry.register(pid("p1"), state).await;
 
-        assert!(registry.is_agent_enabled(Some(&pid("p1")), "researcher").await);
-        assert!(registry.is_agent_enabled(Some(&pid("p1")), "RESEARCHER").await);
+        assert!(
+            registry
+                .is_agent_enabled(Some(&pid("p1")), "researcher")
+                .await
+        );
+        assert!(
+            registry
+                .is_agent_enabled(Some(&pid("p1")), "RESEARCHER")
+                .await
+        );
         assert!(!registry.is_agent_enabled(Some(&pid("p1")), "writer").await);
     }
 
@@ -160,6 +168,10 @@ mod tests {
     #[tokio::test]
     async fn unknown_principal_is_fail_closed() {
         let registry = AgentStateRegistry::default();
-        assert!(!registry.is_agent_enabled(Some(&pid("unknown")), "researcher").await);
+        assert!(
+            !registry
+                .is_agent_enabled(Some(&pid("unknown")), "researcher")
+                .await
+        );
     }
 }

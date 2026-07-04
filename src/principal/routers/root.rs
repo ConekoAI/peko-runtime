@@ -116,26 +116,20 @@ impl RootRouter {
     /// callers can use it outside the lock.
     #[must_use]
     pub fn caller_runtime_id(&self) -> Option<String> {
-        self.caller_runtime_id
-            .read()
-            .ok()
-            .and_then(|g| g.clone())
+        self.caller_runtime_id.read().ok().and_then(|g| g.clone())
     }
 
     /// Build a `PrincipalContext` from the router's already-resolved
     /// state plus the per-call `RouterContext` (which carries the
     /// per-message pieces: inbox registry, session-creation lock, the
-    /// current capabilities snapshot, and the principal's runtime id).
-    fn build_context(
-        &self,
-        ctx: &RouterContext,
-    ) -> PrincipalContext {
+    /// current allowed extensions snapshot, and the principal's runtime id).
+    fn build_context(&self, ctx: &RouterContext) -> PrincipalContext {
         let principal_ctx = PrincipalContext::new(
             self.workspace_path.clone(),
             Arc::clone(&self.memory),
             Arc::clone(&ctx.inbox_registry),
             Arc::clone(&ctx.session_creation_lock),
-            Arc::new(ctx.capabilities.clone()),
+            Arc::new(ctx.allowed_extensions.clone()),
             self.resolver.clone(),
             (
                 self.principal_provider_id.clone(),
@@ -267,8 +261,7 @@ mod tests {
     use super::*;
     use crate::auth::Subject;
     use crate::principal::config::{
-        PrincipalCapabilities, PrincipalGovernanceConfig, PrincipalIntentConfig,
-        PrincipalRoutingConfig,
+        AllowedExtensions, PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
     };
     use crate::principal::router::{ChannelContext, ChannelKind, ContextInjectionKind};
     use crate::session::InboxRegistry;
@@ -304,7 +297,7 @@ mod tests {
                 name: "primary".to_string(),
                 description: Some("Generalist".to_string()),
             }],
-            capabilities: PrincipalCapabilities::default(),
+            allowed_extensions: AllowedExtensions::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
             inbox_registry: Arc::new(InboxRegistry::new()),

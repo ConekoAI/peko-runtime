@@ -41,7 +41,7 @@ pub struct RouterContext {
     pub routing: super::PrincipalRoutingConfig,
     pub recalled_context: Vec<ContextInjection>,
     pub available_agents: Vec<AgentPromptSummary>,
-    pub capabilities: super::PrincipalCapabilities,
+    pub allowed_extensions: super::AllowedExtensions,
     pub intent: super::PrincipalIntentConfig,
     pub governance: super::PrincipalGovernanceConfig,
     /// Shared inbox registry so the router can wire the root agent
@@ -70,7 +70,7 @@ pub enum ChannelKind {
     Http,
     Hub,
     A2a,
-    P2p,        // principal-to-principal
+    P2p, // principal-to-principal
     Webhook,
     Cron,
     FileWatch,
@@ -79,10 +79,7 @@ pub enum ChannelKind {
 #[async_trait]
 pub trait PrincipalRouter: Send + Sync {
     /// Decide how to handle an incoming message.
-    async fn route(
-        &self,
-        ctx: RouterContext,
-    ) -> Result<RouteDecision, RouterError>;
+    async fn route(&self, ctx: RouterContext) -> Result<RouteDecision, RouterError>;
 
     /// Streaming variant. The router is given an `on_event` callback
     /// that it invokes for each `AgenticEvent` it produces (typically

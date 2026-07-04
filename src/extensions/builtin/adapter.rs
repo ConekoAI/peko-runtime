@@ -595,7 +595,7 @@ mod tests {
         assert!(BuiltinToolAdapter::is_builtin("AsyncSpawn"));
         assert!(BuiltinToolAdapter::is_builtin("AsyncOutput"));
         assert!(BuiltinToolAdapter::is_builtin("PRINCIPAL_SEND")); // case insensitive
-                                                             // Unknown
+                                                                   // Unknown
         assert!(!BuiltinToolAdapter::is_builtin("unknown_tool"));
     }
 
@@ -639,7 +639,9 @@ mod tests {
     #[test]
     fn test_is_agent_specific_builtin() {
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("Agent"));
-        assert!(BuiltinToolAdapter::is_agent_specific_builtin("principal_send"));
+        assert!(BuiltinToolAdapter::is_agent_specific_builtin(
+            "principal_send"
+        ));
         assert!(BuiltinToolAdapter::is_agent_specific_builtin("AGENT")); // case insensitive
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("Bash"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("session"));

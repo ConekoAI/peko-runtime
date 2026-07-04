@@ -36,14 +36,14 @@ The [principal thesis](../../../../principal_thesis_compact.md) argues that the 
 - **Intent** — goals and preferences that survive across sessions.
 - **Agency** — bounded delegation to ephemeral agents.
 
-Its core structural claim is the **principal-as-container**: a Principal contains Agents, Agents contain tool executions, and communication happens Principal-to-Principal. The agent is a *capability*; the principal is the *actor*.
+Its core structural claim is the **principal-as-container**: a Principal contains Agents, Agents contain tool executions, and communication happens Principal-to-Principal. The agent is an *extension*; the principal is the *actor*.
 
 ### 1.3 What this ADR decides
 
 This ADR adopts that frame for Peko:
 
 1. **Principal becomes the top-level existence concept.** It is the thing that persists, owns memory, has a DID, and receives messages.
-2. **Agent becomes a contained capability.** An Agent is a specialized execution context that a Principal instantiates, routes to, and supervises.
+2. **Agent becomes a contained extension.** An Agent is a specialized execution context that a Principal instantiates, routes to, and supervises.
 3. **Sessions are blackboxed.** Users and external Principals address a Principal; sessions are internal routing/continuity mechanics of the Principal's memory layer.
 4. **Session routing is extension-controlled.** The Principal's entry point is a pluggable dispatcher that decides how an incoming message maps to agent execution, memory recall, and response synthesis.
 
@@ -185,7 +185,7 @@ prompt = "pekohub.com/agents/reviewer.md"   # registry ref or local path
 role = "specialist"
 ```
 
-An **Agent prompt** is a thin Markdown file containing a specialization prompt. It has no runtime identity, no config, and no capability declarations. All capabilities (tools, skills, MCPs, extensions) are declared on the Principal. The Agent prompt simply tells the Principal how to behave for a specific task or persona.
+An **Agent prompt** is a thin Markdown file containing a specialization prompt. It has no runtime identity, no config, and no extension declarations. All extensions (tools, skills, MCPs, agents) are declared on the Principal. The Agent prompt simply tells the Principal how to behave for a specific task or persona.
 
 ### 3.2 CLI surface
 

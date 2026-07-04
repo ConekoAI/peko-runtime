@@ -65,7 +65,9 @@
 //! needles are belt-and-suspenders.
 
 mod common;
-use common::{create_mock_principal_with_tools, configure_mock, run_with_timeout, DaemonGuard, PekoCli};
+use common::{
+    configure_mock, create_mock_principal_with_tools, run_with_timeout, DaemonGuard, PekoCli,
+};
 use serial_test::serial;
 use std::path::PathBuf;
 use std::process::Stdio;

@@ -289,7 +289,10 @@ mod tests {
     #[test]
     fn test_kind() {
         assert_eq!(Subject::User("a".into()).kind(), SubjectKind::User);
-        assert_eq!(Subject::Principal("a".into()).kind(), SubjectKind::Principal);
+        assert_eq!(
+            Subject::Principal("a".into()).kind(),
+            SubjectKind::Principal
+        );
         assert_eq!(Subject::Public.kind(), SubjectKind::Public);
     }
 
@@ -380,10 +383,7 @@ mod tests {
         // Empty string projects to `Subject::User("")`, distinguishable
         // from `Subject::Public`. Caller-side validation is responsible
         // for not passing empty strings.
-        assert_eq!(
-            Subject::from_bridge_user(""),
-            Subject::User(String::new())
-        );
+        assert_eq!(Subject::from_bridge_user(""), Subject::User(String::new()));
     }
 
     #[test]

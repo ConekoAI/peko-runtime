@@ -556,7 +556,8 @@ impl RegistryClient {
 
         // Reconstruct the package file map by re-prefixing each layer's
         // files with its package prefix.
-        let mut files: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+        let mut files: std::collections::HashMap<String, Vec<u8>> =
+            std::collections::HashMap::new();
         let prefixed = [
             ("config", layers.config.as_ref()),
             ("identity", layers.identity.as_ref()),
