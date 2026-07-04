@@ -49,11 +49,8 @@ peko principal <COMMAND>
 | `permit <NAME> <SUBJECT> <PERMISSION>` | Grant a permission on a Principal |
 | `revoke <NAME> <SUBJECT> <PERMISSION>` | Revoke a permission from a Principal |
 | `permissions <NAME>` | List permissions on a Principal |
-| `set-status <NAME> <STATUS>` | Set tunnel status (`online`/`offline`/`busy`/`error`) |
-| `set-exposure <NAME> <EXPOSURE>` | Set tunnel exposure (`unexposed`/`private`/`public`) |
 | `agent list <NAME>` | List agent prompts inside a Principal |
 | `agent show <NAME> <AGENT>` | Show an agent prompt inside a Principal |
-| `memory session <NAME>` | List sessions for a Principal |
 
 #### Examples
 
@@ -119,6 +116,28 @@ echo "Hello!" | peko send my-principal --stdin
 
 # Disable streaming
 peko send my-principal "Hello!" --no-stream
+```
+
+---
+
+### `login` — Log in to PekoHub
+
+Authenticate with the PekoHub registry. The token is stored in the encrypted vault.
+
+```bash
+peko login [--api-key <KEY>]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--api-key <KEY>` | Authenticate with an API key instead of OAuth |
+
+### `logout` — Log out from PekoHub
+
+Remove the stored registry token.
+
+```bash
+peko logout
 ```
 
 ---
@@ -253,43 +272,6 @@ peko ext info <extension>
 
 ---
 
-### `config` — Configuration Management
-
-Manage Peko configuration.
-
-```bash
-peko config <COMMAND>
-```
-
-#### Subcommands
-
-| Subcommand | Description |
-|-----------|-------------|
-| `validate` | Validate a configuration file |
-| `init` | Initialize a new configuration |
-| `defaults` | Show default configuration values |
-| `path` | Show configuration paths |
-| `get` | Get a configuration value |
-| `set` | Set a configuration value |
-
-#### Examples
-
-```bash
-# Show config paths
-peko config path
-
-# Show defaults
-peko config defaults
-
-# Get a value
-peko config get <key>
-
-# Set a value
-peko config set <key> <value>
-```
-
----
-
 ### `system` — System Diagnostics
 
 System diagnostics and maintenance.
@@ -358,78 +340,6 @@ peko daemon restart
 
 ---
 
-### `cron` — Cron Job Management
-
-Manage scheduled jobs.
-
-```bash
-peko cron <COMMAND>
-```
-
-#### Subcommands
-
-| Subcommand | Description |
-|-----------|-------------|
-| `list` | List all cron jobs |
-| `add` | Add a new cron job |
-| `at` | Add a one-shot job at specific time |
-| `every` | Add a recurring interval job |
-| `remove` | Remove a cron job |
-| `run` | Run a job immediately |
-| `history` | Show job run history |
-| `add-idle` | Add an idle-triggered job |
-| `add-event` | Add an event-triggered job |
-
-#### Examples
-
-```bash
-# List cron jobs
-peko cron list
-
-# Add a recurring job
-peko cron add --name "daily" --schedule "0 9 * * *" --message "Hello"
-
-# Add a one-shot job
-peko cron at --name "reminder" --at "2026-03-01T09:00:00Z" --message "Meeting"
-
-# Add an interval job
-peko cron every --name "heartbeat" --interval-ms 300000 --message "Check"
-
-# Run a job now
-peko cron run --id <job-id>
-```
-
----
-
-### `orchestration` — Orchestration Management
-
-Manage event routing, webhooks, and file watching.
-
-```bash
-peko orchestration <COMMAND>
-```
-
-#### Subcommands
-
-| Subcommand | Description |
-|-----------|-------------|
-| `handlers` | List registered event handlers |
-| `watch` | Watch a directory for changes |
-| `unwatch` | Unwatch a directory |
-| `webhook-add` | Register a webhook route |
-| `webhook-remove` | Remove a webhook route |
-| `webhook-list` | List webhook routes |
-| `ingress-add` | Add an external source |
-| `ingress-remove` | Remove an external source |
-| `ingress-list` | List external sources |
-| `ingress-enable` | Enable unified external ingress |
-| `events` | View recent events |
-| `replay` | Replay an event by ID |
-| `status` | Show orchestration status |
-| `validate` | Validate configuration |
-
----
-
 ### `update` — Update Peko
 
 Update Peko to the latest version.
@@ -487,6 +397,9 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 ## Quick Reference Card
 
 ```bash
+# Log in
+peko login --api-key "$PEKO_API_KEY"
+
 # Principal management
 peko principal create my-principal
 peko principal list
@@ -497,11 +410,9 @@ peko principal export my-principal
 peko send my-principal "Hello!"
 peko send my-principal --file prompt.txt
 
-# Authentication (v3: catalog + keychain)
-peko provider add openai --template openai
-peko credential set openai
-peko credential list
-peko credential test openai
+# Provider setup
+peko provider add --template anthropic --key "$ANTHROPIC_API_KEY" --default
+peko credential set anthropic
 
 # Extensions
 peko ext list
@@ -512,18 +423,29 @@ peko daemon start --foreground
 peko daemon status
 peko daemon stop
 
-# Cron
-peko cron list
-peko cron add --name daily --schedule "0 9 * * *" --message "Hello"
-
 # System
 peko system status
 peko system doctor
-
-# Configuration
-peko config path
-peko config defaults
 ```
+
+---
+
+## Advanced / Hidden Commands
+
+The following commands remain functional but are hidden from `--help` because
+they expose operational internals or legacy behavior. They are intended for
+operators and scripts, not day-to-day Principal use.
+
+| Command | Purpose |
+|---------|---------|
+| `peko auth apikey` | Runtime API key management |
+| `peko config` | Read/write global `config.toml` |
+| `peko cron` | Schedule jobs (currently agent-targeted; awaiting Principal migration) |
+| `peko orchestration` | Event routing / webhooks / file watches (legacy config surface) |
+| `peko registry` | Registry host configuration |
+| `peko runtime` | Runtime identity and known-runtimes trust |
+| `peko tunnel` | PekoHub tunnel setup and status |
+| `peko vault migrate` | Switch vault unlock mode |
 
 ---
 

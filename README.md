@@ -126,7 +126,6 @@ peko principal pull <REF>                           # Pull from registry
 peko principal permit <NAME> <SUBJECT> <PERMISSION> # Grant permission
 peko principal revoke <NAME> <SUBJECT> <PERMISSION> # Revoke permission
 peko principal agent list <NAME>                    # List agent prompts in a Principal
-peko principal memory session <NAME>                # List sessions for a Principal
 ```
 
 > **Note:** There is no top-level `peko agent` or `peko team` command tree. Agents are thin Markdown prompts inside a Principal; teams were removed in favor of Principal-to-Principal interaction.
@@ -176,16 +175,6 @@ peko ext config <ID>                              # Configure extension
 peko ext validate <PATH>                          # Validate extension manifest
 ```
 
-#### Configuration
-```bash
-peko config validate [FILE]                       # Validate config file
-peko config init [--output <FILE>]                # Generate a new config file
-peko config defaults                              # Show default values
-peko config path                                  # Show config paths
-peko config get <KEY>                             # Get config value
-peko config set <KEY> <VALUE>                     # Set config value
-```
-
 #### System
 ```bash
 peko system status                                # Show system status
@@ -206,25 +195,7 @@ peko daemon restart                               # Restart the daemon
 peko daemon check                                 # Trigger immediate check
 ```
 
-#### Cron Jobs
-```bash
-peko cron list                                    # List all cron jobs
-peko cron add --name <NAME> --schedule <CRON> --message <MSG>   # Add recurring job
-peko cron at --name <NAME> --at <TIME> --message <MSG>          # One-shot job
-peko cron every --name <NAME> --interval <INTERVAL> --message <MSG>  # Interval job
-peko cron remove <ID>                             # Remove a job
-peko cron history <ID>                            # View job history
-peko cron run <ID>                                # Run job immediately
-```
-
-#### Orchestration
-```bash
-peko orchestration event-router                   # Manage event router
-peko orchestration webhook                        # Manage webhooks
-peko orchestration watch                          # Manage file watchers
-```
-
-> **Note:** There is no `peko orchestrate` top-level command. Use `peko orchestration`.
+> **Note:** Advanced commands (`config`, `cron`, `orchestration`, `registry`, `runtime`, `tunnel`, `vault`, and `auth apikey`) are hidden from `--help` because they expose operational internals. They remain functional for operators and scripts.
 
 #### Provider Management
 ```bash
@@ -323,47 +294,10 @@ peko principal import ./my-principal.principal --name imported-principal
 
 ---
 
-## Cron System & Daemon Mode
+## Daemon Mode
 
-Peko includes a full cron system for scheduling tasks with a daemon mode for automatic execution.
-
-### Managing Cron Jobs
-
-```bash
-# List all cron jobs
-peko cron list
-
-# Add a recurring cron job
-peko cron add \
-  --name "daily-report" \
-  --schedule "0 9 * * *" \
-  --message "Generate daily sales report"
-
-# Add an interval-based job (every 5 minutes)
-peko cron every \
-  --name "heartbeat" \
-  --interval "5m" \
-  --message "Check system status"
-
-# Add a one-shot job at specific time
-peko cron at \
-  --name "reminder" \
-  --at "2026-03-01T09:00:00Z" \
-  --message "Meeting in 1 hour"
-
-# Remove a job
-peko cron remove <ID>
-
-# View job history
-peko cron history <ID>
-
-# Run a job immediately (manual trigger)
-peko cron run <ID>
-```
-
-### Daemon Mode
-
-The daemon is a long-running process that polls for due jobs and executes them automatically.
+The daemon is a long-running process that owns Principals, executes `send`
+requests, and polls for scheduled jobs.
 
 ```bash
 # Start the daemon (foreground mode)
@@ -372,9 +306,6 @@ peko daemon start --foreground
 # Check daemon status
 peko daemon status
 
-# Trigger immediate cron check
-peko daemon check
-
 # Stop the daemon gracefully
 peko daemon stop
 
@@ -382,32 +313,28 @@ peko daemon stop
 peko daemon restart
 ```
 
+Scheduled jobs are managed via the hidden `peko cron` subcommands (for
+operators) and will be surfaced through the Principal model in a future
+release.
+
 ---
 
 ## Configuration
 
-Create a `peko.toml` file:
+Most users never need to edit `~/.peko/config.toml` directly — `peko provider`
+and `peko principal` write the required state. Operators who need low-level
+can use the hidden `peko config` commands or edit the file by hand.
 
 ```toml
-[agent]
-name = "my-agent"
-description = "A helpful agent"
-capabilities = ["messaging", "task_execution"]
+[daemon]
+bind_address = "127.0.0.1:11435"
+log_level = "info"
 
-[agent.memory]
-enabled = true
-database_path = "~/.local/share/peko/memory.db"
-
-[agent.provider]
-type = "openai"
-api_key = "${OPENAI_API_KEY}"  # or set env var
-base_url = "https://api.openai.com/v1"
-timeout_seconds = 30
-
-[agent.provider.default_model]
-name = "gpt-4"
-max_tokens = 2000
+[defaults]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
 temperature = 0.7
+max_tokens = 2048
 ```
 
 ---
@@ -461,7 +388,7 @@ src/
 cargo test
 
 # Run with logging
-RUST_LOG=debug cargo run -- agent list
+RUST_LOG=debug cargo run -- principal list
 
 # Format code
 cargo fmt
