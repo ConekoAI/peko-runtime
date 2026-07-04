@@ -446,7 +446,8 @@ impl HookHandler for BuiltinExecuteHandler {
                     .with_agent_id(runtime_ctx.agent_id.clone().unwrap_or_default())
                     .with_session_id(runtime_ctx.session_id.clone().unwrap_or_default())
                     .with_workspace(runtime_ctx.workspace.clone().unwrap_or_default())
-                    .with_principal_id(runtime_ctx.principal_id.clone().unwrap_or_default());
+                    .with_principal_id(runtime_ctx.principal_id.clone().unwrap_or_default())
+                    .with_principal_name(runtime_ctx.principal_name.clone().unwrap_or_default());
                     async move {
                         // Use execute_with_context so tools receive session/agent
                         // context injected by the extension framework.

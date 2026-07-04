@@ -994,6 +994,7 @@ mod tests {
                     session_id: None,
                     caller_id: None,
                     principal_id: None,
+                    principal_name: None,
                     allowed_extensions: None,
                 },
             )
@@ -1055,6 +1056,7 @@ mod tests {
                     session_id: None,
                     caller_id: None,
                     principal_id: None,
+                    principal_name: None,
                     allowed_extensions: Some(allowed),
                 },
             )

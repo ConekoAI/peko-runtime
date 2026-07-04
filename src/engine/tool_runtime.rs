@@ -31,7 +31,7 @@ pub async fn execute_tool_via_core(
     workspace: Option<String>,
 ) -> Result<(String, serde_json::Value, bool)> {
     execute_tool_via_core_with_context(
-        core, tool_name, params, workspace, None, None, None, None, None,
+        core, tool_name, params, workspace, None, None, None, None, None, None,
     )
     .await
 }
@@ -44,6 +44,8 @@ pub async fn execute_tool_via_core(
 /// `principal_id` (P2-audit) is threaded into `ToolContext` so
 /// extension-scoped tools (e.g. `Skill`) can resolve per-principal
 /// state via `SkillStateRegistry` at handle time.
+/// `principal_name` is the human-readable Principal name used by
+/// Principal-scoped tools (e.g. `CronCreate`) to target jobs.
 /// `allowed_extensions` is the principal/agent allowlist used by the
 /// execution gate instead of the mutable global `tool_config`.
 pub async fn execute_tool_via_core_with_context(
@@ -55,6 +57,7 @@ pub async fn execute_tool_via_core_with_context(
     session_id: Option<String>,
     caller_id: Option<String>,
     principal_id: Option<String>,
+    principal_name: Option<String>,
     allowed_extensions: Option<Vec<String>>,
 ) -> Result<(String, serde_json::Value, bool)> {
     let point = HookPoint::ToolExecute {
@@ -68,6 +71,7 @@ pub async fn execute_tool_via_core_with_context(
         session_id,
         caller_id,
         principal_id,
+        principal_name,
         allowed_extensions,
     };
 

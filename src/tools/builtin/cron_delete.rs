@@ -90,7 +90,7 @@ impl Tool for CronDeleteTool {
         ctx: &ToolContext,
     ) -> Result<serde_json::Value> {
         let principal_name = ctx
-            .principal_id
+            .principal_name
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("CronDelete requires a Principal context"))?
             .clone();

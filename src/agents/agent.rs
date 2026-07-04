@@ -72,6 +72,10 @@ pub struct Agent {
     /// without re-registering themselves on the shared `ExtensionCore`
     /// per principal.
     principal_id: crate::principal::PrincipalId,
+    /// Spawning principal's human-readable name. Threaded into
+    /// `ToolContext` so Principal-scoped tools (e.g. cron) can target
+    /// jobs by name.
+    principal_name: Option<String>,
 }
 
 impl Clone for Agent {
@@ -95,6 +99,7 @@ impl Clone for Agent {
             principal_workspace: self.principal_workspace.clone(),
             caller_principal_did: self.caller_principal_did.clone(),
             principal_id: self.principal_id.clone(),
+            principal_name: self.principal_name.clone(),
         }
     }
 }
@@ -519,6 +524,7 @@ impl Agent {
             principal_workspace: None,
             caller_principal_did: None,
             principal_id,
+            principal_name: None,
         };
 
         info!(
@@ -561,6 +567,20 @@ impl Agent {
     #[must_use]
     pub fn with_caller_principal_did(mut self, principal_did: Option<String>) -> Self {
         self.caller_principal_did = principal_did;
+        self
+    }
+
+    /// Set the spawning principal's human-readable name. Propagates to the
+    /// subagent executor so descendant spawns inherit the same name for
+    /// Principal-scoped tools.
+    #[must_use]
+    pub fn with_principal_name(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        let executor = (*self.subagent_executor)
+            .clone()
+            .with_principal_name(name.clone());
+        self.subagent_executor = Arc::new(executor);
+        self.principal_name = Some(name);
         self
     }
 
@@ -642,6 +662,7 @@ impl Agent {
         // allowlist.
 
         let principal_id = subagent_executor.principal_id().clone();
+        let principal_name = subagent_executor.principal_name().map(String::from);
         let agent = Self {
             config,
             state: Arc::new(RwLock::new(AgentState::Idle)),
@@ -657,6 +678,7 @@ impl Agent {
             principal_workspace: None,
             caller_principal_did: None,
             principal_id,
+            principal_name,
         };
 
         info!(
@@ -1183,6 +1205,12 @@ impl Agent {
         &self.principal_id
     }
 
+    /// Get the spawning principal's human-readable name, if known.
+    #[must_use]
+    pub fn principal_name(&self) -> Option<&str> {
+        self.principal_name.as_deref()
+    }
+
     // Session overlay methods
 
     /// Get the session manager
@@ -1489,6 +1517,7 @@ impl Agent {
             principal_workspace: None,
             caller_principal_did: None,
             principal_id: crate::principal::PrincipalId::generate(),
+            principal_name: None,
         })
     }
 

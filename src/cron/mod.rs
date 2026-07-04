@@ -120,6 +120,7 @@ pub enum DeliveryMode {
 pub struct CronJob {
     pub id: String,
     pub name: String,
+    #[serde(rename = "principal")]
     pub principal_name: String,
     pub schedule: ScheduleKind,
     pub message: String,

@@ -114,6 +114,9 @@ pub struct SubagentExecutor {
     /// re-reading the principal context, and so descendant subagents
     /// inherit the same principal scope down the spawn tree.
     principal_id: PrincipalId,
+    /// The spawning principal's human-readable name. Carried so
+    /// Principal-scoped tools (e.g. cron) inherit the correct target.
+    principal_name: Option<String>,
 }
 
 impl SubagentExecutor {
@@ -148,6 +151,7 @@ impl SubagentExecutor {
             session_manager,
             principal_workspace: None,
             principal_id,
+            principal_name: None,
         }
     }
 
@@ -155,6 +159,19 @@ impl SubagentExecutor {
     #[must_use]
     pub fn principal_id(&self) -> &PrincipalId {
         &self.principal_id
+    }
+
+    /// Get the spawning principal's human-readable name, if known.
+    #[must_use]
+    pub fn principal_name(&self) -> Option<&str> {
+        self.principal_name.as_deref()
+    }
+
+    /// Set the spawning principal's human-readable name.
+    #[must_use]
+    pub fn with_principal_name(mut self, name: impl Into<String>) -> Self {
+        self.principal_name = Some(name.into());
+        self
     }
 
     /// Create an executor with an explicit registry (for testing and nested spawns)
@@ -179,6 +196,7 @@ impl SubagentExecutor {
             session_manager,
             principal_workspace: None,
             principal_id,
+            principal_name: None,
         }
     }
 
@@ -204,6 +222,7 @@ impl SubagentExecutor {
             session_manager,
             principal_workspace: None,
             principal_id,
+            principal_name: None,
         }
     }
 

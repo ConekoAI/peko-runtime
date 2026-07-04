@@ -109,6 +109,9 @@ pub struct ToolContext {
     /// Spawning principal runtime id (post-PR-#94). Extension-scoped
     /// tools use this to resolve per-principal state at handle time.
     pub principal_id: Option<String>,
+    /// Human-readable Principal name. Cron-scoped tools use this to
+    /// create and filter jobs for the current Principal.
+    pub principal_name: Option<String>,
 }
 
 impl ToolContext {
@@ -133,6 +136,7 @@ impl ToolContext {
             peer_id: None,
             workspace: None,
             principal_id: None,
+            principal_name: None,
         }
     }
 
@@ -156,6 +160,7 @@ impl ToolContext {
             peer_id: None,
             workspace: None,
             principal_id: None,
+            principal_name: None,
         }
     }
 
@@ -183,6 +188,7 @@ impl ToolContext {
             peer_id: None,
             workspace: None,
             principal_id: None,
+            principal_name: None,
         }
     }
 
@@ -208,6 +214,7 @@ impl ToolContext {
             peer_id: None,
             workspace: None,
             principal_id: None,
+            principal_name: None,
         }
     }
 
@@ -271,6 +278,13 @@ impl ToolContext {
     #[must_use]
     pub fn with_principal_id(mut self, principal_id: impl Into<String>) -> Self {
         self.principal_id = Some(principal_id.into());
+        self
+    }
+
+    /// Set principal name for Principal-scoped tools (e.g. cron).
+    #[must_use]
+    pub fn with_principal_name(mut self, principal_name: impl Into<String>) -> Self {
+        self.principal_name = Some(principal_name.into());
         self
     }
 

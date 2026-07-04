@@ -175,6 +175,7 @@ impl ExtensionAsyncAdapter {
                     session_id: None,
                     caller_id: None,
                     principal_id: None,
+                    principal_name: None,
                     allowed_extensions: None,
                 },
             )
@@ -238,6 +239,7 @@ impl ExtensionAsyncAdapter {
                                 session_id: None,
                                 caller_id: None,
                                 principal_id: None,
+                                principal_name: None,
                                 allowed_extensions: None,
                             },
                         )

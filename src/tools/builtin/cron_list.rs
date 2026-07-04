@@ -80,7 +80,7 @@ impl Tool for CronListTool {
         ctx: &ToolContext,
     ) -> Result<serde_json::Value> {
         let principal_name = ctx
-            .principal_id
+            .principal_name
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("CronList requires a Principal context"))?
             .clone();

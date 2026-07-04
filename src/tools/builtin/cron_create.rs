@@ -160,7 +160,7 @@ impl Tool for CronCreateTool {
         ctx: &ToolContext,
     ) -> Result<serde_json::Value> {
         let principal_name = ctx
-            .principal_id
+            .principal_name
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("CronCreate requires a Principal context"))?
             .clone();
