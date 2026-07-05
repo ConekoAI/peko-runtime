@@ -4,11 +4,11 @@
 //! All operations (add, list, cancel) are sent to the daemon over IPC,
 //! and the daemon persists jobs to cron.json and executes them.
 
-use crate::cron::{CronJob, DeliveryMode, ScheduleKind};
+use crate::cron::{CronJob, CronJobAction, DeliveryMode, ScheduleKind};
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -19,7 +19,12 @@ pub async fn connect_daemon() -> anyhow::Result<DaemonClient> {
     })
 }
 
-/// Build a CronJob from common args
+/// Build a [`CronJob`] whose action is [`CronJobAction::Send`].
+///
+/// Equivalent to a deferred `peko send` — at fire time the daemon
+/// delivers `task` to the Principal's owner root session as a
+/// user-message. Used by the `CronCreate` tool's `prompt` shorthand
+/// and kept around for callers that want a Send job specifically.
 pub fn build_job(
     label: String,
     task: String,
@@ -33,7 +38,48 @@ pub fn build_job(
         name: label,
         principal_name,
         schedule,
-        message: task,
+        action: CronJobAction::Send { message: task },
+        delivery: DeliveryMode::None,
+        delete_after_run,
+        enabled: true,
+        created_at: Utc::now(),
+        next_run,
+        last_run: None,
+        last_status: None,
+        run_count: 0,
+    })
+}
+
+/// Build a [`CronJob`] whose action is [`CronJobAction::SpawnTool`].
+///
+/// Used by the `CronCreate` tool when the caller supplies
+/// `tool`+`params`. At fire time the daemon asks its `AsyncExecutor`
+/// to invoke `tool_name` with `tool_params` on behalf of the
+/// Principal's root.
+pub fn build_spawn_tool_job(
+    label: String,
+    tool_name: String,
+    tool_params: Value,
+    wake_on_completion: Option<bool>,
+    timeout_secs: Option<u64>,
+    description: Option<String>,
+    schedule: ScheduleKind,
+    delete_after_run: bool,
+    principal_name: String,
+) -> anyhow::Result<CronJob> {
+    let next_run = crate::cron::calculate_next_run(&schedule, Utc::now())?;
+    Ok(CronJob {
+        id: format!("cron_{}", Uuid::new_v4().simple()),
+        name: label,
+        principal_name,
+        schedule,
+        action: CronJobAction::SpawnTool {
+            tool_name,
+            tool_params,
+            wake_on_completion,
+            timeout_secs,
+            description,
+        },
         delivery: DeliveryMode::None,
         delete_after_run,
         enabled: true,
@@ -160,6 +206,12 @@ pub fn resolve_delete_after_run(params: &serde_json::Value) -> bool {
 }
 
 /// Render a list of CronJob values into the CronList return shape.
+///
+/// Each entry exposes the action kind (`send` vs `spawn_tool`) and the
+/// action-specific body — `task` for `Send` jobs, `tool` + `params`
+/// for `SpawnTool` jobs. The two surfaces (CLI cron and agent cron)
+/// share the same list so the agent always sees everything the user
+/// has scheduled against its principal.
 pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
     let jobs_json: Vec<_> = jobs
         .into_iter()
@@ -172,16 +224,44 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
                 ScheduleKind::Event { .. } => "event",
             };
             let status = if j.enabled { "active" } else { "disabled" };
-            json!({
+            let mut obj = json!({
                 "job_id": j.id,
                 "label": j.name,
                 "principal": j.principal_name,
                 "sub_command": sub_command,
-                "task": j.message,
+                "action": j.action.kind_label(),
                 "status": status,
                 "next_run_at": j.next_run.to_rfc3339(),
                 "run_count": j.run_count,
-            })
+            });
+            // Attach action-specific fields without overwriting the
+            // shared envelope above.
+            let map = obj.as_object_mut().expect("object literal above");
+            match &j.action {
+                CronJobAction::Send { message } => {
+                    map.insert("task".to_string(), Value::String(message.clone()));
+                }
+                CronJobAction::SpawnTool {
+                    tool_name,
+                    tool_params,
+                    wake_on_completion,
+                    timeout_secs,
+                    description,
+                } => {
+                    map.insert("tool".to_string(), Value::String(tool_name.clone()));
+                    map.insert("params".to_string(), tool_params.clone());
+                    if let Some(w) = wake_on_completion {
+                        map.insert("wake_on_completion".to_string(), Value::Bool(*w));
+                    }
+                    if let Some(t) = timeout_secs {
+                        map.insert("timeout_secs".to_string(), Value::Number((*t).into()));
+                    }
+                    if let Some(d) = description {
+                        map.insert("description".to_string(), Value::String(d.clone()));
+                    }
+                }
+            }
+            obj
         })
         .collect();
 

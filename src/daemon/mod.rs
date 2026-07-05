@@ -103,6 +103,13 @@ impl Daemon {
             std::sync::Arc::new(crate::observability::Observability::new("daemon")),
             config.data_dir.clone(),
             None,
+            // Placeholder executor for the un-wired constructor — the
+            // daemon replaces this in `Daemon::run` with a real one
+            // bound to the AppState's `InboxRegistry`.
+            std::sync::Arc::new(
+                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+            ),
+            std::sync::Weak::new(),
         );
 
         Ok(Self {
@@ -132,6 +139,10 @@ impl Daemon {
             std::sync::Arc::new(crate::observability::Observability::new("daemon")),
             config.data_dir.clone(),
             None,
+            std::sync::Arc::new(
+                crate::extensions::framework::async_exec::executor::AsyncExecutor::new(),
+            ),
+            std::sync::Weak::new(),
         );
 
         let daemon = Self {
@@ -190,14 +201,30 @@ impl Daemon {
 
         app_state.set_idle_detector(idle_detector.clone());
 
+        // Build the cron engine's `AsyncExecutor` with the daemon's
+        // shared `InboxRegistry` so completion events and steer
+        // messages land in the same inboxes the in-flight `AgenticLoop`
+        // drains. The executor resolves tools via the daemon-global
+        // `ExtensionCore` (`Arc::downgrade` so the cron engine does not
+        // extend the core's lifetime).
+        let cron_async_executor = Arc::new(
+            crate::extensions::framework::async_exec::executor::AsyncExecutor::new()
+                .with_inbox_registry(app_state.inbox_registry.clone()),
+        );
+        let cron_extension_core = crate::extensions::framework::core::global_core()
+            .map(|arc| std::sync::Arc::downgrade(&arc))
+            .unwrap_or_else(std::sync::Weak::new);
+
         // Replace the placeholder cron engine with one wired to the real
-        // PrincipalManager and the shared idle detector.
+        // PrincipalManager, shared idle detector, and cron-owned executor.
         self.cron_engine = CronEngine::new(
             Arc::new(crate::cron::CronScheduler::new(&self.config.cron_db_path)?),
             idle_detector,
             Arc::new(crate::observability::Observability::new("daemon")),
             self.config.data_dir.clone(),
             Some(app_state.principal_manager().clone()),
+            cron_async_executor,
+            cron_extension_core,
         );
 
         // Write our own PID file so stop commands can find us even if the parent is gone
@@ -327,6 +354,15 @@ impl Daemon {
                         Err(e) => {
                             error!("Error running async task janitor: {}", e);
                         }
+                    }
+
+                    // Reconcile `CronRun` rows still marked `"running"`
+                    // against the executor's task registry so SpawnTool
+                    // fires reach their final status (Phase 4).
+                    match self.cron_engine.reconcile_running_runs().await {
+                        Ok(0) => {}
+                        Ok(n) => info!("Cron janitor reconciled {n} previously-running runs"),
+                        Err(e) => error!("Cron janitor reconciliation failed: {e}"),
                     }
                 }
 

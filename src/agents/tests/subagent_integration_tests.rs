@@ -939,6 +939,8 @@ async fn test_executor_cancel() {
                 timeout_millis: None,
                 cleanup_after_delivery: false,
                 label: None,
+                wake_on_completion: true,
+                principal_root_session_key: None,
             },
         );
         registry_guard.register(entry);

@@ -76,6 +76,15 @@ Returns: { task_id, status, tool_name }"
                 "label": {
                     "type": "string",
                     "description": "Optional label for the task"
+                },
+                "wake_on_completion": {
+                    "type": "boolean",
+                    "description": "If true (default), push a CompletionEvent into the spawning session's inbox when the task finishes. Set false for background bookkeeping that does not need to nudge the agent's next turn (cron schedules use this)."
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum lifetime of the spawned task in seconds. Defaults to 7200 (2h). Pass null/omit to use the default. Cron schedules can override per job."
                 }
             },
             "required": ["tool", "params"]
@@ -104,6 +113,16 @@ Returns: { task_id, status, tool_name }"
             .get("label")
             .and_then(|v| v.as_str())
             .map(String::from);
+        // Per-call `wake_on_completion` overrides the `AsyncToolConfig`
+        // default (`true`). Cron schedules override to `false` because
+        // a scheduled run should not yank the agent into a fresh turn
+        // unless the user explicitly asked for it.
+        let wake_on_completion = params
+            .get("wake_on_completion")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        // Per-call `timeout_secs` overrides the 2h default.
+        let timeout_secs = params.get("timeout_secs").and_then(|v| v.as_u64());
 
         let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
 
@@ -116,11 +135,9 @@ Returns: { task_id, status, tool_name }"
         };
 
         let config = AsyncToolConfig {
-            // `None` means no timeout: the spawned task runs to completion or
-            // until cancelled via AsyncStop. The 5-min cap is applied by the
-            // router on the *spawning* call, not on the spawned task's lifetime.
-            timeout_secs: None,
+            timeout_secs,
             label,
+            wake_on_completion,
             ..Default::default()
         };
 

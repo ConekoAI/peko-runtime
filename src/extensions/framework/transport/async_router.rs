@@ -209,6 +209,8 @@ impl AsyncExecutionRouter {
             timeout_millis: None,
             cleanup_after_delivery: true,
             label: Some(tool_name.to_string()),
+            wake_on_completion: true,
+            principal_root_session_key: None,
         };
 
         // Build a boxed execution closure that captures params and runs the tool.

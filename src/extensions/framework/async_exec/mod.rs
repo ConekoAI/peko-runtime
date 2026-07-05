@@ -4,6 +4,7 @@
 //! all extension types.
 
 pub mod executor;
+pub mod steer;
 
 pub use executor::{
     build_completion_event, cancel_task_across_all_registries, find_run_across_all_registries,
@@ -16,3 +17,4 @@ pub use executor::{
     SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, TaskFileRecord,
     TaskFileWriter, WaitResult,
 };
+pub use steer::format_cron_steer_message;

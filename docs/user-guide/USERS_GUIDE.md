@@ -227,15 +227,44 @@ The daemon can run scheduled jobs on behalf of a Principal. Each job is
 scoped to exactly one Principal by name and executes as that Principal's
 owner, so it reuses the same `peko send` permission path and session memory.
 
+There are **two surfaces** for cron entries, both backed by the same
+schedule store (`cron.json`). `peko cron list` shows entries from both
+surfaces so you always see everything scheduled against a Principal:
+
+1. **User cron (`peko cron`)** — a deferred `peko send`. Each fire
+   delivers a user message to the Principal's owner root session. Built
+   via the CLI subcommands `add`, `at`, `every`, `add-idle`,
+   `add-event`. Use this when you want "send my Principal this prompt
+   on a schedule."
+
+2. **Agent cron (`CronCreate` tool)** — a deferred `AsyncSpawn`. Each
+   fire asks the daemon's executor to invoke a tool on behalf of the
+   Principal. Built from inside an agent turn. Use this when you want
+   "have my Principal run a tool at a time." The `prompt` shorthand is
+   `tool="Agent", params={ prompt }`. Any tool works: `Bash`, `Read`,
+   `Agent`, etc.
+
 Supported schedules:
 
 - **Cron expression** — standard 6-field cron (`sec min hour dom mon dow`)
-- **One-time `at`** — RFC3339 timestamp
+- **One-time `at`** — RFC3339 timestamp (one-shot; auto-deleted)
 - **Interval `every`** — fixed millisecond interval
 - **Idle** — fires after the Principal has had no user activity for N minutes
 - **Event** — fires when a matching system event is published
 
-### Example: daily Principal digest
+### SpawnTool attribution: `wake_on_completion` and `timeout_secs`
+
+`Agent`-cron entries can opt into two attributes per fire:
+
+| Attribute | Default | What it does |
+|-----------|---------|--------------|
+| `wake_on_completion` | `false` for cron-spawned runs (`true` for natural agent spawns) | When `true`, the executor posts a `SteeringMessage` into the Principal's root inbox saying "Your N:NN cron job `{name}` completed. You can check details with the TaskOutput tool." |
+| `timeout_secs` | `7200` (2h) for everyone | Per-run timeout. Both surfaces override per call. |
+
+If the fire is an `Agent` tool run, the spawned session transcript
+appears automatically in the Principal's session list.
+
+### Example: daily Principal digest (user cron)
 
 ```bash
 # Requires the daemon to be running
@@ -247,6 +276,24 @@ peko cron add --principal my-principal \
   --schedule "0 9 * * * *" \
   --message "Summarize my open tasks and today's priorities."
 ```
+
+### Example: nightly shell command (agent cron)
+
+Inside an agent turn:
+
+```text
+CronCreate {
+  tool: "Bash",
+  params: { command: "echo nightly-backup && /opt/backup/run.sh" },
+  wake_on_completion: true,
+  timeout_secs: 3600,
+  every: 24h
+}
+```
+
+On fire the daemon runs `Bash { command: ... }` on behalf of your
+Principal. Because `wake_on_completion=true`, the Principal's next
+turn opens with a one-line steer message pointing at the task id.
 
 Jobs are stored in the daemon's cron DB (`<data_dir>/cron.json`) and can be
 listed, inspected, and removed with `peko cron list` and `peko cron remove`.

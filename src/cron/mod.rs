@@ -115,6 +115,67 @@ pub enum DeliveryMode {
     },
 }
 
+/// What a cron job does when it fires.
+///
+/// One shape covers both surfaces:
+/// - CLI cron (`peko cron add …`) writes a [`Self::Send`] job — at fire
+///   time the daemon delivers `message` to the Principal's owner root
+///   session as a user-message, exactly like a deferred `peko send`.
+/// - Agent cron (`CronCreate` tool) writes a [`Self::SpawnTool`] job —
+///   at fire time the daemon asks the `AsyncExecutor` to run
+///   `tool_name` with `tool_params`. The cron engine sets
+///   `principal_root_session_key` on the executor config so a
+///   `wake_on_completion=true` run posts a steer message into the
+///   Principal's root inbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CronJobAction {
+    /// Deliver a user-message to the Principal's owner root session.
+    /// Equivalent to a deferred `peko send`.
+    Send { message: String },
+    /// Schedule an async tool run attributed to the Principal's root.
+    SpawnTool {
+        tool_name: String,
+        #[serde(default)]
+        tool_params: serde_json::Value,
+        /// Default `false`. When `true`, the executor posts a
+        /// `SteeringMessage` into the principal's root inbox on
+        /// completion (the agent picks it up at the next iteration).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake_on_completion: Option<bool>,
+        /// Default `7200` (2h). Caller overrides per job.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_secs: Option<u64>,
+        /// Optional human-readable description, surfaced in the
+        /// steer-message body and in `peko cron list`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+}
+
+impl CronJobAction {
+    /// Short, human-readable kind label for list rendering.
+    #[must_use]
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            Self::Send { .. } => "send",
+            Self::SpawnTool { .. } => "spawn_tool",
+        }
+    }
+
+    /// Whether the action is a [`Self::Send`].
+    #[must_use]
+    pub fn is_send(&self) -> bool {
+        matches!(self, Self::Send { .. })
+    }
+
+    /// Whether the action is a [`Self::SpawnTool`].
+    #[must_use]
+    pub fn is_spawn_tool(&self) -> bool {
+        matches!(self, Self::SpawnTool { .. })
+    }
+}
+
 /// A scheduled cron job
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronJob {
@@ -123,7 +184,8 @@ pub struct CronJob {
     #[serde(rename = "principal")]
     pub principal_name: String,
     pub schedule: ScheduleKind,
-    pub message: String,
+    #[serde(flatten)]
+    pub action: CronJobAction,
     pub delivery: DeliveryMode,
     pub delete_after_run: bool,
     pub enabled: bool,
@@ -132,6 +194,33 @@ pub struct CronJob {
     pub last_run: Option<DateTime<Utc>>,
     pub last_status: Option<String>,
     pub run_count: u32,
+}
+
+impl CronJob {
+    /// Whether the job's action is [`CronJobAction::Send`].
+    #[must_use]
+    pub fn is_send(&self) -> bool {
+        self.action.is_send()
+    }
+
+    /// Whether the job's action is [`CronJobAction::SpawnTool`].
+    #[must_use]
+    pub fn is_spawn_tool(&self) -> bool {
+        self.action.is_spawn_tool()
+    }
+
+    /// A short description for the steer message body. Falls back to
+    /// the job's `name` and finally a generic label.
+    #[must_use]
+    pub fn task_description(&self) -> String {
+        match &self.action {
+            CronJobAction::Send { message } if !message.is_empty() => message.clone(),
+            CronJobAction::SpawnTool { description, .. } if description.is_some() => {
+                description.clone().unwrap()
+            }
+            _ => format!("scheduled job '{}'", self.name),
+        }
+    }
 }
 
 /// Cron job run record
@@ -160,7 +249,11 @@ struct CronDatabase {
 impl Default for CronDatabase {
     fn default() -> Self {
         Self {
-            version: 1,
+            // v2 introduces `CronJob.action` (Send | SpawnTool) in place
+            // of the legacy top-level `message` field. Pre-launch: legacy
+            // records simply fail to deserialize — operators should clear
+            // `cron.json` rather than rely on a migration.
+            version: 2,
             jobs: Vec::new(),
             runs: Vec::new(),
         }
@@ -240,13 +333,30 @@ impl CronScheduler {
             anyhow::bail!("Cron job with id '{}' already exists", job.id);
         }
 
+        // Validate the action shape. Send requires a non-empty message;
+        // SpawnTool requires a non-empty tool name. Validation happens
+        // here so a malformed job never reaches the on-disk DB.
+        match &job.action {
+            CronJobAction::Send { message } => {
+                if message.trim().is_empty() {
+                    anyhow::bail!("CronJob Send action requires a non-empty 'message'");
+                }
+            }
+            CronJobAction::SpawnTool { tool_name, .. } => {
+                if tool_name.trim().is_empty() {
+                    anyhow::bail!("CronJob SpawnTool action requires a non-empty 'tool_name'");
+                }
+            }
+        }
+
         db.jobs.push(job.clone());
         self.write_db(&db)?;
 
         info!(
-            "Added cron job {}: '{}' with schedule {}",
+            "Added cron job {}: '{}' (action={}) with schedule {}",
             job.id,
             job.name,
+            job.action.kind_label(),
             job.schedule.display()
         );
 
@@ -314,6 +424,32 @@ impl CronScheduler {
         Ok(())
     }
 
+    /// Update only `last_status` (and `last_run`) on a job, leaving
+    /// `next_run` and `run_count` untouched. Used by the cron
+    /// reconciler when an `AsyncTask` finishes long after the original
+    /// fire — the schedule is already advanced and we must not bump
+    /// `run_count` again.
+    pub fn set_job_last_status(&self, job_id: &str, status: &str) -> Result<bool> {
+        let mut db = self.read_db()?;
+        let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+            return Ok(false);
+        };
+        job.last_run = Some(Utc::now());
+        job.last_status = Some(status.to_string());
+        self.write_db(&db)?;
+        Ok(true)
+    }
+
+    /// Recompute the cron job's `next_run` based on its stored
+    /// schedule. Returns `None` for schedules that never re-fire
+    /// (e.g. `At`) or when the job id is unknown.
+    pub fn calculate_next_run_for_job(&self, job_id: &str) -> Result<Option<DateTime<Utc>>> {
+        let Some(job) = self.get_job(job_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(calculate_next_run(&job.schedule, Utc::now())?))
+    }
+
     /// Delete a job
     pub fn delete_job(&self, job_id: &str) -> Result<bool> {
         let mut db = self.read_db()?;
@@ -365,6 +501,43 @@ impl CronScheduler {
         runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
         runs.truncate(limit);
         Ok(runs)
+    }
+
+    /// List all still-running runs. Used by the cron engine to reconcile
+    /// `SpawnTool` fires whose underlying `AsyncTask` has since
+    /// completed in the background.
+    pub fn list_running_runs(&self) -> Result<Vec<CronRun>> {
+        let db = self.read_db()?;
+        Ok(db
+            .runs
+            .into_iter()
+            .filter(|r| r.status == "running" && r.finished_at.is_none())
+            .collect())
+    }
+
+    /// Finalize a still-running run row with the executor's terminal
+    /// outcome. Returns `true` when a row was updated, `false` when
+    /// the id no longer exists or the row is already finalized.
+    pub fn finalize_run(
+        &self,
+        run_id: &str,
+        status: &str,
+        output: Option<String>,
+        error: Option<String>,
+    ) -> Result<bool> {
+        let mut db = self.read_db()?;
+        let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) else {
+            return Ok(false);
+        };
+        if run.finished_at.is_some() {
+            return Ok(false);
+        }
+        run.status = status.to_string();
+        run.output = output;
+        run.error = error;
+        run.finished_at = Some(Utc::now());
+        self.write_db(&db)?;
+        Ok(true)
     }
 
     /// Calculate next run time for a schedule
@@ -485,7 +658,9 @@ mod tests {
             name: "Test Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
             principal_name: "test-principal".to_string(),
-            message: "Test message".to_string(),
+            action: CronJobAction::Send {
+                message: "Test message".to_string(),
+            },
             delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -500,6 +675,8 @@ mod tests {
         let jobs = scheduler.list_jobs(false).unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].name, "Test Job");
+        assert!(jobs[0].is_send());
+        assert!(!jobs[0].is_spawn_tool());
     }
 
     #[test]
@@ -513,7 +690,9 @@ mod tests {
             name: "Past Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
             principal_name: "test-principal".to_string(),
-            message: "Test".to_string(),
+            action: CronJobAction::Send {
+                message: "Test".to_string(),
+            },
             delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -529,7 +708,9 @@ mod tests {
             name: "Future Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
             principal_name: "test-principal".to_string(),
-            message: "Test".to_string(),
+            action: CronJobAction::Send {
+                message: "Test".to_string(),
+            },
             delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -562,7 +743,9 @@ mod tests {
                 at: (Utc::now() - chrono::Duration::hours(2)).to_rfc3339(),
             },
             principal_name: "test-principal".to_string(),
-            message: "Test".to_string(),
+            action: CronJobAction::Send {
+                message: "Test".to_string(),
+            },
             delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -582,7 +765,9 @@ mod tests {
                 every_ms: 3_600_000,
             },
             principal_name: "test-principal".to_string(),
-            message: "Test".to_string(),
+            action: CronJobAction::Send {
+                message: "Test".to_string(),
+            },
             delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -610,7 +795,9 @@ mod tests {
             name: "Recurring".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
             principal_name: "test-principal".to_string(),
-            message: "Test".to_string(),
+            action: CronJobAction::Send {
+                message: "Test".to_string(),
+            },
             delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -665,7 +852,9 @@ mod tests {
                 name: "Persisted Job".to_string(),
                 principal_name: "test-principal".to_string(),
                 schedule: ScheduleKind::Every { every_ms: 60000 },
-                message: "Hello".to_string(),
+                action: CronJobAction::Send {
+                    message: "Hello".to_string(),
+                },
                 delivery: DeliveryMode::None,
                 delete_after_run: false,
                 enabled: true,
