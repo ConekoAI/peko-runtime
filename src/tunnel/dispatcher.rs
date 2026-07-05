@@ -546,10 +546,10 @@ impl TunnelDispatcher {
         match msg {
             TunnelMessage::ProxiedRequest {
                 request_id,
-                agent,
+                principal,
                 payload,
             } => {
-                self.handle_proxied_request(request_id, agent, payload, handle)
+                self.handle_proxied_request(request_id, principal, payload, handle)
                     .await?;
             }
             TunnelMessage::ExposureUpdate { payload } => {
@@ -584,7 +584,6 @@ impl TunnelDispatcher {
                 caller_runtime_id,
                 caller_principal_did,
                 target_principal_did,
-                session_id,
                 message,
                 signature,
             } => {
@@ -594,7 +593,6 @@ impl TunnelDispatcher {
                     caller_runtime_id,
                     caller_principal_did,
                     target_principal_did,
-                    session_id,
                     message,
                     signature,
                 )
@@ -622,13 +620,13 @@ impl TunnelDispatcher {
     async fn handle_proxied_request(
         &self,
         request_id: String,
-        agent_name: String,
+        principal_name: String,
         payload: Vec<u8>,
         handle: TunnelHandle,
     ) -> anyhow::Result<()> {
         debug!(
-            "Handling proxied request {} for agent {}",
-            request_id, agent_name
+            "Handling proxied request {} for principal {}",
+            request_id, principal_name
         );
 
         // Parse the HTTP bridge payload from PekoHub
@@ -644,10 +642,10 @@ impl TunnelDispatcher {
 
         // Defense-in-depth: enforce local ACL even though PekoHub already checked
         if let Err(e) = self
-            .check_request_allowed(&agent_name, &bridge_payload)
+            .check_request_allowed(&principal_name, &bridge_payload)
             .await
         {
-            warn!("Tunnel ACL denied request for {}: {}", agent_name, e);
+            warn!("Tunnel ACL denied request for {}: {}", principal_name, e);
             return self
                 .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
                 .await;
@@ -674,7 +672,10 @@ impl TunnelDispatcher {
             {
                 Ok(caller) => caller,
                 Err(e) => {
-                    warn!("Tunnel caller resolution failed for {}: {}", agent_name, e);
+                    warn!(
+                        "Tunnel caller resolution failed for {}: {}",
+                        principal_name, e
+                    );
                     return self
                         .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
                         .await;
@@ -682,12 +683,18 @@ impl TunnelDispatcher {
             };
         let caller_principal = Subject::from_bridge_user(&caller_user);
 
+        // The audit emit's `agent_did` positional argument is the
+        // AuditEvent struct's legacy `agent_did: Option<String>`
+        // field (column name kept for the Drizzle migration tracking
+        // issue). The principal name is the runtime's view of the
+        // same identifier — pass it through; downstream audit
+        // consumers can re-key on the `caller` Subject kind.
         self.app_state
             .observability()
             .audit_with_caller(
                 Some(&caller_principal),
                 "tunnel_proxied_request",
-                Some(&agent_name),
+                Some(&principal_name),
                 serde_json::json!({
                     "request_id": &request_id,
                     "caller": &caller_user,
@@ -697,10 +704,10 @@ impl TunnelDispatcher {
             .ok();
 
         let principal_manager = self.app_state.principal_manager();
-        let principal = match principal_manager.get_by_name(&agent_name).await {
+        let principal = match principal_manager.get_by_name(&principal_name).await {
             Some(p) => p,
             None => {
-                warn!("Proxied request for unknown principal: {}", agent_name);
+                warn!("Proxied request for unknown principal: {}", principal_name);
                 return self
                     .send_error_response(&handle, &request_id, "Principal not found")
                     .await;
@@ -773,7 +780,7 @@ impl TunnelDispatcher {
             Err(e) => {
                 warn!(
                     "Principal streaming task panicked for {}: {}",
-                    agent_name, e
+                    principal_name, e
                 );
                 return self
                     .send_error_response(&handle, &request_id, "Execution failed")
@@ -801,7 +808,10 @@ impl TunnelDispatcher {
                 }
             }
             Err(e) => {
-                warn!("Principal execution failed for {}: {}", agent_name, e);
+                warn!(
+                    "Principal execution failed for {}: {}",
+                    principal_name, e
+                );
                 return self
                     .send_error_response(&handle, &request_id, &format!("Execution failed: {}", e))
                     .await;
@@ -1163,7 +1173,6 @@ impl TunnelDispatcher {
         caller_runtime_id: String,
         caller_principal_did: String,
         target_principal_did: String,
-        session_id: Option<String>,
         message: String,
         signature: String,
     ) -> anyhow::Result<()> {
@@ -1186,13 +1195,17 @@ impl TunnelDispatcher {
         };
 
         // 2. Re-verify the signature on the canonical pre-image.
+        //
+        // NOTE: `SignedFields` no longer includes `session_id`. ADR-042
+        // dropped `session_id` from the cross-runtime wire envelope; it
+        // remains local-storage correlation only (see
+        // `tunnel::a2a_audit`) and is NOT signed.
         let signed = SignedFields {
             request_id: &request_id,
             caller_runtime_id: &caller_runtime_id,
             caller_principal_did: &caller_principal_did,
             target_principal_did: &target_principal_did,
             message: &message,
-            session_id: session_id.as_deref(),
         };
         if let Err(e) = verify_request(&verifying_key, signed, &signature) {
             warn!(
@@ -1258,11 +1271,19 @@ impl TunnelDispatcher {
             .await;
 
         // 6. Serialize and respond.
+        //
+        // `PrincipalSendResult.session_id` is local-storage correlation
+        // for the receiving runtime. Cross-runtime, the inbound
+        // dispatcher never sees the caller's session_id (it was dropped
+        // from the wire envelope per ADR-042), so the response carries
+        // an empty string — the receiving runtime may internally index
+        // the exchange for its own audit log, but the value is not
+        // round-tripped back through the response payload.
         let a2a_result = match result {
             Ok(response) => PrincipalSendResult {
                 success: true,
                 response: response.content,
-                session_id: session_id.unwrap_or_default(),
+                session_id: String::new(),
                 iterations: None,
                 tool_calls: None,
                 duration_ms: None,
@@ -2143,7 +2164,6 @@ mod tests {
                 "did:peko:agent:not-a-real-did-key".to_string(), // not a did:key form
                 "did:peko:agent:caller".to_string(),
                 "did:peko:agent:target".to_string(),
-                None,
                 "hi".to_string(),
                 "sig".to_string(),
             )
@@ -2193,7 +2213,6 @@ mod tests {
             caller_principal_did: "did:peko:agent:caller",
             target_principal_did: "did:peko:agent:target",
             message: "hi",
-            session_id: None,
         };
         let sig = crate::tunnel::sign_request(&kp_attacker.signing_key, signed);
 
@@ -2204,7 +2223,6 @@ mod tests {
                 caller_did,
                 "did:peko:agent:caller".to_string(),
                 "did:peko:agent:target".to_string(),
-                None,
                 "hi".to_string(),
                 sig,
             )
@@ -2424,7 +2442,6 @@ mod tests {
             caller_principal_did: &caller_principal_did,
             target_principal_did: &target_principal_did,
             message: "ping",
-            session_id: None,
         };
         let sig = crate::tunnel::sign_request(&kp_caller.signing_key, signed);
 
@@ -2435,7 +2452,6 @@ mod tests {
                 caller_runtime_id,
                 caller_principal_did,
                 target_principal_did,
-                None,
                 "ping".to_string(),
                 sig,
             )

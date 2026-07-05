@@ -383,7 +383,6 @@ async fn direct_preference_uses_directory_endpoint() {
         caller_runtime_id,
         caller_principal_did: "did:peko:principal:caller".to_string(),
         target_principal_did: principal_did.to_string(),
-        session_id: None,
         message: "hello direct".to_string(),
         signature: "dummy".to_string(),
     };

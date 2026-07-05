@@ -31,9 +31,6 @@
 //!   [4 bytes BE u32 = len(caller_principal_did)] || caller_principal_did
 //!   [4 bytes BE u32 = len(target_principal_did)] || target_principal_did
 //!   [4 bytes BE u32 = len(message)] || message
-//!   [1 byte presence]
-//!     if 0x01:  [4 bytes BE u32 = len(session_id)] || session_id
-//!     if 0x00:  (nothing further)
 //! ```
 //!
 //! The leading `"a2a:v1"` domain-separation tag makes it impossible for
@@ -71,25 +68,21 @@ pub struct SignedFields<'a> {
     pub caller_principal_did: &'a str,
     pub target_principal_did: &'a str,
     pub message: &'a str,
-    pub session_id: Option<&'a str>,
 }
 
 /// Build the deterministic pre-image bytes that get signed / verified
 /// for an a2a request. See module docs for the byte layout.
 #[must_use]
 pub fn canonical_pre_image(fields: SignedFields<'_>) -> Vec<u8> {
-    // Tight capacity hint: 1 domain + 4 required + up to 1 optional,
-    // each with a 4-byte length prefix and a presence byte on the
-    // optional. Slightly over-allocates rather than reallocates.
+    // Tight capacity hint: 1 domain + 4 required, each with a 4-byte
+    // length prefix. Slightly over-allocates rather than reallocates.
     let estimated = A2A_SIGNATURE_DOMAIN.len()
         + fields.request_id.len()
         + fields.caller_runtime_id.len()
         + fields.caller_principal_did.len()
         + fields.target_principal_did.len()
         + fields.message.len()
-        + fields.session_id.map_or(0, str::len)
-        + (4 * 6) // length prefixes (domain + 4 required + 1 optional field)
-        + 1; // presence byte
+        + (4 * 5); // length prefixes (domain + 4 required)
     let mut out = Vec::with_capacity(estimated);
 
     push_lp(&mut out, A2A_SIGNATURE_DOMAIN);
@@ -98,7 +91,6 @@ pub fn canonical_pre_image(fields: SignedFields<'_>) -> Vec<u8> {
     push_lp(&mut out, fields.caller_principal_did);
     push_lp(&mut out, fields.target_principal_did);
     push_lp(&mut out, fields.message);
-    push_opt_lp(&mut out, fields.session_id);
     out
 }
 
@@ -114,21 +106,6 @@ fn push_lp(out: &mut Vec<u8>, s: &str) {
         u32::try_from(s.len()).expect("a2a signed field exceeds u32::MAX bytes; rejected upstream");
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(s.as_bytes());
-}
-
-/// Append an optional length-prefixed string. The presence byte is 0x01
-/// for `Some` (followed by a length-prefixed string) or 0x00 for `None`
-/// (no following bytes). Critically, `Some("")` and `None` produce
-/// *different* pre-images — the absence of a field is not the same as
-/// the empty string for audit / replay purposes.
-fn push_opt_lp(out: &mut Vec<u8>, s: Option<&str>) {
-    match s {
-        Some(v) => {
-            out.push(0x01);
-            push_lp(out, v);
-        }
-        None => out.push(0x00),
-    }
 }
 
 /// Sign the canonical pre-image of `fields` with `signing_key` and
@@ -186,7 +163,6 @@ mod tests {
             caller_principal_did: "did:peko:agent:caller-hash",
             target_principal_did: "did:peko:agent:target-hash",
             message: "review this",
-            session_id: Some("sess-xyz"),
         }
     }
 
@@ -214,29 +190,6 @@ mod tests {
         assert_eq!(
             &bytes[4..4 + A2A_SIGNATURE_DOMAIN.len()],
             A2A_SIGNATURE_DOMAIN.as_bytes()
-        );
-    }
-
-    /// `Some("")` and `None` MUST produce different pre-images. This
-    /// is the property that prevents a replay where a caller signs an
-    /// `a2a` with `session_id = None` and an attacker re-routes it as
-    /// `session_id = Some("")` (or vice versa), getting the receiver
-    /// to attribute the call to the wrong session.
-    #[test]
-    fn test_canonical_pre_image_distinguishes_none_from_empty() {
-        let none_session = SignedFields {
-            session_id: None,
-            ..sample_fields()
-        };
-        let empty_session = SignedFields {
-            session_id: Some(""),
-            ..sample_fields()
-        };
-        assert_ne!(
-            canonical_pre_image(none_session),
-            canonical_pre_image(empty_session),
-            "Some(\"\") and None must NOT produce the same pre-image \
-             (replay protection across the optional fields)"
         );
     }
 
@@ -280,13 +233,6 @@ mod tests {
                 "message",
                 SignedFields {
                     message: "different message body",
-                    ..sample_fields()
-                },
-            ),
-            (
-                "session_id",
-                SignedFields {
-                    session_id: Some("different-sess"),
                     ..sample_fields()
                 },
             ),
@@ -354,13 +300,6 @@ mod tests {
                     ..sample_fields()
                 },
             ),
-            (
-                "session_id",
-                SignedFields {
-                    session_id: None,
-                    ..sample_fields()
-                },
-            ),
         ];
         for (name, tampered) in tampers {
             verify_request(&kp.verifying_key, tampered, &sig).expect_err(&format!(
@@ -408,33 +347,5 @@ mod tests {
             err.to_string().contains("length"),
             "error must mention length; got: {err}"
         );
-    }
-
-    /// `Some("")` and `None` produce signatures that DO NOT
-    /// cross-verify — the wire-level replay-distinction test from
-    /// `test_canonical_pre_image_distinguishes_none_from_empty`
-    /// elevated to the signature layer, where it actually matters.
-    #[test]
-    fn test_signature_distinguishes_none_from_empty_optional_fields() {
-        let kp = KeyPair::generate();
-        let with_none = SignedFields {
-            session_id: None,
-            ..sample_fields()
-        };
-        let with_empty = SignedFields {
-            session_id: Some(""),
-            ..sample_fields()
-        };
-
-        let sig_none = sign_request(&kp.signing_key, with_none);
-        let sig_empty = sign_request(&kp.signing_key, with_empty);
-
-        // The signatures themselves differ (different pre-images), and
-        // neither verifies against the other's fields.
-        assert_ne!(sig_none, sig_empty);
-        verify_request(&kp.verifying_key, with_empty, &sig_none)
-            .expect_err("None signature must not verify against Some(\"\")");
-        verify_request(&kp.verifying_key, with_none, &sig_empty)
-            .expect_err("Some(\"\") signature must not verify against None");
     }
 }

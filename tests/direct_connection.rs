@@ -74,7 +74,6 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
                     caller_runtime_id,
                     caller_principal_did,
                     target_principal_did,
-                    session_id,
                     message,
                     signature: _,
                 } = msg
@@ -91,7 +90,6 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
                         caller_runtime_id,
                         caller_principal_did,
                         target_principal_did,
-                        session_id,
                     );
                 }
             }) as Pin<Box<dyn Future<Output = ()> + Send>>
@@ -133,7 +131,6 @@ async fn direct_server_client_handshake_and_message_roundtrip() {
         caller_runtime_id: client_runtime_id.clone(),
         caller_principal_did: "did:peko:principal:caller".to_string(),
         target_principal_did: "did:peko:principal:target".to_string(),
-        session_id: None,
         message: "hello direct".to_string(),
         signature: "dummy".to_string(),
     };

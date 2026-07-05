@@ -364,7 +364,6 @@ Send a message to another Principal's root agent and receive its response. This 
             caller_principal_did: &self.caller_principal_did,
             target_principal_did,
             message: &args.message,
-            session_id: args.session_id.as_deref(),
         };
         let signature = sign_request(&ctx.signing_key, signed);
 
@@ -373,7 +372,6 @@ Send a message to another Principal's root agent and receive its response. This 
             caller_runtime_id: ctx.caller_runtime_id.clone(),
             caller_principal_did: self.caller_principal_did.clone(),
             target_principal_did: target_principal_did.to_string(),
-            session_id: args.session_id.clone(),
             message: args.message.clone(),
             signature,
         };
@@ -437,8 +435,11 @@ Send a message to another Principal's root agent and receive its response. This 
         }
 
         // Slice D: emit the outbound audit event now that the request
-        // is on the wire. The session_id is best-effort and may be
-        // empty on a fresh cross-principal exchange.
+        // is on the wire. The local session_id correlation is
+        // best-effort and may be empty on a fresh cross-principal
+        // exchange — it's only embedded in the audit-log JSON, not
+        // in the cross-runtime wire envelope (which dropped
+        // session_id entirely per ADR-042).
         let sent_event = a2a_audit::build_a2a_sent_outbound(
             args.session_id.as_deref().unwrap_or(""),
             &request_id,
@@ -712,7 +713,6 @@ mod tests {
                 caller_runtime_id,
                 caller_principal_did,
                 target_principal_did,
-                session_id: _,
                 message,
                 signature,
             } = msg
@@ -748,7 +748,6 @@ mod tests {
                     caller_principal_did: &caller_principal_did,
                     target_principal_did: &target_principal_did,
                     message: &message,
-                    session_id: None,
                 };
                 if let Err(e) = verify_request(&caller_vk, signed, &signature) {
                     eprintln!("hub: signature did not verify: {e}");
