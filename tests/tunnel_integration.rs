@@ -444,7 +444,7 @@ async fn test_tunnel_proxied_request_response() {
     let request_id = "test-req-1".to_string();
     let req = TunnelMessage::ProxiedRequest {
         request_id: request_id.clone(),
-        agent: "echo-agent".to_string(),
+        principal: "echo-agent".to_string(),
         payload: serde_json::json!({
             "requestId": request_id,
             "instanceId": "echo-agent",

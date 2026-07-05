@@ -185,8 +185,8 @@ pub enum TunnelMessage {
     ProxiedRequest {
         /// Globally unique request ID
         request_id: String,
-        /// Target agent name
-        agent: String,
+        /// Target principal name
+        principal: String,
         /// Serialized IPC RequestPacket
         payload: Vec<u8>,
     },
@@ -253,7 +253,7 @@ pub enum TunnelMessage {
     /// Slice A only defines and round-trips the wire shape. Slice B
     /// adds the outbound signer (`PekoHubCredential::sign(...)` against
     /// the canonical pre-image `request_id || caller_runtime_id ||
-    /// caller_principal_did || target_principal_did || message || session_id?`).
+    /// caller_principal_did || target_principal_did || message`).
     /// Slice C adds the inbound verifier + dispatcher route.
     #[serde(rename = "agent_to_agent_request", rename_all = "camelCase")]
     AgentToAgentRequest {
@@ -282,11 +282,6 @@ pub enum TunnelMessage {
         /// this, so it most often indicates a stale resolution
         /// cached on the caller.
         target_principal_did: String,
-        /// Optional session ID to resume on the target side. When
-        /// absent, the target runtime allocates a fresh session
-        /// keyed under `peer: agent:<caller_principal_did>`.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        session_id: Option<String>,
         /// The message body to deliver to the target agent.
         message: String,
         /// Ed25519 signature, base64url-encoded, over the canonical
@@ -670,7 +665,7 @@ mod tests {
     fn test_proxied_request_roundtrip() {
         let msg = TunnelMessage::ProxiedRequest {
             request_id: "req-1".to_string(),
-            agent: "agent-1".to_string(),
+            principal: "agent-1".to_string(),
             payload: vec![1, 2, 3],
         };
         let bytes = msg.to_bytes().unwrap();
@@ -685,11 +680,11 @@ mod tests {
         match decoded {
             TunnelMessage::ProxiedRequest {
                 request_id,
-                agent,
+                principal,
                 payload,
             } => {
                 assert_eq!(request_id, "req-1");
-                assert_eq!(agent, "agent-1");
+                assert_eq!(principal, "agent-1");
                 assert_eq!(payload, vec![1, 2, 3]);
             }
             _ => panic!("Expected ProxiedRequest"),
@@ -784,7 +779,6 @@ mod tests {
             caller_runtime_id: "did:key:zRuntime1".to_string(),
             caller_principal_did: "did:peko:agent:caller-hash".to_string(),
             target_principal_did: "did:peko:agent:target-hash".to_string(),
-            session_id: Some("sess-xyz".to_string()),
             message: "review this PR".to_string(),
             signature: "base64url-sig".to_string(),
         };
@@ -813,8 +807,8 @@ mod tests {
             "field targetPrincipalDid must be camelCase, got: {json}"
         );
         assert!(
-            json.contains("\"sessionId\""),
-            "field sessionId must be camelCase, got: {json}"
+            !json.contains("sessionId"),
+            "session_id must not appear on the wire, got: {json}"
         );
         assert!(
             json.contains("\"signature\""),
@@ -828,7 +822,6 @@ mod tests {
                 caller_runtime_id,
                 caller_principal_did,
                 target_principal_did,
-                session_id,
                 message,
                 signature,
             } => {
@@ -836,42 +829,8 @@ mod tests {
                 assert_eq!(caller_runtime_id, "did:key:zRuntime1");
                 assert_eq!(caller_principal_did, "did:peko:agent:caller-hash");
                 assert_eq!(target_principal_did, "did:peko:agent:target-hash");
-                assert_eq!(session_id.as_deref(), Some("sess-xyz"));
                 assert_eq!(message, "review this PR");
                 assert_eq!(signature, "base64url-sig");
-            }
-            other => panic!("Expected AgentToAgentRequest, got: {other:?}"),
-        }
-    }
-
-    /// Minimal `AgentToAgentRequest` — no `session_id`.
-    /// The Option field must be omitted from the wire form so
-    /// pre-#29 PekoHub doesn't see an unknown null field; this is the
-    /// same back-compat shape the existing `bundleRef` / `metadata`
-    /// fields use elsewhere in this enum.
-    #[test]
-    fn test_agent_to_agent_request_minimal_roundtrip() {
-        let msg = TunnelMessage::AgentToAgentRequest {
-            request_id: "req-min".to_string(),
-            caller_runtime_id: "did:key:zRuntime1".to_string(),
-            caller_principal_did: "did:peko:agent:caller-hash".to_string(),
-            target_principal_did: "did:peko:agent:target-hash".to_string(),
-            session_id: None,
-            message: "hi".to_string(),
-            signature: "sig".to_string(),
-        };
-        let bytes = msg.to_bytes().unwrap();
-        let json = String::from_utf8(bytes.clone()).unwrap();
-
-        assert!(
-            !json.contains("sessionId"),
-            "session_id must be omitted from the wire when None; got: {json}"
-        );
-
-        let decoded = TunnelMessage::from_bytes(&bytes).unwrap();
-        match decoded {
-            TunnelMessage::AgentToAgentRequest { session_id, .. } => {
-                assert!(session_id.is_none());
             }
             other => panic!("Expected AgentToAgentRequest, got: {other:?}"),
         }
