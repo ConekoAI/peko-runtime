@@ -142,6 +142,23 @@ peko logout
 
 ---
 
+### `auth` — Authentication status
+
+Show the current PekoHub authentication status: which registry you're
+logged into, the masked token, the active runtime identity, and the
+effective scopes. Run this to confirm `peko login` succeeded, or to
+debug a "not authenticated" error from a registry call.
+
+```bash
+peko auth status
+```
+
+The API-key subcommand (`peko auth apikey ...`) is hidden from
+`--help` — see [Advanced / Hidden Commands](#advanced--hidden-commands)
+for the operator surface.
+
+---
+
 ### `credential` — Provider API key management
 
 Store and inspect provider API keys. Keys live in the OS keychain
@@ -223,6 +240,47 @@ peko provider list --detailed
 # Default
 peko provider set-default openai
 peko provider get-default
+```
+
+---
+
+### `search` — Search the PekoHub Registry
+
+Search the PekoHub registry for published principals and extensions,
+and inspect a specific bundle. Search is read-only and does not
+require `peko login` for public bundles; private bundles are gated on
+your PekoHub credentials (use `peko auth status` to check).
+
+```bash
+peko search <COMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `query <QUERY>` | Search the registry. Filter by bundle type (`agent`, `team`, `extension`). |
+| `info <BUNDLE>` | Show full metadata for one bundle (`namespace/name`). |
+
+#### Options (query)
+
+| Option | Description |
+|--------|-------------|
+| `--page <N>` | 1-based page number (default 1). |
+| `--per-page <N>` | Items per page (default 20). |
+| `--type <TYPE>` | Filter to `agent`, `team`, or `extension`. |
+
+#### Examples
+
+```bash
+# Find published researchers
+peko search researcher
+
+# First page of agent-type bundles only
+peko search researcher --type agent --page 1 --per-page 10
+
+# Inspect a specific bundle
+peko search info acme/researcher
 ```
 
 ---
@@ -336,82 +394,6 @@ peko daemon stop
 
 # Restart daemon
 peko daemon restart
-```
-
----
-
-### `cron` — Principal Cron Jobs
-
-Schedule recurring, one-time, idle-triggered, and event-triggered jobs for a
-Principal. The daemon executes each job by sending `message` to the target
-Principal via `PrincipalManager::receive`, running as the Principal's owner.
-
-**Each entry is a user-scoped scheduled message to the Principal's owner root
-session** — equivalent to a deferred `peko send`. For tool-run schedules (e.g.
-asking a Principal to run a specific tool at a time), use the
-[`CronCreate`](#cron) **tool** from inside an agent turn instead. The two
-surfaces share one schedule store (`cron.json`) so agent cron entries also
-appear in `peko cron list`.
-
-```bash
-peko cron <COMMAND>
-```
-
-#### Subcommands
-
-| Subcommand | Description |
-|-----------|-------------|
-| `add` | Add a cron-expression job |
-| `at` | Add a one-time job at an RFC3339 timestamp |
-| `every` | Add a repeating interval job (ms) |
-| `add-idle` | Add a job that runs after the Principal is idle for N minutes |
-| `add-event` | Add a job that runs when a system event fires |
-| `list` | List jobs (optionally filtered by Principal) — shows each entry's `action` kind (`send` vs `spawn_tool`) |
-| `remove <ID>` | Remove a job by id |
-| `history <ID>` | Show run history for a job |
-
-#### Common Options
-
-| Option | Description |
-|--------|-------------|
-| `--principal <NAME>` | Target Principal (required for `add`, `at`, `every`, `add-idle`, `add-event`) |
-| `--name <LABEL>` | Human-readable job label |
-| `--message <TEXT>` | Message sent to the Principal when the job fires |
-| `--announce` | Write a JSON announcement to the data directory on completion |
-| `--once` | For event jobs: disable after first run |
-
-#### Examples
-
-```bash
-# Daily summary for a Principal
-peko cron add --principal my-principal \
-  --name daily-summary \
-  --schedule "0 9 * * * *" \
-  --message "Send me a concise summary of yesterday's activity."
-
-# One-time reminder
-peko cron at --principal my-principal \
-  --name release-reminder \
-  --at "2099-12-31T23:59:59Z" \
-  --message "It's time to cut the release."
-
-# Re-every 60 seconds (use sparingly)
-peko cron every --principal my-principal \
-  --name heartbeat \
-  --interval-ms 60000 \
-  --message "ping"
-
-# Run when the Principal has been idle for 5 minutes
-peko cron add-idle --principal my-principal \
-  --name catch-up \
-  --minutes 5 \
-  --message "What should I know since we last talked?"
-
-# List jobs for one Principal — `action` column shows `send` or `spawn_tool`
-peko cron list --principal my-principal
-
-# Remove a job
-peko cron remove cron_abc123 --force
 ```
 
 ---
@@ -541,6 +523,7 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 ```bash
 # Log in
 peko login --api-key "$PEKO_API_KEY"
+peko auth status
 
 # Principal management
 peko principal create my-principal
@@ -555,6 +538,10 @@ peko send my-principal --file prompt.txt
 # Inspect Principal activity (owner-root view by default)
 peko log my-principal
 peko log my-principal --since 24h --json
+
+# Registry search
+peko search researcher
+peko search info acme/researcher
 
 # Provider setup
 peko provider add --template anthropic --key "$ANTHROPIC_API_KEY" --default
@@ -584,9 +571,9 @@ operators and scripts, not day-to-day Principal use.
 
 | Command | Purpose |
 |---------|---------|
-| `peko auth apikey` | Runtime API key management |
+| `peko auth apikey` | Runtime API key management (`create`/`list`/`revoke`). The `peko auth status` surface is visible — see [`auth`](#auth--authentication-status). |
 | `peko config` | Read/write global `config.toml` |
-| `peko cron` | Schedule Principal-targeted jobs (recurring, one-time, idle, event) |
+| `peko cron` | Schedule Principal-targeted jobs (recurring, one-time, idle, event). The internal `CronCreate` tool surfaces the same store from inside an agent turn. |
 | `peko registry` | Registry host configuration |
 | `peko runtime` | Runtime identity and known-runtimes trust |
 | `peko tunnel` | PekoHub tunnel setup and status |

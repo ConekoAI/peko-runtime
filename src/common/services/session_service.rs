@@ -170,6 +170,64 @@ pub struct HistorySummary {
     pub thinking_blocks: usize,
 }
 
+/// Convert one `SessionEvent` into a `HistoryEvent` for the user-
+/// facing log view.
+///
+/// Single canonical converter. Both `SessionService::get_history` (via
+/// `convert_event`) and `IpcServer::read_principal_log` use this — they
+/// previously each carried their own copy of the same match body, which
+/// had drifted (the IPC variant constructed owned `String`s, the
+/// service variant cloned fields via `&self`). Filtering on
+/// `HistoryQuery` (`include_tool_calls`, `include_thinking`) is applied
+/// at the call site, not here.
+///
+/// Returns `None` for events that have no display representation
+/// (a2a traffic, spawn-request internals, session-end markers).
+pub fn session_event_to_history(event: &SessionEvent) -> Option<HistoryEvent> {
+    Some(match event {
+        SessionEvent::SessionCreated(e) => HistoryEvent::Session {
+            timestamp: e.envelope.ts.to_rfc3339(),
+        },
+        SessionEvent::MessageV2(msg) => HistoryEvent::Message {
+            role: match msg.role() {
+                crate::common::types::message::MessageRole::User => "user",
+                crate::common::types::message::MessageRole::Assistant => "assistant",
+                crate::common::types::message::MessageRole::System => "system",
+                crate::common::types::message::MessageRole::Tool => "tool",
+            }
+            .to_string(),
+            content: msg.text_content(),
+            timestamp: msg.envelope.ts.to_rfc3339(),
+        },
+        SessionEvent::ToolCall(e) => HistoryEvent::ToolCall {
+            tool_name: e.tool.clone(),
+            args: e.args.clone(),
+            tool_call_id: e.tool_call_id.clone(),
+        },
+        SessionEvent::ToolResult(e) => HistoryEvent::ToolResult {
+            tool_call_id: e.tool_call_id.clone(),
+            output: e.output.clone(),
+            error: e.error.clone(),
+        },
+        SessionEvent::Thinking(e) => HistoryEvent::Thinking {
+            content: e.content.clone(),
+        },
+        SessionEvent::System(e) => HistoryEvent::Message {
+            role: "system".to_string(),
+            content: e.detail.to_string(),
+            timestamp: e.envelope.ts.to_rfc3339(),
+        },
+        SessionEvent::HookTrigger(e) => HistoryEvent::Custom {
+            custom_type: format!("hook:{:?}", e.hook_type),
+        },
+        SessionEvent::SpawnRequest(_)
+        | SessionEvent::SpawnResult(_)
+        | SessionEvent::A2aSent(_)
+        | SessionEvent::A2aReceived(_)
+        | SessionEvent::SessionEnded(_) => return None,
+    })
+}
+
 /// Unified session service
 pub struct SessionService {
     path_resolver: PathResolver,
@@ -591,7 +649,18 @@ impl SessionService {
         Ok(sessions_dir)
     }
 
-    /// Convert `SessionEvent` to `HistoryEvent`
+    /// Convert one `SessionEvent` into a `HistoryEvent` for the user-
+/// facing log view.
+///
+/// Single canonical converter. Both `SessionService::get_history` (via
+/// `convert_event`) and `IpcServer::read_principal_log` use this — they
+/// previously each carried their own copy of the same match body, which
+/// had drifted (the IPC variant constructed owned `String`s, the
+/// service variant cloned fields via `&self`). Filtering on
+/// `HistoryQuery` (`include_tool_calls`, `include_thinking`) is applied
+/// at the call site, not here.
+///
+/// Convert `SessionEvent` to `HistoryEvent`, applying query filters.
     fn convert_event(&self, event: &SessionEvent, query: &HistoryQuery) -> Option<HistoryEvent> {
         let event_type = event.event_type();
 
@@ -604,54 +673,7 @@ impl SessionService {
             return None;
         }
 
-        Some(match event {
-            SessionEvent::SessionCreated(e) => HistoryEvent::Session {
-                timestamp: e.envelope.ts.to_rfc3339(),
-            },
-            SessionEvent::MessageV2(msg) => {
-                // Use unified SessionMessage format
-                HistoryEvent::Message {
-                    role: match msg.role() {
-                        crate::common::types::message::MessageRole::User => "user",
-                        crate::common::types::message::MessageRole::Assistant => "assistant",
-                        crate::common::types::message::MessageRole::System => "system",
-                        crate::common::types::message::MessageRole::Tool => "tool",
-                    }
-                    .to_string(),
-                    content: msg.text_content(),
-                    timestamp: msg.envelope.ts.to_rfc3339(),
-                }
-            }
-            SessionEvent::ToolCall(e) => HistoryEvent::ToolCall {
-                tool_name: e.tool.clone(),
-                args: e.args.clone(),
-                tool_call_id: e.tool_call_id.clone(),
-            },
-            SessionEvent::ToolResult(e) => HistoryEvent::ToolResult {
-                tool_call_id: e.tool_call_id.clone(),
-                output: e.output.clone(),
-                error: e.error.clone(),
-            },
-            SessionEvent::Thinking(e) => HistoryEvent::Thinking {
-                content: e.content.clone(),
-            },
-            SessionEvent::System(e) => HistoryEvent::Message {
-                role: "system".to_string(),
-                content: e.detail.to_string(),
-                timestamp: e.envelope.ts.to_rfc3339(),
-            },
-            SessionEvent::HookTrigger(e) => HistoryEvent::Custom {
-                custom_type: format!("hook:{:?}", e.hook_type),
-            },
-            SessionEvent::SpawnRequest(_)
-            | SessionEvent::SpawnResult(_)
-            | SessionEvent::A2aSent(_)
-            | SessionEvent::A2aReceived(_)
-            | SessionEvent::SessionEnded(_) => {
-                // These events don't have simple display representations
-                return None;
-            }
-        })
+        session_event_to_history(event)
     }
 }
 

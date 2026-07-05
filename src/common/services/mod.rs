@@ -20,8 +20,8 @@ pub use daemon_process_service::{DaemonProcessService, DaemonStatus};
 pub use extension_management_service::ExtensionManagementService;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub use session_service::{
-    BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,
-    SessionInfo, SessionService,
+    session_event_to_history, BranchResult, HistoryEvent, HistoryQuery, HistoryResult,
+    HistorySummary, SessionDetails, SessionInfo, SessionService,
 };
 
 /// Backward-compatible alias for `ServiceContainer`.

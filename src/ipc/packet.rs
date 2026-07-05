@@ -183,21 +183,6 @@ pub enum RequestPacket {
     #[serde(rename = "principal_get")]
     PrincipalGet { request_id: u64, name: String },
 
-    // ─── Session CRUD ───────────────────────────────────────────────
-    #[serde(rename = "session_list")]
-    SessionList {
-        request_id: u64,
-        agent: Option<String>,
-    },
-
-    #[serde(rename = "session_remove")]
-    SessionRemove {
-        request_id: u64,
-        agent: String,
-        session_id: String,
-        force: bool,
-    },
-
     // ─── Provider listing ───────────────────────────────────────────
     #[serde(rename = "provider_list")]
     ProviderList { request_id: u64 },
@@ -270,59 +255,6 @@ pub enum RequestPacket {
     SystemClean {
         request_id: u64,
         scope: Option<String>,
-    },
-
-    /// Branch a session
-    #[serde(rename = "session_branch")]
-    SessionBranch {
-        request_id: u64,
-        agent: String,
-        session_id: String,
-        label: Option<String>,
-    },
-
-    /// Compact a session
-    #[serde(rename = "session_compact")]
-    SessionCompact {
-        request_id: u64,
-        agent: String,
-        session_id: String,
-        dry_run: bool,
-        instruction: Option<String>,
-    },
-
-    // ── Session inbox (steering) ─────────────────────────────────────
-    //
-    // Issue: generalize the per-session `AsyncTaskCompletionQueue` into
-    // a `SessionInbox` that also carries user steering messages queued
-    // via IPC. If the session is idle when the message arrives, the
-    // daemon auto-triggers a new run; otherwise the in-flight loop
-    // drains the message at the start of its next iteration.
-    /// Enqueue a user steering message for the given session. The
-    /// daemon responds with `MessageQueued` (carrying `run_triggered`)
-    /// and, if the session was idle, forwards the auto-triggered
-    /// run's events on the same `request_id`'s stream.
-    #[serde(rename = "session_steer")]
-    SessionSteer {
-        request_id: u64,
-        session_id: String,
-        content: String,
-    },
-
-    /// List pending (un-drained) steering messages for a session.
-    /// Returns an empty list if the session has no inbox entry yet.
-    #[serde(rename = "session_steer_list")]
-    SessionSteerList { request_id: u64, session_id: String },
-
-    /// Best-effort cancel of a queued steering message by id. Returns
-    /// `MessageCancelled { was_present }`. Once a message has been
-    /// drained into the in-flight loop's message buffer it can no
-    /// longer be cancelled.
-    #[serde(rename = "session_steer_cancel")]
-    SessionSteerCancel {
-        request_id: u64,
-        session_id: String,
-        message_id: uuid::Uuid,
     },
 
     /// Install an extension from a path
@@ -544,8 +476,6 @@ impl RequestPacket {
             | Self::ExtStatus { request_id, .. }
             | Self::PrincipalList { request_id }
             | Self::PrincipalGet { request_id, .. }
-            | Self::SessionList { request_id, .. }
-            | Self::SessionRemove { request_id, .. }
             | Self::ProviderList { request_id }
             | Self::ProviderReload { request_id }
             | Self::McpReload { request_id }
@@ -560,11 +490,6 @@ impl RequestPacket {
             | Self::ExtensionExport { request_id, .. }
             | Self::ExtensionBundle { request_id, .. }
             | Self::SystemClean { request_id, .. }
-            | Self::SessionBranch { request_id, .. }
-            | Self::SessionCompact { request_id, .. }
-            | Self::SessionSteer { request_id, .. }
-            | Self::SessionSteerList { request_id, .. }
-            | Self::SessionSteerCancel { request_id, .. }
             | Self::ExtensionInstall { request_id, .. }
             | Self::ExtensionUninstall { request_id, .. }
             | Self::RuntimeId { request_id }
@@ -780,22 +705,6 @@ pub enum ResponsePacket {
         principal: Option<crate::principal::PrincipalSummary>,
     },
 
-    /// Session list response
-    #[serde(rename = "session_list")]
-    SessionList {
-        request_id: u64,
-        sessions: Vec<crate::common::services::session_service::SessionInfo>,
-        active_session: Option<String>,
-    },
-
-    /// Session removed response
-    #[serde(rename = "session_removed")]
-    SessionRemoved {
-        request_id: u64,
-        session_id: String,
-        deleted: bool,
-    },
-
     /// System status response
     #[serde(rename = "system_status")]
     SystemStatus {
@@ -912,43 +821,6 @@ pub enum ResponsePacket {
         request_id: u64,
         cleaned: Vec<String>,
         bytes_freed: u64,
-    },
-
-    /// Session branched
-    #[serde(rename = "session_branched")]
-    SessionBranched {
-        request_id: u64,
-        new_session_id: String,
-        parent_session_id: String,
-    },
-
-    /// Session compacted
-    #[serde(rename = "session_compacted")]
-    SessionCompacted {
-        request_id: u64,
-        session_id: String,
-        messages_compacted: usize,
-        tokens_saved: usize,
-        tokens_before: usize,
-        tokens_after: usize,
-    },
-
-    /// Dry-run preview of a compaction (no JSONL mutation).
-    ///
-    /// Carries the full [`crate::session::compaction::cli::DryRunReport`] fields
-    /// directly so the wire format is not overloaded with the real
-    /// `SessionCompacted` response (whose `messages_compacted` means
-    /// "messages folded into the summary", not "messages in the
-    /// session").
-    #[serde(rename = "session_compact_dry_run")]
-    SessionCompactDryRun {
-        request_id: u64,
-        session_id: String,
-        estimated_tokens: usize,
-        context_window: usize,
-        percent: usize,
-        message_count: usize,
-        messages_to_compact: usize,
     },
 
     /// Extension installed response
@@ -1131,49 +1003,12 @@ pub enum ResponsePacket {
         exposure: String,
     },
 
-    // ── Session inbox (steering) ─────────────────────────────────────
-    //
-    // Past-tense naming matches the `FooAdded`/`FooListed` convention.
-    /// Confirmation that a steering message was enqueued.
-    /// `run_triggered = true` means the daemon auto-started a new run
-    /// because the session was idle; subsequent `Text`/`Done` packets
-    /// for the same `request_id` carry the run's output.
-    /// `run_triggered = false` means an `AgenticLoop` is already in
-    /// flight; the message will be drained at the start of its next
-    /// iteration.
-    #[serde(rename = "message_queued")]
-    MessageQueued {
-        request_id: u64,
-        message_id: uuid::Uuid,
-        run_triggered: bool,
-    },
-
-    /// Pending (un-drained) steering messages for a session.
-    #[serde(rename = "pending_messages")]
-    PendingMessages {
-        request_id: u64,
-        session_id: String,
-        messages: Vec<SteeringMessageSummary>,
-    },
-
-    /// Result of a `SessionSteerCancel` request.
-    #[serde(rename = "message_cancelled")]
-    MessageCancelled {
-        request_id: u64,
-        message_id: uuid::Uuid,
-        was_present: bool,
-    },
-}
-
-/// Wire-level summary of a queued steering message. Mirrors the
-/// fields needed to render the message list. Full content is
-/// intentionally omitted from the list payload to keep large inboxes
-/// cheap to enumerate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SteeringMessageSummary {
-    pub message_id: uuid::Uuid,
-    pub queued_at: chrono::DateTime<chrono::Utc>,
-    pub preview: String,
+    // (Session-inbox steering variants — MessageQueued, PendingMessages,
+    // MessageCancelled, SteeringMessageSummary — were retired under
+    // ADR-042. External steering of an in-flight session is no longer
+    // reachable from the IPC surface; if a future ADR reintroduces it,
+    // it must key off PrincipalMemory rather than legacy
+    // SessionService.)
 }
 
 /// Summary of an extension for IPC responses
@@ -1317,8 +1152,6 @@ impl ResponsePacket {
             | Self::ExtStatus { request_id, .. }
             | Self::PrincipalList { request_id, .. }
             | Self::PrincipalGet { request_id, .. }
-            | Self::SessionList { request_id, .. }
-            | Self::SessionRemoved { request_id, .. }
             | Self::SystemStatus { request_id, .. }
             | Self::SystemDoctor { request_id, .. }
             | Self::ProviderList { request_id, .. }
@@ -1333,9 +1166,6 @@ impl ResponsePacket {
             | Self::ExtensionExported { request_id, .. }
             | Self::ExtensionBundled { request_id, .. }
             | Self::SystemCleaned { request_id, .. }
-            | Self::SessionBranched { request_id, .. }
-            | Self::SessionCompacted { request_id, .. }
-            | Self::SessionCompactDryRun { request_id, .. }
             | Self::ExtensionInstalled { request_id, .. }
             | Self::ExtensionUninstalled { request_id, .. }
             | Self::RuntimeId { request_id, .. }
@@ -1359,10 +1189,7 @@ impl ResponsePacket {
             | Self::PrincipalStatusUpdated { request_id, .. }
             | Self::PrincipalExposureUpdated { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
-            | Self::Status { request_id, .. }
-            | Self::MessageQueued { request_id, .. }
-            | Self::PendingMessages { request_id, .. }
-            | Self::MessageCancelled { request_id, .. } => *request_id,
+            | Self::Status { request_id, .. } => *request_id,
         }
     }
 
@@ -1388,8 +1215,6 @@ impl ResponsePacket {
             Self::ExtStatus { .. } => "ExtStatus",
             Self::PrincipalList { .. } => "PrincipalList",
             Self::PrincipalGet { .. } => "PrincipalGet",
-            Self::SessionList { .. } => "SessionList",
-            Self::SessionRemoved { .. } => "SessionRemoved",
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SystemDoctor { .. } => "SystemDoctor",
             Self::ProviderList { .. } => "ProviderList",
@@ -1404,9 +1229,6 @@ impl ResponsePacket {
             Self::ExtensionExported { .. } => "ExtensionExported",
             Self::ExtensionBundled { .. } => "ExtensionBundled",
             Self::SystemCleaned { .. } => "SystemCleaned",
-            Self::SessionBranched { .. } => "SessionBranched",
-            Self::SessionCompacted { .. } => "SessionCompacted",
-            Self::SessionCompactDryRun { .. } => "SessionCompactDryRun",
             Self::ExtensionInstalled { .. } => "ExtensionInstalled",
             Self::ExtensionUninstalled { .. } => "ExtensionUninstalled",
             Self::RuntimeId { .. } => "RuntimeId",
@@ -1431,9 +1253,6 @@ impl ResponsePacket {
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",
             Self::TunnelStatus { .. } => "TunnelStatus",
             Self::Status { .. } => "Status",
-            Self::MessageQueued { .. } => "MessageQueued",
-            Self::PendingMessages { .. } => "PendingMessages",
-            Self::MessageCancelled { .. } => "MessageCancelled",
         }
     }
 
@@ -1898,23 +1717,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_list_request_roundtrip() {
-        let req = RequestPacket::SessionList {
-            request_id: 500,
-            agent: Some("test-agent".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::SessionList { request_id, agent } => {
-                assert_eq!(request_id, 500);
-                assert_eq!(agent, Some("test-agent".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_principal_list_response_roundtrip() {
         let resp = ResponsePacket::PrincipalList {
             request_id: 600,
@@ -1996,44 +1798,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_list_response_roundtrip() {
-        let resp = ResponsePacket::SessionList {
-            request_id: 800,
-            sessions: vec![crate::common::services::session_service::SessionInfo {
-                id: "sess-123".to_string(),
-                agent_name: "test-agent".to_string(),
-                created_at: 0,
-                updated_at: 0,
-                turn_count: 0,
-                message_count: 0,
-                context_window: 0,
-                total_input_tokens: 0,
-                total_output_tokens: 0,
-                parent_session_id: None,
-                title: None,
-                peer_type: None,
-                peer_id: None,
-            }],
-            active_session: Some("sess-123".to_string()),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SessionList {
-                request_id,
-                sessions,
-                active_session,
-            } => {
-                assert_eq!(request_id, 800);
-                assert_eq!(sessions.len(), 1);
-                assert_eq!(sessions[0].id, "sess-123");
-                assert_eq!(active_session, Some("sess-123".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_crud_request_ids() {
         let req_principal_list = RequestPacket::PrincipalList { request_id: 1 };
         assert_eq!(req_principal_list.request_id(), 1);
@@ -2043,12 +1807,6 @@ mod tests {
             name: "helper".to_string(),
         };
         assert_eq!(req_principal_get.request_id(), 2);
-
-        let req_session_list = RequestPacket::SessionList {
-            request_id: 7,
-            agent: None,
-        };
-        assert_eq!(req_session_list.request_id(), 7);
     }
 
     #[test]
@@ -2064,13 +1822,6 @@ mod tests {
             principal: None,
         };
         assert_eq!(resp_principal_get.request_id(), 11);
-
-        let resp_session_list = ResponsePacket::SessionList {
-            request_id: 16,
-            sessions: vec![],
-            active_session: None,
-        };
-        assert_eq!(resp_session_list.request_id(), 16);
     }
 
     #[test]
@@ -2575,263 +2326,6 @@ mod tests {
             message: "m".to_string(),
         };
         assert_eq!(resp_uninstalled.request_id(), 11);
-    }
-
-    #[test]
-    fn test_session_branch_request_roundtrip() {
-        let req = RequestPacket::SessionBranch {
-            request_id: 1201,
-            agent: "test-agent".to_string(),
-            session_id: "sess-123".to_string(),
-            label: Some("feature-x".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::SessionBranch {
-                request_id,
-                agent,
-                session_id,
-                label,
-            } => {
-                assert_eq!(request_id, 1201);
-                assert_eq!(agent, "test-agent");
-                assert_eq!(session_id, "sess-123");
-                assert_eq!(label, Some("feature-x".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_session_compact_request_roundtrip() {
-        let req = RequestPacket::SessionCompact {
-            request_id: 1202,
-            agent: "test-agent".to_string(),
-            session_id: "sess-123".to_string(),
-            dry_run: true,
-            instruction: Some("Summarize".to_string()),
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::SessionCompact {
-                request_id,
-                agent,
-                session_id,
-                dry_run,
-                instruction,
-            } => {
-                assert_eq!(request_id, 1202);
-                assert_eq!(agent, "test-agent");
-                assert_eq!(session_id, "sess-123");
-                assert!(dry_run);
-                assert_eq!(instruction, Some("Summarize".to_string()));
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_session_branched_response_roundtrip() {
-        let resp = ResponsePacket::SessionBranched {
-            request_id: 2201,
-            new_session_id: "sess-new".to_string(),
-            parent_session_id: "sess-parent".to_string(),
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SessionBranched {
-                request_id,
-                new_session_id,
-                parent_session_id,
-            } => {
-                assert_eq!(request_id, 2201);
-                assert_eq!(new_session_id, "sess-new");
-                assert_eq!(parent_session_id, "sess-parent");
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_session_compacted_response_roundtrip() {
-        let resp = ResponsePacket::SessionCompacted {
-            request_id: 2202,
-            session_id: "sess-123".to_string(),
-            messages_compacted: 10,
-            tokens_saved: 500,
-            tokens_before: 2000,
-            tokens_after: 1500,
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SessionCompacted {
-                request_id,
-                session_id,
-                messages_compacted,
-                tokens_saved,
-                tokens_before,
-                tokens_after,
-            } => {
-                assert_eq!(request_id, 2202);
-                assert_eq!(session_id, "sess-123");
-                assert_eq!(messages_compacted, 10);
-                assert_eq!(tokens_saved, 500);
-                assert_eq!(tokens_before, 2000);
-                assert_eq!(tokens_after, 1500);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_session_compact_dry_run_response_roundtrip() {
-        let resp = ResponsePacket::SessionCompactDryRun {
-            request_id: 2301,
-            session_id: "sess-dry".to_string(),
-            estimated_tokens: 622,
-            context_window: 128_000,
-            percent: 0,
-            message_count: 12,
-            messages_to_compact: 10,
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SessionCompactDryRun {
-                request_id,
-                session_id,
-                estimated_tokens,
-                context_window,
-                percent,
-                message_count,
-                messages_to_compact,
-            } => {
-                assert_eq!(request_id, 2301);
-                assert_eq!(session_id, "sess-dry");
-                assert_eq!(estimated_tokens, 622);
-                assert_eq!(context_window, 128_000);
-                assert_eq!(percent, 0);
-                assert_eq!(message_count, 12);
-                assert_eq!(messages_to_compact, 10);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_new_request_ids() {
-        let req_branch = RequestPacket::SessionBranch {
-            request_id: 2,
-            agent: "a".to_string(),
-            session_id: "s".to_string(),
-            label: None,
-        };
-        assert_eq!(req_branch.request_id(), 2);
-
-        let req_compact = RequestPacket::SessionCompact {
-            request_id: 3,
-            agent: "a".to_string(),
-            session_id: "s".to_string(),
-            dry_run: false,
-            instruction: None,
-        };
-        assert_eq!(req_compact.request_id(), 3);
-    }
-
-    #[test]
-    fn test_new_response_ids() {
-        let resp_branch = ResponsePacket::SessionBranched {
-            request_id: 11,
-            new_session_id: "n".to_string(),
-            parent_session_id: "p".to_string(),
-        };
-        assert_eq!(resp_branch.request_id(), 11);
-
-        let resp_compact = ResponsePacket::SessionCompacted {
-            request_id: 12,
-            session_id: "s".to_string(),
-            messages_compacted: 0,
-            tokens_saved: 0,
-            tokens_before: 0,
-            tokens_after: 0,
-        };
-        assert_eq!(resp_compact.request_id(), 12);
-    }
-
-    // ─── Session operations tests ───────────────────────────────────
-
-    #[test]
-    fn test_session_remove_request_roundtrip() {
-        let req = RequestPacket::SessionRemove {
-            request_id: 1601,
-            agent: "test-agent".to_string(),
-            session_id: "sess-123".to_string(),
-            force: false,
-        };
-        let bytes = req.to_bytes().unwrap();
-        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            RequestPacket::SessionRemove {
-                request_id,
-                agent,
-                session_id,
-                force,
-            } => {
-                assert_eq!(request_id, 1601);
-                assert_eq!(agent, "test-agent");
-                assert_eq!(session_id, "sess-123");
-                assert!(!force);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_session_removed_response_roundtrip() {
-        let resp = ResponsePacket::SessionRemoved {
-            request_id: 2601,
-            session_id: "sess-123".to_string(),
-            deleted: true,
-        };
-        let bytes = resp.to_bytes().unwrap();
-        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
-        match decoded {
-            ResponsePacket::SessionRemoved {
-                request_id,
-                session_id,
-                deleted,
-            } => {
-                assert_eq!(request_id, 2601);
-                assert_eq!(session_id, "sess-123");
-                assert!(deleted);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_session_request_ids() {
-        let req_remove = RequestPacket::SessionRemove {
-            request_id: 2,
-            agent: "a".to_string(),
-            session_id: "s".to_string(),
-            force: false,
-        };
-        assert_eq!(req_remove.request_id(), 2);
-    }
-
-    #[test]
-    fn test_session_response_ids() {
-        let resp_removed = ResponsePacket::SessionRemoved {
-            request_id: 11,
-            session_id: "s".to_string(),
-            deleted: true,
-        };
-        assert_eq!(resp_removed.request_id(), 11);
     }
 
     // ─── Extension operations tests ─────────────────────────────────

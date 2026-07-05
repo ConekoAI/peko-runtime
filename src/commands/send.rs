@@ -64,7 +64,7 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
 async fn process_response_stream(
     mut stream: crate::ipc::PacketStream,
     args: &SendArgs,
-    json: bool,
+    _json: bool,
 ) -> Result<()> {
     if args.no_stream {
         let mut final_text = String::new();
@@ -94,11 +94,6 @@ async fn process_response_stream(
                 }
                 ResponsePacket::Error { message, .. } => {
                     anyhow::bail!("Principal execution failed: {message}");
-                }
-                ResponsePacket::MessageQueued { run_triggered, .. } => {
-                    if !run_triggered && json {
-                        println!("{{\"status\":\"queued\",\"run_triggered\":false}}");
-                    }
                 }
                 ResponsePacket::Heartbeat { .. } => {}
                 _ => {}
@@ -145,11 +140,6 @@ async fn process_response_stream(
             }
             ResponsePacket::Error { message, .. } => {
                 anyhow::bail!("Principal execution failed: {message}");
-            }
-            ResponsePacket::MessageQueued { run_triggered, .. } => {
-                if !run_triggered {
-                    eprintln!("(queued — will run when session is idle)");
-                }
             }
             ResponsePacket::Heartbeat { .. } => {}
             _ => {}
