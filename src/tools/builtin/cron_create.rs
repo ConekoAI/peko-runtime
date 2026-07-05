@@ -1,12 +1,14 @@
 //! `CronCreate` tool — create scheduled jobs
 //!
 //! Delegates to the daemon via IPC; the daemon is the source of truth for
-//! cron persistence and execution.
+//! cron persistence and execution. Jobs are always scoped to the current
+//! Principal (taken from the tool execution context).
 
 use crate::tools::builtin::cron::{
     build_job, register_job_via_daemon, resolve_delete_after_run, resolve_label, resolve_prompt,
     resolve_schedule_kind,
 };
+use crate::tools::core::exec::ToolContext;
 use crate::tools::core::traits::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -68,9 +70,6 @@ pub struct CronCreateArgs {
     /// Whether the job persists across restarts (peko extension; default false)
     #[serde(default)]
     pub durable: bool,
-    /// Agent to run the job as
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
     /// Legacy alias for `prompt` (peko extension, one-release support)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
@@ -143,17 +142,29 @@ impl Tool for CronCreateTool {
                     "type": "boolean",
                     "default": false,
                     "description": "Whether the job persists across daemon restarts"
-                },
-                "agent_id": {
-                    "type": "string",
-                    "description": "Agent name to run the job as. If omitted, the daemon chooses a suitable agent."
                 }
             },
             "required": ["prompt"]
         })
     }
 
-    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+    async fn execute(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+        Err(anyhow::anyhow!(
+            "CronCreate requires a Principal context; use execute_with_context"
+        ))
+    }
+
+    async fn execute_with_context(
+        &self,
+        params: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<serde_json::Value> {
+        let principal_name = ctx
+            .principal_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CronCreate requires a Principal context"))?
+            .clone();
+
         // Parse known fields first for better error messages, then fall back
         // to the flexible parameter resolution used by the legacy cron tool.
         let args: CronCreateArgs = serde_json::from_value(params.clone())
@@ -171,7 +182,7 @@ impl Tool for CronCreateTool {
         let delete_after_run = resolve_delete_after_run(&params);
         let label = resolve_label(&params);
 
-        let job = build_job(label, prompt, schedule, delete_after_run, args.agent_id)?;
+        let job = build_job(label, prompt, schedule, delete_after_run, principal_name)?;
         register_job_via_daemon(job).await
     }
 }

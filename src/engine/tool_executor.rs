@@ -48,6 +48,8 @@ impl ToolExecutor {
     /// * `principal_id` - Principal scope for extension-scoped tool state.
     ///   Required in the agentic-loop path; converted back to an option only
     ///   at the `HookInput::ToolCall` boundary for legacy/standalone callers.
+    /// * `principal_name` - Human-readable Principal name for Principal-scoped
+    ///   tools (e.g. cron).
     /// * `allowed_extensions` - Per-call allowlist used by the execution gate
     ///   instead of the mutable global `tool_config`.
     /// * `on_event` - Event callback
@@ -64,6 +66,7 @@ impl ToolExecutor {
         run_id: &str,
         caller_id: Option<&str>,
         principal_id: &str,
+        principal_name: &str,
         allowed_extensions: Option<Vec<String>>,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
     ) -> Result<ToolExecutionResult> {
@@ -102,6 +105,7 @@ impl ToolExecutor {
                 Some(session_id),
                 caller_id.map(str::to_string),
                 Some(principal_id.to_string()),
+                Some(principal_name.to_string()),
                 allowed_extensions,
             )
             .await

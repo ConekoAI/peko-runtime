@@ -13,6 +13,7 @@ use crate::agents::lifecycle::LifecycleManager;
 use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::services::{AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
+use crate::cron::IdleDetector;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::extensions::framework::async_exec::executor::AsyncExecutor;
 use crate::observability::Observability;
@@ -154,6 +155,10 @@ pub struct AppState {
 
     /// Last direct server error, if any.
     pub direct_last_error: Arc<RwLock<Option<String>>>,
+
+    /// Shared idle detector used by the cron engine and IPC server to
+    /// track Principal activity for idle-triggered jobs.
+    idle_detector: Option<Arc<IdleDetector>>,
 
     /// Runtime metadata (ADR-032)
     pub runtime_metadata: crate::identity::runtime_metadata::RuntimeMetadata,
@@ -717,6 +722,7 @@ impl AppState {
             direct_bound_addr: Arc::new(RwLock::new(None)),
             direct_cancel: Arc::new(RwLock::new(None)),
             direct_last_error: Arc::new(RwLock::new(None)),
+            idle_detector: None,
             runtime_metadata,
             known_runtimes,
             trust_store,
@@ -788,6 +794,19 @@ impl AppState {
     pub async fn set_ready(&self, ready: bool) {
         let mut inner = self.inner.write().await;
         inner.ready = ready;
+    }
+
+    /// Attach the shared idle detector used by the cron engine.
+    pub fn set_idle_detector(&mut self, detector: Arc<IdleDetector>) {
+        self.idle_detector = Some(detector);
+    }
+
+    /// Record activity for a Principal so idle-triggered cron jobs do not
+    /// fire while the Principal is actively being used.
+    pub async fn record_principal_activity(&self, principal_name: &str) {
+        if let Some(detector) = self.idle_detector.as_ref() {
+            detector.record_activity(principal_name).await;
+        }
     }
 
     /// Re-read the provider catalog and the credential vault from

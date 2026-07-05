@@ -186,6 +186,9 @@ pub enum HookInput {
         /// principal state at handle time without per-call re-
         /// registration on the shared global `ExtensionCore`.
         principal_id: Option<String>,
+        /// Human-readable Principal name. Cron-scoped tools use this to
+        /// create and filter jobs for the current Principal.
+        principal_name: Option<String>,
         /// Allowed extension IDs for this tool call. When present, the
         /// execution gate checks this list instead of the mutable global
         /// `tool_config`, eliminating a TOCTOU race where concurrent
@@ -360,6 +363,7 @@ mod tests {
             session_id: Some("sess-1".to_string()),
             caller_id: Some("user-42".to_string()),
             principal_id: Some("principal-z".to_string()),
+            principal_name: None,
             allowed_extensions: None,
         };
         match input {

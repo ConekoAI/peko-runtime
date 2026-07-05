@@ -332,6 +332,7 @@ where
     // `subagent_type` resolve against the global `<home>/agents/...` path and
     // fail with "Subagent type '<name>' not found".
     .with_principal_workspace(ctx.workspace_path.clone())
+    .with_principal_name(ctx.name().to_string())
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).
@@ -352,6 +353,7 @@ where
             5,
             ctx.principal_id().clone(),
         )
+        .with_principal_name(ctx.name().to_string())
         .with_provider(agent.provider_arc().ok_or_else(|| {
             // The principal workspace is `{config_dir}/principals/{name}` (see
             // `PathResolver::principal_dir`), so derive the two config files

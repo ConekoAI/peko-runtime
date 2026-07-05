@@ -1,6 +1,6 @@
 //! Idle detection for scheduler
 //!
-//! Tracks agent activity and determines when agents have been idle
+//! Tracks Principal activity and determines when Principals have been idle
 //! for a specified period, triggering idle-based scheduled jobs.
 
 use std::collections::HashMap;
@@ -9,12 +9,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, trace};
 
-/// Tracks agent activity for idle detection
+/// Tracks Principal activity for idle detection
 #[derive(Debug, Clone)]
 pub struct IdleDetector {
-    /// Last activity timestamp per agent
+    /// Last activity timestamp per Principal
     last_activity: Arc<RwLock<HashMap<String, Instant>>>,
-    /// Global last activity (any agent)
+    /// Global last activity (any Principal)
     global_last_activity: Arc<RwLock<Instant>>,
 }
 
@@ -28,12 +28,12 @@ impl IdleDetector {
         }
     }
 
-    /// Record activity for a specific agent
-    pub async fn record_activity(&self, agent_id: &str) {
+    /// Record activity for a specific Principal
+    pub async fn record_activity(&self, principal_name: &str) {
         let mut activity = self.last_activity.write().await;
         let now = Instant::now();
-        activity.insert(agent_id.to_string(), now);
-        trace!("Recorded activity for agent: {}", agent_id);
+        activity.insert(principal_name.to_string(), now);
+        trace!("Recorded activity for Principal: {}", principal_name);
 
         // Also update global activity
         drop(activity);
@@ -48,12 +48,12 @@ impl IdleDetector {
         trace!("Recorded global activity");
     }
 
-    /// Check if a specific agent has been idle for at least `threshold_minutes`
-    pub async fn is_idle(&self, agent_id: &str, threshold_minutes: u64) -> bool {
+    /// Check if a specific Principal has been idle for at least `threshold_minutes`
+    pub async fn is_idle(&self, principal_name: &str, threshold_minutes: u64) -> bool {
         let threshold = Duration::from_secs(threshold_minutes * 60);
         let activity = self.last_activity.read().await;
 
-        if let Some(last) = activity.get(agent_id) {
+        if let Some(last) = activity.get(principal_name) {
             let elapsed = Instant::now().duration_since(*last);
             elapsed >= threshold
         } else {
@@ -62,7 +62,7 @@ impl IdleDetector {
         }
     }
 
-    /// Check if any agent has been active within the threshold
+    /// Check if any Principal has been active within the threshold
     pub async fn is_global_idle(&self, threshold_minutes: u64) -> bool {
         let threshold = Duration::from_secs(threshold_minutes * 60);
         let global = self.global_last_activity.read().await;
@@ -70,8 +70,8 @@ impl IdleDetector {
         elapsed >= threshold
     }
 
-    /// Get list of agents that have been idle for at least `threshold_minutes`
-    pub async fn get_idle_agents(&self, threshold_minutes: u64) -> Vec<String> {
+    /// Get list of Principals that have been idle for at least `threshold_minutes`
+    pub async fn get_idle_principals(&self, threshold_minutes: u64) -> Vec<String> {
         let threshold = Duration::from_secs(threshold_minutes * 60);
         let activity = self.last_activity.read().await;
         let now = Instant::now();
@@ -79,15 +79,15 @@ impl IdleDetector {
         activity
             .iter()
             .filter(|(_, last)| now.duration_since(**last) >= threshold)
-            .map(|(agent_id, _)| agent_id.clone())
+            .map(|(principal_name, _)| principal_name.clone())
             .collect()
     }
 
-    /// Get duration since last activity for an agent
-    pub async fn idle_duration(&self, agent_id: &str) -> Option<Duration> {
+    /// Get duration since last activity for a Principal
+    pub async fn idle_duration(&self, principal_name: &str) -> Option<Duration> {
         let activity = self.last_activity.read().await;
         activity
-            .get(agent_id)
+            .get(principal_name)
             .map(|last| Instant::now().duration_since(*last))
     }
 
@@ -97,15 +97,15 @@ impl IdleDetector {
         Instant::now().duration_since(*global)
     }
 
-    /// Reset activity tracking for an agent
-    pub async fn reset_agent(&self, agent_id: &str) {
+    /// Reset activity tracking for a Principal
+    pub async fn reset_principal(&self, principal_name: &str) {
         let mut activity = self.last_activity.write().await;
-        activity.remove(agent_id);
-        debug!("Reset activity tracking for agent: {}", agent_id);
+        activity.remove(principal_name);
+        debug!("Reset activity tracking for Principal: {}", principal_name);
     }
 
-    /// Get all tracked agents
-    pub async fn tracked_agents(&self) -> Vec<String> {
+    /// Get all tracked Principals
+    pub async fn tracked_principals(&self) -> Vec<String> {
         let activity = self.last_activity.read().await;
         activity.keys().cloned().collect()
     }
@@ -126,13 +126,13 @@ mod tests {
         let detector = IdleDetector::new();
 
         // Initially should be idle
-        assert!(detector.is_idle("agent1", 1).await);
+        assert!(detector.is_idle("my-principal", 1).await);
 
         // Record activity
-        detector.record_activity("agent1").await;
+        detector.record_activity("my-principal").await;
 
         // Should not be idle immediately
-        assert!(!detector.is_idle("agent1", 1).await);
+        assert!(!detector.is_idle("my-principal", 1).await);
     }
 
     #[tokio::test]
@@ -140,10 +140,10 @@ mod tests {
         let detector = IdleDetector::new();
 
         // Record activity
-        detector.record_activity("agent1").await;
+        detector.record_activity("my-principal").await;
 
         // Should not be idle with 1 minute threshold
-        assert!(!detector.is_idle("agent1", 1).await);
+        assert!(!detector.is_idle("my-principal", 1).await);
 
         // Simulate time passing by manually checking
         // (In real test, we'd need to mock time or use a shorter threshold)
@@ -164,23 +164,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_idle_agents() {
+    async fn test_get_idle_principals() {
         let detector = IdleDetector::new();
 
-        // No agents tracked yet
-        let idle = detector.get_idle_agents(1).await;
+        // No Principals tracked yet
+        let idle = detector.get_idle_principals(1).await;
         assert!(idle.is_empty());
 
-        // Add some agents
-        detector.record_activity("agent1").await;
-        detector.record_activity("agent2").await;
+        // Add some Principals
+        detector.record_activity("principal-a").await;
+        detector.record_activity("principal-b").await;
 
         // Both should be tracked but not idle yet
-        let tracked = detector.tracked_agents().await;
+        let tracked = detector.tracked_principals().await;
         assert_eq!(tracked.len(), 2);
 
-        // Check idle agents (should be none with activity just recorded)
-        let idle = detector.get_idle_agents(60).await; // 60 minute threshold
+        // Check idle Principals (should be none with activity just recorded)
+        let idle = detector.get_idle_principals(60).await; // 60 minute threshold
         assert!(idle.is_empty());
     }
 
@@ -189,28 +189,28 @@ mod tests {
         let detector = IdleDetector::new();
 
         // No activity recorded
-        assert!(detector.idle_duration("agent1").await.is_none());
+        assert!(detector.idle_duration("my-principal").await.is_none());
 
         // Record activity
-        detector.record_activity("agent1").await;
+        detector.record_activity("my-principal").await;
 
         // Should have some duration (very small)
-        let duration = detector.idle_duration("agent1").await.unwrap();
+        let duration = detector.idle_duration("my-principal").await.unwrap();
         assert!(duration < Duration::from_secs(1));
     }
 
     #[tokio::test]
-    async fn test_reset_agent() {
+    async fn test_reset_principal() {
         let detector = IdleDetector::new();
 
         // Record and verify
-        detector.record_activity("agent1").await;
-        assert!(!detector.is_idle("agent1", 1).await);
+        detector.record_activity("my-principal").await;
+        assert!(!detector.is_idle("my-principal", 1).await);
 
         // Reset
-        detector.reset_agent("agent1").await;
+        detector.reset_principal("my-principal").await;
 
         // Should be considered idle (no activity recorded)
-        assert!(detector.is_idle("agent1", 1).await);
+        assert!(detector.is_idle("my-principal", 1).await);
     }
 }

@@ -1,7 +1,8 @@
 //! Cron scheduler for periodic task execution
 //!
 //! Stores cron jobs in a JSON file and provides scheduling functionality.
-//! Supports both main session (system event) and isolated execution modes.
+//! Each job targets a Principal; the daemon executes it by sending a message
+//! to that Principal through the PrincipalManager.
 //!
 //! Includes idle detection and event-based triggers.
 
@@ -47,12 +48,8 @@ pub enum ScheduleKind {
     Every { every_ms: u64 },
     /// Cron expression with optional timezone
     Cron { expr: String, tz: Option<String> },
-    /// Trigger when agent has been idle for N minutes
-    Idle {
-        minutes: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        agent_id: Option<String>,
-    },
+    /// Trigger when a Principal has been idle for N minutes
+    Idle { minutes: u64 },
     /// Trigger when specific system event occurs
     Event {
         event_type: String,
@@ -86,12 +83,8 @@ impl ScheduleKind {
                     format!("cron '{expr}'")
                 }
             }
-            ScheduleKind::Idle { minutes, agent_id } => {
-                if let Some(agent) = agent_id {
-                    format!("idle {minutes}m (agent: {agent})")
-                } else {
-                    format!("idle {minutes}m (any agent)")
-                }
+            ScheduleKind::Idle { minutes } => {
+                format!("idle {minutes}m")
             }
             ScheduleKind::Event {
                 event_type,
@@ -104,18 +97,6 @@ impl ScheduleKind {
             }
         }
     }
-}
-
-/// Execution target for cron jobs
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum ExecutionTarget {
-    /// Run in main agent session (system event)
-    #[default]
-    Main,
-    /// Run in isolated session (dedicated agent turn)
-    Isolated,
 }
 
 /// Delivery configuration for job results
@@ -139,9 +120,9 @@ pub enum DeliveryMode {
 pub struct CronJob {
     pub id: String,
     pub name: String,
+    #[serde(rename = "principal")]
+    pub principal_name: String,
     pub schedule: ScheduleKind,
-    pub target: ExecutionTarget,
-    pub agent_id: Option<String>,
     pub message: String,
     pub delivery: DeliveryMode,
     pub delete_after_run: bool,
@@ -287,6 +268,17 @@ impl CronScheduler {
             db.jobs.into_iter().filter(|j| j.enabled).collect()
         };
         jobs.sort_by(|a, b| a.next_run.cmp(&b.next_run));
+        Ok(jobs)
+    }
+
+    /// List cron jobs for a specific Principal
+    pub fn list_jobs_for_principal(
+        &self,
+        principal_name: &str,
+        include_disabled: bool,
+    ) -> Result<Vec<CronJob>> {
+        let mut jobs = self.list_jobs(include_disabled)?;
+        jobs.retain(|j| j.principal_name == principal_name);
         Ok(jobs)
     }
 
@@ -492,8 +484,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Test Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
-            target: ExecutionTarget::Main,
-            agent_id: None,
+            principal_name: "test-principal".to_string(),
             message: "Test message".to_string(),
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -521,8 +512,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Past Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
-            target: ExecutionTarget::Main,
-            agent_id: None,
+            principal_name: "test-principal".to_string(),
             message: "Test".to_string(),
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -538,8 +528,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Future Job".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
-            target: ExecutionTarget::Main,
-            agent_id: None,
+            principal_name: "test-principal".to_string(),
             message: "Test".to_string(),
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -572,8 +561,7 @@ mod tests {
             schedule: ScheduleKind::At {
                 at: (Utc::now() - chrono::Duration::hours(2)).to_rfc3339(),
             },
-            target: ExecutionTarget::Main,
-            agent_id: None,
+            principal_name: "test-principal".to_string(),
             message: "Test".to_string(),
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -593,8 +581,7 @@ mod tests {
             schedule: ScheduleKind::Every {
                 every_ms: 3_600_000,
             },
-            target: ExecutionTarget::Main,
-            agent_id: None,
+            principal_name: "test-principal".to_string(),
             message: "Test".to_string(),
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -622,8 +609,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Recurring".to_string(),
             schedule: ScheduleKind::Every { every_ms: 60000 },
-            target: ExecutionTarget::Main,
-            agent_id: None,
+            principal_name: "test-principal".to_string(),
             message: "Test".to_string(),
             delivery: DeliveryMode::None,
             delete_after_run: false,
@@ -677,9 +663,8 @@ mod tests {
             let job = CronJob {
                 id: "test-123".to_string(),
                 name: "Persisted Job".to_string(),
+                principal_name: "test-principal".to_string(),
                 schedule: ScheduleKind::Every { every_ms: 60000 },
-                target: ExecutionTarget::Main,
-                agent_id: None,
                 message: "Hello".to_string(),
                 delivery: DeliveryMode::None,
                 delete_after_run: false,

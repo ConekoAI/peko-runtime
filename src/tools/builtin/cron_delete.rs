@@ -1,9 +1,11 @@
 //! `CronDelete` tool — cancel scheduled jobs
 //!
 //! Delegates to the daemon via IPC; the daemon is the source of truth for
-//! cron persistence and execution.
+//! cron persistence and execution. Label and ID resolution are scoped to
+//! the current Principal from the tool execution context.
 
 use crate::ipc::{DaemonClient, ResponsePacket};
+use crate::tools::core::exec::ToolContext;
 use crate::tools::core::traits::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -76,25 +78,43 @@ impl Tool for CronDeleteTool {
         })
     }
 
-    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+    async fn execute(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+        Err(anyhow::anyhow!(
+            "CronDelete requires a Principal context; use execute_with_context"
+        ))
+    }
+
+    async fn execute_with_context(
+        &self,
+        params: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<serde_json::Value> {
+        let principal_name = ctx
+            .principal_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CronDelete requires a Principal context"))?
+            .clone();
+
         let args: CronDeleteArgs = serde_json::from_value(params.clone())
             .map_err(|e| anyhow::anyhow!("Invalid CronDelete arguments: {e}"))?;
 
+        let client = DaemonClient::connect().await.map_err(|e| {
+            anyhow::anyhow!("Cannot reach daemon for cron operations. Is it running? ({e})")
+        })?;
+
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
+            Self::verify_id_belongs_to_principal(&client, &id, &principal_name).await?;
             id
         } else if let Some(job_id) = args.job_id.filter(|s| !s.is_empty()) {
+            Self::verify_id_belongs_to_principal(&client, &job_id, &principal_name).await?;
             job_id
         } else if let Some(label) = args.label {
-            Self::resolve_id_by_label(&label).await?
+            Self::resolve_id_by_label(&client, &label, &principal_name).await?
         } else {
             return Err(anyhow::anyhow!(
                 "Either id or label is required for CronDelete"
             ));
         };
-
-        let client = DaemonClient::connect().await.map_err(|e| {
-            anyhow::anyhow!("Cannot reach daemon for cron operations. Is it running? ({e})")
-        })?;
 
         match client.cron_remove(&job_id).await? {
             ResponsePacket::CronRemoved { .. } => Ok(json!({
@@ -110,17 +130,47 @@ impl Tool for CronDeleteTool {
 }
 
 impl CronDeleteTool {
-    /// Find a job ID by its label
-    async fn resolve_id_by_label(label: &str) -> anyhow::Result<String> {
-        let client = DaemonClient::connect().await.map_err(|e| {
-            anyhow::anyhow!("Cannot reach daemon for cron operations. Is it running? ({e})")
-        })?;
-        match client.cron_list(true).await? {
+    /// Find a job ID by its label, restricted to the given Principal.
+    async fn resolve_id_by_label(
+        client: &DaemonClient,
+        label: &str,
+        principal_name: &str,
+    ) -> anyhow::Result<String> {
+        match client
+            .cron_list(true, Some(principal_name.to_string()))
+            .await?
+        {
             ResponsePacket::CronList { jobs, .. } => jobs
                 .into_iter()
                 .find(|j| j.name == label)
                 .ok_or_else(|| anyhow::anyhow!("Job with label '{label}' not found"))
                 .map(|j| j.id),
+            ResponsePacket::Error { message, .. } => {
+                Err(anyhow::anyhow!("Failed to list jobs for cancel: {message}"))
+            }
+            other => Err(crate::ipc::unexpected_response(&other)),
+        }
+    }
+
+    /// Verify that an explicit job ID belongs to the given Principal.
+    async fn verify_id_belongs_to_principal(
+        client: &DaemonClient,
+        job_id: &str,
+        principal_name: &str,
+    ) -> anyhow::Result<()> {
+        match client
+            .cron_list(true, Some(principal_name.to_string()))
+            .await?
+        {
+            ResponsePacket::CronList { jobs, .. } => {
+                if jobs.into_iter().any(|j| j.id == job_id) {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Job '{job_id}' not found for Principal '{principal_name}'"
+                    ))
+                }
+            }
             ResponsePacket::Error { message, .. } => {
                 Err(anyhow::anyhow!("Failed to list jobs for cancel: {message}"))
             }

@@ -2,8 +2,7 @@
 //!
 //! The daemon provides:
 //! - Cron job polling and execution (via `cron_engine`)
-//! - Main session job handling (enqueue system events)
-//! - Isolated job handling (spawn agent turns)
+//! - Principal message handling
 //! - Delivery/announcement of results
 //! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
@@ -12,9 +11,9 @@ pub mod background_runtime;
 pub mod cron_engine;
 pub mod state;
 
-use crate::agents::stateless_service::StatelessAgentService;
 use crate::common::paths::PathResolver;
 use crate::cron::events::SystemEvent;
+use crate::cron::IdleDetector;
 use crate::daemon::cron_engine::CronEngine;
 use anyhow::Result;
 use chrono::Utc;
@@ -36,8 +35,6 @@ pub struct DaemonConfig {
     pub config_dir: PathBuf,
     /// Data directory for storage
     pub data_dir: PathBuf,
-    /// Whether to enable isolated job execution
-    pub enable_isolated_execution: bool,
     /// Session maintenance interval (0 to disable)
     pub maintenance_interval: Duration,
     /// Maximum number of consecutive PekoHub tunnel reconnect attempts
@@ -57,7 +54,6 @@ impl Default for DaemonConfig {
             poll_interval: Duration::from_secs(15),
             config_dir,
             data_dir,
-            enable_isolated_execution: true,
             maintenance_interval: Duration::from_hours(1), // 1 hour default
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
         }
@@ -106,7 +102,7 @@ impl Daemon {
             std::sync::Arc::new(crate::cron::IdleDetector::new()),
             std::sync::Arc::new(crate::observability::Observability::new("daemon")),
             config.data_dir.clone(),
-            config.enable_isolated_execution,
+            None,
         );
 
         Ok(Self {
@@ -135,7 +131,7 @@ impl Daemon {
             std::sync::Arc::new(crate::cron::IdleDetector::new()),
             std::sync::Arc::new(crate::observability::Observability::new("daemon")),
             config.data_dir.clone(),
-            config.enable_isolated_execution,
+            None,
         );
 
         let daemon = Self {
@@ -157,11 +153,6 @@ impl Daemon {
         }
     }
 
-    /// Set the agent service for real job execution
-    pub fn set_agent_service(&mut self, service: Arc<StatelessAgentService>) {
-        self.cron_engine.set_agent_service(service);
-    }
-
     /// Run the daemon (blocks until shutdown)
     pub async fn run(mut self) -> Result<()> {
         info!("🚀 peko daemon starting...");
@@ -179,8 +170,12 @@ impl Daemon {
             status.running = true;
         }
 
+        // Shared idle detector: used by the cron engine for idle-triggered
+        // jobs and by the IPC server to record user activity.
+        let idle_detector = Arc::new(IdleDetector::new());
+
         // Create shared AppState for daemon services
-        let app_state = crate::daemon::state::AppState::new(
+        let mut app_state = crate::daemon::state::AppState::new(
             &self.config.data_dir,
             "127.0.0.1", // host placeholder (HTTP API removed)
             0,           // port placeholder (HTTP API removed)
@@ -193,8 +188,17 @@ impl Daemon {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
 
-        // Wire agent service into daemon for real job execution
-        self.set_agent_service(app_state.agent_service().clone());
+        app_state.set_idle_detector(idle_detector.clone());
+
+        // Replace the placeholder cron engine with one wired to the real
+        // PrincipalManager and the shared idle detector.
+        self.cron_engine = CronEngine::new(
+            Arc::new(crate::cron::CronScheduler::new(&self.config.cron_db_path)?),
+            idle_detector,
+            Arc::new(crate::observability::Observability::new("daemon")),
+            self.config.data_dir.clone(),
+            Some(app_state.principal_manager().clone()),
+        );
 
         // Write our own PID file so stop commands can find us even if the parent is gone
         let pid_file = crate::ipc::default_pid_path();
@@ -421,7 +425,6 @@ mod tests {
             poll_interval: Duration::from_secs(1),
             config_dir: tmp.path().join("config"),
             data_dir: tmp.path().join("data"),
-            enable_isolated_execution: false,
             maintenance_interval: Duration::from_mins(1),
             max_reconnect_attempts: crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS,
         };

@@ -194,11 +194,16 @@ impl DaemonClient {
     // ------------------------------------------------------------------
 
     /// List cron jobs
-    pub async fn cron_list(&self, include_disabled: bool) -> anyhow::Result<ResponsePacket> {
+    pub async fn cron_list(
+        &self,
+        include_disabled: bool,
+        principal: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::CronList {
             request_id,
             include_disabled,
+            principal,
         };
         let mut stream = self.send_request(packet).await?;
         match stream.next().await {

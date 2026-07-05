@@ -1,10 +1,12 @@
 //! Cron Job Management Commands
 //!
 //! All operations are delegated to the daemon via IPC.
-//! The daemon owns the SQLite cron database and the execution engine.
+//! The daemon owns the cron database and the execution engine.
+//! Every cron job targets a Principal and runs with that Principal's
+//! owner permissions.
 
 use crate::commands::GlobalPaths;
-use crate::cron::{CronJob, DeliveryMode, ExecutionTarget, ScheduleKind};
+use crate::cron::{CronJob, DeliveryMode, ScheduleKind};
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -14,25 +16,27 @@ use uuid::Uuid;
 
 /// Cron management subcommands
 ///
-/// Schedule agents to run at specific times or intervals.
-/// Jobs are persisted and survive daemon restarts.
+/// Schedule jobs that target a Principal. Jobs are persisted and
+/// survive daemon restarts.
 ///
 /// Examples:
 ///   # List all cron jobs
 ///   peko cron list
 ///
-///   # Add a daily job (9 AM)
-///   peko cron add --name "daily-report" --schedule "0 9 * * *" --message "Generate daily summary"
+///   # Add a daily job (9 AM) for a Principal
+///   peko cron add --name "daily-report" --principal my-principal \\
+///     --schedule "0 9 * * *" --message "Generate daily summary"
 ///
 ///   # Add a one-time job
-///   peko cron at --name "reminder" --at "2026-03-20T14:00:00Z" --message "Meeting in 1 hour"
+///   peko cron at --name "reminder" --principal my-principal \\
+///     --at "2026-03-20T14:00:00Z" --message "Meeting in 1 hour"
 ///
 ///   # Remove a job
-///   peko cron remove daily-report
+///   peko cron remove <JOB_ID>
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum CronCommands {
-    /// List all cron jobs
+    /// List cron jobs
     List {
         /// Show all jobs including disabled
         #[arg(long)]
@@ -40,6 +44,9 @@ pub enum CronCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Filter to a specific Principal
+        #[arg(short, long)]
+        principal: Option<String>,
     },
 
     /// Add a new cron job
@@ -53,12 +60,9 @@ pub enum CronCommands {
         /// Timezone (e.g., "America/Los_Angeles")
         #[arg(short, long)]
         timezone: Option<String>,
-        /// Agent to run as
+        /// Principal to run the job as
         #[arg(short, long)]
-        agent: Option<String>,
-        /// Execution mode: main or isolated
-        #[arg(short, long, default_value = "main")]
-        execution: String,
+        principal: String,
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
@@ -78,9 +82,9 @@ pub enum CronCommands {
         /// ISO timestamp (e.g., "2026-02-25T14:00:00Z")
         #[arg(long)]
         at: String,
-        /// Agent to run as
+        /// Principal to run the job as
         #[arg(short, long)]
-        agent: Option<String>,
+        principal: String,
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
@@ -97,9 +101,9 @@ pub enum CronCommands {
         /// Interval in milliseconds
         #[arg(short, long)]
         interval_ms: u64,
-        /// Agent to run as
+        /// Principal to run the job as
         #[arg(short, long)]
-        agent: Option<String>,
+        principal: String,
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
@@ -132,7 +136,7 @@ pub enum CronCommands {
         limit: usize,
     },
 
-    /// Add an idle-triggered job (runs when agent is idle)
+    /// Add an idle-triggered job (runs when the target Principal is idle)
     AddIdle {
         /// Job name
         #[arg(short, long)]
@@ -140,9 +144,9 @@ pub enum CronCommands {
         /// Idle threshold in minutes
         #[arg(short = 't', long)]
         minutes: u64,
-        /// Specific agent to monitor (omit for any agent)
+        /// Principal to run as and monitor
         #[arg(short, long)]
-        agent: Option<String>,
+        principal: String,
         /// Message/prompt to execute
         #[arg(short = 'm', long)]
         message: String,
@@ -165,6 +169,9 @@ pub enum CronCommands {
         /// Run only once then disable
         #[arg(long)]
         once: bool,
+        /// Principal to run the job as
+        #[arg(short, long)]
+        principal: String,
         /// Message/prompt to execute
         #[arg(short, long)]
         message: String,
@@ -187,10 +194,11 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
         CronCommands::List {
             all,
             json: cmd_json,
+            principal,
         } => {
             let client = connect_daemon().await?;
             let use_json = cmd_json || json;
-            match client.cron_list(all).await? {
+            match client.cron_list(all, principal.clone()).await? {
                 ResponsePacket::CronList { jobs, .. } => {
                     if use_json {
                         println!("{}", serde_json::to_string_pretty(&jobs)?);
@@ -201,13 +209,12 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                         for job in jobs {
                             let status = if job.enabled { "✅" } else { "⏸️" };
                             let schedule = job.schedule.display();
-                            let agent = job.agent_id.as_deref().unwrap_or("default");
                             println!(
-                                "  {} {} | {} | agent: {} | next: {}",
+                                "  {} {} | {} | principal: {} | next: {}",
                                 status,
                                 job.id,
                                 schedule,
-                                agent,
+                                job.principal_name,
                                 job.next_run.to_rfc3339()
                             );
                             println!("     └─ {}", job.message);
@@ -226,8 +233,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             name,
             schedule,
             timezone,
-            agent,
-            execution,
+            principal,
             message,
             announce,
             delete_after_run,
@@ -242,11 +248,6 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             let schedule_kind = ScheduleKind::Cron {
                 expr: schedule.clone(),
                 tz: timezone.clone(),
-            };
-
-            let target = match execution.as_str() {
-                "isolated" => ExecutionTarget::Isolated,
-                _ => ExecutionTarget::Main,
             };
 
             let delivery = if announce {
@@ -265,9 +266,8 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
+                principal_name: principal.clone(),
                 schedule: schedule_kind,
-                target,
-                agent_id: agent,
                 message,
                 delivery,
                 delete_after_run,
@@ -282,6 +282,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             match client.cron_add(job).await? {
                 ResponsePacket::CronAdded { job_id, .. } => {
                     println!("✅ Added cron job {job_id} with schedule '{schedule}'");
+                    println!("   Principal: {principal}");
                     if let Some(tz) = timezone {
                         println!("   Timezone: {tz}");
                     }
@@ -297,7 +298,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
         CronCommands::At {
             name,
             at,
-            agent,
+            principal,
             message,
             announce,
         } => {
@@ -319,11 +320,10 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
+                principal_name: principal.clone(),
                 schedule: ScheduleKind::At {
                     at: at_time.to_rfc3339(),
                 },
-                target: ExecutionTarget::Main,
-                agent_id: agent,
                 message,
                 delivery,
                 delete_after_run: true,
@@ -338,6 +338,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             match client.cron_add(job).await? {
                 ResponsePacket::CronAdded { job_id, .. } => {
                     println!("✅ Added one-shot job {job_id} at {at}");
+                    println!("   Principal: {principal}");
                     Ok(())
                 }
                 ResponsePacket::Error { message, .. } => {
@@ -350,7 +351,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
         CronCommands::Every {
             name,
             interval_ms,
-            agent,
+            principal,
             message,
             announce,
         } => {
@@ -374,9 +375,8 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
+                principal_name: principal.clone(),
                 schedule: schedule_kind,
-                target: ExecutionTarget::Main,
-                agent_id: agent,
                 message,
                 delivery,
                 delete_after_run: false,
@@ -399,6 +399,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                         format!("{}h", secs / 3600)
                     };
                     println!("✅ Added recurring job {job_id} every {interval_str}");
+                    println!("   Principal: {principal}");
                     Ok(())
                 }
                 ResponsePacket::Error { message, .. } => {
@@ -485,7 +486,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
         CronCommands::AddIdle {
             name,
             minutes,
-            agent,
+            principal,
             message,
             announce,
         } => {
@@ -504,12 +505,8 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
-                schedule: ScheduleKind::Idle {
-                    minutes,
-                    agent_id: agent.clone(),
-                },
-                target: ExecutionTarget::Main,
-                agent_id: agent.clone(),
+                principal_name: principal.clone(),
+                schedule: ScheduleKind::Idle { minutes },
                 message,
                 delivery,
                 delete_after_run: false,
@@ -524,12 +521,8 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             match client.cron_add(job).await? {
                 ResponsePacket::CronAdded { job_id, .. } => {
                     println!("✅ Added idle-triggered job {job_id}");
+                    println!("   Principal: {principal}");
                     println!("   Idle threshold: {minutes} minutes");
-                    if let Some(a) = &agent {
-                        println!("   Monitor agent: {a}");
-                    } else {
-                        println!("   Monitor: any agent");
-                    }
                     Ok(())
                 }
                 ResponsePacket::Error { message, .. } => {
@@ -544,6 +537,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             event_type,
             filter,
             once,
+            principal,
             message,
             announce,
         } => {
@@ -564,13 +558,12 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
                 name,
+                principal_name: principal.clone(),
                 schedule: ScheduleKind::Event {
                     event_type,
                     filter: filter_val,
                     once,
                 },
-                target: ExecutionTarget::Main,
-                agent_id: None,
                 message,
                 delivery,
                 delete_after_run: once,
@@ -585,6 +578,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             match client.cron_add(job).await? {
                 ResponsePacket::CronAdded { job_id, .. } => {
                     println!("✅ Added event-triggered job {job_id}");
+                    println!("   Principal: {principal}");
                     Ok(())
                 }
                 ResponsePacket::Error { message, .. } => {

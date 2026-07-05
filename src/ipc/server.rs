@@ -788,11 +788,19 @@ impl IpcServer {
             RequestPacket::CronList {
                 request_id,
                 include_disabled,
+                principal,
             } => {
                 let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
                     Ok(scheduler) => match scheduler.list_jobs(include_disabled) {
                         Ok(jobs) => {
+                            let jobs = if let Some(principal) = principal {
+                                jobs.into_iter()
+                                    .filter(|j| j.principal_name == principal)
+                                    .collect()
+                            } else {
+                                jobs
+                            };
                             let response = ResponsePacket::CronList { request_id, jobs };
                             Self::send_sink(sink, response).await?;
                         }
@@ -815,6 +823,20 @@ impl IpcServer {
             }
 
             RequestPacket::CronAdd { request_id, job } => {
+                if state
+                    .principal_manager()
+                    .get_by_name(&job.principal_name)
+                    .await
+                    .is_none()
+                {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: format!("Principal '{}' is not loaded", job.principal_name),
+                    };
+                    Self::send_sink(sink, response).await?;
+                    return Ok(());
+                }
+
                 let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
                     Ok(scheduler) => match scheduler.add_job(&job) {
@@ -2348,6 +2370,7 @@ impl IpcServer {
                             error: None,
                         };
                         Self::send_sink(sink, done).await?;
+                        state.record_principal_activity(&name).await;
                     }
                     Err(e) => {
                         let message = e.to_string();
@@ -2508,6 +2531,7 @@ impl IpcServer {
                             error: None,
                         };
                         Self::send_sink(sink, done).await?;
+                        state.record_principal_activity(&name).await;
                     }
                     Err(e) => {
                         let message = e.to_string();

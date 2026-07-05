@@ -823,6 +823,7 @@ impl AgenticLoop {
                             &run_id,
                             self.caller_id.as_deref(),
                             &self.agent_principal_id,
+                            self.agent.principal_name().unwrap_or(""),
                             allowed_extensions,
                             &on_event,
                         )

@@ -340,6 +340,75 @@ peko daemon restart
 
 ---
 
+### `cron` — Principal Cron Jobs
+
+Schedule recurring, one-time, idle-triggered, and event-triggered jobs for a
+Principal. The daemon executes each job by sending `message` to the target
+Principal via `PrincipalManager::receive`, running as the Principal's owner.
+
+```bash
+peko cron <COMMAND>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `add` | Add a cron-expression job |
+| `at` | Add a one-time job at an RFC3339 timestamp |
+| `every` | Add a repeating interval job (ms) |
+| `add-idle` | Add a job that runs after the Principal is idle for N minutes |
+| `add-event` | Add a job that runs when a system event fires |
+| `list` | List jobs (optionally filtered by Principal) |
+| `remove <ID>` | Remove a job by id |
+| `history <ID>` | Show run history for a job |
+
+#### Common Options
+
+| Option | Description |
+|--------|-------------|
+| `--principal <NAME>` | Target Principal (required for `add`, `at`, `every`, `add-idle`, `add-event`) |
+| `--name <LABEL>` | Human-readable job label |
+| `--message <TEXT>` | Message sent to the Principal when the job fires |
+| `--announce` | Write a JSON announcement to the data directory on completion |
+| `--once` | For event jobs: disable after first run |
+
+#### Examples
+
+```bash
+# Daily summary for a Principal
+peko cron add --principal my-principal \
+  --name daily-summary \
+  --schedule "0 9 * * * *" \
+  --message "Send me a concise summary of yesterday's activity."
+
+# One-time reminder
+peko cron at --principal my-principal \
+  --name release-reminder \
+  --at "2099-12-31T23:59:59Z" \
+  --message "It's time to cut the release."
+
+# Re-every 60 seconds (use sparingly)
+peko cron every --principal my-principal \
+  --name heartbeat \
+  --interval-ms 60000 \
+  --message "ping"
+
+# Run when the Principal has been idle for 5 minutes
+peko cron add-idle --principal my-principal \
+  --name catch-up \
+  --minutes 5 \
+  --message "What should I know since we last talked?"
+
+# List jobs for one Principal
+peko cron list --principal my-principal
+
+# Remove a job
+peko cron remove cron_abc123 --force
+```
+
+---
+
 ### `update` — Update Peko
 
 Update Peko to the latest version.
@@ -440,7 +509,7 @@ operators and scripts, not day-to-day Principal use.
 |---------|---------|
 | `peko auth apikey` | Runtime API key management |
 | `peko config` | Read/write global `config.toml` |
-| `peko cron` | Schedule jobs (currently agent-targeted; awaiting Principal migration) |
+| `peko cron` | Schedule Principal-targeted jobs (recurring, one-time, idle, event) |
 | `peko registry` | Registry host configuration |
 | `peko runtime` | Runtime identity and known-runtimes trust |
 | `peko tunnel` | PekoHub tunnel setup and status |
