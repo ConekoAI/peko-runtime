@@ -416,6 +416,72 @@ peko cron remove cron_abc123 --force
 
 ---
 
+### `log` — Inspect Principal Activity
+
+Read a Principal's conversation history. There is no `peko session`
+command and there will never be one (ADR-042); this command is the
+only way to inspect a Principal's working state without running a turn.
+
+The **default view** is the **owner-root view**: the conversation
+running on the Principal's owner's behalf, plus any wake messages,
+cron completions, and async-task steers addressed to the owner. Use
+`--peer` to read a specific peer's thread (subject to the privacy
+contract below).
+
+```bash
+peko log [OPTIONS] <PRINCIPAL>
+```
+
+#### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<PRINCIPAL>` | Principal name (required) |
+
+#### Options
+
+| Option | Description |
+|--------|-------------|
+| `--peer <SUBJECT>` | A specific peer's conversation thread. Defaults to the Principal's owner. Subject parse: `user:<id>`, `principal:<did>`, or `public`. |
+| `--limit <N>` | Cap on number of events returned (default 50, max 1000). |
+| `--since <DURATION>` | Only entries newer than the duration. Accepts `<N>h`, `<N>d`, `<N>m`, `<N>s` (e.g. `24h`, `7d`, `30m`, `3600s`). |
+| `--json` | Emit the raw `HistoryEvent` array as JSON. |
+
+#### Examples
+
+```bash
+# Owner-root activity feed (most common invocation)
+peko log my-principal
+
+# Last 24 hours
+peko log my-principal --since 24h
+
+# A specific peer's thread
+# (caller must equal <peer> or be the principal's owner)
+peko log my-principal --peer user:bob --limit 100
+
+# Machine-readable output for downstream tooling
+peko log my-principal --json | jq '.events[].role'
+```
+
+#### Privacy Contract (ADR-042)
+
+- The **owner** can read any peer's thread on their Principal.
+- A **non-owner peer** can only read their own thread (`--peer
+  user:<self>`); the principal must grant that peer `Chat` permission.
+- A **stranger** (no `Chat` grant) is rejected regardless of `--peer`.
+- `Subject::Public` cannot be used as a peer argument for `peko log`
+  (public is not a session peer).
+
+#### See Also
+
+- [ADR-042](../architecture/adr/ADR-042-no-external-session-concept.md)
+  — the no-session-externally contract this command enforces.
+- [`send`](#send--send-a-message-to-a-principal) — drive a
+  conversation.
+
+---
+
 ### `update` — Update Peko
 
 Update Peko to the latest version.
@@ -485,6 +551,10 @@ peko principal export my-principal
 # Send messages
 peko send my-principal "Hello!"
 peko send my-principal --file prompt.txt
+
+# Inspect Principal activity (owner-root view by default)
+peko log my-principal
+peko log my-principal --since 24h --json
 
 # Provider setup
 peko provider add --template anthropic --key "$ANTHROPIC_API_KEY" --default

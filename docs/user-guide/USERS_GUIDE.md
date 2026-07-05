@@ -32,6 +32,7 @@ Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to
 | **Standalone** | Works without external services |
 | **Principal-Centric** | A Principal is the top-level actor you create and chat with |
 | **Persistent Memory** | JSONL-based session storage managed automatically per Principal |
+| **Owner-Root Activity Feed** | `peko log <PRINCIPAL>` reads the owner's thread — including cron wakes and async completions — without exposing the session abstraction |
 | **DID Identity** | ed25519-based decentralized identifiers |
 | **Extensions** | Unified Extension Architecture for skills, MCP, tools, channels, hooks |
 | **Cron Scheduling** | Schedule recurring and one-time tasks, scoped to a Principal and run as its owner (operator/advanced) |
@@ -99,9 +100,27 @@ Format: `did:peko:{scope}:{tenant}:{identifier}`
 
 ### Session
 
-Sessions store conversation history as JSONL files. They are created, resumed,
-and compacted automatically by the Principal — there is no dedicated
-`peko session` command.
+A Session is the implementation noun for one peer's running conversation
+with a Principal. Sessions are stored as JSONL files under the
+Principal's workspace, created automatically when a peer first sends,
+resumed on every subsequent send from the same peer, and compacted
+when context pressure demands. Sessions are an internal storage
+detail — they are deliberately **not** exposed as a CLI command:
+
+- `peko send <PRINCIPAL> "…"` — drive a conversation.
+- `peko log <PRINCIPAL>` — read the **owner-root view** of activity
+  (the conversation running on the owner's behalf, plus any background
+  work the owner is entitled to see: cron wakes, async-task
+  completions, etc.).
+- `peko log <PRINCIPAL> --peer <X>` — read peer `X`'s thread. Only
+  peer `X` itself or the principal's owner can request this; other
+  peers cannot snoop on each other (see ADR-042 for the full
+  privacy contract).
+
+**There is no `peko session` command and there will never be one.** The
+Principal is an integral actor; sessions are storage, not state that
+the user names, lists, or routes through. Operators who need to inspect
+raw session files read them directly from the Principal's workspace.
 
 ---
 

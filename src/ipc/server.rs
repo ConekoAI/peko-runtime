@@ -38,12 +38,37 @@ use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::auth::caller::CallerContext;
 #[cfg(not(windows))]
 use crate::auth::config::enforce_auth_for_public_bind;
+use crate::auth::ownership::{check_permission, Permission, Resource};
 use crate::auth::permissions::AuthError;
+use crate::auth::Subject;
+use crate::common::services::session_service::HistoryEvent;
 use crate::daemon::state::AppState;
 use crate::principal::{
     router::{ChannelContext, ChannelKind},
     Principal, RouteDecision, RouterError,
 };
+use crate::session::events::SessionEvent;
+
+// ─── peko log read-path types (ADR-042) ──────────────────────────────
+
+/// Errors surfaced by `IpcServer::read_principal_log`. The match arm in
+/// `handle_request` maps each variant into a `ResponsePacket::Error`
+/// with a stable error-code prefix so the CLI can render a useful
+/// message without parsing the human-readable body.
+enum PrincipalLogError {
+    NotFound(String),
+    Forbidden(String),
+    Internal(String),
+}
+
+/// Successful read shape consumed by the `PrincipalLog` response.
+struct PrincipalLogResponse {
+    name: String,
+    peer: Subject,
+    session_id: Option<String>,
+    events: Vec<HistoryEvent>,
+    truncated: bool,
+}
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
 #[derive(Clone)]
@@ -1044,7 +1069,13 @@ impl IpcServer {
                 let service = state.session_service();
                 match agent {
                     Some(agent_name) => {
-                        let session_peer = crate::auth::Subject::User("default".to_string());
+                        // Drive-by fix for ADR-042: previously this
+                        // hardcoded `Subject::User("default")` so the
+                        // session listing would always look up the
+                        // wrong peer's active session. Use the resolved
+                        // caller subject so the listing is keyed to
+                        // whoever is asking.
+                        let session_peer = caller.subject().clone();
                         match service
                             .list_sessions_with_active(&agent_name, &session_peer)
                             .await
@@ -2550,6 +2581,54 @@ impl IpcServer {
                 }
             }
 
+            // ─── peko log ────────────────────────────────────────────────
+            // Read complement to `PrincipalSend`. There is deliberately no
+            // `peko session` command (ADR-042): the CLI only ever sees a
+            // peer's own thread, the owner sees their own by default, and
+            // the principal's `Chat` grant plus a peer-privacy match
+            // (`caller == target_peer || caller == owner`) gates access.
+            RequestPacket::PrincipalLog {
+                request_id,
+                name,
+                peer,
+                limit,
+                since_secs,
+            } => {
+                let caller_subject = caller.subject();
+                let response = match Self::read_principal_log(
+                    &state,
+                    &name,
+                    peer,
+                    limit,
+                    since_secs,
+                    caller_subject,
+                )
+                .await
+                {
+                    Ok(resp) => ResponsePacket::PrincipalLog {
+                        request_id,
+                        name: resp.name,
+                        peer: resp.peer,
+                        session_id: resp.session_id,
+                        events: resp.events,
+                        truncated: resp.truncated,
+                    },
+                    Err(PrincipalLogError::NotFound(msg)) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("[not_found] {msg}"),
+                    },
+                    Err(PrincipalLogError::Forbidden(msg)) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("[forbidden] {msg}"),
+                    },
+                    Err(PrincipalLogError::Internal(msg)) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("[internal_error] {msg}"),
+                    },
+                };
+                Self::send_sink(sink, response).await?;
+            }
+
             RequestPacket::PrincipalExport {
                 request_id,
                 name,
@@ -3746,6 +3825,223 @@ impl IpcServer {
             storage.load(&did)
         })
         .await?
+    }
+
+    // ─── peko log read path ──────────────────────────────────────────
+
+    /// Server-side handler for `RequestPacket::PrincipalLog`.
+    ///
+    /// Enforces three gates in order:
+    /// 1. **`Chat` permission** on the principal — same gate as a peer
+    ///    wanting to chat at all.
+    /// 2. **Peer-privacy match** — `caller == target_peer` (you're
+    ///    reading your own thread) or `caller == owner` (the owner can
+    ///    audit any peer).
+    /// 3. **No `Subject::Public` thread** — `public` is not a session
+    ///    peer (`Subject::is_session_peer`).
+    ///
+    /// Privacy invariant: the default view is the *owner's* thread, not
+    /// the caller's. This is intentional — `peko log` is the owner's
+    /// activity feed, distinct from a peer's own read-back. A non-owner
+    /// peer calling `peko log` without `--peer` therefore errors out
+    /// (the request resolves to owner-view, but caller is not the owner).
+    async fn read_principal_log(
+        state: &AppState,
+        name: &str,
+        peer: Option<Subject>,
+        limit: Option<usize>,
+        since_secs: Option<u64>,
+        caller: Subject,
+    ) -> Result<PrincipalLogResponse, PrincipalLogError> {
+        // ── Resolve the principal ─────────────────────────────────────
+        let manager = state.principal_manager();
+        let principal = manager
+            .get_by_name(name)
+            .await
+            .ok_or_else(|| PrincipalLogError::NotFound(format!("Principal '{name}' not loaded")))?;
+
+        // ── Build the resource for permission gating ──────────────────
+        let (owner, permissions, exposure) = {
+            let cfg = principal.config.read().await;
+            (
+                cfg.owner.clone(),
+                cfg.permissions.clone(),
+                cfg.exposure,
+            )
+        };
+        let resource = Resource::Principal {
+            name: name.to_string(),
+            owner: owner.clone(),
+            permissions,
+            exposure,
+        };
+
+        // ── Chat permission ───────────────────────────────────────────
+        if check_permission(&resource, Permission::Chat, &caller).is_err() {
+            return Err(PrincipalLogError::Forbidden(format!(
+                "caller '{caller}' lacks Chat permission on principal '{name}'"
+            )));
+        }
+
+        // ── Resolve the target peer ───────────────────────────────────
+        // Default is the principal's owner (the owner-root view). A
+        // caller who isn't the owner and didn't supply `--peer` is
+        // asking for the owner's thread and is rejected by the privacy
+        // check below.
+        let target_peer = peer.unwrap_or_else(|| owner.clone());
+
+        if !target_peer.is_session_peer() {
+            return Err(PrincipalLogError::Forbidden(format!(
+                "subject '{target_peer}' is not a session peer"
+            )));
+        }
+
+        // ── Peer-privacy match ────────────────────────────────────────
+        if caller != target_peer && caller != owner {
+            return Err(PrincipalLogError::Forbidden(
+                "you can only read your own conversation; ask the owner to read on your behalf"
+                    .to_string(),
+            ));
+        }
+
+        // ── Resolve session id ────────────────────────────────────────
+        let artifact = principal
+            .memory
+            .find_latest_session_for_peer(&target_peer)
+            .await
+            .map_err(|e| {
+                PrincipalLogError::Internal(format!(
+                    "failed to look up session for '{target_peer}': {e}"
+                ))
+            })?;
+
+        let Some(artifact) = artifact else {
+            return Ok(PrincipalLogResponse {
+                name: name.to_string(),
+                peer: target_peer,
+                session_id: None,
+                events: Vec::new(),
+                truncated: false,
+            });
+        };
+        let session_id = artifact.session_id.clone();
+        drop(artifact);
+
+        // ── Stream the session JSONL ─────────────────────────────────
+        let effective_limit = limit.unwrap_or(50).clamp(1, 1000);
+        let (events, truncated) = Self::load_principal_session_events(
+            principal.memory.sessions_dir().join(&session_id),
+            since_secs,
+            effective_limit,
+        )
+        .await
+        .map_err(|e| PrincipalLogError::Internal(format!("read failed: {e}")))?;
+
+        Ok(PrincipalLogResponse {
+            name: name.to_string(),
+            peer: target_peer,
+            session_id: Some(session_id),
+            events,
+            truncated,
+        })
+    }
+
+    /// Read a principal-owned JSONL session file and convert each event
+    /// into `HistoryEvent`. Applies `since_secs` (skips events whose
+    /// `envelope.ts` is older than `now() - since_secs`) and `limit`
+    /// (caps the number of returned events, oldest-first). Reports
+    /// truncation via the second tuple field when the file held more
+    /// events than the limit allows for.
+    ///
+    /// Missing files (`session.jsonl` not yet created) yield `(vec![], false)`.
+    async fn load_principal_session_events(
+        path: std::path::PathBuf,
+        since_secs: Option<u64>,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<HistoryEvent>, bool)> {
+        if !path.exists() {
+            return Ok((Vec::new(), false));
+        }
+
+        let cutoff = since_secs.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s as i64));
+        let raw = tokio::fs::read_to_string(&path).await?;
+
+        // Two-pass: collect (ts, HistoryEvent) tuples preserving order,
+        // then apply the since+limit window in document order. This
+        // matches `SessionService::get_history`'s semantic (oldest-first
+        // within the window).
+        let mut ordered: Vec<(chrono::DateTime<chrono::Utc>, HistoryEvent)> = Vec::new();
+
+        for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+            let event: SessionEvent = match serde_json::from_str(line) {
+                Ok(e) => e,
+                Err(_) => continue, // skip malformed lines; JSONL append-only durability wins
+            };
+            let ts = event.envelope().ts;
+            if let Some(cutoff_ts) = cutoff {
+                if ts < cutoff_ts {
+                    continue;
+                }
+            }
+            if let Some(hist) = Self::convert_session_event(event) {
+                ordered.push((ts, hist));
+            }
+        }
+
+        let truncated = ordered.len() > limit;
+        ordered.truncate(limit);
+        let events: Vec<HistoryEvent> = ordered.into_iter().map(|(_, h)| h).collect();
+        Ok((events, truncated))
+    }
+
+    /// Convert one `SessionEvent` into a `HistoryEvent` for the user-
+    /// facing log view. Mirrors the convert logic in
+    /// `SessionService::convert_event` (`session_service.rs:595`).
+    /// Returns `None` for events that have no display representation
+    /// (a2a traffic, spawn-request internals, session.ended).
+    fn convert_session_event(event: SessionEvent) -> Option<HistoryEvent> {
+        Some(match event {
+            SessionEvent::SessionCreated(e) => HistoryEvent::Session {
+                timestamp: e.envelope.ts.to_rfc3339(),
+            },
+            SessionEvent::MessageV2(msg) => HistoryEvent::Message {
+                role: match msg.role() {
+                    crate::common::types::message::MessageRole::User => "user",
+                    crate::common::types::message::MessageRole::Assistant => "assistant",
+                    crate::common::types::message::MessageRole::System => "system",
+                    crate::common::types::message::MessageRole::Tool => "tool",
+                }
+                .to_string(),
+                content: msg.text_content(),
+                timestamp: msg.envelope.ts.to_rfc3339(),
+            },
+            SessionEvent::ToolCall(e) => HistoryEvent::ToolCall {
+                tool_name: e.tool,
+                args: e.args,
+                tool_call_id: e.tool_call_id,
+            },
+            SessionEvent::ToolResult(e) => HistoryEvent::ToolResult {
+                tool_call_id: e.tool_call_id,
+                output: e.output,
+                error: e.error,
+            },
+            SessionEvent::Thinking(e) => HistoryEvent::Thinking { content: e.content },
+            SessionEvent::System(e) => HistoryEvent::Message {
+                role: "system".to_string(),
+                content: e.detail.to_string(),
+                timestamp: e.envelope.ts.to_rfc3339(),
+            },
+            SessionEvent::HookTrigger(e) => HistoryEvent::Custom {
+                custom_type: format!("hook:{:?}", e.hook_type),
+            },
+            // No display representation: a2a traffic, spawn internals,
+            // session-end markers.
+            SessionEvent::SpawnRequest(_)
+            | SessionEvent::SpawnResult(_)
+            | SessionEvent::A2aSent(_)
+            | SessionEvent::A2aReceived(_)
+            | SessionEvent::SessionEnded(_) => return None,
+        })
     }
 
     /// Resolve a Principal by name, loading it from disk if it has not yet

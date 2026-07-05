@@ -16,6 +16,7 @@ pub mod credential;
 pub mod cron;
 pub mod daemon;
 pub mod ext;
+pub mod log;
 pub mod mcp;
 pub mod principal;
 pub mod provider;
@@ -44,6 +45,7 @@ use std::path::PathBuf;
   peko principal create myprincipal          # Create a new Principal
   peko principal export myprincipal -o myprincipal.principal  # Export Principal
   peko send myprincipal \"Hello\"             # Send message to a Principal
+  peko log myprincipal                       # Read principal activity (owner-root view)
   peko principal agent list myprincipal      # List agents in a Principal
 ")]
 pub struct Cli {
@@ -102,6 +104,13 @@ pub enum Commands {
     ///   echo "Hello" | peko send myprincipal --stdin
     ///   peko send myprincipal "Hello" --no-stream
     Send(send::SendArgs),
+
+    /// Read a Principal's activity (owner-root view by default)
+    ///
+    /// There is no `peko session` command and there will never be one;
+    /// this command is the only user-facing way to inspect a Principal's
+    /// working state without running a turn.
+    Log(log::LogCommand),
 
     /// Authentication and credential management
     #[command(subcommand)]

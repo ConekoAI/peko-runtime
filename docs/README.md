@@ -22,7 +22,7 @@ Complete documentation for the Peko multi-agent runtime.
 ### 🏗️ Architecture
 
 - **[Extension System](architecture/EXTENSION_SYSTEM.md)** — Unified extension architecture
-- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-039
+- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-042
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
 - **[Changelog](../CHANGELOG.md)** — Version history
@@ -52,7 +52,7 @@ docs/
 │   └── CLI_REFERENCE.md
 ├── architecture/
 │   ├── EXTENSION_SYSTEM.md
-│   └── adr/                         # ADR-001 through ADR-039
+│   └── adr/                         # ADR-001 through ADR-042
 └── mcp/
     ├── MCP.md
     ├── QUICK_START.md
@@ -95,6 +95,9 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-037](architecture/adr/ADR-037-agent-extension-bundling-and-layer-rationalization.md) | Agent-extension bundling |
 | [ADR-038](architecture/adr/ADR-038-named-pipes-on-windows.md) | Windows named-pipe transport |
 | [ADR-039](architecture/adr/ADR-039-principal-model.md) | Principal model (User/Agent/Team/Public) |
+| [ADR-040](architecture/adr/ADR-040-tool-timeout-and-async-refactor.md) | Tool timeout & async refactor |
+| [ADR-041](architecture/adr/ADR-041-principal-as-container.md) | Principal-as-container and session blackboxing |
+| [ADR-042](architecture/adr/ADR-042-no-external-session-concept.md) | No external `session` concept in the CLI/IPC surface (`peko log` is the only read path) |
 
 ---
 

@@ -421,6 +421,27 @@ pub enum RequestPacket {
         user: String,
     },
 
+    /// Read a peer's conversation thread with a Principal.
+    ///
+    /// This is the read complement to `PrincipalSend`. There is no
+    /// `peko session` CLI command (ADR-042): peers only ever see their
+    /// own thread, the owner sees their own by default, and any
+    /// other-thread read by the owner requires `peer` to be set
+    /// explicitly. The server enforces the privacy check (`caller ==
+    /// peer || caller == principal.owner`) plus the principal's `Chat`
+    /// grant before returning anything.
+    #[serde(rename = "principal_log")]
+    PrincipalLog {
+        request_id: u64,
+        name: String,
+        /// None means "the principal's owner" (default view).
+        peer: Option<crate::auth::Subject>,
+        /// Cap on number of events returned (default 50, max 1000).
+        limit: Option<usize>,
+        /// Only events newer than `now() - since_secs` are returned.
+        since_secs: Option<u64>,
+    },
+
     #[serde(rename = "principal_export")]
     PrincipalExport {
         request_id: u64,
@@ -563,6 +584,7 @@ impl RequestPacket {
             | Self::InstanceSetExposure { request_id, .. }
             | Self::PrincipalSend { request_id, .. }
             | Self::PrincipalSendStream { request_id, .. }
+            | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalPush { request_id, .. }
@@ -1024,6 +1046,23 @@ pub enum ResponsePacket {
     #[serde(rename = "principal_sent_done")]
     PrincipalSentDone { request_id: u64, content: String },
 
+    /// Response to a `PrincipalLog` request. Carries the resolved
+    /// peer (substituted with the principal's owner if the request
+    /// omitted one), the session id whose events are returned (if a
+    /// session exists), the events themselves (oldest-first, capped
+    /// by `limit`), and a `truncated` flag indicating the file had
+    /// more entries than the cap. Errors emit `Error { code, message }`
+    /// with `code` in `"not_found" | "forbidden" | "internal_error"`.
+    #[serde(rename = "principal_log")]
+    PrincipalLog {
+        request_id: u64,
+        name: String,
+        peer: crate::auth::Subject,
+        session_id: Option<String>,
+        events: Vec<crate::common::services::session_service::HistoryEvent>,
+        truncated: bool,
+    },
+
     #[serde(rename = "principal_exported")]
     PrincipalExported {
         request_id: u64,
@@ -1309,6 +1348,7 @@ impl ResponsePacket {
             | Self::PrincipalSent { request_id, .. }
             | Self::PrincipalSentChunk { request_id, .. }
             | Self::PrincipalSentDone { request_id, .. }
+            | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalPushed { request_id, .. }
@@ -1379,6 +1419,7 @@ impl ResponsePacket {
             Self::PrincipalSent { .. } => "PrincipalSent",
             Self::PrincipalSentChunk { .. } => "PrincipalSentChunk",
             Self::PrincipalSentDone { .. } => "PrincipalSentDone",
+            Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalPushed { .. } => "PrincipalPushed",
@@ -3516,6 +3557,84 @@ mod tests {
             }
             _ => panic!("Wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_principal_log_request_roundtrip() {
+        // `peko log` IPC shape. The wire tag must match the CLI spelling
+        // and round-trip must preserve `peer`, `limit`, `since_secs`.
+        let req = RequestPacket::PrincipalLog {
+            request_id: 5200,
+            name: "helper".to_string(),
+            peer: Some(crate::auth::Subject::User("alice".to_string())),
+            limit: Some(100),
+            since_secs: Some(86_400),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalLog {
+                request_id,
+                name,
+                peer,
+                limit,
+                since_secs,
+            } => {
+                assert_eq!(request_id, 5200);
+                assert_eq!(name, "helper");
+                assert_eq!(peer, Some(crate::auth::Subject::User("alice".to_string())));
+                assert_eq!(limit, Some(100));
+                assert_eq!(since_secs, Some(86_400));
+            }
+            _ => panic!("Wrong variant"),
+        }
+        let raw = String::from_utf8(bytes).unwrap();
+        assert!(
+            raw.contains("\"type\":\"principal_log\""),
+            "wire tag missing: {raw}"
+        );
+    }
+
+    #[test]
+    fn test_principal_log_response_roundtrip() {
+        // Response shape: resolved peer, session_id, events array, truncated.
+        let resp = ResponsePacket::PrincipalLog {
+            request_id: 6200,
+            name: "helper".to_string(),
+            peer: crate::auth::Subject::User("alice".to_string()),
+            session_id: Some("sess-abc".to_string()),
+            events: vec![crate::common::services::session_service::HistoryEvent::Message {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+                timestamp: "2026-07-04T12:00:00Z".to_string(),
+            }],
+            truncated: false,
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::PrincipalLog {
+                request_id,
+                name,
+                peer,
+                session_id,
+                events,
+                truncated,
+            } => {
+                assert_eq!(request_id, 6200);
+                assert_eq!(name, "helper");
+                assert_eq!(peer, crate::auth::Subject::User("alice".to_string()));
+                assert_eq!(session_id.as_deref(), Some("sess-abc"));
+                assert_eq!(events.len(), 1);
+                assert!(!truncated);
+            }
+            _ => panic!("Wrong variant"),
+        }
+        let raw = String::from_utf8(bytes).unwrap();
+        assert!(
+            raw.contains("\"type\":\"principal_log\""),
+            "wire tag missing: {raw}"
+        );
     }
 
     #[test]
