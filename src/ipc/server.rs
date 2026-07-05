@@ -27,10 +27,9 @@ use anyhow::Context;
 use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
-use tokio::time::interval;
 use tracing::{error, info, trace, warn};
 
-use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket, HEARTBEAT_INTERVAL_SECS};
+use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket};
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
@@ -41,6 +40,7 @@ use crate::auth::config::enforce_auth_for_public_bind;
 use crate::auth::ownership::{check_permission, Permission, Resource};
 use crate::auth::permissions::AuthError;
 use crate::auth::Subject;
+use crate::common::services::session_event_to_history;
 use crate::common::services::session_service::HistoryEvent;
 use crate::daemon::state::AppState;
 use crate::principal::{
@@ -1064,75 +1064,11 @@ impl IpcServer {
                 Self::send_sink(sink, response).await?;
             }
 
-            // ─── Session CRUD ───────────────────────────────────────────────
-            RequestPacket::SessionList { request_id, agent } => {
-                let service = state.session_service();
-                match agent {
-                    Some(agent_name) => {
-                        // Drive-by fix for ADR-042: previously this
-                        // hardcoded `Subject::User("default")` so the
-                        // session listing would always look up the
-                        // wrong peer's active session. Use the resolved
-                        // caller subject so the listing is keyed to
-                        // whoever is asking.
-                        let session_peer = caller.subject().clone();
-                        match service
-                            .list_sessions_with_active(&agent_name, &session_peer)
-                            .await
-                        {
-                            Ok((sessions, active_session)) => {
-                                let response = ResponsePacket::SessionList {
-                                    request_id,
-                                    sessions,
-                                    active_session,
-                                };
-                                Self::send_sink(sink, response).await?;
-                            }
-                            Err(e) => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: e.to_string(),
-                                };
-                                Self::send_sink(sink, response).await?;
-                            }
-                        }
-                    }
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: "Agent name is required for session listing".to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::SessionRemove {
-                request_id,
-                agent,
-                session_id,
-                force: _,
-            } => {
-                let service = state.session_service();
-                match service.delete_session(&agent, &session_id).await {
-                    Ok(deleted) => {
-                        let response = ResponsePacket::SessionRemoved {
-                            request_id,
-                            session_id,
-                            deleted,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
+            // (Session CRUD: SessionList / SessionRemove retired under ADR-042.
+            // The legacy `peko session` command tree that drove these is
+            // gone; the only external session read surface is now
+            // `RequestPacket::PrincipalLog` (see
+            // `handle_principal_log`). See ADR-042 for the contract.)
             RequestPacket::ProviderList { request_id } => {
                 let registry = crate::providers::ProviderRegistry::new();
                 let mut providers: Vec<crate::ipc::packet::ProviderInfo> = Vec::new();
@@ -1574,169 +1510,14 @@ impl IpcServer {
                 Self::send_sink(sink, response).await?;
             }
 
-            RequestPacket::SessionBranch {
-                request_id,
-                agent,
-                session_id,
-                label,
-            } => {
-                let service = state.session_service();
-                match service.branch_session(&agent, &session_id, label).await {
-                    Ok(result) => {
-                        let response = ResponsePacket::SessionBranched {
-                            request_id,
-                            new_session_id: result.new_session_id,
-                            parent_session_id: result.parent_session_id,
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                    }
-                }
-            }
-
-            RequestPacket::SessionCompact {
-                request_id,
-                agent,
-                session_id,
-                dry_run,
-                instruction,
-            } => {
-                let service = state.session_service();
-                let sessions_dir = match service.get_sessions_dir(&agent).await {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-                if !sessions_dir.exists() {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("Agent '{agent}' not found"),
-                    };
-                    Self::send_sink(sink, response).await?;
-                    return Ok(());
-                }
-                let mut session = match service.open_session(&agent, &session_id, "default").await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: e.to_string(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-                let compactor = crate::session::compaction::cli::SessionCompactor::new();
-                if dry_run {
-                    match compactor.dry_run(&session, instruction).await {
-                        Ok(report) => {
-                            let response = ResponsePacket::SessionCompactDryRun {
-                                request_id,
-                                session_id: session_id.clone(),
-                                estimated_tokens: report.estimated_tokens,
-                                context_window: report.context_window,
-                                percent: report.percent,
-                                message_count: report.message_count,
-                                messages_to_compact: report.messages_to_compact,
-                            };
-                            Self::send_sink(sink, response).await?;
-                        }
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: e.to_string(),
-                            };
-                            Self::send_sink(sink, response).await?;
-                        }
-                    }
-                } else {
-                    match compactor.compact(&mut session, instruction).await {
-                        Ok(result) => {
-                            let response = ResponsePacket::SessionCompacted {
-                                request_id,
-                                session_id: session_id.clone(),
-                                messages_compacted: result.entry.messages_compacted,
-                                tokens_saved: result.tokens_saved,
-                                tokens_before: result.entry.tokens_before,
-                                tokens_after: result.entry.tokens_after,
-                            };
-                            Self::send_sink(sink, response).await?;
-                        }
-                        Err(e) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: e.to_string(),
-                            };
-                            Self::send_sink(sink, response).await?;
-                        }
-                    }
-                }
-            }
-
-            RequestPacket::SessionSteer {
-                request_id,
-                session_id,
-                content,
-            } => {
-                if let Err(e) =
-                    Self::handle_session_steer(request_id, &session_id, content, state, sink).await
-                {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: e.to_string(),
-                    };
-                    Self::send_sink(sink, response).await?;
-                }
-            }
-
-            RequestPacket::SessionSteerList {
-                request_id,
-                session_id,
-            } => {
-                if let Err(e) =
-                    Self::handle_session_steer_list(request_id, &session_id, state, sink).await
-                {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: e.to_string(),
-                    };
-                    Self::send_sink(sink, response).await?;
-                }
-            }
-
-            RequestPacket::SessionSteerCancel {
-                request_id,
-                session_id,
-                message_id,
-            } => {
-                if let Err(e) = Self::handle_session_steer_cancel(
-                    request_id,
-                    &session_id,
-                    message_id,
-                    state,
-                    sink,
-                )
-                .await
-                {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: e.to_string(),
-                    };
-                    Self::send_sink(sink, response).await?;
-                }
-            }
+            // (SessionBranch / SessionCompact / SessionSteer / SessionSteerList /
+            // SessionSteerCancel retired under ADR-042. The legacy `peko session`
+            // command tree and `peko session compact` CLI surface that drove
+            // these IPC variants are gone. Compaction is now an internal
+            // daemon concern (see `SessionCompactor`); if a future ADR
+            // reintroduces external compaction or steering, it must key off
+            // PrincipalMemory rather than legacy SessionService. See
+            // ADR-042.)
 
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let mut manager = state.extension_manager().write().await;
@@ -3145,284 +2926,14 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Enqueue a user steering message for the given session. If the
-    /// session is idle, auto-trigger a new run; otherwise the in-flight
-    /// loop drains the message at the start of its next iteration.
-    ///
-    /// Steps:
-    /// 1. Resolve the session by id (cross-agent metadata lookup so
-    ///    the caller doesn't need to know the agent name).
-    /// 2. Persist the user turn via `session.add_user(content)` (the
-    ///    handler is the single owner of the "user wrote this" fact).
-    /// 3. Push the steering item to the per-session inbox.
-    /// 4. `try_acquire_run`: if `Some(permit)`, the daemon auto-starts
-    ///    a new run via `agent_service.run_session_on_inbox` and
-    ///    forwards events to the sink on the same `request_id`.
-    /// 5. Otherwise, the in-flight loop drains the steering message
-    ///    at its next iteration; we emit `MessageQueued {
-    ///    run_triggered: false }` and close the stream.
-    async fn handle_session_steer(
-        request_id: u64,
-        session_id: &str,
-        content: String,
-        state: AppState,
-        sink: &dyn ResponseSink,
-    ) -> anyhow::Result<()> {
-        use crate::engine::{AgenticEvent, LifecyclePhase};
-        use crate::extensions::framework::async_exec::executor::completion_queue::{
-            InboxItem, SteeringMessage,
-        };
-
-        let session_service = state.session_service();
-
-        // 1. Resolve agent_name from the cross-agent metadata index.
-        let metadata = match session_service.get_session_metadata(session_id).await {
-            Ok(m) => m,
-            Err(e) => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: format!("session not found: {e}"),
-                };
-                Self::send_sink(sink, response).await?;
-                return Ok(());
-            }
-        };
-        let agent_name = metadata.agent_name.clone();
-
-        // 2. Open the session by (agent, session_id). We pass an
-        //    empty `user` so we don't fabricate a fake caller — the
-        //    session record already has its real peer.
-        let session = match session_service
-            .open_session(&agent_name, session_id, "")
-            .await
-        {
-            Ok(s) => Arc::new(tokio::sync::RwLock::new(s)),
-            Err(e) => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: format!("failed to open session: {e}"),
-                };
-                Self::send_sink(sink, response).await?;
-                return Ok(());
-            }
-        };
-
-        // 3. Persist the user turn on the session.
-        {
-            let mut s = session.write().await;
-            if let Err(e) = s.add_user(&content).await {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: format!("failed to persist user turn: {e}"),
-                };
-                Self::send_sink(sink, response).await?;
-                return Ok(());
-            }
-        }
-
-        // 4. Push the steering item to the per-session inbox.
-        let inbox = state.inbox_registry.get_or_create(session_id).await;
-        let steering = SteeringMessage::new(content.clone());
-        let message_id = steering.id;
-        inbox.push(InboxItem::Steering(steering));
-
-        // 5. Try to acquire the run permit. If the session is busy,
-        //    the in-flight loop will drain the steering message at
-        //    its next iteration; just emit MessageQueued and Done.
-        let permit = match state.inbox_registry.try_acquire_run(session_id).await {
-            Some(permit) => permit,
-            None => {
-                let queued = ResponsePacket::MessageQueued {
-                    request_id,
-                    message_id,
-                    run_triggered: false,
-                };
-                Self::send_sink(sink, queued).await?;
-                let done = ResponsePacket::Done {
-                    request_id,
-                    success: true,
-                    error: None,
-                };
-                Self::send_sink(sink, done).await?;
-                return Ok(());
-            }
-        };
-
-        // 6. Auto-trigger: session was idle. Emit MessageQueued with
-        //    run_triggered=true, then start the run and forward its
-        //    events to the sink on the same request_id.
-        let queued = ResponsePacket::MessageQueued {
-            request_id,
-            message_id,
-            run_triggered: true,
-        };
-        Self::send_sink(sink, queued).await?;
-
-        let agent_service = state.agent_service().clone();
-        let mut event_stream = match agent_service
-            .run_session_on_inbox(session, state.inbox_registry.clone(), permit, None)
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let response = ResponsePacket::Error {
-                    request_id,
-                    message: format!("failed to start steering run: {e}"),
-                };
-                Self::send_sink(sink, response).await?;
-                let done = ResponsePacket::Done {
-                    request_id,
-                    success: false,
-                    error: Some(e.to_string()),
-                };
-                Self::send_sink(sink, done).await?;
-                return Ok(());
-            }
-        };
-
-        // Forward events to the sink. The steering path always
-        // streams, so we don't buffer — every event hits the wire
-        // as soon as it's available. The `handle_execute` shape
-        // (audit C4) used to do both buffered and streaming; that
-        // path was retired with the legacy `RequestPacket::Execute`
-        // variant.
-        let mut heartbeat = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
-        loop {
-            tokio::select! {
-                maybe_event = event_stream.receiver.recv() => {
-                    match maybe_event {
-                        Some(AgenticEvent::AssistantDelta { text, .. } | AgenticEvent::AssistantText { text, .. }) => {
-                            let packet = ResponsePacket::Text {
-                                request_id,
-                                seq: 0,
-                                chunk: text,
-                            };
-                            Self::send_sink(sink, packet).await?;
-                        }
-                        Some(AgenticEvent::Lifecycle {
-                            phase: LifecyclePhase::End,
-                            ..
-                        }) => {
-                            let packet = ResponsePacket::Done {
-                                request_id,
-                                success: true,
-                                error: None,
-                            };
-                            Self::send_sink(sink, packet).await?;
-                            break;
-                        }
-                        Some(AgenticEvent::Lifecycle {
-                            phase: LifecyclePhase::Error,
-                            error,
-                            ..
-                        }) => {
-                            let packet = ResponsePacket::Done {
-                                request_id,
-                                success: false,
-                                error,
-                            };
-                            Self::send_sink(sink, packet).await?;
-                            break;
-                        }
-                        Some(_) => {
-                            // Ignore other events (ToolStart, ToolEnd,
-                            // Thinking, Status, Usage). The CLI is
-                            // interested in text + lifecycle only.
-                        }
-                        None => {
-                            // Sender dropped without an End/Error —
-                            // treat as success.
-                            let packet = ResponsePacket::Done {
-                                request_id,
-                                success: true,
-                                error: None,
-                            };
-                            Self::send_sink(sink, packet).await?;
-                            break;
-                        }
-                    }
-                }
-                _ = heartbeat.tick() => {
-                    let packet = ResponsePacket::Heartbeat { request_id };
-                    Self::send_sink(sink, packet).await?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// List pending (un-drained) steering messages for a session.
-    async fn handle_session_steer_list(
-        request_id: u64,
-        session_id: &str,
-        state: AppState,
-        sink: &dyn ResponseSink,
-    ) -> anyhow::Result<()> {
-        // Validate the session exists (returns Error if not).
-        if let Err(e) = state
-            .session_service()
-            .get_session_metadata(session_id)
-            .await
-        {
-            let response = ResponsePacket::Error {
-                request_id,
-                message: format!("session not found: {e}"),
-            };
-            Self::send_sink(sink, response).await?;
-            return Ok(());
-        }
-
-        // No inbox entry yet → empty list. We deliberately don't
-        // lazy-create on read; the inbox exists only when something
-        // has been queued or the executor has touched the session.
-        let summaries = if state.inbox_registry.is_empty().await {
-            Vec::new()
-        } else {
-            match state.inbox_registry.peek_inbox(session_id).await {
-                Some(inbox) => {
-                    let pending = inbox.pending_steering().await;
-                    pending
-                        .into_iter()
-                        .map(|m| crate::ipc::packet::SteeringMessageSummary {
-                            message_id: m.id,
-                            queued_at: m.queued_at,
-                            preview: m.content,
-                        })
-                        .collect()
-                }
-                None => Vec::new(),
-            }
-        };
-
-        let response = ResponsePacket::PendingMessages {
-            request_id,
-            session_id: session_id.to_string(),
-            messages: summaries,
-        };
-        Self::send_sink(sink, response).await?;
-        Ok(())
-    }
-
-    /// Best-effort cancel of a queued steering message by id.
-    async fn handle_session_steer_cancel(
-        request_id: u64,
-        session_id: &str,
-        message_id: uuid::Uuid,
-        state: AppState,
-        sink: &dyn ResponseSink,
-    ) -> anyhow::Result<()> {
-        let was_present = match state.inbox_registry.peek_inbox(session_id).await {
-            Some(inbox) => inbox.cancel_steering(message_id).await,
-            None => false,
-        };
-        let response = ResponsePacket::MessageCancelled {
-            request_id,
-            message_id,
-            was_present,
-        };
-        Self::send_sink(sink, response).await?;
-        Ok(())
-    }
+    // (handle_session_steer / handle_session_steer_list /
+    // handle_session_steer_cancel retired under ADR-042 along with
+    // their IPC variants. The internal `inbox_registry`,
+    // `SteeringMessage`, and `run_session_on_inbox` plumbing remains
+    // in use — the executor drains async completions locally — but
+    // there is no longer any IPC entrypoint that pushes a steering
+    // message onto a peer-keyed session from outside the daemon.
+    // See ADR-042.)
 
     /// Handle an AsyncCancel request
     async fn handle_async_cancel(
@@ -3983,7 +3494,7 @@ impl IpcServer {
                     continue;
                 }
             }
-            if let Some(hist) = Self::convert_session_event(event) {
+            if let Some(hist) = session_event_to_history(&event) {
                 ordered.push((ts, hist));
             }
         }
@@ -3992,56 +3503,6 @@ impl IpcServer {
         ordered.truncate(limit);
         let events: Vec<HistoryEvent> = ordered.into_iter().map(|(_, h)| h).collect();
         Ok((events, truncated))
-    }
-
-    /// Convert one `SessionEvent` into a `HistoryEvent` for the user-
-    /// facing log view. Mirrors the convert logic in
-    /// `SessionService::convert_event` (`session_service.rs:595`).
-    /// Returns `None` for events that have no display representation
-    /// (a2a traffic, spawn-request internals, session.ended).
-    fn convert_session_event(event: SessionEvent) -> Option<HistoryEvent> {
-        Some(match event {
-            SessionEvent::SessionCreated(e) => HistoryEvent::Session {
-                timestamp: e.envelope.ts.to_rfc3339(),
-            },
-            SessionEvent::MessageV2(msg) => HistoryEvent::Message {
-                role: match msg.role() {
-                    crate::common::types::message::MessageRole::User => "user",
-                    crate::common::types::message::MessageRole::Assistant => "assistant",
-                    crate::common::types::message::MessageRole::System => "system",
-                    crate::common::types::message::MessageRole::Tool => "tool",
-                }
-                .to_string(),
-                content: msg.text_content(),
-                timestamp: msg.envelope.ts.to_rfc3339(),
-            },
-            SessionEvent::ToolCall(e) => HistoryEvent::ToolCall {
-                tool_name: e.tool,
-                args: e.args,
-                tool_call_id: e.tool_call_id,
-            },
-            SessionEvent::ToolResult(e) => HistoryEvent::ToolResult {
-                tool_call_id: e.tool_call_id,
-                output: e.output,
-                error: e.error,
-            },
-            SessionEvent::Thinking(e) => HistoryEvent::Thinking { content: e.content },
-            SessionEvent::System(e) => HistoryEvent::Message {
-                role: "system".to_string(),
-                content: e.detail.to_string(),
-                timestamp: e.envelope.ts.to_rfc3339(),
-            },
-            SessionEvent::HookTrigger(e) => HistoryEvent::Custom {
-                custom_type: format!("hook:{:?}", e.hook_type),
-            },
-            // No display representation: a2a traffic, spawn internals,
-            // session-end markers.
-            SessionEvent::SpawnRequest(_)
-            | SessionEvent::SpawnResult(_)
-            | SessionEvent::A2aSent(_)
-            | SessionEvent::A2aReceived(_)
-            | SessionEvent::SessionEnded(_) => return None,
-        })
     }
 
     /// Resolve a Principal by name, loading it from disk if it has not yet

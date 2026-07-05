@@ -122,6 +122,30 @@ Principal is an integral actor; sessions are storage, not state that
 the user names, lists, or routes through. Operators who need to inspect
 raw session files read them directly from the Principal's workspace.
 
+#### Privacy gate (ADR-042)
+
+The default `peko log <PRINCIPAL>` invocation (no `--peer`) returns
+the **owner-root view**, which is special: it is only readable by the
+Principal's owner. The privacy contract is enforced strictly:
+
+| Caller | Command | Result |
+|---|---|---|
+| Principal's owner | `peko log <P>` | OK — owner-root view |
+| Principal's owner | `peko log <P> --peer user:<any>` | OK — owner can audit any peer thread |
+| Peer `user:bob` with `Chat` grant | `peko log <P> --peer user:bob` | OK — peer self-read |
+| Peer `user:bob` with `Chat` grant | `peko log <P>` (no `--peer`) | **rejected** — owner-root is not bob's view |
+| Peer `user:bob` with `Chat` grant | `peko log <P> --peer user:alice` | **rejected** — bob cannot read alice's thread |
+| Stranger (no `Chat` grant) | any `peko log …` | **rejected** |
+
+Concretely, a non-owner caller must pass `--peer <self>` (e.g.
+`--peer user:bob`) to read anything; the default form is owner-only.
+There is no flag that widens access. If a future ADR wants asymmetric
+read/write grants (e.g. a broadcast peer that can read but not chat),
+a `ReadLog` permission variant will be designed and documented there.
+
+See [ADR-042](../architecture/adr/ADR-042-no-external-session-concept.md)
+for the underlying contract and the rationale for keeping it strict.
+
 ---
 
 ## Running Your First Principal
