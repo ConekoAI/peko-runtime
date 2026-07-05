@@ -1,6 +1,6 @@
 //! Unified executor for all async tool operations
 
-use super::completion_queue::{CompletionEvent, InboxItem};
+use super::completion_queue::{CompletionEvent, InboxItem, SteeringMessage};
 use super::delivery::{QueueDelivery, ResultDelivery};
 use super::queue::{AsyncResultQueueManager, SharedAsyncResultQueueManager};
 use super::registry::{AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata};
@@ -254,6 +254,10 @@ impl AsyncExecutor {
         let params_for_spawn = params.clone();
         let parent_session_key_for_completion = parent_session_key.clone();
         let inbox_registry = self.inbox_registry.clone();
+        // Clone the full config so the spawned task can read
+        // `wake_on_completion` and `principal_root_session_key` on
+        // terminal outcome delivery.
+        let config_for_spawn = config.clone();
 
         // Spawn the background execution
         tokio::spawn(async move {
@@ -377,6 +381,19 @@ impl AsyncExecutor {
             // so the agentic loop can drain it at the next iteration.
             // The session's inbox is resolved via the daemon-global
             // `InboxRegistry` keyed by `parent_session_key`.
+            //
+            // When the spawn was set up by the cron engine with
+            // `wake_on_completion=true` and a `principal_root_session_key`,
+            // we instead push a human-readable `SteeringMessage` into
+            // the principal's root inbox — the agent picks it up at
+            // the next iteration start as a user-role turn and can call
+            // TaskOutput/AsyncOutput for the full task detail. Without
+            // this branch, cron-scheduled runs would silently complete
+            // and never tell the principal they did.
+            let steer_target = config_for_spawn
+                .principal_root_session_key
+                .clone()
+                .filter(|_| config_for_spawn.wake_on_completion);
             if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
                 let status = entry.status.clone();
                 let result = entry.result.clone().unwrap_or(serde_json::Value::Null);
@@ -384,19 +401,32 @@ impl AsyncExecutor {
                     .as_ref()
                     .map(|w| w.task_file_path(&task_id_clone))
                     .unwrap_or_else(|| std::path::PathBuf::from(""));
-                let event = CompletionEvent {
-                    task_id: task_id_clone.clone(),
-                    tool_name: tool_name.clone(),
-                    result,
-                    status,
-                    completed_at: chrono::Utc::now(),
-                    output_path,
-                    parent_session_key: parent_session_key_for_completion.clone(),
-                };
-                let inbox = inbox_registry
-                    .get_or_create(&parent_session_key_for_completion)
-                    .await;
-                inbox.push(InboxItem::Completion(event));
+                if let Some(target) = steer_target {
+                    let label = config_for_spawn.label.clone().unwrap_or_default();
+                    let text =
+                        crate::extensions::framework::async_exec::steer::format_cron_steer_message(
+                            &label,
+                            &task_id_clone,
+                            &tool_name,
+                            &status,
+                        );
+                    let inbox = inbox_registry.get_or_create(&target).await;
+                    inbox.push(InboxItem::Steering(SteeringMessage::new(text)));
+                } else {
+                    let event = CompletionEvent {
+                        task_id: task_id_clone.clone(),
+                        tool_name: tool_name.clone(),
+                        result,
+                        status,
+                        completed_at: chrono::Utc::now(),
+                        output_path,
+                        parent_session_key: parent_session_key_for_completion.clone(),
+                    };
+                    let inbox = inbox_registry
+                        .get_or_create(&parent_session_key_for_completion)
+                        .await;
+                    inbox.push(InboxItem::Completion(event));
+                }
             }
         });
 
@@ -736,5 +766,104 @@ mod completion_queue_fan_out_tests {
             InboxItem::Completion(e) => assert_eq!(e.task_id, task_b),
             other => panic!("expected Completion, got {other:?}"),
         }
+    }
+
+    /// Cron-spawned runs with `wake_on_completion=true` and a
+    /// `principal_root_session_key` deliver a `SteeringMessage` into
+    /// the principal's root inbox instead of a `CompletionEvent`.
+    /// The agent picks the message up at the next iteration start.
+    #[tokio::test]
+    async fn test_wake_on_completion_delivers_steer_to_principal_inbox() {
+        let (exec, registry) = make_executor_with_registry();
+        let task_id = "shell:cron-wake".to_string();
+        let principal_root = "root:alice".to_string();
+
+        let config = AsyncToolConfig {
+            wake_on_completion: true,
+            principal_root_session_key: Some(principal_root.clone()),
+            label: Some("daily-summary".to_string()),
+            ..Default::default()
+        };
+
+        let _ = exec
+            .execute(
+                task_id.clone(),
+                "Bash",
+                serde_json::json!({"command": "echo done"}),
+                // The executor's own parent_session_key — but the wake
+                // branch should route to principal_root instead.
+                "session_worker_1",
+                config,
+                || async { Ok(serde_json::json!({"ok": true})) },
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Steer message landed in principal_root's inbox.
+        let root_inbox = registry.get_or_create(&principal_root).await;
+        let root_items = root_inbox.drain_all().await;
+        assert_eq!(
+            root_items.len(),
+            1,
+            "expected exactly one steer message in principal root inbox"
+        );
+        match &root_items[0] {
+            InboxItem::Steering(s) => {
+                assert!(s.content.contains("daily-summary"));
+                assert!(s.content.contains("TaskOutput"));
+                assert!(s.content.contains(&task_id));
+            }
+            other => panic!("expected InboxItem::Steering, got {other:?}"),
+        }
+
+        // Completion event did NOT land in the executor's parent inbox.
+        let worker_inbox = registry.get_or_create("session_worker_1").await;
+        let worker_items = worker_inbox.drain_all().await;
+        assert!(
+            worker_items.is_empty(),
+            "worker inbox should be untouched when wake_on_completion=true, got {worker_items:?}"
+        );
+    }
+
+    /// Cron-spawned runs with `wake_on_completion=false` keep the
+    /// legacy CompletionEvent delivery. `principal_root_session_key`
+    /// is ignored when wake is off.
+    #[tokio::test]
+    async fn test_no_wake_keeps_completion_event_delivery() {
+        let (exec, registry) = make_executor_with_registry();
+        let task_id = "shell:cron-no-wake".to_string();
+
+        let config = AsyncToolConfig {
+            wake_on_completion: false,
+            principal_root_session_key: Some("root:alice".to_string()),
+            ..Default::default()
+        };
+
+        let _ = exec
+            .execute(
+                task_id.clone(),
+                "Bash",
+                serde_json::json!({}),
+                "session_worker_2",
+                config,
+                || async { Ok(serde_json::json!({"ok": true})) },
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Only the worker inbox should hold the CompletionEvent.
+        let worker_inbox = registry.get_or_create("session_worker_2").await;
+        let items = worker_inbox.drain_all().await;
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], InboxItem::Completion(_)));
+
+        // principal_root inbox stays empty.
+        let root_inbox = registry.get_or_create("root:alice").await;
+        let root_items = root_inbox.drain_all().await;
+        assert!(root_items.is_empty());
     }
 }

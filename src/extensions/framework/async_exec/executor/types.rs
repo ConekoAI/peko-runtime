@@ -182,6 +182,29 @@ pub struct AsyncToolConfig {
     pub cleanup_after_delivery: bool,
     /// Label for grouping/identifying tasks
     pub label: Option<String>,
+    /// Whether completion should wake the spawning session.
+    ///
+    /// When `true` and [`Self::principal_root_session_key`] is set, the
+    /// executor delivers a `SteeringMessage` into the principal's root
+    /// inbox instead of a `CompletionEvent`. The agent picks the message
+    /// up at its next iteration start.
+    ///
+    /// Defaults to `true` for natural agent spawns. The cron engine
+    /// overrides to `false` because scheduled runs do not need to nudge
+    /// the agent's next turn — the user (or the janitor) decides what
+    /// to do next.
+    #[serde(default = "default_wake_on_completion")]
+    pub wake_on_completion: bool,
+    /// When the spawn is attributed to a principal's root (e.g. via the
+    /// cron engine), this is the inbox key to push a steer message into.
+    /// `None` means deliver the existing `CompletionEvent` to
+    /// `parent_session_key` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_root_session_key: Option<String>,
+}
+
+fn default_wake_on_completion() -> bool {
+    true
 }
 
 impl Default for AsyncToolConfig {
@@ -189,10 +212,16 @@ impl Default for AsyncToolConfig {
         Self {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: None,
-            timeout_secs: Some(300),
+            // Default async-task lifetime is 2 hours. Callers can override
+            // per call via `timeout_secs` or `timeout_millis`. Cron schedules
+            // and natural agent spawns both inherit this default; both
+            // surfaces override it explicitly when needed.
+            timeout_secs: Some(7200),
             timeout_millis: None,
             cleanup_after_delivery: true,
             label: None,
+            wake_on_completion: default_wake_on_completion(),
+            principal_root_session_key: None,
         }
     }
 }

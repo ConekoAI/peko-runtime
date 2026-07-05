@@ -6,7 +6,7 @@
 //! owner permissions.
 
 use crate::commands::GlobalPaths;
-use crate::cron::{CronJob, DeliveryMode, ScheduleKind};
+use crate::cron::{CronJob, CronJobAction, DeliveryMode, ScheduleKind};
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -209,15 +209,17 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                         for job in jobs {
                             let status = if job.enabled { "✅" } else { "⏸️" };
                             let schedule = job.schedule.display();
+                            let action_kind = job.action.kind_label();
                             println!(
-                                "  {} {} | {} | principal: {} | next: {}",
+                                "  {} {} | {} | {} | principal: {} | next: {}",
                                 status,
                                 job.id,
                                 schedule,
+                                action_kind,
                                 job.principal_name,
                                 job.next_run.to_rfc3339()
                             );
-                            println!("     └─ {}", job.message);
+                            println!("     └─ {}", job.task_description());
                         }
                     }
                     Ok(())
@@ -268,7 +270,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 name,
                 principal_name: principal.clone(),
                 schedule: schedule_kind,
-                message,
+                action: CronJobAction::Send { message },
                 delivery,
                 delete_after_run,
                 enabled: true,
@@ -324,7 +326,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 schedule: ScheduleKind::At {
                     at: at_time.to_rfc3339(),
                 },
-                message,
+                action: CronJobAction::Send { message },
                 delivery,
                 delete_after_run: true,
                 enabled: true,
@@ -377,7 +379,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 name,
                 principal_name: principal.clone(),
                 schedule: schedule_kind,
-                message,
+                action: CronJobAction::Send { message },
                 delivery,
                 delete_after_run: false,
                 enabled: true,
@@ -507,7 +509,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                 name,
                 principal_name: principal.clone(),
                 schedule: ScheduleKind::Idle { minutes },
-                message,
+                action: CronJobAction::Send { message },
                 delivery,
                 delete_after_run: false,
                 enabled: true,
@@ -564,7 +566,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
                     filter: filter_val,
                     once,
                 },
-                message,
+                action: CronJobAction::Send { message },
                 delivery,
                 delete_after_run: once,
                 enabled: true,

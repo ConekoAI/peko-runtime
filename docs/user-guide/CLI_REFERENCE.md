@@ -346,6 +346,13 @@ Schedule recurring, one-time, idle-triggered, and event-triggered jobs for a
 Principal. The daemon executes each job by sending `message` to the target
 Principal via `PrincipalManager::receive`, running as the Principal's owner.
 
+**Each entry is a user-scoped scheduled message to the Principal's owner root
+session** — equivalent to a deferred `peko send`. For tool-run schedules (e.g.
+asking a Principal to run a specific tool at a time), use the
+[`CronCreate`](#cron) **tool** from inside an agent turn instead. The two
+surfaces share one schedule store (`cron.json`) so agent cron entries also
+appear in `peko cron list`.
+
 ```bash
 peko cron <COMMAND>
 ```
@@ -359,7 +366,7 @@ peko cron <COMMAND>
 | `every` | Add a repeating interval job (ms) |
 | `add-idle` | Add a job that runs after the Principal is idle for N minutes |
 | `add-event` | Add a job that runs when a system event fires |
-| `list` | List jobs (optionally filtered by Principal) |
+| `list` | List jobs (optionally filtered by Principal) — shows each entry's `action` kind (`send` vs `spawn_tool`) |
 | `remove <ID>` | Remove a job by id |
 | `history <ID>` | Show run history for a job |
 
@@ -400,7 +407,7 @@ peko cron add-idle --principal my-principal \
   --minutes 5 \
   --message "What should I know since we last talked?"
 
-# List jobs for one Principal
+# List jobs for one Principal — `action` column shows `send` or `spawn_tool`
 peko cron list --principal my-principal
 
 # Remove a job

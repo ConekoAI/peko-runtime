@@ -1536,7 +1536,9 @@ mod tests {
             name: "Test Job".to_string(),
             schedule: crate::cron::ScheduleKind::Every { every_ms: 60000 },
             principal_name: "test-principal".to_string(),
-            message: "Hello cron".to_string(),
+            action: crate::cron::CronJobAction::Send {
+                message: "Hello cron".to_string(),
+            },
             delivery: crate::cron::DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -1626,7 +1628,9 @@ mod tests {
             name: "Test Job".to_string(),
             schedule: crate::cron::ScheduleKind::Every { every_ms: 60000 },
             principal_name: "test-principal".to_string(),
-            message: "Hello cron".to_string(),
+            action: crate::cron::CronJobAction::Send {
+                message: "Hello cron".to_string(),
+            },
             delivery: crate::cron::DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -1753,7 +1757,9 @@ mod tests {
                 name: "n".to_string(),
                 schedule: crate::cron::ScheduleKind::Every { every_ms: 1000 },
                 principal_name: "test-principal".to_string(),
-                message: "m".to_string(),
+                action: crate::cron::CronJobAction::Send {
+                    message: "m".to_string(),
+                },
                 delivery: crate::cron::DeliveryMode::None,
                 delete_after_run: false,
                 enabled: true,

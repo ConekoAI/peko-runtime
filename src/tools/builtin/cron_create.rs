@@ -3,9 +3,14 @@
 //! Delegates to the daemon via IPC; the daemon is the source of truth for
 //! cron persistence and execution. Jobs are always scoped to the current
 //! Principal (taken from the tool execution context).
+//!
+//! Supports two action kinds:
+//! - `prompt` shorthand — schedules an `Agent` tool run (a `SpawnTool`
+//!   job whose `tool_name="Agent"` and `params={ prompt }`).
+//! - explicit `tool` + `params` — schedules any tool run.
 
 use crate::tools::builtin::cron::{
-    build_job, register_job_via_daemon, resolve_delete_after_run, resolve_label, resolve_prompt,
+    build_spawn_tool_job, register_job_via_daemon, resolve_delete_after_run, resolve_label,
     resolve_schedule_kind,
 };
 use crate::tools::core::exec::ToolContext;
@@ -13,7 +18,7 @@ use crate::tools::core::traits::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// `CronCreate` tool — create scheduled jobs
 pub struct CronCreateTool;
@@ -32,10 +37,35 @@ impl Default for CronCreateTool {
 }
 
 /// `CronCreate` tool arguments
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CronCreateArgs {
-    /// Prompt/task/message the scheduled job should execute
-    pub prompt: String,
+    /// Prompt/task/message — required unless `tool` is provided.
+    /// When supplied (and no `tool`), it is shorthand for
+    /// `tool="Agent", params={ prompt }`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Tool name to invoke at fire time. When provided, the job is a
+    /// `SpawnTool` job calling this tool with `params`. When omitted
+    /// and `prompt` is non-empty, defaults to `"Agent"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// Tool-call parameters for `SpawnTool` jobs. Defaults to `{}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+    /// `SpawnTool`-only. Whether to post a steer message into the
+    /// principal's root inbox when the scheduled run completes
+    /// (default `false`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wake_on_completion: Option<bool>,
+    /// `SpawnTool`-only. Per-run timeout in seconds. Defaults to the
+    /// executor's `7200s` policy when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// Human-readable description surfaced in the steer message that
+    /// wakes the principal on completion. Falls back to the
+    /// `prompt`/`label`/`job.name` if absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Human-readable label for the job
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -95,7 +125,27 @@ impl Tool for CronCreateTool {
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "The task or message the scheduled job should execute"
+                    "description": "Task or message the scheduled job should execute. Shorthand for tool=\"Agent\", params={ prompt }. Required unless `tool` is provided."
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"Read\"). When provided, the job calls this tool with `params`."
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Tool-call parameters passed to `tool` at fire time. Defaults to {} when omitted."
+                },
+                "wake_on_completion": {
+                    "type": "boolean",
+                    "description": "SpawnTool-only: post a steer message into the principal's root inbox when the run completes. Defaults to false for cron-spawned runs."
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "description": "SpawnTool-only: per-run timeout in seconds. Defaults to the executor's 7200s policy."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Human-readable description surfaced in the wake-on-completion steer message. Falls back to the prompt or label."
                 },
                 "label": {
                     "type": "string",
@@ -143,8 +193,7 @@ impl Tool for CronCreateTool {
                     "default": false,
                     "description": "Whether the job persists across daemon restarts"
                 }
-            },
-            "required": ["prompt"]
+            }
         })
     }
 
@@ -170,19 +219,77 @@ impl Tool for CronCreateTool {
         let args: CronCreateArgs = serde_json::from_value(params.clone())
             .map_err(|e| anyhow::anyhow!("Invalid CronCreate arguments: {e}"))?;
 
-        let prompt = if !args.prompt.is_empty() {
-            args.prompt
-        } else if let Some(task) = args.task {
-            task
-        } else {
-            resolve_prompt(&params)?
-        };
+        let prompt = args
+            .prompt
+            .clone()
+            .or_else(|| args.task.clone())
+            .or_else(|| {
+                params
+                    .get("prompt")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            });
+
+        let tool = args.tool.clone().or_else(|| {
+            params
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+
+        let tool_params = args.params.clone().unwrap_or_else(|| {
+            if tool.is_some() {
+                serde_json::json!({})
+            } else {
+                serde_json::Value::Null
+            }
+        });
 
         let schedule = resolve_schedule_kind(&params)?;
         let delete_after_run = resolve_delete_after_run(&params);
         let label = resolve_label(&params);
 
-        let job = build_job(label, prompt, schedule, delete_after_run, principal_name)?;
+        let job = if let Some(tool_name) = tool {
+            // Explicit SpawnTool path.
+            let final_params = if prompt.is_some() && args.params.is_none() {
+                // When the caller omits `params` but supplies `prompt`,
+                // pass the prompt as a top-level `prompt` field —
+                // matches the `Agent` tool's contract.
+                let mut p = serde_json::Map::new();
+                if let Some(p_text) = &prompt {
+                    p.insert("prompt".to_string(), Value::String(p_text.clone()));
+                }
+                Value::Object(p)
+            } else {
+                tool_params
+            };
+            build_spawn_tool_job(
+                label,
+                tool_name,
+                final_params,
+                args.wake_on_completion,
+                args.timeout_secs,
+                args.description.or(prompt.clone()),
+                schedule,
+                delete_after_run,
+                principal_name,
+            )?
+        } else {
+            // Shorthand: prompt → SpawnTool{ tool="Agent", params={ prompt } }.
+            let prompt_text = prompt
+                .ok_or_else(|| anyhow::anyhow!("CronCreate requires either `prompt` or `tool`"))?;
+            build_spawn_tool_job(
+                label,
+                "Agent".to_string(),
+                serde_json::json!({ "prompt": prompt_text }),
+                None,
+                None,
+                Some(prompt_text),
+                schedule,
+                delete_after_run,
+                principal_name,
+            )?
+        };
         register_job_via_daemon(job).await
     }
 }
@@ -202,6 +309,15 @@ mod tests {
         let tool = CronCreateTool::new();
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
-        assert!(params.get("required").is_some());
+        // The schema documents `prompt` and `tool` as optional; callers
+        // must supply at least one of them, but the JSON Schema stays
+        // open so the agent can omit both and recover from a missing
+        // `task` alias.
+        assert!(params.get("required").is_none());
+        let props = params.get("properties").unwrap();
+        assert!(props.get("prompt").is_some());
+        assert!(props.get("tool").is_some());
+        assert!(props.get("wake_on_completion").is_some());
+        assert!(props.get("timeout_secs").is_some());
     }
 }

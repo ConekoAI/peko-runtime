@@ -7,13 +7,18 @@
 use crate::auth::caller::CallerContext;
 use crate::common::json_utils::json_subset;
 use crate::cron::events::SystemEvent;
-use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, IdleDetector};
+use crate::cron::{CronJob, CronJobAction, CronRun, CronScheduler, DeliveryMode, IdleDetector};
+use crate::extensions::framework::async_exec::executor::{
+    AsyncExecutor, AsyncTaskStatus, AsyncToolConfig,
+};
+use crate::extensions::framework::core::ExtensionCore;
 use crate::observability::Observability;
 use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
+use crate::tools::core::ToolResult;
 use anyhow::Result;
 use chrono::Utc;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -32,24 +37,44 @@ pub struct CronEngine {
     idle_detector: Arc<IdleDetector>,
     observability: Arc<Observability>,
     principal_manager: Option<Arc<PrincipalManager>>,
+    /// Cron-owned `AsyncExecutor`. Spawned with a `Weak` reference to
+    /// the daemon's global `ExtensionCore` so it can resolve tool
+    /// instances by name without keeping the core alive longer than the
+    /// daemon. Wired to the daemon's `InboxRegistry` so completion
+    /// events and steer messages land in the same inboxes the
+    /// in-flight `AgenticLoop` drains.
+    async_executor: Arc<AsyncExecutor>,
+    extension_core: Weak<ExtensionCore>,
     status: Arc<Mutex<CronStatus>>,
     data_dir: std::path::PathBuf,
 }
 
 impl CronEngine {
     /// Create a new cron engine.
+    ///
+    /// `async_executor` is the daemon-shared executor used to fire
+    /// `CronJobAction::SpawnTool` jobs. Pass a fresh `Arc<AsyncExecutor>`
+    /// (built with `AsyncExecutor::new().with_inbox_registry(...)`) when
+    /// no daemon-global executor is desired; the cron engine does not
+    /// share its executor with any agent's per-call executor today.
+    /// `extension_core` is held weakly so the cron engine never keeps
+    /// the daemon's core alive past its natural lifetime.
     pub fn new(
         scheduler: Arc<CronScheduler>,
         idle_detector: Arc<IdleDetector>,
         observability: Arc<Observability>,
         data_dir: std::path::PathBuf,
         principal_manager: Option<Arc<PrincipalManager>>,
+        async_executor: Arc<AsyncExecutor>,
+        extension_core: Weak<ExtensionCore>,
     ) -> Self {
         Self {
             scheduler,
             idle_detector,
             observability,
             principal_manager,
+            async_executor,
+            extension_core,
             status: Arc::new(Mutex::new(CronStatus::default())),
             data_dir,
         }
@@ -58,6 +83,12 @@ impl CronEngine {
     /// Attach the PrincipalManager used to execute jobs.
     pub fn set_principal_manager(&mut self, pm: Arc<PrincipalManager>) {
         self.principal_manager = Some(pm);
+    }
+
+    /// Borrow the cron engine's `AsyncExecutor`.
+    #[must_use]
+    pub fn async_executor(&self) -> &Arc<AsyncExecutor> {
+        &self.async_executor
     }
 
     /// Snapshot of current cron status.
@@ -205,7 +236,10 @@ impl CronEngine {
         };
         self.scheduler.record_run(&run)?;
 
-        let result = self.run_job_with_principal_manager(&job).await;
+        let result = match &job.action {
+            CronJobAction::Send { .. } => self.run_send_job(&job).await,
+            CronJobAction::SpawnTool { .. } => self.run_spawn_tool_job(&job).await,
+        };
 
         let (status, output, error) = match result {
             Ok((s, o)) => (s, o, None),
@@ -269,13 +303,13 @@ impl CronEngine {
     }
 
     // ------------------------------------------------------------------
-    // Principal execution
+    // Principal execution — Send path (CLI cron)
     // ------------------------------------------------------------------
 
-    async fn run_job_with_principal_manager(
-        &self,
-        job: &CronJob,
-    ) -> Result<(String, Option<String>)> {
+    /// Run a [`CronJobAction::Send`] job by delivering its message to
+    /// the Principal's owner root session. Equivalent to a deferred
+    /// `peko send` from the daemon.
+    async fn run_send_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
                 "failed".to_string(),
@@ -299,7 +333,7 @@ impl CronEngine {
         };
 
         match pm
-            .receive(principal.id.clone(), peer, job.message.clone(), channel)
+            .receive(principal.id.clone(), peer, job.task_description(), channel)
             .await
         {
             Ok(response) => {
@@ -316,8 +350,173 @@ impl CronEngine {
     }
 
     // ------------------------------------------------------------------
+    // Async execution — SpawnTool path (agent cron)
+    // ------------------------------------------------------------------
+
+    /// Run a [`CronJobAction::SpawnTool`] job by handing it to the
+    /// cron engine's `AsyncExecutor`. The executor:
+    /// 1. resolves the tool instance via the daemon's `ExtensionCore`,
+    /// 2. records an `AsyncTask` entry attributed to the principal's
+    ///    root session (so `AsyncOutput`/`AsyncStatus`/`AsyncStop`
+    ///    remain scoped to that root), and
+    /// 3. on completion, posts a `SteeringMessage` into the principal's
+    ///    root inbox when `wake_on_completion=true`.
+    ///
+    /// Returns `("running", Some(task_id))` immediately — the actual
+    /// tool execution is async. The daemon's janitor loop reconciles
+    /// the eventual outcome against the executor's registry to update
+    /// `last_status` (Phase 4).
+    async fn run_spawn_tool_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
+        let CronJobAction::SpawnTool {
+            tool_name,
+            tool_params,
+            wake_on_completion,
+            timeout_secs,
+            ..
+        } = &job.action
+        else {
+            // Defensive: the dispatch in `execute_job` only routes
+            // SpawnTool actions here. Anything else is a bug.
+            return Ok((
+                "failed".to_string(),
+                Some("run_spawn_tool_job called with non-SpawnTool action".to_string()),
+            ));
+        };
+
+        let core = match self.extension_core.upgrade() {
+            Some(c) => c,
+            None => {
+                return Ok((
+                    "failed".to_string(),
+                    Some("ExtensionCore dropped; cannot resolve tool".to_string()),
+                ));
+            }
+        };
+
+        let tool = match core.get_tool(tool_name).await {
+            Some(t) => t,
+            None => {
+                return Ok((
+                    "failed".to_string(),
+                    Some(format!("tool '{tool_name}' not found")),
+                ));
+            }
+        };
+
+        // The executor's inbox key needs to be the principal's root
+        // session key so completion events and steer messages reach the
+        // principal's owner session — same shape as `peko send`. The
+        // owner subject is the same one `run_send_job` uses.
+        let Some(pm) = self.principal_manager.as_ref() else {
+            return Ok((
+                "failed".to_string(),
+                Some("PrincipalManager not available".to_string()),
+            ));
+        };
+        let principal = match pm.get_by_name(&job.principal_name).await {
+            Some(p) => p,
+            None => {
+                return Ok((
+                    "failed".to_string(),
+                    Some(format!("Principal '{}' not loaded", job.principal_name)),
+                ));
+            }
+        };
+        let owner = {
+            let config = principal.config.read().await;
+            config.owner.clone()
+        };
+        let principal_root_session_key = format!("root:{owner}");
+
+        let wake = wake_on_completion.unwrap_or(false);
+        let timeout = timeout_secs.or(Some(7200));
+
+        let config = AsyncToolConfig {
+            timeout_secs: timeout,
+            wake_on_completion: wake,
+            principal_root_session_key: Some(principal_root_session_key.clone()),
+            label: Some(job.name.clone()),
+            ..Default::default()
+        };
+
+        let task_id = format!("cron:{}:{}", job.id, uuid::Uuid::new_v4());
+        let tool_params_for_closure = tool_params.clone();
+        let tool_name_owned = tool_name.clone();
+        let executor = self.async_executor.clone();
+
+        let receipt = executor
+            .execute(
+                task_id.clone(),
+                tool_name_owned,
+                tool_params.clone(),
+                principal_root_session_key,
+                config,
+                move || async move { tool.execute(tool_params_for_closure).await },
+            )
+            .await?;
+
+        // The fire itself completed synchronously (the tool runs in the
+        // background). Return immediately so the cron engine records
+        // the run with the spawn receipt.
+        Ok(("running".to_string(), Some(receipt.task_id)))
+    }
+
+    // ------------------------------------------------------------------
     // Delivery
     // ------------------------------------------------------------------
+
+    /// Reconcile `CronRun` rows still marked `"running"` against the
+    /// executor's task registry. Each row's `output` carries the
+    /// async `task_id` we wrote at fire time; we look it up and, when
+    /// terminal, finalize the row with the executor's outcome
+    /// (`success`/`failed`/`timed_out`/`cancelled`) and propagate
+    /// `last_status` onto the owning `CronJob`.
+    pub async fn reconcile_running_runs(&self) -> Result<usize> {
+        let running = self.scheduler.list_running_runs()?;
+        if running.is_empty() {
+            return Ok(0);
+        }
+
+        let mut finalized = 0usize;
+        for run in running {
+            let Some(task_id) = run.output.clone() else {
+                // Running row without a task id (e.g. a Send job left
+                // in this state by an older code path). Leave it.
+                continue;
+            };
+
+            let status = match self.async_executor.check_status(&task_id).await {
+                Some(s) => s,
+                // Registry no longer holds this task. Treat it as a
+                // successful no-op so the cron row lands somewhere
+                // other than "running" forever.
+                None => AsyncTaskStatus::Completed {
+                    result: ToolResult::success(serde_json::json!({
+                        "note": "task disappeared from registry"
+                    })),
+                },
+            };
+
+            if !status.is_terminal() {
+                continue;
+            }
+
+            let (cron_status, output, error) = map_async_status(status);
+            if self
+                .scheduler
+                .finalize_run(&run.id, &cron_status, output.clone(), error.clone())?
+            {
+                finalized += 1;
+                self.scheduler
+                    .set_job_last_status(&run.job_id, &cron_status)?;
+                info!(
+                    "🔁 Reconciled cron run {} (job={}) → {}",
+                    run.id, run.job_id, cron_status
+                );
+            }
+        }
+        Ok(finalized)
+    }
 
     async fn handle_delivery(&self, job: &CronJob, status: &str) -> Result<()> {
         match &job.delivery {
@@ -355,7 +554,7 @@ impl CronEngine {
             "job_id": job.id,
             "job_name": job.name,
             "status": status,
-            "message": job.message,
+            "message": job.task_description(),
             "channel": channel,
             "to": to,
             "timestamp": Utc::now().to_rfc3339(),
@@ -386,6 +585,38 @@ impl CronEngine {
     }
 }
 
+/// Translate an `AsyncTaskStatus` into the wire string the cron
+/// `CronRun.status` field has historically used.
+///
+/// `Completed` is collapsed to `"success"` so existing users (the CLI
+/// renderer, history grep) keep matching what the `Send` path emitted.
+/// Failures / timeouts / cancellations keep the executor's names so an
+/// operator can correlate cron history with `AsyncOutput`.
+fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<String>) {
+    match status {
+        AsyncTaskStatus::Completed { result } => {
+            let rendered = result
+                .data
+                .as_ref()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<no result data>".to_string());
+            ("success".to_string(), Some(rendered), None)
+        }
+        AsyncTaskStatus::Failed { error } => ("failed".to_string(), None, Some(error)),
+        AsyncTaskStatus::Cancelled => (
+            "cancelled".to_string(),
+            None,
+            Some("cancelled by user".to_string()),
+        ),
+        AsyncTaskStatus::TimedOut { error } => ("timed_out".to_string(), None, Some(error)),
+        other => (
+            other.as_str().to_string(),
+            None,
+            Some("run did not reach terminal state".to_string()),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,7 +641,15 @@ mod tests {
         let scheduler = Arc::new(CronScheduler::new(tmp.path().join("cron.json")).unwrap());
         let idle = Arc::new(IdleDetector::new());
         let obs = Arc::new(Observability::new("daemon"));
-        CronEngine::new(scheduler, idle, obs, tmp.path().join("data"), None)
+        CronEngine::new(
+            scheduler,
+            idle,
+            obs,
+            tmp.path().join("data"),
+            None,
+            Arc::new(AsyncExecutor::new()),
+            std::sync::Weak::new(),
+        )
     }
 
     async fn setup_principal_manager(tmp: &TempDir) -> Arc<PrincipalManager> {
@@ -529,6 +768,8 @@ mod tests {
             obs,
             tmp.path().join("data"),
             Some(manager.clone()),
+            Arc::new(AsyncExecutor::new()),
+            std::sync::Weak::new(),
         );
 
         let job = CronJob {
@@ -536,7 +777,9 @@ mod tests {
             name: "test-job".to_string(),
             principal_name: "crony".to_string(),
             schedule: crate::cron::ScheduleKind::Every { every_ms: 60_000 },
-            message: "Hello from cron".to_string(),
+            action: CronJobAction::Send {
+                message: "Hello from cron".to_string(),
+            },
             delivery: DeliveryMode::None,
             delete_after_run: false,
             enabled: true,
@@ -565,5 +808,180 @@ mod tests {
 
         // Avoid dropping the principal early; it is not needed after this.
         drop(principal);
+    }
+
+    /// Direct unit test for the cron reconciler: a synthetic
+    /// "running" CronRun whose `output` matches a real entry in the
+    /// AsyncTaskRegistry with a terminal status must be finalized
+    /// and the parent job's `last_status` updated.
+    #[tokio::test]
+    async fn test_reconcile_running_runs_finalizes_known_task() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = Arc::new(CronScheduler::new(tmp.path().join("cron.json")).unwrap());
+
+        // Seed a SpawnTool job and a corresponding "running" run row.
+        let job = CronJob {
+            id: "job-recon".to_string(),
+            name: "recon-job".to_string(),
+            principal_name: "crony".to_string(),
+            schedule: crate::cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::SpawnTool {
+                tool_name: "Agent".to_string(),
+                tool_params: serde_json::json!({"prompt": "ping"}),
+                wake_on_completion: Some(false),
+                timeout_secs: Some(7200),
+                description: Some("ping description".to_string()),
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() + Duration::minutes(5),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        let run = CronRun {
+            id: "run-recon".to_string(),
+            job_id: job.id.clone(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: "running".to_string(),
+            output: Some("shell:abc".to_string()),
+            error: None,
+        };
+        scheduler.record_run(&run).unwrap();
+
+        // Pre-mark `last_status = "running"` so we can see the
+        // reconciler update it.
+        scheduler.set_job_last_status(&job.id, "running").unwrap();
+
+        // Build a CronEngine with an executor whose registry holds a
+        // terminal entry for `shell:abc`.
+        let async_executor = Arc::new(AsyncExecutor::new());
+        let mut entry =
+            crate::extensions::framework::async_exec::executor::registry::AsyncTaskEntry::new(
+                "shell:abc".to_string(),
+                "Bash".to_string(),
+                serde_json::json!({"command": "echo done"}),
+                "session_worker_1".to_string(),
+                AsyncToolConfig::default(),
+            );
+        entry.set_result(serde_json::json!("done"));
+        async_executor.registry().write().await.register(entry);
+        // Mark the entry as Completed so reconcile treats it as terminal.
+        async_executor.registry().write().await.update_status(
+            &"shell:abc".to_string(),
+            AsyncTaskStatus::Completed {
+                result: ToolResult::success(serde_json::json!("done")),
+            },
+        );
+
+        let engine = CronEngine::new(
+            scheduler.clone(),
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            tmp.path().join("data"),
+            None,
+            async_executor,
+            std::sync::Weak::new(),
+        );
+
+        let n = engine.reconcile_running_runs().await.unwrap();
+        assert_eq!(n, 1, "expected exactly one finalized run");
+
+        let updated = scheduler.get_run_history(&job.id, 10).unwrap();
+        let run = updated
+            .iter()
+            .find(|r| r.id == "run-recon")
+            .expect("run row should still be present");
+        assert_eq!(run.status, "success");
+        assert!(run.finished_at.is_some());
+        // The output is the JSON-serialized form of the value the executor
+        // produced — a JSON string `"done"` serializes to `\"done\"`.
+        let output = run.output.as_deref().unwrap_or_default();
+        assert!(
+            output.contains("done"),
+            "expected output to mention 'done', got {output:?}"
+        );
+
+        // And the job's last_status is updated without bumping run_count
+        // (run_count remains 0 because we used the helper, not
+        // update_job_after_run).
+        let updated_job = scheduler.get_job(&job.id).unwrap().unwrap();
+        assert_eq!(updated_job.last_status.as_deref(), Some("success"));
+        assert_eq!(updated_job.run_count, 0);
+    }
+
+    /// When the AsyncTaskRegistry no longer holds the task (e.g. the
+    /// janitor already cleaned it up), the reconciler still finalizes
+    /// the cron row as `success` so it does not stay marked "running"
+    /// forever.
+    #[tokio::test]
+    async fn test_reconcile_finalizes_when_task_disappeared() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = Arc::new(CronScheduler::new(tmp.path().join("cron.json")).unwrap());
+
+        let job = CronJob {
+            id: "job-vanished".to_string(),
+            name: "vanished".to_string(),
+            principal_name: "crony".to_string(),
+            schedule: crate::cron::ScheduleKind::Every { every_ms: 60_000 },
+            action: CronJobAction::SpawnTool {
+                tool_name: "Bash".to_string(),
+                tool_params: serde_json::json!({}),
+                wake_on_completion: Some(false),
+                timeout_secs: Some(7200),
+                description: None,
+            },
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() + Duration::minutes(5),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        // Two rows: one with a real task id we will orphan, one with
+        // a task id that no longer exists in the registry. Both must
+        // become terminal in one reconcile pass.
+        scheduler
+            .record_run(&CronRun {
+                id: "run-vanish".to_string(),
+                job_id: job.id.clone(),
+                started_at: Utc::now(),
+                finished_at: None,
+                status: "running".to_string(),
+                output: Some("ghost:gone".to_string()),
+                error: None,
+            })
+            .unwrap();
+
+        let async_executor = Arc::new(AsyncExecutor::new());
+        let engine = CronEngine::new(
+            scheduler.clone(),
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            tmp.path().join("data"),
+            None,
+            async_executor,
+            std::sync::Weak::new(),
+        );
+
+        let n = engine.reconcile_running_runs().await.unwrap();
+        assert_eq!(n, 1);
+
+        let updated = scheduler.get_run_history(&job.id, 10).unwrap();
+        let run = updated
+            .iter()
+            .find(|r| r.id == "run-vanish")
+            .expect("run should still be present");
+        assert_eq!(run.status, "success", "missing tasks finalize as success");
+        assert!(run.finished_at.is_some());
     }
 }

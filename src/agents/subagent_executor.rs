@@ -349,6 +349,8 @@ impl SubagentExecutor {
             timeout_millis: None,
             cleanup_after_delivery: config.cleanup == SpawnCleanupPolicy::Delete,
             label: config.label.clone(),
+            wake_on_completion: true,
+            principal_root_session_key: None,
         };
 
         // Clone values for the execution closure
