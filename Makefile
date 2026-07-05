@@ -70,7 +70,7 @@ help:
 	@echo "    test-cli-send / test-cli-session / test-cli-basics / test-cli-cron"
 	@echo "    test-cli-subagent / test-cli-tools / test-cli-agent-signature"
 	@echo "    test-cli-extensions"
-	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY / KIMI_API_KEY)"
+	@echo "    test-cli-providers (real-LLM tier — needs MINIMAX_API_KEY; kimi skipped while KIMI_API_KEY is suspended)"
 	@echo "    test-scenarios-s1 (Phase D — local agent + ext lifecycle, mock-LLM)"
 	@echo "    test-scenarios-s2 / s4 (Phase D — registry/tunnel scenarios, mock-LLM)"
 	@echo "    test-mock-llm-sequence"
@@ -123,12 +123,18 @@ test-integration: docker-up
 # ── Tier 2: nightly + [llm] commit tag — adds real-LLM tests ─────────────
 # MOCK_LLM_URL is unset so the dual-mode rule at tunnel_e2e.rs:63-76
 # falls through to the real provider.
+#
+# KIMI_API_KEY is stripped (env -u) because the Kimi API key is
+# temporarily suspended at the provider. Removing the `-u KIMI_API_KEY`
+# clauses here and in `test-cli-providers` re-enables the kimi smoke
+# test once the key is resumed — the test's existing early-return on
+# an unset KIMI_API_KEY will then promote it back to a live run.
 
 test-integration-llm: docker-up
 	@if [ -z "$$MINIMAX_API_KEY" ]; then \
 	    echo "ERROR: MINIMAX_API_KEY must be set for test-integration-llm"; exit 1; \
 	fi
-	@env -u MOCK_LLM_URL \
+	@env -u MOCK_LLM_URL -u KIMI_API_KEY \
 	    PEKOHUB_URL=$(PEKOHUB_URL) \
 	    cargo test $(CARGO_TEST_FLAGS) -- --include-ignored
 
@@ -233,9 +239,15 @@ test-mock-llm-sequence: docker-up
 # dispatch, with `MINIMAX_API_KEY` and `KIMI_API_KEY` passed as
 # `secrets.*` env. See docs/integration/TESTING.md §7 for the
 # providers migration context.
+#
+# KIMI_API_KEY is stripped (env -u) because the Kimi API key is
+# temporarily suspended. The kimi smoke test's existing early-return
+# on an unset KIMI_API_KEY turns into a clean skip in CI logs.
+# To re-enable once the key is back: drop the `-u KIMI_API_KEY` and
+# restore `KIMI_API_KEY=$(KIMI_API_KEY)` on the next line.
 test-cli-providers: docker-up
-	@env -u MOCK_LLM_URL PEKOHUB_URL=$(PEKOHUB_URL) \
-	    MINIMAX_API_KEY=$(MINIMAX_API_KEY) KIMI_API_KEY=$(KIMI_API_KEY) \
+	@env -u MOCK_LLM_URL -u KIMI_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) \
+	    MINIMAX_API_KEY=$(MINIMAX_API_KEY) \
 	    cargo test --test cli_providers -- --include-ignored
 
 # ── Phase D — user-journey scenarios (mock-LLM tier) ──────────────────────
