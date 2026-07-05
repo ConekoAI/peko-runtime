@@ -270,6 +270,35 @@ impl DaemonClient {
         }
     }
 
+    /// Read a peer's conversation thread with a Principal (peko log).
+    ///
+    /// This is the read complement to `principal_send`. Pass `None` for
+    /// `peer` to read the principal's owner-root view; pass a
+    /// `Subject::User`/`Subject::Principal` to read that peer's thread
+    /// (caller must equal peer or be the principal's owner — the daemon
+    /// enforces this).
+    pub async fn principal_log(
+        &self,
+        principal: impl Into<String>,
+        peer: Option<crate::auth::Subject>,
+        limit: Option<usize>,
+        since_secs: Option<u64>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalLog {
+            request_id,
+            name: principal.into(),
+            peer,
+            limit,
+            since_secs,
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("PrincipalLog stream closed unexpectedly"),
+        }
+    }
+
     // ------------------------------------------------------------------
     // Extension runtime lifecycle (ADR-026)
     // ------------------------------------------------------------------
