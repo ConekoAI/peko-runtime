@@ -90,6 +90,28 @@ impl Drop for StreamingRunGuard {
     }
 }
 
+/// Selects between the two IPC variants of `PrincipalSend`.
+///
+/// Both variants go through the same root-router streaming path
+/// (`run_principal_send`) and the same `streaming_runs` registry, so
+/// the only difference at the wire level is the success-packet shape:
+///
+/// - `OneShot` emits `PrincipalSent { content }` then `Done`. Used by
+///   the `RequestPacket::PrincipalSend` handler (peko-desktop's
+///   `usePrincipalSend` with no `onChunk`).
+/// - `Streaming` emits zero-or-more `PrincipalSentChunk { delta }`
+///   packets followed by `PrincipalSentDone { content }` and `Done`.
+///   Used by the `RequestPacket::PrincipalSendStream` handler.
+///
+/// Both variants are interrupt-capable: the cancel token is registered
+/// in `streaming_runs` regardless of which variant the caller chose,
+/// so `peko interrupt <id>` works uniformly.
+#[derive(Copy, Clone)]
+enum PrincipalSendResponseKind {
+    OneShot,
+    Streaming,
+}
+
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
 #[derive(Clone)]
 pub enum ServerSocket {
@@ -2175,64 +2197,31 @@ impl IpcServer {
             }
 
             // ── Principal operations ─────────────────────────────────────────
+            // Non-streaming `PrincipalSend` — peko-desktop's
+            // `usePrincipalSend` (no `onChunk`) uses this variant.
+            // Both this and the `PrincipalSendStream` variant are now
+            // handled by the shared `run_principal_send` helper, which
+            // routes the call through the streaming machinery, registers
+            // a `CancellationToken` in `streaming_runs`, and picks the
+            // wire-shape of the success packet based on
+            // `PrincipalSendResponseKind`. Net effect: a soft-interrupt
+            // issued via `peko interrupt <id>` works for both variants.
             RequestPacket::PrincipalSend {
                 request_id,
                 name,
                 message,
                 user,
             } => {
-                let manager = state.principal_manager().clone();
-                let principal = match Self::load_principal(&state, &name).await {
-                    Some(p) => p,
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal '{}' not found", name),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-
-                let peer = crate::auth::Subject::User(user);
-                let channel = ChannelContext {
-                    kind: ChannelKind::Cli,
-                    streaming: false,
-                };
-
-                match manager
-                    .receive(principal.id.clone(), peer, message, channel)
-                    .await
-                {
-                    Ok(response) => {
-                        let sent = ResponsePacket::PrincipalSent {
-                            request_id,
-                            content: response.content,
-                        };
-                        Self::send_sink(sink, sent).await?;
-                        let done = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        Self::send_sink(sink, done).await?;
-                        state.record_principal_activity(&name).await;
-                    }
-                    Err(e) => {
-                        let message = e.to_string();
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: message.clone(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        let done = ResponsePacket::Done {
-                            request_id,
-                            success: false,
-                            error: Some(message),
-                        };
-                        Self::send_sink(sink, done).await?;
-                    }
-                }
+                Self::run_principal_send(
+                    request_id,
+                    name,
+                    message,
+                    user,
+                    state,
+                    sink,
+                    PrincipalSendResponseKind::OneShot,
+                )
+                .await?;
             }
 
             // Streaming variant of `PrincipalSend`. The root agent
@@ -2251,176 +2240,26 @@ impl IpcServer {
             // `PrincipalSentDone` payload. This keeps the callback
             // `Send + Sync + 'static` (it only holds an `mpsc::Sender`)
             // and avoids the `&dyn ResponseSink` lifetime problem.
+            //
+            // Both IPC variants of `PrincipalSend` go through
+            // `run_principal_send` so the cancel-token registry,
+            // build_router_context, and root-agent spawn are shared.
             RequestPacket::PrincipalSendStream {
                 request_id,
                 name,
                 message,
                 user,
             } => {
-                let _manager = state.principal_manager().clone();
-                let principal = match Self::load_principal(&state, &name).await {
-                    Some(p) => p,
-                    None => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Principal '{}' not found", name),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        return Ok(());
-                    }
-                };
-
-                let peer = crate::auth::Subject::User(user);
-                let channel = ChannelContext {
-                    kind: ChannelKind::Cli,
-                    streaming: true,
-                };
-
-                // Construct the RouterContext the root router expects.
-                // Audit H1: the streaming path now uses the same
-                // `PrincipalManager::build_router_context` helper as
-                // the one-shot `PrincipalManager::receive` path, so
-                // permission checks, session recall, and per-message
-                // configuration can't drift between the two.
-                let router_ctx = match state
-                    .principal_manager()
-                    .build_router_context(&principal, peer.clone(), message.clone(), channel)
-                    .await
-                {
-                    Ok(ctx) => ctx,
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Failed to build router context: {e}"),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        let done = ResponsePacket::Done {
-                            request_id,
-                            success: false,
-                            error: Some(e.to_string()),
-                        };
-                        Self::send_sink(sink, done).await?;
-                        return Ok(());
-                    }
-                };
-
-                // Bounded channel for streaming events. Capacity
-                // 256; a slow client back-pressures the root agent
-                // (events are dropped on `try_send` failure).
-                let (event_tx, mut event_rx) =
-                    tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(256);
-
-                // Oneshot for the final RouteDecision.
-                let (result_tx, result_rx) =
-                    tokio::sync::oneshot::channel::<Result<RouteDecision, RouterError>>();
-
-                let on_event = move |event: crate::engine::AgenticEvent| {
-                    let _ = event_tx.try_send(event);
-                };
-
-                // Soft-interrupt plumbing. The cancel token is shared
-                // between the spawned agentic loop (observed at
-                // iteration boundaries) and the in-flight run registry
-                // (the `PrincipalSendControl` IPC handler flips it).
-                // The Drop guard removes the registry entry on every
-                // return path, including the early sink-error return
-                // below and panics.
-                let cancel = tokio_util::sync::CancellationToken::new();
-                let interrupt_acked = Arc::new(tokio::sync::Notify::new());
-                let run_handle = StreamingRunHandle {
-                    principal_name: name.clone(),
-                    peer: peer.clone(),
-                    cancel: cancel.clone(),
-                    interrupt_acked: Arc::clone(&interrupt_acked),
-                };
-                {
-                    let runs_registry = state.streaming_runs();
-                    let mut runs = runs_registry.lock().unwrap();
-                    runs.insert(request_id, run_handle);
-                }
-                let _run_guard = StreamingRunGuard {
-                    registry: state.streaming_runs(),
+                Self::run_principal_send(
                     request_id,
-                };
-
-                // Run the root agent in a background task. When the
-                // task completes, the event_tx is dropped, closing
-                // the channel and signalling the handler to flush.
-                let router = Arc::clone(&principal.router);
-                let root_agent_handle = tokio::spawn(async move {
-                    let result = router
-                        .route_streaming(router_ctx, Box::new(on_event), Some(cancel))
-                        .await;
-                    let _ = result_tx.send(result);
-                });
-
-                // Drain the channel into `PrincipalSentChunk` packets
-                // until the root agent task finishes (channel closes).
-                while let Some(event) = event_rx.recv().await {
-                    let delta = match event {
-                        crate::engine::AgenticEvent::AssistantDelta { text, .. } => text,
-                        crate::engine::AgenticEvent::AssistantText { text, .. } => text,
-                        _ => continue,
-                    };
-                    let packet = ResponsePacket::PrincipalSentChunk { request_id, delta };
-                    if let Err(e) = Self::send_sink(sink, packet).await {
-                        tracing::warn!("failed to send PrincipalSentChunk: {e}; aborting stream");
-                        // Drop the root agent task — it will be
-                        // cancelled when the handler returns.
-                        root_agent_handle.abort();
-                        let done = ResponsePacket::Done {
-                            request_id,
-                            success: false,
-                            error: Some(format!("sink write failed: {e}")),
-                        };
-                        Self::send_sink(sink, done).await?;
-                        return Ok(());
-                    }
-                }
-
-                // The channel closed because the root agent task
-                // dropped `event_tx`. Await the result.
-                let route_result = match result_rx.await {
-                    Ok(r) => r,
-                    Err(_) => Err(RouterError::AgentFailed(
-                        "root-agent task died before producing a result".into(),
-                    )),
-                };
-                let _ = root_agent_handle.await;
-
-                match route_result {
-                    Ok(decision) => {
-                        let content = match decision {
-                            RouteDecision::Respond { response } => response,
-                        };
-                        let done_packet = ResponsePacket::PrincipalSentDone {
-                            request_id,
-                            content,
-                        };
-                        Self::send_sink(sink, done_packet).await?;
-                        let done = ResponsePacket::Done {
-                            request_id,
-                            success: true,
-                            error: None,
-                        };
-                        Self::send_sink(sink, done).await?;
-                        state.record_principal_activity(&name).await;
-                    }
-                    Err(e) => {
-                        let message = e.to_string();
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: message.clone(),
-                        };
-                        Self::send_sink(sink, response).await?;
-                        let done = ResponsePacket::Done {
-                            request_id,
-                            success: false,
-                            error: Some(message),
-                        };
-                        Self::send_sink(sink, done).await?;
-                    }
-                }
+                    name,
+                    message,
+                    user,
+                    state,
+                    sink,
+                    PrincipalSendResponseKind::Streaming,
+                )
+                .await?;
             }
 
             // ─── peko log ────────────────────────────────────────────────
@@ -3663,6 +3502,219 @@ impl IpcServer {
         let bytes = packet.to_bytes()?;
         trace!("Sending response: {:?} ({} bytes)", packet, bytes.len());
         sink.send_bytes(&bytes).await?;
+        Ok(())
+    }
+
+    /// Shared body for `RequestPacket::PrincipalSend` and
+    /// `RequestPacket::PrincipalSendStream`. Both IPC variants run the
+    /// root agent via the streaming machinery (`router.route_streaming`)
+    /// and register a `CancellationToken` in `streaming_runs`, so the
+    /// `PrincipalSendControl` IPC works uniformly regardless of which
+    /// variant the caller chose. The only difference at the wire level
+    /// is the success packet — `PrincipalSent` for `OneShot` and
+    /// `PrincipalSentDone` for `Streaming` — selected by
+    /// `response_kind`.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_principal_send(
+        request_id: u64,
+        name: String,
+        message: String,
+        user: String,
+        state: AppState,
+        sink: &dyn ResponseSink,
+        response_kind: PrincipalSendResponseKind,
+    ) -> anyhow::Result<()> {
+        // Look up the principal first — short-circuit with a clean
+        // Error packet and Done so the client doesn't hang waiting on
+        // a never-arriving response.
+        let principal = match Self::load_principal(&state, &name).await {
+            Some(p) => p,
+            None => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("Principal '{}' not found", name),
+                };
+                Self::send_sink(sink, response).await?;
+                let done = ResponsePacket::Done {
+                    request_id,
+                    success: false,
+                    error: Some(format!("Principal '{name}' not found")),
+                };
+                Self::send_sink(sink, done).await?;
+                return Ok(());
+            }
+        };
+
+        let peer = crate::auth::Subject::User(user);
+        let channel = ChannelContext {
+            kind: ChannelKind::Cli,
+            // The channel flag is informational — both variants are
+            // routed through the streaming machinery and the
+            // streaming_runs registry now, so a `OneShot` request
+            // still has cancel capability.
+            streaming: matches!(response_kind, PrincipalSendResponseKind::Streaming),
+        };
+
+        // Construct the RouterContext the root router expects.
+        // Audit H1: the streaming path now uses the same
+        // `PrincipalManager::build_router_context` helper as the
+        // legacy one-shot `PrincipalManager::receive` path (which
+        // is no longer called from this handler), so permission
+        // checks, session recall, and per-message configuration
+        // can't drift between the two variants.
+        let router_ctx = match state
+            .principal_manager()
+            .build_router_context(&principal, peer.clone(), message.clone(), channel)
+            .await
+        {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: format!("Failed to build router context: {e}"),
+                };
+                Self::send_sink(sink, response).await?;
+                let done = ResponsePacket::Done {
+                    request_id,
+                    success: false,
+                    error: Some(e.to_string()),
+                };
+                Self::send_sink(sink, done).await?;
+                return Ok(());
+            }
+        };
+
+        // Bounded channel for streaming events. Capacity 256; a slow
+        // client back-pressures the root agent (events are dropped on
+        // `try_send` failure). Note: for the `OneShot` variant we
+        // still drain the channel into a temporary buffer — the
+        // `Streaming` branch emits the chunks, the `OneShot` branch
+        // discards them because the client expects a single
+        // `PrincipalSent { content }` at the end.
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(256);
+
+        // Oneshot for the final RouteDecision.
+        let (result_tx, result_rx) =
+            tokio::sync::oneshot::channel::<Result<RouteDecision, RouterError>>();
+
+        let on_event = move |event: crate::engine::AgenticEvent| {
+            let _ = event_tx.try_send(event);
+        };
+
+        // Soft-interrupt plumbing. The cancel token is shared
+        // between the spawned agentic loop (observed at iteration
+        // boundaries) and the in-flight run registry (the
+        // `PrincipalSendControl` IPC handler flips it). The Drop
+        // guard removes the registry entry on every return path,
+        // including the early sink-error return below and panics.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let interrupt_acked = Arc::new(tokio::sync::Notify::new());
+        let run_handle = StreamingRunHandle {
+            principal_name: name.clone(),
+            peer: peer.clone(),
+            cancel: cancel.clone(),
+            interrupt_acked: Arc::clone(&interrupt_acked),
+        };
+        {
+            let runs_registry = state.streaming_runs();
+            let mut runs = runs_registry.lock().unwrap();
+            runs.insert(request_id, run_handle);
+        }
+        let _run_guard = StreamingRunGuard {
+            registry: state.streaming_runs(),
+            request_id,
+        };
+
+        // Run the root agent in a background task. When the task
+        // completes, the event_tx is dropped, closing the channel
+        // and signalling the handler to flush.
+        let router = Arc::clone(&principal.router);
+        let root_agent_handle = tokio::spawn(async move {
+            let result = router
+                .route_streaming(router_ctx, Box::new(on_event), Some(cancel))
+                .await;
+            let _ = result_tx.send(result);
+        });
+
+        // Drain the channel. For `Streaming` we forward each
+        // delta to the client; for `OneShot` we discard the events
+        // and rely on the final `PrincipalSent { content }` to
+        // carry the answer. Either way, a sink-write error aborts
+        // the root agent task and returns early.
+        while let Some(event) = event_rx.recv().await {
+            let delta = match event {
+                crate::engine::AgenticEvent::AssistantDelta { text, .. } => text,
+                crate::engine::AgenticEvent::AssistantText { text, .. } => text,
+                _ => continue,
+            };
+            if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
+                let packet = ResponsePacket::PrincipalSentChunk { request_id, delta };
+                if let Err(e) = Self::send_sink(sink, packet).await {
+                    tracing::warn!("failed to send PrincipalSentChunk: {e}; aborting stream");
+                    root_agent_handle.abort();
+                    let done = ResponsePacket::Done {
+                        request_id,
+                        success: false,
+                        error: Some(format!("sink write failed: {e}")),
+                    };
+                    Self::send_sink(sink, done).await?;
+                    return Ok(());
+                }
+            }
+            // For OneShot we drop `delta` — the client expects one
+            // final packet with the full answer, not deltas.
+        }
+
+        // The channel closed because the root agent task dropped
+        // `event_tx`. Await the result.
+        let route_result = match result_rx.await {
+            Ok(r) => r,
+            Err(_) => Err(RouterError::AgentFailed(
+                "root-agent task died before producing a result".into(),
+            )),
+        };
+        let _ = root_agent_handle.await;
+
+        match route_result {
+            Ok(decision) => {
+                let content = match decision {
+                    RouteDecision::Respond { response } => response,
+                };
+                let final_packet = match response_kind {
+                    PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
+                        request_id,
+                        content,
+                    },
+                    PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
+                        request_id,
+                        content,
+                    },
+                };
+                Self::send_sink(sink, final_packet).await?;
+                let done = ResponsePacket::Done {
+                    request_id,
+                    success: true,
+                    error: None,
+                };
+                Self::send_sink(sink, done).await?;
+                state.record_principal_activity(&name).await;
+            }
+            Err(e) => {
+                let message = e.to_string();
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: message.clone(),
+                };
+                Self::send_sink(sink, response).await?;
+                let done = ResponsePacket::Done {
+                    request_id,
+                    success: false,
+                    error: Some(message),
+                };
+                Self::send_sink(sink, done).await?;
+            }
+        }
         Ok(())
     }
 }

@@ -209,12 +209,16 @@ pub struct AppState {
     /// before the tunnel connects.
     pending_a2a_responses: Arc<crate::tunnel::PendingA2aResponses>,
 
-    /// In-flight `PrincipalSendStream` runs, keyed by the original
-    /// `request_id`. The streaming handler inserts on spawn (with a
+    /// In-flight principal-send runs, keyed by the original
+    /// `request_id`. Both IPC variants — `RequestPacket::PrincipalSend`
+    /// and `RequestPacket::PrincipalSendStream` — register here, so
+    /// `peko interrupt <id>` and `peko steer <id>` work uniformly. The
+    /// shared `run_principal_send` helper inserts on spawn (with a
     /// cancel token + peer for steer session-id derivation) and
-    /// removes on natural completion. The `PrincipalSendControl` IPC
-    /// handler looks up entries here to issue soft-interrupt or push
-    /// a steering message into the run's session inbox.
+    /// removes on natural completion via the `StreamingRunGuard`
+    /// RAII. The `PrincipalSendControl` IPC handler looks up entries
+    /// here to issue soft-interrupt or push a steering message into
+    /// the run's session inbox.
     ///
     /// `std::sync::Mutex` matches the `PendingA2aResponses` pattern:
     /// every operation is hash-map-only, no `.await` is held across

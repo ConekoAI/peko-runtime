@@ -14,11 +14,12 @@
 use crate::extensions::framework::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
 use crate::extensions::framework::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
 use crate::extensions::framework::HookResult;
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolInterruptNotice};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 // ============================================================================
@@ -339,6 +340,7 @@ impl HookHandler for BuiltinExecuteHandler {
         let tool_name = tool.name().to_string();
         let tool_name_for_preproc = tool_name.clone();
         let tool_name_for_ctx = tool_name.clone();
+        let tool_name_for_notice = tool_name.clone();
 
         let exec_config = crate::extensions::framework::services::ToolExecutionConfig::with_schema(
             self.tool.parameters(),
@@ -349,7 +351,56 @@ impl HookHandler for BuiltinExecuteHandler {
             .cloned()
             .unwrap_or_default();
 
-        ctx.services
+        // Build the ToolContext once so both the watcher task and the exec
+        // closure share the same abort receiver / identity fields.
+        let base_ctx =
+            crate::tools::ToolContext::for_hook_run("hook_run", "hook", &tool_name_for_ctx)
+                .with_agent_id(runtime_ctx.agent_id.clone().unwrap_or_default())
+                .with_session_id(runtime_ctx.session_id.clone().unwrap_or_default())
+                .with_workspace(runtime_ctx.workspace.clone().unwrap_or_default())
+                .with_principal_id(runtime_ctx.principal_id.clone().unwrap_or_default())
+                .with_principal_name(runtime_ctx.principal_name.clone().unwrap_or_default());
+        let tool_ctx = match runtime_ctx.abort_signal.as_ref() {
+            Some(rx) => base_ctx.with_abort_signal(rx.clone()),
+            None => base_ctx,
+        };
+
+        // Shared state for the cancel watcher. If the framework provided an
+        // abort signal, spawn a task that invokes `on_interrupt` when it fires
+        // and writes the resulting notice into the slot. The framework always
+        // emits a notice on cancel, even for tools that do not implement
+        // `InterruptibleTool` (the blanket impl supplies a soft default).
+        let cancel_fired = Arc::new(AtomicBool::new(false));
+        let notice_slot: Arc<tokio::sync::Mutex<Option<ToolInterruptNotice>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+
+        if let Some(mut rx) = runtime_ctx.abort_signal.clone() {
+            let cancel_fired_w = cancel_fired.clone();
+            let notice_slot_w = notice_slot.clone();
+            let tool_for_interrupt = tool.clone();
+            let tool_ctx_w = tool_ctx.clone();
+            let tool_call_id_w = String::new();
+            tokio::spawn(async move {
+                if *rx.borrow() {
+                    // Already aborted before we started watching.
+                } else if rx.changed().await.is_err() {
+                    // Sender dropped without a value flip — do nothing.
+                    return;
+                } else if !*rx.borrow() {
+                    // Flipped to false (should not happen) — ignore.
+                    return;
+                }
+                cancel_fired_w.store(true, Ordering::SeqCst);
+                let notice = tool_for_interrupt
+                    .on_interrupt(&tool_call_id_w, &tool_ctx_w)
+                    .await;
+                *notice_slot_w.lock().await = Some(notice);
+            });
+        }
+
+        let tool_ctx_for_exec = tool_ctx.clone();
+        let result = ctx
+            .services
             .async_router()
             .execute_from_hook(
                 &ctx,
@@ -438,16 +489,7 @@ impl HookHandler for BuiltinExecuteHandler {
                 ),
                 move |p| {
                     let tool = tool.clone();
-                    let tool_ctx = crate::tools::ToolContext::for_hook_run(
-                        "hook_run",
-                        "hook",
-                        &tool_name_for_ctx,
-                    )
-                    .with_agent_id(runtime_ctx.agent_id.clone().unwrap_or_default())
-                    .with_session_id(runtime_ctx.session_id.clone().unwrap_or_default())
-                    .with_workspace(runtime_ctx.workspace.clone().unwrap_or_default())
-                    .with_principal_id(runtime_ctx.principal_id.clone().unwrap_or_default())
-                    .with_principal_name(runtime_ctx.principal_name.clone().unwrap_or_default());
+                    let tool_ctx = tool_ctx_for_exec.clone();
                     async move {
                         // Use execute_with_context so tools receive session/agent
                         // context injected by the extension framework.
@@ -455,7 +497,19 @@ impl HookHandler for BuiltinExecuteHandler {
                     }
                 },
             )
-            .await
+            .await;
+
+        // If the cancel fired, always emit the interrupt notice — even if the
+        // tool also completed naturally. The user wanted to stop, so cancel wins.
+        if cancel_fired.load(Ordering::SeqCst) {
+            let notice =
+                notice_slot.lock().await.take().unwrap_or_else(|| {
+                    ToolInterruptNotice::soft_default("", &tool_name_for_notice)
+                });
+            HookResult::Continue(HookOutput::Text(notice.to_tool_result_text()))
+        } else {
+            result
+        }
     }
 
     fn hook_point(&self) -> HookPoint {
@@ -647,5 +701,229 @@ mod tests {
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("Bash"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("session"));
         assert!(!BuiltinToolAdapter::is_agent_specific_builtin("unknown"));
+    }
+
+    #[tokio::test]
+    async fn cancel_after_completion_does_not_emit_spurious_notice() {
+        use crate::extensions::framework::core::{HookContext, HookPoint};
+        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use std::time::Duration;
+
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let tool: Arc<dyn Tool> = Arc::new(MockTool {
+            name: "Fast".to_string(),
+        });
+        BuiltinToolAdapter::register_tool(&core, tool.clone())
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let input = HookInput::ToolCall {
+            tool_name: "Fast".to_string(),
+            params: json!({}),
+            workspace: None,
+            agent_id: None,
+            session_id: None,
+            caller_id: None,
+            principal_id: None,
+            principal_name: None,
+            allowed_extensions: Some(vec!["builtin:tool:Fast".to_string()]),
+            abort_signal: Some(rx),
+        };
+        let point = HookPoint::ToolExecute {
+            tool_name: "Fast".to_string(),
+        };
+        let mut ctx = HookContext::new(point, input, core.services());
+        let runtime_ctx = ToolRuntimeContext::default().with_abort_signal(
+            // Receiver already moved into input; re-clone from the input's field
+            // is awkward, so build a fresh paired receiver just for the runtime ctx.
+            // In production both come from the same source; the test only needs
+            // the handler to see *a* receiver on the runtime ctx.
+            tx.subscribe(),
+        );
+        ctx.set_state("tool_context", runtime_ctx);
+
+        let handler = BuiltinExecuteHandler::new(tool);
+        let result = handler.handle(ctx).await;
+
+        // Cancel fires *after* the tool already completed.
+        tx.send(true).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        match result {
+            HookResult::Continue(HookOutput::Json(v)) => {
+                assert_eq!(v, json!({"success": true}));
+            }
+            other => panic!("expected natural JSON result, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_before_completion_emits_minimal_notice_for_soft_tool() {
+        use crate::extensions::framework::core::{HookContext, HookPoint};
+        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use std::time::Duration;
+
+        struct SlowMockTool;
+
+        #[async_trait]
+        impl Tool for SlowMockTool {
+            fn name(&self) -> &str {
+                "Slow"
+            }
+
+            fn description(&self) -> String {
+                "slow mock tool".to_string()
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                json!({"type": "object", "properties": {}})
+            }
+
+            async fn execute(
+                &self,
+                _params: serde_json::Value,
+            ) -> anyhow::Result<serde_json::Value> {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(json!({"ok": true}))
+            }
+        }
+
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let tool: Arc<dyn Tool> = Arc::new(SlowMockTool);
+        BuiltinToolAdapter::register_tool(&core, tool.clone())
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let input = HookInput::ToolCall {
+            tool_name: "Slow".to_string(),
+            params: json!({}),
+            workspace: None,
+            agent_id: None,
+            session_id: None,
+            caller_id: None,
+            principal_id: None,
+            principal_name: None,
+            allowed_extensions: Some(vec!["builtin:tool:Slow".to_string()]),
+            abort_signal: Some(rx),
+        };
+        let point = HookPoint::ToolExecute {
+            tool_name: "Slow".to_string(),
+        };
+        let mut ctx = HookContext::new(point, input, core.services());
+        let runtime_ctx = ToolRuntimeContext::default().with_abort_signal(tx.subscribe());
+        ctx.set_state("tool_context", runtime_ctx);
+
+        // Fire cancel while the slow tool is sleeping.
+        let cancel_tx = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_tx.send(true).unwrap();
+        });
+
+        let handler = BuiltinExecuteHandler::new(tool);
+        let result = handler.handle(ctx).await;
+
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(text.contains("[Slow call was CANCELLED]"), "text: {text}");
+            }
+            other => panic!("expected cancel notice, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_fires_custom_on_interrupt_when_tool_opts_in() {
+        use crate::extensions::framework::core::{HookContext, HookPoint};
+        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use crate::tools::{ToolContext, ToolInterruptNotice};
+        use std::time::Duration;
+
+        struct EnrichingMockTool;
+
+        #[async_trait]
+        impl Tool for EnrichingMockTool {
+            fn name(&self) -> &str {
+                "Enriching"
+            }
+
+            fn description(&self) -> String {
+                "enriches cancel notice".to_string()
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                json!({"type": "object", "properties": {}})
+            }
+
+            async fn execute(
+                &self,
+                _params: serde_json::Value,
+            ) -> anyhow::Result<serde_json::Value> {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(json!({"ok": true}))
+            }
+
+            async fn on_interrupt(
+                &self,
+                tool_call_id: &str,
+                _ctx: &ToolContext,
+            ) -> ToolInterruptNotice {
+                ToolInterruptNotice {
+                    tool_call_id: tool_call_id.to_string(),
+                    tool_name: self.name().to_string(),
+                    preserved: vec![],
+                    rolled_back: vec!["async-tx-123".to_string()],
+                    leaked: vec![],
+                    resume_hint: None,
+                }
+            }
+        }
+
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        let tool: Arc<dyn Tool> = Arc::new(EnrichingMockTool);
+        BuiltinToolAdapter::register_tool(&core, tool.clone())
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let input = HookInput::ToolCall {
+            tool_name: "Enriching".to_string(),
+            params: json!({}),
+            workspace: None,
+            agent_id: None,
+            session_id: None,
+            caller_id: None,
+            principal_id: None,
+            principal_name: None,
+            allowed_extensions: Some(vec!["builtin:tool:Enriching".to_string()]),
+            abort_signal: Some(rx),
+        };
+        let point = HookPoint::ToolExecute {
+            tool_name: "Enriching".to_string(),
+        };
+        let mut ctx = HookContext::new(point, input, core.services());
+        let runtime_ctx = ToolRuntimeContext::default().with_abort_signal(tx.subscribe());
+        ctx.set_state("tool_context", runtime_ctx);
+
+        let cancel_tx = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_tx.send(true).unwrap();
+        });
+
+        let handler = BuiltinExecuteHandler::new(tool);
+        let result = handler.handle(ctx).await;
+
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(
+                    text.contains("[Enriching call was CANCELLED]"),
+                    "text: {text}"
+                );
+                assert!(text.contains("Rolled back: async-tx-123"), "text: {text}");
+            }
+            other => panic!("expected enriched cancel notice, got {:?}", other),
+        }
     }
 }

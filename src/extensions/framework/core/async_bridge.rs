@@ -177,6 +177,7 @@ impl ExtensionAsyncAdapter {
                     principal_id: None,
                     principal_name: None,
                     allowed_extensions: None,
+                    abort_signal: None,
                 },
             )
             .await;
@@ -241,6 +242,7 @@ impl ExtensionAsyncAdapter {
                                 principal_id: None,
                                 principal_name: None,
                                 allowed_extensions: None,
+                                abort_signal: None,
                             },
                         )
                         .await;

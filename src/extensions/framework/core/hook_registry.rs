@@ -428,6 +428,7 @@ impl HookRegistry {
             ref workspace,
             ref principal_id,
             ref principal_name,
+            ref abort_signal,
             ..
         } = input
         {
@@ -447,6 +448,11 @@ impl HookRegistry {
             };
             let tool_ctx = if let Some(ref name) = principal_name {
                 tool_ctx.with_principal_name(name.clone())
+            } else {
+                tool_ctx
+            };
+            let tool_ctx = if let Some(rx) = abort_signal {
+                tool_ctx.with_abort_signal(rx.clone())
             } else {
                 tool_ctx
             };

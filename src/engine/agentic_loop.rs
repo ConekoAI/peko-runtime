@@ -883,6 +883,7 @@ impl AgenticLoop {
                             &self.agent_principal_id,
                             self.agent.principal_name().unwrap_or(""),
                             allowed_extensions,
+                            self.cancel.clone(),
                             &on_event,
                         )
                         .await?;

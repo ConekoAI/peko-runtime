@@ -996,6 +996,7 @@ mod tests {
                     principal_id: None,
                     principal_name: None,
                     allowed_extensions: None,
+                    abort_signal: None,
                 },
             )
             .await;
@@ -1058,6 +1059,7 @@ mod tests {
                     principal_id: None,
                     principal_name: None,
                     allowed_extensions: Some(allowed),
+                    abort_signal: None,
                 },
             )
             .await;

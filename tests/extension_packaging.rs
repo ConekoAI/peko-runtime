@@ -290,6 +290,7 @@ async fn test_extension_install_tool_registration_and_invocation() {
                 principal_id: None,
                 principal_name: None,
                 allowed_extensions: None,
+                abort_signal: None,
             },
         )
         .await;

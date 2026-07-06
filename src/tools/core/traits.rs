@@ -2,6 +2,7 @@
 
 use crate::observability::performance::GLOBAL_METRICS;
 use crate::tools::core::exec::{ToolContext, ToolError};
+use crate::tools::core::interrupt::ToolInterruptNotice;
 use async_trait::async_trait;
 
 /// Tool trait for agent capabilities
@@ -56,6 +57,22 @@ pub trait Tool: Send + Sync {
     /// - Unit tests of individual tools
     /// - The `BuiltinToolAdapter` wrapper (which bridges into ExtensionCore)
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value>;
+
+    /// Hook point called by the framework when a tool call is cancelled.
+    ///
+    /// Implementations should **not** perform the actual stop here. The
+    /// framework's existing abort plumbing (`ToolContext::abort_signal`,
+    /// `bridge_to_cancellation_token`, etc.) already stops long-running tools
+    /// such as `BashTool` and `AgentTool`. Soft-path tools are allowed to finish
+    /// naturally. Instead, override this method to enrich the
+    /// [`ToolInterruptNotice`] with what was preserved / rolled back / leaked.
+    ///
+    /// The framework always emits a notice on cancel, replacing the tool's
+    /// natural output on the next turn. The default implementation returns a
+    /// minimal soft-path notice.
+    async fn on_interrupt(&self, tool_call_id: &str, ctx: &ToolContext) -> ToolInterruptNotice {
+        ToolInterruptNotice::soft_default(tool_call_id, ctx.tool_name.as_str())
+    }
 
     /// Execute with full context (abort signal + progress callbacks).
     ///

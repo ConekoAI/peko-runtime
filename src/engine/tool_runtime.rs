@@ -9,8 +9,8 @@ use crate::extensions::framework::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::framework::types::{tool_result_from_hook, HookInput};
 use crate::extensions::framework::HookPoint;
 use crate::tools::{
-    BashTool, CronCreateTool, CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool,
-    Tool, WriteTool,
+    bridge_from_cancellation_token, AbortSignalBridgeGuard, BashTool, CronCreateTool,
+    CronDeleteTool, CronListTool, EditTool, GlobTool, GrepTool, ReadTool, Tool, WriteTool,
 };
 use anyhow::Result;
 use std::path::PathBuf;
@@ -31,7 +31,7 @@ pub async fn execute_tool_via_core(
     workspace: Option<String>,
 ) -> Result<(String, serde_json::Value, bool)> {
     execute_tool_via_core_with_context(
-        core, tool_name, params, workspace, None, None, None, None, None, None,
+        core, tool_name, params, workspace, None, None, None, None, None, None, None,
     )
     .await
 }
@@ -48,6 +48,14 @@ pub async fn execute_tool_via_core(
 /// Principal-scoped tools (e.g. `CronCreate`) to target jobs.
 /// `allowed_extensions` is the principal/agent allowlist used by the
 /// execution gate instead of the mutable global `tool_config`.
+/// `cancel` is the soft-interrupt `CancellationToken` (PR #128). When
+/// `Some`, this function bridges the token into a `watch::Receiver<bool>`
+/// (`AbortSignal`) via `bridge_from_cancellation_token` so `BuiltinToolAdapter`
+/// can plumb a real receiver into `ToolContext::for_hook_run_with_abort`,
+/// making the trait-default `ctx.is_aborted()` check in
+/// `src/tools/core/traits.rs:82, 102` meaningful in production. The
+/// bridge task is aborted on drop; callers should not need to await
+/// or otherwise manage the returned guard.
 pub async fn execute_tool_via_core_with_context(
     core: &ExtensionCore,
     tool_name: &str,
@@ -59,10 +67,19 @@ pub async fn execute_tool_via_core_with_context(
     principal_id: Option<String>,
     principal_name: Option<String>,
     allowed_extensions: Option<Vec<String>>,
+    cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(String, serde_json::Value, bool)> {
     let point = HookPoint::ToolExecute {
         tool_name: tool_name.to_string(),
     };
+    let (abort_signal, _abort_guard) = match cancel {
+        Some(token) => {
+            let (signal, guard) = bridge_from_cancellation_token(token);
+            (Some(signal.subscribe()), guard)
+        }
+        None => (None, AbortSignalBridgeGuard::noop()),
+    };
+
     let input = HookInput::ToolCall {
         tool_name: tool_name.to_string(),
         params,
@@ -73,6 +90,7 @@ pub async fn execute_tool_via_core_with_context(
         principal_id,
         principal_name,
         allowed_extensions,
+        abort_signal,
     };
 
     let result = core.invoke_hook(point, input).await;

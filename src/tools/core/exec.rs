@@ -92,6 +92,14 @@ pub struct ToolContext {
     event_tx: Option<mpsc::Sender<ToolProgressEvent>>,
     /// Abort signal receiver
     abort_rx: tokio::sync::watch::Receiver<bool>,
+    /// Sender half of the abort channel, kept alive so the watch
+    /// channel doesn't close (and `rx.changed().await` doesn't return
+    /// `Err` immediately, which would make `wait_for_abort` fire
+    /// spuriously). Set by constructors that synthesize a fresh
+    /// abort channel (`for_hook_run`, `default_for_tool`); `None`
+    /// when the channel was sourced from an external `AbortSignal`
+    /// (which holds its own keeper in `AbortSignal._rx_keeper`).
+    _abort_tx_keeper: Option<tokio::sync::watch::Sender<bool>>,
     /// Progress update throttle (minimum ms between updates)
     pub progress_throttle_ms: u64,
     /// Last progress update time (for throttling)
@@ -128,6 +136,9 @@ impl ToolContext {
             tool_name: tool_name.into(),
             event_tx: None,
             abort_rx,
+            // External `abort_rx` — assumed to come from an `AbortSignal`
+            // (which holds its own keeper) or an equivalent external owner.
+            _abort_tx_keeper: None,
             progress_throttle_ms: 500, // Default 500ms between progress updates
             last_progress_update: Arc::new(tokio::sync::Mutex::new(None)),
             timeout: None,
@@ -145,13 +156,17 @@ impl ToolContext {
     /// Used by `BuiltinToolAdapter` to ensure `execute_with_context` gets
     /// consistent metrics/timeout handling even when invoked through the hook system.
     pub fn default_for_tool(tool_name: impl Into<String>) -> Self {
-        let (_tx, abort_rx) = tokio::sync::watch::channel(false);
+        let (tx, abort_rx) = tokio::sync::watch::channel(false);
         Self {
             run_id: "hook".to_string(),
             tool_id: "hook".to_string(),
             tool_name: tool_name.into(),
             event_tx: None,
             abort_rx,
+            // We synthesized the channel — keep the sender so the
+            // channel doesn't close and `rx.changed().await` doesn't
+            // return `Err` immediately.
+            _abort_tx_keeper: Some(tx),
             progress_throttle_ms: 500,
             last_progress_update: Arc::new(tokio::sync::Mutex::new(None)),
             timeout: None,
@@ -173,13 +188,15 @@ impl ToolContext {
         tool_id: impl Into<String>,
         tool_name: impl Into<String>,
     ) -> Self {
-        let (_tx, abort_rx) = tokio::sync::watch::channel(false);
+        let (tx, abort_rx) = tokio::sync::watch::channel(false);
         Self {
             run_id: run_id.into(),
             tool_id: tool_id.into(),
             tool_name: tool_name.into(),
             event_tx: None,
             abort_rx,
+            // We synthesized the channel — keep the sender so it doesn't close.
+            _abort_tx_keeper: Some(tx),
             progress_throttle_ms: 500,
             last_progress_update: Arc::new(tokio::sync::Mutex::new(None)),
             timeout: None,
@@ -190,6 +207,33 @@ impl ToolContext {
             principal_id: None,
             principal_name: None,
         }
+    }
+
+    /// Create a tool context for hook-based execution that observes an
+    /// external `watch::Receiver<bool>` abort signal.
+    ///
+    /// Unlike [`Self::for_hook_run`] (which produces a fresh never-aborted
+    /// `abort_rx` and therefore makes the trait-default
+    /// `ctx.is_aborted()` check a no-op), this constructor lets the
+    /// engine thread a real abort signal through to the tool. Used by
+    /// `BuiltinToolAdapter` when the engine has built an abort bridge
+    /// from a `CancellationToken` (see
+    /// [`bridge_from_cancellation_token`]).
+    pub fn for_hook_run_with_abort(
+        run_id: impl Into<String>,
+        tool_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        abort_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Self {
+        let mut ctx = Self::for_hook_run(run_id, tool_id, tool_name);
+        ctx.abort_rx = abort_rx;
+        // The receiver came from an external `AbortSignal` (which
+        // holds its own keeper). Drop the synthesized keeper that
+        // `for_hook_run` installed — keeping both would hold a
+        // phantom sender that would prevent the channel from ever
+        // closing when the engine-side owner goes away.
+        ctx._abort_tx_keeper = None;
+        ctx
     }
 
     /// Create a new tool context with event channel
@@ -206,6 +250,8 @@ impl ToolContext {
             tool_name: tool_name.into(),
             event_tx: Some(event_tx),
             abort_rx,
+            // External `abort_rx` — no keeper needed here.
+            _abort_tx_keeper: None,
             progress_throttle_ms: 500,
             last_progress_update: Arc::new(tokio::sync::Mutex::new(None)),
             timeout: None,
@@ -285,6 +331,18 @@ impl ToolContext {
     #[must_use]
     pub fn with_principal_name(mut self, principal_name: impl Into<String>) -> Self {
         self.principal_name = Some(principal_name.into());
+        self
+    }
+
+    /// Replace the abort receiver. Use when the engine built a fresh
+    /// context via [`Self::for_hook_run`] (a never-aborted receiver)
+    /// and then later needs to attach a real `CancellationToken` bridge
+    /// (e.g. the closure in `BuiltinToolAdapter` which can't move out of
+    /// `for_hook_run`'s receiver because the rest of the builder chain
+    /// has already run on top of it).
+    #[must_use]
+    pub fn with_abort_signal(mut self, abort_rx: tokio::sync::watch::Receiver<bool>) -> Self {
+        self.abort_rx = abort_rx;
         self
     }
 
@@ -468,6 +526,176 @@ impl Default for AbortSignal {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// RAII guard that aborts the spawned bridge task on drop.
+///
+/// Returned by [`bridge_from_cancellation_token`] alongside the
+/// `AbortSignal`. The guard's `Drop` impl aborts the bridge task so it
+/// can't outlive the tool call that owns the abort signal — preventing
+/// a `send(true)` against a `watch::Sender` whose receiver is gone.
+///
+/// Also holds an internal `watch::Receiver` keeper so the watch
+/// channel stays open until the guard drops. This is the race window
+/// between "bridge task fires" and "tool body subscribes via
+/// `ToolContext::abort_signal`" — without the keeper, the bridge's
+/// `send(true)` would `Err(SendError)` and the abort would silently
+/// fail. Once the tool body has its own subscriber, dropping the
+/// guard closes the keeper and the channel can clean up.
+pub struct AbortSignalBridgeGuard {
+    handle: Option<tokio::task::JoinHandle<()>>,
+    /// Keeper for the watch channel; dropped alongside the guard.
+    /// Field is `Option` so `Drop` can `.take()` it before the
+    /// generated `Drop` runs.
+    _rx_keeper: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl AbortSignalBridgeGuard {
+    /// No-op guard for paths that didn't actually spawn a bridge task
+    /// (e.g. `cancel: None`). Holding a `noop()` guard keeps call sites
+    /// uniform — they always destructure `(signal, guard)` and let the
+    /// guard drop normally at scope end.
+    #[must_use]
+    pub const fn noop() -> Self {
+        Self {
+            handle: None,
+            _rx_keeper: None,
+        }
+    }
+}
+
+impl Drop for AbortSignalBridgeGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+/// Build an `AbortSignal` that fires when `cancel` is cancelled.
+///
+/// Spawns a small `tokio` task that awaits `cancel.cancelled()` and
+/// then calls `signal.abort()`. The returned [`AbortSignalBridgeGuard`]
+/// must be kept alive for the lifetime of the tool call — when dropped
+/// it aborts the bridge task to prevent it from outliving the
+/// `ToolContext` that subscribes to the `AbortSignal`.
+///
+/// This is the bridge between the engine's `CancellationToken` (the
+/// hierarchical soft-interrupt primitive) and the `watch::Receiver<bool>`
+/// that `ToolContext` exposes. It is intentionally a one-line bridge
+/// (not a unification) so that the existing `AbortSignal` API stays
+/// intact for extension authors and the trait-default
+/// `ctx.is_aborted()` check (`src/tools/core/traits.rs:82, 102`) starts
+/// working in production the moment the engine supplies a real
+/// `abort_rx` via [`ToolContext::for_hook_run_with_abort`].
+#[must_use]
+pub fn bridge_from_cancellation_token(
+    cancel: tokio_util::sync::CancellationToken,
+) -> (AbortSignal, AbortSignalBridgeGuard) {
+    let (tx, rx_keeper) = tokio::sync::watch::channel(false);
+    let tx2 = tx.clone();
+    let handle = tokio::spawn(async move {
+        cancel.cancelled().await;
+        let _ = tx2.send(true);
+    });
+    (
+        AbortSignal { tx },
+        AbortSignalBridgeGuard {
+            handle: Some(handle),
+            // Race-window keeper: see struct docs. Holds the watch
+            // channel open until the tool call that owns this guard
+            // ends, so the bridge's `send(true)` doesn't fail with
+            // `SendError` if it races ahead of the tool body
+            // subscribing via `ToolContext::abort_signal`.
+            _rx_keeper: Some(rx_keeper),
+        },
+    )
+}
+
+/// RAII guard that aborts the spawned reverse-bridge task on drop.
+///
+/// Returned by [`bridge_to_cancellation_token`] alongside the
+/// `CancellationToken`. The guard's `Drop` impl aborts the bridge
+/// task so it can't outlive the tool call that owns the abort signal.
+pub struct CancellationTokenBridgeGuard {
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl CancellationTokenBridgeGuard {
+    /// No-op guard for the `rx = None` path.
+    #[must_use]
+    pub const fn noop() -> Self {
+        Self { handle: None }
+    }
+}
+
+impl Drop for CancellationTokenBridgeGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+/// Build a `CancellationToken` that fires when the watch receiver
+/// flips to `true`.
+///
+/// This is the **reverse** of [`bridge_from_cancellation_token`]: a
+/// tool that holds a `watch::Receiver<bool>` (e.g. from
+/// [`ToolContext::abort_signal`]) can derive a `CancellationToken` to
+/// hand to a downstream component that expects a token — most
+/// importantly, `AgentTool` passes this token to the sub-agent's
+/// `AgenticLoop` so a parent cancel propagates into a spawned
+/// sub-agent. Without this, the sub-agent's loop would never observe
+/// the parent's interrupt.
+///
+/// The returned [`CancellationTokenBridgeGuard`] must be kept alive
+/// for the lifetime of the tool call so the spawned task is aborted
+/// on drop. `rx = None` yields a never-cancelled token and a no-op
+/// guard — useful for legacy call sites that don't have an abort
+/// receiver.
+#[must_use]
+pub fn bridge_to_cancellation_token(
+    rx: Option<tokio::sync::watch::Receiver<bool>>,
+) -> (
+    tokio_util::sync::CancellationToken,
+    CancellationTokenBridgeGuard,
+) {
+    let mut rx = match rx {
+        Some(rx) => rx,
+        None => {
+            return (
+                tokio_util::sync::CancellationToken::new(),
+                CancellationTokenBridgeGuard::noop(),
+            );
+        }
+    };
+    let token = tokio_util::sync::CancellationToken::new();
+    let token2 = token.clone();
+    let handle = tokio::spawn(async move {
+        // If the watch is already true at the moment we register
+        // (caller signaled before the bridge spawned), flip the
+        // token immediately.
+        if *rx.borrow() {
+            token2.cancel();
+            return;
+        }
+        loop {
+            if rx.changed().await.is_err() {
+                return;
+            }
+            if *rx.borrow() {
+                token2.cancel();
+                return;
+            }
+        }
+    });
+    (
+        token,
+        CancellationTokenBridgeGuard {
+            handle: Some(handle),
+        },
+    )
 }
 
 /// Adapter that implements `ContextSource` for `ToolContext`
@@ -716,5 +944,93 @@ mod tests {
         assert_eq!(json["success"], true);
         assert_eq!(json["data"], 42);
         assert_eq!(json["metadata"], serde_json::json!({"time": 1}));
+    }
+
+    /// Verifies the `CancellationToken → AbortSignal` bridge fires the
+    /// underlying `AbortSignal` when the token is cancelled. Pre-merge
+    /// check for the "interrupt actually means stop" follow-up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bridge_fires_on_cancel() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let (signal, _guard) = bridge_from_cancellation_token(token.clone());
+
+        // Pre-cancel: signal reports not-aborted.
+        assert!(!signal.is_aborted());
+
+        // Cancel the token; the bridge task should flip the signal
+        // within a few ms. Poll instead of sleeping once so the
+        // assertion is robust to runtime scheduling jitter.
+        token.cancel();
+        for _ in 0..50 {
+            if signal.is_aborted() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(signal.is_aborted(), "AbortSignal must fire on token cancel");
+    }
+
+    /// Verifies that the `AbortSignalBridgeGuard` aborts the bridge
+    /// task on drop. We assert the **observable effect** of an aborted
+    /// task: cancelling the underlying token *after* the guard drops
+    /// does not flip the signal. If the bridge task were still
+    /// running, the cancel would still propagate to the signal (the
+    /// bridge would re-fire) — so the assertion is meaningful.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bridge_drop_aborts_spawned_task() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let (signal, guard) = bridge_from_cancellation_token(token.clone());
+
+        // Drop the guard first — the bridge task is aborted.
+        drop(guard);
+        // Now cancel the token. The aborted task can no longer
+        // observe this and `send(true)` it to the signal.
+        token.cancel();
+        for _ in 0..50 {
+            // Give the runtime plenty of time to potentially re-fire
+            // the bridge if it weren't really aborted.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if signal.is_aborted() {
+                break;
+            }
+        }
+        assert!(
+            !signal.is_aborted(),
+            "signal should remain false: aborted bridge task must not fire send"
+        );
+    }
+
+    /// Verifies the **reverse** bridge (`watch::Receiver<bool> →
+    /// CancellationToken`) flips the local token when the watch
+    /// receiver signals. Used by `AgentTool` to derive a token from
+    /// `ToolContext::abort_signal()` for the sub-agent's loop.
+    #[tokio::test]
+    async fn reverse_bridge_fires_on_watch() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (token, _guard) = bridge_to_cancellation_token(Some(rx));
+        assert!(!token.is_cancelled());
+
+        // Flip the watch — the reverse bridge should fire the token.
+        tx.send(true).unwrap();
+        // Give the bridge task a chance to schedule.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            token.is_cancelled(),
+            "CancellationToken must fire on watch flip"
+        );
+    }
+
+    /// Verifies the `noop()` path of `bridge_to_cancellation_token`:
+    /// when no watch is supplied, the returned token is never cancelled
+    /// and the guard is a no-op (no task to abort).
+    #[tokio::test]
+    async fn reverse_bridge_noop_never_cancels() {
+        let (token, _guard) = bridge_to_cancellation_token(None);
+        assert!(!token.is_cancelled());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            !token.is_cancelled(),
+            "no-op bridge must never cancel the token"
+        );
     }
 }

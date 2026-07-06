@@ -637,7 +637,7 @@ impl StatelessAgentService {
         // 7. Execute agent with session and history
         // Use the new execute_with_session method that properly handles session resumption
         let execute_result = agent
-            .execute_with_session(&prompt, session.clone(), Some(history), |_event| {
+            .execute_with_session(&prompt, session.clone(), Some(history), None, |_event| {
                 // Events are ignored for non-streaming execution
                 // All data comes from the AgenticResult
             })
