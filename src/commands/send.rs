@@ -10,6 +10,7 @@
 //!   peko send myprincipal "Hello" --no-stream
 
 use crate::commands::GlobalPaths;
+use crate::ipc::packet::PrincipalSendControlMode;
 use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::Result;
 use clap::Args;
@@ -57,18 +58,58 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
         .principal_send_stream(&args.principal, message, _paths.user())
         .await?;
 
-    process_response_stream(stream, &args, _json).await
+    // Print the request_id to stderr before reading the stream so
+    // users can run `peko interrupt <id>` from another terminal to
+    // soft-interrupt the run. The daemon also accepts Ctrl-C via the
+    // `tokio::select!` below, but a separate terminal is the supported
+    // headless path.
+    let request_id = stream.request_id();
+    eprintln!("[peko] request_id={request_id} (run `peko interrupt {request_id}` to stop)");
+
+    process_response_stream(stream, &client, &args, _json).await
 }
 
 /// Process the response stream from a `PrincipalSend` request.
+///
+/// In streaming mode, races the response loop against `tokio::signal::ctrl_c()`
+/// so the user can interrupt a long-running stream from the same
+/// terminal. On Ctrl-C, sends a `PrincipalSendControl { Interrupt }` to
+/// the daemon and returns once the daemon's own `Done`/`Error`
+/// closes the stream naturally (the loop will fall through with the
+/// "interrupted" error message).
 async fn process_response_stream(
     mut stream: crate::ipc::PacketStream,
+    client: &DaemonClient,
     args: &SendArgs,
     _json: bool,
 ) -> Result<()> {
+    // Spawn a side-channel task that watches for Ctrl-C and signals
+    // the main loop. We can't await `ctrl_c()` directly inside the
+    // `tokio::select!` because the future is one-shot and would be
+    // consumed after the first iteration; using `Notify` lets us
+    // re-arm each iteration.
+    let ctrl_c_signal = std::sync::Arc::new(tokio::sync::Notify::new());
+    {
+        let signal = std::sync::Arc::clone(&ctrl_c_signal);
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                signal.notify_waiters();
+            }
+        });
+    }
+    let mut interrupt_sent = false;
+    let request_id = stream.request_id();
     if args.no_stream {
         let mut final_text = String::new();
-        while let Some(packet) = stream.next().await {
+        while let Some(packet) = next_or_interrupt(
+            &mut stream,
+            &ctrl_c_signal,
+            &mut interrupt_sent,
+            client,
+            request_id,
+        )
+        .await?
+        {
             match packet {
                 ResponsePacket::PrincipalSentChunk { delta, .. } => {
                     final_text.push_str(&delta);
@@ -103,7 +144,15 @@ async fn process_response_stream(
     }
 
     let mut has_started_line = false;
-    while let Some(packet) = stream.next().await {
+    while let Some(packet) = next_or_interrupt(
+        &mut stream,
+        &ctrl_c_signal,
+        &mut interrupt_sent,
+        client,
+        request_id,
+    )
+    .await?
+    {
         match packet {
             ResponsePacket::PrincipalSentChunk { delta: content, .. }
             | ResponsePacket::PrincipalSent { content, .. }
@@ -146,6 +195,44 @@ async fn process_response_stream(
         }
     }
     anyhow::bail!("Stream closed unexpectedly");
+}
+
+/// Race `stream.next()` against a Ctrl-C signal. On the first Ctrl-C,
+/// sends a `PrincipalSendControl { Interrupt }` to the daemon and
+/// continues reading the stream (the daemon will eventually emit its
+/// own `Done` with `error: Some("interrupted")` and close it). Returns
+/// the next packet or `None` when the stream is fully closed.
+async fn next_or_interrupt(
+    stream: &mut crate::ipc::PacketStream,
+    ctrl_c_signal: &std::sync::Arc<tokio::sync::Notify>,
+    interrupt_sent: &mut bool,
+    client: &DaemonClient,
+    request_id: u64,
+) -> Result<Option<ResponsePacket>> {
+    // Outer loop so a Ctrl-C that races with a packet still falls back
+    // to the next stream.next() call to pick up the daemon's final
+    // `Done`. The `if !*interrupt_sent` guard ensures we only send the
+    // interrupt once even if the user mashes Ctrl-C.
+    loop {
+        let notified = ctrl_c_signal.notified();
+        tokio::pin!(notified);
+        tokio::select! {
+            biased;
+            packet = stream.next() => return Ok(packet),
+            () = &mut notified, if !*interrupt_sent => {
+                *interrupt_sent = true;
+                eprintln!("\n[peko] Ctrl-C received — sending interrupt to daemon...");
+                if let Err(e) = client
+                    .principal_send_control(request_id, PrincipalSendControlMode::Interrupt)
+                    .await
+                {
+                    eprintln!("[peko] failed to send interrupt to daemon: {e}");
+                }
+                // Loop back and let the stream's next packet be the
+                // daemon's `Done { success: false, error: "interrupted" }`.
+            }
+        }
+    }
 }
 
 /// Resolve message from various sources (argument, file, or stdin)

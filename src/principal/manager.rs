@@ -562,7 +562,10 @@ impl PrincipalManager {
         let session_id = super::routers::root::root_session_id(&ctx.peer);
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
-                let decision = principal.router.route_streaming(ctx, on_event).await?;
+                let decision = principal
+                    .router
+                    .route_streaming(ctx, on_event, None)
+                    .await?;
                 match decision {
                     RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
                 }

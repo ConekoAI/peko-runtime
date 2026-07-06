@@ -824,7 +824,7 @@ impl Agent {
         //   `current_session_id` and the core before the helper runs.
         let session_key = self.current_session_id.read().await.clone();
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_key, None)
+            .build_agentic_loop(agent_arc, provider, session_key, None, None)
             .await?;
 
         let result = match loop_.run(prompt, on_event).await {
@@ -881,7 +881,7 @@ impl Agent {
             *current = Some(session_id.clone());
         }
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, Some(session_id), None)
+            .build_agentic_loop(agent_arc, provider, Some(session_id), None, None)
             .await?;
 
         let result = match loop_
@@ -916,6 +916,7 @@ impl Agent {
         history: Option<Vec<crate::common::types::message::LlmMessage>>,
         caller_id: Option<String>,
         on_event: F,
+        cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<crate::engine::AgenticResult>
     where
         F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
@@ -954,7 +955,7 @@ impl Agent {
         // to ensure mid-iteration `AsyncSpawn` calls see a real session key.
         let session_id = self.current_session_id.read().await.clone();
         let loop_ = match self
-            .build_agentic_loop(agent_arc, provider, session_id, caller_id)
+            .build_agentic_loop(agent_arc, provider, session_id, caller_id, cancel)
             .await
         {
             Ok(loop_) => loop_,
@@ -1009,7 +1010,7 @@ impl Agent {
         let agent_arc = Arc::new(self.clone());
         let session_id = self.current_session_id.read().await.clone();
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_id, caller_id)
+            .build_agentic_loop(agent_arc, provider, session_id, caller_id, None)
             .await?;
 
         let streaming_config = crate::engine::OrchestratorConfig::live();
@@ -1040,6 +1041,7 @@ impl Agent {
         provider: Arc<crate::providers::Provider>,
         session_key: Option<String>,
         caller_id: Option<String>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<crate::engine::agentic_loop::AgenticLoop> {
         let extension_core = self.extension_core();
 
@@ -1150,11 +1152,14 @@ impl Agent {
             .await;
 
         // 6. Construct AgenticLoop with the queue.
-        let loop_ =
+        let mut loop_ =
             crate::engine::agentic_loop::AgenticLoop::new(agent_arc, provider, extension_core)
                 .await
                 .with_async_completion_queue(async_completion_queue)
                 .with_caller_id(caller_id);
+        if let Some(token) = cancel {
+            loop_ = loop_.with_cancel_token(token);
+        }
         Ok(loop_)
     }
 

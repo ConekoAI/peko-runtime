@@ -808,10 +808,7 @@ impl TunnelDispatcher {
                 }
             }
             Err(e) => {
-                warn!(
-                    "Principal execution failed for {}: {}",
-                    principal_name, e
-                );
+                warn!("Principal execution failed for {}: {}", principal_name, e);
                 return self
                     .send_error_response(&handle, &request_id, &format!("Execution failed: {}", e))
                     .await;

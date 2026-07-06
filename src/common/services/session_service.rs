@@ -650,17 +650,17 @@ impl SessionService {
     }
 
     /// Convert one `SessionEvent` into a `HistoryEvent` for the user-
-/// facing log view.
-///
-/// Single canonical converter. Both `SessionService::get_history` (via
-/// `convert_event`) and `IpcServer::read_principal_log` use this — they
-/// previously each carried their own copy of the same match body, which
-/// had drifted (the IPC variant constructed owned `String`s, the
-/// service variant cloned fields via `&self`). Filtering on
-/// `HistoryQuery` (`include_tool_calls`, `include_thinking`) is applied
-/// at the call site, not here.
-///
-/// Convert `SessionEvent` to `HistoryEvent`, applying query filters.
+    /// facing log view.
+    ///
+    /// Single canonical converter. Both `SessionService::get_history` (via
+    /// `convert_event`) and `IpcServer::read_principal_log` use this — they
+    /// previously each carried their own copy of the same match body, which
+    /// had drifted (the IPC variant constructed owned `String`s, the
+    /// service variant cloned fields via `&self`). Filtering on
+    /// `HistoryQuery` (`include_tool_calls`, `include_thinking`) is applied
+    /// at the call site, not here.
+    ///
+    /// Convert `SessionEvent` to `HistoryEvent`, applying query filters.
     fn convert_event(&self, event: &SessionEvent, query: &HistoryQuery) -> Option<HistoryEvent> {
         let event_type = event.event_type();
 

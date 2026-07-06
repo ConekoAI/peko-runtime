@@ -16,6 +16,7 @@ pub mod credential;
 pub mod cron;
 pub mod daemon;
 pub mod ext;
+pub mod interrupt;
 pub mod log;
 pub mod mcp;
 pub mod principal;
@@ -104,6 +105,14 @@ pub enum Commands {
     ///   echo "Hello" | peko send myprincipal --stdin
     ///   peko send myprincipal "Hello" --no-stream
     Send(send::SendArgs),
+
+    /// Soft-interrupt or steer a running `peko send --stream` run.
+    ///
+    /// The `request_id` is the integer printed to stderr by
+    /// `peko send --stream` at start. Use `--steer "text"` to inject
+    /// a new user turn into the run's session inbox instead of
+    /// cancelling it.
+    Interrupt(interrupt::InterruptArgs),
 
     /// Read a Principal's activity (owner-root view by default)
     ///

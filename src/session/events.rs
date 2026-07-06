@@ -357,6 +357,9 @@ pub enum SessionEndReason {
     IdleTimeout,
     /// Hard token limit hit
     MaxTokensReached,
+    /// Run was soft-interrupted by an external `PrincipalSendControl`
+    /// request. The current step finished cleanly before exit.
+    Interrupted,
 }
 
 /// session.ended - Final line when session is explicitly closed

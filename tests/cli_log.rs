@@ -159,10 +159,7 @@ fn log_stranger_forbidden_on_default_view() {
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Caller is user:eve (no grant, not the owner).
-    let (stdout, stderr, status) = log(
-        &cli,
-        &["-U", "eve", "log", "log-principal-2"],
-    );
+    let (stdout, stderr, status) = log(&cli, &["-U", "eve", "log", "log-principal-2"]);
     assert_log_err(&stdout, &stderr, &status);
     let combined = format!("{stdout}{stderr}");
     assert!(
@@ -187,10 +184,7 @@ fn log_granted_peer_forbidden_on_owner_default_view() {
     // Even with a Chat grant, bob can't read the owner's default view.
     grant(&cli, "log-principal-3", "user:bob", "chat");
 
-    let (stdout, stderr, status) = log(
-        &cli,
-        &["-U", "bob", "log", "log-principal-3"],
-    );
+    let (stdout, stderr, status) = log(&cli, &["-U", "bob", "log", "log-principal-3"]);
     assert_log_err(&stdout, &stderr, &status);
     let combined = format!("{stdout}{stderr}");
     assert!(
@@ -277,8 +271,7 @@ fn log_owner_reads_granted_peer_thread() {
 
     // Grant bob Chat so he can drive the principal; bob sends once.
     grant(&cli, "log-principal-5", "user:bob", "chat");
-    let (sout, serr, sstatus) =
-        send_with_user(&cli, "log-principal-5", "hi from bob", "bob");
+    let (sout, serr, sstatus) = send_with_user(&cli, "log-principal-5", "hi from bob", "bob");
     assert_eq!(
         sstatus.code(),
         Some(0),
@@ -317,8 +310,7 @@ fn log_peer_self_read_only() {
 
     // Grant bob Chat and let him send once.
     grant(&cli, "log-principal-6", "user:bob", "chat");
-    let (sout, serr, sstatus) =
-        send_with_user(&cli, "log-principal-6", "hi from bob", "bob");
+    let (sout, serr, sstatus) = send_with_user(&cli, "log-principal-6", "hi from bob", "bob");
     assert_eq!(
         sstatus.code(),
         Some(0),
@@ -328,14 +320,30 @@ fn log_peer_self_read_only() {
     // Bob can read his own thread.
     let (stdout, stderr, status) = log(
         &cli,
-        &["-U", "bob", "log", "log-principal-6", "--peer", "user:bob", "--json"],
+        &[
+            "-U",
+            "bob",
+            "log",
+            "log-principal-6",
+            "--peer",
+            "user:bob",
+            "--json",
+        ],
     );
     assert_log_ok(&stdout, &stderr, &status);
 
     // Bob cannot read another peer's thread (user:default is the owner).
     let (stdout2, stderr2, status2) = log(
         &cli,
-        &["-U", "bob", "log", "log-principal-6", "--peer", "user:default", "--json"],
+        &[
+            "-U",
+            "bob",
+            "log",
+            "log-principal-6",
+            "--peer",
+            "user:default",
+            "--json",
+        ],
     );
     assert_log_err(&stdout2, &stderr2, &status2);
     let combined = format!("{stdout2}{stderr2}");

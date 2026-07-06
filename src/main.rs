@@ -1,7 +1,7 @@
 use clap::Parser;
 use clap_complete::generate;
 use peko::commands::{
-    auth, config, credential, cron, daemon, ext, init_logging, log, principal, provider,
+    auth, config, credential, cron, daemon, ext, init_logging, interrupt, log, principal, provider,
     registry, runtime, search, send, system, tunnel, update, vault, Cli, Commands, GlobalPaths,
 };
 
@@ -95,6 +95,7 @@ async fn run_command(
     match command {
         Commands::Principal(cmd) => principal::handle_principal(cmd, paths, json).await,
         Commands::Send(args) => send::handle_send(args, paths, json).await,
+        Commands::Interrupt(args) => interrupt::handle_interrupt(args, paths, json).await,
         Commands::Log(cmd) => log::handle_log(cmd, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),
         Commands::Credential(cmd) => credential::execute(cmd, paths).await,

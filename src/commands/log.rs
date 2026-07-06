@@ -123,7 +123,9 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
                     render_history_event(ev);
                 }
                 if truncated {
-                    println!("… (more events truncated by --limit; pass a larger --limit to see them)");
+                    println!(
+                        "… (more events truncated by --limit; pass a larger --limit to see them)"
+                    );
                 }
             }
             Ok(())
@@ -147,10 +149,7 @@ fn parse_duration_secs(input: &str) -> Result<u64> {
     if s.is_empty() {
         anyhow::bail!("empty duration");
     }
-    let (num, unit) = s.split_at(
-        s.find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(s.len()),
-    );
+    let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
     let n: u64 = num
         .parse()
         .with_context(|| format!("invalid duration number in '{input}'"))?;
