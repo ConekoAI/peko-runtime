@@ -164,6 +164,7 @@ pub async fn run_root_agent_prompt(
         |_event| {
             // Non-streaming: events are ignored.
         },
+        None,
     )
     .await
 }
@@ -184,6 +185,7 @@ pub async fn run_root_agent_prompt_streaming<F>(
     available_agents: Vec<AgentPromptSummary>,
     ctx: &PrincipalContext,
     on_event: F,
+    cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> anyhow::Result<String>
 where
     F: Fn(AgenticEvent) + Send + Sync + 'static,
@@ -196,6 +198,7 @@ where
         available_agents,
         ctx,
         on_event,
+        cancel,
     )
     .await
 }
@@ -208,6 +211,7 @@ async fn run_root_agent_prompt_with_callback<F>(
     available_agents: Vec<AgentPromptSummary>,
     ctx: &PrincipalContext,
     on_event: F,
+    cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> anyhow::Result<String>
 where
     F: Fn(AgenticEvent) + Send + Sync + 'static,
@@ -416,6 +420,7 @@ where
             Some(history),
             None, // caller_id: attribution is handled at the dispatcher boundary
             on_event,
+            cancel,
         )
         .await
         .context("root agent execution failed")?;

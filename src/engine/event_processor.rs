@@ -172,6 +172,16 @@ impl EventProcessor {
                             self.state.has_started_turn = false;
                         }
                     }
+                    LifecyclePhase::Interrupted => {
+                        // Soft-interrupt is terminal — close the turn
+                        // like a normal end. The reason (if any) flows
+                        // through the Lifecycle event itself; the
+                        // channel doesn't need a distinct action.
+                        if self.state.has_started_turn {
+                            actions.push(ChannelAction::EndTurn);
+                            self.state.has_started_turn = false;
+                        }
+                    }
                     _ => {}
                 }
             }

@@ -161,6 +161,14 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
                         output.error = error;
                         end_received = true;
                     }
+                    LifecyclePhase::Interrupted => {
+                        // Soft-interrupt is terminal but not an error.
+                        // Surface as success with the reason (if any) on
+                        // output.error so callers can distinguish.
+                        output.success = false;
+                        output.error = error.or_else(|| Some("interrupted".to_string()));
+                        end_received = true;
+                    }
                     _ => {}
                 }
             }

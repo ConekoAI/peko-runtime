@@ -200,6 +200,7 @@ impl PrincipalRouter for RootRouter {
         &self,
         ctx: RouterContext,
         on_event: Box<dyn Fn(AgenticEvent) + Send + Sync>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<RouteDecision, RouterError> {
         let peer = ctx.peer.clone();
         let session_id = root_session_id(&peer);
@@ -215,6 +216,7 @@ impl PrincipalRouter for RootRouter {
             available_agents,
             &principal_ctx,
             on_event,
+            cancel,
         )
         .await
         .map_err(|e| RouterError::AgentFailed(e.to_string()))?;

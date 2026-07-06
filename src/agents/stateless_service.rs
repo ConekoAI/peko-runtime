@@ -942,6 +942,7 @@ impl StatelessAgentService {
                     Some(history.clone()),
                     caller_id,
                     on_event,
+                    None,
                 )
                 .await;
 

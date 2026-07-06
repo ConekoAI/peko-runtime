@@ -39,6 +39,10 @@ pub struct AgenticResult {
     pub iterations: usize,
     /// Token usage
     pub usage: TokenUsage,
+    /// True if the run was soft-interrupted by an external
+    /// `PrincipalSendControl` request. The current step finished
+    /// cleanly before exit; `final_answer` may be empty or partial.
+    pub interrupted: bool,
 }
 
 /// A tool call for session storage compatibility
@@ -69,9 +73,19 @@ pub struct AgenticLoop {
     /// via the `SkillStateRegistry` at handle time.
     agent_principal_id: String,
     /// Per-session queue of completed async tasks, drained at the start
-    /// of each `run_inner` iteration. Surfaced to the LLM as a
+    /// of `run_inner` iteration. Surfaced to the LLM as a
     /// synthetic user-role message containing all queued completions.
     async_completion_queue: Option<SharedSessionInbox>,
+    /// Optional soft-interrupt token. When set, the loop checks
+    /// `is_cancelled()` at the start of each iteration and just
+    /// before delivering the final answer; if cancelled, it emits a
+    /// `Lifecycle::Interrupted` event and returns `interrupted: true`
+    /// without committing the final answer to the session. The
+    /// current in-flight step (LLM stream chunk, tool call) always
+    /// runs to completion — this is a *soft* interrupt, not a hard
+    /// kill. Set by the streaming IPC handler via `with_cancel_token`
+    /// so the `PrincipalSendControl` IPC can signal cancellation.
+    cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl AgenticLoop {
@@ -98,6 +112,7 @@ impl AgenticLoop {
             caller_id: None,
             agent_principal_id,
             async_completion_queue: None,
+            cancel: None,
         }
     }
 
@@ -125,6 +140,18 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_max_iterations(mut self, max: usize) -> Self {
         self.max_iterations = max;
+        self
+    }
+
+    /// Set the soft-interrupt cancel token. When set, the loop checks
+    /// `is_cancelled()` at iteration boundaries and exits cleanly via
+    /// `Lifecycle::Interrupted` + `AgenticResult { interrupted: true }`
+    /// when the token is signalled. The in-flight LLM stream chunk or
+    /// tool call always finishes first — this is cooperative
+    /// cancellation, not a hard kill.
+    #[must_use]
+    pub fn with_cancel_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
+        self.cancel = Some(token);
         self
     }
 
@@ -495,6 +522,36 @@ impl AgenticLoop {
                 }
             }
 
+            // Soft-interrupt checkpoint #1: at the top of every
+            // iteration, after the inbox drain. If the cancel token
+            // was signalled, exit cleanly without starting another
+            // LLM call. The in-flight step from the *previous*
+            // iteration has already completed by the time we get
+            // here, so this is the earliest point a cancel takes
+            // effect (the LLM stream chunk and any tool round-trip
+            // always run to completion first).
+            if let Some(cancel) = &self.cancel {
+                if cancel.is_cancelled() {
+                    info!(
+                        "AgenticLoop: soft-interrupt observed at iteration {}; exiting cleanly",
+                        iteration
+                    );
+                    on_event(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Interrupted,
+                        error: Some("cancelled by PrincipalSendControl".to_string()),
+                    });
+                    return Ok(AgenticResult {
+                        success: false,
+                        final_answer: String::new(),
+                        tool_calls: vec![],
+                        iterations: iteration,
+                        usage: total_usage,
+                        interrupted: true,
+                    });
+                }
+            }
+
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
             let tool_defs = self.build_tool_definitions().await;
 
@@ -531,6 +588,7 @@ impl AgenticLoop {
                     tool_calls: vec![],
                     iterations: iteration,
                     usage: total_usage,
+                    interrupted: false,
                 });
             }
 
@@ -838,6 +896,35 @@ impl AgenticLoop {
             // No tool calls - this is the final answer
             info!("Final answer received after {} iterations", iteration);
 
+            // Soft-interrupt checkpoint #2: just before we commit
+            // the final answer to the session. If the cancel token
+            // was signalled *while* the LLM was streaming this final
+            // response, drop the answer on the floor and exit
+            // cleanly. The streamed deltas have already been emitted
+            // to the client (soft interrupt doesn't chop mid-token),
+            // but we don't persist the final answer or emit
+            // `Lifecycle::End`.
+            if let Some(cancel) = &self.cancel {
+                if cancel.is_cancelled() {
+                    info!(
+                        "AgenticLoop: soft-interrupt observed at final-answer; dropping final answer"
+                    );
+                    on_event(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Interrupted,
+                        error: Some("cancelled by PrincipalSendControl".to_string()),
+                    });
+                    return Ok(AgenticResult {
+                        success: false,
+                        final_answer: String::new(),
+                        tool_calls: vec![],
+                        iterations: iteration,
+                        usage: total_usage,
+                        interrupted: true,
+                    });
+                }
+            }
+
             // Add final answer to session
             {
                 let mut s = session.write().await;
@@ -870,6 +957,7 @@ impl AgenticLoop {
                 tool_calls: vec![],
                 iterations: iteration,
                 usage: total_usage,
+                interrupted: false,
             });
         }
     }
@@ -1702,6 +1790,84 @@ mod tests {
         assert!(
             synthetic_msg.is_some(),
             "expected the synthetic user message with the Async task results header"
+        );
+    }
+
+    // ===================================================================
+    // RT-Interrupt: Cancel token observed at iteration boundary
+    //
+    // Build an AgenticLoop with a CancellationToken that's already
+    // cancelled, queue a mock LLM response, and verify the loop
+    // returns `interrupted: true` with an empty final answer and an
+    // `Interrupted` lifecycle event. The LLM call should NOT be made
+    // because the cancel check fires before the LLM iteration.
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_interrupt_pre_cancelled_token_short_circuits() {
+        crate::identity::init_test_env();
+        ensure_global_core();
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        // No LLM call should be made because the cancel check fires
+        // before the first iteration. If the test sees this text in
+        // the result, the cancel check was bypassed.
+        mock.queue_text("THIS_SHOULD_NOT_BE_RETURNED");
+
+        let config = test_agent_config("interrupt-agent");
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel(); // pre-cancel
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+            .await
+            .with_cancel_token(cancel);
+
+        let session = test_session("interrupt-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let result = loop_
+            .run_with_resume(
+                "Will be interrupted",
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                session,
+                None,
+            )
+            .await
+            .expect("agentic loop should return Ok with interrupted=true");
+
+        assert!(
+            result.interrupted,
+            "result should be marked interrupted; got {result:?}"
+        );
+        assert!(
+            !result.success,
+            "interrupted run should not be marked success; got {result:?}"
+        );
+        assert_eq!(
+            result.final_answer, "",
+            "interrupted run should have an empty final answer; got {:?}",
+            result.final_answer
+        );
+
+        // The agentic loop must emit a Lifecycle::Interrupted event
+        // before returning.
+        let emitted = events.lock().unwrap();
+        let has_interrupted = emitted.iter().any(|e| {
+            matches!(
+                e,
+                AgenticEvent::Lifecycle {
+                    phase: LifecyclePhase::Interrupted,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_interrupted,
+            "expected a Lifecycle::Interrupted event in: {emitted:?}"
         );
     }
 }

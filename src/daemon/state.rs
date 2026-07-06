@@ -24,6 +24,7 @@ use crate::principal::{
 };
 use crate::registry::{load_from_workspace, RegistryConfig};
 use crate::session::InboxRegistry;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -208,6 +209,18 @@ pub struct AppState {
     /// before the tunnel connects.
     pending_a2a_responses: Arc<crate::tunnel::PendingA2aResponses>,
 
+    /// In-flight `PrincipalSendStream` runs, keyed by the original
+    /// `request_id`. The streaming handler inserts on spawn (with a
+    /// cancel token + peer for steer session-id derivation) and
+    /// removes on natural completion. The `PrincipalSendControl` IPC
+    /// handler looks up entries here to issue soft-interrupt or push
+    /// a steering message into the run's session inbox.
+    ///
+    /// `std::sync::Mutex` matches the `PendingA2aResponses` pattern:
+    /// every operation is hash-map-only, no `.await` is held across
+    /// the lock. See `src/tunnel/a2a_pending.rs:53-55`.
+    streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>>,
+
     /// Slot for the live outbound tunnel handle. The
     /// `TunnelDispatcher` writes the freshest handle on every
     /// reconnect; the `CrossRuntimeA2aCtx` (and any other consumer
@@ -225,6 +238,32 @@ pub struct AppState {
     /// (which can be set by extension failures etc.). Surfaced via
     /// `TunnelHealth::Degraded` (issue #8).
     tunnel_degraded: Arc<RwLock<bool>>,
+}
+
+/// Per-run control handle for an in-flight `PrincipalSendStream`.
+///
+/// Inserted by the streaming handler when it spawns the root agent
+/// task, removed on natural completion. Looked up by
+/// `handle_principal_send_control` to either cancel the run (Interrupt
+/// mode) or push a steering message into its session inbox (Steer
+/// mode). See `src/ipc/server.rs` for the streaming handler and the
+/// `PrincipalSendControl` IPC handler.
+pub struct StreamingRunHandle {
+    /// Principal name — diagnostic only, included in control responses.
+    pub principal_name: String,
+    /// Peer subject — needed to derive `session_id` for steer pushes.
+    /// Cloned into the IPC handler's scope (cheap, `Subject` is small).
+    pub peer: crate::auth::Subject,
+    /// Cancellation token for soft-interrupt. Setting this signals
+    /// the agentic loop to finish the current step and exit cleanly.
+    /// Cloned into both the agentic loop and the IPC handler.
+    pub cancel: tokio_util::sync::CancellationToken,
+    /// Set by the streaming handler when it observes the cancel
+    /// signal (or detects natural completion). Lets the IPC handler
+    /// wait for the run to actually wind down if it needs to. Not
+    /// required for the fire-and-forget control ack; reserved for
+    /// future "wait for clean shutdown" semantics.
+    pub interrupt_acked: Arc<tokio::sync::Notify>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -428,6 +467,8 @@ impl AppState {
         let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
         let peko_config = load_peko_config(&config_dir);
         let pending_a2a_responses = Arc::new(crate::tunnel::PendingA2aResponses::new());
+        let streaming_runs: Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
         let direct_manager = Arc::new(crate::tunnel::direct::DirectConnectionManager::new(
             runtime_signing_key.clone(),
             runtime_identity.runtime_did.clone(),
@@ -743,6 +784,7 @@ impl AppState {
             // connects; the slot starts as `None` and is filled by
             // the dispatcher's handle-publisher on every reconnect.
             pending_a2a_responses,
+            streaming_runs,
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
         })
     }
@@ -1292,6 +1334,14 @@ impl AppState {
     /// call sites hold a cheap reference.
     pub fn pending_a2a_responses(&self) -> Arc<crate::tunnel::PendingA2aResponses> {
         self.pending_a2a_responses.clone()
+    }
+
+    /// In-flight `PrincipalSendStream` run registry. Looked up by the
+    /// `PrincipalSendControl` IPC handler for soft-interrupt and
+    /// steer operations. Returns a clone of the inner `Arc<Mutex>`
+    /// so call sites can hold a cheap reference.
+    pub fn streaming_runs(&self) -> Arc<std::sync::Mutex<HashMap<u64, StreamingRunHandle>>> {
+        self.streaming_runs.clone()
     }
 
     /// Slot for the live outbound tunnel handle (issue #29). The

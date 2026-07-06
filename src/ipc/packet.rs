@@ -33,6 +33,26 @@ pub enum AuthCredential {
     ApiKey(String),
 }
 
+/// Mode for a `PrincipalSendControl` request.
+///
+/// Tagged enum, internally discriminated on `mode`. The wire shape is:
+///
+/// ```json
+/// { "mode": "interrupt" }
+/// { "mode": "steer", "text": "..." }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum PrincipalSendControlMode {
+    /// Set the run's cancel token. The run finishes its current step
+    /// (LLM stream chunk, in-flight tool call) and exits cleanly,
+    /// emitting a final `PrincipalSentDone` + `Lifecycle::Interrupted`.
+    Interrupt,
+    /// Inject `text` as a new user-role turn into the run's session
+    /// inbox. The agentic loop drains it at the next iteration.
+    Steer { text: String },
+}
+
 impl Default for AuthCredential {
     fn default() -> Self {
         Self::None
@@ -353,6 +373,25 @@ pub enum RequestPacket {
         user: String,
     },
 
+    /// Soft-cancel or steer an in-flight `PrincipalSendStream` run.
+    ///
+    /// The `mode` enum selects between two behaviours:
+    /// - `Interrupt`: set the run's cancel token. The run finishes its
+    ///   current step (LLM stream chunk, in-flight tool call), emits a
+    ///   final `PrincipalSentDone` + `Lifecycle::Interrupted`, then exits.
+    /// - `Steer`: push a new user-role turn into the run's session
+    ///   inbox; the agentic loop drains it at the next iteration.
+    ///
+    /// `target_request_id` is the `request_id` of the original
+    /// `PrincipalSendStream` request. The response is a single
+    /// `Done { success, error }` (mirrors `AsyncCancel`).
+    #[serde(rename = "principal_send_control")]
+    PrincipalSendControl {
+        request_id: u64,
+        target_request_id: u64,
+        mode: PrincipalSendControlMode,
+    },
+
     /// Read a peer's conversation thread with a Principal.
     ///
     /// This is the read complement to `PrincipalSend`. There is no
@@ -518,7 +557,8 @@ impl RequestPacket {
             | Self::PrincipalRevokePermission { request_id, .. }
             | Self::PrincipalSetStatus { request_id, .. }
             | Self::PrincipalSetExposure { request_id, .. }
-            | Self::PrincipalPermissions { request_id, .. } => *request_id,
+            | Self::PrincipalPermissions { request_id, .. }
+            | Self::PrincipalSendControl { request_id, .. } => *request_id,
         }
     }
 
@@ -1002,7 +1042,6 @@ pub enum ResponsePacket {
         name: String,
         exposure: String,
     },
-
     // (Session-inbox steering variants — MessageQueued, PendingMessages,
     // MessageCancelled, SteeringMessageSummary — were retired under
     // ADR-042. External steering of an in-flight session is no longer
@@ -1311,6 +1350,80 @@ mod tests {
                 assert_eq!(name, "helper");
                 assert_eq!(message, "Hello");
                 assert_eq!(user, "alice");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_send_control_interrupt_roundtrip() {
+        let req = RequestPacket::PrincipalSendControl {
+            request_id: 1,
+            target_request_id: 99,
+            mode: PrincipalSendControlMode::Interrupt,
+        };
+        let bytes = req.to_bytes().unwrap();
+        // The on-wire payload must be the snake_case `principal_send_control`
+        // variant so a pre-launch CLI never sends an unknown variant to
+        // an older daemon.
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains("\"principal_send_control\""),
+            "expected `principal_send_control` in serialized payload, got: {json}"
+        );
+        assert!(
+            json.contains("\"mode\":\"interrupt\""),
+            "expected `interrupt` mode, got: {json}"
+        );
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalSendControl {
+                request_id,
+                target_request_id,
+                mode,
+            } => {
+                assert_eq!(request_id, 1);
+                assert_eq!(target_request_id, 99);
+                assert!(matches!(mode, PrincipalSendControlMode::Interrupt));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_principal_send_control_steer_roundtrip() {
+        let req = RequestPacket::PrincipalSendControl {
+            request_id: 2,
+            target_request_id: 100,
+            mode: PrincipalSendControlMode::Steer {
+                text: "actually do X instead".to_string(),
+            },
+        };
+        let bytes = req.to_bytes().unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains("\"mode\":\"steer\""),
+            "expected `steer` mode, got: {json}"
+        );
+        assert!(
+            json.contains("\"text\":\"actually do X instead\""),
+            "expected steered text in payload, got: {json}"
+        );
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::PrincipalSendControl {
+                request_id,
+                target_request_id,
+                mode,
+            } => {
+                assert_eq!(request_id, 2);
+                assert_eq!(target_request_id, 100);
+                match mode {
+                    PrincipalSendControlMode::Steer { text } => {
+                        assert_eq!(text, "actually do X instead");
+                    }
+                    _ => panic!("expected Steer mode"),
+                }
             }
             _ => panic!("Wrong variant"),
         }
@@ -3097,11 +3210,13 @@ mod tests {
             name: "helper".to_string(),
             peer: crate::auth::Subject::User("alice".to_string()),
             session_id: Some("sess-abc".to_string()),
-            events: vec![crate::common::services::session_service::HistoryEvent::Message {
-                role: "user".to_string(),
-                content: "hi".to_string(),
-                timestamp: "2026-07-04T12:00:00Z".to_string(),
-            }],
+            events: vec![
+                crate::common::services::session_service::HistoryEvent::Message {
+                    role: "user".to_string(),
+                    content: "hi".to_string(),
+                    timestamp: "2026-07-04T12:00:00Z".to_string(),
+                },
+            ],
             truncated: false,
         };
         let bytes = resp.to_bytes().unwrap();

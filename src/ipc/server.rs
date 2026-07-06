@@ -29,7 +29,9 @@ use tokio::net::UdpSocket;
 use tokio::net::UnixDatagram;
 use tracing::{error, info, trace, warn};
 
-use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket};
+use super::packet::{
+    AuthenticatedRequest, PrincipalSendControlMode, RequestPacket, ResponsePacket,
+};
 use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
@@ -42,7 +44,7 @@ use crate::auth::permissions::AuthError;
 use crate::auth::Subject;
 use crate::common::services::session_event_to_history;
 use crate::common::services::session_service::HistoryEvent;
-use crate::daemon::state::AppState;
+use crate::daemon::state::{AppState, StreamingRunHandle};
 use crate::principal::{
     router::{ChannelContext, ChannelKind},
     Principal, RouteDecision, RouterError,
@@ -68,6 +70,24 @@ struct PrincipalLogResponse {
     session_id: Option<String>,
     events: Vec<HistoryEvent>,
     truncated: bool,
+}
+
+/// RAII guard that removes a `PrincipalSendStream` run from the
+/// `streaming_runs` registry on drop. The streaming handler holds one
+/// of these for the lifetime of the run so registry cleanup happens on
+/// every return path — natural completion, sink-write error, panic —
+/// without needing a removal call at every `?`/`return` site.
+struct StreamingRunGuard {
+    registry: Arc<std::sync::Mutex<std::collections::HashMap<u64, StreamingRunHandle>>>,
+    request_id: u64,
+}
+
+impl Drop for StreamingRunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut runs) = self.registry.lock() {
+            runs.remove(&self.request_id);
+        }
+    }
 }
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
@@ -810,6 +830,21 @@ impl IpcServer {
                 Self::handle_async_cancel(request_id, task_id, state, sink, peer).await?;
             }
 
+            RequestPacket::PrincipalSendControl {
+                request_id,
+                target_request_id,
+                mode,
+            } => {
+                Self::handle_principal_send_control(
+                    request_id,
+                    target_request_id,
+                    mode,
+                    state,
+                    sink,
+                )
+                .await?;
+            }
+
             RequestPacket::CronList {
                 request_id,
                 include_disabled,
@@ -1518,7 +1553,6 @@ impl IpcServer {
             // reintroduces external compaction or steering, it must key off
             // PrincipalMemory rather than legacy SessionService. See
             // ADR-042.)
-
             RequestPacket::ExtensionInstall { request_id, path } => {
                 let mut manager = state.extension_manager().write().await;
                 let install_path =
@@ -2284,12 +2318,39 @@ impl IpcServer {
                     let _ = event_tx.try_send(event);
                 };
 
+                // Soft-interrupt plumbing. The cancel token is shared
+                // between the spawned agentic loop (observed at
+                // iteration boundaries) and the in-flight run registry
+                // (the `PrincipalSendControl` IPC handler flips it).
+                // The Drop guard removes the registry entry on every
+                // return path, including the early sink-error return
+                // below and panics.
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let interrupt_acked = Arc::new(tokio::sync::Notify::new());
+                let run_handle = StreamingRunHandle {
+                    principal_name: name.clone(),
+                    peer: peer.clone(),
+                    cancel: cancel.clone(),
+                    interrupt_acked: Arc::clone(&interrupt_acked),
+                };
+                {
+                    let runs_registry = state.streaming_runs();
+                    let mut runs = runs_registry.lock().unwrap();
+                    runs.insert(request_id, run_handle);
+                }
+                let _run_guard = StreamingRunGuard {
+                    registry: state.streaming_runs(),
+                    request_id,
+                };
+
                 // Run the root agent in a background task. When the
                 // task completes, the event_tx is dropped, closing
                 // the channel and signalling the handler to flush.
                 let router = Arc::clone(&principal.router);
                 let root_agent_handle = tokio::spawn(async move {
-                    let result = router.route_streaming(router_ctx, Box::new(on_event)).await;
+                    let result = router
+                        .route_streaming(router_ctx, Box::new(on_event), Some(cancel))
+                        .await;
                     let _ = result_tx.send(result);
                 });
 
@@ -2960,6 +3021,67 @@ impl IpcServer {
         Ok(())
     }
 
+    /// Handle a `PrincipalSendControl` request: soft-interrupt or
+    /// steer a running `PrincipalSendStream` identified by
+    /// `target_request_id`. Looks the run up in
+    /// `AppState::streaming_runs`; if missing (run already completed,
+    /// unknown id, or the wrong process) returns `success=false`.
+    ///
+    /// `Interrupt` flips the run's cancel token; the agentic loop
+    /// observes it at the next iteration boundary and emits
+    /// `Lifecycle::Interrupted` before returning. `Steer` derives the
+    /// run's `session_id` from the stored peer and pushes a
+    /// `SteeringMessage` into the same `InboxRegistry` the agentic
+    /// loop drains.
+    async fn handle_principal_send_control(
+        request_id: u64,
+        target_request_id: u64,
+        mode: PrincipalSendControlMode,
+        state: AppState,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        use crate::extensions::framework::async_exec::executor::SteeringMessage;
+        use crate::principal::routers::root::root_session_id;
+
+        // Snapshot the handle under the lock and drop the guard
+        // before doing any work — never hold the lock across an
+        // `.await` or a steering push (which takes its own inbox
+        // lock).
+        let snapshot = {
+            let runs_registry = state.streaming_runs();
+            let runs = runs_registry.lock().unwrap();
+            runs.get(&target_request_id)
+                .map(|h| (h.cancel.clone(), h.peer.clone(), h.principal_name.clone()))
+        };
+
+        let (success, error) = match (snapshot, mode) {
+            (Some((cancel, _peer, _name)), PrincipalSendControlMode::Interrupt) => {
+                cancel.cancel();
+                (true, None)
+            }
+            (Some((_cancel, peer, _name)), PrincipalSendControlMode::Steer { text }) => {
+                let session_id = root_session_id(&peer);
+                let inbox = state.inbox_registry.get_or_create(&session_id).await;
+                inbox.push(SteeringMessage::new(text));
+                (true, None)
+            }
+            (None, _) => (
+                false,
+                Some(format!(
+                    "Stream run {target_request_id} not found (already completed or unknown id)"
+                )),
+            ),
+        };
+
+        let response = ResponsePacket::Done {
+            request_id,
+            success,
+            error,
+        };
+        Self::send_sink(sink, response).await?;
+        Ok(())
+    }
+
     /// Handle an ExtStart request — start a background runtime for an extension
     async fn handle_ext_start(
         request_id: u64,
@@ -3374,11 +3496,7 @@ impl IpcServer {
         // ── Build the resource for permission gating ──────────────────
         let (owner, permissions, exposure) = {
             let cfg = principal.config.read().await;
-            (
-                cfg.owner.clone(),
-                cfg.permissions.clone(),
-                cfg.exposure,
-            )
+            (cfg.owner.clone(), cfg.permissions.clone(), cfg.exposure)
         };
         let resource = Resource::Principal {
             name: name.to_string(),

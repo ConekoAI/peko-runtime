@@ -28,6 +28,11 @@ pub enum LifecyclePhase {
     Error,
     /// Run was aborted
     Aborted,
+    /// Run was soft-interrupted by an external request. The run
+    /// finished its current step (LLM stream chunk, in-flight tool
+    /// call) before exiting. The reason (if any) is carried on the
+    /// `Lifecycle` event's `error` field.
+    Interrupted,
 }
 
 impl fmt::Display for LifecyclePhase {
@@ -38,6 +43,7 @@ impl fmt::Display for LifecyclePhase {
             LifecyclePhase::End => write!(f, "end"),
             LifecyclePhase::Error => write!(f, "error"),
             LifecyclePhase::Aborted => write!(f, "aborted"),
+            LifecyclePhase::Interrupted => write!(f, "interrupted"),
         }
     }
 }

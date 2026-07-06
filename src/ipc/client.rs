@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::trace;
 
 use super::connection::{ConnectionHandle, ConnectionManager};
-use super::packet::{RequestPacket, ResponsePacket};
+use super::packet::{PrincipalSendControlMode, RequestPacket, ResponsePacket};
 use super::stream::{PacketStream, StreamRouter};
 
 /// Client for communicating with the peko daemon
@@ -505,6 +505,30 @@ impl DaemonClient {
             user: user.into(),
         };
         self.send_request(packet).await
+    }
+
+    /// Send a `PrincipalSendControl` (soft interrupt or steer) to the
+    /// running stream identified by `target_request_id`. Returns the
+    /// server's `ResponsePacket::Done` directly — the caller is
+    /// expected to inspect `success`/`error` and surface a useful
+    /// message to the user (the CLI's `peko interrupt` command does
+    /// this).
+    ///
+    /// `target_request_id` is the `request_id` of the original
+    /// `PrincipalSendStream` request, surfaced by `peko send --stream`
+    /// on stderr at start.
+    pub async fn principal_send_control(
+        &self,
+        target_request_id: u64,
+        mode: PrincipalSendControlMode,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalSendControl {
+            request_id,
+            target_request_id,
+            mode,
+        };
+        self.request_response(packet).await
     }
 
     /// Export a Principal to a package.
