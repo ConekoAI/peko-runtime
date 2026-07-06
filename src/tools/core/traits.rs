@@ -58,18 +58,55 @@ pub trait Tool: Send + Sync {
     /// - The `BuiltinToolAdapter` wrapper (which bridges into ExtensionCore)
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value>;
 
-    /// Hook point called by the framework when a tool call is cancelled.
+    /// Hook called by the framework when a tool call is cancelled.
     ///
-    /// Implementations should **not** perform the actual stop here. The
-    /// framework's existing abort plumbing (`ToolContext::abort_signal`,
-    /// `bridge_to_cancellation_token`, etc.) already stops long-running tools
-    /// such as `BashTool` and `AgentTool`. Soft-path tools are allowed to finish
-    /// naturally. Instead, override this method to enrich the
-    /// [`ToolInterruptNotice`] with what was preserved / rolled back / leaked.
+    /// This is the **single seam** where a tool author expresses its interrupt
+    /// semantics. Override it to do two things, in any order:
     ///
-    /// The framework always emits a notice on cancel, replacing the tool's
-    /// natural output on the next turn. The default implementation returns a
-    /// minimal soft-path notice.
+    /// 1. **Cleanup** of side-effects owned by this tool — kill spawned
+    ///    subprocesses, roll back staged writes, drop network handles, abort
+    ///    in-flight transactions, etc. Because `on_interrupt` runs with `&self`,
+    ///    it has direct access to the tool's internal state (`Arc<Mutex<Inner>>`
+    ///    fields, child handles, etc.) and can perform cleanup that the main
+    ///    `execute` task can't do safely from inside itself.
+    /// 2. **Describe** what happened by returning a [`ToolInterruptNotice`]
+    ///    with the `preserved` / `rolled_back` / `leaked` / `resume_hint`
+    ///    fields filled in for the calling agent.
+    ///
+    /// The default implementation does **no cleanup** and returns a soft
+    /// default notice. Soft-path tools that just want the framework to emit a
+    /// generic "cancelled" notice can leave this method alone.
+    ///
+    /// # What `on_interrupt` is *not*
+    ///
+    /// It is **not** the stop mechanism. The framework's existing abort
+    /// plumbing — `ToolContext::abort_signal()` (a `watch::Receiver<bool>`),
+    /// `bridge_to_cancellation_token`, the `tokio::select!` inside
+    /// `BashTool::execute_command_blocking`, the child's
+    /// `AgenticLoop::is_cancelled()` check — already stops long-running
+    /// tools. By the time the framework calls `on_interrupt`, the abort
+    /// signal has been flipped; the tool's `execute` is either returning
+    /// promptly (because it polled `is_aborted()`) or finishing naturally
+    /// (soft path). `on_interrupt` runs concurrently with that and gets to
+    /// describe the aftermath.
+    ///
+    /// # Order of operations (cancel flow)
+    ///
+    /// ```text
+    /// 1. Framework spawns the cancel watcher.
+    /// 2. Framework calls `tool.execute_with_context(...)` (the tool's main work).
+    /// 3. User (or upstream) flips the abort signal.
+    /// 4. Watcher observes the flip; in parallel:
+    ///    a. The tool's `execute` task observes `is_aborted()` and returns.
+    ///    b. `on_interrupt` runs cleanup and returns the notice.
+    /// 5. Framework emits the notice text on the next turn (cancel wins).
+    /// ```
+    ///
+    /// Cleanup in `on_interrupt` therefore runs *concurrently* with the
+    /// tool's `execute` task unwinding. Tools that need `execute` to have
+    /// fully returned before they do cleanup should await an internal
+    /// completion signal (e.g., a `tokio::sync::oneshot` their `execute`
+    /// sends on when it observes `is_aborted()`).
     async fn on_interrupt(&self, tool_call_id: &str, ctx: &ToolContext) -> ToolInterruptNotice {
         ToolInterruptNotice::soft_default(tool_call_id, ctx.tool_name.as_str())
     }
