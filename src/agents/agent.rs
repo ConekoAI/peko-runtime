@@ -842,11 +842,20 @@ impl Agent {
     /// Execute with a specific session and history.
     ///
     /// Directly creates an `AgenticLoop` and runs it with session resumption.
+    ///
+    /// `cancel` is the soft-interrupt `CancellationToken` (PR #128) the
+    /// child agent should observe at iteration boundaries. When the
+    /// parent agent's `CancellationToken` is flipped (e.g. via
+    /// `PrincipalSendControl`), the child agent's loop also exits
+    /// cleanly with `AgenticResult { interrupted: true }`. `None` for
+    /// the legacy non-cancelable path (sub-agents that pre-date this
+    /// plumbing, tests).
     pub async fn execute_with_session(
         &self,
         prompt: &str,
         session: Arc<tokio::sync::RwLock<crate::session::Session>>,
         history: Option<Vec<crate::common::types::message::LlmMessage>>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
     ) -> Result<crate::engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
@@ -881,7 +890,7 @@ impl Agent {
             *current = Some(session_id.clone());
         }
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, Some(session_id), None, None)
+            .build_agentic_loop(agent_arc, provider, Some(session_id), None, cancel)
             .await?;
 
         let result = match loop_

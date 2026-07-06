@@ -3319,4 +3319,88 @@ mod tests {
         assert_eq!(resp_perms.request_id(), 11);
         assert_eq!(resp_perms.variant_name(), "PrincipalPermissions");
     }
+
+    // ─── Interrupt means stop: Change 3 wire-shape tests ────────────
+    //
+    // The non-streaming `PrincipalSend` IPC variant is now internally
+    // routed through the streaming machinery (see
+    // `src/ipc/server.rs:run_principal_send` and the
+    // `PrincipalSendResponseKind` enum). The only observable wire-level
+    // difference is the success packet: one-shot emits
+    // `PrincipalSent` (peko-desktop wire compat), streaming emits
+    // `PrincipalSentDone`. These two tests lock down the wire shape
+    // the redirect MUST preserve.
+
+    /// The one-shot `PrincipalSent` response round-trips losslessly
+    /// through the JSON wire format, with the `principal_sent` serde
+    /// tag — the same shape peko-desktop's `usePrincipalSend` hook
+    /// (`peko-desktop/src/hooks/usePrincipals.ts:82-88`) expects when
+    /// the IPC client invokes the one-shot variant. The redirect
+    /// must NOT change this packet's serde name.
+    #[test]
+    fn one_shot_principal_sent_preserves_wire_shape() {
+        let resp = ResponsePacket::PrincipalSent {
+            request_id: 42,
+            content: "answer".to_string(),
+        };
+        let bytes = resp.to_bytes().expect("encode PrincipalSent");
+        let decoded = ResponsePacket::from_bytes(&bytes).expect("decode PrincipalSent");
+        match decoded {
+            ResponsePacket::PrincipalSent {
+                request_id,
+                content,
+            } => {
+                assert_eq!(request_id, 42);
+                assert_eq!(content, "answer");
+            }
+            other => panic!(
+                "decoded as wrong variant: {:?} — the redirect must keep \
+                 one-shot responses as PrincipalSent",
+                other.variant_name()
+            ),
+        }
+
+        // Verify the JSON serde tag is exactly `principal_sent` so
+        // peko-desktop's type guards still match.
+        let json = String::from_utf8(bytes).expect("utf-8");
+        assert!(
+            json.contains("\"type\":\"principal_sent\""),
+            "PrincipalSent must serialize with type tag 'principal_sent', got: {json}"
+        );
+    }
+
+    /// The streaming `PrincipalSentDone` response uses the
+    /// `principal_sent_done` serde tag — distinct from the one-shot
+    /// `principal_sent` tag. Both shapes must coexist on the wire
+    /// (the redirect adds a *third* transport behavior: a one-shot
+    /// request may now emit a streamed chunk sequence, but it ends
+    /// with `PrincipalSent`, never `PrincipalSentDone`).
+    #[test]
+    fn streaming_principal_sent_done_distinct_from_one_shot() {
+        let one_shot = ResponsePacket::PrincipalSent {
+            request_id: 1,
+            content: "x".to_string(),
+        };
+        let streaming = ResponsePacket::PrincipalSentDone {
+            request_id: 1,
+            content: "x".to_string(),
+        };
+
+        let one_shot_json = String::from_utf8(one_shot.to_bytes().unwrap()).unwrap();
+        let streaming_json = String::from_utf8(streaming.to_bytes().unwrap()).unwrap();
+
+        assert!(
+            one_shot_json.contains("\"type\":\"principal_sent\""),
+            "one-shot must use 'principal_sent' tag, got: {one_shot_json}"
+        );
+        assert!(
+            streaming_json.contains("\"type\":\"principal_sent_done\""),
+            "streaming must use 'principal_sent_done' tag, got: {streaming_json}"
+        );
+        // The two tags are distinct, confirming wire-compat.
+        assert_ne!(
+            one_shot_json, streaming_json,
+            "PrincipalSent and PrincipalSentDone must have distinct wire shapes"
+        );
+    }
 }

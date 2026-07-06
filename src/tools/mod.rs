@@ -17,7 +17,11 @@ pub mod core;
 pub mod registry;
 
 // Re-exports from core for convenience — these are the most commonly imported types.
-pub use core::{AbortSignal, Tool, ToolContext, ToolError, ToolResult, ToolWithContext};
+pub use core::{
+    bridge_from_cancellation_token, bridge_to_cancellation_token, AbortSignal,
+    AbortSignalBridgeGuard, CancellationTokenBridgeGuard, Tool, ToolContext, ToolError,
+    ToolInterruptNotice, ToolResult, ToolWithContext,
+};
 
 // Re-exports from builtin for convenience.
 pub use builtin::{

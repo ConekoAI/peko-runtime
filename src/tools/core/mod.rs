@@ -12,11 +12,14 @@
 
 pub mod context_source;
 pub mod exec;
+pub mod interrupt;
 pub mod traits;
 
 pub use context_source::ContextSource;
 pub use exec::{
-    AbortSignal, ToolContext, ToolContextAdapter, ToolError, ToolProgressEvent, ToolResult,
-    ToolWithContext,
+    bridge_from_cancellation_token, bridge_to_cancellation_token, AbortSignal,
+    AbortSignalBridgeGuard, CancellationTokenBridgeGuard, ToolContext, ToolContextAdapter,
+    ToolError, ToolProgressEvent, ToolResult, ToolWithContext,
 };
+pub use interrupt::ToolInterruptNotice;
 pub use traits::Tool;

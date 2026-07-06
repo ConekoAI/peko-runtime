@@ -144,11 +144,20 @@ impl BashTool {
     }
 
     /// Execute a shell command with an optional per-call timeout.
+    ///
+    /// `ctx` is observed for soft-interrupt: when the engine has plumbed
+    /// a `CancellationToken` (PR #128) into the tool layer via
+    /// `BuiltinToolAdapter`'s `for_hook_run_with_abort` path, a cancel
+    /// during a long-running subprocess aborts the wait, drops the
+    /// `Command` future (which Tokio then uses to kill the child), and
+    /// returns `Err`. Without a context, the call is uninterruptible —
+    /// preserving the legacy CLI path that has no cancel token.
     async fn execute_command_blocking(
         command: &str,
         working_dir: Option<std::path::PathBuf>,
         timeout_ms: Option<u64>,
         max_output_bytes: Option<usize>,
+        ctx: Option<&ToolContext>,
     ) -> Result<serde_json::Value> {
         let mut cmd = Command::new(SHELL);
         cmd.arg(SHELL_ARG).arg(command);
@@ -157,17 +166,37 @@ impl BashTool {
             cmd.current_dir(dir);
         }
 
+        // Build the abort-watcher future. When no context is supplied
+        // (or the context carries no abort receiver) the future is
+        // `pending` and the select behaves as a 2-way race.
+        let mut abort_rx = ctx.map(ToolContext::abort_signal);
+
+        let output_fut = cmd.output();
+        tokio::pin!(output_fut);
+
         let output = match timeout_ms {
             Some(ms) if ms > 0 => {
-                tokio::time::timeout(tokio::time::Duration::from_millis(ms), cmd.output())
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Bash command timed out after {ms} ms"))?
-                    .context("Failed to execute Bash command")?
+                let timeout_sleep = tokio::time::sleep(tokio::time::Duration::from_millis(ms));
+                tokio::pin!(timeout_sleep);
+                tokio::select! {
+                    res = &mut output_fut => res.context("Failed to execute Bash command")?,
+                    () = &mut timeout_sleep => {
+                        // Dropping `output_fut` here lets Tokio reap and
+                        // kill the spawned child; we surface the timeout
+                        // to the caller and bail without formatting.
+                        return Err(anyhow::anyhow!("Bash command timed out after {ms} ms"));
+                    }
+                    () = wait_for_abort(&mut abort_rx) => {
+                        return Err(anyhow::anyhow!("Bash command aborted"));
+                    }
+                }
             }
-            _ => cmd
-                .output()
-                .await
-                .context("Failed to execute Bash command")?,
+            _ => tokio::select! {
+                res = &mut output_fut => res.context("Failed to execute Bash command")?,
+                () = wait_for_abort(&mut abort_rx) => {
+                    return Err(anyhow::anyhow!("Bash command aborted"));
+                }
+            },
         };
 
         Self::format_output(&output, max_output_bytes)
@@ -198,7 +227,12 @@ impl BashTool {
                 move || async move {
                     // Background tasks stream their output through
                     // AsyncOutput; the per-call cap is not applied here.
-                    Self::execute_command_blocking(&command, working_dir, None, None).await
+                    // No context is threaded in because the closure runs
+                    // in the async-executor task, outside the
+                    // soft-interrupt path. Cancellation for background
+                    // tasks goes through `AsyncStop` (which uses the
+                    // registry's `cancel` slot — tracked separately).
+                    Self::execute_command_blocking(&command, working_dir, None, None, None).await
                 },
             )
             .await?;
@@ -254,8 +288,14 @@ impl BashTool {
             )
             .await
         } else {
-            Self::execute_command_blocking(&args.command, cwd, args.timeout, args.max_output_bytes)
-                .await
+            Self::execute_command_blocking(
+                &args.command,
+                cwd,
+                args.timeout,
+                args.max_output_bytes,
+                ctx,
+            )
+            .await
         }
     }
 }
@@ -263,6 +303,21 @@ impl BashTool {
 impl Default for BashTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Resolve to `()` when the abort receiver signals; never resolves
+/// when the receiver is `None` (no context supplied). Used as one
+/// branch of the `tokio::select!` inside `execute_command_blocking`.
+async fn wait_for_abort(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    if let Some(rx) = rx.as_mut() {
+        // `changed` resolves when the watcher's value flips. We don't
+        // care about the new value — we just want to bail.
+        let _ = rx.changed().await;
+    } else {
+        // No abort context — park forever. The other select branches
+        // (timeout, command output) still race as normal.
+        std::future::pending::<()>().await;
     }
 }
 
@@ -613,5 +668,66 @@ mod tests {
         // 3 lands inside the first 2-byte char; we should cut at 0 or 2.
         assert!(out.starts_with("é") || out.starts_with(""));
         assert!(out.ends_with("...(truncated)"));
+    }
+
+    /// Pre-armed abort signal — subscribe first, then abort, then
+    /// run `sleep 60` via `BashTool::execute_with_maybe_context`,
+    /// assert the call returns `Err` within ~1s — not the 60s the
+    /// command would otherwise block for. Validates the
+    /// `tokio::select!` between the command and the abort watcher
+    /// in `execute_command_blocking`.
+    ///
+    /// Note: we subscribe *before* calling `abort()` so the
+    /// receiver's initial state is `false` and `rx.changed().await`
+    /// (the path used by `wait_for_abort`) resolves on the abort
+    /// edge. Subscribing after `abort()` would leave the receiver
+    /// initialized to `true` and `changed()` would never fire.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_aborts_long_command() {
+        use std::time::{Duration, Instant};
+
+        let tool = BashTool::new();
+        let abort = crate::tools::AbortSignal::new();
+        let ctx = crate::tools::ToolContext::for_hook_run_with_abort(
+            "abort_test",
+            "Bash",
+            "Bash",
+            abort.subscribe(),
+        );
+        // Flip the signal after subscribing.
+        abort.abort();
+
+        let start = Instant::now();
+        let result = tool
+            .execute_with_maybe_context(json!({"command": "sleep 60"}), Some(&ctx))
+            .await;
+        let elapsed = start.elapsed();
+
+        // Must abort quickly — well under the 60s the command would
+        // otherwise take. Generous bound to avoid CI flakes.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "aborted call took {elapsed:?}; expected < 2s"
+        );
+        let err = result.expect_err("aborted command should error");
+        let msg = err.to_string();
+        assert!(msg.contains("abort"), "expected abort error, got: {msg}");
+    }
+
+    /// Without a context (or with a never-aborted one), the tool
+    /// behaves as before — `sleep` runs to completion. This is the
+    /// legacy non-cancelable path; we don't want the abort check to
+    /// break it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_no_ctx_runs_to_completion() {
+        let tool = BashTool::new();
+        let result = tool
+            .execute_with_maybe_context(json!({"command": "echo hi"}), None)
+            .await;
+        assert!(result.is_ok());
+        let v = result.unwrap();
+        assert_eq!(v["success"], true);
     }
 }

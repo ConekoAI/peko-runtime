@@ -282,6 +282,15 @@ impl SubagentExecutor {
     /// Spawn and execute a subagent
     ///
     /// Returns the `run_id` immediately. The execution happens in the background.
+    ///
+    /// `parent_cancel` is the soft-interrupt `CancellationToken` from
+    /// the parent agent's `AgenticLoop` (PR #128). When set, a
+    /// `child_token()` is derived so the sub-agent's own
+    /// `AgenticLoop` observes a cancel at iteration boundaries —
+    /// closing the gap where interrupting a parent left its
+    /// sub-agents running. The child token also fires on
+    /// `is_cancelled()` inside the closure below so the
+    /// `AsyncTaskStatus::Cancelled` write path runs cleanly.
     pub async fn spawn_and_execute(
         &self,
         task: &str,
@@ -289,6 +298,7 @@ impl SubagentExecutor {
         isolated: bool,
         parent_session_key: &str,
         config: ExecutionConfig,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         // Check depth limits
         let parent_depth = self.get_parent_depth(parent_session_key).await;
@@ -370,6 +380,14 @@ impl SubagentExecutor {
         let session_manager_for_cleanup = self.session_manager.clone();
         let principal_id_clone = self.principal_id.clone();
         let cleanup_policy_clone = config.cleanup;
+        // Derive a child token inside the closure so the sub-agent
+        // observes the parent's cancel via `child_cancel` without
+        // extending the parent's lifetime past the closure's
+        // `'static` bound. Without `child_token()` the child would
+        // share a token with the parent, which is fine for cancel
+        // propagation but means a child cancel would also cancel the
+        // parent — wrong direction. Derivation fixes both directions.
+        let child_cancel_for_closure = parent_cancel.as_ref().map(|t| t.child_token());
 
         self.unified_executor
             .execute_with_metadata(
@@ -403,7 +421,16 @@ impl SubagentExecutor {
                     let task_message =
                         build_subagent_task_message(&task_clone, child_depth, config.max_depth);
 
-                    // Execute with timeout
+                    // Execute with timeout. The cancel token is
+                    // observed via two paths: (1) the child's
+                    // `AgenticLoop` checks `is_cancelled()` at
+                    // iteration boundaries and exits cleanly via
+                    // `Lifecycle::Interrupted`; (2) the closure
+                    // here checks `is_cancelled()` after the
+                    // `exec_fut` resolves so the registry is
+                    // updated with `AsyncTaskStatus::Cancelled`
+                    // rather than `Failed` when the parent was
+                    // interrupted.
                     let exec_fut = execute_subagent_task(
                         &agent_name,
                         &child_session_key_clone,
@@ -415,6 +442,7 @@ impl SubagentExecutor {
                         registry_for_task,
                         principal_id_clone,
                         principal_workspace_clone,
+                        child_cancel_for_closure.clone(),
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -436,31 +464,48 @@ impl SubagentExecutor {
                         exec_fut.await
                     };
 
-                    // Process result
-                    let (status, output, error) = match result {
-                        Ok(output) => {
-                            info!("Subagent completed successfully: run_id={}", run_id_clone);
-                            (
-                                AsyncTaskStatus::Completed {
-                                    result: crate::tools::ToolResult::success(
-                                        serde_json::json!({"output": &output}),
-                                    ),
-                                },
-                                Some(output),
-                                None,
-                            )
-                        }
-                        Err(e) => {
-                            error!("Subagent failed: run_id={} error={}", run_id_clone, e);
-                            (
-                                AsyncTaskStatus::Failed {
-                                    error: e.to_string(),
-                                },
-                                None,
-                                Some(e.to_string()),
-                            )
-                        }
-                    };
+                    // Process result. If the parent was cancelled
+                    // mid-flight, the child's loop returns
+                    // `AgenticResult { interrupted: true }` —
+                    // surface that as `Cancelled` instead of
+                    // `Failed` so the parent's `peko async-list`
+                    // shows the right state.
+                    let cancelled = child_cancel_for_closure
+                        .as_ref()
+                        .is_some_and(tokio_util::sync::CancellationToken::is_cancelled);
+                    let (status, output, error): (AsyncTaskStatus, Option<String>, Option<String>) =
+                        if cancelled {
+                            info!("Subagent cancelled by parent: run_id={}", run_id_clone);
+                            (AsyncTaskStatus::Cancelled, None, None)
+                        } else {
+                            match result {
+                                Ok(output) => {
+                                    info!(
+                                        "Subagent completed successfully: run_id={}",
+                                        run_id_clone
+                                    );
+                                    (
+                                        AsyncTaskStatus::Completed {
+                                            result: crate::tools::ToolResult::success(
+                                                serde_json::json!({"output": &output}),
+                                            ),
+                                        },
+                                        Some(output),
+                                        None,
+                                    )
+                                }
+                                Err(e) => {
+                                    error!("Subagent failed: run_id={} error={}", run_id_clone, e);
+                                    (
+                                        AsyncTaskStatus::Failed {
+                                            error: e.to_string(),
+                                        },
+                                        None,
+                                        Some(e.to_string()),
+                                    )
+                                }
+                            }
+                        };
 
                     // Update the unified registry with the subagent result.
                     // This is the ONLY state update — no dual registry sync.
@@ -547,6 +592,13 @@ impl SubagentExecutor {
     /// completes or times out. Used for sequential decomposition patterns.
     ///
     /// Returns the completed run view on success, or an error if the run fails or times out.
+    ///
+    /// `parent_cancel` is forwarded to `spawn_and_execute` so the
+    /// sub-agent's `AgenticLoop` observes the parent's cancel token at
+    /// iteration boundaries. When the parent is interrupted via
+    /// `PrincipalSendControl`, the sub-agent exits cleanly with
+    /// `interrupted: true` and the wait unblocks promptly. `None` for
+    /// legacy non-cancelable call sites.
     pub async fn execute_and_wait(
         &self,
         task: &str,
@@ -555,10 +607,18 @@ impl SubagentExecutor {
         parent_session_key: &str,
         config: ExecutionConfig,
         timeout_secs: u64,
+        parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<SubagentRunView> {
         // Start the subagent (async mode initially)
         let run_id = self
-            .spawn_and_execute(task, parent_ctx, isolated, parent_session_key, config)
+            .spawn_and_execute(
+                task,
+                parent_ctx,
+                isolated,
+                parent_session_key,
+                config,
+                parent_cancel,
+            )
             .await?;
 
         // Wait for completion using the unified registry.
@@ -774,6 +834,7 @@ async fn execute_subagent_task(
     async_registry: SharedAsyncTaskRegistry,
     principal_id: PrincipalId,
     principal_workspace: Option<std::path::PathBuf>,
+    cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<String> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -897,6 +958,7 @@ async fn execute_subagent_task(
             &combined_prompt,
             child_session,
             None, // history: None => full system prompt (with tools) is prepended
+            cancel,
             |_event| {
                 // Non-streaming: ignore events
             },

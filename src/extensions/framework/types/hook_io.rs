@@ -194,6 +194,17 @@ pub enum HookInput {
         /// `tool_config`, eliminating a TOCTOU race where concurrent
         /// agents overwrite each other's whitelist on the shared core.
         allowed_extensions: Option<Vec<String>>,
+        /// Optional abort signal receiver for soft-interrupt propagation.
+        /// When `Some`, `BuiltinToolAdapter` builds the `ToolContext`
+        /// from this receiver (via
+        /// `ToolContext::for_hook_run_with_abort`) so the trait-default
+        /// `ctx.is_aborted()` check in
+        /// `src/tools/core/traits.rs:82, 102` is meaningful in production
+        /// — previously the adapter created a fresh never-aborted
+        /// receiver and the check was a no-op. Bridges the engine's
+        /// `CancellationToken` (soft-interrupt) into the tool layer
+        /// without changing the public `AbortSignal`/`ToolContext` API.
+        abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
     },
 
     /// Async task status check
@@ -365,6 +376,7 @@ mod tests {
             principal_id: Some("principal-z".to_string()),
             principal_name: None,
             allowed_extensions: None,
+            abort_signal: None,
         };
         match input {
             HookInput::ToolCall {

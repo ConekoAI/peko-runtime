@@ -90,6 +90,18 @@ pub struct ToolRuntimeContext {
     pub run_id: Option<String>,
     pub principal_id: Option<String>,
     pub principal_name: Option<String>,
+    /// Soft-interrupt abort signal receiver. Plumbed from the engine's
+    /// `CancellationToken` (PR #128) via
+    /// [`bridge_from_cancellation_token`] in `tools::core::exec`. When
+    /// `Some`, [`BuiltinToolAdapter`] calls
+    /// `ToolContext::for_hook_run_with_abort` so the trait-default
+    /// `ctx.is_aborted()` check (in `src/tools/core/traits.rs:82, 102`)
+    /// is meaningful in production — previously the adapter created a
+    /// fresh never-aborted receiver and the check was a no-op. `None`
+    /// for hooks fired outside a tool execution (prompt-build, async
+    /// status checks) and for legacy callers that haven't been migrated
+    /// to thread a token through.
+    pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl ToolRuntimeContext {
@@ -136,6 +148,18 @@ impl ToolRuntimeContext {
     #[must_use]
     pub fn with_principal_name(mut self, principal_name: impl Into<String>) -> Self {
         self.principal_name = Some(principal_name.into());
+        self
+    }
+
+    /// Bridge the engine's `CancellationToken` into the tool layer by
+    /// supplying the `watch::Receiver<bool>` half of an `AbortSignal`
+    /// built via [`crate::tools::bridge_from_cancellation_token`]. The
+    /// adapter at `src/extensions/builtin/adapter.rs:441` consumes this
+    /// and calls `ToolContext::for_hook_run_with_abort` so the
+    /// trait-default `ctx.is_aborted()` check works in production.
+    #[must_use]
+    pub fn with_abort_signal(mut self, abort_signal: tokio::sync::watch::Receiver<bool>) -> Self {
+        self.abort_signal = Some(abort_signal);
         self
     }
 }

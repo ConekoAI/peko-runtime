@@ -18,6 +18,7 @@ use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::common::services::AgentService;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::core::Tool;
+use crate::tools::{bridge_to_cancellation_token, CancellationTokenBridgeGuard, ToolContext};
 use anyhow::Context;
 
 /// Maximum allowed spawn depth (safety limit)
@@ -249,6 +250,13 @@ impl AgentTool {
     }
 
     /// Execute subagent spawn in blocking mode (waits for completion, returns inline result)
+    ///
+    /// `ctx` is the parent tool's execution context. When `Some`, the
+    /// abort signal is bridged into a `CancellationToken` (via
+    /// [`crate::tools::bridge_to_cancellation_token`]) and forwarded
+    /// to the sub-agent's `AgenticLoop` so a parent cancel propagates
+    /// into a spawned sub-agent. The bridge guard is held for the
+    /// duration of the spawn so the spawned task is aborted on drop.
     async fn execute_spawn_blocking(
         &self,
         prompt: &str,
@@ -257,8 +265,19 @@ impl AgentTool {
         config: ExecutionConfig,
         description: Option<String>,
         cleanup: SpawnCleanupPolicy,
+        ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
         let timeout_seconds = config.timeout_seconds;
+        let (parent_cancel, _cancel_guard): (
+            Option<tokio_util::sync::CancellationToken>,
+            CancellationTokenBridgeGuard,
+        ) = match ctx {
+            Some(c) => {
+                let (token, guard) = bridge_to_cancellation_token(Some(c.abort_signal()));
+                (Some(token), guard)
+            }
+            None => (None, CancellationTokenBridgeGuard::noop()),
+        };
 
         match self
             .executor
@@ -269,6 +288,7 @@ impl AgentTool {
                 parent_session_key,
                 config,
                 timeout_seconds,
+                parent_cancel,
             )
             .await
         {
@@ -504,6 +524,74 @@ Examples:
             config,
             description,
             cleanup,
+            None,
+        )
+        .await
+    }
+
+    /// Override the trait default to bridge the abort signal from
+    /// `ToolContext` into a `CancellationToken` for the sub-agent.
+    /// The default `Tool::execute_with_context` would call `self.execute`
+    /// directly, losing the cancel signal. We re-parse `params` and
+    /// dispatch to `execute_spawn_blocking(Some(ctx))` so the sub-agent
+    /// observes the parent's cancel at iteration boundaries.
+    async fn execute_with_context(
+        &self,
+        params: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> anyhow::Result<serde_json::Value> {
+        let args: AgentArgs = serde_json::from_value(params)
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+
+        let cleanup = args.cleanup.map_or(SpawnCleanupPolicy::Keep, |s| {
+            match s.to_lowercase().as_str() {
+                "delete" => SpawnCleanupPolicy::Delete,
+                _ => SpawnCleanupPolicy::Keep,
+            }
+        });
+
+        let parent_session_key = if let Some(key) = args.parent_session_key {
+            key
+        } else if let Some(ref provider) = self.session_provider {
+            provider.current_session_key()
+        } else {
+            return Err(anyhow::anyhow!(
+                "Agent tool requires a parent_session_key parameter or session provider."
+            ));
+        };
+
+        let subagent_config = self
+            .resolve_subagent_config(&args.subagent_type, args.model.as_deref())
+            .await?;
+
+        let executor = self
+            .executor
+            .as_ref()
+            .clone()
+            .with_agent_config(subagent_config);
+
+        let tool = AgentTool {
+            executor: Arc::new(executor),
+            agent_service: self.agent_service.clone(),
+            session_provider: None,
+            max_depth: self.max_depth,
+            max_concurrent: self.max_concurrent,
+        };
+        let config = ExecutionConfig {
+            timeout_seconds: 300,
+            cleanup,
+            label: args.description.clone(),
+            announce_completion: true,
+            max_depth: self.max_depth,
+        };
+        tool.execute_spawn_blocking(
+            &args.prompt,
+            args.isolated,
+            &parent_session_key,
+            config,
+            args.description,
+            cleanup,
+            Some(ctx),
         )
         .await
     }
