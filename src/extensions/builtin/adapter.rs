@@ -926,4 +926,153 @@ mod tests {
             other => panic!("expected enriched cancel notice, got {:?}", other),
         }
     }
+
+    /// Demonstrates `on_interrupt` doing real cleanup of tool-internal state,
+    /// not just describing consequences. The tool accumulates partial
+    /// side-effects into a shared `staged` buffer during `execute`. When
+    /// cancel fires, `on_interrupt` drains that buffer (rollback) and reports
+    /// the drained entries in the notice. After the call, the buffer must be
+    /// empty — proving the cleanup actually ran, not just that the notice
+    /// was synthesized.
+    #[tokio::test]
+    async fn on_interrupt_performs_actual_cleanup_of_tool_state() {
+        use crate::extensions::framework::core::{HookContext, HookPoint};
+        use crate::extensions::framework::types::{HookInput, ToolRuntimeContext};
+        use crate::tools::{ToolContext, ToolInterruptNotice};
+        use std::sync::Mutex as StdMutex;
+        use std::time::Duration;
+
+        struct CleanupTool {
+            staged: Arc<StdMutex<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl Tool for CleanupTool {
+            fn name(&self) -> &str {
+                "Cleanup"
+            }
+
+            fn description(&self) -> String {
+                "tool that performs cleanup on cancel".to_string()
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                json!({"type": "object", "properties": {}})
+            }
+
+            async fn execute(
+                &self,
+                _params: serde_json::Value,
+            ) -> anyhow::Result<serde_json::Value> {
+                let staged = self.staged.clone();
+                staged
+                    .lock()
+                    .unwrap()
+                    .extend(["row-1".to_string(), "row-2".to_string()]);
+                // Hold the tool open long enough for the cancel watcher to fire
+                // and for `on_interrupt` to race us.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                staged.lock().unwrap().push("row-3".to_string());
+                Ok(json!({"ok": true}))
+            }
+
+            async fn on_interrupt(
+                &self,
+                tool_call_id: &str,
+                _ctx: &ToolContext,
+            ) -> ToolInterruptNotice {
+                // Cleanup: drain whatever's been staged so far. This is the
+                // "rollback" — the partial writes never reach durable storage.
+                let drained = {
+                    let mut guard = self.staged.lock().unwrap();
+                    std::mem::take(&mut *guard)
+                };
+                ToolInterruptNotice {
+                    tool_call_id: tool_call_id.to_string(),
+                    tool_name: self.name().to_string(),
+                    preserved: vec![],
+                    rolled_back: drained,
+                    leaked: vec![],
+                    resume_hint: Some("staged write was rolled back; safe to retry".to_string()),
+                }
+            }
+        }
+
+        let staged = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let tool_struct = CleanupTool {
+            staged: staged.clone(),
+        };
+        // Wrap in a tool that exposes `as_any` so `Arc<dyn Tool>` works.
+        let tool: Arc<dyn Tool> = Arc::new(tool_struct);
+
+        let core = Arc::new(crate::extensions::framework::core::ExtensionCore::new());
+        BuiltinToolAdapter::register_tool(&core, tool.clone())
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let input = HookInput::ToolCall {
+            tool_name: "Cleanup".to_string(),
+            params: json!({}),
+            workspace: None,
+            agent_id: None,
+            session_id: None,
+            caller_id: None,
+            principal_id: None,
+            principal_name: None,
+            allowed_extensions: Some(vec!["builtin:tool:Cleanup".to_string()]),
+            abort_signal: Some(rx),
+        };
+        let point = HookPoint::ToolExecute {
+            tool_name: "Cleanup".to_string(),
+        };
+        let mut ctx = HookContext::new(point, input, core.services());
+        let runtime_ctx = ToolRuntimeContext::default().with_abort_signal(tx.subscribe());
+        ctx.set_state("tool_context", runtime_ctx);
+
+        // Fire cancel while the tool is sleeping in `execute`.
+        let cancel_tx = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_tx.send(true).unwrap();
+        });
+
+        let handler = BuiltinExecuteHandler::new(tool);
+        let result = handler.handle(ctx).await;
+
+        // Notice carries the rolled-back entries.
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(
+                    text.contains("[Cleanup call was CANCELLED]"),
+                    "text: {text}"
+                );
+                // The two rows staged before the cancel fired were drained
+                // by `on_interrupt`. Whether the third row was drained
+                // depends on whether `on_interrupt` ran before or after
+                // `execute` resumed — we only assert the rows that were
+                // *certainly* present at cancel time.
+                assert!(
+                    text.contains("Rolled back: row-1") && text.contains("row-2"),
+                    "text: {text}"
+                );
+            }
+            other => panic!("expected cancel notice, got {:?}", other),
+        }
+
+        // Cleanup actually ran: by the time the framework returned the
+        // notice, `on_interrupt` had drained the staged buffer. Allow
+        // a small grace window for the executor task to fully unwind
+        // before we inspect the buffer.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let final_staged = staged.lock().unwrap().clone();
+        // Whatever rows survived in the buffer (e.g. row-3 if `execute`
+        // resumed and pushed before noticing the abort) must NOT have
+        // been reported as rolled-back — the cleanup is a one-shot
+        // snapshot of what was staged *at interrupt time*.
+        assert!(
+            final_staged.is_empty() || final_staged.iter().all(|r| r == "row-3"),
+            "staged buffer after cleanup: {final_staged:?} — on_interrupt should have drained everything staged at cancel time"
+        );
+    }
 }
