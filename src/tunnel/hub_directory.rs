@@ -7,7 +7,7 @@
 //! (merged Jun 19 2026, commit `2995164`):
 //!
 //!   * `GET /v1/principals/by-did/:did`
-//!   * `GET /v1/principals/by-handle/:owner/:agent_name`
+//!   * `GET /v1/principals/by-handle/:owner/:principal_name`
 //!
 //! ## Authentication
 //!
@@ -41,7 +41,7 @@ use thiserror::Error;
 use crate::auth::Subject;
 
 /// Hit payload returned by the hub's `/v1/principals/by-did/:did` and
-/// `/v1/principals/by-handle/:owner/:agent_name` endpoints.
+/// `/v1/principals/by-handle/:owner/:principal_name` endpoints.
 ///
 /// Field names match pekohub's `PrincipalTargetResolution` (camelCase on the
 /// wire); see `pekohub/backend/src/services/instances.ts` for the source of
@@ -130,13 +130,13 @@ pub trait AgentDirectory: Send + Sync {
     /// Resolve a `did:peko:agent:...` to its host.
     async fn resolve_by_did(&self, did: &str) -> Result<AgentResolution, DirectoryError>;
 
-    /// Resolve a `{owner, agent_name}` handle to its host. The `owner`
-    /// segment is a user namespace today; team-handle resolution is
-    /// gated on pekohub#8.
+    /// Resolve a `{owner, principal_name}` handle to its host. The
+    /// `owner` segment is a user namespace today; team-handle resolution
+    /// is gated on pekohub#8.
     async fn resolve_by_handle(
         &self,
         owner: &str,
-        agent_name: &str,
+        principal_name: &str,
     ) -> Result<AgentResolution, DirectoryError>;
 }
 
@@ -252,13 +252,13 @@ impl AgentDirectory for HubAgentDirectoryClient {
     async fn resolve_by_handle(
         &self,
         owner: &str,
-        agent_name: &str,
+        principal_name: &str,
     ) -> Result<AgentResolution, DirectoryError> {
         // No client-side encoding — the hub's path regex pins both
         // segments and round-trips bad shapes as 400. Keeping the
         // client thin means the test surface is the contract.
         let url = format!(
-            "{base}/v1/principals/by-handle/{owner}/{agent_name}",
+            "{base}/v1/principals/by-handle/{owner}/{principal_name}",
             base = self.base_url
         );
         let resp = self
@@ -380,12 +380,12 @@ pub mod fake {
         async fn resolve_by_handle(
             &self,
             owner: &str,
-            agent_name: &str,
+            principal_name: &str,
         ) -> Result<AgentResolution, DirectoryError> {
             self.by_handle
                 .lock()
                 .unwrap()
-                .get(&(owner.to_string(), agent_name.to_string()))
+                .get(&(owner.to_string(), principal_name.to_string()))
                 .cloned()
                 .ok_or(DirectoryError::NotFound)?
                 .map_err(Into::into)
