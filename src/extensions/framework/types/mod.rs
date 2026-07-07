@@ -5,7 +5,6 @@
 
 // Re-export all types to preserve backward compatibility
 pub use self::async_types::AsyncReceipt;
-pub use self::directory_context::DirectoryContextTracker;
 pub use self::hook_io::{tool_result_from_hook, HookInput, HookOutput, HookResult};
 pub use self::manifest::{ExtensionDependency, ExtensionManifest};
 pub use self::session::{MessageEnvelope, PromptBuildState, SessionSnapshot, ToolRegistryAccess};
@@ -103,13 +102,6 @@ pub struct ToolRuntimeContext {
     /// status checks) and for legacy callers that haven't been migrated
     /// to thread a token through.
     pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
-    /// Directory-context tracker for AGENTS.md on-demand discovery.
-    /// The adapter pushes directories touched by tool calls; the
-    /// agentic loop drains the tracker at iteration start and
-    /// surfaces any newly-discovered `AGENTS.md` content as a
-    /// synthetic user message. See
-    /// [`crate::extensions::framework::types::DirectoryContextTracker`].
-    pub directory_tracker: Option<std::sync::Arc<DirectoryContextTracker>>,
 }
 
 impl ToolRuntimeContext {
@@ -170,26 +162,10 @@ impl ToolRuntimeContext {
         self.abort_signal = Some(abort_signal);
         self
     }
-
-    /// Attach a [`DirectoryContextTracker`] for `AGENTS.md` on-demand
-    /// discovery. The adapter pushes directories touched by tool
-    /// calls; the agentic loop drains the tracker at iteration start
-    /// and surfaces any newly-discovered `AGENTS.md` content as a
-    /// synthetic user message. See
-    /// [`crate::extensions::framework::types::DirectoryContextTracker`].
-    #[must_use]
-    pub fn with_directory_tracker(
-        mut self,
-        tracker: std::sync::Arc<DirectoryContextTracker>,
-    ) -> Self {
-        self.directory_tracker = Some(tracker);
-        self
-    }
 }
 
 // Submodules
 pub mod async_types;
-pub mod directory_context;
 pub mod hook_io;
 pub mod manifest;
 pub mod session;

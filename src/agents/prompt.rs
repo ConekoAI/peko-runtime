@@ -14,6 +14,6 @@ pub mod service;
 pub use builder::{PromptMode, SystemPromptBuilder};
 pub use memory::{
     directory_from_tool_params, discover_shared_context, load_principal_memory,
-    DirectoryContextTracker, PRINCIPAL_MEMORY_FILE, SHARED_CONTEXT_FILE,
+    PRINCIPAL_MEMORY_FILE, SHARED_CONTEXT_FILE,
 };
 pub use service::SystemPromptService;

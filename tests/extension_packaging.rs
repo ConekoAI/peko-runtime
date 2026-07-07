@@ -291,7 +291,6 @@ async fn test_extension_install_tool_registration_and_invocation() {
                 principal_name: None,
                 allowed_extensions: None,
                 abort_signal: None,
-                directory_tracker: None,
             },
         )
         .await;

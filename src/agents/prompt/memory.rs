@@ -4,38 +4,20 @@
 //! Two complementary surfaces:
 //!
 //! - **MEMORY.md** lives at `<principal_workspace>/MEMORY.md`. It is
-//!   loaded at session start and injected into the system prompt
-//!   under `## Your long-term memory (MEMORY.md)`. The principal
-//!   owns this file and may update it via `Write`.
+//!   loaded at session start and injected into the system prompt at
+//!   the `{{memory}}` placeholder when the template opts in. The
+//!   principal owns this file and may update it via `Write`.
 //!
 //! - **AGENTS.md** lives at arbitrary directories the principal
-//!   touches during a session. The framework discovers it on demand
-//!   when a directory-aware tool call lands in a directory that
-//!   contains (or has an ancestor containing) `AGENTS.md`. Discovered
-//!   contexts are surfaced to the model as synthetic user messages so
-//!   they appear on the next iteration's LLM call. The walk-up is
-//!   capped at the principal's workspace root so we never load files
-//!   outside the principal's authority.
+//!   touches during a session. The framework no longer auto-injects
+//!   this file; the helpers `discover_shared_context` and
+//!   `directory_from_tool_params` are exposed here so individual
+//!   agent extensions can implement their own AGENTS.md handling if
+//!   they want it. Missing files simply omit the section.
 //!
-//! Both are conventions rather than required files. Missing files
-//! simply omit the section.
-//!
-//! The tracker type itself lives in the framework types module
-//! ([`crate::extensions::framework::types::DirectoryContextTracker`])
-//! so framework code can hold an `Arc` to one without crossing the
-//! `extensions::framework` → `agents` boundary enforced by the
-//! `scripts/check_module_boundaries.sh` lint. We re-export it here
-//! for callers that already use the agents-side API.
+//! Both are conventions rather than required files.
 
 use std::path::{Path, PathBuf};
-
-// Re-exported from the framework types module so callers using the
-// agents-side API surface don't need to know about the framework
-// internals. The actual definition is in
-// `crate::extensions::framework::types::DirectoryContextTracker`
-// to satisfy the module-boundary lint (Rule 5: `extensions/framework`
-// must not import from `agents/`).
-pub use crate::extensions::framework::types::DirectoryContextTracker;
 
 /// Filename peko uses for per-principal long-term memory.
 pub const PRINCIPAL_MEMORY_FILE: &str = "MEMORY.md";
