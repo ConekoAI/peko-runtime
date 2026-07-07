@@ -346,6 +346,17 @@ impl HookHandler for BuiltinExecuteHandler {
             self.tool.parameters(),
         );
 
+        // Capture the original call params for AGENTS.md discovery.
+        // The actual execution path mutates params inside the closure
+        // (workspace injection), so we read from the HookInput before
+        // it changes.
+        let params_for_discovery = match &ctx.input {
+            crate::extensions::framework::types::HookInput::ToolCall { params, .. } => {
+                params.clone()
+            }
+            _ => serde_json::Value::Null,
+        };
+
         let runtime_ctx = ctx
             .get_state::<crate::extensions::framework::types::ToolRuntimeContext>("tool_context")
             .cloned()
@@ -508,6 +519,27 @@ impl HookHandler for BuiltinExecuteHandler {
                 });
             HookResult::Continue(HookOutput::Text(notice.to_tool_result_text()))
         } else {
+            // AGENTS.md on-demand discovery: if the tool call carried
+            // a directory-bearing parameter (Read/Write/Edit/Glob/Grep/
+            // Bash), record it in the directory tracker so the agentic
+            // loop can surface any newly-discovered AGENTS.md on the
+            // next iteration. Idempotent — touching the same directory
+            // twice is a no-op.
+            if let Some(tracker) = runtime_ctx.directory_tracker.as_ref() {
+                let default_root = runtime_ctx
+                    .workspace
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default();
+                if let Some(dir) = crate::agents::prompt::memory::directory_from_tool_params(
+                    &tool_name_for_notice,
+                    &params_for_discovery,
+                    &default_root,
+                ) {
+                    tracker.touch(&dir);
+                }
+            }
+
             result
         }
     }
@@ -729,6 +761,7 @@ mod tests {
             principal_name: None,
             allowed_extensions: Some(vec!["builtin:tool:Fast".to_string()]),
             abort_signal: Some(rx),
+            directory_tracker: None,
         };
         let point = HookPoint::ToolExecute {
             tool_name: "Fast".to_string(),
@@ -807,6 +840,7 @@ mod tests {
             principal_name: None,
             allowed_extensions: Some(vec!["builtin:tool:Slow".to_string()]),
             abort_signal: Some(rx),
+            directory_tracker: None,
         };
         let point = HookPoint::ToolExecute {
             tool_name: "Slow".to_string(),
@@ -898,6 +932,7 @@ mod tests {
             principal_name: None,
             allowed_extensions: Some(vec!["builtin:tool:Enriching".to_string()]),
             abort_signal: Some(rx),
+            directory_tracker: None,
         };
         let point = HookPoint::ToolExecute {
             tool_name: "Enriching".to_string(),
@@ -1022,6 +1057,7 @@ mod tests {
             principal_name: None,
             allowed_extensions: Some(vec!["builtin:tool:Cleanup".to_string()]),
             abort_signal: Some(rx),
+            directory_tracker: None,
         };
         let point = HookPoint::ToolExecute {
             tool_name: "Cleanup".to_string(),

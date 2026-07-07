@@ -102,6 +102,14 @@ pub struct ToolRuntimeContext {
     /// status checks) and for legacy callers that haven't been migrated
     /// to thread a token through.
     pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Directory-context tracker for AGENTS.md on-demand discovery.
+    /// The adapter pushes directories touched by tool calls; the
+    /// agentic loop drains the tracker at iteration start and
+    /// surfaces any newly-discovered `AGENTS.md` content as a
+    /// synthetic user message. See
+    /// `crate::agents::prompt::memory::DirectoryContextTracker`.
+    pub directory_tracker:
+        Option<std::sync::Arc<crate::agents::prompt::memory::DirectoryContextTracker>>,
 }
 
 impl ToolRuntimeContext {
@@ -160,6 +168,21 @@ impl ToolRuntimeContext {
     #[must_use]
     pub fn with_abort_signal(mut self, abort_signal: tokio::sync::watch::Receiver<bool>) -> Self {
         self.abort_signal = Some(abort_signal);
+        self
+    }
+
+    /// Attach a [`DirectoryContextTracker`] for `AGENTS.md` on-demand
+    /// discovery. The adapter pushes directories touched by tool
+    /// calls; the agentic loop drains the tracker at iteration start
+    /// and surfaces any newly-discovered `AGENTS.md` content as a
+    /// synthetic user message. See
+    /// `crate::agents::prompt::memory::DirectoryContextTracker`.
+    #[must_use]
+    pub fn with_directory_tracker(
+        mut self,
+        tracker: std::sync::Arc<crate::agents::prompt::memory::DirectoryContextTracker>,
+    ) -> Self {
+        self.directory_tracker = Some(tracker);
         self
     }
 }
