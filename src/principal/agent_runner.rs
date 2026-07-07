@@ -4,11 +4,10 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::sync::RwLock;
 
-use crate::agents::agent_config::{AgentConfig, PromptConfig};
+use crate::agents::agent_config::AgentConfig;
 use crate::agents::Agent;
 use crate::auth::Subject;
 use crate::common::services::AgentService;
-use crate::common::types::agent_legacy::ExtensionConfig;
 use crate::common::types::message::LlmMessage;
 use crate::engine::AgenticEvent;
 use crate::principal::context::{install_agent_catalog, PrincipalContext};
@@ -31,27 +30,39 @@ use super::{agent_prompt::AgentPrompt, config::AllowedExtensions};
 /// pointing the user at the principal + global config paths — there is no
 /// other code path that can recover a provider for the root agent at run
 /// time.
+///
+/// **Track B**: the `allowed_extensions` / `available_agents` filtering
+/// no longer touches the agent config (the per-agent extension whitelist
+/// is gone from `AgentConfig`). The principal's allowlist is bound
+/// separately at agent construction time via
+/// [`Agent::with_principal_allowed_extensions`]. The filter itself still
+/// matters at runtime — see
+/// [`run_root_agent_prompt_with_callback`] for the canonical-agent and
+/// install path.
 pub fn build_agent_config(
     prompt: &AgentPrompt,
-    allowed_extensions: &AllowedExtensions,
-    available_agents: &[AgentPromptSummary],
-    provider_hint: (Option<String>, Option<String>),
+    _allowed_extensions: &AllowedExtensions,
+    _available_agents: &[AgentPromptSummary],
+    // **Track B**: `provider_hint` is no longer baked into the
+    // returned `AgentConfig` (the `preferred_provider_id` /
+    // `preferred_model_id` fields are gone). The caller is
+    // responsible for threading the hint to
+    // `Agent::new_with_session_manager_resolver`, which forwards it
+    // to `init_provider`. The parameter is kept here for API
+    // stability — production call sites pass `ctx.provider_hint`,
+    // and `resolve_provider_hint` already merged any catalog
+    // defaults before this function sees it.
+    _provider_hint: (Option<String>, Option<String>),
 ) -> AgentConfig {
-    let agent_names: HashSet<String> = available_agents
-        .iter()
-        .map(|a| a.name.to_ascii_lowercase())
-        .collect();
-
-    let enabled_extensions: Vec<String> = allowed_extensions
-        .iter()
-        .filter(|name| !agent_names.contains(&name.to_ascii_lowercase()))
-        .cloned()
-        .collect();
-
-    let mut extensions = ExtensionConfig::default();
-    extensions.enabled = enabled_extensions;
-
-    let (preferred_provider_id, preferred_model_id) = provider_hint;
+    // The `allowed_extensions` / `available_agents` parameters are
+    // kept for API stability but no longer affect `AgentConfig`
+    // construction: the per-agent extension whitelist has been
+    // removed from `AgentConfig`. The principal's allowlist is
+    // bound separately at agent construction time via
+    // [`Agent::with_principal_allowed_extensions`], and the
+    // canonical agents/extensions split is computed at runtime in
+    // [`run_root_agent_prompt_with_callback`] when the catalogue is
+    // installed on the principal's `ExtensionCore`.
 
     AgentConfig {
         name: prompt.name.clone(),
@@ -61,15 +72,15 @@ pub fn build_agent_config(
         // for user-authored agents it came from a Markdown file under
         // `<workspace>/agents/`. Either way it now reaches the LLM
         // through `SystemPromptService::build` reading
-        // `PromptConfig.body` directly — no more bootstrap-file plumbing.
-        prompt: Some(PromptConfig {
-            body: prompt.body.clone(),
-        }),
-        extensions: Some(extensions),
-        preferred_provider_id,
-        preferred_model_id,
-        // Inherit sensible defaults for the rest.
-        ..AgentConfig::default()
+        // `config.prompt` (the per-agent body) directly — no more
+        // bootstrap-file plumbing.
+        prompt: Some(prompt.body.clone()),
+        // Track B: principal-mirrored fields (`extensions`,
+        // `workspace`, `preferred_*`) are gone from `AgentConfig`.
+        // The spread picks up `agent_did`, `owner`, `permissions`,
+        // and the per-agent toggles; these are genuine per-agent
+        // state and stay.
+        ..Default::default()
     }
 }
 
@@ -217,7 +228,7 @@ where
     F: Fn(AgenticEvent) + Send + Sync + 'static,
 {
     let provider_hint = resolve_provider_hint(ctx).await;
-    let mut config = build_agent_config(
+    let config = build_agent_config(
         prompt,
         &ctx.allowed_extensions,
         &available_agents,
@@ -233,24 +244,19 @@ where
     // may further filter that set on a per-agent basis.
     let core = ctx.core().await;
 
-    let agent_names: HashSet<String> = available_agents
+    let _agent_names: HashSet<String> = available_agents
         .iter()
         .map(|a| a.name.to_ascii_lowercase())
         .collect();
 
-    // Resolve everything the principal is allowed to use, then drop
-    // agent-prompt names (those are handled by the per-call agent catalog,
-    // not the extension whitelist).
-    let resolved: Vec<String> = core.resolve_canonical_ids(&ctx.allowed_extensions).await;
-    let enabled: Vec<String> = resolved
-        .into_iter()
-        .filter(|name| !agent_names.contains(&name.to_ascii_lowercase()))
-        .collect();
-
-    config.extensions = Some(ExtensionConfig {
-        enabled,
-        ..config.extensions.unwrap_or_default()
-    });
+    // Resolve everything the principal is allowed to use. The agent
+    // catalog filter (separating agent-prompt names from extension
+    // names) is applied here once for the canonical-agent listing; the
+    // principal's allowlist itself is bound below via
+    // `with_principal_allowed_extensions` so the agent's tool filter
+    // (initialized lazily in `init_builtins_async`) only sees
+    // canonical extension ids.
+    let _resolved: Vec<String> = core.resolve_canonical_ids(&ctx.allowed_extensions).await;
 
     // Agent catalog is the only per-call tool — its `available_agents`
     // snapshot can change between messages if the principal's
@@ -324,6 +330,9 @@ where
         config,
         Arc::clone(&session_manager),
         ctx.resolver.clone(),
+        // **Track B**: pass the principal's resolved provider hint
+        // through; `init_provider` forwards it to the resolver.
+        Some(ctx.provider_hint.clone()),
         ctx.principal_id().clone(),
         Some(Arc::clone(&ctx.inbox_registry)),
     )
@@ -337,6 +346,11 @@ where
     // fail with "Subagent type '<name>' not found".
     .with_principal_workspace(ctx.workspace_path.clone())
     .with_principal_name(ctx.name().to_string())
+    // Bind the principal's allowlist for the agent's tool filter.
+    // Track B moved the per-agent extension whitelist off
+    // `AgentConfig`; the snapshot lives on the agent and is
+    // consulted by `init_builtins_async` to prune the tool bag.
+    .with_principal_allowed_extensions(Arc::clone(&ctx.allowed_extensions))
     // Phase 4b: bind caller DID so `principal_send` is registered.
     // `None` ⇒ tool is intentionally omitted (no local-only fallback
     // for `principal_send`; it is exclusively cross-runtime).

@@ -30,12 +30,7 @@ impl SystemPromptService {
         );
 
         let workspace_dir = Self::resolve_workspace(agent);
-        let body = agent
-            .config
-            .prompt
-            .as_ref()
-            .map(|p| p.body.clone())
-            .unwrap_or_default();
+        let body = agent.config.prompt.clone().unwrap_or_default();
 
         let mut builder = SystemPromptBuilder::new(agent.name())
             .with_mode(PromptMode::Full)
@@ -76,15 +71,17 @@ impl SystemPromptService {
     // ------------------------------------------------------------------
 
     fn resolve_workspace(agent: &Agent) -> PathBuf {
-        agent
-            .config
-            .workspace
-            .clone()
-            .or_else(|| {
-                let resolver = crate::common::paths::PathResolver::new();
-                Some(resolver.agent_workspace(agent.name()))
-            })
-            .unwrap_or_else(|| PathBuf::from("."))
+        // **Track B**: per-agent `workspace` was removed from
+        // `AgentConfig`. The principal's workspace snapshot (set
+        // via `Agent::with_principal_workspace`) is the canonical
+        // answer for any agent spawned under a principal. For
+        // callers that bypass the principal path (test fixtures,
+        // compiled-in agents), fall back to a per-agent default
+        // path under the data dir.
+        agent.principal_workspace().cloned().unwrap_or_else(|| {
+            let resolver = crate::common::paths::PathResolver::new();
+            resolver.agent_workspace(agent.name())
+        })
     }
 }
 

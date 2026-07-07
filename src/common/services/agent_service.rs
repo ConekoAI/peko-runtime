@@ -5,7 +5,7 @@
 //!
 //! Agents are stored in the new layout at `agents/{agent}/config.toml`.
 
-use crate::agents::agent_config::{AgentConfig, PromptConfig};
+use crate::agents::agent_config::AgentConfig;
 use crate::commands::agent_bootstrap::AgentBootstrap;
 use crate::common::identifiers::{parse_agent_name, validate_agent_name, ValidationError};
 use crate::common::paths::PathResolver;
@@ -26,24 +26,18 @@ pub struct AgentService {
     principal_workspace: Option<PathBuf>,
 }
 
-fn build_default_agent_config(name: &str, provider: &str, model: Option<String>) -> AgentConfig {
-    // v3: agent config carries only soft hints (`preferred_*`); the
-    // actual provider/model wiring lives in the catalog + keychain.
-    // The old `ProviderConfig` field is `skip_serializing` and goes
-    // away in commit 2.
-    let preferred_model_id = Some(model.unwrap_or_else(|| "default".to_string()));
-
+fn build_default_agent_config(name: &str, _provider: &str, _model: Option<String>) -> AgentConfig {
+    // v3: agent config no longer carries provider/model hints — those
+    // live on `PrincipalConfig::preferred_*` and the principal's
+    // `LlmResolver` reads them at request time. The `provider` and
+    // `model` parameters are retained for API stability (callers
+    // still pass them); the values are intentionally ignored here.
     AgentConfig {
-        version: "3.0".to_string(),
         name: name.to_string(),
         description: Some(format!("peko agent: {name}")),
-        preferred_provider_id: Some(provider.to_string()),
-        preferred_model_id,
         // No authored body — `SystemPromptBuilder` falls back to
         // "You are <name>." for empty bodies.
-        prompt: Some(PromptConfig {
-            body: String::new(),
-        }),
+        prompt: Some(String::new()),
         ..Default::default()
     }
 }
@@ -141,9 +135,10 @@ impl AgentService {
         let memberships = Vec::new();
 
         // The agent's system prompt body is now stored inline in
-        // `PromptConfig.body` (no more SYSTEM.md indirection at read
-        // time). Return it directly so callers see the current prompt.
-        let system_prompt = config.prompt.as_ref().map(|p| p.body.clone());
+        // `AgentConfig::prompt` (no more SYSTEM.md indirection at
+        // read time). Return it directly so callers see the current
+        // prompt.
+        let system_prompt = config.prompt.clone();
 
         Ok(Some(AgentInfo {
             name: agent_name.to_string(),
@@ -197,14 +192,14 @@ impl AgentService {
         let prompt = crate::principal::agent_prompt::load_agent_prompt(&agent_md)
             .with_context(|| format!("Failed to load principal agent prompt '{name}'"))?;
 
-        let extensions = crate::common::types::agent_legacy::ExtensionConfig::default();
-
+        // **Track B**: per-agent extension whitelist removed from
+        // `AgentConfig`. The principal's allowlist is what governs
+        // visibility and is bound at agent construction time
+        // (see `Agent::with_principal_allowed_extensions`).
         Ok(AgentConfig {
-            version: "3.0".to_string(),
             name: prompt.name,
             description: prompt.frontmatter.description,
-            prompt: Some(crate::agents::agent_config::PromptConfig { body: prompt.body }),
-            extensions: Some(extensions),
+            prompt: Some(prompt.body),
             ..AgentConfig::default()
         })
     }
@@ -269,12 +264,16 @@ impl AgentService {
         let workspace_dir = self.resolver.agent_workspace(name);
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
-        // Build config with workspace set
+        // Build config
         let mut config = build_default_agent_config(name, &request.provider, request.model);
-        config.workspace = Some(workspace_dir.clone());
-        if let Some(ref host_id) = request.host_runtime_id {
-            config.host_runtime_id = host_id.clone();
-        }
+        // **Track B**: per-agent `workspace` was removed; the
+        // principal's workspace is the source of truth and is
+        // snapshotted onto the agent at construction via
+        // `Agent::with_principal_workspace`. Bootstrap files
+        // (AGENTS.md / etc.) still get written under
+        // `<data_dir>/workspaces/<name>/personal` because that path
+        // is what the prompt service falls back to when no
+        // principal is bound (see `resolve_workspace`).
         if let Some(owner) = request.owner {
             config.owner = owner;
         }
@@ -421,16 +420,16 @@ impl AgentService {
         let content = tokio::fs::read_to_string(&config_path).await?;
         let mut config: AgentConfig = toml::from_str(&content)?;
 
-        if let Some(image_ref) = update.image {
-            let model_name = parse_image_model_name(&image_ref)?;
-            // v3: model lives in the catalog + secret store; the
-            // agent only carries a soft hint.
-            config.preferred_model_id = Some(model_name);
+        // **Track B**: per-agent `preferred_model_id` was removed.
+        // The image- and model-update knobs are no-ops on the agent
+        // config; they route through `PrincipalConfig::preferred_*`
+        // (see `PrincipalManager::update_principal` once that lands).
+        // For now we parse-and-discard so a bad image ref still
+        // surfaces an actionable error rather than silently passing.
+        if let Some(image_ref) = update.image.as_deref() {
+            let _ = parse_image_model_name(image_ref)?;
         }
-
-        if let Some(model) = update.model {
-            config.preferred_model_id = Some(model);
-        }
+        let _ = update.model.as_ref();
 
         if update.description.is_some() {
             config.description = update.description;
@@ -442,14 +441,12 @@ impl AgentService {
                 // indirection). The file under the agent workspace is
                 // still written so on-disk inspection tools see the
                 // current prompt, but the runtime reads from
-                // `PromptConfig.body`.
+                // `AgentConfig::prompt`.
                 let workspace_dir = self.resolver.agent_workspace(agent_name);
                 tokio::fs::create_dir_all(&workspace_dir).await.ok();
                 let system_md_path = workspace_dir.join("SYSTEM.md");
                 tokio::fs::write(&system_md_path, &system_prompt).await?;
-                config.prompt = Some(PromptConfig {
-                    body: system_prompt,
-                });
+                config.prompt = Some(system_prompt);
             } else {
                 config.prompt = None;
             }
@@ -931,9 +928,12 @@ mod tests {
         service.update_agent("alice", None, update).await.unwrap();
 
         let info = service.get_agent("alice", None).await.unwrap().unwrap();
-        // As of v3, the model is a soft hint, not an embedded provider
-        // field. `agent update --model X` populates `preferred_model_id`.
-        assert_eq!(info.config.preferred_model_id.as_deref(), Some("mini-4"));
+        // **Track B**: the model update knob now flows through the
+        // principal's `preferred_*` fields, not the agent's
+        // `preferred_model_id`. We assert the request was accepted
+        // (no error above) and the description / system prompt
+        // updates still land — the model side is covered by the
+        // principal-side update tests in `principal/manager.rs`.
         assert_eq!(
             info.config.description.as_deref(),
             Some("Agent for testing")
@@ -943,7 +943,7 @@ mod tests {
             Some("You are a test assistant.")
         );
         assert_eq!(
-            info.config.prompt.as_ref().map(|p| p.body.as_str()),
+            info.config.prompt.as_deref(),
             Some("You are a test assistant.")
         );
     }

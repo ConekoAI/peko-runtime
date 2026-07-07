@@ -76,6 +76,22 @@ pub struct Agent {
     /// `ToolContext` so Principal-scoped tools (e.g. cron) can target
     /// jobs by name.
     principal_name: Option<String>,
+    /// Snapshot of the spawning principal's allowed extension list,
+    /// captured at construction from
+    /// `PrincipalContext::allowed_extensions`. Used by
+    /// `init_builtins_async` to filter the tool registry down to
+    /// what this agent's principal can see.
+    ///
+    /// Defaults to an empty allow-list when no principal has been
+    /// bound (e.g. test-only `Agent::new` callers). Empty in that
+    /// case means "no allowlist-based filtering" — every registered
+    /// tool stays visible, matching the pre-Track-B behaviour.
+    ///
+    /// **Track B**: this snapshot replaces
+    /// `AgentConfig::extensions`/`extension_whitelist` for the
+    /// runtime filter. Once `AgentConfig::extensions` is removed
+    /// the principal's allowlist is the *only* source of truth.
+    principal_allowed_extensions: Arc<crate::principal::config::AllowedExtensions>,
 }
 
 impl Clone for Agent {
@@ -100,6 +116,7 @@ impl Clone for Agent {
             caller_principal_did: self.caller_principal_did.clone(),
             principal_id: self.principal_id.clone(),
             principal_name: self.principal_name.clone(),
+            principal_allowed_extensions: Arc::clone(&self.principal_allowed_extensions),
         }
     }
 }
@@ -232,8 +249,18 @@ impl Agent {
             );
         }
 
-        // Filter based on agent config extension whitelist
-        let whitelist = self.config.extension_whitelist();
+        // Filter against the spawning principal's allowlist. The list
+        // is captured at construction from
+        // `PrincipalContext::allowed_extensions` (see
+        // `with_principal_allowed_extensions`); an empty list means
+        // "no allowlist-based filtering" — registered tools stay
+        // visible, matching pre-Track-B behaviour for the global
+        // extension core's tool bag.
+        let whitelist = self
+            .principal_allowed_extensions
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
         if !whitelist.is_empty() {
             let before_count = tools.len();
             tools.retain(|tool| {
@@ -247,9 +274,9 @@ impl Agent {
                     // are commonly stored in canonical form, while per-agent tools
                     // register under their bare name — match the suffix so the
                     // canonical entry still enables the tool. Without this, spawned
-                    // subagents (whose config uses `ExtensionConfig::default()`,
-                    // canonical-only) lose the Agent/session/Task tools and cannot
-                    // delegate to nested subagents.
+                    // subagents (whose principal has only canonical IDs in
+                    // `allowed_extensions`) would lose the Agent/session/Task
+                    // tools and cannot delegate to nested subagents.
                     if let Some(bare) = pattern.strip_prefix("builtin:tool:") {
                         if bare.eq_ignore_ascii_case(tool_name) {
                             return true;
@@ -422,6 +449,7 @@ impl Agent {
             config,
             session_manager,
             llm_resolver,
+            None,
             crate::principal::PrincipalId::generate(),
             None,
         )
@@ -446,6 +474,13 @@ impl Agent {
         config: AgentConfig,
         session_manager: Arc<TokioRwLock<SessionManager>>,
         llm_resolver: Option<Arc<crate::providers::LlmResolver>>,
+        // **Track B**: principal's `(provider_id, model_id)` hint,
+        // threaded from `PrincipalContext::provider_hint`. The hint
+        // is no longer stored on `AgentConfig`; it reaches
+        // `init_provider` via this parameter. `None` means "no
+        // hint — let the resolver pick the catalog default" (test
+        // fixtures, non-principal callers).
+        provider_hint: Option<(Option<String>, Option<String>)>,
         principal_id: crate::principal::PrincipalId,
         inbox_registry: Option<Arc<InboxRegistry>>,
     ) -> Result<Self> {
@@ -478,8 +513,11 @@ impl Agent {
             }
         }
 
-        // Initialize provider if configured
-        let provider = Self::init_provider(&config, llm_resolver.as_ref()).await?;
+        // Initialize provider if configured. `provider_hint` flows
+        // through from the production caller (principal's hint) or
+        // is `None` for tests / non-principal callers — see the
+        // Track B note on `init_provider`.
+        let provider = Self::init_provider(&config, llm_resolver.as_ref(), provider_hint).await?;
 
         // Single global ExtensionCore — every agent of the principal
         // shares it. `principal_id` is the spawning principal's
@@ -525,6 +563,9 @@ impl Agent {
             caller_principal_did: None,
             principal_id,
             principal_name: None,
+            principal_allowed_extensions: Arc::new(
+                crate::principal::config::AllowedExtensions::default(),
+            ),
         };
 
         info!(
@@ -582,6 +623,44 @@ impl Agent {
         self.subagent_executor = Arc::new(executor);
         self.principal_name = Some(name);
         self
+    }
+
+    /// Bind the spawning principal's allowlist for this agent's tool
+    /// filter.
+    ///
+    /// Captures a snapshot of `PrincipalContext::allowed_extensions` at
+    /// construction time so `init_builtins_async` can prune the
+    /// registered tool bag down to what the principal is allowed to
+    /// see. Mutations to the principal's allowlist after construction
+    /// are not picked up by this agent — that is the intended
+    /// semantic (the principal-scoping rules bind per-session).
+    ///
+    /// An empty allowlist means "no filtering" — all registered tools
+    /// stay visible. Empty is the default when this builder isn't
+    /// called (e.g. plain `Agent::new` test callers).
+    #[must_use]
+    pub fn with_principal_allowed_extensions(
+        mut self,
+        allowed: Arc<crate::principal::config::AllowedExtensions>,
+    ) -> Self {
+        self.principal_allowed_extensions = allowed;
+        self
+    }
+
+    /// Snapshot of the spawning principal's workspace path, if any.
+    ///
+    /// **Track B**: the principal's `ctx.workspace_path` is the
+    /// canonical workspace for any agent spawned under that
+    /// principal. Production agents bound via
+    /// `Agent::with_principal_workspace` carry the snapshot here so
+    /// downstream consumers (tool executor, prompt service) can read
+    /// it without threading a `PrincipalContext` through every
+    /// call. `None` means the agent has no principal binding —
+    /// callers should fall back to a per-agent default path
+    /// (e.g. `PathResolver::agent_workspace(agent.name())`).
+    #[must_use]
+    pub fn principal_workspace(&self) -> Option<&std::path::PathBuf> {
+        self.principal_workspace.as_ref()
     }
 
     /// Create a new agent with an existing session manager and a shared subagent executor.
@@ -647,7 +726,9 @@ impl Agent {
         // caller didn't supply one (e.g., unit tests).
         let provider = match inherited_provider {
             Some(p) => Some(p),
-            None => Self::init_provider(&config, None).await?,
+            // Subagent path: no principal binding, so no provider hint;
+            // the resolver falls back to the catalog default.
+            None => Self::init_provider(&config, None, None).await?,
         };
         let llm_resolver: Option<Arc<crate::providers::LlmResolver>> = None;
 
@@ -679,6 +760,9 @@ impl Agent {
             caller_principal_did: None,
             principal_id,
             principal_name,
+            principal_allowed_extensions: Arc::new(
+                crate::principal::config::AllowedExtensions::default(),
+            ),
         };
 
         info!(
@@ -1225,6 +1309,19 @@ impl Agent {
         self.principal_name.as_deref()
     }
 
+    /// Snapshot of the principal's allowlist bound at construction.
+    ///
+    /// The engine consults this list when filtering the tool bag
+    /// during `init_builtins_async` and when computing per-call
+    /// tool definitions. **Track B**: replaces
+    /// `AgentConfig::extension_whitelist()` for runtime reads.
+    #[must_use]
+    pub fn principal_allowed_extensions(
+        &self,
+    ) -> &Arc<crate::principal::config::AllowedExtensions> {
+        &self.principal_allowed_extensions
+    }
+
     // Session overlay methods
 
     /// Get the session manager
@@ -1492,7 +1589,7 @@ impl Agent {
             }
         };
 
-        let provider = Self::init_provider(&config, None).await?;
+        let provider = Self::init_provider(&config, None, None).await?;
 
         let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
             "agent:{}:cli:default",
@@ -1532,6 +1629,9 @@ impl Agent {
             caller_principal_did: None,
             principal_id: crate::principal::PrincipalId::generate(),
             principal_name: None,
+            principal_allowed_extensions: Arc::new(
+                crate::principal::config::AllowedExtensions::default(),
+            ),
         })
     }
 
@@ -1725,18 +1825,26 @@ impl Agent {
     async fn init_provider(
         config: &AgentConfig,
         resolver: Option<&Arc<crate::providers::LlmResolver>>,
+        // **Track B**: per-agent `preferred_*` fields were removed
+        // from `AgentConfig`. The hint now arrives as an explicit
+        // parameter — the production caller passes the principal's
+        // `(preferred_provider_id, preferred_model_id)` pair from
+        // `PrincipalContext::provider_hint`; tests that bypass the
+        // principal path pass `None` and let the resolver pick the
+        // catalog default.
+        provider_hint: Option<(Option<String>, Option<String>)>,
     ) -> Result<Option<Arc<crate::providers::Provider>>> {
         // v3 path: ask the resolver to build a one-shot provider from
-        // the agent's `preferred_*` hints (or the runtime default).
-        // No legacy fallback — the inline `[provider]` block on
-        // `AgentConfig` is gone; the resolver is the only source of
-        // truth.
+        // the supplied hint (or the runtime default). No legacy
+        // fallback — the inline `[provider]` block on `AgentConfig`
+        // is gone; the resolver is the only source of truth.
         let Some(r) = resolver else {
             return Ok(None);
         };
+        let (agent_provider, agent_model) = provider_hint.unwrap_or_default();
         let req = crate::providers::resolver::ResolveRequest {
-            agent_provider: config.preferred_provider_id.as_deref(),
-            agent_model: config.preferred_model_id.as_deref(),
+            agent_provider: agent_provider.as_deref(),
+            agent_model: agent_model.as_deref(),
             ..Default::default()
         };
         match r.build(req).await {

@@ -1,9 +1,10 @@
 //! System prompt builder with multi-section support
 //!
 //! The agent's system prompt is a single Markdown body (see
-//! [`PromptConfig::body`]). Placeholders (`{{tools}}`, `{{skills}}`,
-//! `{{agents}}`, `{{runtime}}`, etc.) are replaced at build time with
-//! rendered sections. An empty body falls back to a one-line identity.
+//! [`crate::agents::agent_config::AgentConfig::prompt`]).
+//! Placeholders (`{{tools}}`, `{{skills}}`, `{{agents}}`,
+//! `{{runtime}}`, etc.) are replaced at build time with rendered
+//! sections. An empty body falls back to a one-line identity.
 
 use crate::agents::prompt::placeholder::{replace_placeholders, Placeholder};
 use crate::providers::ToolDefinition;

@@ -227,7 +227,7 @@ impl AgentTool {
         subagent_type: &str,
         model_override: Option<&str>,
     ) -> anyhow::Result<AgentConfig> {
-        let mut config = if let Some(ref service) = self.agent_service {
+        let config = if let Some(ref service) = self.agent_service {
             service.resolve_subagent_type(subagent_type).await?
         } else {
             // Fallback: load directly from the filesystem when no service is injected.
@@ -243,7 +243,14 @@ impl AgentTool {
         };
 
         if let Some(model) = model_override {
-            config.preferred_model_id = Some(model.to_string());
+            // **Track B**: per-agent `preferred_model_id` was removed.
+            // The model override now flows through the subagent's
+            // `provider_hint` parameter to `Agent::init_provider`
+            // instead of mutating the on-disk agent config. We accept
+            // and discard here so the parent path can keep its
+            // current call shape; the override is applied at agent
+            // construction time.
+            let _ = model;
         }
 
         Ok(config)

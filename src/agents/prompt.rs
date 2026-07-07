@@ -1,10 +1,11 @@
 //! System prompt generation and management
 //!
 //! Each agent's system prompt is a single Markdown body (see
-//! [`crate::agents::agent_config::PromptConfig::body`]). At build time
-//! `SystemPromptService` runs the body through `SystemPromptBuilder`
-//! which replaces `{{placeholder}}` tokens with rendered sections
-//! (tools, skills, agents, runtime, self-update).
+//! [`crate::agents::agent_config::AgentConfig::prompt`]). At build
+//! time `SystemPromptService` runs the body through
+//! `SystemPromptBuilder` which replaces `{{placeholder}}` tokens
+//! with rendered sections (tools, skills, agents, runtime,
+//! self-update).
 
 pub mod builder;
 pub mod memory;

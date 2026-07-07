@@ -147,29 +147,16 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 /// whitelist to verify that `peko ext enable <id> --target <agent>` adds
 /// the canonical extension ID. The other tests don't use this agent at
 /// all — they only install/uninstall and don't invoke `peko send`.
-fn write_ext_agent(home: &Path, name: &str, mock_llm_url: &str) -> std::io::Result<()> {
+fn write_ext_agent(home: &Path, name: &str, _mock_llm_url: &str) -> std::io::Result<()> {
     use std::path::Path;
     let agent_dir = Path::new(home).join(".peko").join("agents").join(name);
     std::fs::create_dir_all(&agent_dir)?;
-    let _base_url = mock_llm_url.trim_end_matches('/');
     let config_toml = format!(
-        r#"version = "3.0"
-name = "{name}"
+        r#"name = "{name}"
 description = "CLI integration test agent for the extensions framework"
-auto_accept_trusted = false
 
-preferred_provider_id = "mock-llm"
-preferred_model_id = "default"
-default_timeout_seconds = 60
-
-[extensions]
-enabled = []
-
-[channels]
-cli = true
-
-[prompt]
-system = {{ max_chars_per_file = 20000, files = ["SYSTEM.md"] }}
+enable_task_tools = true
+enable_async_tools = true
 "#
     );
     std::fs::write(agent_dir.join("config.toml"), config_toml)?;
