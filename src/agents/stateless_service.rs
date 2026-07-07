@@ -65,7 +65,7 @@ pub struct ExecutionRequest {
     /// Resolved caller principal for session peer attribution.
     ///
     /// When set, this takes precedence over [`ExecutionRequest::user`]
-    /// when constructing the session peer (issue #24). `a2a_send` sets
+    /// when constructing the session peer (issue #24). `principal_send` sets
     /// this to `Subject::Principal(caller_agent_name)` so the receiving
     /// agent's session is keyed under `agent:{caller}` (not
     /// `user:{caller}`), and the audit log / `PermissionGrant`
@@ -552,7 +552,7 @@ impl StatelessAgentService {
             } else {
                 debug!("Session '{}' not found, creating new", request.session_id);
                 // Issue #24: prefer the resolved caller principal (e.g.
-                // `Subject::Principal("helper")` for a2a_send) over the
+                // `Subject::Principal("helper")` for principal_send) over the
                 // legacy `Subject::User(user)` masquerade. The principal
                 // sets the session key correctly and makes audit /
                 // permission-grant attribution type-safe.
@@ -811,7 +811,7 @@ impl StatelessAgentService {
                     request.session_id
                 );
                 // Issue #24: prefer the resolved caller principal (e.g.
-                // `Subject::Principal("helper")` for a2a_send) over the
+                // `Subject::Principal("helper")` for principal_send) over the
                 // legacy `Subject::User(user)` masquerade.
                 let peer = request
                     .caller_principal

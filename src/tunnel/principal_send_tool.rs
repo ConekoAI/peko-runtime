@@ -906,7 +906,7 @@ mod tests {
     /// Edge case: the hub returns a `HubErrorResponse` (target not
     /// found). The caller's `execute` decodes it as a structured
     /// error rather than a generic decode failure. Mirrors the
-    /// `a2a_send::test_cross_runtime_a2a_hub_synthesized_error_response`
+    /// `principal_send_tool::test_principal_send_hub_synthesized_error_response`
     /// test the prior plan listed.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_principal_send_hub_synthesized_error_response() {
@@ -989,7 +989,7 @@ mod tests {
     /// end-to-end, intercept the envelope on the hub side, and
     /// assert that the signature verifies against the canonical
     /// pre-image from `tunnel::a2a_signature`. Mirrors the
-    /// `a2a_send::test_cross_runtime_a2a_signature_verification`
+    /// `principal_send_tool::test_principal_send_signature_verification`
     /// test the prior plan listed.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_principal_send_signature_verification() {

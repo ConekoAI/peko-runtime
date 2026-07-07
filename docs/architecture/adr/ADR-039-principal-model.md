@@ -98,7 +98,7 @@ pub enum Subject {
 
 Each was a separate issue once this ADR landed. Items that shipped in ADR-041 are noted.
 
-- **`a2a_send` masquerade**: route as `Subject::Principal(caller_did)`. **(Part of ADR-041's P2P scope; not yet shipped.)**
+- **`principal_send` masquerade** (formerly the `a2a_send` work item): route as `Subject::Principal(caller_did)`. **(Part of ADR-041's P2P scope; not yet shipped.)**
 - **Collapse IPC `(subject_id, subject_type)` wire field** into a single `subject: Subject`. **(Shipped in issue #30; the wire is now a single `subject: Subject` field.)**
 - **`AuditEvent` first-class caller field** — add a `caller: Subject` to `AuditEvent`. **Not yet shipped.**
 - **Pekohub-side `instance.ownerId` enforcement** for the principal case — ~9 owner-check sites in `pekohub/backend/src/routes/api/instances.ts`. **Out of repo.**

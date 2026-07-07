@@ -2,7 +2,8 @@
 //!
 //! This module contains all built-in tools that ship with Peko:
 //! - `fs`: Filesystem tools (Read, Write, glob, grep, Edit)
-//! - `messaging`: Messaging tools (Agent, a2a_send)
+//! - `messaging`: Messaging tools (Agent). Cross-runtime principal-to-principal
+//!   messaging lives in `crate::tunnel::principal_send_tool`.
 //! - `bash`: Shell execution (`Bash`)
 //! - `cron`: Scheduled jobs (shared helpers)
 //! - `cron_create`: `CronCreate` tool

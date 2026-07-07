@@ -304,7 +304,7 @@ parity program:
 - `glob`, `grep` — peko-specific filesystem helpers.
 - `session` — peko-specific session introspection.
 - `message` — peko-specific channel messaging.
-- `a2a_send` — peko A2A protocol messaging.
+- `principal_send` — peko cross-runtime principal-to-principal messaging. (Replaces the legacy `a2a_send` tool from ADR-023.)
 - MCP-provided tools (`web_search`, `fetch`, etc.) — provided via MCP servers.
 - Skills — still prompt-injected via the `prompt:skills` hook.
 

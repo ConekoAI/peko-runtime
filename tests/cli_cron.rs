@@ -7,7 +7,7 @@
 //! |-----------------------|----------------------------------------------------------------------------|
 //! | `cron_basics.ps1`     | `cron_*_persists`, `cron_list_*`, `cron_remove_*`, `cron_history_*`         |
 //! | `cron_execution.ps1`  | `cron_run_triggers_due_job`, `cron_announce_writes_file_on_run`            |
-//! | `cron_agent_tool.ps1` | (deferred — requires agent + tool-call driving, see [tests/cli_a2a.rs]…)    |
+//! | `cron_agent_tool.ps1` | (deferred — requires agent + tool-call driving)    |
 //! | `cron_idle_event.ps1` | `cron_add_idle_does_not_panic`, `cron_add_event_does_not_panic`            |
 //!
 //! Each test:
