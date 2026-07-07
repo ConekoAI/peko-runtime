@@ -7,7 +7,7 @@
 //! dependency graph acyclic: both the bootstrap side
 //! (`extension::core::ExtensionServices` holds the ctx as an
 //! optional slot) and the consumer side
-//! (`tools::builtin::messaging::a2a_send::PrincipalSendTool`) import it
+//! (`crate::tunnel::principal_send_tool::PrincipalSendTool`) import it
 //! from here.
 
 use std::sync::Arc;

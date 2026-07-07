@@ -185,3 +185,18 @@ At that point, `a2a_send` and the event bus **coexist**:
 - [x] Add structured `caller_agent` field to `MessageRequest` and `ExecutionRequest`
 - [x] Defensive empty-string filtering in `with_caller_agent_opt()` and service layer
 - [x] All 898 unit tests pass
+
+---
+
+## Superseded by
+
+The implementation described in this ADR was completed under the name
+`a2a_send` and **subsequently replaced** by `principal_send`
+(`src/tunnel/principal_send_tool.rs`), which retargets the tool from
+agent-named peers to principal DIDs and folds the legacy wire envelope
+into the principal-level messaging path described in ADR-039 and
+ADR-041. The `a2a_audit`, `a2a_signature`, and `a2a_pending` modules
+in `src/tunnel/` are still imported by `principal_send` and remain
+the canonical home for cross-runtime signing, audit, and
+pending-response coordination. The on-wire event kinds `a2a.sent` and
+`a2a.received` and the signature domain tag `a2a:v1` are unchanged.

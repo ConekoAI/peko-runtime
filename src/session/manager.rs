@@ -505,7 +505,7 @@ pub struct SessionManager {
     /// [`SessionManager::user`] when constructing the session peer
     /// via [`SessionManager::peer`].
     ///
-    /// Used by `a2a_send` (and any other agent-originated call path)
+    /// Used by `principal_send` (and any other agent-originated call path)
     /// to attribute the receiving agent's session to a `Subject::Principal`
     /// rather than the legacy `Subject::User(user)` masquerade.
     peer_principal: Option<Subject>,
@@ -666,7 +666,7 @@ impl SessionManager {
     /// Resolve the session peer to use for new sessions (issue #24).
     ///
     /// Returns the explicit `peer_principal` if set (e.g. a
-    /// `Subject::Principal` for an a2a_send call); otherwise falls back
+    /// `Subject::Principal` for a principal_send call); otherwise falls back
     /// to the legacy `Subject::User(user)` form.
     ///
     /// **Issue #24 review #2:** if `peer_principal` is set to a
@@ -2526,7 +2526,7 @@ mod tests {
 
     // -- Issue #24 review #1 acceptance-criterion test --
 
-    /// End-to-end assertion that an a2a_send-originated call produces
+    /// End-to-end assertion that a principal_send-originated call produces
     /// a `SessionEntry` whose `peer_type` is `"agent"`, not `"user"`
     /// (review #1 — the audit-trail footgun the issue is built on).
     ///

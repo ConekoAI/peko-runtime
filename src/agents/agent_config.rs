@@ -64,7 +64,7 @@ pub struct AgentConfig {
     ///
     /// **Wire contract:** `Subject::Principal(agent_did)` is used on the
     /// tunnel/audit/permission IPC paths so cross-runtime references
-    /// (a2a_send, `PermissionGrant.subject`, PekoHub instance row) are
+    /// (`principal_send`, `PermissionGrant.subject`, PekoHub instance row) are
     /// unambiguous. When `None` (legacy agents predating #28), callers
     /// fall back to `Subject::Principal(name)` within a single runtime —
     /// see `Subject::principal_wire_id` for the canonical resolution.
@@ -114,7 +114,7 @@ impl AgentConfig {
     /// Returns the agent's `agent_did` if it has been backfilled into
     /// the config (post-#28), otherwise the local `name` as a
     /// within-runtime fallback. **Within a single runtime, the two are
-    /// interchangeable on the wire**; cross-runtime references (a2a_send,
+    /// interchangeable on the wire**; cross-runtime references (`principal_send`,
     /// `PermissionGrant.subject`, PekoHub instance row) require a live
     /// `agent_did` — the runtime-local fallback is forgeable across
     /// runtimes by design.

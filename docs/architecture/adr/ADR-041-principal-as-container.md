@@ -182,7 +182,7 @@ The original 2026-06-25 proposal mentioned the following follow-up ADRs. They ar
 - **`peko principal memory *` / `peko principal context` CLI trees.**
 - **`peko agent-prompt init/install` for sharing reusable agent prompts.**
 - **Cross-runtime P2P transport.** Principal-level addressing over the tunnel protocol; builds on ADR-035 but needs its own wire format decisions.
-- **P2P reinterpretation of `a2a_send`.** Routing as principal-to-principal rather than agent-to-agent.
+- **P2P reinterpretation of `principal_send`.** Routing as principal-to-principal rather than agent-to-agent. (Originally framed as the `a2a_send` work item; renamed with the tool.)
 
 If any of these become real product needs, a new ADR is filed. This ADR does not promise them.
 

@@ -222,7 +222,7 @@ cargo test --all-features
     - `extensions::framework` depends on `tools::core` (one-way, for `Tool`, `ToolContext`, `ContextSource`, and other execution primitives). It does **not** depend on `tools::builtin` or any concrete extension type.
     - `tools::core` does **not** depend on `extensions::framework`. The previous bidirectional loop is broken.
     - `tunnel` depends on `tools::core` (for the `Tool` trait) and **does not** depend on `agents` in production code.
-    - `agents` depends on `tunnel` (for the `AgentMessageService` trait used by `A2aSendTool`) and does **not** depend on `tunnel::a2a_send_tool`'s concrete types.
+    - `agents` depends on `tunnel` (for the `AgentMessageService` trait used by `PrincipalSendTool`) and does **not** depend on `tunnel::principal_send_tool`'s concrete types.
     - `extensions::framework` does **not** depend on `agents`, `tunnel`, or `daemon` (enforced by `check_module_boundaries.sh` Rule 5).
   - Cycles 4 (`tools::core ↔ extension::types`) and 5 (`tunnel ↔ agents`) from `PLAN.md` §2.5 are now actually broken (not reshuffled).
   - `src/commands/` should delegate to services and not import low-level persistence/packaging modules directly (e.g. `crate::registry::packaging::`, `crate::common::services::config_authority::`, `crate::identity::storage::`, `crate::session::jsonl::`, `crate::session::metadata_controller::`). `scripts/check_module_boundaries.sh` enforces this as an advisory rule while existing violations are being resolved.

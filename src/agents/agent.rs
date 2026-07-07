@@ -1939,7 +1939,7 @@ mod tests {
     /// Issue #28 acceptance criterion: two agents with the same name
     /// on two distinct runtime directories must have different
     /// `agent_did` values. This is what makes cross-runtime references
-    /// (a2a_send, `PermissionGrant.subject`, PekoHub instance rows)
+    /// (`principal_send`, `PermissionGrant.subject`, PekoHub instance rows)
     /// unambiguous when two runtimes each have an agent literally
     /// called `helper`.
     ///

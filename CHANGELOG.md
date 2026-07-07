@@ -100,6 +100,14 @@ execution, A2A protocol, and extension system.
   to `peko-tool` / `peko_tool`.
 - Historical CHANGELOG entries below are preserved verbatim.
 
+### Cleanup
+
+- **Legacy `a2a_send` references scrubbed from doc comments and docs.** The
+  tool itself was fully superseded by `principal_send` (ADR-023 + ADR-039);
+  the `a2a_audit`, `a2a_signature`, `a2a_pending` modules and the on-wire
+  event kinds `a2a.sent` / `a2a.received` / signature domain `a2a:v1` are
+  unchanged. No behavior or wire changes; doc-only.
+
 ### Provider catalog & agent decoupling (v3)
 
 This release decouples agent configs from provider/model/API-key
