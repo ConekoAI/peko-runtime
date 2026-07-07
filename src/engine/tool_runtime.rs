@@ -31,7 +31,7 @@ pub async fn execute_tool_via_core(
     workspace: Option<String>,
 ) -> Result<(String, serde_json::Value, bool)> {
     execute_tool_via_core_with_context(
-        core, tool_name, params, workspace, None, None, None, None, None, None, None,
+        core, tool_name, params, workspace, None, None, None, None, None, None, None, None,
     )
     .await
 }
@@ -56,6 +56,10 @@ pub async fn execute_tool_via_core(
 /// `src/tools/core/traits.rs:82, 102` meaningful in production. The
 /// bridge task is aborted on drop; callers should not need to await
 /// or otherwise manage the returned guard.
+/// `directory_tracker` is the per-session `AGENTS.md` discovery tracker
+/// (see `crate::agents::prompt::memory::DirectoryContextTracker`). When
+/// `Some`, the adapter pushes directories touched by this tool call;
+/// the agentic loop drains the tracker at iteration start.
 pub async fn execute_tool_via_core_with_context(
     core: &ExtensionCore,
     tool_name: &str,
@@ -68,6 +72,9 @@ pub async fn execute_tool_via_core_with_context(
     principal_name: Option<String>,
     allowed_extensions: Option<Vec<String>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
+    directory_tracker: Option<
+        std::sync::Arc<crate::extensions::framework::types::DirectoryContextTracker>,
+    >,
 ) -> Result<(String, serde_json::Value, bool)> {
     let point = HookPoint::ToolExecute {
         tool_name: tool_name.to_string(),
@@ -91,6 +98,7 @@ pub async fn execute_tool_via_core_with_context(
         principal_name,
         allowed_extensions,
         abort_signal,
+        directory_tracker,
     };
 
     let result = core.invoke_hook(point, input).await;

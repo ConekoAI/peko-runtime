@@ -56,6 +56,11 @@ impl ToolExecutor {
     ///   inside `execute_tool_via_core_with_context` into the tool
     ///   layer's `AbortSignal` so the trait-default `is_aborted()`
     ///   check works in production.
+    /// * `directory_tracker` - Per-session `AGENTS.md` discovery
+    ///   tracker. The adapter pushes directories touched by tool calls
+    ///   via `directory_from_tool_params`; the agentic loop drains it
+    ///   at iteration start and surfaces discovered `AGENTS.md`
+    ///   content as synthetic user messages.
     /// * `on_event` - Event callback
     ///
     /// Returns the tool result message and success flag.
@@ -73,6 +78,9 @@ impl ToolExecutor {
         principal_name: &str,
         allowed_extensions: Option<Vec<String>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
+        directory_tracker: Option<
+            Arc<crate::extensions::framework::types::DirectoryContextTracker>,
+        >,
         on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
     ) -> Result<ToolExecutionResult> {
         let (id, name, arguments) = match tool_call {
@@ -113,6 +121,7 @@ impl ToolExecutor {
                 Some(principal_name.to_string()),
                 allowed_extensions,
                 cancel,
+                directory_tracker,
             )
             .await
             {

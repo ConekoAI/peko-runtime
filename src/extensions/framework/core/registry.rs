@@ -997,6 +997,7 @@ mod tests {
                     principal_name: None,
                     allowed_extensions: None,
                     abort_signal: None,
+                    directory_tracker: None,
                 },
             )
             .await;
@@ -1060,6 +1061,7 @@ mod tests {
                     principal_name: None,
                     allowed_extensions: Some(allowed),
                     abort_signal: None,
+                    directory_tracker: None,
                 },
             )
             .await;

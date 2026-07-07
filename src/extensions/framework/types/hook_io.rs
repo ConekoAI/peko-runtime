@@ -205,6 +205,13 @@ pub enum HookInput {
         /// `CancellationToken` (soft-interrupt) into the tool layer
         /// without changing the public `AbortSignal`/`ToolContext` API.
         abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+        /// Optional directory-context tracker for `AGENTS.md` on-demand
+        /// discovery. The adapter pushes directories touched by this
+        /// tool call; the agentic loop drains the tracker at iteration
+        /// start and surfaces newly-discovered `AGENTS.md` content as
+        /// synthetic user messages. `None` for callers that don't need
+        /// directory-scoped memory.
+        directory_tracker: Option<std::sync::Arc<super::DirectoryContextTracker>>,
     },
 
     /// Async task status check
@@ -377,6 +384,7 @@ mod tests {
             principal_name: None,
             allowed_extensions: None,
             abort_signal: None,
+            directory_tracker: None,
         };
         match input {
             HookInput::ToolCall {

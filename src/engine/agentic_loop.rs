@@ -86,6 +86,14 @@ pub struct AgenticLoop {
     /// kill. Set by the streaming IPC handler via `with_cancel_token`
     /// so the `PrincipalSendControl` IPC can signal cancellation.
     cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Per-session `AGENTS.md` discovery tracker. The adapter pushes
+    /// directories touched by tool calls via
+    /// `directory_from_tool_params`; the loop drains it at iteration
+    /// start and surfaces any newly-discovered `AGENTS.md` content as
+    /// synthetic user-role messages. Always present — `None` would
+    /// disable on-demand discovery, which is the default for callers
+    /// that don't opt in (notably tests and legacy agent paths).
+    directory_tracker: Arc<crate::extensions::framework::types::DirectoryContextTracker>,
 }
 
 impl AgenticLoop {
@@ -113,6 +121,9 @@ impl AgenticLoop {
             agent_principal_id,
             async_completion_queue: None,
             cancel: None,
+            directory_tracker: Arc::new(
+                crate::agents::prompt::memory::DirectoryContextTracker::new(),
+            ),
         }
     }
 
@@ -152,6 +163,18 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_cancel_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
         self.cancel = Some(token);
+        self
+    }
+
+    /// Replace the per-session directory tracker. Mostly useful for
+    /// tests that want to inject a pre-populated tracker; production
+    /// code uses the default constructed in [`Self::new`].
+    #[must_use]
+    pub fn with_directory_tracker(
+        mut self,
+        tracker: Arc<crate::extensions::framework::types::DirectoryContextTracker>,
+    ) -> Self {
+        self.directory_tracker = tracker;
         self
     }
 
@@ -519,6 +542,40 @@ impl AgenticLoop {
                         iteration,
                     );
                     messages.push(LlmMessage::user(msg.content));
+                }
+            }
+
+            // Drain the directory-context tracker and surface any newly
+            // discovered `AGENTS.md` content as synthetic user-role
+            // messages. The adapter pushes directories touched by the
+            // previous iteration's tool calls; we walk up from each one
+            // (capped at the principal's workspace) and inject whatever
+            // we find. Discovery is idempotent — already-loaded
+            // `AGENTS.md` files don't re-emit on the next iteration.
+            let touched = self.directory_tracker.drain_new();
+            if !touched.is_empty() {
+                let root = self
+                    .agent
+                    .config
+                    .workspace
+                    .as_deref()
+                    .unwrap_or_else(|| std::path::Path::new(""));
+                for dir in &touched {
+                    if let Some((label, content)) =
+                        crate::agents::prompt::memory::discover_shared_context(dir, root)
+                    {
+                        debug!(
+                            "AgenticLoop: injecting AGENTS.md from {} ({} bytes) at iteration {}",
+                            label,
+                            content.len(),
+                            iteration,
+                        );
+                        let body = format!(
+                            "<directory-context source=\"{}\">\n{}\n</directory-context>",
+                            label, content
+                        );
+                        messages.push(LlmMessage::user(body));
+                    }
                 }
             }
 
@@ -895,6 +952,7 @@ impl AgenticLoop {
                             self.agent.principal_name().unwrap_or(""),
                             Some(self.agent.config.extension_whitelist()),
                             self.cancel.clone(),
+                            Some(self.directory_tracker.clone()),
                             &on_event,
                         )
                     })
@@ -2051,5 +2109,137 @@ mod tests {
             has_interrupted,
             "expected a Lifecycle::Interrupted event in: {emitted:?}"
         );
+    }
+
+    // ===================================================================
+    // End-to-end: pre-populate the directory tracker with a directory
+    // that contains an `AGENTS.md`, run one iteration, and verify the
+    // synthetic user-role message with the file's contents reaches the
+    // LLM. Pins down the loop-side drain+inject step that pairs with
+    // the adapter-side `tracker.touch` push (covered by the unit tests
+    // in `agents::prompt::memory`).
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_e2e_directory_context_tracker_injects_agents_md() {
+        use crate::agents::prompt::memory::DirectoryContextTracker;
+        use crate::common::types::message::{ContentBlock as CB, LlmMessage, MessageRole};
+
+        crate::identity::init_test_env();
+        ensure_global_core();
+
+        // Lay out a workspace with an `AGENTS.md` at the root.
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join("AGENTS.md"),
+            "Project rule: do not commit secrets.",
+        )
+        .unwrap();
+        let nested = temp_dir.path().join("src").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        // Mock LLM returns a plain text final answer. We don't need
+        // tool calls for this test — we just want to verify the
+        // synthetic user message gets injected before the LLM sees the
+        // prompt.
+        let (provider, mock) = mock_provider();
+        mock.queue_text("ack");
+
+        // Build an agent whose workspace is the temp dir so the
+        // walk-up in `discover_shared_context` is bounded to it.
+        let mut config = test_agent_config("agents-md-agent");
+        config.workspace = Some(temp_dir.path().to_path_buf());
+        let agent = Arc::new(Agent::new_for_test(config, temp_dir.path()).await.unwrap());
+        let extension_core = global_core().unwrap();
+
+        // Pre-populate the tracker with the deep nested directory.
+        // The discovery loop should walk up to the workspace root and
+        // pick up the AGENTS.md we wrote there.
+        let tracker = Arc::new(DirectoryContextTracker::new());
+        assert!(tracker.touch(&nested));
+
+        let loop_ = AgenticLoop::new(agent.clone(), provider, extension_core)
+            .await
+            .with_directory_tracker(tracker.clone());
+
+        let session = test_session("agents-md-agent", temp_dir.path()).await;
+        let result = loop_.run_with_resume("begin", |_| {}, session, None).await;
+        assert!(
+            result.is_ok(),
+            "agentic loop should succeed: {:?}",
+            result.err()
+        );
+
+        let recorded = mock.recorded_requests();
+        assert!(
+            !recorded.is_empty(),
+            "mock should have recorded at least one request"
+        );
+
+        // Find a user-role message containing the AGENTS.md content
+        // wrapped in our `<directory-context>` synthetic block.
+        let req = &recorded[0];
+        let synthetic: Option<&LlmMessage> = req.messages.iter().find(|m| {
+            matches!(m.role, MessageRole::User)
+                && m.content.iter().any(|b| {
+                    if let CB::Text { text } = b {
+                        text.contains("<directory-context")
+                            && text.contains("do not commit secrets")
+                    } else {
+                        false
+                    }
+                })
+        });
+        assert!(
+            synthetic.is_some(),
+            "expected a synthetic <directory-context> user message in: {:?}",
+            req.messages
+                .iter()
+                .map(|m| format!("{:?} -> {:?}", m.role, m.content))
+                .collect::<Vec<_>>()
+        );
+
+        // Drain should have consumed the touched directory, so a second
+        // run with no new touches emits nothing.
+        assert!(
+            tracker.snapshot().is_empty(),
+            "tracker should be drained after the iteration"
+        );
+    }
+
+    // ===================================================================
+    // Companion to the test above: the directory tracker dedupes
+    // canonicalised paths, so pushing the same logical directory twice
+    // across iterations only triggers one discovery. Pinned here so the
+    // idempotence is enforced at the engine layer (the unit test in
+    // `agents::prompt::memory` already covers the data structure).
+    // ===================================================================
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn test_directory_tracker_dedupes_across_iterations() {
+        use crate::agents::prompt::memory::DirectoryContextTracker;
+
+        let tracker = DirectoryContextTracker::new();
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        std::fs::create_dir_all(&a).unwrap();
+
+        // Two distinct logical pushes from the same path.
+        assert!(tracker.touch(&a));
+        assert!(!tracker.touch(&a));
+
+        let drained = tracker.drain_new();
+        assert_eq!(
+            drained.len(),
+            1,
+            "tracker must collapse canonical-equivalent paths"
+        );
+
+        // Snapshot is empty post-drain.
+        assert!(tracker.snapshot().is_empty());
+
+        // Re-pushing after drain registers a fresh touch.
+        assert!(tracker.touch(&a));
+        assert_eq!(tracker.drain_new().len(), 1);
     }
 }

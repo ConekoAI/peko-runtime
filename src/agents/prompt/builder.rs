@@ -44,6 +44,11 @@ pub struct SystemPromptBuilder {
     extension_core: Option<Arc<crate::extensions::framework::ExtensionCore>>,
     /// Principal runtime id for extension-scoped prompt hooks (P2 audit).
     principal_id: Option<String>,
+    /// Per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
+    /// Appended to the rendered prompt under a clearly delimited section
+    /// if present. The principal owns this file and may update it via
+    /// `Write`.
+    principal_memory: Option<String>,
 }
 
 impl SystemPromptBuilder {
@@ -63,6 +68,7 @@ impl SystemPromptBuilder {
             channel: "discord".to_string(),
             extension_core: None,
             principal_id: None,
+            principal_memory: None,
         }
     }
 
@@ -83,6 +89,16 @@ impl SystemPromptBuilder {
     /// enabled-skill allowlist at handle time.
     pub fn with_principal_id(mut self, principal_id: impl Into<String>) -> Self {
         self.principal_id = Some(principal_id.into());
+        self
+    }
+
+    /// Set the per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
+    ///
+    /// When set, the builder appends a `## Your long-term memory (MEMORY.md)`
+    /// section containing this content to the rendered prompt. Pass `None`
+    /// (the default) when the file does not exist.
+    pub fn with_principal_memory(mut self, memory: impl Into<String>) -> Self {
+        self.principal_memory = Some(memory.into());
         self
     }
 
@@ -148,7 +164,21 @@ impl SystemPromptBuilder {
         values.insert(Placeholder::McpContext, self.build_mcp_context_section());
 
         // 3. Replace placeholders in template
-        replace_placeholders(&template, &values, true)
+        let mut rendered = replace_placeholders(&template, &values, true);
+
+        // 4. Append principal long-term memory section, if a
+        //    MEMORY.md was found at the principal's workspace root.
+        //    Use a clearly delimited header so the model can attribute
+        //    the content (it is owned by the principal, not the user).
+        if let Some(memory) = self.principal_memory.as_deref() {
+            if !memory.trim().is_empty() {
+                rendered.push_str("\n\n## Your long-term memory (MEMORY.md)\n\n");
+                rendered.push_str(memory.trim());
+                rendered.push('\n');
+            }
+        }
+
+        rendered
     }
 
     /// Build the MCP context section via Extension Core hooks

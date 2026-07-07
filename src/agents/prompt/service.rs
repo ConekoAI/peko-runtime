@@ -37,13 +37,18 @@ impl SystemPromptService {
             .map(|p| p.body.clone())
             .unwrap_or_default();
 
-        SystemPromptBuilder::new(agent.name())
+        let mut builder = SystemPromptBuilder::new(agent.name())
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
             .with_extension_core(Arc::clone(extension_core))
             .with_principal_id(agent.principal_id().to_string())
-            .with_body(body)
-            .build()
+            .with_body(body);
+
+        if let Some(memory) = crate::agents::prompt::memory::load_principal_memory(&workspace_dir) {
+            builder = builder.with_principal_memory(memory);
+        }
+
+        builder.build()
     }
 
     /// Build a fresh system prompt dynamically.
@@ -53,12 +58,17 @@ impl SystemPromptService {
     pub async fn build_fresh(agent: &Agent, extension_core: &Arc<ExtensionCore>) -> String {
         let workspace_dir = Self::resolve_workspace(agent);
 
-        SystemPromptBuilder::new(agent.name())
+        let mut builder = SystemPromptBuilder::new(agent.name())
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
             .with_extension_core(Arc::clone(extension_core))
-            .with_principal_id(agent.principal_id().to_string())
-            .build()
+            .with_principal_id(agent.principal_id().to_string());
+
+        if let Some(memory) = crate::agents::prompt::memory::load_principal_memory(&workspace_dir) {
+            builder = builder.with_principal_memory(memory);
+        }
+
+        builder.build()
     }
 
     // ------------------------------------------------------------------
